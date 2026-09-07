@@ -20,6 +20,28 @@ vi.mock("./backend", () => ({
   // just needs it not to reject.
   queueInput: vi.fn().mockResolvedValue([]),
 }));
+/// Hoisted so the `vi.mock` factory below (which is hoisted above every
+/// import) can close over it, and so `resolvedAgentFor` and
+/// `agentForCard` can be the same function object.
+const agentMock = vi.hoisted(() =>
+  vi.fn(() => ({
+    profileId: "claude-code",
+    label: "Claude Code",
+    file: "CLAUDE.md",
+    command: "claude --model opus",
+    launchCommand: "claude --model opus",
+    mcpSupported: true,
+    failurePatterns: ["API Error:"],
+    failureCauses: [
+      { pattern: "/login", cause: "auth" },
+      { pattern: "Connection dropped", cause: "network" },
+    ],
+    sessionIdArgs: "",
+    resumeArgs: "",
+    promptArgs: "",
+  }))
+);
+
 vi.mock("./layoutState", () => ({
   layoutState: writable({
     workspaces: [
@@ -64,19 +86,12 @@ vi.mock("./layoutState", () => ({
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
   workspaceRootPath: vi.fn(() => "/ws"),
-  resolvedAgentFor: vi.fn(() => ({
-    profileId: "claude-code",
-    label: "Claude Code",
-    file: "CLAUDE.md",
-    command: "claude --model opus",
-    launchCommand: "claude --model opus",
-    mcpSupported: true,
-    failurePatterns: ["API Error:"],
-      failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],
-    sessionIdArgs: "",
-    resumeArgs: "",
-    promptArgs: "",
-  })),
+  resolvedAgentFor: agentMock,
+  // The SAME mock function, deliberately: no fixture here carries a
+  // complexity, so `agentForCard` really does resolve to the workspace's
+  // agent -- and a test that moves one has to move both, or half the
+  // launches in a single run would use a different agent.
+  agentForCard: agentMock,
 }));
 vi.mock("./workspace", () => {
   const findSessionLocation = vi.fn();

@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
+  agentActionToApply,
+  availableAgentActions,
   buildCreatePlanArgs,
+  composedCardView,
+  toggleAgentAction,
+  AGENT_ACTIONS,
+  AGENT_ACTION_LABELS,
   composeHint,
   composeKeyAction,
   composeWindowKeyAction,
@@ -150,6 +156,131 @@ describe("railToApply", () => {
 
   it("no pick, no placement", () => {
     expect(railToApply("task", null, ["r1"])).toBeNull();
+  });
+});
+
+describe("availableAgentActions", () => {
+  const ctx = { kind: "task" as const, railId: null, canRun: true, canDevelop: true };
+
+  it("offers develop first — running an undeveloped card is the deliberate choice", () => {
+    expect(availableAgentActions(ctx)).toEqual(["develop", "run"]);
+    expect(AGENT_ACTIONS[0]).toBe("develop");
+  });
+
+  it("keeps run to tasks and lets develop cover plans too", () => {
+    // A plan's body is never inlined into the prompt, so running one
+    // filed here would launch an agent at a checklist nobody wrote.
+    expect(availableAgentActions({ ...ctx, kind: "plan" })).toEqual(["develop"]);
+  });
+
+  it("offers a note neither — nothing executes it and nothing shapes it", () => {
+    expect(availableAgentActions({ ...ctx, kind: "note" })).toEqual([]);
+  });
+
+  it("takes both away once the card is going onto a rail", () => {
+    // The rail launches the card when the human arms it; a second agent
+    // started here would race that one or rewrite the card under it.
+    expect(availableAgentActions({ ...ctx, railId: "r1" })).toEqual([]);
+    expect(availableAgentActions({ ...ctx, kind: "plan", railId: "r1" })).toEqual([]);
+  });
+
+  it("offers only what the board handed the composer a handler for", () => {
+    expect(availableAgentActions({ ...ctx, canRun: false })).toEqual(["develop"]);
+    expect(availableAgentActions({ ...ctx, canDevelop: false })).toEqual(["run"]);
+    expect(availableAgentActions({ ...ctx, canRun: false, canDevelop: false })).toEqual([]);
+  });
+
+  it("describes each action in one line, and never as the other one", () => {
+    expect(AGENT_ACTION_LABELS.run.label).toBe("Run now with the agent");
+    expect(AGENT_ACTION_LABELS.develop.label).toBe("Develop with agent on add");
+    expect(AGENT_ACTION_LABELS.develop.hint).toContain("gavin-develop");
+    expect(AGENT_ACTION_LABELS.develop.hint).toContain("does not start");
+  });
+});
+
+describe("toggleAgentAction", () => {
+  it("picks one and un-picks the other — they are one question", () => {
+    expect(toggleAgentAction(null, "run")).toBe("run");
+    expect(toggleAgentAction("develop", "run")).toBe("run");
+    expect(toggleAgentAction("run", "develop")).toBe("develop");
+  });
+
+  it("un-picks on a second click, so 'no action' stays reachable", () => {
+    // The reason these are checkboxes rather than radios: filing a card
+    // with no agent on it is the ordinary case.
+    expect(toggleAgentAction("run", "run")).toBeNull();
+    expect(toggleAgentAction("develop", "develop")).toBeNull();
+  });
+});
+
+describe("agentActionToApply", () => {
+  it("takes the action the human ticked", () => {
+    expect(agentActionToApply("develop", ["develop", "run"])).toBe("develop");
+  });
+
+  it("drops one whose checkbox has since gone off screen", () => {
+    // Tick Run on a task, switch the chip to plan: the flag survives
+    // under a control the composer has stopped drawing, and a card must
+    // never be launched by a checkbox nobody can see. Same posture as
+    // railToApply.
+    expect(agentActionToApply("run", ["develop"])).toBeNull();
+    expect(agentActionToApply("develop", [])).toBeNull();
+  });
+
+  it("no tick, no agent", () => {
+    expect(agentActionToApply(null, ["develop", "run"])).toBeNull();
+  });
+});
+
+describe("composedCardView", () => {
+  const args = buildCreatePlanArgs(
+    {
+      kind: "task",
+      title: "Fix login",
+      body: "do it",
+      status: "To Do",
+      attachments: ["docs/a.md"],
+      complexity: "intricate",
+    },
+    []
+  );
+  if ("error" in args) throw new Error(args.error);
+
+  it("carries the level onto the view an action is handed", () => {
+    // A card filed at "intricate" and acted on in the same gesture has
+    // to reach the agent that level names, not the workspace's default.
+    const view = composedCardView(args, "/ws/.gavin-root/plans/fix-login.md", "/ws/.gavin-root", "root", [
+      "docs/a.md",
+    ]);
+    expect(view.complexity).toBe("intricate");
+    expect(view.attachments).toEqual(["docs/a.md"]);
+    expect(view.kind).toBe("task");
+    expect(view.id).toBe("/ws/.gavin-root/plans/fix-login.md");
+    expect(view.fileName).toBe("fix-login.md");
+    expect(view.contextFolder).toBe("/ws/.gavin-root");
+    expect(view.contextName).toBe("root");
+    expect(view.status).toBe("To Do");
+  });
+
+  it("is a card nothing has happened to yet", () => {
+    // Both actions launch off this view, and a fabricated parent, label
+    // or checklist count would be a lie about a file just written.
+    const view = composedCardView(args, "/p/t.md", "/p", "root", []);
+    expect(view.parent).toBeNull();
+    expect(view.parentBroken).toBe(false);
+    expect(view.labels).toEqual([]);
+    expect(view.nestedChildren).toEqual([]);
+    expect(view.checklistTotal).toBe(0);
+    expect(view.parseWarning).toBe(false);
+  });
+
+  it("copies the attachments rather than aliasing the composer's list", () => {
+    // The composer clears its own list on every commit; a shared array
+    // would empty the view's references out from under the launch.
+    const live = ["docs/a.md"];
+    const view = composedCardView(args, "/p/t.md", "/p", "root", live);
+    live.length = 0;
+    expect(view.attachments).toEqual(["docs/a.md"]);
   });
 });
 
@@ -449,5 +580,67 @@ describe("CardComposeModal dismissal wiring", () => {
   it("offers the discard as the confirm's own choice", () => {
     expect(source).toContain("<ConfirmPrompt");
     expect(source).toContain('{ label: "Discard", danger: true, onPick: onClose }');
+  });
+});
+
+// The composer is the one surface where the two actions meet, and every
+// rule they share is invisible to the pure suite above: a checkbox wired
+// to nothing renders perfectly, and a group whose two boxes each own
+// their own flag looks identical until both are ticked. Source-read
+// rather than mounted, following complexitySurfaces.test.ts.
+describe("CardComposeModal agent actions", () => {
+  const source = (
+    import.meta.glob("./CardComposeModal.svelte", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>
+  )["./CardComposeModal.svelte"];
+
+  it("draws the group from the shared list rather than two hand-written rows", () => {
+    // Two independent `{#if}` blocks are how the pair stops being one
+    // question -- and how one of them ends up with a rule the other
+    // never got.
+    expect(source).toContain("<legend>Agent actions</legend>");
+    expect(source).toContain("{#each agentActions as action (action)}");
+    expect(source).toContain("AGENT_ACTION_LABELS[action].label");
+  });
+
+  it("holds ONE selection, so the boxes cannot both be on", () => {
+    expect(source).toContain("let agentAction = $state<AgentAction | null>(null)");
+    expect(source).toContain("checked={agentAction === action}");
+    expect(source).toContain("agentAction = toggleAgentAction(agentAction, action)");
+    // The old per-action flag: a second one is how mutual exclusion
+    // silently stops being mutual.
+    expect(source).not.toContain("runNow");
+  });
+
+  it("asks availableAgentActions what to draw, rather than re-deriving the rule", () => {
+    expect(source).toContain("availableAgentActions({");
+    expect(source).toContain("canRun: onRunCard !== null");
+    expect(source).toContain("canDevelop: onDevelopCard !== null");
+    // Hidden entirely when there is nothing to offer: a heading over no
+    // boxes reads as a broken control.
+    expect(source).toContain("{#if agentActions.length > 0}");
+  });
+
+  it("re-measures the tick against what is on screen before launching anything", () => {
+    expect(source).toContain("agentActionToApply(agentAction, agentActions)");
+  });
+
+  it("routes each action to its own handler, off one shared card view", () => {
+    // Two separately-built views is how the level or the attachments
+    // reach one launch route and not the other.
+    expect(source).toContain("composedCardView(args, path, contextFolder, ctxName, attachments)");
+    expect(source).toContain('action === "run" ? onRunCard?.(view) : onDevelopCard?.(view)');
+  });
+
+  it("clears the action after each card, and when a rail takes it over", () => {
+    // It survives `reset()` nowhere: autoCommit and the level describe
+    // the card, while this starts an agent, and inheriting that onto the
+    // next card typed into the same open composer is a session nobody
+    // asked for.
+    expect(source).toContain("agentAction = null;");
+    expect(source).toContain("if (railId) agentAction = null;");
   });
 });

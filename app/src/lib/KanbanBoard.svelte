@@ -9,7 +9,7 @@
   import { gavinTrees } from "./gavinState";
   import { mergePlanCards, type CardView } from "./planBoard";
   import { planCommitFromMerged } from "./planDrop";
-  import { runCard, resumeCard, sendToMainAgent } from "./cardRunActions";
+  import { runCard, resumeCard, developCard, sendToMainAgent } from "./cardRunActions";
   import { layoutState, daemonCompat } from "./layoutState";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
@@ -246,6 +246,18 @@
   async function handleRun(card: CardView): Promise<void> {
     planWriteError = null;
     const err = await runCard(workspaceId, card);
+    if (err) planWriteError = err;
+  }
+
+  // "Develop with agent on add" (CardComposeModal's Agent actions), and
+  // the same call the card menu's "Develop into a plan…" makes: a card
+  // filed as one line, handed straight to the gavin-develop skill. Not a
+  // run -- developCard writes no status and binds no session -- so the
+  // board shows nothing afterwards and the action jumps to the agent's
+  // own tab instead.
+  async function handleDevelop(card: CardView): Promise<void> {
+    planWriteError = null;
+    const err = await developCard(workspaceId, card);
     if (err) planWriteError = err;
   }
 
@@ -537,6 +549,7 @@
       initialStatus={composeStatus}
       {merged}
       onRunCard={handleRun}
+      onDevelopCard={handleDevelop}
       onClose={() => (composeStatus = null)}
     />
   {/if}

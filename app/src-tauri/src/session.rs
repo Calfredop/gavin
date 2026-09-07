@@ -78,6 +78,11 @@ fn persist_workspaces(
     // is the guarantee the comment on `agent_models` had to ask for in
     // prose.
     superpowers: HashMap<String, crate::config::SuperpowersMark>,
+    // The custom agent's command and flag plus the complexity table, in
+    // one struct rather than three positionals -- see
+    // `AgentDefaultsConfig`. Its type is shared with nothing else here,
+    // so a transposition is a type error rather than a silent swap.
+    agent_defaults: crate::config::AgentDefaultsConfig,
 ) -> anyhow::Result<()> {
     crate::config::save(
         config_dir,
@@ -95,6 +100,7 @@ fn persist_workspaces(
             removed_workspaces: data.removed_workspaces.clone(),
             agent_pause,
             superpowers,
+            agent_defaults,
         },
     )
 }
@@ -147,6 +153,7 @@ pub fn set_agent_pause(
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
     superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
 ) -> Result<(), String> {
     *agent_pause_state.0.lock().unwrap() = agent_pause.clone();
     let data = state.0.lock().unwrap().clone();
@@ -157,6 +164,7 @@ pub fn set_agent_pause(
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -173,6 +181,7 @@ pub fn set_agent_pause(
         auto_commit,
         agent_pause,
         superpowers,
+        agent_defaults,
     )
     .map_err(|e| e.to_string())
 }
@@ -181,6 +190,70 @@ pub fn set_agent_pause(
 /// String maps so a transposed argument is a compile error rather than a
 /// silently wiped field.
 pub struct SuperpowersMarks(pub Mutex<HashMap<String, crate::config::SuperpowersMark>>);
+
+/// The app-wide custom agent (command + model flag) and the complexity
+/// table. Tauri-managed and persisted into the same `AppConfig` as the
+/// rest -- the eighth field a save site can silently wipe, and carried
+/// through `persist_workspaces` for exactly that reason.
+pub struct AgentDefaults(pub Mutex<crate::config::AgentDefaultsConfig>);
+
+#[tauri::command]
+pub fn get_agent_defaults(state: State<AgentDefaults>) -> crate::config::AgentDefaultsConfig {
+    state.0.lock().unwrap().clone()
+}
+
+/// Replaces the app-wide agent defaults wholesale, the same shape as
+/// `set_agent_pause`: the panel edits a whole struct and hands it back,
+/// so there is no per-key command and no way for one field of it to be
+/// saved while another is dropped.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn set_agent_defaults(
+    agent_defaults: crate::config::AgentDefaultsConfig,
+    app_handle: AppHandle,
+    state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
+    theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
+) -> Result<(), String> {
+    *agent_defaults_state.0.lock().unwrap() = agent_defaults.clone();
+    let data = state.0.lock().unwrap().clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
+    let theme = theme_state.0.lock().unwrap().clone();
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let auto_commit = *auto_commit_state.0.lock().unwrap();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        card_tabs,
+        theme,
+        agent_models,
+        terminal_font_size,
+        auto_commit,
+        agent_pause,
+        superpowers,
+        agent_defaults,
+    )
+    .map_err(|e| e.to_string())
+}
 
 #[cfg(test)]
 mod workspaces_data_tests {
@@ -222,6 +295,7 @@ mod workspaces_data_tests {
             None,
             None,
             HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
         )
         .unwrap();
         let loaded = crate::config::load(dir.path()).unwrap();
@@ -261,6 +335,7 @@ mod workspaces_data_tests {
             None,
             None,
             HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().card_tabs, card_tabs);
@@ -287,6 +362,7 @@ mod workspaces_data_tests {
             None,
             None,
             HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().terminal_font_size, Some(11));
@@ -314,6 +390,7 @@ mod workspaces_data_tests {
             Some(true),
             None,
             HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().auto_commit, Some(true));
@@ -340,6 +417,7 @@ mod workspaces_data_tests {
             Some(false),
             None,
             HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().auto_commit, Some(false));
@@ -375,6 +453,7 @@ mod workspaces_data_tests {
             None,
             None,
             HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().removed_workspaces, vec![tombstone]);
@@ -403,9 +482,119 @@ mod workspaces_data_tests {
             None,
             None,
             marks.clone(),
+            crate::config::AgentDefaultsConfig::default(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().superpowers, marks);
+    }
+
+    /// The eighth carry-through field, and the one whose loss is the most
+    /// expensive to notice: a wiped complexity table does not error, it
+    /// silently sends every card back to the workspace's default agent,
+    /// which looks exactly like a table that was never filled in.
+    #[test]
+    fn persist_workspaces_carries_the_agent_defaults_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        let mut complexity = HashMap::new();
+        complexity.insert(
+            "intricate".to_string(),
+            crate::config::ComplexityAgent {
+                profile: "claude-code".to_string(),
+                model: "opus".to_string(),
+            },
+        );
+        let defaults = crate::config::AgentDefaultsConfig {
+            custom_command: "my-agent --yolo".to_string(),
+            custom_model_flag: "--llm".to_string(),
+            complexity,
+        };
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            None,
+            None,
+            None,
+            HashMap::new(),
+            defaults.clone(),
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().agent_defaults, defaults);
+    }
+
+    /// A workspace's own overrides ride on the workspace record, so they
+    /// travel with `WorkspacesData` rather than as a thirteenth
+    /// positional -- the same reason `removed_workspaces` does. This pins
+    /// that they survive the save at all: `skip_serializing_if` keeps the
+    /// key out of config.json for an inheriting workspace, and a bug
+    /// there would drop a real override just as quietly.
+    #[test]
+    fn persist_workspaces_carries_a_workspaces_complexity_overrides_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace {
+            id: "ws-1".to_string(),
+            name: "WS".to_string(),
+            pages: vec![],
+            active_page_id: None,
+            active_view: None,
+            hub_view: None,
+            root_path: None,
+            main_session_id: None,
+            orchestration_agent: None,
+            developing_cards: Vec::new(),
+            legacy_agent_command: None,
+            color: None,
+            notify_needs_input: true,
+            notify_finished: true,
+            confirm_tab_close: true,
+            home_agent_share: None,
+            git_view: None,
+            last_active_at: None,
+            terminal_font_size: None,
+            auto_commit: None,
+            auto_resume_runs: false,
+            agent_pause: None,
+            pinned_at: None,
+            complexity_agents: HashMap::new(),
+        };
+        ws.complexity_agents.insert(
+            "trivial".to_string(),
+            crate::config::ComplexityAgent {
+                profile: String::new(),
+                model: "haiku".to_string(),
+            },
+        );
+        let data = WorkspacesData {
+            workspaces: vec![ws.clone()],
+            active_workspace_id: None,
+            removed_workspaces: vec![],
+        };
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            None,
+            None,
+            None,
+            HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::config::load(dir.path()).unwrap().workspaces[0].complexity_agents,
+            ws.complexity_agents
+        );
     }
 
     /// The marker is the human's word, so it has to survive a round trip
@@ -431,6 +620,7 @@ mod workspaces_data_tests {
             None,
             None,
             marks,
+            crate::config::AgentDefaultsConfig::default(),
         )
         .unwrap();
         let raw = std::fs::read_to_string(crate::config::config_path(dir.path())).unwrap();
@@ -494,6 +684,7 @@ mod workspaces_data_tests {
             None,
             None,
             HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().theme, Some("light".to_string()));
@@ -530,6 +721,7 @@ mod workspaces_data_tests {
             None,
             Some(cycle.clone()),
             HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().agent_pause, Some(cycle));
@@ -583,6 +775,7 @@ mod workspace_migration_tests {
             auto_resume_runs: false,
             agent_pause: None,
             pinned_at: None,
+            complexity_agents: HashMap::new(),
         }
     }
 
@@ -675,6 +868,7 @@ pub fn set_workspaces_state(
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
     superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
 ) -> Result<(), String> {
     let data = WorkspacesData { workspaces, active_workspace_id, removed_workspaces };
     *state.0.lock().unwrap() = data.clone();
@@ -689,6 +883,7 @@ pub fn set_workspaces_state(
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -702,6 +897,7 @@ pub fn set_workspaces_state(
         auto_commit,
         agent_pause,
         superpowers,
+        agent_defaults,
     )
     .map_err(|e| e.to_string())?;
     let _ = app_handle.emit(
@@ -740,6 +936,7 @@ pub fn set_agent_model_default(
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
     superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
 ) -> Result<(), String> {
     // An empty model removes the entry rather than storing "": the
     // picker's unset row must be able to UNDO a default, not just
@@ -764,6 +961,7 @@ pub fn set_agent_model_default(
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -778,6 +976,7 @@ pub fn set_agent_model_default(
         auto_commit,
         agent_pause,
         superpowers,
+        agent_defaults,
     )
     .map_err(|e| e.to_string())
 }
@@ -813,6 +1012,7 @@ pub fn set_superpowers_mark(
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
     superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
 ) -> Result<(), String> {
     let superpowers = {
         let mut current = superpowers_state.0.lock().unwrap();
@@ -834,6 +1034,7 @@ pub fn set_superpowers_mark(
     let theme = theme_state.0.lock().unwrap().clone();
     let agent_models = agent_models_state.0.lock().unwrap().clone();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -850,6 +1051,7 @@ pub fn set_superpowers_mark(
         auto_commit,
         agent_pause,
         superpowers,
+        agent_defaults,
     )
     .map_err(|e| e.to_string())
 }
@@ -874,6 +1076,7 @@ pub fn set_theme_pref(
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
     superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
 ) -> Result<(), String> {
     // An absent or blank value clears the override back to System rather
     // than persisting an empty string -- there's no separate "clear"
@@ -894,6 +1097,7 @@ pub fn set_theme_pref(
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -907,6 +1111,7 @@ pub fn set_theme_pref(
         auto_commit,
         agent_pause,
         superpowers,
+        agent_defaults,
     )
         .map_err(|e| e.to_string())
 }
@@ -939,6 +1144,7 @@ pub fn set_terminal_font_size(
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
     superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
 ) -> Result<(), String> {
     let terminal_font_size = {
         let mut current = font_size_state.0.lock().unwrap();
@@ -958,6 +1164,7 @@ pub fn set_terminal_font_size(
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -972,6 +1179,7 @@ pub fn set_terminal_font_size(
         auto_commit,
         agent_pause,
         superpowers,
+        agent_defaults,
     )
     .map_err(|e| e.to_string())
 }
@@ -1001,6 +1209,7 @@ pub fn set_auto_commit(
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
     superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
 ) -> Result<(), String> {
     let auto_commit = {
         let mut current = auto_commit_state.0.lock().unwrap();
@@ -1017,6 +1226,7 @@ pub fn set_auto_commit(
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -1031,6 +1241,7 @@ pub fn set_auto_commit(
         auto_commit,
         agent_pause,
         superpowers,
+        agent_defaults,
     )
     .map_err(|e| e.to_string())
 }
@@ -1056,6 +1267,7 @@ pub fn set_session_name(
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
     superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
 ) -> Result<(), String> {
     // An empty (or whitespace-only) name clears the override rather than
     // persisting an empty string -- there's no separate "clear" command,
@@ -1081,6 +1293,7 @@ pub fn set_session_name(
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -1094,6 +1307,7 @@ pub fn set_session_name(
         auto_commit,
         agent_pause,
         superpowers,
+        agent_defaults,
     )
         .map_err(|e| e.to_string())
 }
@@ -1123,6 +1337,7 @@ pub fn set_file_tabs(
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
     superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
 ) -> Result<(), String> {
     *file_tabs_state.0.lock().unwrap() = file_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -1136,6 +1351,7 @@ pub fn set_file_tabs(
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -1149,6 +1365,7 @@ pub fn set_file_tabs(
         auto_commit,
         agent_pause,
         superpowers,
+        agent_defaults,
     )
         .map_err(|e| e.to_string())
 }
@@ -1207,6 +1424,7 @@ pub fn set_card_tabs(
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
     superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
 ) -> Result<(), String> {
     *card_tabs_state.0.lock().unwrap() = card_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -1220,6 +1438,7 @@ pub fn set_card_tabs(
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -1233,6 +1452,7 @@ pub fn set_card_tabs(
         auto_commit,
         agent_pause,
         superpowers,
+        agent_defaults,
     )
     .map_err(|e| e.to_string())
 }
@@ -1260,6 +1480,7 @@ pub fn set_board_tabs(
     auto_commit_state: State<AutoCommit>,
     agent_pause_state: State<AgentPause>,
     superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
 ) -> Result<(), String> {
     *board_tabs_state.0.lock().unwrap() = board_tabs.clone();
     let card_tabs = card_tabs_state.0.lock().unwrap().clone();
@@ -1273,6 +1494,7 @@ pub fn set_board_tabs(
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     persist_workspaces(
         &config_dir,
         &data,
@@ -1286,6 +1508,7 @@ pub fn set_board_tabs(
         auto_commit,
         agent_pause,
         superpowers,
+        agent_defaults,
     )
         .map_err(|e| e.to_string())
 }
@@ -2276,6 +2499,7 @@ mod resolve_workspaces_tests {
             auto_resume_runs: false,
             agent_pause: None,
             pinned_at: None,
+            complexity_agents: HashMap::new(),
         }
     }
 
@@ -2876,6 +3100,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 auto_resume_runs: false,
                 agent_pause: None,
                 pinned_at: None,
+                complexity_agents: HashMap::new(),
             },
         );
     }
@@ -2916,6 +3141,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         config.auto_commit,
         config.agent_pause.clone(),
         config.superpowers.clone(),
+        config.agent_defaults.clone(),
     )?;
 
     let session_ids = attachable_session_ids(&workspaces_data, &non_session_tab_ids);
@@ -2933,6 +3159,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(AutoCommit(Mutex::new(config.auto_commit)));
     app_handle.manage(AgentPause(Mutex::new(config.agent_pause)));
     app_handle.manage(SuperpowersMarks(Mutex::new(config.superpowers)));
+    app_handle.manage(AgentDefaults(Mutex::new(config.agent_defaults)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
     attach_and_relay(&app_handle, &writer, reader_stream, session_ids, compat)?;
@@ -3887,6 +4114,7 @@ pub fn create_plan(
     kind: Option<String>,
     parent: Option<String>,
     attachments: Option<String>,
+    complexity: Option<String>,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
@@ -3903,6 +4131,7 @@ pub fn create_plan(
             kind,
             parent,
             attachments,
+            complexity,
         },
     )
     .map_err(|e| e.to_string())?;
@@ -4158,6 +4387,7 @@ mod main_session_tests {
             auto_resume_runs: false,
             agent_pause: None,
             pinned_at: None,
+            complexity_agents: HashMap::new(),
         }
     }
 
@@ -4367,6 +4597,7 @@ mod gate_tests {
                 kind: None,
                 parent: None,
                 attachments: None,
+                complexity: None,
             },
             Request::GetBoardByRoot { root_path: "r".into() },
             Request::SpawnAgentSession { root_path: "r".into(), cwd: "c".into(), command: "cmd".into() },
@@ -4694,6 +4925,7 @@ mod attach_target_tests {
             auto_resume_runs: false,
             agent_pause: None,
             pinned_at: None,
+            complexity_agents: HashMap::new(),
         }
     }
 

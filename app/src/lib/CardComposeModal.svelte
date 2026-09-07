@@ -27,14 +27,20 @@
   import { placeCardAtColumnEnd } from "./planDrop";
   import type { MergedBoard } from "./boardSearch";
   import {
+    agentActionToApply,
+    availableAgentActions,
     buildCreatePlanArgs,
     composeHint,
     composeCloseAction,
     composeKeyAction,
+    composedCardView,
     composeWindowKeyAction,
     railToApply,
+    toggleAgentAction,
+    AGENT_ACTION_LABELS,
     COMPOSE_KINDS,
     DEFAULT_COMPOSE_KIND,
+    type AgentAction,
     type ComposeField,
     type ComposeKind,
   } from "./cardCompose";
@@ -45,6 +51,12 @@
     removeAttachment,
   } from "./attachments";
   import { autoCommitAppliesTo } from "./autoCommit";
+  import {
+    COMPLEXITY_LABELS,
+    COMPLEXITY_LEVELS,
+    NO_COMPLEXITY,
+    parseComplexity,
+  } from "./complexity";
   import { daemonCompat, newCardAutoCommit, workspaceRootPath } from "./layoutState";
   import { featureBlockedReason } from "./daemonCompat";
   import { formatShortcut } from "./shortcuts";
@@ -76,6 +88,13 @@
     scoped?: MergedBoard | null;
     /// Offered only when the board can actually run a card.
     onRunCard?: ((card: CardView) => void | Promise<void>) | null;
+    /// The other half of the Agent actions group: hand the card straight
+    /// to the gavin-develop skill. Separate prop rather than a mode on
+    /// `onRunCard` because it is a different launch -- no In Progress
+    /// write, no card<->session binding, and a refusal where a run would
+    /// jump (cardRunActions.ts) -- and a board that offers one may not
+    /// offer the other.
+    onDevelopCard?: ((card: CardView) => void | Promise<void>) | null;
     onClose: () => void;
   }
   let {
@@ -87,6 +106,7 @@
     merged = null,
     scoped = null,
     onRunCard = null,
+    onDevelopCard = null,
     onClose,
   }: Props = $props();
 
@@ -117,7 +137,19 @@
   // ticked. Survives `reset()` for the same reason railId does: filing a
   // run of cards that all need committing is one tick, not one per card.
   let autoCommit = $state(get(newCardAutoCommit));
-  let runNow = $state(false);
+  // How hard the card is, if the human says. Survives `reset()` like
+  // `autoCommit` and `railId` above, and for the same reason: filing a
+  // run of cards of the same difficulty is one choice, not one per card.
+  // Empty means unrated, which is the absence of the line rather than a
+  // sixth level -- an unrated card runs the workspace's own agent.
+  let complexity = $state<string>(NO_COMPLEXITY);
+  // The one thing an agent is asked to do with the card as it is filed,
+  // or null for the ordinary case: file it and leave it alone. Cleared
+  // after every commit rather than surviving `reset()` like the settings
+  // above it -- autoCommit and the level describe the card, while this
+  // starts an agent, and inheriting that silently onto the next card
+  // typed into the same open composer is a session nobody asked for.
+  let agentAction = $state<AgentAction | null>(null);
   let error = $state<string | null>(null);
   let titleEl = $state<HTMLTextAreaElement | null>(null);
   // Drives the footer hint only: which key files a card depends on
@@ -154,6 +186,23 @@
   // and carry none of these files. Nothing on the wire catches that --
   // this gate is the only one there is.
   const attachmentsBlocked = $derived(featureBlockedReason($daemonCompat, "attachments"));
+  // Exactly the same hole, one version later: a v30 daemon parses
+  // CreatePlan happily and drops `complexity` on the floor, so the card
+  // would be filed looking rated and run at the workspace's default
+  // agent. Nothing on the wire catches that either.
+  const complexityBlocked = $derived(featureBlockedReason($daemonCompat, "complexity"));
+  // Which boxes the Agent actions group draws at all -- the kind, the
+  // rail and what this board handed the composer. Empty takes the whole
+  // group off screen: a heading over nothing is a control that looks
+  // broken.
+  const agentActions = $derived(
+    availableAgentActions({
+      kind,
+      railId,
+      canRun: onRunCard !== null,
+      canDevelop: onDevelopCard !== null,
+    })
+  );
   const isMac = isMacSync();
 
   async function pickAttachment(): Promise<void> {
@@ -218,7 +267,7 @@
     }
     const ctx = contexts.find((c) => c.folderPath === contextFolder);
     const args = buildCreatePlanArgs(
-      { kind, title, body, status, attachments, autoCommit },
+      { kind, title, body, status, attachments, autoCommit, complexity },
       ctx?.plans.map((p) => p.fileName) ?? []
     );
     if ("error" in args) {
@@ -231,6 +280,17 @@
       else requestClose();
       return;
     }
+    // Re-measured rather than trusted from the checkbox, exactly as the
+    // rail below is: switching the kind chip hides a box without
+    // clearing what it set, and a card launched by a control nobody can
+    // see is the worst kind of surprise agent. Taken HERE, with `args`,
+    // rather than after the writes: the pickers stay live while the card
+    // is being written, and a chip switched in that window must not
+    // cancel an action the human already asked for on this card. The
+    // view it is handed carries the level, so a card filed at
+    // "intricate" and acted on in the same gesture reaches the agent
+    // that level names rather than the workspace's default.
+    const action = agentActionToApply(agentAction, agentActions);
     error = null;
     try {
       const path = await backend.createPlan(
@@ -242,7 +302,8 @@
         args.body,
         args.kind,
         undefined,
-        args.attachments
+        args.attachments,
+        args.complexity
       );
       const created: PlanFileInfo = {
         path,
@@ -255,6 +316,7 @@
         parent: null,
         labels: [],
         attachments: [...attachments],
+        complexity: parseComplexity(args.complexity),
         checklistDone: 0,
         checklistTotal: 0,
         parseWarning: false,
@@ -276,28 +338,10 @@
         rails.map((r) => r.id)
       );
       const railError = rail ? await sendCardToRailAction(workspaceId, rail, path) : null;
-      if (runNow && args.kind === "task" && onRunCard) {
+      if (action) {
         const ctxName = ctx?.name ?? contextFolder.split("/").at(-1) ?? contextFolder;
-        onRunCard({
-          id: path,
-          title: args.title,
-          status: args.status,
-          priority: null,
-          order: null,
-          kind: "task",
-          parent: null,
-          parentTitle: null,
-          parentBroken: false,
-          labels: [],
-          attachments: [...attachments],
-          checklistDone: 0,
-          checklistTotal: 0,
-          contextName: ctxName,
-          contextFolder,
-          fileName: args.fileName,
-          parseWarning: false,
-          nestedChildren: [],
-        });
+        const view = composedCardView(args, path, contextFolder, ctxName, attachments);
+        void (action === "run" ? onRunCard?.(view) : onDevelopCard?.(view));
       }
       added += 1;
       reset();
@@ -309,7 +353,7 @@
       // the wrong row.
       if (railError) error = `Card created, but it isn't on the rail: ${railError}`;
       else if (placeError) error = `Card created, but not at the end of the column: ${placeError}`;
-      runNow = false;
+      agentAction = null;
       if (!keepOpen) onClose();
       else titleEl?.focus();
     } catch (e) {
@@ -436,8 +480,9 @@
           onkeydown={(e) => handleKeydown("body", e)}
           onchange={() => {
             // The rail runs it when the human arms that rail; running it
-            // now as well would put two agents on one card.
-            if (railId) runNow = false;
+            // now -- or rewriting the card the rail is about to run --
+            // would put two agents on one card.
+            if (railId) agentAction = null;
           }}
         >
           {#if !railRequired}
@@ -449,6 +494,26 @@
         </select>
       </label>
     {/if}
+    <!-- The blocked reason rides the LABEL, not the select: tooltip.ts
+         binds mouseenter, which a disabled element never fires. -->
+    <label class="field" title={complexityBlocked ?? undefined}>
+      <span>Complexity</span>
+      <select
+        bind:value={complexity}
+        disabled={complexityBlocked !== null}
+        onfocus={() => (focusField = "body")}
+        onkeydown={(e) => handleKeydown("body", e)}
+      >
+        <!-- Not a sixth level: the absence of the line, which runs this
+             workspace's own agent rather than a level's. -->
+        <option value={NO_COMPLEXITY}>unrated</option>
+        {#each COMPLEXITY_LEVELS as level (level)}
+          <option value={level} title={COMPLEXITY_LABELS[level].hint}
+            >{COMPLEXITY_LABELS[level].label.toLowerCase()}</option
+          >
+        {/each}
+      </select>
+    </label>
   </div>
 
   <!-- The blocked reason rides the ROW, not the button: tooltip.ts binds
@@ -498,16 +563,28 @@
     </label>
   {/if}
 
-  {#if kind === "task" && !railId && onRunCard}
-    <label class="check-row">
-      <input
-        type="checkbox"
-        bind:checked={runNow}
-        onfocus={() => (focusField = "body")}
-        onkeydown={(e) => handleKeydown("body", e)}
-      />
-      Run now with the agent
-    </label>
+  <!-- Grouped, because they are one question with three answers --
+       develop it, run it, or neither -- and two loose checkboxes read as
+       two independent switches that could both be on. Checkboxes rather
+       than radios so "neither" stays reachable: a radio group cannot be
+       un-picked, and filing a card with no agent on it is the ordinary
+       case. -->
+  {#if agentActions.length > 0}
+    <fieldset class="agent-actions">
+      <legend>Agent actions</legend>
+      {#each agentActions as action (action)}
+        <label class="check-row" title={AGENT_ACTION_LABELS[action].hint}>
+          <input
+            type="checkbox"
+            checked={agentAction === action}
+            onchange={() => (agentAction = toggleAgentAction(agentAction, action))}
+            onfocus={() => (focusField = "body")}
+            onkeydown={(e) => handleKeydown("body", e)}
+          />
+          {AGENT_ACTION_LABELS[action].label}
+        </label>
+      {/each}
+    </fieldset>
   {/if}
 
   {#if error}
@@ -677,6 +754,24 @@
   /* Shared by the two checkbox rows -- auto commit and Run now -- so
      the name says what the row IS, not which control reached for it
      first. */
+  /* A bordered group rather than a heading over loose rows: the border
+     is what says the two boxes answer ONE question, which is the whole
+     point of the pair being mutually exclusive. Browser defaults on
+     fieldset/legend are removed rather than styled over -- the inset
+     border and the notched legend do not belong in this panel. */
+  .agent-actions {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 10px 10px;
+    margin: 10px 0 0;
+    min-width: 0;
+  }
+  .agent-actions legend {
+    color: var(--text-subtle);
+    font-family: monospace;
+    font-size: 0.75em;
+    padding: 0 4px;
+  }
   .check-row {
     display: flex;
     align-items: center;

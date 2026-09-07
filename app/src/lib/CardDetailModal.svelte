@@ -21,7 +21,16 @@
     openFileInSplit,
     resolvedAgents,
     liveSessionIds,
+    agentDefaultsStore,
+    agentProfilesStore,
   } from "./layoutState";
+  import {
+    COMPLEXITY_LABELS,
+    COMPLEXITY_LEVELS,
+    NO_COMPLEXITY,
+  } from "./complexity";
+  import CardAgentControls from "./CardAgentControls.svelte";
+  import { cardAgentSummary } from "./cardAgent";
   import {
     addAttachment,
     attachmentFromPick,
@@ -253,7 +262,7 @@
 
   // --- field writes (surgical, patch-on-success) -----------------------
   async function writeField(
-    key: "title" | "status" | "priority" | "labels" | "attachments",
+    key: "title" | "status" | "priority" | "labels" | "attachments" | "complexity" | "agent" | "model",
     value: string
   ): Promise<boolean> {
     errorMessage = null;
@@ -319,6 +328,61 @@
   function commitPriority(): void {
     void writeField("priority", priority);
   }
+
+  // --- complexity (which agent executes this card) ----------------------
+  // A v30 daemon's set_plan_field allow-list has no `complexity`, so the
+  // write would fail on change. Disabled with the reason instead: this
+  // and the ⌘N composer are the two surfaces that can produce the
+  // payload.
+  const complexityBlocked = $derived(featureBlockedReason($daemonCompat, "complexity"));
+  let complexity = $state<string>(NO_COMPLEXITY);
+  $effect(() => {
+    complexity = card.complexity ?? NO_COMPLEXITY;
+  });
+  function commitComplexity(): void {
+    void writeField("complexity", complexity);
+  }
+
+  // --- the agent this card runs on --------------------------------------
+  // `complexity:` above answers "which agent" by proxy: rate the work
+  // once, let the table decide. These two lines answer it outright, for
+  // the card that is not like its level -- and they win, whole, over
+  // whatever the level would have picked (cardAgent.ts says why).
+  //
+  // A v31 daemon fails this in BOTH directions, which is why the gate
+  // disables the controls rather than letting a change fail: it refuses
+  // the two set_plan_field keys loudly, and it also never PARSES the two
+  // lines, so a card that already carries an override reads back as
+  // carrying none and runs at the workspace's default.
+  const cardAgentBlocked = $derived(featureBlockedReason($daemonCompat, "cardAgent"));
+  /// Read off `layoutState` rather than through `workspaceComplexityTable`,
+  /// which is a one-shot `get()`: this is a component, and a table read
+  /// once at mount would keep whatever the workspace said then.
+  const workspaceTable = $derived(
+    $layoutState.workspaces.find((w) => w.id === workspaceId)?.complexityAgents ?? {}
+  );
+  /// The complexity select's LIVE value, not the card's stored one, so
+  /// the line below follows a level the human is still choosing.
+  const agentFields = $derived({
+    agent: card.agent ?? "",
+    model: card.model ?? "",
+    complexity,
+  });
+  /// What this card will actually launch, in one line under the row --
+  /// the whole reason both fields exist, and the answer nobody should
+  /// have to open two settings panels to find. It also names which of
+  /// the two controls won, because a card can carry a level AND an
+  /// override and the row would otherwise show two answers with no way
+  /// to tell them apart. Null when the card says nothing at all, which
+  /// is the ordinary case.
+  const cardAgentLine = $derived(
+    cardAgentSummary(
+      agentFields,
+      $agentDefaultsStore.complexity,
+      workspaceTable,
+      (id) => $agentProfilesStore.find((p) => p.id === id)?.label ?? id
+    )
+  );
 
   const activeLabelSlugs = $derived(new Set(card.labels.map(slugStatus)));
   async function toggleLabel(name: string): Promise<void> {
@@ -1003,6 +1067,32 @@
             {/each}
           </select>
         </label>
+        <label class="field">
+          <span class="label">Complexity</span>
+          <select
+            bind:value={complexity}
+            disabled={Boolean(complexityBlocked)}
+            title={complexityBlocked ?? ""}
+            onchange={commitComplexity}
+          >
+            <!-- "Unrated" is not a sixth level: it is the absence of the
+                 line, and it runs this workspace's own agent. Saying so
+                 in the option keeps it from reading as "trivial". -->
+            <option value={NO_COMPLEXITY}>unrated</option>
+            {#each COMPLEXITY_LEVELS as level (level)}
+              <option value={level} title={COMPLEXITY_LABELS[level].hint}
+                >{COMPLEXITY_LABELS[level].label.toLowerCase()}</option
+              >
+            {/each}
+          </select>
+        </label>
+        <CardAgentControls
+          {workspaceId}
+          profiles={$agentProfilesStore}
+          card={agentFields}
+          blocked={cardAgentBlocked}
+          onChange={(key, value) => void writeField(key, value)}
+        />
         {#if card.parent}
           <div class="field">
             <span class="label">Part of</span>
@@ -1018,6 +1108,11 @@
           </div>
         {/if}
       </div>
+      {#if complexityBlocked ?? cardAgentBlocked}
+        <p class="warning">{complexityBlocked ?? cardAgentBlocked}</p>
+      {:else if cardAgentLine}
+        <p class="agent-line">{cardAgentLine}</p>
+      {/if}
       {#if card.parseWarning}
         <p class="warning">This card's frontmatter has issues — some fields may not be readable.</p>
       {/if}
@@ -1630,6 +1725,16 @@
   }
   .warning {
     color: var(--warning-text);
+    font-size: 0.8em;
+    margin: 6px 0 0;
+  }
+
+  /* What this card will actually launch, level and override folded into
+     one sentence. Quiet by design: it is an answer to a question the
+     human already asked with the selects, not a warning about
+     anything. */
+  .agent-line {
+    color: var(--text-subtle);
     font-size: 0.8em;
     margin: 6px 0 0;
   }

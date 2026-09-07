@@ -13,6 +13,60 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v32 lets ONE card say which agent and which model runs it, overriding
+/// both the complexity table and the workspace's own `[agent]` block.
+/// `PlanFileInfo` gains `agent` and `model`, and `SetPlanFrontmatterField`
+/// takes the two new key names.
+///
+/// The pair is the card's own statement and is read whole rather than
+/// merged half-by-half with the level's: a model name from one CLI in
+/// another's argv is garbage, so "this card's agent" replaces "this
+/// level's agent" outright. Either half alone is meaningful -- an
+/// `agent:` with no `model:` runs that binary at its own default, a
+/// `model:` with no `agent:` runs the workspace's binary at that model --
+/// which is the same shape the complexity table's rows already have.
+///
+/// Kept RAW at this layer, unlike `complexity`. The five levels are an
+/// enum the daemon owns, so it can refuse a misspelling; the profile
+/// table lives in the Tauri host (`agent_setup.rs`) and the model names
+/// belong to whichever CLI is installed, so the daemon has nothing to
+/// validate either value against. A value it invented a rule for would
+/// refuse writes the app knows are fine.
+///
+/// No new Request variant: `SetPlanFrontmatterField` merely gains two
+/// allowed KEYS, and `PlanFileInfo` gains two `serde(default)` fields, so
+/// `min_version_for` -- which gates by request type -- is structurally
+/// blind to the whole change. The gate that matters is the app's
+/// `FEATURE_MIN_VERSION.cardAgent`, and it has to cover BOTH directions:
+/// a v31 daemon refuses the two writes loudly, but it also never PARSES
+/// the two lines, so a card that already carries an override reads back
+/// as carrying none and runs at the workspace's default with nothing on
+/// screen to say so.
+///
+/// v31 taught a card how HARD it is, and taught the root config the flag
+/// that puts a model on a hand-written agent command. Two halves of one
+/// question -- which binary, at which model tier, executes this card:
+///
+/// - `PlanFileInfo.complexity` carries the card's `complexity:` line, one
+///   of five ascending levels, and `SetPlanFrontmatterField` and
+///   `CreatePlan` are how it is written. The app maps a level to an agent
+///   profile and a model, so a trivial card need not spend the model a
+///   gnarly one needs.
+/// - `AgentConfig.model_flag` is the argv that carries that model for a
+///   profile gavin has no verified flag for -- the `custom` profile is
+///   the user's own binary, and until now its model control could not be
+///   offered at all. `SetRootConfigField` accepts the seventh key name.
+///
+/// Not one new Request variant between them: all three widen EXISTING
+/// requests, which `min_version_for` gates by TYPE and is therefore
+/// structurally blind to. So the gates that matter are the app's
+/// FEATURE_MIN_VERSION.complexity and .agentModelFlag. The two halves
+/// fail differently and both need saying: a v30 daemon refuses the
+/// `SetPlanFrontmatterField` and `SetRootConfigField` keys loudly, but
+/// drops `CreatePlan`'s `complexity` silently -- the card would be filed
+/// looking exactly as asked for and run at whatever the workspace's
+/// default agent is.
+///
 /// v30 gave a TOOL a run of its own. Until now a library tool was
 /// reachable only as a step on an orchestration rail, so "commit the
 /// dirty tree" meant building a rail and binding it to a checkout; the
@@ -192,7 +246,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 30;
+pub const PROTOCOL_VERSION: u32 = 32;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -417,6 +471,13 @@ pub enum Request {
         /// agree with. None writes no line at all.
         #[serde(default)]
         attachments: Option<String>,
+        /// The `complexity:` line to write -- one of the five level
+        /// names -- or None for a card that gets no such line. Refused
+        /// rather than defaulted when it names no level: a card filed
+        /// with a misspelled complexity would run the workspace's
+        /// default agent while looking as though it had been placed.
+        #[serde(default)]
+        complexity: Option<String>,
     },
     /// The SQLite board of the WATCHED workspace whose root matches.
     GetBoardByRoot {
@@ -1268,6 +1329,66 @@ impl Priority {
     }
 }
 
+/// How hard the work on a card is, on five ascending steps.
+///
+/// Deliberately NOT modelled on `Priority`, which has a `None` variant
+/// standing for "nobody said". Complexity has no such level: an unset
+/// card is `Option::None` at the field, so "nobody said" and "this is
+/// trivial" stay two different answers. A card that says nothing runs
+/// the workspace's own agent, which is the behaviour every card had
+/// before this field existed.
+///
+/// The scale is about DIFFICULTY, not size -- how much reasoning the work
+/// needs, not how many files it touches -- because that is the question
+/// the app then answers with a model tier.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum Complexity {
+    Trivial,
+    Simple,
+    Moderate,
+    Complex,
+    Intricate,
+}
+
+impl Complexity {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Complexity::Trivial => "trivial",
+            Complexity::Simple => "simple",
+            Complexity::Moderate => "moderate",
+            Complexity::Complex => "complex",
+            Complexity::Intricate => "intricate",
+        }
+    }
+
+    /// The five levels in ascending order. The one place the ORDER is
+    /// written down, so a picker, a settings table and a test cannot
+    /// disagree about which end is which.
+    pub const ALL: [Complexity; 5] = [
+        Complexity::Trivial,
+        Complexity::Simple,
+        Complexity::Moderate,
+        Complexity::Complex,
+        Complexity::Intricate,
+    ];
+
+    /// Parses one written level, or None. Returns an Option rather than
+    /// falling back to a level the way `Priority::from_str` does: a
+    /// misspelled complexity must degrade to "unset" and a parse
+    /// warning, never to a level that silently picks somebody an agent.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "trivial" => Some(Complexity::Trivial),
+            "simple" => Some(Complexity::Simple),
+            "moderate" => Some(Complexity::Moderate),
+            "complex" => Some(Complexity::Complex),
+            "intricate" => Some(Complexity::Intricate),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Label {
@@ -1729,6 +1850,48 @@ pub struct PlanFileInfo {
     /// `serde(default)` so an older daemon's tree still parses.
     #[serde(default)]
     pub attachments: Vec<String>,
+    /// The card's `complexity:` line -- how hard the work is, on five
+    /// ascending steps -- or None where the card says nothing. The app
+    /// turns a level into the agent profile and model that executes the
+    /// card, so None is load-bearing: it means "run the workspace's own
+    /// agent", which is what every card did before this field existed.
+    ///
+    /// Parsed on any card kind, like `attachments`: a note is a fine
+    /// place to record that something is going to be gnarly, even though
+    /// nothing will ever run it. An unparseable value is a
+    /// `parse_warning` and None, never a guessed level -- see
+    /// `Complexity::parse`.
+    ///
+    /// `serde(default)` so an older daemon's tree still parses.
+    #[serde(default)]
+    pub complexity: Option<Complexity>,
+    /// The card's `agent:` line -- the agent profile THIS card runs on,
+    /// whatever the complexity table or the workspace's own `[agent]`
+    /// block would otherwise pick -- or None where the card says nothing.
+    ///
+    /// Kept RAW, like `attachments` and unlike `complexity`: the profile
+    /// table lives in the Tauri host, so the daemon has nothing to check
+    /// a name against and inventing a rule here would refuse writes the
+    /// app knows are fine. A name the app cannot resolve reads back as
+    /// itself on the card, which is what makes a typo visible instead of
+    /// silent.
+    ///
+    /// Parsed on any card kind, like `complexity`, and `serde(default)`
+    /// so an older daemon's tree still parses.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The card's `model:` line -- the model that agent launches with.
+    /// Independent of `agent` above: on its own it means "this
+    /// workspace's own agent, at this model", which is the commonest
+    /// override of the two.
+    ///
+    /// Raw for a sharper version of `agent`'s reason: the names belong to
+    /// whichever CLI is installed, and gavin's own per-profile lists are
+    /// a convenience for the picker rather than a closed set.
+    ///
+    /// `serde(default)` so an older daemon's tree still parses.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// A markdown file in a context's docs/ or specs/ listing. `rel_path` is
@@ -1840,6 +2003,25 @@ pub struct AgentConfig {
     /// daemon's tree parseable, exactly as `mcp_file` does above.
     #[serde(default)]
     pub model: Option<String>,
+    /// The argv that carries `model` into this workspace's agent, e.g.
+    /// `--model`. Absent means "use the profile table's flag", which is
+    /// the right answer for the five stock profiles: their flags are
+    /// verified in Rust and a hand-typed one here could only be wrong.
+    ///
+    /// It exists for the sixth profile. `custom` is the user's own
+    /// binary, so the table has no flag for it and could never have one
+    /// -- which until now meant a custom agent had no model control at
+    /// all, and the only way to pin a model was to bake it into
+    /// `command` where nothing could read it back. Naming the flag is
+    /// what turns a hand-written command into an agent gavin can vary
+    /// the model of, which is the whole of the complexity table.
+    ///
+    /// Clearable, like `model` -- an absent key reads as "gavin decides"
+    /// where `model_flag = ""` would read as a deliberate refusal.
+    /// `default` keeps an older daemon's tree parseable, exactly as
+    /// `model` does above.
+    #[serde(default)]
+    pub model_flag: Option<String>,
 }
 
 /// A folder that contains a `.gavin-root/` (kind Root, only ever directly
@@ -2288,6 +2470,32 @@ mod tests {
         assert_eq!(Priority::from_str("not-a-real-priority"), Priority::None);
     }
 
+    /// The opposite posture to `Priority::from_str` above, and the
+    /// difference is the point: an unreadable priority is cosmetic, an
+    /// unreadable complexity would pick somebody an agent.
+    #[test]
+    fn complexity_parse_refuses_an_unrecognized_value_rather_than_guessing() {
+        assert_eq!(Complexity::parse("not-a-real-level"), None);
+        assert_eq!(Complexity::parse(""), None);
+        assert_eq!(Complexity::parse("  Complex  "), Some(Complexity::Complex));
+        assert_eq!(Complexity::parse("INTRICATE"), Some(Complexity::Intricate));
+    }
+
+    /// `ALL` is what every picker and settings table iterates, so it has
+    /// to be the whole enum in ascending order -- a level missing here is
+    /// a level nothing can ever be set to.
+    #[test]
+    fn every_complexity_level_round_trips_through_its_written_name() {
+        assert_eq!(Complexity::ALL.len(), 5);
+        for level in Complexity::ALL {
+            assert_eq!(Complexity::parse(level.as_str()), Some(level));
+        }
+        assert_eq!(
+            Complexity::ALL.map(|c| c.as_str()),
+            ["trivial", "simple", "moderate", "complex", "intricate"]
+        );
+    }
+
     fn sample_tree() -> GavinTree {
         GavinTree {
             root_path: "/tmp/ws".to_string(),
@@ -2311,6 +2519,9 @@ mod tests {
                     parse_warning: false,
                     modified_at: None,
                     attachments: vec!["docs/spec.md".to_string()],
+                    complexity: Some(Complexity::Moderate),
+                    agent: Some("codex".to_string()),
+                    model: Some("gpt-5.1".to_string()),
                 }],
                 docs: vec![MdFileInfo {
                     path: "/tmp/ws/.gavin-root/docs/notes.md".to_string(),
@@ -2352,7 +2563,10 @@ mod tests {
                         "checklistTotal": 0,
                         "parseWarning": false,
                         "modifiedAt": null,
-                        "attachments": ["docs/spec.md"]
+                        "attachments": ["docs/spec.md"],
+                        "complexity": "moderate",
+                        "agent": "codex",
+                        "model": "gpt-5.1"
                     }],
                     "docs": [{ "path": "/tmp/ws/.gavin-root/docs/notes.md", "relPath": "notes.md" }],
                     "specs": [],
@@ -2487,6 +2701,7 @@ mod tests {
                 mcp_file: None,
                 mcp_format: None,
                 model: Some("sonnet".to_string()),
+                model_flag: None,
             }),
             outside: false,
             prd: Some("docs/PRD.md".to_string()),
@@ -2503,7 +2718,8 @@ mod tests {
                 "command": "claude --model opus",
                 "mcpFile": null,
                 "mcpFormat": null,
-                "model": "sonnet"
+                "model": "sonnet",
+                "modelFlag": null
             })
         );
     }
@@ -2531,6 +2747,20 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v32: a card's OWN agent -- PlanFileInfo.agent/model, and the
+        // ninth and tenth SetPlanFrontmatterField keys. Neither is a new
+        // variant, and both fields are serde(default), so this match is
+        // structurally blind to the whole change: daemonCompat.ts's
+        // `cardAgent` is its only gate, and it has to cover the READ as
+        // well as the write -- a v31 daemon never parses the two lines,
+        // so a card that already carries an override reads back as
+        // carrying none and runs at the workspace's default.
+        // v31: a card's `complexity:` (PlanFileInfo.complexity, an eighth
+        // SetPlanFrontmatterField key, CreatePlan.complexity) and the
+        // root config's `[agent] model_flag` (AgentConfig.model_flag, a
+        // seventh SetRootConfigField key). No new variant on either half,
+        // which is exactly why daemonCompat.ts owes `complexity` and
+        // `agentModelFlag` entries with real consumers.
         // v26: the follow-up queue -- Request::QueueInput,
         // ListQueuedInputs, SetQueuedInputs and SendQueuedInput, plus
         // Response::QueuedInputs and the QueuedInputsChanged push. Four
@@ -2619,7 +2849,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 30);
+        assert_eq!(PROTOCOL_VERSION, 32);
     }
 
     #[test]
@@ -2861,6 +3091,7 @@ mod tests {
                 kind: None,
                 parent: None,
                 attachments: None,
+                complexity: None,
             },
             Request::GetBoardByRoot { root_path: "r".into() },
             Request::ClaimCardForSession {
@@ -3131,6 +3362,34 @@ mod tests {
     /// and that has to parse as None -- "runs at the root" -- rather
     /// than failing the whole library read.
     #[test]
+    fn a_card_scanned_before_v32_parses_as_naming_no_agent_of_its_own() {
+        // The read half of the `cardAgent` gate, in the one place it can
+        // be asserted: a v31 daemon sends neither field, and the app has
+        // to see "this card names nothing" rather than fail to parse the
+        // whole tree. Which is also why the gate is a hard one -- the
+        // absence is indistinguishable from a card that really names
+        // nothing.
+        let plan: PlanFileInfo = serde_json::from_value(serde_json::json!({
+            "path": "/ws/.gavin-root/plans/a.md",
+            "fileName": "a.md",
+            "title": "a",
+            "status": null,
+            "priority": null,
+            "order": null,
+            "kind": "task",
+            "parent": null,
+            "labels": [],
+            "checklistDone": 0,
+            "checklistTotal": 0,
+            "parseWarning": false
+        }))
+        .unwrap();
+        assert_eq!(plan.agent, None);
+        assert_eq!(plan.model, None);
+        assert_eq!(plan.complexity, None);
+    }
+
+    #[test]
     fn a_tool_def_written_before_v30_parses_with_no_working_directory() {
         let tool: ToolDef = serde_json::from_value(serde_json::json!({
             "id": "u1",
@@ -3241,15 +3500,17 @@ mod tests {
             kind: Some("task".to_string()),
             parent: Some("auth-plan.md".to_string()),
             attachments: Some("docs/spec.md, /Users/x/shot.png".to_string()),
+            complexity: Some("intricate".to_string()),
         };
         write_message(&mut buf, &req).unwrap();
         let mut cursor = Cursor::new(buf);
         let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
         match decoded {
-            Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent, attachments } => {
+            Request::CreatePlan { context_folder, file_name, title, status, priority, body, kind, parent, attachments, complexity } => {
                 assert_eq!(kind.as_deref(), Some("task"));
                 assert_eq!(parent.as_deref(), Some("auth-plan.md"));
                 assert_eq!(attachments.as_deref(), Some("docs/spec.md, /Users/x/shot.png"));
+                assert_eq!(complexity.as_deref(), Some("intricate"));
                 assert_eq!(context_folder, "/ws/auth");
                 assert_eq!(file_name, "login.md");
                 assert_eq!(title, "Login flow");

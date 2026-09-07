@@ -41,7 +41,7 @@ describe("the composer", () => {
     // One CreatePlan. A card written first and enriched second has a
     // window in which it exists without the instruction, and a failure
     // mode in which it never gets it.
-    expect(source(COMPOSER)).toContain("attachments, autoCommit }");
+    expect(source(COMPOSER)).toContain("attachments, autoCommit,");
   });
 
   it("seeds the box from the resolved default rather than a literal", () => {

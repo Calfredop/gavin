@@ -1,3 +1,4 @@
+import type { Complexity } from "./complexity";
 import type { Board, Column } from "./kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
 
@@ -30,6 +31,21 @@ export interface CardView {
   // attachments, and a pre-v18 daemon never sends the field. The
   // projection itself always sets it.
   attachments?: string[];
+  // How hard this card's work is, or null where it says nothing -- which
+  // is what makes it run the workspace's own agent rather than a level's.
+  // Optional for the same reason `attachments` is: a card view is built
+  // in a dozen fixtures with no opinion about it, and a pre-v31 daemon
+  // never sends the field. The projection itself always sets it.
+  complexity?: Complexity | null;
+  // The agent profile and model THIS card names for itself, raw as the
+  // frontmatter records them, or null where it names neither. Read
+  // WHOLE rather than merged with the level's pair: a model name from
+  // one CLI in another's argv is garbage, so a card that says anything
+  // replaces what its complexity level would have picked. Optional for
+  // the same reason `complexity` is -- fixtures, and a pre-v32 daemon
+  // never sends either.
+  agent?: string | null;
+  model?: string | null;
   checklistDone: number;
   checklistTotal: number;
   contextName: string;
@@ -105,6 +121,9 @@ function cardView(ctx: GavinContext, plan: PlanFileInfo): CardView {
     parentBroken: false,
     labels: plan.labels,
     attachments: plan.attachments ?? [],
+    complexity: plan.complexity ?? null,
+    agent: plan.agent ?? null,
+    model: plan.model ?? null,
     checklistDone: plan.checklistDone,
     checklistTotal: plan.checklistTotal,
     contextName: ctx.name,

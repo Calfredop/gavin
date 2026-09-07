@@ -90,6 +90,7 @@ import { gitStore, refresh as refreshGit } from "./gitState";
 import { branchResolvable } from "./git";
 import {
   layoutState,
+  agentForCard,
   resolvedAgentFor,
   armFailureDetection,
   baseShaForLaunch,
@@ -729,7 +730,15 @@ export async function resumeStep(
   const run = orch?.stepRuns.find((r) => r.stepId === stepId);
   if (!orch || !rail || !step || !run) return "This step is no longer on any rail";
 
-  const agent = resolvedAgentFor(workspaceId);
+  // Through the CARD's own agent where there is a card -- its
+  // `agent:`/`model:` if it names either, else its complexity level --
+  // so a resume reopens the conversation with the same binary that
+  // started it. A tool step has no card and resolves to the workspace's
+  // agent, which is what it launched with.
+  const resumingCard = isToolStep(step)
+    ? null
+    : (cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath)?.plan ?? null);
+  const agent = agentForCard(workspaceId, resumingCard);
   const command = buildResumeCommand(agent.launchCommand, agent.resumeArgs, run.conversationId);
   if (!command) {
     // Either the profile verified no resume argv, or this run predates
@@ -1252,7 +1261,13 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // and "the check you have to pass says this".
   prompt = withRetryPrefix(prompt, await retryNoteFor(workspaceId, rail, stepId));
 
-  const agent = resolvedAgentFor(workspaceId);
+  // The card picks its own agent, exactly as it does for a board Run: a
+  // rail is a different way to schedule the same card, not a different
+  // kind of work. Its `agent:`/`model:` win where it names either, its
+  // complexity level answers otherwise, and a card that says neither
+  // falls back to the workspace's agent -- so a rail of plain cards
+  // behaves as it always has.
+  const agent = agentForCard(workspaceId, entry.plan);
   const conversationId = conversationIdForLaunch(agent);
   const command = buildRunCommand(
     agent.launchCommand,

@@ -30,6 +30,7 @@ import {
   type AgentProfileInfo,
   type McpFormatInfo,
 } from "./settings";
+import { mergeDiscoveredModels } from "./agentModel";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "./terminalFont";
 import { normalizeAutoCommit, resolveAutoCommit } from "./autoCommit";
 import type { BoardTab, CardTab, CardTabView, GavinTree } from "./gavin";
@@ -39,6 +40,13 @@ import type { OrphanProcess } from "./orphan";
 import type { StatusSince } from "./attentionInbox";
 import { indexQueued, type QueuedInput } from "./queuedInput";
 import { candidateAgentConfig, type Candidate } from "./bestOfN";
+import {
+  agentConfigWithAttribution,
+  EMPTY_AGENT_DEFAULTS,
+  type AgentDefaults,
+  type ComplexityTable,
+} from "./complexity";
+import { cardAgentEntry, type CardAgentFields } from "./cardAgent";
 import {
   activeWorkspaceForWindow,
   isInAnotherWindow,
@@ -1240,9 +1248,29 @@ export async function bootstrap(): Promise<void> {
   // The agent profile table: static Rust data, so one fetch is enough.
   // Best-effort like the rest -- resolveAgentConfig falls back to
   // claude-code's defaults if this never arrives.
+  //
+  // Published TWICE on purpose. The table lands first because every
+  // panel needs a command and a flag immediately, and the catalogue
+  // behind it can cost a subprocess; the second set folds the discovered
+  // names into the same rows. Waiting for both would put the whole agent
+  // config behind a CLI that may not answer for fifteen seconds, which
+  // is far worse than a picker that grows.
+  //
+  // What a panel mounted in between sees, and why it is the harmless
+  // order: a stored model the first table does not list reads as a
+  // Custom one and draws the text box, then becomes a selected row when
+  // the catalogue lands. Wrong-then-right, never right-then-wrong -- and
+  // a catalogue that never answers leaves the first set standing, which
+  // is exactly the picker gavin had before this existed.
   void backend
     .agentProfiles()
-    .then((profiles) => agentProfilesStore.set(profiles))
+    .then((profiles) => {
+      agentProfilesStore.set(profiles);
+      return backend
+        .agentModelCatalog()
+        .then((catalog) => agentProfilesStore.set(mergeDiscoveredModels(profiles, catalog)))
+        .catch(() => {});
+    })
     .catch(() => {});
 
   void backend
@@ -1269,6 +1297,15 @@ export async function bootstrap(): Promise<void> {
   void backend
     .getAutoCommit()
     .then((enabled) => autoCommitDefault.set(normalizeAutoCommit(enabled)))
+    .catch(() => {});
+
+  // Best-effort like the rest: an empty table reads as "no level names
+  // an agent", which is exactly how every card behaved before the
+  // complexity field existed, so a failed fetch degrades to the old
+  // behaviour rather than to a wrong agent.
+  void backend
+    .getAgentDefaults()
+    .then((defaults) => agentDefaultsStore.set({ ...EMPTY_AGENT_DEFAULTS, ...defaults }))
     .catch(() => {});
 
   void pollForStartupState();
@@ -1493,6 +1530,15 @@ export const mcpFormatsStore = writable<McpFormatInfo[]>([]);
 /// posture agentProfilesStore takes above.
 export const agentModelDefaultsStore = writable<Record<string, string>>({});
 
+/// The app-wide custom agent and complexity table, from config.json.
+/// Empty until bootstrap fetches it, and empty is a safe rather than a
+/// wrong answer: no level names an agent, so every card runs the
+/// workspace's own -- which is what every card did before this existed.
+///
+/// Re-fetched on every bootstrap like the model defaults, so it is
+/// deliberately not parked across an HMR remount.
+export const agentDefaultsStore = writable<AgentDefaults>(EMPTY_AGENT_DEFAULTS);
+
 /// The app-wide terminal font size from config.json, or null when the user
 /// has never set one. Null rather than the default so the global panel can
 /// tell "chose 13" from "never chose", and so a workspace with no size of
@@ -1610,6 +1656,13 @@ export async function baseShaForLaunch(cwd: string): Promise<string | null> {
   }
 }
 
+/// The app-wide custom agent, in the shape `resolveAgentConfig` takes.
+/// One spelling so a launcher, a settings panel and a derived store
+/// cannot each unpack the struct slightly differently.
+function customAgentDefault(defaults: AgentDefaults) {
+  return { command: defaults.customCommand, modelFlag: defaults.customModelFlag };
+}
+
 /// The workspace's resolved agent settings, from config.toml's [agent]
 /// block on the root context plus the profile table.
 export function resolvedAgentFor(workspaceId: string) {
@@ -1618,7 +1671,50 @@ export function resolvedAgentFor(workspaceId: string) {
   return resolveAgentConfig(
     rootContext?.agent ?? null,
     get(agentProfilesStore),
-    get(agentModelDefaultsStore)
+    get(agentModelDefaultsStore),
+    customAgentDefault(get(agentDefaultsStore))
+  );
+}
+
+/// This workspace's own complexity overrides, defaulted to empty. Empty
+/// means "inherit every level", which is what a workspace that has never
+/// opened the table looks like.
+export function workspaceComplexityTable(workspaceId: string): ComplexityTable {
+  const state = get(layoutState);
+  return state.workspaces.find((w) => w.id === workspaceId)?.complexityAgents ?? {};
+}
+
+/// The agent that should execute THIS card: the workspace's own, unless
+/// the card names another one -- either outright, in its own
+/// `agent:`/`model:` lines, or through the `complexity:` level the
+/// tables attribute to a different agent. `cardAgentEntry` owns which
+/// of the two wins.
+///
+/// Through `resolveAgentConfig` for the same reason `candidateAgentFor`
+/// is: an attributed run is not a special kind of launch. It needs the
+/// same fallbacks, the same `promptArgs` refusal, the same failure
+/// patterns and the same conversation argv as any other, and a second
+/// resolution path here is how those quietly stop matching.
+///
+/// A card that names nothing, and whose level no table attributes,
+/// resolves to EXACTLY `resolvedAgentFor` -- so every launch route can
+/// call this unconditionally and behave as it did before either field
+/// existed.
+export function agentForCard(
+  workspaceId: string,
+  card: CardAgentFields | null | undefined
+) {
+  const entry = cardAgentEntry(
+    card,
+    get(agentDefaultsStore).complexity,
+    workspaceComplexityTable(workspaceId)
+  );
+  if (!entry) return resolvedAgentFor(workspaceId);
+  return resolveAgentConfig(
+    agentConfigWithAttribution(workspaceAgentConfig(workspaceId), entry),
+    get(agentProfilesStore),
+    get(agentModelDefaultsStore),
+    customAgentDefault(get(agentDefaultsStore))
   );
 }
 
@@ -1645,7 +1741,8 @@ export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
   return resolveAgentConfig(
     candidateAgentConfig(workspaceAgentConfig(workspaceId), candidate),
     get(agentProfilesStore),
-    get(agentModelDefaultsStore)
+    get(agentModelDefaultsStore),
+    customAgentDefault(get(agentDefaultsStore))
   );
 }
 
@@ -1663,14 +1760,44 @@ export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
 /// the workspace id is a prop the component already has and the three
 /// inputs are app-wide.
 export const resolvedAgents = derived(
-  [gavinTrees, agentProfilesStore, agentModelDefaultsStore],
-  ([$trees, $profiles, $models]) =>
+  [gavinTrees, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
+  ([$trees, $profiles, $models, $defaults]) =>
     (workspaceId: string) =>
       resolveAgentConfig(
         $trees[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null,
         $profiles,
-        $models
+        $models,
+        customAgentDefault($defaults)
       )
+);
+
+/// The same answer for a CARD, reactively: `$cardAgents(workspaceId,
+/// card)`.
+///
+/// `agentForCard` above is four `get()`s, which is right for an action
+/// -- it runs once, at the moment of the click -- and wrong for a
+/// component, which would keep whatever the profile table said at
+/// mount. The table is fetched asynchronously at bootstrap, so a card
+/// modal derived from the one-shot helper would show claude-code's
+/// model flag for a card the human pointed at codex, and would go on
+/// showing it for the life of the modal.
+export const cardAgents = derived(
+  [gavinTrees, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
+  ([$trees, $layout, $profiles, $models, $defaults]) =>
+    (workspaceId: string, card: CardAgentFields | null | undefined) => {
+      const base = $trees[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null;
+      const entry = cardAgentEntry(
+        card,
+        $defaults.complexity,
+        $layout.workspaces.find((w) => w.id === workspaceId)?.complexityAgents ?? {}
+      );
+      return resolveAgentConfig(
+        agentConfigWithAttribution(base, entry),
+        $profiles,
+        $models,
+        customAgentDefault($defaults)
+      );
+    }
 );
 
 // Starts the workspace's main agent: a normal daemon session at the
@@ -1767,7 +1894,7 @@ export async function stopMainAgent(workspaceId: string): Promise<void> {
 /// watcher push -- no optimistic local copy to fall out of sync.
 export async function setAgentField(
   workspaceId: string,
-  key: "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model",
+  key: "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model" | "model_flag",
   value: string
 ): Promise<void> {
   const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
@@ -1860,6 +1987,46 @@ export async function setAutoCommitDefault(enabled: boolean | null): Promise<voi
   } catch (e) {
     setError(String(e));
   }
+}
+
+/// The app-wide custom agent and complexity table. Machine-local like
+/// the theme, the model defaults and the font size, so it goes straight
+/// to config.json through Tauri and never touches the daemon -- which is
+/// why the complexity TABLE needs no protocol bump and no compat gate,
+/// even though the card field it reads does.
+///
+/// Wholesale rather than per key, matching `setAgentPause`: the panel
+/// holds every field already, and a per-key command is how one of them
+/// ends up saved while another is dropped.
+export async function setAgentDefaults(defaults: AgentDefaults): Promise<void> {
+  try {
+    await backend.setAgentDefaults(defaults);
+    agentDefaultsStore.set(defaults);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
+/// One workspace's complexity overrides. Rides the workspace record
+/// (config.json) like the accent colour, the font size and the pause
+/// cycle, rather than config.toml: which model tier THIS human spends on
+/// a hard card is a habit and a subscription fact about this machine,
+/// not something to hand everyone who clones the repo.
+///
+/// An empty table is stored as ABSENT, so a workspace that clears its
+/// last override goes back to inheriting rather than to shadowing the
+/// app table with nothing.
+export async function setWorkspaceComplexityTable(
+  workspaceId: string,
+  table: ComplexityTable
+): Promise<void> {
+  const state = get(layoutState);
+  const complexityAgents = Object.keys(table).length > 0 ? table : undefined;
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, complexityAgents } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
 /// One workspace's own auto-commit default, or null to inherit the

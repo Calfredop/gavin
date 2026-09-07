@@ -235,6 +235,46 @@ export const FEATURE_MIN_VERSION = {
   // that can produce the payload, and it reads this through
   // featureBlockedReason.
   toolCwd: 30,
+  // A card's `complexity:`. Two holes, and they fail differently -- the
+  // same split `attachments` has, and the silent half is again the worse
+  // one. A v30 daemon's set_plan_field allow-list has no `complexity`,
+  // so that write fails with a message; but `CreatePlan` merely GAINED a
+  // field, which a v30 daemon parses fine and drops on the floor. The
+  // card would be filed looking exactly as asked for, carry no level,
+  // and run at whatever the workspace's default agent is -- which is
+  // indistinguishable from a card nobody rated. min_version_for gates
+  // request TYPES, not payloads, so this entry is the only gate there
+  // is; both surfaces that can produce the payload (the card detail
+  // modal's Complexity row and the ⌘N composer's) read it through
+  // featureBlockedReason.
+  complexity: 31,
+  // The root config's `[agent] model_flag`. A v30 daemon's
+  // SetRootConfigField allow-list has no `model_flag`, so it refuses the
+  // key -- loudly, like `prdPath` and unlike `groups`. It is gated
+  // anyway because refusing the write is only half of it: a v30 daemon
+  // also does not PARSE the key, so a flag somehow already in
+  // config.toml would never reach `AgentConfig.modelFlag` and the model
+  // gavin composed would silently go nowhere. The Settings panel's Model
+  // flag row is the one surface that can produce the payload.
+  agentModelFlag: 31,
+  // A card's own `agent:` and `model:`. Two holes again, and this time
+  // BOTH matter -- the write and the read.
+  //
+  // The write is the loud half: a v31 daemon's set_plan_field allow-list
+  // has neither key, so the change fails with a message. The read is the
+  // silent one, and it is why the gate cannot just be a try/catch on the
+  // write: a v31 daemon never PARSES either line, so `PlanFileInfo`
+  // comes back with both absent and a card that already carries an
+  // override reads as carrying none. Nothing is broken on screen; the
+  // card simply runs at the workspace's default agent, which is
+  // indistinguishable from a card nobody overrode.
+  //
+  // min_version_for gates request TYPES, and this change adds no
+  // variant -- only two allowed key names and two serde(default) fields
+  // -- so it is structurally blind to all of it. This entry is the only
+  // gate there is; the card detail modal and the Plans tab strip both
+  // read it through featureBlockedReason.
+  cardAgent: 32,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

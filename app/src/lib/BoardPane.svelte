@@ -9,7 +9,7 @@
   import CardDetailModal from "./CardDetailModal.svelte";
   import CardComposeModal from "./CardComposeModal.svelte";
   import { planCommitFromMerged } from "./planDrop";
-  import { runCard, resumeCard, sendToMainAgent } from "./cardRunActions";
+  import { runCard, resumeCard, developCard, sendToMainAgent } from "./cardRunActions";
   import { layoutState } from "./layoutState";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
@@ -217,6 +217,18 @@
     if (err) planWriteError = err;
   }
 
+  // "Develop with agent on add" (CardComposeModal's Agent actions), and
+  // the same call the card menu's "Develop into a plan…" makes: a card
+  // filed as one line, handed straight to the gavin-develop skill. Not a
+  // run -- developCard writes no status and binds no session -- so the
+  // board shows nothing afterwards and the action jumps to the agent's
+  // own tab instead.
+  async function handleDevelop(card: CardView): Promise<void> {
+    planWriteError = null;
+    const err = await developCard(workspaceId, card);
+    if (err) planWriteError = err;
+  }
+
   // The In Progress column's Resume (columnRunAction.ts): same spawn,
   // the prompt that tells the agent to pick the work up rather than
   // start it.
@@ -355,6 +367,7 @@
       {merged}
       {scoped}
       onRunCard={handleRun}
+      onDevelopCard={handleDevelop}
       onClose={() => (composeStatus = null)}
     />
   {/if}

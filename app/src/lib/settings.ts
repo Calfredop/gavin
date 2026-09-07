@@ -246,6 +246,18 @@ export interface ResolvedAgent {
   /// The model this workspace launches with: its own `[agent] model`,
   /// else the app-wide default for the RESOLVED profile, else "".
   model: string;
+  /// The flag `model` is composed onto the command with: the
+  /// workspace's own `[agent] model_flag`, else the app-wide custom
+  /// flag when the resolved profile IS `custom`, else the profile
+  /// table's verified flag, else "".
+  ///
+  /// Empty is the honest answer, not a failure: it means gavin has no
+  /// way to put a model on this command, so every model control for it
+  /// stays hidden rather than emitting a guessed flag into somebody's
+  /// argv. The Rust table takes the same posture, and this is where the
+  /// two configurable layers get folded into it -- so the picker, the
+  /// launcher and the complexity table all read one answer.
+  modelFlag: string;
   /// `command` with the model flag composed on. What every LAUNCHER
   /// uses. `command` above stays the raw configured value, because that
   /// is what the settings box edits and writes back to config.toml -- a
@@ -281,7 +293,16 @@ export function resolveAgentConfig(
   /// The app-wide default model per profile id (config.json). Required
   /// rather than defaulted, so the compiler names every call site
   /// instead of letting one silently stop inheriting.
-  globalModels: Record<string, string>
+  globalModels: Record<string, string>,
+  /// The app-wide custom agent: the command and model flag a workspace
+  /// on the `custom` profile inherits when it names none of its own.
+  /// OPTIONAL, unlike `globalModels`, and that asymmetry is deliberate:
+  /// every existing call site resolves an agent for a workspace that has
+  /// already chosen a profile, and defaulting to "no app-wide custom
+  /// agent" reproduces exactly the behaviour those call sites have
+  /// today. Making it required would have forced a dozen edits to
+  /// restate the empty case.
+  customAgent: { command: string; modelFlag: string } = { command: "", modelFlag: "" }
 ): ResolvedAgent {
   const requested = nonEmpty(config?.profile) ?? FALLBACK_PROFILE;
   const configured = nonEmpty(config?.mcpFile);
@@ -290,8 +311,14 @@ export function resolveAgentConfig(
   const fallback = profiles.find((p) => p.id === FALLBACK_PROFILE);
   const effective = profile ?? fallback;
   const profileId = effective?.id ?? FALLBACK_PROFILE;
+  // The app-wide custom command sits BETWEEN the workspace's own and the
+  // profile table's, and only for `custom` -- the stock rows carry a
+  // verified command of their own and have no business inheriting
+  // somebody's hand-written one.
+  const customDefault = profileId === "custom" ? nonEmpty(customAgent.command) : null;
   const command =
     nonEmpty(config?.command) ??
+    customDefault ??
     nonEmpty(effective?.command) ??
     nonEmpty(fallback?.command) ??
     "claude";
@@ -299,11 +326,22 @@ export function resolveAgentConfig(
   // naming a profile that no longer exists runs claude-code, so it must
   // inherit claude-code's default rather than a dead row's.
   const model = nonEmpty(config?.model) ?? nonEmpty(globalModels[profileId]) ?? "";
+  // Same three layers as `command` above, in the same order: the
+  // workspace's own flag, then the app-wide custom one (for `custom`
+  // only), then the table's verified flag. A workspace flag wins even on
+  // a stock profile -- it is the more specific statement, exactly as an
+  // overridden `command` is -- but nobody is expected to set one there.
+  const modelFlag =
+    nonEmpty(config?.modelFlag) ??
+    (profileId === "custom" ? nonEmpty(customAgent.modelFlag) : null) ??
+    nonEmpty(effective?.modelFlag) ??
+    "";
   return {
     profileId,
     label: effective?.label ?? profileId,
     model,
-    launchCommand: composeLaunchCommand(command, effective?.modelFlag ?? "", model),
+    modelFlag,
+    launchCommand: composeLaunchCommand(command, modelFlag, model),
     // `custom` carries empty defaults, so an unfilled custom profile still
     // resolves to something openable rather than an empty path.
     file:

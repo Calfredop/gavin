@@ -6,7 +6,8 @@
 
 import { get } from "svelte/store";
 import * as backend from "./backend";
-import { resolvedAgentFor, armFailureDetection, baseShaForLaunch, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "./layoutState";
+import { agentForCard, resolvedAgentFor, armFailureDetection, baseShaForLaunch, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "./layoutState";
+import { gavinTrees } from "./gavinState";
 import { findSessionLocation } from "./workspace";
 import { cardSessionState } from "./columnRunAction";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
@@ -34,7 +35,7 @@ import { stripFrontmatter } from "./planChecklist";
 import { missingAttachmentReason, resolvedAttachmentPaths } from "./attachments";
 import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "./queuedInput";
 import { queueFollowUp, queueTargetFor } from "./queuedInputActions";
-import type { CardView } from "./planBoard";
+import { cardViewForPath, type CardView } from "./planBoard";
 
 /// The run gate for a card's attachments: the absolute paths to hand the
 /// agent, or the reason this launch must not happen.
@@ -203,6 +204,12 @@ export async function developCard(
   // The card file is never read here: the skill's first move is to read
   // it, and inlining a task's body is what turns an interview into a
   // build.
+  // The WORKSPACE's agent, not the card's own, and deliberately: develop
+  // is an interview that rewrites a one-line card into work, so whatever
+  // the card names -- a level, or an `agent:`/`model:` of its own --
+  // describes the implementation nobody has written yet, not this
+  // conversation. The same reasoning covers both: the choice is about
+  // executing the card, and developing it is not executing it.
   const agent = resolvedAgentFor(workspaceId);
   const command = buildRunCommand(
     agent.launchCommand,
@@ -275,7 +282,14 @@ async function launchCard(
   // The agent gate needs nothing from the card: an agent that takes no
   // prompt refuses every card, so resolving attachments for one is work
   // with no possible outcome.
-  const agent = resolvedAgentFor(workspaceId);
+  //
+  // Which agent, though, is the card's own business: its `agent:` and
+  // `model:` name one outright, its `complexity:` picks one out of the
+  // two settings tables, and a card that says neither (or a level nobody
+  // attributed) resolves to exactly the workspace's agent -- so this
+  // reads the same as `resolvedAgentFor` did for every card that
+  // predates the fields.
+  const agent = agentForCard(workspaceId, card);
   if (agent.promptArgs === null) return noPromptReason(agent.label);
 
   const resolved = await resolveAttachmentsForRun(workspaceId, card.attachments ?? []);
@@ -585,7 +599,12 @@ export async function relaunchCard(workspaceId: string, path: string): Promise<s
   // least.
   const developing = developingBlocker(workspaceId, path);
   if (developing) return developing;
-  const agent = resolvedAgentFor(workspaceId);
+  // Through the card's OWN agent, not the workspace's, because the
+  // command being replayed is the one that card LAUNCHED with -- and
+  // `sessionIdArgs` below has to describe that binary. Resolving the
+  // workspace's agent here would hand codex's replay claude's
+  // `--session-id`, which is garbage in its argv.
+  const agent = agentForCard(workspaceId, cardViewForPath(get(gavinTrees)[workspaceId], path));
   // The remembered command carries the conversation id gavin fixed at
   // launch, and running it again as-is DOES NOT WORK: `claude
   // --session-id <uuid>` refuses outright with "Session ID <uuid> is

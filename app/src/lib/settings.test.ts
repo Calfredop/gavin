@@ -208,6 +208,7 @@ describe("resolveAgentConfig", () => {
       headlessArgs: "",
       promptArgs: "",
       model: "",
+      modelFlag: "--model",
       launchCommand: "codex --x",
       failurePatterns: [],
       failureCauses: [],
@@ -227,7 +228,7 @@ describe("resolveAgentConfig", () => {
       profileId: "claude-code", label: "Claude Code", file: "CLAUDE.md", command: "claude",
       mcpSupported: true, mcpConfigFile: ".mcp.json",
       headlessArgs: '-p --allowedTools "Bash(git *)" --', promptArgs: "",
-      model: "", launchCommand: "claude",
+      model: "", modelFlag: "--model", launchCommand: "claude",
       failurePatterns: ["API Error:"],
       failureCauses: [{ pattern: "/login", cause: "auth" }],
       sessionIdArgs: "--session-id", resumeArgs: "--resume",
@@ -316,6 +317,53 @@ describe("resolveAgentConfig", () => {
     expect(r.promptArgs).toBeNull();
   });
 
+  it("gives the custom profile the app-wide command and flag when it names none", () => {
+    const custom = { command: "my-agent --yolo", modelFlag: "--llm" };
+    const r = resolveAgentConfig(
+      { profile: "custom", file: "RULES.md", command: null, model: "big" },
+      PROFILES,
+      {},
+      custom
+    );
+    expect(r.command).toBe("my-agent --yolo");
+    expect(r.modelFlag).toBe("--llm");
+    // The whole point of the flag: without it there is no way to put a
+    // model on a hand-written command, so the model would be dropped.
+    expect(r.launchCommand).toBe("my-agent --yolo --llm big");
+  });
+
+  it("lets the workspace's own command and flag beat the app-wide custom ones", () => {
+    const custom = { command: "my-agent", modelFlag: "--llm" };
+    const r = resolveAgentConfig(
+      { profile: "custom", file: null, command: "other-agent", modelFlag: "-m", model: "big" },
+      PROFILES,
+      {},
+      custom
+    );
+    expect(r.command).toBe("other-agent");
+    expect(r.launchCommand).toBe("other-agent -m big");
+  });
+
+  it("never lends the app-wide custom command to a stock profile", () => {
+    // The stock rows carry a verified command of their own and have no
+    // business inheriting somebody's hand-written one.
+    const r = resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, {}, {
+      command: "my-agent",
+      modelFlag: "--llm",
+    });
+    expect(r.command).toBe("codex");
+    expect(r.modelFlag).toBe("--model");
+  });
+
+  it("lets a workspace flag override the profile table's, on any profile", () => {
+    const r = resolveAgentConfig(
+      { profile: "claude-code", file: null, command: null, modelFlag: "--pick", model: "opus" },
+      PROFILES,
+      {}
+    );
+    expect(r.launchCommand).toBe("claude --pick opus");
+  });
+
   it("keeps custom usable only through its explicit values", () => {
     const r = resolveAgentConfig({ profile: "custom", file: "RULES.md", command: "my-agent" }, PROFILES, {});
     expect(r).toEqual({
@@ -330,6 +378,11 @@ describe("resolveAgentConfig", () => {
       // is a different answer from "its prompt is the bare positional".
       promptArgs: null,
       model: "",
+      // Empty, because `custom` has no flag in the table and neither
+      // this workspace nor the app-wide default named one: gavin has no
+      // verified way to put a model on this command, so every model
+      // control for it stays hidden rather than guessing a flag.
+      modelFlag: "",
       launchCommand: "my-agent",
       failurePatterns: [],
       failureCauses: [],

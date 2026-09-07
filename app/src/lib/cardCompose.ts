@@ -5,6 +5,7 @@
 
 import { formatAttachments } from "./attachments";
 import { autoCommitAppliesTo, setAutoCommitInBody } from "./autoCommit";
+import { parseComplexity } from "./complexity";
 import { translateDropIndex } from "./pageBoard";
 import { slugFileName } from "./planExplorer";
 import { slugStatus, type CardView } from "./planBoard";
@@ -45,6 +46,12 @@ export interface ComposeSpec {
   // without the instruction, and a failure mode in which it never gets
   // it. Optional -- absent means off.
   autoCommit?: boolean;
+  // How hard the card's work is, as the frontmatter records it. Written
+  // in the same CreatePlan for the same reason the auto-commit block is:
+  // a card filed and then rated is a card that could be RUN in between,
+  // at the wrong agent. Empty or absent means the card gets no
+  // `complexity:` line at all, which is what "unrated" is.
+  complexity?: string;
 }
 
 export type ComposeArgs =
@@ -59,6 +66,12 @@ export type ComposeArgs =
       // rather than a list, so the daemon writes what it was handed
       // instead of re-deriving a format its own parser has to match.
       attachments: string | undefined;
+      // The level name, or undefined for a card that gets no
+      // `complexity:` line. Parsed rather than passed through: the
+      // daemon REFUSES a level it cannot read, and a composer that sent
+      // one would fail the whole file creation over a field the human
+      // may not even have touched.
+      complexity: string | undefined;
     }
   | { error: string };
 
@@ -83,6 +96,7 @@ export function buildCreatePlanArgs(spec: ComposeSpec, existingFileNames: string
     spec.autoCommit === true && autoCommitAppliesTo(spec.kind)
   );
   const attachments = formatAttachments(spec.attachments ?? []);
+  const complexity = parseComplexity(spec.complexity);
   return {
     fileName,
     title,
@@ -90,6 +104,7 @@ export function buildCreatePlanArgs(spec: ComposeSpec, existingFileNames: string
     body: body === "" ? undefined : body,
     kind: spec.kind,
     attachments: attachments === "" ? undefined : attachments,
+    complexity: complexity ?? undefined,
   };
 }
 
@@ -182,6 +197,137 @@ export function railToApply(
 ): string | null {
   if (kind === "note" || !railId) return null;
   return railIds.includes(railId) ? railId : null;
+}
+
+/// What the composer can set an agent going on the instant the card is
+/// filed. Both are the same bargain -- the card and the agent in one
+/// gesture instead of file-it-then-find-it -- and they are alternatives
+/// rather than a pair, because they want opposite things from the same
+/// file: a run EXECUTES the card, a develop REWRITES it. Doing both
+/// would have one agent editing the brief the other is working from,
+/// which is the collision `developCard` already refuses when it finds a
+/// live agent on a card.
+export type AgentAction = "run" | "develop";
+
+/// The order the composer offers them in. Develop first: it is what a
+/// one-line card usually wants, and running an undeveloped card is the
+/// choice worth making deliberately rather than the one under the
+/// cursor.
+export const AGENT_ACTIONS = ["develop", "run"] as const;
+
+/// The one line each action puts on screen. Here rather than in the
+/// template so the checkbox, its tooltip and the tests read the same
+/// words -- and so "develop" cannot end up described as a run.
+export const AGENT_ACTION_LABELS: Record<AgentAction, { label: string; hint: string }> = {
+  develop: {
+    label: "Develop with agent on add",
+    hint: "Hand the new card to the gavin-develop skill — it interviews you, then writes the steps, the kind and the complexity. It does not start the work.",
+  },
+  run: {
+    label: "Run now with the agent",
+    hint: "Start an agent on the card as filed, in a session of its own.",
+  },
+};
+
+export interface AgentActionContext {
+  kind: ComposeKind;
+  /// The rail the card is being filed onto, if any.
+  railId: string | null;
+  /// Whether the board mounting the composer handed it a handler at all.
+  /// A board with no way to run a card must not offer to.
+  canRun: boolean;
+  canDevelop: boolean;
+}
+
+/// Which actions this card can actually be filed with.
+///
+/// A note takes neither: nothing executes it and there is nothing to
+/// develop it into. Run stays task-only, as it was -- a plan's body is
+/// never inlined into the prompt, so running one from here would launch
+/// an agent at a checklist nobody has written yet -- while develop is
+/// exactly what a plan-shaped card wants, so it covers both runnable
+/// kinds.
+///
+/// A rail takes both away, for the reason the Run checkbox already went
+/// away under one: the card belongs to the rail from the moment it is
+/// filed, and the rail launches it when the human arms it. A second
+/// agent started here would either race that one or rewrite the card
+/// under it.
+///
+/// Deliberately NOT `developAvailable` (cardRun.ts), which the card menu
+/// and the detail modal share: that gate asks whether an EXISTING card
+/// is still unstarted, and answers it with the To Do column. A card that
+/// does not exist yet is unstarted whichever column it is being filed
+/// into, so borrowing the column rule here would blink the checkbox in
+/// and out over a fact about the new card that is always true.
+export function availableAgentActions(ctx: AgentActionContext): AgentAction[] {
+  if (ctx.kind === "note" || ctx.railId) return [];
+  return AGENT_ACTIONS.filter((a) =>
+    a === "run" ? ctx.canRun && ctx.kind === "task" : ctx.canDevelop
+  );
+}
+
+/// A click on one of the boxes. Checkboxes rather than radios because
+/// "no action" has to stay reachable -- a radio group cannot be
+/// unpicked -- and picking one has to un-pick the other.
+export function toggleAgentAction(
+  current: AgentAction | null,
+  clicked: AgentAction
+): AgentAction | null {
+  return current === clicked ? null : clicked;
+}
+
+/// The action to actually take, re-measured against what is available at
+/// the moment the card is filed. Same posture as `railToApply`, and for
+/// the same reason: the selection outlives the thing that offered it.
+/// Ticking Run on a task and then switching the chip to plan leaves the
+/// flag set underneath a control the composer has stopped drawing, and a
+/// card must never be launched by a checkbox nobody can see.
+export function agentActionToApply(
+  selected: AgentAction | null,
+  available: AgentAction[]
+): AgentAction | null {
+  return selected && available.includes(selected) ? selected : null;
+}
+
+/// The card the composer has just written, as the board's own projection
+/// would see it -- what an agent action is handed, since the real
+/// projection does not have it yet (the daemon's scan is a round trip
+/// away, and the action has to start on the card the human just filed).
+///
+/// Built here rather than inline in the template so the two actions
+/// cannot be handed two differently-shaped views of one card: every
+/// field a launch route reads -- the level that picks the agent, the
+/// attachments that reach its prompt, the kind that picks the prompt at
+/// all -- comes from the same place as the file that was written.
+export function composedCardView(
+  args: Extract<ComposeArgs, { fileName: string }>,
+  path: string,
+  contextFolder: string,
+  contextName: string,
+  attachments: string[]
+): CardView {
+  return {
+    id: path,
+    title: args.title,
+    status: args.status,
+    priority: null,
+    order: null,
+    kind: args.kind,
+    parent: null,
+    parentTitle: null,
+    parentBroken: false,
+    labels: [],
+    attachments: [...attachments],
+    complexity: parseComplexity(args.complexity),
+    checklistDone: 0,
+    checklistTotal: 0,
+    contextName,
+    contextFolder,
+    fileName: args.fileName,
+    parseWarning: false,
+    nestedChildren: [],
+  };
 }
 
 /// The composer's commit chord, as data so the keydown handler and the

@@ -215,15 +215,45 @@ pub struct AgentProfile {
     /// for the profile rather than guessing one, which is the same
     /// posture `headless_args` takes above.
     pub model_flag: &'static str,
-    /// Model names offered as picks. Only ever names the CLI itself
-    /// documents as STABLE aliases: `claude --help` names `fable`,
-    /// `opus` and `sonnet`, which point at the latest model of each tier
-    /// and so never go stale. Nobody else offers that -- `opencode
-    /// models` is a per-user catalogue built from whichever providers
-    /// that user configured, and Gemini's and Codex's names are dated
-    /// ids that rot -- so those rows ship empty and the user types what
-    /// they want. A wrong name here lands in somebody's argv.
+    /// Model names offered as picks, and only ever the ones the CLI
+    /// itself documents as STABLE aliases -- a name that points at
+    /// "the latest model of this tier" and so never goes stale. A dated
+    /// id does not belong here: it rots, and a wrong name lands in
+    /// somebody's argv.
+    ///
+    /// Re-checked against each CLI 2026-09-07, by running it rather than
+    /// by reading about it:
+    ///
+    /// - claude-code -- `claude --model` takes `fable`, `opus`,
+    ///   `sonnet` and `haiku` (one per tier), `opusplan` (opus while
+    ///   planning, sonnet while executing), `best` (the latest Fable
+    ///   where the account has one, else opus) and the `[1m]` variants
+    ///   that open the 1M-token context window. All eight were run
+    ///   through `claude --model <x> -p` and answered. `default` is
+    ///   deliberately absent: it means "no override", which is what
+    ///   gavin's own empty row already says.
+    /// - gemini -- `auto`, `pro`, `flash` and `flash-lite`, the four
+    ///   `GEMINI_MODEL_ALIAS_*` constants its own `resolveModel` switches
+    ///   on before falling through to a concrete name.
+    /// - codex and opencode -- no stable alias exists. Both ship empty
+    ///   here and are enumerated at runtime instead; see
+    ///   `model_catalog` below.
+    /// - cursor -- no `model_flag`, so no picker at all.
     pub models: &'static [&'static str],
+    /// How this agent's CURRENT model list is read back at runtime, for
+    /// the CLIs whose names are dated ids rather than aliases.
+    ///
+    /// `models` above is a constant compiled into gavin: correct for an
+    /// agent that promises "sonnet is always the latest sonnet", useless
+    /// for one whose picker is `gpt-5.2` today and something else next
+    /// month. Those agents keep their own catalogue, and gavin reads it
+    /// once per app START (`agent_models::agent_model_catalog`) rather
+    /// than shipping a copy that is stale the day it lands.
+    ///
+    /// `None` is the honest default and says gavin has no route: three
+    /// of the six rows have none, and for them the picker is `models`
+    /// plus "Custom…", exactly as before.
+    pub model_catalog: Option<ModelCatalog>,
     /// The text this agent prints on screen when it has STOPPED because
     /// something BROKE, rather than because its turn ended. Handed to the
     /// daemon per session (`Request::SetFailurePatterns`) and matched
@@ -433,6 +463,43 @@ pub enum TokenLog {
     CodexRollout,
 }
 
+/// Where a profile's model list is read from at runtime. One variant per
+/// VERIFIED route, the same posture `UsageProbe` and `TokenLog` take: the
+/// two differ in whether a file or a process answers, in what a record
+/// means, and in what "available to this user" turns out to mean.
+///
+/// Both are read best-effort and merged BEHIND `models` rather than
+/// replacing it (`mergeDiscoveredModels` in agentModel.ts). A route that
+/// answers nothing -- the agent is not installed, the file was never
+/// written, the shape changed -- leaves exactly today's picker rather
+/// than an empty one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ModelCatalog {
+    /// Codex CLI. `~/.codex/models_cache.json`, the snapshot codex writes
+    /// after asking its own `/models` endpoint: a `models` array of
+    /// objects carrying `slug` (the name `--model` takes) and
+    /// `visibility` (`list` for the ones its own picker shows, `hide`
+    /// and `none` for internal rows like `codex-auto-review`).
+    ///
+    /// The FILE rather than `codex debug models`, which prints the same
+    /// catalogue: reading costs no process, no network and no auth, and
+    /// a `debug` subcommand is by name not a promise. The cost is that a
+    /// machine where codex has never run has no file -- which reads as
+    /// "no route", the same as codex not being installed at all.
+    CodexCache,
+    /// opencode. `opencode models` prints one `provider/model` per line,
+    /// and there is nothing to read instead: `~/.cache/opencode/models.json`
+    /// is the whole models.dev registry (every provider that exists),
+    /// while the command answers the narrower and only useful question --
+    /// which models THIS machine's configured providers actually offer.
+    /// 454 rows here against a registry of thousands.
+    ///
+    /// This is also why opencode has no static list: `--model sonnet`
+    /// dies with `ProviderModelNotFoundError { providerID: "sonnet",
+    /// modelID: "" }`, so a name gavin could hard-code does not exist.
+    OpencodeCli,
+}
+
 /// One row of a profile's cause table: a substring of the failure line
 /// the daemon reported, and what that line MEANS.
 ///
@@ -451,7 +518,20 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
     AgentProfile {
         id: "claude-code",
         model_flag: "--model",
-        models: &["fable", "opus", "sonnet"],
+        models: &[
+            "fable",
+            "opus",
+            "sonnet",
+            "haiku",
+            "opusplan",
+            "best",
+            "sonnet[1m]",
+            "opus[1m]",
+        ],
+        // No route: `claude` has no models subcommand, and it does not
+        // need one -- the aliases above are the whole picker and each
+        // already means "the latest of this tier".
+        model_catalog: None,
         label: "Claude Code",
         instructions_file: "CLAUDE.md",
         command: "claude",
@@ -538,6 +618,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         id: "codex",
         model_flag: "--model",
         models: &[],
+        model_catalog: Some(ModelCatalog::CodexCache),
         label: "Codex CLI",
         instructions_file: "AGENTS.md",
         command: "codex",
@@ -562,7 +643,16 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
     AgentProfile {
         id: "gemini",
         model_flag: "--model",
-        models: &[],
+        // Aliases, not the `gemini-3-pro-preview`-shaped ids the docs
+        // also list: `resolveModel` maps these four onto whatever the
+        // installed CLI considers current, and the account's preview
+        // access decides the rest. A dated id pinned here would outlive
+        // the model it names.
+        models: &["auto", "pro", "flash", "flash-lite"],
+        // No route: `gemini` has no models subcommand, and the Google
+        // endpoint that does list them wants an API key a CLI signed in
+        // with a Google account does not have.
+        model_catalog: None,
         label: "Gemini CLI",
         instructions_file: "GEMINI.md",
         command: "gemini",
@@ -589,6 +679,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         id: "cursor",
         model_flag: "",
         models: &[],
+        model_catalog: None,
         label: "Cursor",
         instructions_file: "AGENTS.md",
         command: "cursor",
@@ -615,12 +706,11 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
     AgentProfile {
         id: "opencode",
         model_flag: "--model",
-        // `opencode models` is a per-user catalogue assembled from the
-        // providers THIS machine has configured -- 445 rows here -- and
-        // `--model sonnet` dies with `ProviderModelNotFoundError
-        // { providerID: "sonnet", modelID: "" }`. There is no stable
-        // alias to offer, so the user types their own `provider/model`.
+        // No stable alias exists (see ModelCatalog::OpencodeCli), so this
+        // row is empty on purpose and the picker is filled at startup
+        // from the machine's own catalogue instead.
         models: &[],
+        model_catalog: Some(ModelCatalog::OpencodeCli),
         label: "opencode",
         instructions_file: "AGENTS.md",
         command: "opencode",
@@ -694,6 +784,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         id: "custom",
         model_flag: "",
         models: &[],
+        model_catalog: None,
         label: "Custom…",
         instructions_file: "",
         command: "",
@@ -757,7 +848,7 @@ pub fn prd_relative_path(root: &Path) -> String {
 /// set_root_config_field, for app-side paths that must not depend on a
 /// daemon round trip (the D41 launch-command migration).
 pub fn write_root_config_key(root: &Path, key: &str, value: &str) -> anyhow::Result<()> {
-    if !matches!(key, "profile" | "file" | "command" | "mcp_file" | "mcp_format") {
+    if !matches!(key, "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model_flag") {
         anyhow::bail!("not a settable agent key: {key}");
     }
     let path = root.join(".gavin-root").join("config.toml");
@@ -1523,16 +1614,25 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_code_ships_model_presets_and_cursor_has_no_flag() {
+    fn only_alias_cli_s_ship_model_presets_and_cursor_has_no_flag() {
         let by = |id: &str| AGENT_PROFILES.iter().find(|p| p.id == id).unwrap();
-        // Aliases named by `claude --help`: pointers to the latest model
-        // of each tier, so they cannot go stale.
-        assert_eq!(by("claude-code").models, &["fable", "opus", "sonnet"]);
+        // Aliases named by `claude --model`'s own help and by the model
+        // config docs: each points at the latest model of a tier, or at
+        // a mode, so none of them can go stale.
+        assert_eq!(
+            by("claude-code").models,
+            &["fable", "opus", "sonnet", "haiku", "opusplan", "best", "sonnet[1m]", "opus[1m]"]
+        );
         assert_eq!(by("claude-code").model_flag, "--model");
-        // Flags verified from each CLI's own --help; no preset names,
-        // because theirs are dated ids that rot.
+        // Gemini's four aliases, the ones its own resolveModel switches
+        // on. Its dated ids are deliberately NOT here.
         assert_eq!(by("gemini").model_flag, "--model");
-        assert!(by("gemini").models.is_empty());
+        assert_eq!(by("gemini").models, &["auto", "pro", "flash", "flash-lite"]);
+        // Flags verified from each CLI's own --help; no preset names for
+        // these two, because theirs are dated ids that rot -- they are
+        // enumerated at startup instead (agent_models).
+        assert_eq!(by("codex").model_flag, "--model");
+        assert!(by("codex").models.is_empty());
         assert_eq!(by("opencode").model_flag, "--model");
         assert!(by("opencode").models.is_empty());
         // `cursor` is the IDE launcher -- no model control at all.
@@ -1540,12 +1640,31 @@ mod tests {
         assert_eq!(by("custom").model_flag, "");
     }
 
+    /// The two halves have to be exclusive. A row that ships an alias
+    /// list AND a runtime route would be gavin offering two answers to
+    /// the same question, and the merge order would start to matter.
+    #[test]
+    fn a_profile_names_its_models_or_discovers_them_never_both() {
+        for profile in AGENT_PROFILES {
+            assert!(
+                profile.models.is_empty() || profile.model_catalog.is_none(),
+                "{} both ships presets and discovers them",
+                profile.id
+            );
+        }
+    }
+
     #[test]
     fn profile_dto_carries_the_model_fields_in_camel_case() {
         let dto = agent_profiles().into_iter().find(|p| p.id == "claude-code").unwrap();
         let json = serde_json::to_value(&dto).unwrap();
         assert_eq!(json["modelFlag"], "--model");
-        assert_eq!(json["models"], serde_json::json!(["fable", "opus", "sonnet"]));
+        assert_eq!(
+            json["models"],
+            serde_json::json!([
+                "fable", "opus", "sonnet", "haiku", "opusplan", "best", "sonnet[1m]", "opus[1m]"
+            ])
+        );
     }
 
     #[test]
