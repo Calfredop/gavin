@@ -10,7 +10,11 @@ export type TitleBarAction = "toggleMaximize" | "minimize" | "none";
  * an action. "Maximize" is what the setting stores for Zoom; "Fill" is
  * the newer fill-the-screen option -- both are `toggleMaximize` for a
  * borderless window, whose maximize already fills the visible screen.
- * A missing or unknown value falls back to the OS default, Zoom.
+ * A missing or unknown value falls back to the OS default, Zoom -- which
+ * is also the whole of the answer off macOS, where the Rust side always
+ * reports `null` (there is no such global default to read) and both
+ * GNOME and KDE ship the same "double-click to maximize" behaviour this
+ * produces.
  */
 export function doubleClickAction(pref: string | null | undefined): TitleBarAction {
   switch (pref) {
