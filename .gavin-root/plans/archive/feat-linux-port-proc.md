@@ -3,6 +3,12 @@ kind: task
 title: Linux process probe via /proc
 parent: feat-linux-port.md
 ---
+**Done 2026-09-07** on `feat/multi-os-support`: `identify`, `usage` and
+`children` all read `/proc`, and the existing `mod tests` — all 21 of
+them, written against macOS — pass unmodified in a Linux container,
+plus five new ones for the `/proc`-only parts. The brief below is kept
+as the record of what it had to get right.
+
 Give `crates/daemon/src/proc.rs` a real Linux implementation. Today
 `identify`, `usage` and `children` are libproc calls behind
 `#[cfg(target_os = "macos")]` with stubs returning "gone"/nothing

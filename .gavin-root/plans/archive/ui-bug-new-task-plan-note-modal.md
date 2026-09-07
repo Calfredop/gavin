@@ -2,7 +2,7 @@
 order: 6144
 kind: task
 title: [ui/bug] new task/plan/note modal
-status: In Progress
+status: Done
 ---
 The complexity picker is not working; attachments picker is way to close to previous select group; invert run now with agent with develop options in agents actions
 
