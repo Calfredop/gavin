@@ -1,22 +1,21 @@
 <script lang="ts">
-  // The head of whichever header row is the top edge of the window (the
-  // hub tabs, a page's session tabs, or the app hub's own strip): the
-  // room the window's corner needs, and — while the sidebar is open —
-  // the sidebar's own chrome, search it and open a folder into it.
+  // The sidebar's own chrome: collapse the column, search it, open a
+  // folder into it. Drawn in the window's corner (TitleBar.svelte),
+  // after the platform's controls and over the column all three act on.
   //
-  // Those buttons used to sit in the strip over the sidebar, beside the
-  // traffic lights, and that is exactly what made "collapsed" only a
-  // little narrower than "open": the strip is inside the sidebar's
-  // column, so its content sets the floor for how narrow that column can
-  // get. Three buttons and their gap are ~32px the icon rail could not
-  // shed. Over here they cost the column nothing.
+  // They spent a while in the header row beside that corner, because the
+  // corner was inside the sidebar's column and everything in it was a
+  // floor under how narrow that column could collapse -- three buttons
+  // and their gap were ~32px the icon rail could not shed. The corner is
+  // out of the column's flow now and sized to `max(controls, rail)`, so
+  // over an open column these cost nothing: they sit in the 124px the
+  // traffic lights leave of a 200px top row.
   //
-  // One instance per window, at the window's top-left corner after the
-  // controls: +page.svelte draws it on every headed branch and on a
-  // strip of its own for the ones with no header, and Pane.svelte draws
-  // it on the pane that LEADS the page (layout.ts's paneLeadsWindow) so
-  // that on a split page it is still in the corner rather than wherever
-  // the keyboard happens to be.
+  // Collapsed, they stand down entirely. There is no room for them over
+  // a 36px rail, a search box has nowhere to go in a column showing
+  // initials, and the one button that must survive -- the way back out
+  // -- becomes the rail's own first row instead (Sidebar.svelte's
+  // .rail-chrome), where it costs exactly what a workspace row costs.
   import IconButton from "./ui/IconButton.svelte";
   import { PanelLeftClose, Search, FolderOpen } from "@lucide/svelte";
   import { sidebarCollapsed, toggleSidebarCollapsed } from "./sidebarPrefs";
@@ -24,32 +23,21 @@
   import { openWorkspaceFolder } from "./workspaceOpen";
   import { layoutState } from "./layoutState";
 
-  // Collapsed, this row draws nothing but the corner's room. The way
-  // back out of the rail is a row IN the rail then (Sidebar.svelte),
-  // where it costs the same width the workspaces below it already cost;
-  // the other two act on a column that is showing initials, and a search
-  // box has nowhere to go in one. Keyed off the preference rather than
-  // off sidebarShowsRail, so a peek -- which the pointer cannot leave
-  // for this row without ending it -- does not flicker three buttons
-  // into the corner on its way past.
+  // Keyed off the preference rather than off sidebarShowsRail: a peek is
+  // the collapsed column borrowing its full width for a glance, and
+  // three buttons appearing in the corner as the pointer passes would be
+  // a flicker rather than an offer -- the peek ends the moment the
+  // pointer leaves the column to reach for them.
   const collapsed = $derived($sidebarCollapsed);
 
   // The two that act on the workspace list, which does not exist until
   // the layout is ready. A window that cannot reach its daemon still
-  // draws this row, so these must not pretend the list is there.
+  // draws this corner, so these must not pretend the list is there.
   const ready = $derived($layoutState.status === "ready");
 </script>
 
-<div class="sidebar-actions">
-  <!-- What the window's corner overhangs the rail by. The corner is
-       positioned over the rail's top-left (TitleBar.svelte) and is as
-       wide as the platform's controls; the rail under it is as narrow as
-       its own rows. Whatever the corner has left over hangs into THIS
-       row, and this is the box that keeps the row's first item out from
-       under it. Zero whenever the rail is the wider of the two, which is
-       the whole of the open state. -->
-  <div class="corner-overhang"></div>
-  {#if !collapsed}
+{#if !collapsed}
+  <div class="sidebar-actions">
     <IconButton
       icon={PanelLeftClose}
       label="Collapse sidebar"
@@ -71,36 +59,18 @@
         onclick={() => void openWorkspaceFolder()}
       />
     {/if}
-    <!-- The rule belongs to the chrome, not to the row: with the rail
-         collapsed there is no chrome here, and a rule on its own would
-         read as the first tab's left edge. -->
-    <span class="divider"></span>
-  {/if}
-</div>
+  </div>
+{/if}
 
 <style>
-  /* Centred inside the row's padded box, exactly like the actions at the
-     other end of it: the top pad belongs to the tab indicator, and these
-     buttons line up with the tabs they lead rather than with the traffic
-     lights in the corner beside them. */
   .sidebar-actions {
     display: flex;
     align-items: center;
     gap: 2px;
     flex: 0 0 auto;
-  }
-  .corner-overhang {
-    flex: 0 0 auto;
-    width: max(0px, calc(var(--window-corner-width) - var(--rail-width)));
-  }
-  /* The same rule both header rows draw between their own groups of
-     actions -- same height, same colour, same margin -- because it is
-     doing the same job at the other end of the bar. */
-  .divider {
-    width: 1px;
-    align-self: center;
-    height: var(--tab-divider);
-    margin: 0 3px 0 5px;
-    background: var(--border);
+    /* Off the traffic lights, which end at their own 12px pad: the two
+       groups act on different things and should not read as one row of
+       six. */
+    padding-left: 4px;
   }
 </style>

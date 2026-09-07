@@ -1,12 +1,12 @@
 <script lang="ts">
-  // The window's own controls, in a corner of their own, and the rail's
-  // top row beside them.
+  // The window's corner: everything that acts on the WINDOW and on the
+  // COLUMN, in one strip over the sidebar -- the platform's controls,
+  // then the sidebar's own three buttons, then somewhere to grab it.
   //
   // This used to be a strip spanning the whole sidebar column, carrying
   // the pane controls and the "New page" button as well. Both of those
   // moved to the bar that is now the app's top edge (Pane.svelte's tab
-  // row, and the hub tab row in +page.svelte), and the sidebar's own
-  // three chrome buttons followed them (SidebarActions.svelte).
+  // row, and the hub tab row in +page.svelte).
   //
   // What was left was still a floor under the column: the strip is
   // INSIDE the sidebar's column, so the platform's window controls --
@@ -14,17 +14,21 @@
   // could ever collapse to, and a rail of initials had to rattle around
   // in a width the lights had chosen.
   //
-  // So the controls stopped being part of the column and became a corner
-  // of the window: absolutely positioned at (0, 0), the height of the
-  // header row beside it, and painted the header row's surface rather
-  // than the sidebar's, because that row is what it is now part of. It
-  // is free to be wider than the rail under it -- the head of the header
-  // row leaves exactly that much room (SidebarActions.svelte's
-  // .corner-overhang), so nothing is ever drawn beneath it.
+  // So the strip stopped being part of the column's flow and became a
+  // corner: absolutely positioned at (0, 0), the height of the header
+  // row beside it, and free to be wider than the rail under it. The head
+  // of that header row leaves exactly the overhang (CornerOverhang.svelte),
+  // so nothing is ever drawn beneath the corner.
   //
-  // The rail's top row is what stays in flow: it is the height that puts
-  // the sidebar's first row on the same line as the view beside it, and
-  // it is somewhere to grab the window while the column is open.
+  // Its width is `max(the platform's controls, the rail)`: over an open
+  // column it is that column's own top row, and over a collapsed one it
+  // shrinks to the controls and hangs 40px into the row beside it. It
+  // keeps the SIDEBAR's surface at both widths, because what it is the
+  // header of is the column, not the view.
+  //
+  // The rail's top row is what stays in flow, under the corner at every
+  // width: it is the height that puts the sidebar's first row on the
+  // same line as the view beside it.
   //
   // The corner is the top-LEFT on every platform, which is macOS's own
   // placement and not Windows'. Off macOS the controls were already not
@@ -33,6 +37,7 @@
   // so this is one geometry instead of two rather than a change of
   // convention.
   import WindowControls from "./WindowControls.svelte";
+  import SidebarActions from "./SidebarActions.svelte";
   import { isMacSync } from "./platform";
   import { windowDrag } from "./windowDrag";
 
@@ -43,10 +48,15 @@
 
 <div class="corner">
   <WindowControls {macOS} />
+  <SidebarActions />
+  <!-- No data-tauri-drag-region: Tauri's injected script would fire its
+       own maximize on top of the one windowDrag decides on. Whatever the
+       chrome leaves of an open column's top row is a handle; collapsed
+       there is nothing left over, and the header row's own spacer is
+       where the window is grabbed instead. -->
+  <div class="drag-spacer" use:windowDrag></div>
 </div>
-<!-- No data-tauri-drag-region: Tauri's injected script would fire its
-     own maximize on top of the one windowDrag decides on. -->
-<div class="rail-top" use:windowDrag></div>
+<div class="rail-top"></div>
 
 <style>
   /* Out of the column's flow entirely, so its width is nothing the rail
@@ -64,23 +74,29 @@
     z-index: 1;
     display: flex;
     align-items: center;
-    width: var(--window-corner-width);
+    width: max(var(--window-corner-width), var(--rail-width));
     height: var(--header-height);
     box-sizing: border-box;
-    /* The header row's surface, not the sidebar's: these controls sit on
-       the app's top bar now, and a raised block would read as a piece of
-       the sidebar that had slipped out of its column. */
-    background: var(--surface-base);
+    padding-right: 6px;
+    /* The sidebar's surface, at both widths: this strip is the column's
+       header, and the column is what everything in it acts on. */
+    background: var(--surface-raised);
     color: var(--text);
     font-family: sans-serif;
     font-size: 0.8em;
   }
-  /* The rest of the rail's top line: the same height and surface, so the
-     top of the window is one unbroken bar from the controls across to
-     the tabs, and the sidebar starts under it. */
+  .drag-spacer {
+    flex: 1 1 auto;
+    height: 100%;
+    min-width: 0;
+  }
+  /* The rail's own top line, in flow under the corner: what actually
+     pushes the sidebar down to start on the line the view beside it
+     starts on. Same surface, so the seam between the two never shows at
+     any width. */
   .rail-top {
     flex: 0 0 auto;
     height: var(--header-height);
-    background: var(--surface-base);
+    background: var(--surface-raised);
   }
 </style>

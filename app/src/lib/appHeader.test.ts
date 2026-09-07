@@ -78,6 +78,8 @@ function rule(componentSource: string, selector: string): Record<string, string>
 const PAGE = source("+page.svelte");
 const PANE = source("Pane.svelte");
 const TITLE_BAR = source("TitleBar.svelte");
+const ACTIONS = source("SidebarActions.svelte");
+const OVERHANG = source("CornerOverhang.svelte");
 
 describe("the app's three header rows", () => {
   // One definition, three readers. A literal in any of the three files is
@@ -116,13 +118,13 @@ describe("the app's three header rows", () => {
   it("paints both tab rows the surface of the view they open", () => {
     expect(rule(PAGE, ".tabs").background).toBe("var(--surface-base)");
     expect(rule(PANE, ".tab-bar").background).toBe("var(--surface-base)");
-    // The window's own line is that surface too, corner and all: the
-    // controls belong to the bar across the top of the window now, not
-    // to the sidebar's column, and a raised block would read as a piece
-    // of the sidebar that had slipped out of it -- most of all while the
-    // rail is collapsed, when the corner is the wider of the two.
-    expect(rule(TITLE_BAR, ".corner").background).toBe("var(--surface-base)");
-    expect(rule(TITLE_BAR, ".rail-top").background).toBe("var(--surface-base)");
+    // The window's own line is the exception, at both its widths: the
+    // corner is the SIDEBAR's header -- the window's controls and the
+    // column's own three buttons, over the column they act on -- so it
+    // wears the column's surface, and the line under it matches so the
+    // seam never shows.
+    expect(rule(TITLE_BAR, ".corner").background).toBe("var(--surface-raised)");
+    expect(rule(TITLE_BAR, ".rail-top").background).toBe("var(--surface-raised)");
   });
 
   // What a flat row costs: the active tab can no longer be a differently
@@ -199,14 +201,15 @@ describe("the hub and the page reach the top of the window", () => {
 // under it. Nothing else may be drawn in the strip that corner hangs
 // over -- which is the head of whichever header row is on screen.
 describe("the window's corner and the rail under it", () => {
-  const ACTIONS = source("SidebarActions.svelte");
 
   it("takes the corner out of the column's flow, so it sets no floor", () => {
     const corner = rule(TITLE_BAR, ".corner");
     expect(corner.position).toBe("absolute");
     expect(corner.top).toBe("0");
     expect(corner.left).toBe("0");
-    expect(corner.width).toBe("var(--window-corner-width)");
+    // Over an open column the corner IS that column's top row; over a
+    // collapsed one it shrinks to the controls and overhangs.
+    expect(corner.width).toBe("max(var(--window-corner-width), var(--rail-width))");
     // The view column's header row is painted later in tree order and
     // would otherwise cover whatever of the corner overhangs the rail.
     expect(corner["z-index"]).toBe("1");
@@ -220,7 +223,7 @@ describe("the window's corner and the rail under it", () => {
     // The same two variables the corner and the column are sized from,
     // and the subtraction between them: room for exactly what hangs
     // over, and none at all when the rail is the wider of the two.
-    expect(rule(ACTIONS, ".corner-overhang").width).toBe(
+    expect(rule(OVERHANG, ".corner-overhang").width).toBe(
       "max(0px, calc(var(--window-corner-width) - var(--rail-width)))"
     );
     expect(rule(PAGE, ".app")["--window-corner-width"]).toBe("76px");
@@ -238,9 +241,9 @@ describe("the window's corner and the rail under it", () => {
     expect(rule(PAGE, ".rail")["max-width"]).toBeUndefined();
   });
 
-  // Collapsed, the header row draws nothing but that room: the toggle
-  // moves into the rail itself, where it costs what a workspace row
-  // costs, and the two actions that need a full-width column stand down.
+  // Collapsed, the corner is the controls alone: the toggle moves into
+  // the rail itself, where it costs what a workspace row costs, and the
+  // two actions that need a full-width column stand down.
   it("moves the collapse toggle into the rail while the rail is collapsed", () => {
     expect(ACTIONS).toContain("{#if !collapsed}");
     expect(ACTIONS).toContain("const collapsed = $derived($sidebarCollapsed);");
@@ -253,11 +256,16 @@ describe("the window's corner and the rail under it", () => {
     expect(rule(SIDEBAR, ".rail-chrome").flex).toBe("0 0 auto");
   });
 
-  // A rule with nothing before it reads as the first tab's left edge.
-  it("gives the rule to the chrome it separates, not to the row", () => {
-    expect(ACTIONS).toContain('<span class="divider"></span>');
-    expect(PANE).not.toMatch(/<SidebarActions \/>\s*<span class="divider">/);
-    expect(PAGE).not.toMatch(/<SidebarActions \/>\s*<span class="divider">/);
+  // Everything that acts on the window or on the column is in the
+  // corner; the header rows keep only the room it needs. A rule between
+  // the two groups would be a rule with nothing but a spacer before it.
+  it("leaves the header rows nothing of the chrome but its room", () => {
+    expect(TITLE_BAR).toContain("<SidebarActions />");
+    for (const text of [PAGE, PANE]) {
+      expect(text).toContain("<CornerOverhang />");
+      expect(text).not.toContain("<SidebarActions />");
+      expect(text).not.toMatch(/<CornerOverhang \/>\s*<span class="divider">/);
+    }
   });
 });
 
@@ -324,27 +332,28 @@ describe("what the bars carry", () => {
     expect(TITLE_BAR).not.toContain("Close Pane");
   });
 
-  // The strip lives INSIDE the sidebar's column, so everything in it is
-  // a floor under how narrow that column can collapse to. Only the
-  // window controls and a handle are allowed to be that floor -- the
-  // sidebar's own three buttons moved to the header row beside it, where
-  // they cost the column nothing.
-  it("leaves the sidebar's chrome out of the strip over the sidebar", () => {
-    expect(TITLE_BAR).not.toContain("Collapse sidebar");
-    expect(TITLE_BAR).not.toContain("Open workspace");
-    expect(TITLE_BAR).not.toContain("sidebarSearch");
-    expect(source("SidebarActions.svelte")).toContain("Collapse sidebar");
+  // What acts on the WINDOW and what acts on the COLUMN share the
+  // corner over that column: the platform's controls, then collapse,
+  // search and Open workspace. They could not while the corner was in
+  // the column's flow -- everything in it was a floor under how narrow
+  // the column could collapse -- and out of that flow they are free
+  // again, in the 124px the lights leave of an open column's top row.
+  it("gives the sidebar's chrome the corner over the sidebar", () => {
+    expect(TITLE_BAR).toContain("<SidebarActions />");
+    expect(TITLE_BAR).toContain("<WindowControls {macOS} />");
+    expect(ACTIONS).toContain("Collapse sidebar");
+    expect(ACTIONS).toContain("Open workspace");
   });
 
   // One instance per window, at the window's top-left corner: the hub
   // row draws it, a page's row draws it on the pane that LEADS the page
   // (never the focused one, which moves), and the branches with no
   // header row of their own get a strip of the same height for it.
-  it("draws the sidebar's chrome on whichever row is the window's top edge", () => {
-    expect(PAGE).toContain("<SidebarActions />");
-    expect(PANE).toContain("<SidebarActions />");
+  it("reserves the corner's room on whichever row is the window's top edge", () => {
+    expect(PAGE).toContain("<CornerOverhang />");
+    expect(PANE).toContain("<CornerOverhang />");
     expect(PANE).toContain("paneLeadsWindow(getActiveTree($layoutState), leaf)");
-    expect(PANE).toMatch(/\{#if leadsWindow\}\s*<SidebarActions \/>/);
+    expect(PANE).toMatch(/\{#if leadsWindow\}\s*<CornerOverhang \/>/);
     expect(rule(PAGE, ".chrome-row").height).toBe("var(--header-height)");
     expect(rule(PAGE, ".chrome-row")["box-sizing"]).toBe("border-box");
     expect(rule(PAGE, ".chrome-row").padding.startsWith("var(--header-pad-top)")).toBe(true);

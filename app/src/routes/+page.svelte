@@ -43,7 +43,7 @@
   import OpenInWindowButton from "$lib/OpenInWindowButton.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
-  import SidebarActions from "$lib/SidebarActions.svelte";
+  import CornerOverhang from "$lib/CornerOverhang.svelte";
   import { isMacSync } from "$lib/platform";
   import AppHubView from "$lib/AppHubView.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
@@ -81,14 +81,12 @@
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
   const activeView = $derived(activeWorkspace ? getActiveView(activeWorkspace) : "terminal");
-  // Whether this window has to draw a strip of its own for the sidebar's
-  // chrome. Those buttons ride the header row that is the top edge of
-  // the window -- the hub tabs here, a page's session tabs in
-  // Pane.svelte -- and these are exactly the branches that have no such
-  // row: the two connection states, the app hub, a window with no
-  // workspace, and a workspace whose page has no panes yet. The collapse
-  // toggle is the only way back from a collapsed rail, so "nowhere to
-  // put it" is not an option any of them can take.
+  // Whether this window has to draw a header row of its own. These are
+  // the branches that have none -- the two connection states, the app
+  // hub, a window with no workspace, and a workspace whose page has no
+  // panes yet -- and a window's top edge has two jobs it cannot go
+  // without: leaving room for whatever of the window's corner overhangs
+  // a collapsed rail, and offering somewhere to grab the window.
   const needsChromeRow = $derived(
     $layoutState.status !== "ready" ||
       $appHubOpen ||
@@ -311,7 +309,7 @@
            as it does under a row of tabs. -->
       {#if needsChromeRow}
         <div class="chrome-row">
-          <SidebarActions />
+          <CornerOverhang />
           <div class="drag-spacer" use:windowDrag></div>
         </div>
       {/if}
@@ -370,7 +368,7 @@
                    could scroll out of reach would be a rail with no way
                    back. A rule after it, so what acts on the WINDOW is
                    not read as the first tab of the workspace. -->
-              <SidebarActions />
+              <CornerOverhang />
               <!-- The tabs scroll; what follows them does not. A
                    workspace with a root offers nine of them, and the
                    button that adds a page must not be the first thing a

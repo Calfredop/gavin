@@ -38,7 +38,7 @@
   import { X, Plus, Kanban, Pin, ListChecks, FileDiff, Columns2, Rows2 } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import NewPageButton from "./NewPageButton.svelte";
-  import SidebarActions from "./SidebarActions.svelte";
+  import CornerOverhang from "./CornerOverhang.svelte";
   import ShortcutHint from "./ui/ShortcutHint.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import {
@@ -468,13 +468,12 @@
 
 <div class="pane-wrapper">
   <div class="tab-bar">
-    <!-- Before the tabs, and outside the scroller: this is the window's
-         top-left corner on a terminal page. It brings its own rule with
-         it, so the chrome that acts on the WINDOW is not read as the
-         first tab of the page -- and so a collapsed rail, which draws no
-         chrome here at all, does not leave a rule leading the tabs. -->
+    <!-- Before the tabs, and outside the scroller: the room the
+         window's corner needs when it hangs over a collapsed rail, so
+         the first tab of the page is never drawn under the traffic
+         lights. Zero-width whenever the column is open. -->
     {#if leadsWindow}
-      <SidebarActions />
+      <CornerOverhang />
     {/if}
     <!-- The tabs scroll under the actions rather than pushing them off
          the pane: a pane with six tabs open must still offer Close Pane.
