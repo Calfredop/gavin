@@ -11,7 +11,7 @@
   import SearchInput from "./ui/SearchInput.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { tooltip } from "./tooltip";
-  import { NO_FILES_GROUP_ID, noFilesHint, type ReviewGroup } from "./reviewBoard";
+  import { type ReviewGroup } from "./reviewBoard";
   import type { Column } from "./kanban";
 
   interface Props {
@@ -164,13 +164,15 @@
               <span class="group-label" title={group.files.join("\n")}>{group.label}</span>
               <span class="group-count">{group.cards.length}</span>
             </button>
-            {#if group.id === NO_FILES_GROUP_ID && !isFolded(group.id)}
-              <!-- Only the sentences true of the cards under it: this
-                   one bucket holds runs nobody measured AND runs
-                   measured to have moved nothing, and telling the
-                   second as the first is the conflation reviewBoard.ts
-                   is built around. -->
-              <p class="group-hint">{noFilesHint(group.cards)}</p>
+            {#if group.hint && !isFolded(group.id)}
+              <!-- Whatever the header cannot say, decided in
+                   reviewBoard.ts: the fileless bucket holds runs nobody
+                   measured AND runs measured to have moved nothing, and
+                   a same-baseline group holds cards whose file list is
+                   one measurement rather than an agreement. Telling
+                   either as something it is not is the conflation that
+                   module is built around. -->
+              <p class="group-hint">{group.hint}</p>
             {/if}
             {#if !isFolded(group.id)}
               <div class="cards" role="listbox" aria-label={group.label}>

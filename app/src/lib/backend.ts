@@ -778,8 +778,18 @@ export function gitHeadSha(cwd: string): Promise<string | null> {
 /// when it started. `cwd` is the run's LAUNCH directory: the command
 /// resolves the repository root from it and answers in root-relative
 /// paths.
-export function gitRunChanges(cwd: string, baseSha: string): Promise<RunChanges> {
-  return invoke("git_run_changes", { cwd, baseSha });
+/// `peers` is every other baseline recorded against the same checkout.
+/// Given them, the window stops where the next run started, so a run in
+/// a checkout several agents share reports its own slice rather than
+/// everything the tree has done since. Empty -- the default -- is the
+/// unbounded question: what does this checkout look like versus that
+/// commit.
+export function gitRunChanges(
+  cwd: string,
+  baseSha: string,
+  peers: string[] = []
+): Promise<RunChanges> {
+  return invoke("git_run_changes", { cwd, baseSha, peers });
 }
 
 export function gitDiffSince(
@@ -787,9 +797,10 @@ export function gitDiffSince(
   baseSha: string,
   path: string,
   oldPath: string | null,
-  untracked: boolean
+  untracked: boolean,
+  untilSha: string | null = null
 ): Promise<FileDiff> {
-  return invoke("git_diff_since", { cwd, baseSha, path, oldPath, untracked });
+  return invoke("git_diff_since", { cwd, baseSha, path, oldPath, untracked, untilSha });
 }
 
 /// Resets the run's checkout to its baseline and moves the named

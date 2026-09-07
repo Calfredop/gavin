@@ -32,6 +32,18 @@ import { queryTokens } from "./search";
 export interface ReviewCandidate {
   card: CardView;
   files: string[] | null;
+  /// The checkout the files were measured in -- the repository root, so
+  /// two cards launched at different depths of one tree still meet.
+  ///
+  /// A file is only the same file as another card's when both were
+  /// measured HERE. The path alone is not identity: `app/src/lib/git.ts`
+  /// in this tree and in a sibling worktree are two files on two
+  /// branches, and treating them as one put every card in every checkout
+  /// -- and in unrelated repositories -- into a single group.
+  checkout: string | null;
+  /// The baseline the files were measured from. Two cards that share one
+  /// share their whole measurement; see `sameBaselineHint`.
+  baseSha: string | null;
 }
 
 /// One cluster in the left list.
@@ -45,6 +57,11 @@ export interface ReviewGroup {
   /// The header's words: two file names and a "+N", or the fileless
   /// group's sentence.
   label: string;
+  /// The sentence drawn under an open header, or null for a group whose
+  /// files say everything there is to say. Decided here rather than in
+  /// the list, so what a group means and what it is called cannot drift
+  /// apart.
+  hint: string | null;
   cards: ReviewCandidate[];
 }
 
@@ -62,8 +79,47 @@ export interface ReviewGroup {
 export const NO_FILES_GROUP_ID = "";
 export const NO_FILES_LABEL = "No files to show";
 
+/// What a group is called when its cards were all launched from the same
+/// commit in the same checkout.
+///
+/// Such cards were measured against one baseline in one tree, so they
+/// have the SAME file list -- not because they touched the same files,
+/// but because gavin took one measurement and handed it to each of them.
+/// Naming files here would report an agreement no one observed, and it
+/// is the reading that made every card on a shared checkout look like it
+/// had touched the whole tree.
+export const SAME_BASELINE_LABEL = "Same starting point";
+
 /// How many file names a group header names before it starts counting.
 const HEADER_FILES = 2;
+
+/// Every baseline recorded against the same checkout, attached to each
+/// request -- what bounds a run's window to its own slice
+/// (`next_baseline` in `runchanges.rs`).
+///
+/// Grouped by the launch cwd and not by the repository root, which only
+/// git can resolve: a sibling worktree shares the object store, so its
+/// baselines are reachable here and would bound a window they have
+/// nothing to do with. Same cwd is the conservative reading, and the one
+/// that matches how a run is launched.
+///
+/// Sorted and deduped so the same board asks the same question twice --
+/// the peer list is part of the cache key, and an order that followed
+/// the board's would re-fetch every card on every reorder.
+export function withBaselinePeers<T extends { cwd: string; baseSha: string }>(
+  requests: T[]
+): (T & { peers: string[] })[] {
+  const byCheckout = new Map<string, Set<string>>();
+  for (const request of requests) {
+    const seen = byCheckout.get(request.cwd);
+    if (seen) seen.add(request.baseSha);
+    else byCheckout.set(request.cwd, new Set([request.baseSha]));
+  }
+  const peers = new Map(
+    [...byCheckout].map(([cwd, shas]) => [cwd, [...shas].sort()] as const)
+  );
+  return requests.map((request) => ({ ...request, peers: peers.get(request.cwd) ?? [] }));
+}
 
 // ---- Which columns feed the tab --------------------------------------------
 
@@ -172,11 +228,18 @@ function clusterIndexes(candidates: ReviewCandidate[]): Map<number, number[]> {
   // One pass over the files rather than a comparison of every pair: the
   // first card to claim a file owns it, and every later claimant is
   // unioned into it.
+  //
+  // Keyed by CHECKOUT and path together. A bare path is not a file: the
+  // same one in two worktrees is two branches' worth of edits that have
+  // not met, and in two repositories it is a coincidence of naming. Both
+  // used to chain -- a `README.md` was enough to put an unrelated
+  // project's cards in this one's group.
   const owner = new Map<string, number>();
   candidates.forEach((candidate, i) => {
     for (const file of candidate.files ?? []) {
-      const first = owner.get(file);
-      if (first === undefined) owner.set(file, i);
+      const key = `${candidate.checkout ?? ""} ${file}`;
+      const first = owner.get(key);
+      if (first === undefined) owner.set(key, i);
       else union(first, i);
     }
   });
@@ -243,7 +306,17 @@ export function groupCandidates(candidates: ReviewCandidate[]): ReviewGroup[] {
   for (const indexes of clusterIndexes(withFiles).values()) {
     const cards = indexes.sort((a, b) => a - b).map((i) => withFiles[i]);
     const files = rankFiles(cards);
-    groups.push({ id: files.join("\n"), files, label: groupLabel(files), cards });
+    const shared = sharesOneBaseline(cards);
+    groups.push({
+      // The checkout leads the id for the same reason it keys the
+      // clustering: two worktrees with the same files are two groups,
+      // and one id for both would fold and unfold them together.
+      id: `${cards[0].checkout ?? ""}\n${files.join("\n")}`,
+      files,
+      label: shared ? SAME_BASELINE_LABEL : groupLabel(files),
+      hint: shared ? sameBaselineHint(cards) : null,
+      cards,
+    });
   }
   groups.sort((a, b) => b.cards.length - a.cards.length || a.label.localeCompare(b.label));
 
@@ -252,10 +325,38 @@ export function groupCandidates(candidates: ReviewCandidate[]): ReviewGroup[] {
       id: NO_FILES_GROUP_ID,
       files: [],
       label: NO_FILES_LABEL,
+      hint: noFilesHint(withoutFiles),
       cards: withoutFiles,
     });
   }
   return groups;
+}
+
+/// Whether every card here was launched from one commit in one checkout
+/// -- which makes their file lists one measurement rather than an
+/// agreement between several.
+///
+/// One card is never this: a lone card's files are its own, however they
+/// were measured, and there is nothing for it to be indistinguishable
+/// from.
+function sharesOneBaseline(cards: ReviewCandidate[]): boolean {
+  if (cards.length < 2) return false;
+  const { checkout, baseSha } = cards[0];
+  if (baseSha === null) return false;
+  return cards.every((c) => c.baseSha === baseSha && c.checkout === checkout);
+}
+
+/// What the list says under a group whose cards all started from one
+/// commit. It has to name the limit rather than the files, because the
+/// files are the same for all of them by construction -- saying "these
+/// cards touched git.ts" of a measurement nobody attributed is the
+/// review-tab equivalent of reporting an unmeasured run as an empty one.
+export function sameBaselineHint(cards: ReviewCandidate[]): string {
+  return (
+    `These ${cards.length} cards were launched from the same commit in the same checkout, ` +
+    `so gavin measured one set of changes and it belongs to all of them. ` +
+    `It can't say which card made what.`
+  );
 }
 
 /// What the list says under a group with no baseline behind it. A

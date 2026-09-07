@@ -33,12 +33,13 @@ function changes(over: Partial<RunChanges> = {}): RunChanges {
     added: 3,
     removed: 1,
     commits: 0,
+    untilSha: null,
     ...over,
   };
 }
 
 function request(path: string, over: Partial<TouchRequest> = {}): TouchRequest {
-  return { path, cwd: "/repo", baseSha: BASE, ...over };
+  return { path, cwd: "/repo", baseSha: BASE, peers: [], ...over };
 }
 
 const runChanges = vi.mocked(backend.gitRunChanges);
@@ -108,6 +109,28 @@ describe("loadTouchedFiles", () => {
     await loadTouchedFiles(WS, [request("/a.md")]);
     await loadTouchedFiles(WS, [request("/a.md", { cwd: "/other" })]);
     expect(runChanges).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks git where this run's window ends", async () => {
+    runChanges.mockResolvedValue(changes());
+    await loadTouchedFiles(WS, [request("/a.md", { peers: [BASE, "2".repeat(40)] })]);
+    expect(runChanges).toHaveBeenCalledWith("/repo", BASE, [BASE, "2".repeat(40)]);
+  });
+
+  it("re-reads a card once a later run appears beside it", async () => {
+    // The peers decide where the window ends, so the stored answer is
+    // about a window that no longer exists.
+    runChanges.mockResolvedValue(changes());
+    await loadTouchedFiles(WS, [request("/a.md")]);
+    await loadTouchedFiles(WS, [request("/a.md", { peers: ["2".repeat(40)] })]);
+    expect(runChanges).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the bound git resolved, for the file diffs under it", async () => {
+    const until = "2".repeat(40);
+    runChanges.mockResolvedValue(changes({ untilSha: until }));
+    await loadTouchedFiles(WS, [request("/a.md", { peers: [until] })]);
+    expect(viewFor(WS).runs["/a.md"].untilSha).toBe(until);
   });
 
   it("re-reads everything when Refresh forces it", async () => {
@@ -210,6 +233,8 @@ describe("selectReviewFile", () => {
   const run: TouchedRun = {
     cwd: "/repo",
     baseSha: BASE,
+    untilSha: null,
+    peers: [],
     changes: changes(),
     files: ["app/src/lib/git.ts"],
     problem: null,
@@ -220,7 +245,7 @@ describe("selectReviewFile", () => {
   it("reads the file against that card's baseline", async () => {
     diffSince.mockResolvedValue(diff);
     await selectReviewFile(WS, run, "app/src/lib/git.ts");
-    expect(diffSince).toHaveBeenCalledWith("/repo", BASE, "app/src/lib/git.ts", null, false);
+    expect(diffSince).toHaveBeenCalledWith("/repo", BASE, "app/src/lib/git.ts", null, false, null);
     expect(viewFor(WS).selectedFile).toBe("app/src/lib/git.ts");
     expect(viewFor(WS).diff).toEqual(diff);
   });
@@ -232,7 +257,16 @@ describe("selectReviewFile", () => {
     };
     diffSince.mockResolvedValue({ ...diff, path: "new.ts" });
     await selectReviewFile(WS, untracked, "new.ts");
-    expect(diffSince).toHaveBeenCalledWith("/repo", BASE, "new.ts", null, true);
+    expect(diffSince).toHaveBeenCalledWith("/repo", BASE, "new.ts", null, true, null);
+  });
+
+  it("reads the file under the same bound as the row that opened it", async () => {
+    // Otherwise a file the next run also edited opens showing that
+    // run's hunks under this card's name.
+    const until = "2".repeat(40);
+    diffSince.mockResolvedValue(diff);
+    await selectReviewFile(WS, { ...run, untilSha: until }, "app/src/lib/git.ts");
+    expect(diffSince).toHaveBeenCalledWith("/repo", BASE, "app/src/lib/git.ts", null, false, until);
   });
 
   it("ignores a file the run never touched", async () => {

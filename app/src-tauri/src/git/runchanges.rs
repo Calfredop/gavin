@@ -54,6 +54,16 @@ pub struct RunChanges {
     /// Commits on HEAD that the baseline does not have -- the ones a
     /// discard would drop.
     pub commits: u32,
+    /// The peer baseline this window stops at, when a later run was
+    /// launched in the same checkout -- see `next_baseline`. `None` is
+    /// the ordinary case: nothing was launched here after this run, so
+    /// the window runs all the way to the worktree.
+    ///
+    /// Reported rather than kept private because the caller has to ask
+    /// the same question again for a single file's diff, and a bound
+    /// resolved twice is a bound that can differ between the list and
+    /// the diff under it.
+    pub until_sha: Option<String>,
 }
 
 /// What a discard actually did. Shaped like `RemovalReport` in
@@ -142,7 +152,67 @@ pub fn head_sha(cwd: &str) -> Result<Option<String>, String> {
     Ok((sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())).then_some(sha))
 }
 
-pub fn run_changes(cwd: &str, base_sha: &str) -> Result<RunChanges, String> {
+/// The nearest baseline in `peers` that comes AFTER `base` in this
+/// checkout's history, or `None` when nothing was launched here later.
+///
+/// This is what makes a run's changes the RUN's. `git diff <base>` in a
+/// checkout several agents share answers "what does this tree look like
+/// versus that commit", which is every later run's work as well as this
+/// one's -- on gavin's own board the oldest finished card claimed 196
+/// files, nearly the whole tree. Stopping the window where the next run
+/// started hands each card the slice between its own launch and the
+/// next.
+///
+/// "After" is ancestry, never a commit date: a rebase rewrites dates,
+/// and a bound taken from a commit that is not a descendant would diff
+/// two divergent tips and report the difference between two branches as
+/// one card's work. A peer that is not a descendant is simply not a
+/// bound -- concurrent branches leave the window open rather than
+/// closing it on a guess.
+///
+/// A peer EQUAL to `base` is no bound either. Two runs launched from the
+/// same commit are measured identically, and that is the truth about
+/// them: nothing here can say which of them wrote what, and a
+/// zero-length window would say they wrote nothing.
+fn next_baseline(root: &str, base: &str, peers: &[String]) -> Result<Option<String>, String> {
+    let mut best: Option<(u32, String)> = None;
+    for peer in peers {
+        if peer.is_empty() || peer == base || !commit_exists(root, peer)? {
+            continue;
+        }
+        if run_git_ro(root, &["merge-base", "--is-ancestor", base, peer])?.code != 0 {
+            continue;
+        }
+        let counted = run_git_ro(root, &["rev-list", "--count", &format!("{base}..{peer}")])?;
+        if counted.code != 0 {
+            continue;
+        }
+        let Ok(distance) = counted.stdout_str().trim().parse::<u32>() else { continue };
+        if distance == 0 {
+            continue;
+        }
+        // Ties broken by the sha itself, so two peers the same distance
+        // away do not make the answer depend on the order the app
+        // happened to send them in.
+        let closer = match &best {
+            None => true,
+            Some((best_distance, best_sha)) => {
+                distance < *best_distance || (distance == *best_distance && peer < best_sha)
+            }
+        };
+        if closer {
+            best = Some((distance, peer.clone()));
+        }
+    }
+    Ok(best.map(|(_, sha)| sha))
+}
+
+/// `peers` is every OTHER baseline recorded against the same checkout,
+/// which is what lets this bound the window (`next_baseline`). Pass an
+/// empty slice for the unbounded question -- what the checkout looks
+/// like versus this baseline -- which is what the per-run Changes view
+/// asks.
+pub fn run_changes(cwd: &str, base_sha: &str, peers: &[String]) -> Result<RunChanges, String> {
     let mut out = RunChanges { base_sha: base_sha.to_string(), ..Default::default() };
     let Some(root) = repo_root(cwd)? else {
         out.not_a_repo = true;
@@ -157,22 +227,40 @@ pub fn run_changes(cwd: &str, base_sha: &str) -> Result<RunChanges, String> {
         ok(run_git_ro(&root, &["log", "-1", "--format=%s", base_sha])?)?.stdout_str().trim().to_string(),
     );
 
+    out.until_sha = next_baseline(&root, base_sha, peers)?;
+    let until = out.until_sha.clone();
+
     // The worktree against the baseline, staged and unstaged together:
     // the question is what the run changed, not what it happened to
     // stage. `-M` so a rename reads as one row rather than as a delete
-    // and an add.
-    let named = ok(run_git_ro(&root, &["diff", "--name-status", "-M", base_sha])?)?;
+    // and an add. A bounded window names the peer instead of the
+    // worktree, which is the same diff with the later runs left out.
+    let mut named_args = vec!["diff", "--name-status", "-M", base_sha];
+    let mut stat_args = vec!["diff", "--shortstat", base_sha];
+    if let Some(end) = until.as_deref() {
+        named_args.push(end);
+        stat_args.push(end);
+    }
+    let named = ok(run_git_ro(&root, &named_args)?)?;
     out.files = parse_name_status(&named.stdout_str());
 
-    let shortstat = ok(run_git_ro(&root, &["diff", "--shortstat", base_sha])?)?;
+    let shortstat = ok(run_git_ro(&root, &stat_args)?)?;
     let (added, removed) = parse_shortstat(&shortstat.stdout_str());
     out.added = added;
     out.removed = removed;
 
-    let untracked = ok(run_git_ro(&root, &["ls-files", "--others", "--exclude-standard"])?)?;
-    for path in untracked.stdout_str().lines().filter(|l| !l.is_empty()) {
-        out.added += untracked_line_count(&std::path::Path::new(&root).join(path));
-        out.files.push(FileEntry { path: path.to_string(), old_path: None, status: "?".to_string() });
+    // Untracked files belong to the unbounded question only. `ls-files
+    // --others` reports what the tree holds NOW with no baseline in it
+    // at all, so it cannot be cut down to a window: handing this run the
+    // whole checkout's untracked set is the same misattribution the
+    // bound exists to remove, and every run sharing the checkout would
+    // get the identical list.
+    if until.is_none() {
+        let untracked = ok(run_git_ro(&root, &["ls-files", "--others", "--exclude-standard"])?)?;
+        for path in untracked.stdout_str().lines().filter(|l| !l.is_empty()) {
+            out.added += untracked_line_count(&std::path::Path::new(&root).join(path));
+            out.files.push(FileEntry { path: path.to_string(), old_path: None, status: "?".to_string() });
+        }
     }
     out.files.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -180,7 +268,8 @@ pub fn run_changes(cwd: &str, base_sha: &str) -> Result<RunChanges, String> {
     // unborn HEAD, which fails; and a rail that rebased its branch still
     // gets a truthful count, because this asks what is on HEAD and not
     // in base rather than assuming one descends from the other.
-    let revs = run_git_ro(&root, &["rev-list", "--count", &format!("{base_sha}..HEAD")])?;
+    let end = until.as_deref().unwrap_or("HEAD");
+    let revs = run_git_ro(&root, &["rev-list", "--count", &format!("{base_sha}..{end}")])?;
     if revs.code == 0 {
         out.commits = revs.stdout_str().trim().parse().unwrap_or(0);
     }
@@ -190,19 +279,29 @@ pub fn run_changes(cwd: &str, base_sha: &str) -> Result<RunChanges, String> {
 /// One file's diff against the baseline. `untracked` takes the
 /// `--no-index` route the Git tab already uses for a file git has never
 /// seen, since there is no baseline blob to compare it to.
+///
+/// `until` is the bound `run_changes` resolved for this run, passed back
+/// rather than recomputed: the row the human clicked was produced under
+/// that bound, and a diff taken under a different one would open a file
+/// with hunks the row never counted -- or none at all.
 pub fn diff_since(
     cwd: &str,
     base_sha: &str,
     path: &str,
     old_path: Option<&str>,
     untracked: bool,
+    until: Option<&str>,
 ) -> Result<FileDiff, String> {
     let root = repo_root(cwd)?.ok_or_else(|| format!("not a git repository: {cwd}"))?;
     let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "-U3"];
     if untracked {
         args.extend(["--no-index", "--", "/dev/null", path]);
     } else {
-        args.extend(["-M", base_sha, "--"]);
+        args.extend(["-M", base_sha]);
+        if let Some(end) = until {
+            args.push(end);
+        }
+        args.push("--");
         if let Some(old) = old_path {
             args.push(old);
         }
@@ -297,8 +396,12 @@ pub fn git_head_sha(cwd: String) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-pub fn git_run_changes(cwd: String, base_sha: String) -> Result<RunChanges, String> {
-    run_changes(&cwd, &base_sha)
+pub fn git_run_changes(
+    cwd: String,
+    base_sha: String,
+    peers: Option<Vec<String>>,
+) -> Result<RunChanges, String> {
+    run_changes(&cwd, &base_sha, &peers.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -308,8 +411,9 @@ pub fn git_diff_since(
     path: String,
     old_path: Option<String>,
     untracked: bool,
+    until_sha: Option<String>,
 ) -> Result<FileDiff, String> {
-    diff_since(&cwd, &base_sha, &path, old_path.as_deref(), untracked)
+    diff_since(&cwd, &base_sha, &path, old_path.as_deref(), untracked, until_sha.as_deref())
 }
 
 #[tauri::command]
@@ -339,7 +443,7 @@ mod tests {
         write(&dir, "f.txt", "alpha\nBETA\nGAMMA\ndelta\nepsilon\n");
         write(&dir, "new.txt", "one\ntwo\n");
 
-        let changes = run_changes(cwd(&dir), &base).unwrap();
+        let changes = run_changes(cwd(&dir), &base, &[]).unwrap();
         assert!(!changes.not_a_repo && !changes.base_missing);
         assert_eq!(changes.base_subject.as_deref(), Some("base"));
         assert_eq!(
@@ -352,11 +456,137 @@ mod tests {
         assert_eq!((changes.added, changes.removed), (4, 2));
     }
 
+    /// The bug this bound exists for: several agents share one checkout,
+    /// so `git diff <base>` hands the earliest run every later run's work
+    /// too. Every card then looks like it touched everything, and the
+    /// Review tab's clustering collapses into one group holding the board.
+    #[test]
+    fn a_later_baseline_in_the_same_checkout_ends_the_window() {
+        let dir = temp_repo();
+        let base = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        write(&dir, "mine.txt", "one\n");
+        git(cwd(&dir), &["add", "-A"]);
+        git(cwd(&dir), &["commit", "-qm", "this run's work"]);
+        let peer = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        write(&dir, "theirs.txt", "two\n");
+        git(cwd(&dir), &["add", "-A"]);
+        git(cwd(&dir), &["commit", "-qm", "the next run's work"]);
+        write(&dir, "loose.txt", "and an untracked one\n");
+
+        let changes = run_changes(cwd(&dir), &base, &[peer.clone()]).unwrap();
+        assert_eq!(changes.until_sha.as_deref(), Some(peer.as_str()));
+        assert_eq!(
+            changes.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            vec!["mine.txt"],
+            "the later run's file and the checkout's untracked files are not this run's"
+        );
+        assert_eq!(changes.commits, 1);
+    }
+
+    #[test]
+    fn a_baseline_older_than_this_one_is_not_a_bound() {
+        let dir = temp_repo();
+        let older = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        write(&dir, "before.txt", "one\n");
+        git(cwd(&dir), &["add", "-A"]);
+        git(cwd(&dir), &["commit", "-qm", "before this run"]);
+        let base = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        write(&dir, "mine.txt", "two\n");
+
+        let changes = run_changes(cwd(&dir), &base, &[older]).unwrap();
+        assert_eq!(changes.until_sha, None);
+        assert_eq!(changes.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["mine.txt"]);
+    }
+
+    #[test]
+    fn the_nearest_later_baseline_wins() {
+        let dir = temp_repo();
+        let base = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        write(&dir, "mine.txt", "one\n");
+        git(cwd(&dir), &["add", "-A"]);
+        git(cwd(&dir), &["commit", "-qm", "this run"]);
+        let near = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        write(&dir, "next.txt", "two\n");
+        git(cwd(&dir), &["add", "-A"]);
+        git(cwd(&dir), &["commit", "-qm", "the run after that"]);
+        let far = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+
+        // Sent far-first, so the answer cannot come from the order.
+        let changes = run_changes(cwd(&dir), &base, &[far, near.clone()]).unwrap();
+        assert_eq!(changes.until_sha.as_deref(), Some(near.as_str()));
+        assert_eq!(changes.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["mine.txt"]);
+    }
+
+    /// A run launched on a branch this one never touched is not "after"
+    /// it. Diffing the two tips would report the difference between two
+    /// branches as this card's work.
+    #[test]
+    fn a_baseline_on_a_divergent_branch_is_not_a_bound() {
+        let dir = temp_repo();
+        let fork = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        git(cwd(&dir), &["checkout", "-q", "-b", "elsewhere"]);
+        write(&dir, "elsewhere.txt", "theirs\n");
+        git(cwd(&dir), &["add", "-A"]);
+        git(cwd(&dir), &["commit", "-qm", "another branch"]);
+        let sibling = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+
+        // Back to the fork point and off the other way, so neither
+        // baseline descends from the other.
+        git(cwd(&dir), &["checkout", "-q", "-b", "here", &fork]);
+        write(&dir, "here.txt", "ours\n");
+        git(cwd(&dir), &["add", "-A"]);
+        git(cwd(&dir), &["commit", "-qm", "this branch"]);
+        let base = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        write(&dir, "mine.txt", "mine\n");
+
+        let changes = run_changes(cwd(&dir), &base, &[sibling]).unwrap();
+        assert_eq!(changes.until_sha, None);
+        assert_eq!(changes.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["mine.txt"]);
+    }
+
+    /// Two runs launched from the same commit are measured identically,
+    /// and that IS the truth about them -- nothing here can say which of
+    /// them wrote what. A zero-length window would say they wrote nothing.
+    #[test]
+    fn a_peer_launched_from_the_same_commit_is_not_a_bound() {
+        let dir = temp_repo();
+        let base = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        write(&dir, "mine.txt", "one\n");
+
+        let changes = run_changes(cwd(&dir), &base, &[base.clone()]).unwrap();
+        assert_eq!(changes.until_sha, None);
+        assert_eq!(changes.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["mine.txt"]);
+    }
+
+    /// The row the human clicked was produced under the bound, so the
+    /// diff it opens has to be too -- otherwise a file the next run also
+    /// edited opens showing that run's hunks under this card's name.
+    #[test]
+    fn a_bounded_files_diff_stops_at_the_bound() {
+        let dir = temp_repo();
+        let base = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        write(&dir, "f.txt", "alpha\nBETA\ngamma\ndelta\nepsilon\n");
+        git(cwd(&dir), &["commit", "-qam", "this run's edit"]);
+        let peer = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        write(&dir, "f.txt", "alpha\nBETA\nGAMMA\ndelta\nepsilon\n");
+        git(cwd(&dir), &["commit", "-qam", "the next run's edit"]);
+
+        let diff = diff_since(cwd(&dir), &base, "f.txt", None, false, Some(&peer)).unwrap();
+        let added: Vec<&str> = diff
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| l.kind == "add")
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(added, vec!["BETA"], "GAMMA belongs to the run after this one");
+    }
+
     #[test]
     fn an_unchanged_checkout_reports_nothing_at_all() {
         let dir = temp_repo();
         let base = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
-        let changes = run_changes(cwd(&dir), &base).unwrap();
+        let changes = run_changes(cwd(&dir), &base, &[]).unwrap();
         assert!(changes.files.is_empty());
         assert_eq!((changes.added, changes.removed, changes.commits), (0, 0, 0));
     }
@@ -367,7 +597,7 @@ mod tests {
     #[test]
     fn a_baseline_missing_from_this_checkout_is_an_answer() {
         let dir = temp_repo();
-        let changes = run_changes(cwd(&dir), "0123456789012345678901234567890123456789").unwrap();
+        let changes = run_changes(cwd(&dir), "0123456789012345678901234567890123456789", &[]).unwrap();
         assert!(changes.base_missing);
         assert!(changes.files.is_empty());
     }
@@ -379,7 +609,7 @@ mod tests {
         if run_git_ro(path, &["rev-parse", "--show-toplevel"]).unwrap().code == 0 {
             return; // a temp dir inside a checkout proves nothing
         }
-        let changes = run_changes(path, "0123456789012345678901234567890123456789").unwrap();
+        let changes = run_changes(path, "0123456789012345678901234567890123456789", &[]).unwrap();
         assert!(changes.not_a_repo);
     }
 
@@ -394,7 +624,7 @@ mod tests {
         git(cwd(&dir), &["commit", "-qam", "committed half"]);
         write(&dir, "f.txt", "alpha\nBETA\nGAMMA\ndelta\nepsilon\n");
 
-        let diff = diff_since(cwd(&dir), &base, "f.txt", None, false).unwrap();
+        let diff = diff_since(cwd(&dir), &base, "f.txt", None, false, None).unwrap();
         let added: Vec<&str> =
             diff.hunks.iter().flat_map(|h| h.lines.iter()).filter(|l| l.kind == "add").map(|l| l.text.as_str()).collect();
         assert_eq!(added, vec!["BETA", "GAMMA"]);
@@ -405,7 +635,7 @@ mod tests {
         let dir = temp_repo();
         let base = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
         write(&dir, "new.txt", "one\ntwo\n");
-        let diff = diff_since(cwd(&dir), &base, "new.txt", None, true).unwrap();
+        let diff = diff_since(cwd(&dir), &base, "new.txt", None, true, None).unwrap();
         assert_eq!(diff.hunks.len(), 1);
         assert!(diff.hunks[0].lines.iter().all(|l| l.kind == "add"));
     }

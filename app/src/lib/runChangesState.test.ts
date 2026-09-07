@@ -32,6 +32,7 @@ function changes(over: Partial<RunChanges> = {}): RunChanges {
     added: 3,
     removed: 1,
     commits: 0,
+    untilSha: null,
     ...over,
   };
 }

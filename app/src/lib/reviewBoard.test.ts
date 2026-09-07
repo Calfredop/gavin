@@ -4,6 +4,7 @@ import {
   NO_FILES_GROUP_ID,
   NO_FILES_HINT,
   NO_FILES_LABEL,
+  SAME_BASELINE_LABEL,
   fileLabel,
   noFilesHint,
   groupCandidates,
@@ -13,6 +14,7 @@ import {
   reviewCards,
   reviewStatusSlugs,
   reviewSummary,
+  withBaselinePeers,
   type ReviewCandidate,
 } from "./reviewBoard";
 import type { CardView, MergedProjection } from "./planBoard";
@@ -42,8 +44,16 @@ function card(title: string, over: Partial<CardView> = {}): CardView {
   };
 }
 
-function candidate(title: string, files: string[] | null, over: Partial<CardView> = {}): ReviewCandidate {
-  return { card: card(title, over), files };
+function candidate(
+  title: string,
+  files: string[] | null,
+  over: Partial<CardView> = {},
+  measured: Partial<Pick<ReviewCandidate, "checkout" | "baseSha">> = {}
+): ReviewCandidate {
+  // One checkout and no baseline unless a test says otherwise: the
+  // default is the ordinary board, where cards were measured in the same
+  // place and each from its own launch point.
+  return { card: card(title, over), files, checkout: "/repo", baseSha: null, ...measured };
 }
 
 const COLUMNS: Column[] = [
@@ -208,6 +218,103 @@ describe("groupCandidates", () => {
 
   it("has nothing to group when there is nothing to review", () => {
     expect(groupCandidates([])).toEqual([]);
+  });
+
+  it("does not collide two checkouts on the same path", () => {
+    // The same repo-relative path in two worktrees is two files. Left
+    // unscoped, one hub file put every card on the board in one group.
+    const groups = groupCandidates([
+      candidate("Here", ["app/src/lib/git.ts"], {}, { checkout: "/repo" }),
+      candidate("There", ["app/src/lib/git.ts"], {}, { checkout: "/repo-wt" }),
+    ]);
+    expect(groups.map((g) => g.cards.map((c) => c.card.title))).toEqual([["Here"], ["There"]]);
+  });
+
+  it("gives two checkouts with the same files two groups, not one id", () => {
+    const groups = groupCandidates([
+      candidate("Here", ["a.ts"], {}, { checkout: "/repo" }),
+      candidate("There", ["a.ts"], {}, { checkout: "/repo-wt" }),
+    ]);
+    expect(new Set(groups.map((g) => g.id)).size).toBe(2);
+  });
+
+  it("still collides two cards measured in the same checkout", () => {
+    const groups = groupCandidates([
+      candidate("A", ["a.ts"], {}, { checkout: "/repo", baseSha: "1" }),
+      candidate("B", ["a.ts"], {}, { checkout: "/repo", baseSha: "2" }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].label).toBe("a.ts");
+  });
+
+  it("does not read a shared measurement as a file collision", () => {
+    // Two runs launched from the same commit in the same checkout are
+    // measured identically, so the files they share are not evidence
+    // that either of them touched anything.
+    const groups = groupCandidates([
+      candidate("A", ["a.ts", "b.ts"], {}, { checkout: "/repo", baseSha: "same" }),
+      candidate("B", ["a.ts", "b.ts"], {}, { checkout: "/repo", baseSha: "same" }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].label).toBe(SAME_BASELINE_LABEL);
+    expect(groups[0].hint).toContain("same commit");
+    expect(groups[0].files).toEqual(["a.ts", "b.ts"]);
+  });
+
+  it("names files when the group holds more than one baseline", () => {
+    const groups = groupCandidates([
+      candidate("A", ["a.ts"], {}, { checkout: "/repo", baseSha: "one" }),
+      candidate("B", ["a.ts"], {}, { checkout: "/repo", baseSha: "one" }),
+      candidate("C", ["a.ts"], {}, { checkout: "/repo", baseSha: "two" }),
+    ]);
+    expect(groups[0].label).toBe("a.ts");
+    expect(groups[0].hint).toBeNull();
+  });
+
+  it("does not call one card a shared measurement", () => {
+    const groups = groupCandidates([candidate("A", ["a.ts"], {}, { baseSha: "one" })]);
+    expect(groups[0].label).toBe("a.ts");
+    expect(groups[0].hint).toBeNull();
+  });
+
+  it("carries the fileless group's hint on the group", () => {
+    const groups = groupCandidates([candidate("Unmeasured", null)]);
+    expect(groups[0].hint).toBe(NO_FILES_HINT);
+  });
+});
+
+describe("withBaselinePeers", () => {
+  it("gives a run the other baselines recorded in its checkout", () => {
+    const peers = withBaselinePeers([
+      { cwd: "/repo", baseSha: "a" },
+      { cwd: "/repo", baseSha: "b" },
+    ]);
+    expect(peers.map((r) => r.peers)).toEqual([
+      ["a", "b"],
+      ["a", "b"],
+    ]);
+  });
+
+  it("keeps checkouts apart — a peer only bounds a run measured beside it", () => {
+    const peers = withBaselinePeers([
+      { cwd: "/repo", baseSha: "a" },
+      { cwd: "/repo-wt", baseSha: "b" },
+    ]);
+    expect(peers.map((r) => r.peers)).toEqual([["a"], ["b"]]);
+  });
+
+  it("orders and dedupes, so the same board asks the same question twice", () => {
+    const once = withBaselinePeers([
+      { cwd: "/repo", baseSha: "b" },
+      { cwd: "/repo", baseSha: "a" },
+      { cwd: "/repo", baseSha: "b" },
+    ]);
+    expect(once.every((r) => r.peers.join() === "a,b")).toBe(true);
+  });
+
+  it("keeps every other field of the request", () => {
+    const peers = withBaselinePeers([{ cwd: "/repo", baseSha: "a", path: "/plans/x.md" }]);
+    expect(peers[0].path).toBe("/plans/x.md");
   });
 });
 

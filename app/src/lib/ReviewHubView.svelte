@@ -29,6 +29,7 @@
     resolveSelection,
     reviewCards,
     reviewSummary,
+    withBaselinePeers,
     type ReviewCandidate,
   } from "./reviewBoard";
   import {
@@ -114,15 +115,22 @@
     return runBaseline(cardSessionFor(board, card.id), $daemonCompat);
   }
 
+  // Every measurable card, each carrying the other baselines recorded
+  // against its checkout -- what stops its window where the next run
+  // started. Without that, a card in a checkout several agents share
+  // reports the whole tree's work as its own, and the clustering below
+  // has nothing left to tell cards apart by.
   const requests = $derived<TouchRequest[]>(
-    listed
-      .map((card) => {
-        const baseline = baselineFor(card);
-        return baseline.kind === "ready"
-          ? { path: card.id, cwd: baseline.cwd, baseSha: baseline.baseSha }
-          : null;
-      })
-      .filter((r): r is TouchRequest => r !== null)
+    withBaselinePeers(
+      listed
+        .map((card) => {
+          const baseline = baselineFor(card);
+          return baseline.kind === "ready"
+            ? { path: card.id, cwd: baseline.cwd, baseSha: baseline.baseSha }
+            : null;
+        })
+        .filter((r): r is { path: string; cwd: string; baseSha: string } => r !== null)
+    )
   );
 
   // What the list is ASKING FOR, reduced to a string. The effect below
@@ -144,7 +152,7 @@
   // reviewState.ts): a card re-launched onto a new sha has to be asked
   // again, and nothing else has to be.
   const requestKey = $derived(
-    requests.map((r) => `${r.path}\u0000${r.cwd}\u0000${r.baseSha}`).join("\n")
+    requests.map((r) => `${r.path}\u0000${r.cwd}\u0000${r.baseSha}\u0000${r.peers.join(",")}`).join("\n")
   );
 
   // Fetch whenever that set changes. Cached entries are skipped inside
@@ -163,8 +171,19 @@
   const view = $derived($reviewStore[workspaceId]);
   const loadingPaths = $derived(new Set(view?.loadingPaths ?? []));
 
+  // The checkout is the run's repository ROOT when git resolved one, so
+  // two cards launched at different depths of one tree still collide;
+  // the launch cwd is the fallback for a run that never got that far.
   const candidates = $derived<ReviewCandidate[]>(
-    listed.map((card) => ({ card, files: view?.runs[card.id]?.files ?? null }))
+    listed.map((card) => {
+      const run = view?.runs[card.id];
+      return {
+        card,
+        files: run?.files ?? null,
+        checkout: run ? (run.changes?.root ?? run.cwd) : null,
+        baseSha: run?.baseSha ?? null,
+      };
+    })
   );
   const groups = $derived(groupCandidates(candidates));
   const summary = $derived(reviewSummary(groups));

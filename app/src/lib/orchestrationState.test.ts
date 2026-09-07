@@ -3350,6 +3350,7 @@ describe("refreshDecoyEdits", () => {
     added: 0,
     removed: 0,
     commits: 0,
+    untilSha: null,
   });
 
   beforeEach(async () => {

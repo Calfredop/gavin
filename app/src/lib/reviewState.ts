@@ -7,8 +7,8 @@
 // EVERY listed card's files at once, because the grouping is the view.
 // So the fetches are pooled rather than serialized, capped so a board
 // with forty finished cards does not fork forty gits at once, and cached
-// per (cwd, baseSha) so re-opening the tab, flipping the archive toggle
-// or typing in the search box costs nothing.
+// per (cwd, baseSha, peers) so re-opening the tab, flipping the archive
+// toggle or typing in the search box costs nothing.
 //
 // A card's entry is keyed by its own baseline, not by a timestamp:
 // re-launching a card gives it a new one, and that is exactly when the
@@ -31,10 +31,18 @@ import { changesProblem } from "./runChanges";
 export const FETCH_CONCURRENCY = 4;
 
 /// One card's baseline, as the tab has to ask for it.
+///
+/// `peers` is every baseline recorded against the same checkout, which
+/// is what bounds this run's window to its own slice -- see
+/// `withBaselinePeers` and `next_baseline` in `runchanges.rs`. It is
+/// part of the request and not a detail of the fetch because it is part
+/// of the ANSWER: adding a card to the list can move where an older
+/// card's window ends.
 export interface TouchRequest {
   path: string;
   cwd: string;
   baseSha: string;
+  peers: string[];
 }
 
 /// What this tab knows about one card's run.
@@ -47,6 +55,11 @@ export interface TouchRequest {
 export interface TouchedRun {
   cwd: string;
   baseSha: string;
+  /// The peer baseline the window stopped at, or null when it ran to the
+  /// worktree. Kept so a file's diff is taken under the same bound as
+  /// the row that opened it.
+  untilSha: string | null;
+  peers: string[];
   changes: RunChanges | null;
   files: string[] | null;
   problem: string | null;
@@ -102,16 +115,26 @@ export function viewFor(workspaceId: string): ReviewView {
 /// neither.
 function cached(view: ReviewView, request: TouchRequest): boolean {
   const run = view.runs[request.path];
-  return run !== undefined && run.cwd === request.cwd && run.baseSha === request.baseSha;
+  return (
+    run !== undefined &&
+    run.cwd === request.cwd &&
+    run.baseSha === request.baseSha &&
+    // The peers too: they decide where the window ends, so a card
+    // filed into the list beside this one makes the stored answer
+    // about a window that no longer exists.
+    run.peers.join("\n") === request.peers.join("\n")
+  );
 }
 
 async function fetchOne(workspaceId: string, request: TouchRequest, token: number): Promise<void> {
   try {
-    const changes = await backend.gitRunChanges(request.cwd, request.baseSha);
+    const changes = await backend.gitRunChanges(request.cwd, request.baseSha, request.peers);
     const problem = changesProblem(changes);
     store(workspaceId, request, token, {
       cwd: request.cwd,
       baseSha: request.baseSha,
+      untilSha: changes.untilSha,
+      peers: request.peers,
       changes,
       // A checkout that cannot be diffed against this baseline has NOT
       // been measured, so its files are null and not `[]`. Reporting it
@@ -125,6 +148,8 @@ async function fetchOne(workspaceId: string, request: TouchRequest, token: numbe
     store(workspaceId, request, token, {
       cwd: request.cwd,
       baseSha: request.baseSha,
+      untilSha: null,
+      peers: request.peers,
       changes: null,
       files: null,
       problem: null,
@@ -226,7 +251,8 @@ export async function selectReviewFile(
       run.baseSha,
       entry.path,
       entry.oldPath ?? null,
-      entry.status === "?"
+      entry.status === "?",
+      run.untilSha
     );
     update(workspaceId, (v) => (v.diffToken === token ? { ...v, diff, diffLoading: false } : v));
   } catch (e) {

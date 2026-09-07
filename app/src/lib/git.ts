@@ -61,6 +61,12 @@ export interface RunChanges {
   removed: number;
   /// Commits on HEAD the baseline does not have -- what a discard drops.
   commits: number;
+  /// The peer baseline this window stopped at, when a later run was
+  /// launched in the same checkout. Null means the window ran all the
+  /// way to the worktree, which is the unbounded question the per-run
+  /// Changes view asks. Pass it back to `gitDiffSince` so a file's diff
+  /// covers exactly what its row counted.
+  untilSha: string | null;
 }
 
 export interface DiscardReport {
