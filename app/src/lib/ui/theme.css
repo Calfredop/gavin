@@ -296,7 +296,9 @@ select {
   .lucide-chevron-down,
   .lucide-chevron-left,
   .lucide-chevron-up,
-  .lucide-chevrons-right
+  .lucide-chevrons-right,
+  .lucide-chevrons-down-up,
+  .lucide-chevrons-up-down
 ) {
   stroke-linejoin: miter;
   stroke-linecap: butt;

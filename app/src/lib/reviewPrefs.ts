@@ -1,6 +1,7 @@
 // What the Review tab remembers per workspace: which columns it treats
 // as "up for review", whether the archive is folded in, whether the card
-// list is collapsed to a rail, and which card was selected.
+// list is collapsed to a rail, which groups are open, and which card was
+// selected.
 //
 // localStorage, for the reason hubTabPrefs.ts and sidebarPrefs.ts spell
 // out at length: these are per-human VIEW preferences -- which parts of
@@ -15,6 +16,7 @@
 // would be right only by coincidence, and wrong silently.
 
 import { get, writable } from "svelte/store";
+import { MAX_REMEMBERED_GROUPS } from "./reviewBoard";
 
 /// Injected (defaulting to the browser's) for the same two reasons every
 /// other prefs module injects it: vitest's node environment has no
@@ -64,6 +66,18 @@ export interface ReviewPrefs {
   /// -- and it holds for the whole pass down the list. Re-answering it
   /// on every card would be answering it forty times.
   pane: ReviewPane;
+  /// The groups the human has opened, most recently opened first.
+  ///
+  /// The OPEN set and not the closed one, because groups are closed by
+  /// default and a group's id is its file set -- which retires whenever
+  /// anything in the fleet writes. An id nobody recognises then falls
+  /// back to closed, which is the default anyway; remembering the closed
+  /// set instead would make every churned id spring open.
+  ///
+  /// Capped at `MAX_REMEMBERED_GROUPS` rather than pruned against the
+  /// groups on screen: the search box narrows the list, and pruning
+  /// would quietly forget every group the query happens to hide.
+  expandedGroups: string[];
 }
 
 /// The first column's two answers. A union rather than a boolean so the
@@ -80,6 +94,7 @@ export const DEFAULT_REVIEW_PREFS: ReviewPrefs = {
   query: "",
   selected: null,
   pane: "session",
+  expandedGroups: [],
 };
 
 function readJson(storage: MaybeStorage, key: string): unknown {
@@ -133,6 +148,7 @@ export function normalizeReviewPrefs(value: unknown): ReviewPrefs {
     pane: REVIEW_PANES.includes(raw.pane as ReviewPane)
       ? (raw.pane as ReviewPane)
       : DEFAULT_REVIEW_PREFS.pane,
+    expandedGroups: (normalizeStrings(raw.expandedGroups) ?? []).slice(0, MAX_REMEMBERED_GROUPS),
   };
 }
 
@@ -175,7 +191,8 @@ function isDefault(prefs: ReviewPrefs): boolean {
     !prefs.listCollapsed &&
     prefs.query === "" &&
     prefs.selected === null &&
-    prefs.pane === DEFAULT_REVIEW_PREFS.pane
+    prefs.pane === DEFAULT_REVIEW_PREFS.pane &&
+    prefs.expandedGroups.length === 0
   );
 }
 

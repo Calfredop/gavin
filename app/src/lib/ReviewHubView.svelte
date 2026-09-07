@@ -29,6 +29,8 @@
     resolveSelection,
     reviewCards,
     reviewSummary,
+    setAllGroupsExpanded,
+    toggleExpandedGroup,
     withBaselinePeers,
     type ReviewCandidate,
   } from "./reviewBoard";
@@ -276,6 +278,7 @@
     loading={loadingPaths.size > 0}
     {loadingPaths}
     {archivedPaths}
+    expandedGroups={prefs.expandedGroups}
     onSelect={select}
     onQuery={(next) => setReviewPrefs(workspaceId, { query: next })}
     onToggleArchived={() => setReviewPrefs(workspaceId, { includeArchived: !prefs.includeArchived })}
@@ -284,6 +287,14 @@
         columns: toggleReviewColumn(prefs.columns, reviewColumnIds, id),
       })}
     onToggleCollapsed={() => setReviewPrefs(workspaceId, { listCollapsed: !prefs.listCollapsed })}
+    onToggleGroup={(id) =>
+      setReviewPrefs(workspaceId, {
+        expandedGroups: toggleExpandedGroup(prefs.expandedGroups, id),
+      })}
+    onSetAllGroups={(open) =>
+      setReviewPrefs(workspaceId, {
+        expandedGroups: setAllGroupsExpanded(groups, prefs.expandedGroups, open),
+      })}
     onRefresh={() => void loadTouchedFiles(workspaceId, requests, { force: true })}
   />
 

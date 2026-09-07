@@ -7,11 +7,20 @@
   // card, so a list that could vanish entirely would leave a view with
   // no way back to its own subject. Collapsed it keeps a button to
   // reopen and nothing else.
-  import { ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen, RefreshCw, Archive } from "@lucide/svelte";
+  import {
+    ChevronDown,
+    ChevronRight,
+    ChevronsDownUp,
+    ChevronsUpDown,
+    PanelLeftClose,
+    PanelLeftOpen,
+    RefreshCw,
+    Archive,
+  } from "@lucide/svelte";
   import SearchInput from "./ui/SearchInput.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { tooltip } from "./tooltip";
-  import { type ReviewGroup } from "./reviewBoard";
+  import { everyGroupExpanded, isGroupExpanded, type ReviewGroup } from "./reviewBoard";
   import type { Column } from "./kanban";
 
   interface Props {
@@ -34,11 +43,17 @@
     /// mergePlanCards answers it by which list a card came out of -- so
     /// the host that did the merge hands the answer down.
     archivedPaths: Set<string>;
+    /// The groups the human has opened. Everything else is closed --
+    /// see `reviewPrefs.expandedGroups` for why the OPEN set is the one
+    /// that gets remembered.
+    expandedGroups: string[];
     onSelect: (path: string) => void;
     onQuery: (next: string) => void;
     onToggleArchived: () => void;
     onToggleColumn: (id: string) => void;
     onToggleCollapsed: () => void;
+    onToggleGroup: (id: string) => void;
+    onSetAllGroups: (open: boolean) => void;
     onRefresh: () => void;
   }
   let {
@@ -52,25 +67,23 @@
     loading,
     loadingPaths,
     archivedPaths,
+    expandedGroups,
     onSelect,
     onQuery,
     onToggleArchived,
     onToggleColumn,
     onToggleCollapsed,
+    onToggleGroup,
+    onSetAllGroups,
     onRefresh,
   }: Props = $props();
 
-  // Groups start open. Collapsing is per group and lives here rather
-  // than in the prefs: it is a gesture about what you are reading right
-  // now, and a group's identity is its file set, which changes whenever
-  // anything in the fleet writes.
-  let folded = $state<Set<string>>(new Set());
-  const isFolded = (id: string): boolean => folded.has(id);
-  function toggleGroup(id: string): void {
-    const next = new Set(folded);
-    if (!next.delete(id)) next.add(id);
-    folded = next;
-  }
+  // Groups start CLOSED, and which ones the human opened is remembered
+  // per workspace rather than held here: the hub destroys this view on
+  // every tab switch (the trap conflictsBox.ts documents), so state kept
+  // in the component would reset every time they glanced at the board.
+  const isFolded = (id: string): boolean => !isGroupExpanded(expandedGroups, id);
+  const allOpen = $derived(everyGroupExpanded(groups, expandedGroups));
 
   let pickerOpen = $state(false);
   const total = $derived(groups.reduce((n, g) => n + g.cards.length, 0));
@@ -96,6 +109,14 @@
         placeholder="Search review…"
         label="Search cards up for review"
         class="grow"
+      />
+      <IconButton
+        icon={allOpen ? ChevronsDownUp : ChevronsUpDown}
+        label={allOpen ? "Collapse every group" : "Expand every group"}
+        tip={allOpen ? "Collapse every group" : "Expand every group"}
+        size={14}
+        disabled={groups.length === 0}
+        onclick={() => onSetAllGroups(!allOpen)}
       />
       <IconButton
         icon={Archive}
@@ -159,7 +180,7 @@
       {:else}
         {#each groups as group (group.id)}
           <div class="group">
-            <button type="button" class="group-head" onclick={() => toggleGroup(group.id)}>
+            <button type="button" class="group-head" onclick={() => onToggleGroup(group.id)}>
               {#if isFolded(group.id)}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
               <span class="group-label" title={group.files.join("\n")}>{group.label}</span>
               <span class="group-count">{group.cards.length}</span>

@@ -1,6 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { render } from "svelte/server";
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronsRight, ChevronUp } from "@lucide/svelte";
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsDownUp,
+  ChevronsRight,
+  ChevronsUpDown,
+  ChevronUp,
+} from "@lucide/svelte";
 
 // theme.css re-cuts the chevrons with miter joins and butt caps so the
 // “>” keeps a point at the 12px the disclosures run at, and it does that
@@ -20,6 +28,8 @@ const SHARPENED = {
   ChevronRight: "lucide-chevron-right",
   ChevronUp: "lucide-chevron-up",
   ChevronsRight: "lucide-chevrons-right",
+  ChevronsDownUp: "lucide-chevrons-down-up",
+  ChevronsUpDown: "lucide-chevrons-up-down",
 } as const;
 
 /// Every `Chevron*` identifier the app imports from the icon package,
@@ -47,9 +57,15 @@ function importedChevrons(): Map<string, string[]> {
 describe("chevron sharpening", () => {
   it("each sharpened chevron renders the class theme.css selects", () => {
     for (const [id, expected] of Object.entries(SHARPENED)) {
-      const Icon = { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ChevronsRight }[
-        id as keyof typeof SHARPENED
-      ];
+      const Icon = {
+        ChevronDown,
+        ChevronLeft,
+        ChevronRight,
+        ChevronUp,
+        ChevronsRight,
+        ChevronsDownUp,
+        ChevronsUpDown,
+      }[id as keyof typeof SHARPENED];
       const classes = [...render(Icon, { props: { size: 12 } }).body.matchAll(/class="([^"]*)"/g)].flatMap((match) =>
         match[1].split(/\s+/),
       );

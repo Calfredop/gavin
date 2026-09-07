@@ -48,8 +48,9 @@ export interface ReviewCandidate {
 
 /// One cluster in the left list.
 export interface ReviewGroup {
-  /// Stable across refetches so an expanded group stays expanded: the
-  /// cluster's files joined, or "" for the fileless group.
+  /// Stable across refetches so an expanded group stays expanded: a
+  /// digest of the checkout and the cluster's files, or "" for the
+  /// fileless group. Short because it is written down -- see `digest`.
   id: string;
   /// Every file the cluster's cards touched, most-shared first -- the
   /// files that actually bind these cards together lead the header.
@@ -92,6 +93,34 @@ export const SAME_BASELINE_LABEL = "Same starting point";
 
 /// How many file names a group header names before it starts counting.
 const HEADER_FILES = 2;
+
+/// How many group ids the tab remembers the open state of.
+///
+/// A group's identity is its file set, which moves whenever anything in
+/// the fleet writes, so ids retire constantly and a list that only ever
+/// grew would be a slow leak in localStorage. Bounded most-recent-first
+/// instead of pruned against the groups on screen: the search box
+/// narrows the list, and pruning would quietly forget every group the
+/// query happens to hide.
+export const MAX_REMEMBERED_GROUPS = 64;
+
+/// A 32-bit FNV-1a, twice with different offsets, as 16 hex characters.
+///
+/// Not for security -- for length. A group's id has to survive being
+/// written down (`reviewPrefs.expandedGroups`), and spelling it out
+/// would put every path in the cluster into localStorage: the group this
+/// module was fixed for holds 230 of them.
+function digest(text: string): string {
+  let a = 0x811c9dc5;
+  let b = 0x01000193;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193);
+    b = Math.imul(b ^ c, 0x85ebca6b);
+  }
+  const hex = (n: number): string => (n >>> 0).toString(16).padStart(8, "0");
+  return hex(a) + hex(b);
+}
 
 /// Every baseline recorded against the same checkout, attached to each
 /// request -- what bounds a run's window to its own slice
@@ -308,10 +337,10 @@ export function groupCandidates(candidates: ReviewCandidate[]): ReviewGroup[] {
     const files = rankFiles(cards);
     const shared = sharesOneBaseline(cards);
     groups.push({
-      // The checkout leads the id for the same reason it keys the
+      // The checkout is in the id for the same reason it keys the
       // clustering: two worktrees with the same files are two groups,
       // and one id for both would fold and unfold them together.
-      id: `${cards[0].checkout ?? ""}\n${files.join("\n")}`,
+      id: digest(`${cards[0].checkout ?? ""}\n${files.join("\n")}`),
       files,
       label: shared ? SAME_BASELINE_LABEL : groupLabel(files),
       hint: shared ? sameBaselineHint(cards) : null,
@@ -409,4 +438,52 @@ export function resolveSelection(groups: ReviewGroup[], selected: string | null)
   const paths = new Set(groups.flatMap((g) => g.cards.map((c) => c.card.id)));
   if (selected && paths.has(selected)) return selected;
   return groups[0]?.cards[0]?.card.id ?? null;
+}
+
+// ---- Which groups are open --------------------------------------------------
+
+/// Groups are CLOSED by default, and what is remembered is the open set.
+///
+/// That polarity is what makes remembering safe. A group's id is its
+/// file set, so it retires whenever anything in the fleet writes to the
+/// checkout; an id nobody recognises therefore falls back to closed,
+/// which is the state the human asked for anyway. Remembering the closed
+/// set instead would make every churned id spring open, which is the
+/// opposite of a default.
+export function isGroupExpanded(expanded: string[], id: string): boolean {
+  return expanded.includes(id);
+}
+
+/// One header clicked. Newest first and capped, so the list stays
+/// bounded without ever being pruned against what is on screen.
+export function toggleExpandedGroup(expanded: string[], id: string): string[] {
+  if (expanded.includes(id)) return expanded.filter((e) => e !== id);
+  return [id, ...expanded].slice(0, MAX_REMEMBERED_GROUPS);
+}
+
+/// Whether the one control has anything left to open. False for an empty
+/// list too: a button that offers to close nothing is a button that
+/// looks broken when it is pressed.
+export function everyGroupExpanded(groups: ReviewGroup[], expanded: string[]): boolean {
+  return groups.length > 0 && groups.every((g) => expanded.includes(g.id));
+}
+
+/// What the control writes.
+///
+/// Opening keeps the ids already remembered that are not on screen --
+/// the query may be hiding them -- so "expand all" is not also a quiet
+/// "forget everything else". Closing does the same in reverse: it closes
+/// what is listed, not what it cannot see.
+export function setAllGroupsExpanded(
+  groups: ReviewGroup[],
+  expanded: string[],
+  open: boolean
+): string[] {
+  const listed = groups.map((g) => g.id);
+  if (!open) {
+    const hidden = new Set(listed);
+    return expanded.filter((e) => !hidden.has(e));
+  }
+  const already = new Set(expanded);
+  return [...listed.filter((id) => !already.has(id)), ...expanded].slice(0, MAX_REMEMBERED_GROUPS);
 }

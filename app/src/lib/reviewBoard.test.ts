@@ -4,8 +4,13 @@ import {
   NO_FILES_GROUP_ID,
   NO_FILES_HINT,
   NO_FILES_LABEL,
+  MAX_REMEMBERED_GROUPS,
   SAME_BASELINE_LABEL,
+  everyGroupExpanded,
   fileLabel,
+  isGroupExpanded,
+  setAllGroupsExpanded,
+  toggleExpandedGroup,
   noFilesHint,
   groupCandidates,
   groupLabel,
@@ -16,6 +21,7 @@ import {
   reviewSummary,
   withBaselinePeers,
   type ReviewCandidate,
+  type ReviewGroup,
 } from "./reviewBoard";
 import type { CardView, MergedProjection } from "./planBoard";
 import type { Column } from "./kanban";
@@ -396,5 +402,71 @@ describe("resolveSelection", () => {
 
   it("selects nothing when the list is empty", () => {
     expect(resolveSelection([], "/ws/.gavin-root/plans/a.md")).toBeNull();
+  });
+});
+
+describe("group expansion", () => {
+  const group = (id: string): ReviewGroup => ({
+    id,
+    files: [],
+    label: id,
+    hint: null,
+    cards: [],
+  });
+
+  it("closes a group nobody has opened", () => {
+    // The default the whole feature rests on: an id that is not
+    // remembered is closed, so a group whose file set churned comes
+    // back closed rather than springing open.
+    expect(isGroupExpanded([], "g1")).toBe(false);
+    expect(isGroupExpanded(["g2"], "g1")).toBe(false);
+    expect(isGroupExpanded(["g1"], "g1")).toBe(true);
+  });
+
+  it("opens and closes one group", () => {
+    expect(toggleExpandedGroup([], "g1")).toEqual(["g1"]);
+    expect(toggleExpandedGroup(["g1"], "g1")).toEqual([]);
+  });
+
+  it("keeps the most recently opened first", () => {
+    expect(toggleExpandedGroup(["g1"], "g2")).toEqual(["g2", "g1"]);
+  });
+
+  it("stops remembering rather than growing without bound", () => {
+    const many = Array.from({ length: MAX_REMEMBERED_GROUPS }, (_, i) => `g${i}`);
+    const next = toggleExpandedGroup(many, "new");
+    expect(next).toHaveLength(MAX_REMEMBERED_GROUPS);
+    expect(next[0]).toBe("new");
+    expect(next).not.toContain(`g${MAX_REMEMBERED_GROUPS - 1}`);
+  });
+
+  it("says whether the one control has anything left to open", () => {
+    const groups = [group("a"), group("b")];
+    expect(everyGroupExpanded(groups, ["a"])).toBe(false);
+    expect(everyGroupExpanded(groups, ["a", "b"])).toBe(true);
+  });
+
+  it("does not offer to close an empty list", () => {
+    expect(everyGroupExpanded([], [])).toBe(false);
+  });
+
+  it("expands every listed group", () => {
+    expect(setAllGroupsExpanded([group("a"), group("b")], [], true)).toEqual(["a", "b"]);
+  });
+
+  it("collapses every listed group", () => {
+    expect(setAllGroupsExpanded([group("a"), group("b")], ["a", "b"], false)).toEqual([]);
+  });
+
+  it("leaves groups the query is hiding alone", () => {
+    // Expand-all is not also a quiet "forget everything else": the
+    // search box narrows the list, and a group off screen keeps the
+    // state the human left it in.
+    expect(setAllGroupsExpanded([group("a")], ["hidden"], true)).toEqual(["a", "hidden"]);
+    expect(setAllGroupsExpanded([group("a")], ["a", "hidden"], false)).toEqual(["hidden"]);
+  });
+
+  it("does not remember a group twice", () => {
+    expect(setAllGroupsExpanded([group("a")], ["a"], true)).toEqual(["a"]);
   });
 });
