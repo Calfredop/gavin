@@ -1,5 +1,5 @@
 ---
-order: 1024
+order: 2048
 kind: task
 title: [ui] sidebar collapse state
 status: Done

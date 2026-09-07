@@ -1,5 +1,5 @@
 ---
-order: 5120
+order: 7168
 kind: task
 title: UI refinements
 status: Done

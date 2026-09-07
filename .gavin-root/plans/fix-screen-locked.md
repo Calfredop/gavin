@@ -1,5 +1,5 @@
 ---
-order: 4096
+order: 3072
 kind: task
 title: [fix] screen locked
 status: In Progress
