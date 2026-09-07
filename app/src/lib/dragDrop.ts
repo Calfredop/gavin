@@ -86,3 +86,36 @@ export function computeReorderPosition(rect: DOMRect, clientY: number): ReorderP
   const y = (clientY - rect.top) / rect.height;
   return y < 0.5 ? "before" : "after";
 }
+
+// A tab button's horizontal extent in the bar, in the order the bar
+// draws them. Only x matters -- a tab bar is one row.
+export type TabBox = { left: number; width: number };
+
+// Where a tab dragged across a pane's tab BAR would land: an index into
+// that pane's tabs (0..length, so "past the last tab" is expressible),
+// plus the tab the insertion caret should be drawn against and which
+// side of it.
+//
+// The whole bar answers, not just the tabs in it. A pane showing one tab
+// spends most of its header on the run of empty bar after it, and that
+// stretch is what a human aims at to say "put it in that pane" -- if only
+// the tab buttons themselves take the drop, moving a tab between two
+// panes means hitting a target a few characters wide, and every miss
+// splits the pane instead (the body underneath is the 5-zone graft
+// surface). So a pointer past the last tab reads as "append", and one
+// left of the first as "prepend", rather than as no answer at all.
+//
+// Null only for a bar with no tabs, which no rendered pane has -- an
+// empty leaf is pruned from the tree.
+export function computeTabInsertion(
+  boxes: readonly TabBox[],
+  clientX: number
+): { index: number; anchorIndex: number; position: ReorderPosition } | null {
+  if (boxes.length === 0) return null;
+  for (let i = 0; i < boxes.length; i++) {
+    const { left, width } = boxes[i];
+    if (clientX < left + width / 2) return { index: i, anchorIndex: i, position: "before" };
+    if (clientX < left + width) return { index: i + 1, anchorIndex: i, position: "after" };
+  }
+  return { index: boxes.length, anchorIndex: boxes.length - 1, position: "after" };
+}

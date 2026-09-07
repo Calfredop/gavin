@@ -75,7 +75,9 @@
     getDragKind,
     getDragPayload,
     computeDropZone,
+    computeTabInsertion,
     type DropZone,
+    type ReorderPosition,
   } from "./dragDrop";
   import { movePaneOrTab, reorderTabWithinPane } from "./layoutState";
   import { getActiveWorkspace, getActivePage, getActiveTree } from "./workspace";
@@ -404,51 +406,95 @@
     setDragPayload(event, { kind: "tab", workspaceId: location.workspaceId, pageId: location.pageId, sessionId });
   }
 
-  function handleTabDragOver(event: DragEvent, sessionId: string): void {
+  // The whole BAR takes the drop, not the individual tabs: a pane
+  // showing one or two tabs spends most of its header on the empty run
+  // after them, and that stretch is exactly what a human aims at to say
+  // "move it into that pane". While only the tab buttons answered, every
+  // miss fell through to the body below and SPLIT the pane instead --
+  // which is the gesture this one is supposed to be an alternative to.
+  //
+  // Boxes are read off what is drawn rather than off leaf.tabs, so a
+  // strip scrolled sideways still measures where the pointer sees it.
+  function barInsertion(
+    event: DragEvent
+  ): { index: number; anchorIndex: number; position: ReorderPosition } | null {
+    const bar = event.currentTarget as HTMLElement;
+    const boxes = [...bar.querySelectorAll<HTMLElement>(".tab-strip > .tab")].map((el) => {
+      const rect = el.getBoundingClientRect();
+      return { left: rect.left, width: rect.width };
+    });
+    return computeTabInsertion(boxes, event.clientX);
+  }
+
+  function handleBarDragOver(event: DragEvent): void {
     if (getDragKind(event) !== "tab") return;
     event.preventDefault();
-    event.stopPropagation();
     // Without an explicit dropEffect, the browser shows the "copy" (+)
     // cursor even though setDragPayload set effectAllowed to "move" --
     // dropEffect has to be set on the target's dragover, not just
     // effectAllowed on the source's dragstart.
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    const x = (event.clientX - rect.left) / rect.width;
-    tabReorderState = { sessionId, position: x < 0.5 ? "before" : "after" };
+    const insertion = barInsertion(event);
+    tabReorderState = insertion
+      ? { sessionId: leaf.tabs[insertion.anchorIndex], position: insertion.position }
+      : null;
+  }
+
+  // dragleave BUBBLES, so crossing from one tab to the next inside this
+  // bar reports a leave for the bar as well. Only a pointer that has left
+  // the bar's whole subtree clears the caret -- without the relatedTarget
+  // check the indicator blinks out at every tab boundary the drag crosses.
+  function handleBarDragLeave(event: DragEvent): void {
+    const bar = event.currentTarget as HTMLElement;
+    const to = event.relatedTarget as Node | null;
+    if (to && bar.contains(to)) return;
+    tabReorderState = null;
   }
 
   function clearTabReorder(): void {
     tabReorderState = null;
   }
 
-  async function handleTabDrop(event: DragEvent, sessionId: string, index: number): Promise<void> {
+  async function handleBarDrop(event: DragEvent): Promise<void> {
     event.preventDefault();
-    event.stopPropagation();
     const payload = getDragPayload(event);
+    const insertion = barInsertion(event);
     tabReorderState = null;
     if (!payload || payload.kind !== "tab") return;
     const location = activeLocation();
-    if (!location) return;
+    if (!location || !insertion) return;
     if (
       leaf.tabs.includes(payload.sessionId) &&
       payload.workspaceId === location.workspaceId &&
       payload.pageId === location.pageId
     ) {
-      // Reordering within this same pane's own tab bar.
-      const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-      const x = (event.clientX - rect.left) / rect.width;
-      const targetIndex = x < 0.5 ? index : index + 1;
-      await reorderTabWithinPane(payload.sessionId, targetIndex);
+      // Reordering within this same pane's own tab bar. The caret's index
+      // counts the moving tab; moveTabWithinLeaf's does not, because it
+      // splices that tab out first. So an insertion point to the RIGHT of
+      // where the tab started is one place further along than the caret
+      // said, and dropping a tab past a neighbour used to overshoot it.
+      const from = leaf.tabs.indexOf(payload.sessionId);
+      await reorderTabWithinPane(
+        payload.sessionId,
+        insertion.index > from ? insertion.index - 1 : insertion.index
+      );
     } else {
-      // A tab from elsewhere, dropped onto a specific tab in this pane --
-      // merge it in as a new tab here, same as dropping on .content's
-      // center zone. targetSessionId: active pins the merge to THIS
+      // A tab from another pane on this page (or, via the sidebar's own
+      // routes, another page): it JOINS this pane at the caret rather
+      // than splitting anything. targetSessionId pins the merge to THIS
       // pane specifically, not wherever the page's remembered focus
-      // happens to point.
+      // happens to point; targetIndex is what makes the caret honest,
+      // since a center merge otherwise appends.
       await movePaneOrTab(
         { kind: "tab", workspaceId: payload.workspaceId, pageId: payload.pageId, sessionId: payload.sessionId },
-        { kind: "page", workspaceId: location.workspaceId, pageId: location.pageId, mode: "center", targetSessionId: active }
+        {
+          kind: "page",
+          workspaceId: location.workspaceId,
+          pageId: location.pageId,
+          mode: "center",
+          targetSessionId: active,
+          targetIndex: insertion.index,
+        }
       );
     }
   }
@@ -502,7 +548,13 @@
 </script>
 
 <div class="pane-wrapper">
-  <div class="tab-bar">
+  <div
+    class="tab-bar"
+    class:drop-target={tabReorderState !== null}
+    ondragover={handleBarDragOver}
+    ondragleave={handleBarDragLeave}
+    ondrop={handleBarDrop}
+  >
     <!-- Before the tabs, and outside the scroller: the room the
          window's corner needs when it hangs over a collapsed rail, so
          the first tab of the page is never drawn under the traffic
@@ -524,10 +576,7 @@
           class:drop-after={tabReorderState?.sessionId === sessionId && tabReorderState.position === "after"}
           draggable={editingSessionId !== sessionId}
           ondragstart={(e) => handleTabDragStart(e, sessionId)}
-          ondragover={(e) => handleTabDragOver(e, sessionId)}
-          ondragleave={clearTabReorder}
           ondragend={clearTabReorder}
-          ondrop={(e) => handleTabDrop(e, sessionId, tabIndex)}
           onclick={() => switchToTab(sessionId)}
           class:pinned={isPinnedTab(sessionId)}
           oncontextmenu={(e) => openTabMenu(e, sessionId)}
@@ -862,6 +911,17 @@
   .drag-spacer {
     flex: 1 1 auto;
   }
+  /* The bar answers as one surface while a tab is over it, because the
+     caret alone marks a point the pointer may be nowhere near -- out on
+     the spacer it would be the only feedback, and it sits back at the
+     last tab. The blue is .content's drop overlay at a fraction of its
+     weight: same language, a tint rather than a wash, since this row
+     stays readable underneath. */
+  .tab-bar.drop-target {
+    background:
+      linear-gradient(rgba(74, 158, 255, 0.12), rgba(74, 158, 255, 0.12)),
+      var(--surface-base);
+  }
   .tab-actions {
     display: flex;
     align-items: center;
@@ -942,6 +1002,9 @@
   .tab.focused {
     border-bottom-color: var(--ws-accent, #d9a648);
   }
+  /* Where the bar lands the tab, drawn against the nearest tab to the
+     pointer -- including a drop out on the empty run past the last one,
+     which reads as "after" it. */
   .tab.drop-before {
     box-shadow: inset 2px 0 0 0 var(--ws-accent, #4a9eff);
   }

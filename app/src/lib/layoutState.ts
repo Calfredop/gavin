@@ -3441,6 +3441,12 @@ export type DropTarget =
       // this, and movePaneOrTab falls back to the page's own remembered
       // focus, exactly as it did before this field existed.
       targetSessionId?: string;
+      // Where in that pane's tab bar a mode: "center" merge lands. Set
+      // only by a drop ON the bar, which draws an insertion caret under
+      // the pointer and so has to be obeyed; every other center drop --
+      // the sidebar's, or one on the pane's body -- names no position and
+      // omits this, keeping the append it has always done.
+      targetIndex?: number;
     }
   | { kind: "workspace"; workspaceId: string };
 
@@ -3518,7 +3524,8 @@ export async function movePaneOrTab(
         ? layout.mergeIntoActivePane(
             targetPage.layout,
             hasValidTarget ? (target.targetSessionId as string) : targetPage.focusedSessionId,
-            detached
+            detached,
+            target.targetIndex
           )
         : hasValidTarget
           ? layout.graftLeafAt(targetPage.layout, target.targetSessionId as string, detached, target.mode)

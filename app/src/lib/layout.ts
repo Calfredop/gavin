@@ -255,14 +255,28 @@ export function graftLeafAt(
   );
 }
 
-// Appends every tab from `incoming` onto the leaf identified by
+// Inserts every tab from `incoming` into the leaf identified by
 // targetFocusedSessionId (falling back to the tree's first leaf if that
 // id isn't present, or is null), mirroring addTab's "new tab becomes
-// active" behavior for the last of incoming's tabs.
+// active" behavior for the first of incoming's tabs.
+//
+// `insertIndex` is a position in that leaf's tabs array; omitted means
+// the end, which is where a drop that named no position -- the sidebar's
+// (the target page isn't even rendered), or one on the pane's body --
+// has always put it. A drop ON the tab bar does name one, and has to be
+// obeyed: the bar draws an insertion caret under the pointer while the
+// drag is live, so appending regardless would make that caret a lie.
+//
+// Pinning is not clamped here on purpose: normalizeLeaf already keeps
+// the pinned block a prefix, so an unpinned tab inserted among pinned
+// ones slides to just after them and a pinned one to the end of the
+// block, which is the same rule clampReorderIndex spells out for a
+// same-pane reorder.
 export function mergeIntoActivePane(
   targetTree: LayoutNode,
   targetFocusedSessionId: string | null,
-  incoming: Extract<LayoutNode, { type: "leaf" }>
+  incoming: Extract<LayoutNode, { type: "leaf" }>,
+  insertIndex?: number
 ): LayoutNode {
   const anchorId =
     targetFocusedSessionId && findLeafPath(targetTree, targetFocusedSessionId)
@@ -274,10 +288,12 @@ export function mergeIntoActivePane(
   return (
     replaceAtPath(targetTree, path, (node) => {
       if (node.type !== "leaf") return node;
+      const at =
+        insertIndex === undefined ? node.tabs.length : Math.max(0, Math.min(insertIndex, node.tabs.length));
       return normalizeLeaf({
         type: "leaf",
-        tabs: [...node.tabs, ...incoming.tabs],
-        activeTabIndex: node.tabs.length,
+        tabs: [...node.tabs.slice(0, at), ...incoming.tabs, ...node.tabs.slice(at)],
+        activeTabIndex: at,
         pinned: [...(node.pinned ?? []), ...(incoming.pinned ?? [])],
       });
     }) ?? targetTree

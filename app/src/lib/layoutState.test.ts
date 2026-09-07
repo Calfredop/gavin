@@ -2600,6 +2600,75 @@ describe("movePaneOrTab", () => {
     });
   });
 
+  it("lands a tab dropped on another pane's tab BAR at the caret's index, not at the end", async () => {
+    // The gesture the bar exists for: "a2" is dragged out of the left
+    // pane and dropped between "b1" and "b2" in the right one. A center
+    // merge appends, so without targetIndex it would arrive after "b2"
+    // -- somewhere the insertion caret never pointed.
+    setState(
+      [
+        ws("ws-1", [
+          page("page-1", {
+            type: "split",
+            direction: "row",
+            sizes: [0.5, 0.5],
+            children: [leaf(["a1", "a2"]), leaf(["b1", "b2"])],
+          }),
+        ]),
+      ],
+      "ws-1",
+      "a1"
+    );
+
+    await movePaneOrTab(
+      { kind: "tab", workspaceId: "ws-1", pageId: "page-1", sessionId: "a2" },
+      {
+        kind: "page",
+        workspaceId: "ws-1",
+        pageId: "page-1",
+        mode: "center",
+        targetSessionId: "b1",
+        targetIndex: 1,
+      }
+    );
+
+    expect(get(layoutState).workspaces[0].pages[0].layout).toEqual({
+      type: "split",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [leaf(["a1"]), leaf(["b1", "a2", "b2"], 1)],
+    });
+  });
+
+  it("still appends when no index is named, which is every drop that has no caret", async () => {
+    setState(
+      [
+        ws("ws-1", [
+          page("page-1", {
+            type: "split",
+            direction: "row",
+            sizes: [0.5, 0.5],
+            children: [leaf(["a1", "a2"]), leaf(["b1", "b2"])],
+          }),
+        ]),
+      ],
+      "ws-1",
+      "a1"
+    );
+
+    await movePaneOrTab(
+      { kind: "tab", workspaceId: "ws-1", pageId: "page-1", sessionId: "a2" },
+      { kind: "page", workspaceId: "ws-1", pageId: "page-1", mode: "center", targetSessionId: "b1" }
+    );
+
+    expect(get(layoutState).workspaces[0].pages[0].layout).toEqual({
+      type: "split",
+      direction: "row",
+      sizes: [0.5, 0.5],
+      children: [leaf(["a1"]), leaf(["b1", "b2", "a2"], 2)],
+    });
+  });
+
   it("grafts at the specific pane via targetSessionId on a 3+-pane page, not the whole page", async () => {
     // A 2x2 grid: dragging pane "c" onto pane "d"'s right edge should
     // split just d's location, not wrap the entire grid.

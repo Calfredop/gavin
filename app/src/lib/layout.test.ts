@@ -572,6 +572,58 @@ describe("mergeIntoActivePane", () => {
       activeTabIndex: 1,
     });
   });
+
+  it("honours an insertion index, so a drop on the tab bar lands where its caret said", () => {
+    const target: LayoutNode = { type: "leaf", tabs: ["a", "b", "c"], activeTabIndex: 0 };
+    const incoming: LayoutNode = { type: "leaf", tabs: ["new"], activeTabIndex: 0 };
+    expect(mergeIntoActivePane(target, "a", incoming, 1)).toEqual({
+      type: "leaf",
+      tabs: ["a", "new", "b", "c"],
+      activeTabIndex: 1,
+    });
+  });
+
+  it("inserts at the head when the index is 0", () => {
+    const target: LayoutNode = { type: "leaf", tabs: ["a", "b"], activeTabIndex: 1 };
+    const incoming: LayoutNode = { type: "leaf", tabs: ["new"], activeTabIndex: 0 };
+    expect(mergeIntoActivePane(target, "a", incoming, 0)).toEqual({
+      type: "leaf",
+      tabs: ["new", "a", "b"],
+      activeTabIndex: 0,
+    });
+  });
+
+  it("clamps an index past the end back to an append", () => {
+    const target: LayoutNode = { type: "leaf", tabs: ["a", "b"], activeTabIndex: 0 };
+    const incoming: LayoutNode = { type: "leaf", tabs: ["new"], activeTabIndex: 0 };
+    expect(mergeIntoActivePane(target, "a", incoming, 99)).toEqual({
+      type: "leaf",
+      tabs: ["a", "b", "new"],
+      activeTabIndex: 2,
+    });
+  });
+
+  it("slides an unpinned tab dropped inside the pinned block to just after it", () => {
+    const target: LayoutNode = { type: "leaf", tabs: ["p", "a"], activeTabIndex: 0, pinned: ["p"] };
+    const incoming: LayoutNode = { type: "leaf", tabs: ["new"], activeTabIndex: 0 };
+    expect(mergeIntoActivePane(target, "p", incoming, 0)).toEqual({
+      type: "leaf",
+      tabs: ["p", "new", "a"],
+      activeTabIndex: 1,
+      pinned: ["p"],
+    });
+  });
+
+  it("keeps an incoming PINNED tab in the pinned block wherever it was dropped", () => {
+    const target: LayoutNode = { type: "leaf", tabs: ["p", "a"], activeTabIndex: 0, pinned: ["p"] };
+    const incoming: LayoutNode = { type: "leaf", tabs: ["new"], activeTabIndex: 0, pinned: ["new"] };
+    expect(mergeIntoActivePane(target, "p", incoming, 2)).toEqual({
+      type: "leaf",
+      tabs: ["p", "new", "a"],
+      activeTabIndex: 1,
+      pinned: ["p", "new"],
+    });
+  });
 });
 
 describe("moveTabWithinLeaf", () => {

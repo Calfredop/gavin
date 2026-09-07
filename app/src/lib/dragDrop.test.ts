@@ -5,6 +5,7 @@ import {
   getDragPayload,
   computeDropZone,
   computeReorderPosition,
+  computeTabInsertion,
   type DragPayload,
 } from "./dragDrop";
 
@@ -91,5 +92,38 @@ describe("computeReorderPosition", () => {
 
   it("returns after for the bottom half", () => {
     expect(computeReorderPosition(rect, 15)).toBe("after");
+  });
+});
+
+describe("computeTabInsertion", () => {
+  // Three 40px tabs with 10px gaps: 0..40, 50..90, 100..140.
+  const boxes = [
+    { left: 0, width: 40 },
+    { left: 50, width: 40 },
+    { left: 100, width: 40 },
+  ];
+
+  it("inserts before the tab whose left half the pointer is over", () => {
+    expect(computeTabInsertion(boxes, 55)).toEqual({ index: 1, anchorIndex: 1, position: "before" });
+  });
+
+  it("inserts after the tab whose right half the pointer is over", () => {
+    expect(computeTabInsertion(boxes, 85)).toEqual({ index: 2, anchorIndex: 1, position: "after" });
+  });
+
+  it("reads the gap between two tabs as before the one on its right", () => {
+    expect(computeTabInsertion(boxes, 95)).toEqual({ index: 2, anchorIndex: 2, position: "before" });
+  });
+
+  it("reads the empty run past the last tab as append -- the whole point of the bar taking the drop", () => {
+    expect(computeTabInsertion(boxes, 600)).toEqual({ index: 3, anchorIndex: 2, position: "after" });
+  });
+
+  it("reads the room left of the first tab as prepend", () => {
+    expect(computeTabInsertion(boxes, -20)).toEqual({ index: 0, anchorIndex: 0, position: "before" });
+  });
+
+  it("has no answer for a bar with no tabs", () => {
+    expect(computeTabInsertion([], 10)).toBeNull();
   });
 });
