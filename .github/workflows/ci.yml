@@ -1,0 +1,84 @@
+# The repo's first CI, and the thing that keeps Linux green once the port
+# lands. It runs on ubuntu-latest deliberately: every developer here is on
+# a mac, so macOS is the platform that gets exercised by hand a hundred
+# times a day and Linux is the one that would silently rot between
+# releases.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run's answer stale.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (Rust + app)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `app/src-tauri` is a workspace member, so `cargo test --workspace`
+      # links against the whole WebKitGTK stack even though nothing here
+      # opens a window. This is the Tauri v2 Ubuntu list.
+      - name: Install the GTK/WebKit stack tauri links against
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      # daemon.rs's connect_or_spawn test binds a unix socket with
+      # `nc -lU`, which is netcat-openbsd's spelling. Not part of the
+      # Tauri stack, and not something to discover as a red build.
+      - name: Install netcat (a test spawns `nc -lU`)
+        run: sudo apt-get install --no-install-recommends -y netcat-openbsd
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: npm ci
+        working-directory: app
+        run: npm ci
+
+      # The daemon's fs-watcher module first and by itself. It is flaky
+      # under full-suite cargo parallelism -- watcher timing, not the code
+      # (CLAUDE.md says to re-run it alone before calling a failure a
+      # regression). Running it alone up front and excluding it from the
+      # sweep removes the CAUSE rather than retrying after the symptom, so
+      # a red build below means something is actually broken.
+      - name: cargo test — the fs-watcher module, alone
+        run: cargo test -p gavin-daemon gavin:: -- --test-threads=1
+
+      - name: cargo test --workspace
+        run: cargo test --workspace -- --skip gavin::
+
+      - name: npm test
+        working-directory: app
+        run: npm test
+
+      - name: npm run check
+        working-directory: app
+        run: npm run check
+
+      - name: npm run build
+        working-directory: app
+        run: npm run build
