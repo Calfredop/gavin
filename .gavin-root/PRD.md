@@ -80,9 +80,11 @@ independently of the GUI. Design history is in
 4. **Orchestration hardening** — the open cards: a rail icon on a card that sits in
    a rail, an orchestration recap on Home, agent-driven rail organisation, archiving
    closing the card's sessions, and the tab-rename skill regression.
-5. **The manual GUI smoke passes.** For most shipped features this is the only
-   unverified thing left (nesting, init wizard, archive, git tab, orchestration,
-   multi-agent MCP). They are the owner's to run.
+5. **Confirming the rendered surface.** The suites cannot reach it, and gavin no
+   longer tracks it: the smoke checklist and its dev-only workspace are retired,
+   so there is no list to tick and no smoke items to file on a card. Looking at
+   what a change does in the running app is the owner's, done when a change
+   warrants it rather than accumulated as a backlog.
 
 ## Out of scope
 
@@ -92,6 +94,6 @@ independently of the GUI. Design history is in
   in-page HTML5 drag-and-drop works at all.
 - **Viewing binary or media files in-app.** Anything but text / markdown / code
   opens in the OS default application.
-- **Automating the GUI smoke passes.** The surface is WKWebView with no harness, and
+- **Automating the visual pass.** The surface is WKWebView with no harness, and
   the dev server has no Tauri `invoke`, so the board is empty in a browser. An
   agent's contribution is a static pre-flight, not a simulated pass.
