@@ -136,7 +136,18 @@
     font-size: 0.75em;
     color: var(--accent);
   }
+  /* Positioned, and load-bearing: TerminalPane's root is `position:
+     absolute; inset: 0` -- Pane.svelte stacks a pane's tabs on one
+     rectangle and hides the inactive ones with `visibility`, so they
+     all have to occupy it at once. A static wrapper does not make the
+     terminal sit wrong, it takes it out of this column altogether and
+     hands it the nearest positioned ancestor, which is `.view` in
+     +page.svelte: the whole tab, painted over the card list, the
+     touched files and the diff. MainAgentPanel's `.terminal` carries
+     this for the same reason; terminalPaneMount.test.ts holds every
+     call site to it. */
   .terminal {
+    position: relative;
     flex: 1;
     min-height: 0;
     padding: 4px;
