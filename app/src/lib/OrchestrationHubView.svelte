@@ -870,6 +870,29 @@
           onSaveStageAsTemplate={(stageId) => (savingTemplateFor = stageId)}
         />
       {/each}
+      <!-- The strip's own "+ Add rail", the board's `.add-column` by
+           another name. Rails are capped now, so the space past the last
+           one is exactly where a new column would land, and the control
+           that makes one belongs there and not only in the header. The
+           header button stays: it is the one still reachable when the
+           strip is scrolled away from its end, and the one a rail-less
+           workspace already knows.
+
+           Off while the search box is filtering, for the same reason
+           drag is: the strip is a lens then, and a rail named "New rail"
+           would almost never match the query -- the button would appear
+           to do nothing. -->
+      {#if !lens.filtering}
+        <button
+          type="button"
+          class="add-rail-col"
+          disabled={Boolean(orchestrationBlocked)}
+          title={orchestrationBlocked ?? "Add a rail — a column of stages over your cards"}
+          onclick={() => void newRail()}
+        >
+          <Plus size={14} /> Add rail
+        </button>
+      {/if}
       </div>
       <OrchestrationDrawer
         groups={unplacedGroups}
@@ -1232,6 +1255,43 @@
     display: flex;
     overflow-x: auto;
     overflow-y: hidden;
+  }
+  /* Inside the strip the empty line shares its row with the add-rail
+     stub, so it takes a column's worth of width and wraps, instead of
+     laying one long sentence across the strip and pushing the stub off
+     the right edge. */
+  .grid .empty {
+    flex: 0 1 auto;
+    max-width: 320px;
+  }
+  /* Sized and drawn as the kanban's `.add-column`: a dashed stub at the
+     top of the strip rather than a full-height column, so it reads as an
+     invitation and not as an empty rail. One rail-width wide (280px, the
+     rail's own floor) so it lines the strip up. */
+  .add-rail-col {
+    flex: 0 0 auto;
+    align-self: flex-start;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 280px;
+    box-sizing: border-box;
+    margin: 8px;
+    padding: 10px;
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    color: var(--text-muted);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .add-rail-col:hover:not(:disabled) {
+    border-color: var(--border-strong);
+    color: var(--text);
+  }
+  .add-rail-col:disabled {
+    color: var(--text-subtle);
+    cursor: default;
   }
   .picker-body {
     min-width: 320px;

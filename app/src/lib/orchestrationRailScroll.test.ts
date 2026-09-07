@@ -131,6 +131,25 @@ describe("a rail", () => {
     expect(rail).toContain("box-sizing: border-box");
   });
 
+  it("is capped so a wide window does not stretch two rails across it", () => {
+    // `flex-grow: 1` has no ceiling of its own: without a max the strip
+    // divided the whole window between however many rails there were.
+    // The floor stays -- the cap only stops the growth.
+    const rail = ruleFor(RAIL, ".rail");
+    expect(rail).toContain("max-width: 320px");
+    expect(rail).toContain("flex: 1 0 280px");
+  });
+
+  it("is capped WIDER than a kanban column, not narrower", () => {
+    // The card asked for "similar to kanban cols but a little wider": a
+    // rail row carries a stage band and a step's status where a card row
+    // carries a title, so the two numbers have to stay in that order.
+    const railMax = Number(/max-width: (\d+)px/.exec(ruleFor(RAIL, ".rail"))?.[1]);
+    const columnWidth = Number(/width: (\d+)px/.exec(ruleFor(COLUMN, ".column"))?.[1]);
+    expect(columnWidth).toBeGreaterThan(0);
+    expect(railMax).toBeGreaterThan(columnWidth);
+  });
+
   it("keeps its header out of the scroller entirely", () => {
     const header = ruleFor(RAIL, "header");
     expect(header).toContain("flex: none");
@@ -172,5 +191,58 @@ describe("drag auto-scroll", () => {
 
   it("documents the attribute in the data-attribute contract", () => {
     expect(source(GLUE)).toContain("//   [data-orch-rail-body]");
+  });
+});
+
+// The strip gained the board's trailing "+ Add rail" stub, in the slack
+// the width cap above now leaves past the last rail. The header button it
+// joins is not replaced by it -- that one stays reachable when the strip
+// is scrolled away from its end.
+describe("the strip's add-rail CTA", () => {
+  it("sits at the end of the rail loop, inside the strip", () => {
+    const hub = source(GRID);
+    const each = hub.indexOf("{#each shownRails as rail (rail.id)}");
+    const cta = hub.indexOf('class="add-rail-col"');
+    const gridClose = hub.indexOf("</div>", hub.indexOf("{/each}", each));
+    expect(each).toBeGreaterThan(-1);
+    expect(cta).toBeGreaterThan(each);
+    expect(cta).toBeLessThan(gridClose);
+  });
+
+  it("makes a rail the same way the header button does", () => {
+    const hub = codeOf(GRID);
+    // Two callers, one action: a rail from either route opens straight
+    // into rename mode, because `newRail` is what sets `editingRailId`.
+    expect(hub.match(/onclick=\{\(\) => void newRail\(\)\}/g)?.length).toBe(2);
+  });
+
+  it("keeps the header button", () => {
+    // The card asked for the CTA "but keep button too".
+    const hub = source(GRID);
+    expect(hub).toContain('class="add-rail"');
+    expect(hub).toContain("<Plus size={14} /> Rail");
+  });
+
+  it("is gated on the same daemon reason the header button is", () => {
+    const hub = codeOf(GRID);
+    expect(hub.match(/disabled=\{Boolean\(orchestrationBlocked\)\}/g)?.length).toBe(2);
+  });
+
+  it("is off while the search box is filtering", () => {
+    // Drag is off for the same reason: the strip is a lens then, and a
+    // rail named "New rail" would not match the query it was added under.
+    const hub = source(GRID);
+    const guard = hub.lastIndexOf("{#if !lens.filtering}", hub.indexOf('class="add-rail-col"'));
+    expect(guard).toBeGreaterThan(-1);
+    expect(hub.indexOf("{/if}", guard)).toBeGreaterThan(hub.indexOf('class="add-rail-col"'));
+  });
+
+  it("is drawn as the board's own add-column stub", () => {
+    const board = ruleFor(COLUMN_STRIP, ".add-column");
+    const strip = ruleFor(GRID, ".add-rail-col");
+    for (const decl of ["border: 1px dashed var(--border)", "flex: 0 0 auto", "align-self: flex-start"]) {
+      expect(board).toContain(decl);
+      expect(strip).toContain(decl);
+    }
   });
 });
