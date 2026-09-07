@@ -3425,6 +3425,18 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
 }
 
 pub fn run_server(socket_path: &std::path::Path, manager: Arc<SessionManager>) -> anyhow::Result<()> {
+    serve(bind_server(socket_path)?, manager)
+}
+
+/// Claim the socket, and return only once it is accepting connections.
+///
+/// Split out from `serve` so a caller can hold that guarantee before it
+/// lets anything else run -- which is the only way to hand it to another
+/// thread. Watching for the socket FILE does not give it: `bind(2)`
+/// creates the file and `connect(2)` is refused until `listen(2)`, two
+/// syscalls later, so a connect aimed at the gap between them fails
+/// against a daemon that is moments from being ready.
+fn bind_server(socket_path: &std::path::Path) -> anyhow::Result<UnixListener> {
     if socket_path.exists() {
         if UnixStream::connect(socket_path).is_ok() {
             anyhow::bail!(
@@ -3436,6 +3448,10 @@ pub fn run_server(socket_path: &std::path::Path, manager: Arc<SessionManager>) -
     }
     let listener = UnixListener::bind(socket_path)?;
     std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
+fn serve(listener: UnixListener, manager: Arc<SessionManager>) -> anyhow::Result<()> {
     // After recover(), before the first connection: the watchdog's first
     // reading has to be taken while the daemon is definitely awake, and
     // it must be running before any session it might have to speak for.
@@ -3843,6 +3859,35 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// A reader with no buffer of its own, which is what sharing one
+    /// connection between several reads requires.
+    ///
+    /// A `BufReader` takes up to its capacity per `read(2)` and keeps
+    /// the surplus, so a second reader built on the same connection
+    /// starts wherever the first one's buffer happened to stop -- and a
+    /// loaded machine is exactly when the daemon coalesces a response
+    /// and a push into one write, putting that stop mid-message. The
+    /// first reader then goes out of scope with the rest of the write
+    /// still inside it. `request()` and `drive_until()` build one each,
+    /// so every test that reads twice has been reading a stream with
+    /// holes in it. A byte at a time never over-consumes, and these are
+    /// short messages read a few dozen at a time.
+    fn line_reader<R: std::io::Read>(inner: R) -> BufReader<R> {
+        BufReader::with_capacity(1, inner)
+    }
+
+    /// How long a test waits on a real OS process -- a fork, an exec, a
+    /// shell reaching its first prompt, a PTY round trip -- before
+    /// calling it dead.
+    ///
+    /// Far longer than any of those takes on an idle machine, on
+    /// purpose. `cargo test` runs this file's ~150 tests in parallel and
+    /// dozens of them spawn shells of their own, so what sets the wall
+    /// clock on a round trip is how contended the machine is, not the
+    /// daemon. Only a test that is going to fail anyway ever pays this
+    /// in full, so the reliability it buys costs a green run nothing.
+    const PROCESS_BUDGET: Duration = Duration::from_secs(30);
+
     fn start_test_server() -> (std::path::PathBuf, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("daemon.sock");
@@ -3852,24 +3897,22 @@ mod tests {
         let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
         let manager = Arc::new(SessionManager::new(registry, kanban, test_orchestration_store()));
 
-        let server_socket_path = socket_path.clone();
+        // Bound here rather than on the server thread, so this function
+        // cannot return before the socket is accepting. The wait it
+        // replaces -- poll until the socket file appears -- was watching
+        // for something `bind(2)` does and `connect(2)` does not depend
+        // on, and every caller's FIRST connect was riding on the gap.
+        let listener = bind_server(&socket_path).unwrap();
         std::thread::spawn(move || {
-            run_server(&server_socket_path, manager).unwrap();
+            serve(listener, manager).unwrap();
         });
-
-        // Give the listener a moment to bind.
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while !socket_path.exists() {
-            assert!(std::time::Instant::now() < deadline, "server never bound");
-            std::thread::sleep(Duration::from_millis(20));
-        }
 
         (socket_path, dir)
     }
 
     fn request(stream: &mut UnixStream, req: &Request) -> Response {
         write_message(stream, req).unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut reader = line_reader(stream.try_clone().unwrap());
         read_message(&mut reader).unwrap().unwrap()
     }
 
@@ -3900,7 +3943,7 @@ mod tests {
             &Request::WatchGavinRoot { workspace_id: "ws-1".into(), root_path: root.clone() },
         )
         .unwrap();
-        let mut reader = BufReader::new(watcher.try_clone().unwrap());
+        let mut reader = line_reader(watcher.try_clone().unwrap());
         let first: Option<Response> = read_message(&mut reader).unwrap();
         assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
 
@@ -3946,7 +3989,7 @@ mod tests {
             &Request::WatchGavinRoot { workspace_id: "ws-1".into(), root_path: root.clone() },
         )
         .unwrap();
-        let mut reader = BufReader::new(watcher.try_clone().unwrap());
+        let mut reader = line_reader(watcher.try_clone().unwrap());
         let first: Option<Response> = read_message(&mut reader).unwrap();
         assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
 
@@ -4101,7 +4144,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut reader = line_reader(stream.try_clone().unwrap());
         let first: Response = read_message(&mut reader).unwrap().unwrap();
         match &first {
             Response::GavinTreeChanged { workspace_id, tree } => {
@@ -4142,7 +4185,7 @@ mod tests {
             },
         )
         .unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut reader = line_reader(stream.try_clone().unwrap());
         let first: Response = read_message(&mut reader).unwrap().unwrap();
         match first {
             Response::GavinTreeChanged { tree, .. } => assert!(tree.root_missing),
@@ -4243,7 +4286,7 @@ mod tests {
             &Request::WatchGavinRoot { workspace_id: "ws-a".to_string(), root_path: root.clone() },
         )
         .unwrap();
-        let mut app_reader = BufReader::new(app.try_clone().unwrap());
+        let mut app_reader = line_reader(app.try_clone().unwrap());
         let first: Response = read_message(&mut app_reader).unwrap().unwrap();
         assert!(matches!(first, Response::GavinTreeChanged { .. }));
 
@@ -4327,7 +4370,7 @@ mod tests {
         // so an agent in a rail's worktree can still name its tab.
         let mut app = UnixStream::connect(&socket_path).unwrap();
         write_message(&mut app, &Request::Attach { id: session_id.clone() }).unwrap();
-        let mut app_reader = BufReader::new(app.try_clone().unwrap());
+        let mut app_reader = line_reader(app.try_clone().unwrap());
 
         // Attach is handled on its own connection thread, so the writer
         // may not be registered the instant the request is written --
@@ -4380,7 +4423,7 @@ mod tests {
             },
         )
         .unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut reader = line_reader(stream.try_clone().unwrap());
         let first: Response = read_message(&mut reader).unwrap().unwrap();
         assert!(matches!(first, Response::GavinTreeChanged { .. }));
 
@@ -4569,7 +4612,7 @@ mod tests {
     /// rather than a signal because the teardown that forgets a session
     /// runs on that session's own pump thread, not on the one asking.
     fn wait_until_forgotten(manager: &SessionManager, id: &str) -> bool {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         while std::time::Instant::now() < deadline {
             if !manager.list_sessions().unwrap().iter().any(|s| s.id == id) {
                 return true;
@@ -4630,7 +4673,7 @@ mod tests {
 
         // Waits for the status rather than for the row to vanish, because
         // not vanishing is the whole assertion.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut exited = None;
         while std::time::Instant::now() < deadline && exited.is_none() {
             match manager.list_sessions().unwrap().into_iter().find(|s| s.id == "orphan-kept") {
@@ -4676,10 +4719,10 @@ mod tests {
     ) -> Vec<Response> {
         write_message(stream, &Request::WriteInput { id: id.to_string(), data: input.to_string() })
             .unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut reader = line_reader(stream.try_clone().unwrap());
         let mut seen = Vec::new();
         let mut collected = String::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         loop {
             let resp: Response = read_message(&mut reader).unwrap().unwrap();
             if let Response::Output { data, .. } = &resp {
@@ -4716,8 +4759,8 @@ mod tests {
         // anything that came before.
         let mut second = UnixStream::connect(&socket_path).unwrap();
         write_message(&mut second, &Request::Attach { id: id.clone() }).unwrap();
-        let mut reader = BufReader::new(second.try_clone().unwrap());
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut reader = line_reader(second.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut restored = String::new();
         while std::time::Instant::now() < deadline && !restored.contains("on_the_screen") {
             if let Some(Response::Output { data, .. }) = read_message(&mut reader).unwrap() {
@@ -4761,7 +4804,7 @@ mod tests {
         // transition looks exactly like a re-sent baseline on the wire -- so
         // without waiting it out, this test would be asserting on which of
         // the two won a race.
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut reader = line_reader(stream.try_clone().unwrap());
         let deadline = std::time::Instant::now() + HEURISTIC_QUIET_PERIOD * 4;
         let mut settled = false;
         while std::time::Instant::now() < deadline && !settled {
@@ -4773,7 +4816,7 @@ mod tests {
         assert!(settled, "precondition: the session never went idle");
 
         write_message(&mut stream, &Request::Snapshot { id: id.clone() }).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut repainted = String::new();
         let mut baselines: Vec<Response> = Vec::new();
         while std::time::Instant::now() < deadline && !repainted.contains("still_here") {
@@ -4845,9 +4888,9 @@ mod tests {
         )
         .unwrap();
 
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let mut reader = line_reader(stream2.try_clone().unwrap());
         let mut collected = String::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         loop {
             let resp: Response = read_message(&mut reader).unwrap().unwrap();
             if let Response::Output { data, .. } = resp {
@@ -4901,9 +4944,9 @@ mod tests {
         )
         .unwrap();
 
-        let mut reader = BufReader::new(stream3.try_clone().unwrap());
+        let mut reader = line_reader(stream3.try_clone().unwrap());
         let mut collected = String::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         loop {
             let resp: Response = read_message(&mut reader).unwrap().unwrap();
             if let Response::Output { data, .. } = resp {
@@ -4962,9 +5005,9 @@ mod tests {
         let mut stream3 = UnixStream::connect(&socket_path).unwrap();
         write_message(&mut stream3, &Request::Attach { id: id.clone() }).unwrap();
 
-        let mut reader = BufReader::new(stream3.try_clone().unwrap());
+        let mut reader = line_reader(stream3.try_clone().unwrap());
         let mut collected = String::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         loop {
             let resp: Response = read_message(&mut reader).unwrap().unwrap();
             if let Response::Output { data, .. } = resp {
@@ -5500,7 +5543,7 @@ mod tests {
 
         // The app is holding the old path, so the re-key has to reach it --
         // and BEFORE the tree, which is what re-runs its scheduler.
-        let mut reader = BufReader::new(ours);
+        let mut reader = line_reader(ours);
         match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
             Response::OrchestrationChanged { orchestration, .. } => {
                 assert_eq!(orchestration.rails[0].stages[0].steps[0].card_path, after);
@@ -5539,7 +5582,7 @@ mod tests {
             &root.to_string_lossy(),
             Arc::new(Mutex::new(theirs)),
         );
-        let mut reader = BufReader::new(ours);
+        let mut reader = line_reader(ours);
         assert!(matches!(
             read_message::<_, Response>(&mut reader).unwrap().unwrap(),
             Response::GavinTreeChanged { .. }
@@ -5586,7 +5629,7 @@ mod tests {
             &root.to_string_lossy(),
             Arc::new(Mutex::new(theirs)),
         );
-        let mut reader = BufReader::new(ours);
+        let mut reader = line_reader(ours);
         assert!(matches!(
             read_message::<_, Response>(&mut reader).unwrap().unwrap(),
             Response::GavinTreeChanged { .. }
@@ -5635,7 +5678,7 @@ mod tests {
             &root.to_string_lossy(),
             Arc::new(Mutex::new(theirs)),
         );
-        let mut reader = BufReader::new(ours);
+        let mut reader = line_reader(ours);
         assert!(matches!(
             read_message::<_, Response>(&mut reader).unwrap().unwrap(),
             Response::GavinTreeChanged { .. }
@@ -5674,7 +5717,7 @@ mod tests {
             Arc::new(Mutex::new(theirs)),
         );
 
-        let mut reader = BufReader::new(ours);
+        let mut reader = line_reader(ours);
         assert!(matches!(
             read_message::<_, Response>(&mut reader).unwrap().unwrap(),
             Response::GavinTreeChanged { .. }
@@ -5873,7 +5916,7 @@ mod tests {
         // line and desynchronises everything after it. Shutting the read
         // half down from a watchdog thread ends the wait at a clean EOF
         // instead, and only ever after every deadline in here has passed.
-        let reader = BufReader::new(stream.try_clone().unwrap());
+        let reader = line_reader(stream.try_clone().unwrap());
         let guard = stream.try_clone().unwrap();
         std::thread::spawn(move || {
             std::thread::sleep(HEURISTIC_QUIET_PERIOD * 20);
@@ -6083,7 +6126,7 @@ mod tests {
         let mut stream2 = UnixStream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
 
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let mut reader = line_reader(stream2.try_clone().unwrap());
         let resp: Response = read_message(&mut reader).unwrap().unwrap();
         match resp {
             Response::CwdChanged { id: rid, cwd } => {
@@ -6117,7 +6160,7 @@ mod tests {
         let mut stream2 = UnixStream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
 
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let mut reader = line_reader(stream2.try_clone().unwrap());
 
         let first: Response = read_message(&mut reader).unwrap().unwrap();
         assert!(matches!(first, Response::CwdChanged { .. }), "expected CwdChanged first, got {first:?}");
@@ -6160,8 +6203,8 @@ mod tests {
         write_message(&mut stream1, &Request::Attach { id: id.clone() }).unwrap();
         write_message(&mut stream1, &Request::WriteInput { id: id.clone(), data: "exit\n".to_string() }).unwrap();
 
-        let mut reader1 = BufReader::new(stream1.try_clone().unwrap());
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut reader1 = line_reader(stream1.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut exited = false;
         while std::time::Instant::now() < deadline && !exited {
             let resp: Response = read_message(&mut reader1).unwrap().unwrap();
@@ -6178,7 +6221,7 @@ mod tests {
         let mut stream2 = UnixStream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
 
-        let mut reader2 = BufReader::new(stream2.try_clone().unwrap());
+        let mut reader2 = line_reader(stream2.try_clone().unwrap());
         reader2.get_ref().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         loop {
             match read_message::<_, Response>(&mut reader2) {
@@ -6226,10 +6269,13 @@ mod tests {
         );
 
         let (client, server) = UnixStream::pair().unwrap();
-        manager.attach("unrecoverable-1", Arc::new(Mutex::new(server)));
-
+        // Set before attach, not after: this row is Exited, so attach()
+        // has nothing to baseline and drops the far end of this pair
+        // straight away -- and on macOS SO_RCVTIMEO on a socketpair whose
+        // peer has already gone fails with EINVAL.
         client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
-        let mut reader = BufReader::new(client);
+        manager.attach("unrecoverable-1", Arc::new(Mutex::new(server)));
+        let mut reader = line_reader(client);
         loop {
             match read_message::<_, Response>(&mut reader) {
                 Ok(Some(Response::StatusChanged { id, .. })) if id == "unrecoverable-1" => {
@@ -6279,8 +6325,8 @@ mod tests {
         write_message(&mut stream1, &Request::Attach { id: id.clone() }).unwrap();
         write_message(&mut stream1, &Request::WriteInput { id: id.clone(), data: "exit\n".to_string() }).unwrap();
 
-        let mut reader1 = BufReader::new(stream1.try_clone().unwrap());
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut reader1 = line_reader(stream1.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut exited = false;
         while std::time::Instant::now() < deadline && !exited {
             let resp: Response = read_message(&mut reader1).unwrap().unwrap();
@@ -6302,7 +6348,7 @@ mod tests {
         let mut stream2 = UnixStream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
 
-        let mut reader2 = BufReader::new(stream2.try_clone().unwrap());
+        let mut reader2 = line_reader(stream2.try_clone().unwrap());
         reader2.get_ref().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         loop {
             match read_message::<_, Response>(&mut reader2) {
@@ -6346,8 +6392,8 @@ mod tests {
         )
         .unwrap();
 
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut reader = line_reader(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut found = false;
         while std::time::Instant::now() < deadline {
             let resp: Response = read_message(&mut reader).unwrap().unwrap();
@@ -6392,8 +6438,8 @@ mod tests {
         )
         .unwrap();
 
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut reader = line_reader(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut found = false;
         while std::time::Instant::now() < deadline {
             let resp: Response = read_message(&mut reader).unwrap().unwrap();
@@ -6435,8 +6481,8 @@ mod tests {
         )
         .unwrap();
 
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut reader = line_reader(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut found = false;
         while std::time::Instant::now() < deadline {
             let resp: Response = read_message(&mut reader).unwrap().unwrap();
@@ -6495,8 +6541,8 @@ mod tests {
         // further messages arrive, and this loop's deadline is only
         // consulted between messages.
         stream2.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut reader = line_reader(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut found = false;
         while std::time::Instant::now() < deadline {
             match read_message::<_, Response>(&mut reader) {
@@ -6544,14 +6590,14 @@ mod tests {
         )
         .unwrap();
 
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let mut reader = line_reader(stream2.try_clone().unwrap());
         let mut statuses: Vec<String> = Vec::new();
         // HEURISTIC_QUIET_PERIOD is 2 real seconds; give this a generous
         // deadline (this project's tests already accept multi-second real
         // waits for timing-dependent behavior, e.g. the existing OSC 7
         // test's 5-second deadline -- no time-mocking is used anywhere in
         // this codebase).
-        let deadline = std::time::Instant::now() + Duration::from_secs(6);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut saw_working_then_idle = false;
         while std::time::Instant::now() < deadline {
             let resp: Response = read_message(&mut reader).unwrap().unwrap();
@@ -6634,7 +6680,7 @@ mod tests {
     /// already pulled out of the socket with it, and the next one starts
     /// reading in the middle of a line.
     fn wait_for_status(reader: &mut BufReader<UnixStream>, id: &str, want: &str) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         while std::time::Instant::now() < deadline {
             if let Ok(Some(Response::StatusChanged { id: rid, status })) =
                 read_message::<_, Response>(reader)
@@ -6654,7 +6700,7 @@ mod tests {
         let mut stream = UnixStream::connect(socket_path).unwrap();
         write_message(&mut stream, &Request::Attach { id: id.to_string() }).unwrap();
         stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
-        BufReader::new(stream)
+        line_reader(stream)
     }
 
     /// The bug: one pane geometry change refits every tab in the pane, so
@@ -6924,7 +6970,7 @@ mod tests {
         // all has had time to be seen -- and a read timeout so a quiet
         // session ends the loop at the deadline instead of blocking.
         stream2.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let mut reader = line_reader(stream2.try_clone().unwrap());
         let deadline = std::time::Instant::now() + HEURISTIC_QUIET_PERIOD * 3;
         let mut statuses: Vec<String> = Vec::new();
         while std::time::Instant::now() < deadline {
@@ -6978,9 +7024,9 @@ mod tests {
         )
         .unwrap();
 
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let mut reader = line_reader(stream2.try_clone().unwrap());
         let mut saw_working = false;
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         while std::time::Instant::now() < deadline && !saw_working {
             let resp: Response = read_message(&mut reader).unwrap().unwrap();
             if let Response::StatusChanged { id: rid, status } = resp {
@@ -7048,8 +7094,8 @@ mod tests {
         )
         .unwrap();
 
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut reader = line_reader(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut saw_waiting = false;
         while std::time::Instant::now() < deadline && !saw_waiting {
             let resp: Response = read_message(&mut reader).unwrap().unwrap();
@@ -7123,8 +7169,8 @@ mod tests {
         )
         .unwrap();
 
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut reader = line_reader(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut found = false;
         while std::time::Instant::now() < deadline {
             let resp: Response = read_message(&mut reader).unwrap().unwrap();
@@ -7193,8 +7239,8 @@ mod tests {
         let mut stream_b = attach_and_report_cwd(&id_b);
 
         let wait_for_git_status = |stream: &mut UnixStream, expected_id: &str| {
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut reader = line_reader(stream.try_clone().unwrap());
+            let deadline = std::time::Instant::now() + PROCESS_BUDGET;
             while std::time::Instant::now() < deadline {
                 let resp: Response = read_message(&mut reader).unwrap().unwrap();
                 if let Response::GitStatusChanged { id: rid, status: Some(status) } = resp {
@@ -7238,7 +7284,7 @@ mod tests {
         // needed, the session's own launch cwd already qualifies.
         write_message(&mut stream2, &Request::WriteInput { id: id.clone(), data: "echo no_repo_here\n".to_string() }).unwrap();
 
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
+        let mut reader = line_reader(stream2.try_clone().unwrap());
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         reader.get_ref().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         let mut saw_output = false;
@@ -7293,8 +7339,8 @@ mod tests {
         {
             let mut stream1 = UnixStream::connect(&socket_path).unwrap();
             write_message(&mut stream1, &Request::Attach { id: id.clone() }).unwrap();
-            let mut reader = BufReader::new(stream1.try_clone().unwrap());
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut reader = line_reader(stream1.try_clone().unwrap());
+            let deadline = std::time::Instant::now() + PROCESS_BUDGET;
             let mut found = false;
             while std::time::Instant::now() < deadline {
                 let resp: Response = read_message(&mut reader).unwrap().unwrap();
@@ -7313,7 +7359,7 @@ mod tests {
         // first attach above), not a fresh live check.
         let mut stream2 = UnixStream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
-        let mut reader2 = BufReader::new(stream2.try_clone().unwrap());
+        let mut reader2 = line_reader(stream2.try_clone().unwrap());
 
         let first: Response = read_message(&mut reader2).unwrap().unwrap();
         assert!(matches!(first, Response::CwdChanged { .. }), "expected CwdChanged first, got {first:?}");
@@ -7436,28 +7482,51 @@ mod tests {
         manager
     }
 
+    /// Reads a session's PTY until `enough` is satisfied, and returns
+    /// everything read; empty if the budget ran out first.
+    ///
+    /// The reading happens on a thread of its own because `reader_for`
+    /// hands back a blocking `Read` with no timeout, so a deadline
+    /// consulted BETWEEN reads bounds only a session that is talking --
+    /// and misses the one case worth bounding, a session that never says
+    /// anything at all. Handing the wait to `recv_timeout` bounds both.
+    fn pty_reads_until(
+        manager: &SessionManager,
+        id: &str,
+        enough: impl Fn(&str) -> bool + Send + 'static,
+    ) -> String {
+        let mut reader = manager.reader_for(id).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut collected = String::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let Ok(n) = reader.read(&mut buf) else { break };
+                if n == 0 {
+                    break;
+                }
+                collected.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if enough(&collected) {
+                    break;
+                }
+            }
+            let _ = tx.send(collected);
+        });
+        rx.recv_timeout(PROCESS_BUDGET).unwrap_or_default()
+    }
+
     /// Reads from a recovered session until `needle` shows up, or gives
     /// up. Proves there is a real interactive shell behind the id rather
     /// than merely a registry row.
     fn shell_echoes(manager: &SessionManager, id: &str, needle: &str) -> bool {
         manager.write_input(id, format!("echo {needle}\n").as_bytes()).unwrap();
-        let mut reader = manager.reader_for(id).unwrap();
-        let mut collected = String::new();
-        let mut buf = [0u8; 4096];
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline {
-            let Ok(n) = reader.read(&mut buf) else { break };
-            if n == 0 {
-                break;
-            }
-            collected.push_str(&String::from_utf8_lossy(&buf[..n]));
-            // The echo of the typed line contains the needle too, so the
-            // marker is assembled at runtime by the shell instead.
-            if collected.matches(needle).count() > 1 {
-                return true;
-            }
-        }
-        false
+        // The echo of the typed line carries the needle too, so what
+        // proves a shell ran the command is the SECOND occurrence.
+        let wanted = needle.to_string();
+        pty_reads_until(manager, id, move |seen| seen.matches(&wanted).count() > 1)
+            .matches(needle)
+            .count()
+            > 1
     }
 
     #[test]
@@ -7576,17 +7645,8 @@ mod tests {
             "the recovered shell should print a directory at all"
         );
         manager.write_input("moved-1", b"case \"$PWD\" in *elsewhere) echo CWDMARK_yes;; *) echo CWDMARK_no;; esac\n").unwrap();
-        let mut reader = manager.reader_for("moved-1").unwrap();
-        let mut collected = String::new();
-        let mut buf = [0u8; 4096];
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline && collected.matches("CWDMARK_").count() < 2 {
-            let Ok(n) = reader.read(&mut buf) else { break };
-            if n == 0 {
-                break;
-            }
-            collected.push_str(&String::from_utf8_lossy(&buf[..n]));
-        }
+        let collected =
+            pty_reads_until(&manager, "moved-1", |seen| seen.matches("CWDMARK_").count() >= 2);
         assert!(
             collected.contains("CWDMARK_yes"),
             "recovery must land in the session's own cwd, got: {collected}"
@@ -8014,7 +8074,7 @@ mod tests {
         let (mut client, server) = UnixStream::pair().unwrap();
         manager.attach("orphan-6", Arc::new(Mutex::new(server)));
 
-        let mut reader = BufReader::new(&mut client);
+        let mut reader = line_reader(&mut client);
         let mut saw_interrupted = false;
         let mut saw_orphan = None;
         for _ in 0..6 {
@@ -8052,7 +8112,7 @@ mod tests {
         let (mut client, server) = UnixStream::pair().unwrap();
         manager.attach("plain-2", Arc::new(Mutex::new(server)));
 
-        let mut reader = BufReader::new(&mut client);
+        let mut reader = line_reader(&mut client);
         for _ in 0..5 {
             let next: Result<Option<Response>, _> = read_message(&mut reader);
             match next {
@@ -8083,7 +8143,7 @@ mod tests {
         client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         manager.attach("agent-3", Arc::new(Mutex::new(server_side)));
 
-        let mut reader = BufReader::new(client);
+        let mut reader = line_reader(client);
         let mut saw_restored = false;
         let mut saw_interrupted = false;
         while let Ok(Some(msg)) = read_message::<_, Response>(&mut reader) {
@@ -8117,7 +8177,7 @@ mod tests {
         client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         manager.attach("shell-2", Arc::new(Mutex::new(server_side)));
 
-        let mut reader = BufReader::new(client);
+        let mut reader = line_reader(client);
         while let Ok(Some(msg)) = read_message::<_, Response>(&mut reader) {
             assert!(
                 !matches!(msg, Response::SessionInterrupted { .. }),
@@ -8214,7 +8274,7 @@ mod tests {
         trigger_recheck(&manager, repo_root, &poller);
         trigger_recheck(&manager, repo_root, &poller);
 
-        let mut reader = BufReader::new(client);
+        let mut reader = line_reader(client);
         let mut emitted = 0;
         loop {
             match read_message::<_, Response>(&mut reader) {
@@ -8268,8 +8328,8 @@ mod tests {
         .unwrap();
 
         // First get into the repo, so there is a stale indicator to clear.
-        let mut reader = BufReader::new(stream2.try_clone().unwrap());
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut reader = line_reader(stream2.try_clone().unwrap());
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut in_repo = false;
         while std::time::Instant::now() < deadline && !in_repo {
             let resp: Response = read_message(&mut reader).unwrap().unwrap();
@@ -8289,7 +8349,7 @@ mod tests {
         )
         .unwrap();
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut cleared = false;
         while std::time::Instant::now() < deadline && !cleared {
             let resp: Response = read_message(&mut reader).unwrap().unwrap();
@@ -8325,7 +8385,7 @@ mod tests {
                 String::from_utf8_lossy(&s.lock().unwrap().snapshot()).contains("hello")
             })
         };
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + PROCESS_BUDGET;
         while Instant::now() < deadline && !painted(&id) {
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -8337,7 +8397,7 @@ mod tests {
         manager.kill_session(&id).unwrap();
 
         // The pump notices the closed pty and tears down asynchronously.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + PROCESS_BUDGET;
         while Instant::now() < deadline {
             if !manager.screens.lock().unwrap().contains_key(&id) {
                 break;
@@ -8392,7 +8452,7 @@ mod tests {
                 .iter()
                 .any(|p| p.session_id == id && p.process_count >= 2)
         };
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + PROCESS_BUDGET;
         while Instant::now() < deadline && !ignoring_hangup(&manager) {
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -8415,7 +8475,7 @@ mod tests {
         // And the escalation still happens: a process that ignored the
         // hangup is SIGKILLed once the grace period passes, so ending a
         // session asynchronously must not mean ending it never.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + PROCESS_BUDGET;
         while Instant::now() < deadline && crate::proc::still_running(process) {
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -8471,7 +8531,7 @@ mod tests {
         };
         let wait_for_status_in = |reader: &mut BufReader<UnixStream>, id: &str, root: &std::path::Path| {
             let want = std::fs::canonicalize(root).unwrap();
-            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            let deadline = std::time::Instant::now() + PROCESS_BUDGET;
             while std::time::Instant::now() < deadline {
                 let resp: Response = read_message(reader).unwrap().unwrap();
                 if let Response::GitStatusChanged { id: rid, status: Some(status) } = resp {
@@ -8488,14 +8548,14 @@ mod tests {
         let id_b = make_session(&plain_path);
         let stream_b = attach(&id_b);
         report_cwd(&stream_b, &id_b, &repo_b_path);
-        let mut reader_b = BufReader::new(stream_b.try_clone().unwrap());
+        let mut reader_b = line_reader(stream_b.try_clone().unwrap());
         wait_for_status_in(&mut reader_b, &id_b, repo_b.path());
 
         // Session A starts out in repo A...
         let id_a = make_session(&plain_path);
         let stream_a = attach(&id_a);
         report_cwd(&stream_a, &id_a, &repo_a_path);
-        let mut reader_a = BufReader::new(stream_a.try_clone().unwrap());
+        let mut reader_a = line_reader(stream_a.try_clone().unwrap());
         wait_for_status_in(&mut reader_a, &id_a, repo_a.path());
 
         // ...and then moves straight into repo B, which must produce a
@@ -8564,7 +8624,7 @@ mod tests {
         manager.attach("failed-spawn-1", Arc::new(Mutex::new(server_side)));
 
         // The pump thread's error arm runs asynchronously, so poll for it.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         loop {
             let mapped = manager.session_repo_root.lock().unwrap().contains_key("failed-spawn-1");
             let pollers = manager.repo_pollers.lock().unwrap().len();
@@ -8580,7 +8640,7 @@ mod tests {
         }
 
         // And nothing git-status-shaped was ever sent to this client.
-        let mut reader = BufReader::new(client);
+        let mut reader = line_reader(client);
         loop {
             match read_message::<_, Response>(&mut reader) {
                 Ok(Some(Response::GitStatusChanged { .. })) => {
@@ -8743,7 +8803,7 @@ mod tests {
         client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         manager.attach("no-live-pty-1", Arc::new(Mutex::new(server_side)));
 
-        let mut reader = BufReader::new(client);
+        let mut reader = line_reader(client);
         let mut saw_scoped_exit = false;
         loop {
             match read_message::<_, Response>(&mut reader) {
@@ -8763,7 +8823,7 @@ mod tests {
 
         // And it self-heals: the registry now reflects Exited too, so the
         // *next* launch's reconciliation (Task 3) can cleanly replace it.
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         loop {
             let status = manager.registry.lock().unwrap().get("no-live-pty-1").unwrap().unwrap().status;
             if status == SessionStatus::Exited {
@@ -8806,7 +8866,7 @@ mod tests {
         client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         manager.attach("restored-1", Arc::new(Mutex::new(server_side)));
 
-        let mut reader = BufReader::new(client);
+        let mut reader = line_reader(client);
         let first: Response = read_message(&mut reader).unwrap().unwrap();
         assert!(matches!(first, Response::CwdChanged { .. }), "expected CwdChanged first, got {first:?}");
         let second: Response = read_message(&mut reader).unwrap().unwrap();
@@ -8848,7 +8908,7 @@ mod tests {
         client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         manager.attach("not-restored-1", Arc::new(Mutex::new(server_side)));
 
-        let mut reader = BufReader::new(client);
+        let mut reader = line_reader(client);
         loop {
             match read_message::<_, Response>(&mut reader) {
                 Ok(Some(Response::SessionRestored { .. })) => {
@@ -9189,7 +9249,7 @@ mod tests {
 
         manager.queue_input("s1", "hold on").unwrap();
 
-        let mut reader = BufReader::new(client);
+        let mut reader = line_reader(client);
         match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
             Response::QueuedInputsChanged { id, queued } => {
                 assert_eq!(id, "s1");
@@ -9223,7 +9283,7 @@ mod tests {
         client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         manager.attach("queued-1", Arc::new(Mutex::new(server_side)));
 
-        let mut reader = BufReader::new(client);
+        let mut reader = line_reader(client);
         let mut seen = None;
         // The baseline rides among CwdChanged / StatusChanged / the
         // screen snapshot, so the assertion is on arrival, not position.
@@ -9289,13 +9349,13 @@ mod tests {
         .unwrap();
 
         streaming.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
-        let mut reader = BufReader::new(streaming.try_clone().unwrap());
+        let mut reader = line_reader(streaming.try_clone().unwrap());
 
         // Wait for the loop to actually be producing output before
         // queueing, so the request cannot land while the session is
         // still Idle and be delivered straight through -- which would
         // pass the marker assertion while proving nothing.
-        let started = std::time::Instant::now() + Duration::from_secs(5);
+        let started = std::time::Instant::now() + PROCESS_BUDGET;
         let mut working = false;
         while std::time::Instant::now() < started && !working {
             if let Ok(Some(Response::StatusChanged { id: rid, status })) =
@@ -9319,7 +9379,7 @@ mod tests {
             other => panic!("expected QueuedInputs, got {other:?}"),
         }
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut delivered = false;
         while std::time::Instant::now() < deadline && !delivered {
             if let Ok(Some(Response::Output { id: rid, data })) =
@@ -9365,7 +9425,7 @@ mod tests {
         let mut streaming = UnixStream::connect(&socket_path).unwrap();
         write_message(&mut streaming, &Request::Attach { id: id.clone() }).unwrap();
         streaming.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
-        let mut reader = BufReader::new(streaming.try_clone().unwrap());
+        let mut reader = line_reader(streaming.try_clone().unwrap());
 
         let mut queue_stream = UnixStream::connect(&socket_path).unwrap();
         match request(
@@ -9378,7 +9438,7 @@ mod tests {
             other => panic!("expected QueuedInputs, got {other:?}"),
         }
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut delivered = false;
         while std::time::Instant::now() < deadline && !delivered {
             if let Ok(Some(Response::Output { id: rid, data })) =

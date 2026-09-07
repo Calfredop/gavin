@@ -392,8 +392,15 @@ mod tests {
         // core's worth, and the scheduler may give this thread less than
         // all of one. Any unit error is off by 24x or 41x and lands
         // nowhere near it.
+        //
+        // The floor is an eighth rather than a half because the share
+        // this thread gets is set by how loaded the machine is, and a
+        // full `cargo test --workspace` on a 10-core box has been
+        // measured handing it 42%. An eighth still sits five times above
+        // the 41x understatement the assertion exists to catch, so the
+        // headroom is bought from slack, not from the test's meaning.
         assert!(
-            burned > elapsed / 2,
+            burned > elapsed / 8,
             "burned {burned}us of CPU over {elapsed}us of spinning -- the counter is not in microseconds"
         );
         assert!(
