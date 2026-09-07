@@ -44,6 +44,8 @@ import type {
   StatusResult,
 } from "./git";
 import { LOG_PAGE_SIZE } from "./git";
+import { isGavinOwnPath } from "./gitTracking";
+import { mayForceRemoval } from "./worktreeSweep";
 
 export interface Selection {
   path: string;
@@ -1127,6 +1129,16 @@ export function pruneWorktrees(workspaceId: string): Promise<boolean> {
 /// mode here — a folder half-deleted, a permissions problem, a git that
 /// exited non-zero — is a reason not to know what is in it, and "we
 /// could not look" must never be recorded as "there was nothing there".
+///
+/// Dirty means THE PROJECT's files. Every checkout of a gavin workspace
+/// holds gavin's own board — untracked where the workspace keeps it out
+/// of git, a symlink to the root checkout's copy where a fleet of
+/// worktrees shares one, a tracked folder that churns on every card move
+/// where it does not — and counting that made `classifyWorktrees` keep
+/// every worktree on its first and strongest blocker, "uncommitted
+/// changes". The Sweep button was a no-op in exactly the workspaces it
+/// was built for, and the reason it gave named a file gavin put there
+/// itself.
 export async function sweepFacts(
   rootPath: string,
   base: string,
@@ -1141,7 +1153,7 @@ export async function sweepFacts(
     paths.map(async (path) => {
       const clean = await backend
         .gitStatus(path)
-        .then((s) => s.staged.length === 0 && s.unstaged.length === 0)
+        .then((s) => [...s.staged, ...s.unstaged].every((e) => isGavinOwnPath(e.path)))
         .catch(() => false);
       if (!clean) dirty.add(path.replace(/\/+$/, ""));
     })
@@ -1149,11 +1161,27 @@ export async function sweepFacts(
   return { merged, dirty };
 }
 
-/// Remove a batch of worktrees in one busy cycle, never forced: `git
-/// worktree remove` refusing is the last line of defence under the
-/// staleness rule, and a sweep that passed `--force` would delete
-/// exactly the work the rule exists to protect. The first refusal stops
-/// the batch and lands in the error banner with git's own words.
+/// Remove a batch of worktrees in one busy cycle, forced only past
+/// gavin's OWN files: `git worktree remove` refusing is the last line of
+/// defence under the staleness rule, and a sweep that passed `--force`
+/// outright would delete exactly the work the rule exists to protect.
+/// The first refusal stops the batch and lands in the error banner with
+/// git's own words.
+///
+/// The narrow force is what makes the sweep work at all now that
+/// `sweepFacts` no longer calls gavin's board dirty. git does not draw
+/// that distinction — it refuses on ANY untracked file — so without this
+/// every gavin worktree would classify stale and then die at removal on
+/// a raw fatal, which is a worse answer than the wrong verdict it
+/// replaced. `mayForceRemoval` states the rule; the only thing decided
+/// here is WHEN to ask.
+///
+/// And it is asked HERE, per entry, off a fresh read rather than the
+/// facts the confirmation was drawn from. Those were gathered before a
+/// dialog the human then spent seconds in, and an agent writes to a
+/// checkout in far less: forcing on a minute-old answer is precisely the
+/// window git's blanket refusal used to cover. A read that fails forces
+/// nothing, so the unforced call goes out and git refuses it.
 export function sweepWorktrees(
   workspaceId: string,
   entries: readonly { path: string; branch: string | null }[],
@@ -1161,7 +1189,8 @@ export function sweepWorktrees(
 ): Promise<boolean> {
   return run(workspaceId, "Sweep worktrees", async (cwd) => {
     for (const entry of entries) {
-      await backend.gitWorktreeRemove(cwd, entry.path, false);
+      const status = await backend.gitStatus(entry.path).catch(() => null);
+      await backend.gitWorktreeRemove(cwd, entry.path, mayForceRemoval(status));
       // Never forced either: `branch -d` refuses anything unmerged, and
       // the sweep only ever offers this for branches git already agreed
       // had landed.

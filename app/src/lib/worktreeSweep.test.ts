@@ -2,12 +2,13 @@ import { describe, it, expect } from "vitest";
 import {
   classifyWorktrees,
   deleteBranchesLabel,
+  mayForceRemoval,
   nothingToSweepLines,
   staleWorktrees,
   sweepConfirm,
   type SweepFacts,
 } from "./worktreeSweep";
-import type { WorktreeInfo } from "./git";
+import type { FileEntry, WorktreeInfo } from "./git";
 
 function wt(path: string, branch: string | null, extra: Partial<WorktreeInfo> = {}): WorktreeInfo {
   return { path, head: "abc1234", branch, isMain: false, locked: false, prunable: false, ...extra };
@@ -233,5 +234,42 @@ describe("when nothing is stale", () => {
     expect(nothingToSweepLines(classifyWorktrees([MAIN], facts()))).toEqual([
       "This repo has no linked worktrees.",
     ]);
+  });
+});
+
+describe("whether a removal may be forced", () => {
+  const entry = (path: string): FileEntry => ({ path, status: "?" });
+
+  it("refuses on a checkout git could not be read for", () => {
+    // The same direction sweepFacts takes: unknown counts against the
+    // deletion, never for it.
+    expect(mayForceRemoval(null)).toBe(false);
+  });
+
+  it("refuses on a clean checkout — nothing is in the way to force past", () => {
+    expect(mayForceRemoval({ staged: [], unstaged: [] })).toBe(false);
+  });
+
+  it("allows it when everything left is gavin's own", () => {
+    expect(
+      mayForceRemoval({ staged: [], unstaged: [entry(".gavin-root")] })
+    ).toBe(true);
+    expect(
+      mayForceRemoval({
+        staged: [entry(".gavin-root/PRD.md")],
+        unstaged: [entry(".gavin-root/plans/a.md"), entry("apps/web/.gavin/plans/b.md")],
+      })
+    ).toBe(true);
+  });
+
+  it("refuses the moment one entry is the human's", () => {
+    // The whole guard: `--force` past gavin's own board is a link and a
+    // folder gavin made, `--force` past this is an hour of someone's work.
+    expect(
+      mayForceRemoval({
+        staged: [],
+        unstaged: [entry(".gavin-root"), entry("src/newfile.ts")],
+      })
+    ).toBe(false);
   });
 });

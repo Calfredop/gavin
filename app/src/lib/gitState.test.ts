@@ -33,6 +33,7 @@ vi.mock("./backend", () => ({
   gitStashApply: vi.fn().mockResolvedValue(undefined),
   gitStashDrop: vi.fn().mockResolvedValue(undefined),
   gitStashFiles: vi.fn().mockResolvedValue([]),
+  gitMergedBranches: vi.fn().mockResolvedValue([]),
   gitWorktreeAdd: vi.fn().mockResolvedValue(undefined),
   gitWorktreeRemove: vi.fn().mockResolvedValue(undefined),
   gitWorktreePrune: vi.fn().mockResolvedValue(undefined),
@@ -115,7 +116,7 @@ import {
   ensureGitView, refresh, select, run, runWithReason, runBlocker, forkWorktree,
   stageFiles, stageAll, commit, setCommitDraft, setLineSelection,
   effectiveRemote, pushLabel, canSync, setActiveRemote, startOp, fetch, selectStash, selectChanges,
-  switchWorktree, mergeBack, rootPathOf, removeWorktree,
+  switchWorktree, mergeBack, rootPathOf, removeWorktree, sweepFacts, sweepWorktrees,
   selectCommits, loadMore, selectCommit, selectDetailFile, setGraphAll,
   markResolved, saveConflict, openMergeTool,
   commitViaAgent, revealAgentCommit, agentCommitPhase, agentCommitBlocker, AGENT_COMMIT_FLASH_MS,
@@ -478,6 +479,81 @@ describe("worktrees", () => {
     vi.mocked(backend.gitMerge).mockRejectedValueOnce("CONFLICT (content)");
     vi.mocked(backend.gitRepoInfo).mockResolvedValue({ ...repo, inProgress: "merge" });
     expect(await mergeBack("ws", "/r", "feature")).toBe("conflict");
+  });
+
+  /// The sweep's half of the bug bug-rail-stall.md fixed for the rail
+  /// branch switch: every checkout of a gavin workspace holds gavin's own
+  /// board, so reading it as "uncommitted changes" kept every worktree
+  /// and made the button a no-op in exactly the workspaces it is for.
+  it("sweepFacts does not call a checkout dirty for gavin's own files", async () => {
+    vi.mocked(backend.gitMergedBranches).mockResolvedValue(["feat/a"]);
+    vi.mocked(backend.gitStatus).mockResolvedValue({
+      staged: [],
+      unstaged: [{ path: ".gavin-root", status: "?" }],
+    } as never);
+
+    const out = await sweepFacts("/r", "main", ["/r-a"]);
+
+    expect(out.dirty.has("/r-a")).toBe(false);
+  });
+
+  it("sweepFacts still calls a checkout dirty for the project's own files", async () => {
+    vi.mocked(backend.gitMergedBranches).mockResolvedValue([]);
+    vi.mocked(backend.gitStatus).mockResolvedValue({
+      staged: [],
+      unstaged: [{ path: ".gavin-root", status: "?" }, { path: "src/a.ts", status: "M" }],
+    } as never);
+
+    expect((await sweepFacts("/r", "main", ["/r-a"])).dirty.has("/r-a")).toBe(true);
+  });
+
+  it("sweepFacts counts a checkout it could not read as dirty", async () => {
+    vi.mocked(backend.gitMergedBranches).mockResolvedValue([]);
+    vi.mocked(backend.gitStatus).mockRejectedValue(new Error("nope"));
+
+    expect((await sweepFacts("/r", "main", ["/r-a"])).dirty.has("/r-a")).toBe(true);
+  });
+
+  /// git refuses to remove a worktree holding ANY untracked file, gavin's
+  /// own included, so filtering the classification alone would turn a
+  /// clear "kept: uncommitted changes" into a raw fatal in the banner.
+  /// The force is re-decided HERE, off a fresh read, so the window
+  /// between the confirmation and the deletion cannot widen it.
+  it("sweepWorktrees forces past gavin's own files and nothing else", async () => {
+    ensureGitView("ws", "/r");
+    vi.mocked(backend.gitStatus).mockResolvedValue({
+      staged: [],
+      unstaged: [{ path: ".gavin-root", status: "?" }],
+    } as never);
+
+    await sweepWorktrees("ws", [{ path: "/r-a", branch: "feat/a" }], false);
+
+    expect(backend.gitStatus).toHaveBeenCalledWith("/r-a");
+    expect(backend.gitWorktreeRemove).toHaveBeenCalledWith("/r", "/r-a", true);
+  });
+
+  it("sweepWorktrees leaves the removal unforced when real work appeared since", async () => {
+    ensureGitView("ws", "/r");
+    vi.mocked(backend.gitStatus).mockResolvedValue({
+      staged: [],
+      unstaged: [{ path: "src/hours-of-work.ts", status: "?" }],
+    } as never);
+
+    await sweepWorktrees("ws", [{ path: "/r-a", branch: "feat/a" }], false);
+
+    // Unforced, so git's own refusal stops the batch — which is the
+    // whole point of not passing --force blindly.
+    expect(backend.gitWorktreeRemove).toHaveBeenCalledWith("/r", "/r-a", false);
+  });
+
+  it("sweepWorktrees leaves a clean removal unforced", async () => {
+    ensureGitView("ws", "/r");
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] } as never);
+
+    await sweepWorktrees("ws", [{ path: "/r-a", branch: "feat/a" }], true);
+
+    expect(backend.gitWorktreeRemove).toHaveBeenCalledWith("/r", "/r-a", false);
+    expect(backend.gitDeleteBranch).toHaveBeenCalledWith("/r", "feat/a", false);
   });
 
   it("removeWorktree optionally deletes the branch in the same op", async () => {

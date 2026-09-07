@@ -19,7 +19,8 @@
 // all have to be reading the same one.
 
 import type { ConfirmCheck, ConfirmOptions } from "./dialog";
-import { splitPath, type WorktreeInfo } from "./git";
+import { splitPath, type StatusResult, type WorktreeInfo } from "./git";
+import { isGavinOwnPath } from "./gitTracking";
 import { count } from "./railConfirm";
 
 /// Why a worktree is being KEPT. Ordered by what is at stake, and that
@@ -180,6 +181,38 @@ export function staleWorktrees(worktrees: readonly WorktreeInfo[], facts: SweepF
 function line(verdict: SweepVerdict): string {
   const name = splitPath(normalize(verdict.path)).name || verdict.path;
   return `${name} — ${verdict.reason}`;
+}
+
+/// Whether `git worktree remove` may be FORCED for this checkout: true
+/// exactly when git still reports something and every bit of it is
+/// gavin's own.
+///
+/// The sweep's removal is unforced on principle -- git refusing is what
+/// stands between this button and an hour of someone's work -- but git
+/// refuses on ANY untracked file, and every checkout of a gavin
+/// workspace holds gavin's board: a symlink to the root checkout's copy
+/// where a fleet of worktrees shares one, a folder of cards where it
+/// does not. Once `dirty` stopped counting those (gitState's
+/// `sweepFacts`), a row could classify stale and then fail at removal
+/// with git's raw fatal -- a worse answer than the wrong verdict it
+/// replaced.
+///
+/// So gavin keeps a last line of defence of its own, and a narrower one:
+/// git's is "anything untracked", this is "anything untracked that is
+/// not mine". Forcing past a link gavin made costs the link; forcing
+/// past `src/half-done.ts` costs the work. One entry of the second kind
+/// is enough to refuse -- there is no reading of the sweep under which
+/// deleting it is what the human asked for.
+///
+/// A checkout git could not be read for answers false, the direction
+/// `sweepFacts` takes for the same question. So does a CLEAN one: there
+/// is nothing in the way, the unforced removal already succeeds, and a
+/// `--force` handed out where it changes nothing is a habit rather than
+/// a decision.
+export function mayForceRemoval(status: StatusResult | null): boolean {
+  if (!status) return false;
+  const entries = [...status.staged, ...status.unstaged];
+  return entries.length > 0 && entries.every((e) => isGavinOwnPath(e.path));
 }
 
 /// The label on the checkbox, which has to name what it deletes. One
