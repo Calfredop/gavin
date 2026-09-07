@@ -411,9 +411,9 @@
               <!-- What the window lost when the title strip came down to
                    the sidebar's width: somewhere roomy to grab it. The
                    run of bar after the last tab moves the window, the way
-                   an empty toolbar does on macOS. A pane's tab row
-                   pointedly does not (there, empty bar means "drag this
-                   pane") -- see windowDrag.ts. -->
+                   an empty toolbar does on macOS. A pane's tab row now
+                   does the same with its own leftover -- see
+                   windowDrag.ts. -->
               <div class="drag-spacer" use:windowDrag></div>
               <div class="tab-actions">
                 <!-- The workspace's own settings, off the strip and into

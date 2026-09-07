@@ -256,14 +256,27 @@ describe("what the bars carry", () => {
   });
 
   // What the window lost with the full-width strip: room to grab it.
-  // The hub row's leftover gives some of it back. A pane's row must NOT
-  // -- empty space there already means "drag this pane", and a bar that
-  // moved either the pane or the window would be worse than a small
-  // handle.
-  it("keeps two window-drag surfaces, and none on a pane's row", () => {
+  // Every row that can be the window's top edge hands its leftover back,
+  // a page's tab row included -- press the bar right of the last tab and
+  // the WINDOW moves, the way an empty toolbar does on macOS. That run
+  // used to start a whole-pane drag instead: an unnamed gesture sitting
+  // on the one surface the human reaches for to move the window, on a
+  // row where a single tab leaves almost nothing else. Dragging a TAB is
+  // what survives, and it starts on the tab.
+  it("hands every row's leftover to the window, a pane's row included", () => {
     expect(TITLE_BAR).toContain("use:windowDrag");
-    expect(PAGE).toContain('<div class="drag-spacer" use:windowDrag>');
-    expect(PANE).not.toContain("windowDrag");
-    expect(PANE).toContain("ondragstart={handlePaneDragStart}");
+    for (const text of [PAGE, PANE]) {
+      expect(text).toContain('<div class="drag-spacer" use:windowDrag>');
+      // The strip grows only as far as its tabs: what it does not claim
+      // belongs to the spacer, rather than being dead bar inside a
+      // scroller.
+      expect(rule(text, ".tab-strip").flex).toBe("0 1 auto");
+      expect(rule(text, ".drag-spacer").flex).toBe("1 1 auto");
+    }
+    // The tab keeps its own drag -- that is the one this row is for.
+    // Nothing around it is a drag source any more, so no press on the
+    // bar can mean two things at once.
+    expect(PANE).toContain("ondragstart={(e) => handleTabDragStart(e, sessionId)}");
+    expect(PANE).not.toContain("handlePaneDragStart");
   });
 });

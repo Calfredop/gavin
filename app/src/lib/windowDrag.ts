@@ -6,14 +6,18 @@
 // not full width any more -- the hub tabs and a page's session tabs are
 // the top edge of the window now, and the strip that survives only
 // covers the sidebar. So the gesture has to be something more than one
-// element can offer, and the two places that offer it (the strip over
-// the sidebar, and the empty run of the hub tab row) share it from here
-// rather than each wiring startDragging to its own mousedown.
+// element can offer, and the three places that offer it (the strip over
+// the sidebar, and the empty run of each tab row -- the hub's and a
+// pane's) share it from here rather than each wiring startDragging to
+// its own mousedown.
 //
-// A pane's tab row deliberately does NOT use this: the empty space on
-// that row already means "drag this pane", and a bar that moved either
-// the pane or the whole window depending on invisible state is worse
-// than a small drag handle.
+// A pane's tab row uses it too, and did not always: the empty run there
+// used to drag the PANE. Two gestures cannot share one surface --
+// startDragging() takes the pointer from the webview before any
+// dragstart could fire, so whichever is armed on mousedown wins outright
+// -- and of the two, the one a human reaches for on the top edge of the
+// window is the window. The pane drag had no other surface and is gone;
+// dragging a tab is what the row keeps.
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { createDoubleClickTracker, doubleClickAction } from "./titleBarGesture";

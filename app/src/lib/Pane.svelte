@@ -34,6 +34,7 @@
   import { showAlert } from "./dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildTabMenuEntries } from "./tabMenu";
+  import { windowDrag } from "./windowDrag";
   import { X, Plus, Kanban, Pin, ListChecks, FileDiff, Columns2, Rows2 } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import NewPageButton from "./NewPageButton.svelte";
@@ -355,18 +356,7 @@
     return { workspaceId: ws.id, pageId: page.id };
   }
 
-  function handlePaneDragStart(event: DragEvent): void {
-    const location = activeLocation();
-    if (!location) return;
-    setDragPayload(event, { kind: "pane", workspaceId: location.workspaceId, pageId: location.pageId, sessionId: active });
-  }
-
   function handleTabDragStart(event: DragEvent, sessionId: string): void {
-    // Prevents this event from also triggering the parent .tab-bar's own
-    // dragstart handler via bubbling -- see this task's module-level note
-    // on why that would silently turn a single-tab drag into a
-    // whole-pane drag.
-    event.stopPropagation();
     const location = activeLocation();
     if (!location) return;
     setDragPayload(event, { kind: "tab", workspaceId: location.workspaceId, pageId: location.pageId, sessionId });
@@ -473,14 +463,9 @@
   <div class="tab-bar">
     <!-- The tabs scroll under the actions rather than pushing them off
          the pane: a pane with six tabs open must still offer Close Pane.
-         The pane drag lives on the strip, not the bar around it, so
-         grabbing an action button never starts one. -->
-    <div
-      class="tab-strip"
-      use:wheelScrollsSideways
-      draggable={editingSessionId === null}
-      ondragstart={handlePaneDragStart}
-    >
+         Nothing here is a drag source but the tabs themselves -- see the
+         spacer below. -->
+    <div class="tab-strip" use:wheelScrollsSideways>
         {#each leaf.tabs as sessionId, tabIndex (sessionId)}
         <button
           class="tab"
@@ -601,6 +586,14 @@
         </button>
       {/each}
     </div>
+    <!-- The run of bar after the last tab moves the WINDOW, exactly as
+         the hub row's leftover does. It used to start a drag of the
+         whole pane instead: a gesture nothing named, sitting on the one
+         surface a human reaches for to move a window -- and on a page
+         with a single tab that surface is nearly the whole row.
+         Dragging a TAB is the drag this row keeps, and it starts on the
+         tab, so no press on this bar can mean two things at once. -->
+    <div class="drag-spacer" use:windowDrag></div>
     <!-- Everything the bar offers, pinned to the right of it. Three of
          these used to sit in the app's title bar, where they addressed
          "the focused pane" -- a pane the human could not see from a hub
@@ -754,12 +747,16 @@
      LayoutTree), so the strip carries its own overflow -- without this,
      splitting a pane with several tabs open would clip the last ones out
      of reach instead of merely making them scroll. The actions sit
-     outside it, so what scrolls away is only ever a tab. */
+     outside it, so what scrolls away is only ever a tab.
+
+     Grows only as far as its tabs, like the hub row's strip: the
+     leftover is the drag spacer's, so an empty stretch of this row moves
+     the window instead of being dead bar inside a scroller. */
   .tab-strip {
     display: flex;
     align-items: stretch;
     gap: var(--tab-gap);
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
     overflow-x: auto;
     /* No visible scrollbar: an overlay bar would land on the active
@@ -770,6 +767,9 @@
   .tab-strip::-webkit-scrollbar {
     width: 0;
     height: 0;
+  }
+  .drag-spacer {
+    flex: 1 1 auto;
   }
   .tab-actions {
     display: flex;
