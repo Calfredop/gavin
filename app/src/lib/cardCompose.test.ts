@@ -162,9 +162,12 @@ describe("railToApply", () => {
 describe("availableAgentActions", () => {
   const ctx = { kind: "task" as const, railId: null, canRun: true, canDevelop: true };
 
-  it("offers develop first — running an undeveloped card is the deliberate choice", () => {
-    expect(availableAgentActions(ctx)).toEqual(["develop", "run"]);
-    expect(AGENT_ACTIONS[0]).toBe("develop");
+  it("offers run first — it is the action the composer's own shape asks for", () => {
+    // ⌘N opens on the task chip with a prompt field, so the card being
+    // typed is meant to be executed; develop is the detour back to an
+    // interview and sits second.
+    expect(availableAgentActions(ctx)).toEqual(["run", "develop"]);
+    expect(AGENT_ACTIONS[0]).toBe("run");
   });
 
   it("keeps run to tasks and lets develop cover plans too", () => {

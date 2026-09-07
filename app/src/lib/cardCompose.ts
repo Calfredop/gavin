@@ -209,11 +209,13 @@ export function railToApply(
 /// live agent on a card.
 export type AgentAction = "run" | "develop";
 
-/// The order the composer offers them in. Develop first: it is what a
-/// one-line card usually wants, and running an undeveloped card is the
-/// choice worth making deliberately rather than the one under the
-/// cursor.
-export const AGENT_ACTIONS = ["develop", "run"] as const;
+/// The order the composer offers them in. Run first: it is the action
+/// the composer is already shaped around -- ⌘N opens on the task chip
+/// with a prompt field, and the card typed into it is meant to be
+/// executed -- so the box under the cursor is the one that does what the
+/// form just asked for. Develop sits second as the detour it is: it
+/// throws the card back to an interview before any work starts.
+export const AGENT_ACTIONS = ["run", "develop"] as const;
 
 /// The one line each action puts on screen. Here rather than in the
 /// template so the checkbox, its tooltip and the tests read the same

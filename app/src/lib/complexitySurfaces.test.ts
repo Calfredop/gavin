@@ -82,6 +82,30 @@ describe("the card surfaces", () => {
     expect(source(file)).toContain("{#each COMPLEXITY_LEVELS as level (level)}");
   });
 
+  it.each([
+    ["the composer", COMPOSER],
+    ["the detail modal", DETAIL],
+    ["the Plans tab strip", PLANS_PANEL],
+  ])("%s draws the gated picker as gated, not as broken", (_name, file) => {
+    // The gate turns the select `disabled`, and all three surfaces set
+    // its colour AND background explicitly -- which beats the UA's own
+    // disabled greying. Without a rule of their own the dead picker
+    // renders pixel-identical to the live ones beside it: it opens
+    // nothing, says nothing, and reads as a bug rather than as a field
+    // this daemon does not carry. That is what "the complexity picker is
+    // not working" turned out to be.
+    expect(source(file)).toMatch(/select:disabled\s*{/);
+  });
+
+  it("says why the composer's picker is off, not just that it is", () => {
+    // The other two surfaces already explain themselves -- the detail
+    // modal with a warning line, the Plans strip with the reason on a
+    // label short enough to hover. The composer had only a `title` on a
+    // control the human had already written off as broken.
+    expect(source(COMPOSER)).toContain("{#if complexityBlocked}");
+    expect(source(COMPOSER)).toContain('class="field-note">{complexityBlocked}');
+  });
+
   it("files the level in the SAME CreatePlan as the card", () => {
     // A card written first and rated second has a window in which it
     // exists unrated -- and could be run in it, at the wrong agent.

@@ -1768,6 +1768,15 @@
     padding: 3px 6px;
     border-radius: 4px;
   }
+  /* A picker a daemon version has taken away is `disabled`, and the rule
+     above sets colour AND background explicitly -- which beats the UA's
+     own greying, so the dead control rendered pixel-identical to the
+     live ones beside it. The warning line below the group says why; this
+     is what points at which control it is about. */
+  .field select:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
 
   /* The session bar: the whole point of the rework. It sits in the
      pinned head, so the distance to "Jump to session" is the same on a

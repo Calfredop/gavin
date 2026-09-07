@@ -227,6 +227,14 @@
     font-family: inherit;
     padding: 1px 4px;
   }
+  /* Same reason as the composer and the detail modal: the rule above
+     sets colour and background explicitly, so a `disabled` picker (the
+     complexity one, against an older daemon) looked exactly like the two
+     live ones next to it. The label carries the reason as a `title`. */
+  select:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
   .warn {
     color: var(--warning-text);
   }

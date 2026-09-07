@@ -516,6 +516,15 @@
     </label>
   </div>
 
+  <!-- Said out loud rather than left on the label's `title`. A disabled
+       select is a control the human has already decided is broken -- it
+       is the reason this card was filed -- and nobody hovers a broken
+       control waiting for a tooltip to explain it. The greyed picker
+       says THAT it is off; this says why, and what lifts it. -->
+  {#if complexityBlocked}
+    <div class="field-note">{complexityBlocked}</div>
+  {/if}
+
   <!-- The blocked reason rides the ROW, not the button: tooltip.ts binds
        mouseenter, which a disabled element never fires. -->
   <div class="attachments" title={attachmentsBlocked ?? undefined}>
@@ -645,6 +654,13 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 4px;
+    /* `.fields` ends with no margin of its own and separates its rows by
+       6px, so with nothing here the attachments row sat 6px under the
+       last select and read as one more picker in that group rather than
+       as the next thing. Wider than the gap `.agent-actions` takes,
+       because that group has a border doing the same job and this one
+       has only the space. */
+    margin-top: 12px;
     margin-bottom: 8px;
   }
   .attachments-label {
@@ -740,6 +756,30 @@
     padding: 3px 6px;
     flex: 1 1 auto;
     min-width: 0;
+  }
+  /* A picker the daemon version has taken away (complexity, today) is
+     `disabled`, and the rules above set colour AND background
+     explicitly -- which beats the UA's own greying, so the dead control
+     rendered pixel-identical to the three live ones beside it. Clicking
+     it did nothing and nothing on screen said why, which is exactly how
+     a gated field reads as a broken one. */
+  .field select:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  /* ...and the label with it, so the whole row reads as one dead
+     control rather than a live label beside a faded box. */
+  .field:has(select:disabled) span {
+    opacity: 0.45;
+  }
+  /* Why a control above is off, and what lifts it. Muted rather than
+     `.compose-error`'s warning colour: nothing the human did failed --
+     the field is simply not available against this daemon. */
+  .field-note {
+    color: var(--text-subtle);
+    font-family: monospace;
+    font-size: 0.7em;
+    margin-top: 6px;
   }
   /* Beats `.field span`'s label width -- this is the value, not a label. */
   .field .pinned-rail {
