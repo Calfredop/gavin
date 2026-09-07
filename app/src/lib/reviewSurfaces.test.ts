@@ -96,6 +96,31 @@ describe("the hub view", () => {
   it("offers Refresh as a forced re-read, not a cached one", () => {
     expect(source(VIEW)).toContain("loadTouchedFiles(workspaceId, requests, { force: true })");
   });
+
+  it("fetches off a stable key, never off the derived array itself", () => {
+    // `requests` is a new array on every board emission -- and the board
+    // is refetched on every `.gavin*` tree push -- while a new batch
+    // ABANDONS the one in flight. Depending on the array would throw
+    // away finished `git diff`s every time an agent wrote a card file.
+    const text = source(VIEW);
+    expect(text).toContain("const requestKey = $derived(");
+    expect(text).toContain("void requestKey;");
+  });
+
+  it("writes the resolved selection down instead of re-deriving it forever", () => {
+    // `resolveSelection` falls back to the first card of the first
+    // group, and group ORDER moves as each batch of touched files lands.
+    // Underived, the three panes re-target on their own while loading.
+    expect(source(VIEW)).toContain("setReviewPrefs(workspaceId, { selected: path })");
+  });
+
+  it("refits the borrowed terminal when its column changes width", () => {
+    // TerminalPane fits on mount and on a font-size change and at no
+    // other time, and collapsing the card list hands this row 280px.
+    const text = source(VIEW);
+    expect(text).toContain("bind:this={agentPane}");
+    expect(text).toContain("new ResizeObserver(() => agentPane?.fit())");
+  });
 });
 
 describe("the card list", () => {

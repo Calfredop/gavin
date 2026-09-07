@@ -1060,10 +1060,13 @@ async function executeToolLaunch(
   // over when the human presses Skip or Mark done on the chip, which are
   // the same two buttons every running step already offers.
   //
-  // Nothing is checked first -- not the branch, not the checkout. A
-  // review needs neither: it is a hold on the rail, and refusing to hold
-  // an unbound rail would be a refusal about something the step was
-  // never going to touch.
+  // No branch is checked, and no cwd is resolved. A review needs
+  // neither: it is a hold on the rail, and refusing to hold an UNBOUND
+  // rail would be a refusal about something the step was never going to
+  // touch. (launchBlocker's last test still applies, as it does to every
+  // kind: a rail whose worktree has been removed stalls before it gets
+  // here. That one is not about what the step touches -- the checkout
+  // the human was going to review is gone.)
   if (tool.kind === "review") {
     // 0, not null: the `resumeAttempts` field carries a LOOP's budget
     // (see orchestrationLoop.ts) and this step neither loops nor

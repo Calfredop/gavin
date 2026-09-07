@@ -11,7 +11,7 @@
   import SearchInput from "./ui/SearchInput.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { tooltip } from "./tooltip";
-  import { NO_FILES_GROUP_ID, NO_FILES_HINT, type ReviewGroup } from "./reviewBoard";
+  import { NO_FILES_GROUP_ID, noFilesHint, type ReviewGroup } from "./reviewBoard";
   import type { Column } from "./kanban";
 
   interface Props {
@@ -165,7 +165,12 @@
               <span class="group-count">{group.cards.length}</span>
             </button>
             {#if group.id === NO_FILES_GROUP_ID && !isFolded(group.id)}
-              <p class="group-hint">{NO_FILES_HINT}</p>
+              <!-- Only the sentences true of the cards under it: this
+                   one bucket holds runs nobody measured AND runs
+                   measured to have moved nothing, and telling the
+                   second as the first is the conflation reviewBoard.ts
+                   is built around. -->
+              <p class="group-hint">{noFilesHint(group.cards)}</p>
             {/if}
             {#if !isFolded(group.id)}
               <div class="cards" role="listbox" aria-label={group.label}>

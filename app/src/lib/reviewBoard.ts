@@ -51,8 +51,16 @@ export interface ReviewGroup {
 /// The fileless group's id and words. Its own constant because three
 /// places need to agree on it: the grouper, the ordering rule that pins
 /// it last, and the test that says so.
+///
+/// The label says what the LIST cannot do -- show you files -- and
+/// deliberately not why, because the group holds both of this module's
+/// two opposite answers: a run nobody measured, and a run measured to
+/// have moved nothing. A header naming the first would tell the second
+/// as the first, which is the conflation this file exists to avoid, and
+/// it would contradict the "0 files" the card's own row already carries.
+/// `noFilesHint` is where the difference is spelled.
 export const NO_FILES_GROUP_ID = "";
-export const NO_FILES_LABEL = "No files recorded";
+export const NO_FILES_LABEL = "No files to show";
 
 /// How many file names a group header names before it starts counting.
 const HEADER_FILES = 2;
@@ -255,6 +263,26 @@ export function groupCandidates(candidates: ReviewCandidate[]): ReviewGroup[] {
 /// exact kind this module exists to avoid.
 export const NO_FILES_HINT =
   "Gavin didn't record where these runs started, so it can't say what they touched.";
+
+/// ...and what it says under a group whose runs WERE measured. One
+/// bucket holds both, because neither has files to cluster on, but they
+/// are opposite answers and the hint under the header is the one place
+/// with room to say which.
+export const MEASURED_EMPTY_HINT = "These runs were measured: they changed nothing in the checkout.";
+
+/// The hint the fileless group actually draws.
+///
+/// Only the sentences that are TRUE of the cards in front of the reader.
+/// A group of measured-empty runs used to be told "gavin didn't record
+/// where these runs started" while every row under it said "0 files" --
+/// the header and the rows contradicting each other about the one
+/// distinction this module is built around.
+export function noFilesHint(cards: ReviewCandidate[]): string {
+  const unmeasured = cards.some((c) => c.files === null);
+  const measured = cards.some((c) => c.files !== null);
+  if (unmeasured && measured) return `${NO_FILES_HINT} ${MEASURED_EMPTY_HINT}`;
+  return unmeasured ? NO_FILES_HINT : MEASURED_EMPTY_HINT;
+}
 
 /// The one line the tab's header reduces to. Null when there is nothing
 /// to say yet.

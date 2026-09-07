@@ -171,7 +171,16 @@ export async function loadTouchedFiles(
   update(workspaceId, (v) => ({
     ...v,
     token,
-    loadingPaths: [...new Set([...v.loadingPaths, ...wanted.map((r) => r.path)])],
+    // What this batch wants, and NOT a union with what was already
+    // loading. Bumping the token abandons every worker of the previous
+    // batch: a path it had not reached is no longer being read by
+    // anyone, and a path it did reach has its answer dropped by `store`.
+    // Carrying those forward left the list saying "reading…" about cards
+    // nothing would ever answer for -- and, through the `loading` flag
+    // the tab derives from this, a Refresh button dark for the rest of
+    // the session. Anything still genuinely wanted is in `wanted`,
+    // because an entry is only skipped when it is already STORED.
+    loadingPaths: wanted.map((r) => r.path),
   }));
 
   let next = 0;

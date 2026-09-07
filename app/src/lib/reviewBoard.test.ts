@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
+  MEASURED_EMPTY_HINT,
   NO_FILES_GROUP_ID,
+  NO_FILES_HINT,
   NO_FILES_LABEL,
   fileLabel,
+  noFilesHint,
   groupCandidates,
   groupLabel,
   resolveReviewColumns,
@@ -221,6 +224,31 @@ describe("groupLabel", () => {
 
   it("says the fileless group's words rather than an empty header", () => {
     expect(groupLabel([])).toBe(NO_FILES_LABEL);
+  });
+
+  it("does not say why, because the group holds both answers", () => {
+    // "No files recorded" over a card whose own row says "0 files" is
+    // the list contradicting itself about the one distinction this
+    // module exists to draw.
+    expect(NO_FILES_LABEL).not.toMatch(/record/i);
+  });
+});
+
+describe("noFilesHint", () => {
+  it("says nobody measured these runs when nobody did", () => {
+    expect(noFilesHint([candidate("A", null), candidate("B", null)])).toBe(NO_FILES_HINT);
+  });
+
+  it("does not claim a measured run was never measured", () => {
+    const hint = noFilesHint([candidate("A", []), candidate("B", [])]);
+    expect(hint).toBe(MEASURED_EMPTY_HINT);
+    expect(hint).not.toContain("didn't record");
+  });
+
+  it("says both when the group holds both", () => {
+    const hint = noFilesHint([candidate("A", null), candidate("B", [])]);
+    expect(hint).toContain(NO_FILES_HINT);
+    expect(hint).toContain(MEASURED_EMPTY_HINT);
   });
 });
 

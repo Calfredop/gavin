@@ -98,8 +98,12 @@
            one on the board that does NOT move the card, and a reviewer
            whose card vanished from the list would have no way to know
            which action did it. -->
+      <!-- Names the Agents page rather than "a page of its own":
+           handleAgentSessionSpawned puts the session on the workspace's
+           Agents page beside every other spawned agent, and a reviewer
+           told to look for a new page would not find one. -->
       <p class="hint">
-        Opens on a page of its own, with this card's context. It leaves the card where it is.
+        Opens on the Agents page too, with this card's context. It leaves the card where it is.
       </p>
       {#if error}<p class="error">{error}</p>{/if}
     </div>

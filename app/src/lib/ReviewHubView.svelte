@@ -115,15 +115,39 @@
       .filter((r): r is TouchRequest => r !== null)
   );
 
-  // Fetch whenever the list changes. Cached entries are skipped inside
-  // the store, so typing in the search box costs nothing.
+  // What the list is ASKING FOR, reduced to a string. The effect below
+  // depends on this rather than on `requests`, and that indirection is
+  // load-bearing rather than tidy.
+  //
+  // `requests` is a fresh array on every emission of the board store,
+  // and the board is refetched on every `.gavin*` tree push
+  // (gavinState.ts) -- which is to say every time any agent in the fleet
+  // writes a card file. A `$derived` array is never equal to its
+  // predecessor, so the effect would re-enter on each of those; and
+  // `loadTouchedFiles` ABANDONS the batch in flight whenever a new one
+  // starts, throwing away up to FETCH_CONCURRENCY finished `git diff`s
+  // each time. On a busy fleet the first load would restart faster than
+  // it could finish and the list would sit on "reading…" forever.
+  //
+  // The key covers the baseline as well as the path, because that is
+  // exactly what makes a cached answer stale (see `cached` in
+  // reviewState.ts): a card re-launched onto a new sha has to be asked
+  // again, and nothing else has to be.
+  const requestKey = $derived(
+    requests.map((r) => `${r.path}\u0000${r.cwd}\u0000${r.baseSha}`).join("\n")
+  );
+
+  // Fetch whenever that set changes. Cached entries are skipped inside
+  // the store as well, so flipping the archive toggle back costs
+  // nothing.
   //
   // `untrack` around the call for the reason every other fetching effect
   // in the app uses it: the store this writes is one this component
   // reads, and without it the effect would re-run on its own result.
   $effect(() => {
-    const next = requests;
-    untrack(() => void loadTouchedFiles(workspaceId, next));
+    const id = workspaceId;
+    void requestKey;
+    untrack(() => void loadTouchedFiles(id, requests));
   });
 
   const view = $derived($reviewStore[workspaceId]);
@@ -141,6 +165,25 @@
   // the app. A selection pointing at a card the list no longer holds
   // renders three empty columns beside a list with plenty in it.
   const selected = $derived(resolveSelection(groups, prefs.selected));
+
+  // ...and then written down, so the answer stops moving. Nothing about
+  // `resolveSelection` is stable while the tab is loading: it falls back
+  // to the first card of the first group, `groupCandidates` orders
+  // groups by how many cards they hold, and that order changes with
+  // every batch of touched files that lands. Left underived, the three
+  // panes re-target — and the open diff is dropped — several times over
+  // on first open, without the human touching anything.
+  //
+  // Terminates on its own: once stored, `resolveSelection` answers with
+  // the stored path for as long as the list still holds it, so the
+  // second pass writes nothing.
+  $effect(() => {
+    const path = selected;
+    const stored = prefs.selected;
+    if (path === null || path === stored) return;
+    untrack(() => setReviewPrefs(workspaceId, { selected: path }));
+  });
+
   const card = $derived(listed.find((c) => c.id === selected) ?? null);
   const binding = $derived(card ? (cardSessionFor(board, card.id) ?? null) : null);
   const run = $derived(selected ? (view?.runs[selected] ?? null) : null);
@@ -165,6 +208,23 @@
   // object it holds, and the touched-file cache it keeps is what makes
   // coming back free (reviewState.ts).
   onDestroy(() => clearReviewFile(workspaceId));
+
+  // The three-column row, watched for the reason HomeHubView watches its
+  // agent cell: TerminalPane fits on mount and on a font-size change and
+  // at no other time, so a terminal whose column got wider keeps the rows
+  // and columns it was born with, and the agent goes on wrapping its
+  // output to a width that is no longer there. The row is the right thing
+  // to observe because every track in it is a fraction of the row -- and
+  // it moves without the window moving at all: collapsing the card list
+  // hands it that list's 280px.
+  let colsEl = $state<HTMLElement | null>(null);
+  let agentPane = $state<{ fit: () => void } | null>(null);
+  onMount(() => {
+    if (!colsEl) return;
+    const observer = new ResizeObserver(() => agentPane?.fit());
+    observer.observe(colsEl);
+    return () => observer.disconnect();
+  });
 
   function select(path: string): void {
     setReviewPrefs(workspaceId, { selected: path });
@@ -203,8 +263,8 @@
       <span class="title">{card?.title ?? "Nothing selected"}</span>
       {#if summary}<span class="summary">{summary}</span>{/if}
     </div>
-    <div class="cols">
-      <ReviewAgentPane {workspaceId} {card} {binding} />
+    <div class="cols" bind:this={colsEl}>
+      <ReviewAgentPane bind:this={agentPane} {workspaceId} {card} {binding} />
 
       <div class="files">
         <div class="head"><span class="label">Touched files</span></div>

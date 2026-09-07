@@ -176,6 +176,34 @@ describe("loadTouchedFiles", () => {
     await loadTouchedFiles(WS, []);
     expect(runChanges).not.toHaveBeenCalled();
   });
+
+  it("leaves nothing loading that no batch is reading any more", async () => {
+    // The failure this covers is a Refresh button that never comes back.
+    // A superseded worker returns without clearing its path, so a batch
+    // narrowed under it -- the human types in the search box while ten
+    // cards load -- used to leave the other nine in `loadingPaths` for
+    // the life of the store, and the tab derives `loading` from that.
+    const gates: Array<() => void> = [];
+    runChanges.mockImplementation(
+      () => new Promise<RunChanges>((resolve) => gates.push(() => resolve(changes())))
+    );
+
+    const wide = ["/a.md", "/b.md", "/c.md", "/d.md", "/e.md", "/f.md"].map((p) => request(p));
+    const first = loadTouchedFiles(WS, wide);
+    await Promise.resolve();
+    expect(viewFor(WS).loadingPaths).toHaveLength(wide.length);
+
+    const second = loadTouchedFiles(WS, [request("/z.md")]);
+    expect(viewFor(WS).loadingPaths).toEqual(["/z.md"]);
+
+    for (let i = 0; i < 20 && gates.length > 0; i++) {
+      gates.splice(0).forEach((resolve) => resolve());
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    await Promise.all([first, second]);
+    expect(viewFor(WS).loadingPaths).toEqual([]);
+  });
 });
 
 describe("selectReviewFile", () => {
