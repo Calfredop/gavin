@@ -23,16 +23,14 @@
     liveSessionIds,
     agentDefaultsStore,
     agentProfilesStore,
-    workspaceComplexityTable,
   } from "./layoutState";
   import {
     COMPLEXITY_LABELS,
     COMPLEXITY_LEVELS,
-    complexityEntry,
-    complexitySummary,
     NO_COMPLEXITY,
-    parseComplexity,
   } from "./complexity";
+  import CardAgentControls from "./CardAgentControls.svelte";
+  import { cardAgentSummary } from "./cardAgent";
   import {
     addAttachment,
     attachmentFromPick,
@@ -264,7 +262,7 @@
 
   // --- field writes (surgical, patch-on-success) -----------------------
   async function writeField(
-    key: "title" | "status" | "priority" | "labels" | "attachments" | "complexity",
+    key: "title" | "status" | "priority" | "labels" | "attachments" | "complexity" | "agent" | "model",
     value: string
   ): Promise<boolean> {
     errorMessage = null;
@@ -344,18 +342,44 @@
   function commitComplexity(): void {
     void writeField("complexity", complexity);
   }
-  /// What this level will actually launch, in one line under the row --
-  /// the whole reason the field exists, and the answer nobody should
-  /// have to open two settings panels to find. Null when the card says
-  /// nothing, which is the ordinary case.
-  const complexityLine = $derived(
-    complexitySummary(
-      parseComplexity(complexity),
-      complexityEntry(
-        parseComplexity(complexity),
-        $agentDefaultsStore.complexity,
-        workspaceComplexityTable(workspaceId)
-      ),
+
+  // --- the agent this card runs on --------------------------------------
+  // `complexity:` above answers "which agent" by proxy: rate the work
+  // once, let the table decide. These two lines answer it outright, for
+  // the card that is not like its level -- and they win, whole, over
+  // whatever the level would have picked (cardAgent.ts says why).
+  //
+  // A v31 daemon fails this in BOTH directions, which is why the gate
+  // disables the controls rather than letting a change fail: it refuses
+  // the two set_plan_field keys loudly, and it also never PARSES the two
+  // lines, so a card that already carries an override reads back as
+  // carrying none and runs at the workspace's default.
+  const cardAgentBlocked = $derived(featureBlockedReason($daemonCompat, "cardAgent"));
+  /// Read off `layoutState` rather than through `workspaceComplexityTable`,
+  /// which is a one-shot `get()`: this is a component, and a table read
+  /// once at mount would keep whatever the workspace said then.
+  const workspaceTable = $derived(
+    $layoutState.workspaces.find((w) => w.id === workspaceId)?.complexityAgents ?? {}
+  );
+  /// The complexity select's LIVE value, not the card's stored one, so
+  /// the line below follows a level the human is still choosing.
+  const agentFields = $derived({
+    agent: card.agent ?? "",
+    model: card.model ?? "",
+    complexity,
+  });
+  /// What this card will actually launch, in one line under the row --
+  /// the whole reason both fields exist, and the answer nobody should
+  /// have to open two settings panels to find. It also names which of
+  /// the two controls won, because a card can carry a level AND an
+  /// override and the row would otherwise show two answers with no way
+  /// to tell them apart. Null when the card says nothing at all, which
+  /// is the ordinary case.
+  const cardAgentLine = $derived(
+    cardAgentSummary(
+      agentFields,
+      $agentDefaultsStore.complexity,
+      workspaceTable,
       (id) => $agentProfilesStore.find((p) => p.id === id)?.label ?? id
     )
   );
@@ -1062,6 +1086,13 @@
             {/each}
           </select>
         </label>
+        <CardAgentControls
+          {workspaceId}
+          profiles={$agentProfilesStore}
+          card={agentFields}
+          blocked={cardAgentBlocked}
+          onChange={(key, value) => void writeField(key, value)}
+        />
         {#if card.parent}
           <div class="field">
             <span class="label">Part of</span>
@@ -1077,10 +1108,10 @@
           </div>
         {/if}
       </div>
-      {#if complexityBlocked}
-        <p class="warning">{complexityBlocked}</p>
-      {:else if complexityLine}
-        <p class="complexity-line">{complexityLine}</p>
+      {#if complexityBlocked ?? cardAgentBlocked}
+        <p class="warning">{complexityBlocked ?? cardAgentBlocked}</p>
+      {:else if cardAgentLine}
+        <p class="agent-line">{cardAgentLine}</p>
       {/if}
       {#if card.parseWarning}
         <p class="warning">This card's frontmatter has issues — some fields may not be readable.</p>
@@ -1698,10 +1729,11 @@
     margin: 6px 0 0;
   }
 
-  /* What the chosen level will actually launch. Quiet by design: it is
-     an answer to a question the human already asked with the select, not
-     a warning about anything. */
-  .complexity-line {
+  /* What this card will actually launch, level and override folded into
+     one sentence. Quiet by design: it is an answer to a question the
+     human already asked with the selects, not a warning about
+     anything. */
+  .agent-line {
     color: var(--text-subtle);
     font-size: 0.8em;
     margin: 6px 0 0;

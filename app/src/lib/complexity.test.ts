@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  agentConfigForComplexity,
+  agentConfigWithAttribution,
   COMPLEXITY_LABELS,
   COMPLEXITY_LEVELS,
   complexityEntry,
@@ -85,7 +85,7 @@ describe("complexityEntry", () => {
   });
 });
 
-describe("agentConfigForComplexity", () => {
+describe("agentConfigWithAttribution", () => {
   const base = {
     profile: "claude-code",
     file: "CLAUDE.md",
@@ -97,19 +97,19 @@ describe("agentConfigForComplexity", () => {
   // The property every launch route depends on: calling this
   // unconditionally must not change what an unrated card does.
   it("hands the base back untouched when nothing is attributed", () => {
-    expect(agentConfigForComplexity(base, null)).toBe(base);
-    expect(agentConfigForComplexity(null, null)).toBeNull();
+    expect(agentConfigWithAttribution(base, null)).toBe(base);
+    expect(agentConfigWithAttribution(null, null)).toBeNull();
   });
 
   it("keeps the whole workspace agent when the level names only a model", () => {
-    const r = agentConfigForComplexity(base, { profile: "", model: "opus" });
+    const r = agentConfigWithAttribution(base, { profile: "", model: "opus" });
     // The wrapper script and the hand-written MCP path survive: it
     // really is the same agent, only the model differs.
     expect(r).toEqual({ ...base, model: "opus" });
   });
 
   it("drops the workspace's binary-specific keys when the level switches profile", () => {
-    const r = agentConfigForComplexity(base, { profile: "codex", model: "gpt-5.1" });
+    const r = agentConfigWithAttribution(base, { profile: "codex", model: "gpt-5.1" });
     expect(r).toEqual({
       profile: "codex",
       file: null,
@@ -121,12 +121,12 @@ describe("agentConfigForComplexity", () => {
   });
 
   it("keeps them when the level names the profile the workspace already runs", () => {
-    const r = agentConfigForComplexity(base, { profile: "claude-code", model: "opus" });
+    const r = agentConfigWithAttribution(base, { profile: "claude-code", model: "opus" });
     expect(r).toEqual({ ...base, model: "opus" });
   });
 
   it("reads an empty model as the profile's own default, not as a blank", () => {
-    expect(agentConfigForComplexity(base, { profile: "codex", model: "  " })?.model).toBeNull();
+    expect(agentConfigWithAttribution(base, { profile: "codex", model: "  " })?.model).toBeNull();
   });
 });
 

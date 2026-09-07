@@ -257,6 +257,24 @@ export const FEATURE_MIN_VERSION = {
   // gavin composed would silently go nowhere. The Settings panel's Model
   // flag row is the one surface that can produce the payload.
   agentModelFlag: 31,
+  // A card's own `agent:` and `model:`. Two holes again, and this time
+  // BOTH matter -- the write and the read.
+  //
+  // The write is the loud half: a v31 daemon's set_plan_field allow-list
+  // has neither key, so the change fails with a message. The read is the
+  // silent one, and it is why the gate cannot just be a try/catch on the
+  // write: a v31 daemon never PARSES either line, so `PlanFileInfo`
+  // comes back with both absent and a card that already carries an
+  // override reads as carrying none. Nothing is broken on screen; the
+  // card simply runs at the workspace's default agent, which is
+  // indistinguishable from a card nobody overrode.
+  //
+  // min_version_for gates request TYPES, and this change adds no
+  // variant -- only two allowed key names and two serde(default) fields
+  // -- so it is structurally blind to all of it. This entry is the only
+  // gate there is; the card detail modal and the Plans tab strip both
+  // read it through featureBlockedReason.
+  cardAgent: 32,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

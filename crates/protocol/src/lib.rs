@@ -13,6 +13,36 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v32 lets ONE card say which agent and which model runs it, overriding
+/// both the complexity table and the workspace's own `[agent]` block.
+/// `PlanFileInfo` gains `agent` and `model`, and `SetPlanFrontmatterField`
+/// takes the two new key names.
+///
+/// The pair is the card's own statement and is read whole rather than
+/// merged half-by-half with the level's: a model name from one CLI in
+/// another's argv is garbage, so "this card's agent" replaces "this
+/// level's agent" outright. Either half alone is meaningful -- an
+/// `agent:` with no `model:` runs that binary at its own default, a
+/// `model:` with no `agent:` runs the workspace's binary at that model --
+/// which is the same shape the complexity table's rows already have.
+///
+/// Kept RAW at this layer, unlike `complexity`. The five levels are an
+/// enum the daemon owns, so it can refuse a misspelling; the profile
+/// table lives in the Tauri host (`agent_setup.rs`) and the model names
+/// belong to whichever CLI is installed, so the daemon has nothing to
+/// validate either value against. A value it invented a rule for would
+/// refuse writes the app knows are fine.
+///
+/// No new Request variant: `SetPlanFrontmatterField` merely gains two
+/// allowed KEYS, and `PlanFileInfo` gains two `serde(default)` fields, so
+/// `min_version_for` -- which gates by request type -- is structurally
+/// blind to the whole change. The gate that matters is the app's
+/// `FEATURE_MIN_VERSION.cardAgent`, and it has to cover BOTH directions:
+/// a v31 daemon refuses the two writes loudly, but it also never PARSES
+/// the two lines, so a card that already carries an override reads back
+/// as carrying none and runs at the workspace's default with nothing on
+/// screen to say so.
+///
 /// v31 taught a card how HARD it is, and taught the root config the flag
 /// that puts a model on a hand-written agent command. Two halves of one
 /// question -- which binary, at which model tier, executes this card:
@@ -216,7 +246,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 31;
+pub const PROTOCOL_VERSION: u32 = 32;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -1835,6 +1865,33 @@ pub struct PlanFileInfo {
     /// `serde(default)` so an older daemon's tree still parses.
     #[serde(default)]
     pub complexity: Option<Complexity>,
+    /// The card's `agent:` line -- the agent profile THIS card runs on,
+    /// whatever the complexity table or the workspace's own `[agent]`
+    /// block would otherwise pick -- or None where the card says nothing.
+    ///
+    /// Kept RAW, like `attachments` and unlike `complexity`: the profile
+    /// table lives in the Tauri host, so the daemon has nothing to check
+    /// a name against and inventing a rule here would refuse writes the
+    /// app knows are fine. A name the app cannot resolve reads back as
+    /// itself on the card, which is what makes a typo visible instead of
+    /// silent.
+    ///
+    /// Parsed on any card kind, like `complexity`, and `serde(default)`
+    /// so an older daemon's tree still parses.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The card's `model:` line -- the model that agent launches with.
+    /// Independent of `agent` above: on its own it means "this
+    /// workspace's own agent, at this model", which is the commonest
+    /// override of the two.
+    ///
+    /// Raw for a sharper version of `agent`'s reason: the names belong to
+    /// whichever CLI is installed, and gavin's own per-profile lists are
+    /// a convenience for the picker rather than a closed set.
+    ///
+    /// `serde(default)` so an older daemon's tree still parses.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// A markdown file in a context's docs/ or specs/ listing. `rel_path` is
@@ -2463,6 +2520,8 @@ mod tests {
                     modified_at: None,
                     attachments: vec!["docs/spec.md".to_string()],
                     complexity: Some(Complexity::Moderate),
+                    agent: Some("codex".to_string()),
+                    model: Some("gpt-5.1".to_string()),
                 }],
                 docs: vec![MdFileInfo {
                     path: "/tmp/ws/.gavin-root/docs/notes.md".to_string(),
@@ -2505,7 +2564,9 @@ mod tests {
                         "parseWarning": false,
                         "modifiedAt": null,
                         "attachments": ["docs/spec.md"],
-                        "complexity": "moderate"
+                        "complexity": "moderate",
+                        "agent": "codex",
+                        "model": "gpt-5.1"
                     }],
                     "docs": [{ "path": "/tmp/ws/.gavin-root/docs/notes.md", "relPath": "notes.md" }],
                     "specs": [],
@@ -2686,6 +2747,14 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v32: a card's OWN agent -- PlanFileInfo.agent/model, and the
+        // ninth and tenth SetPlanFrontmatterField keys. Neither is a new
+        // variant, and both fields are serde(default), so this match is
+        // structurally blind to the whole change: daemonCompat.ts's
+        // `cardAgent` is its only gate, and it has to cover the READ as
+        // well as the write -- a v31 daemon never parses the two lines,
+        // so a card that already carries an override reads back as
+        // carrying none and runs at the workspace's default.
         // v31: a card's `complexity:` (PlanFileInfo.complexity, an eighth
         // SetPlanFrontmatterField key, CreatePlan.complexity) and the
         // root config's `[agent] model_flag` (AgentConfig.model_flag, a
@@ -2780,7 +2849,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 31);
+        assert_eq!(PROTOCOL_VERSION, 32);
     }
 
     #[test]
@@ -3292,6 +3361,34 @@ mod tests {
     /// caller that predates the field has no `cwd` on the wire at all,
     /// and that has to parse as None -- "runs at the root" -- rather
     /// than failing the whole library read.
+    #[test]
+    fn a_card_scanned_before_v32_parses_as_naming_no_agent_of_its_own() {
+        // The read half of the `cardAgent` gate, in the one place it can
+        // be asserted: a v31 daemon sends neither field, and the app has
+        // to see "this card names nothing" rather than fail to parse the
+        // whole tree. Which is also why the gate is a hard one -- the
+        // absence is indistinguishable from a card that really names
+        // nothing.
+        let plan: PlanFileInfo = serde_json::from_value(serde_json::json!({
+            "path": "/ws/.gavin-root/plans/a.md",
+            "fileName": "a.md",
+            "title": "a",
+            "status": null,
+            "priority": null,
+            "order": null,
+            "kind": "task",
+            "parent": null,
+            "labels": [],
+            "checklistDone": 0,
+            "checklistTotal": 0,
+            "parseWarning": false
+        }))
+        .unwrap();
+        assert_eq!(plan.agent, None);
+        assert_eq!(plan.model, None);
+        assert_eq!(plan.complexity, None);
+    }
+
     #[test]
     fn a_tool_def_written_before_v30_parses_with_no_working_directory() {
         let tool: ToolDef = serde_json::from_value(serde_json::json!({

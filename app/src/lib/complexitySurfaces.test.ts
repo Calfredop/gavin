@@ -76,8 +76,13 @@ describe("the card surfaces", () => {
   it("tells the human what the level will actually launch", () => {
     // The whole reason the field exists. Without this the modal offers a
     // choice whose consequence lives in two other panels.
-    expect(source(DETAIL)).toContain("complexitySummary(");
-    expect(source(DETAIL)).toContain("complexityLine");
+    //
+    // Through `cardAgentSummary` rather than `complexitySummary` since
+    // v32: the card's own `agent:`/`model:` can beat the level, and two
+    // independent lines would leave the modal asserting both answers at
+    // once. See cardAgentSurfaces.test.ts.
+    expect(source(DETAIL)).toContain("cardAgentSummary(");
+    expect(source(DETAIL)).toContain("cardAgentLine");
   });
 });
 

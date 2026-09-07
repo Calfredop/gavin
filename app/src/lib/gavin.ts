@@ -32,6 +32,15 @@ export interface PlanFileInfo {
   // Optional for the same reason `attachments` is, and additionally
   // because a pre-v31 daemon never sends it.
   complexity?: Complexity | null;
+  // The card's `agent:` and `model:` lines -- the profile and model THIS
+  // card runs on, whatever its complexity level or the workspace would
+  // otherwise pick. RAW, like `attachments` and unlike `complexity`: the
+  // daemon has no profile table to check a name against, so a value the
+  // app cannot resolve reads back as itself and the typo is visible.
+  // Optional for the same reasons as the fields above, and additionally
+  // because a pre-v32 daemon never sends either.
+  agent?: string | null;
+  model?: string | null;
 }
 
 export interface MdFileInfo {

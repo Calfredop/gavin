@@ -181,10 +181,12 @@ export async function developCard(
   // The card file is never read here: the skill's first move is to read
   // it, and inlining a task's body is what turns an interview into a
   // build.
-  // The WORKSPACE's agent, not the card's complexity one, and
-  // deliberately: develop is an interview that rewrites a one-line card
-  // into work, so the level on the card (if there is one at all) rates
-  // the implementation nobody has written yet, not this conversation.
+  // The WORKSPACE's agent, not the card's own, and deliberately: develop
+  // is an interview that rewrites a one-line card into work, so whatever
+  // the card names -- a level, or an `agent:`/`model:` of its own --
+  // describes the implementation nobody has written yet, not this
+  // conversation. The same reasoning covers both: the choice is about
+  // executing the card, and developing it is not executing it.
   const agent = resolvedAgentFor(workspaceId);
   const command = buildRunCommand(
     agent.launchCommand,
@@ -258,11 +260,12 @@ async function launchCard(
   // prompt refuses every card, so resolving attachments for one is work
   // with no possible outcome.
   //
-  // Which agent, though, is the card's own business: its `complexity:`
-  // picks one out of the two settings tables, and a card that names no
-  // level (or a level nobody attributed) resolves to exactly the
-  // workspace's agent -- so this reads the same as `resolvedAgentFor`
-  // did for every card that predates the field.
+  // Which agent, though, is the card's own business: its `agent:` and
+  // `model:` name one outright, its `complexity:` picks one out of the
+  // two settings tables, and a card that says neither (or a level nobody
+  // attributed) resolves to exactly the workspace's agent -- so this
+  // reads the same as `resolvedAgentFor` did for every card that
+  // predates the fields.
   const agent = agentForCard(workspaceId, card);
   if (agent.promptArgs === null) return noPromptReason(agent.label);
 
@@ -540,8 +543,8 @@ export async function relaunchCard(workspaceId: string, path: string): Promise<s
   // least.
   const developing = developingBlocker(workspaceId, path);
   if (developing) return developing;
-  // Through the card's complexity, not the workspace's agent, because
-  // the command being replayed is the one that card LAUNCHED with -- and
+  // Through the card's OWN agent, not the workspace's, because the
+  // command being replayed is the one that card LAUNCHED with -- and
   // `sessionIdArgs` below has to describe that binary. Resolving the
   // workspace's agent here would hand codex's replay claude's
   // `--session-id`, which is garbage in its argv.

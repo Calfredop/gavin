@@ -7,9 +7,10 @@
   import { cardIndex, nestedChildrenOf } from "./orchestration";
   import { guardCompletion } from "./cardCompletion";
   import * as backend from "./backend";
-  import { daemonCompat } from "./layoutState";
+  import { agentProfilesStore, daemonCompat } from "./layoutState";
   import { featureBlockedReason } from "./daemonCompat";
   import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, NO_COMPLEXITY } from "./complexity";
+  import CardAgentControls from "./CardAgentControls.svelte";
 
   interface Props {
     plan: PlanFileInfo;
@@ -27,6 +28,12 @@
   /// write fails on change. Disabled with the reason instead -- the same
   /// gate the card detail modal and the composer carry.
   const complexityBlocked = $derived(featureBlockedReason($daemonCompat, "complexity"));
+
+  /// A v31 daemon refuses the `agent`/`model` keys AND never parses the
+  /// two lines, so a card that already carries an override would read
+  /// back as carrying none. Disabled with the reason, like the level
+  /// above.
+  const cardAgentBlocked = $derived(featureBlockedReason($daemonCompat, "cardAgent"));
 
   let titleDraft = $state(plan.title);
   let error = $state<string | null>(null);
@@ -76,7 +83,7 @@
   /// True when the field was actually written -- a caller holding a
   /// control's own draft has to know whether to put it back.
   async function commit(
-    key: "title" | "status" | "priority" | "complexity",
+    key: "title" | "status" | "priority" | "complexity" | "agent" | "model",
     value: string
   ): Promise<boolean> {
     error = null;
@@ -160,6 +167,13 @@
       {/each}
     </select>
   </label>
+  <CardAgentControls
+    {workspaceId}
+    profiles={$agentProfilesStore}
+    card={plan}
+    blocked={cardAgentBlocked}
+    onChange={(key, value) => void commit(key, value)}
+  />
   {#if plan.labels.length > 0}
     <span class="labels" title="labels: {plan.labels.join(', ')}">{plan.labels.join(" · ")}</span>
   {/if}

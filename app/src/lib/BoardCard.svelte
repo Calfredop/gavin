@@ -2,8 +2,9 @@
   import type { Snippet } from "svelte";
   import type { Label } from "./kanban";
   import { slugStatus, type CardView } from "./planBoard";
-  import { FileText, TriangleAlert, StickyNote, Play, Route, Paperclip, Gauge, ChevronRight, ChevronDown } from "@lucide/svelte";
+  import { FileText, TriangleAlert, StickyNote, Play, Route, Paperclip, Gauge, Bot, ChevronRight, ChevronDown } from "@lucide/svelte";
   import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, parseComplexity } from "./complexity";
+  import { cardOverrideNote } from "./cardAgent";
   import IconButton from "./ui/IconButton.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import {
@@ -188,6 +189,12 @@
   const complexityStep = $derived(
     complexityLevel ? COMPLEXITY_LEVELS.indexOf(complexityLevel) + 1 : 0
   );
+  /// A card that names its own agent or model runs somewhere its column
+  /// does not explain, so the board says so. Only the card's OWN lines
+  /// count here, never the agent its complexity level resolves to: the
+  /// level already has a chip of its own beside this one, and a glyph on
+  /// every rated card would say nothing about which of them is unusual.
+  const agentOverride = $derived(cardOverrideNote(card));
 
   const labelChips = $derived(
     card.labels.map((name) => ({
@@ -292,6 +299,11 @@
       >
         <Gauge size={11} />
         <span class="complexity-step">{complexityStep}</span>
+      </span>
+    {/if}
+    {#if agentOverride}
+      <span class="agent-override" use:tooltip={agentOverride}>
+        <Bot size={11} />
       </span>
     {/if}
     {#if card.kind === "plan" && card.checklistTotal > 0}
@@ -557,6 +569,16 @@
   .complexity-step {
     font-family: monospace;
     font-size: 0.7em;
+  }
+  /* Same rules again: a glyph in the same footer strip, next to the
+     level it overrides. */
+  .agent-override {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+  }
+  .card:hover .agent-override {
+    color: var(--text);
   }
   .progress {
     color: var(--text-muted);

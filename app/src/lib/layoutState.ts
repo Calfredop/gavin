@@ -40,13 +40,12 @@ import type { StatusSince } from "./attentionInbox";
 import { indexQueued, type QueuedInput } from "./queuedInput";
 import { candidateAgentConfig, type Candidate } from "./bestOfN";
 import {
-  agentConfigForComplexity,
-  complexityEntry,
+  agentConfigWithAttribution,
   EMPTY_AGENT_DEFAULTS,
-  parseComplexity,
   type AgentDefaults,
   type ComplexityTable,
 } from "./complexity";
+import { cardAgentEntry, type CardAgentFields } from "./cardAgent";
 import {
   activeWorkspaceForWindow,
   isInAnotherWindow,
@@ -1665,31 +1664,33 @@ export function workspaceComplexityTable(workspaceId: string): ComplexityTable {
 }
 
 /// The agent that should execute THIS card: the workspace's own, unless
-/// the card's `complexity:` names a level the tables attribute to
-/// another agent or model.
+/// the card names another one -- either outright, in its own
+/// `agent:`/`model:` lines, or through the `complexity:` level the
+/// tables attribute to a different agent. `cardAgentEntry` owns which
+/// of the two wins.
 ///
 /// Through `resolveAgentConfig` for the same reason `candidateAgentFor`
-/// is: a complexity-attributed run is not a special kind of launch. It
-/// needs the same fallbacks, the same `promptArgs` refusal, the same
-/// failure patterns and the same conversation argv as any other, and a
-/// second resolution path here is how those quietly stop matching.
+/// is: an attributed run is not a special kind of launch. It needs the
+/// same fallbacks, the same `promptArgs` refusal, the same failure
+/// patterns and the same conversation argv as any other, and a second
+/// resolution path here is how those quietly stop matching.
 ///
-/// A card with no level, or a level no table attributes, resolves to
-/// EXACTLY `resolvedAgentFor` -- so every launch route can call this
-/// unconditionally and behave as it did before the field existed.
+/// A card that names nothing, and whose level no table attributes,
+/// resolves to EXACTLY `resolvedAgentFor` -- so every launch route can
+/// call this unconditionally and behave as it did before either field
+/// existed.
 export function agentForCard(
   workspaceId: string,
-  card: { complexity?: string | null } | null | undefined
+  card: CardAgentFields | null | undefined
 ) {
-  const level = parseComplexity(card?.complexity);
-  const entry = complexityEntry(
-    level,
+  const entry = cardAgentEntry(
+    card,
     get(agentDefaultsStore).complexity,
     workspaceComplexityTable(workspaceId)
   );
   if (!entry) return resolvedAgentFor(workspaceId);
   return resolveAgentConfig(
-    agentConfigForComplexity(workspaceAgentConfig(workspaceId), entry),
+    agentConfigWithAttribution(workspaceAgentConfig(workspaceId), entry),
     get(agentProfilesStore),
     get(agentModelDefaultsStore),
     customAgentDefault(get(agentDefaultsStore))
@@ -1747,6 +1748,35 @@ export const resolvedAgents = derived(
         $models,
         customAgentDefault($defaults)
       )
+);
+
+/// The same answer for a CARD, reactively: `$cardAgents(workspaceId,
+/// card)`.
+///
+/// `agentForCard` above is four `get()`s, which is right for an action
+/// -- it runs once, at the moment of the click -- and wrong for a
+/// component, which would keep whatever the profile table said at
+/// mount. The table is fetched asynchronously at bootstrap, so a card
+/// modal derived from the one-shot helper would show claude-code's
+/// model flag for a card the human pointed at codex, and would go on
+/// showing it for the life of the modal.
+export const cardAgents = derived(
+  [gavinTrees, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
+  ([$trees, $layout, $profiles, $models, $defaults]) =>
+    (workspaceId: string, card: CardAgentFields | null | undefined) => {
+      const base = $trees[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null;
+      const entry = cardAgentEntry(
+        card,
+        $defaults.complexity,
+        $layout.workspaces.find((w) => w.id === workspaceId)?.complexityAgents ?? {}
+      );
+      return resolveAgentConfig(
+        agentConfigWithAttribution(base, entry),
+        $profiles,
+        $models,
+        customAgentDefault($defaults)
+      );
+    }
 );
 
 // Starts the workspace's main agent: a normal daemon session at the

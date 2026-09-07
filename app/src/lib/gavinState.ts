@@ -120,7 +120,17 @@ export function patchPlanPath(workspaceId: string, oldPath: string, newPath: str
 export function patchPlanField(
   workspaceId: string,
   path: string,
-  key: "status" | "priority" | "order" | "title" | "parent" | "labels" | "attachments" | "complexity",
+  key:
+    | "status"
+    | "priority"
+    | "order"
+    | "title"
+    | "parent"
+    | "labels"
+    | "attachments"
+    | "complexity"
+    | "agent"
+    | "model",
   value: string
 ): void {
   gavinTrees.update((m) => {
@@ -146,6 +156,11 @@ export function patchPlanField(
         // and an empty value clears the field back to "unrated", which
         // is a different answer from "trivial".
         if (key === "complexity") return { ...p, complexity: parseComplexity(value) };
+        // Trimmed the way the daemon trims them, and an empty value
+        // clears the line back to inheriting -- which is a different
+        // answer from naming the profile the workspace happens to be on.
+        if (key === "agent") return { ...p, agent: value.trim() || null };
+        if (key === "model") return { ...p, model: value.trim() || null };
         const n = Number(value);
         return Number.isFinite(n) ? { ...p, order: n } : p;
       }),

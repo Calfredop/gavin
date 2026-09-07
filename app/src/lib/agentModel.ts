@@ -46,9 +46,30 @@ export function composeLaunchCommand(command: string, flag: string, model: strin
   return `${command} ${flag} ${chosen}`;
 }
 
-/// The rows a model picker renders: inherit, then each preset, then
-/// Custom. The inherit row is labelled with the value it inherits, so a
-/// panel never shows an empty box that is secretly doing something.
+/// The rows themselves: inherit, then each preset, then Custom. The
+/// inherit row is labelled with the value it inherits, so a panel never
+/// shows an empty box that is secretly doing something.
+///
+/// Split from the flag gate below because a CARD's picker needs the rows
+/// without it. A settings panel is configuring that agent, so offering a
+/// model control it has no flag for would be offering a control that
+/// cannot work -- but a card can carry a `model:` written when its agent
+/// was a different one, and hiding the control there leaves a line the
+/// human can see on the card and has no way to clear. The card surfaces
+/// answer the flag question beside the control instead, as a warning.
+export function modelChoices(
+  profile: { models: string[] },
+  inheritedDefault: string
+): ModelOption[] {
+  const inherited = inheritedDefault.trim();
+  return [
+    { value: "", label: inherited ? `Default (${inherited})` : "(unset)" },
+    ...profile.models.map((m) => ({ value: m, label: m })),
+    { value: CUSTOM_MODEL, label: "Custom…" },
+  ];
+}
+
+/// The rows a SETTINGS model picker renders.
 ///
 /// Empty for a profile with no flag -- gavin has no verified way to put a
 /// model on that command, and the panel must say so rather than offer a
@@ -58,10 +79,5 @@ export function modelOptions(
   globalDefault: string
 ): ModelOption[] {
   if (!profile.modelFlag) return [];
-  const inherited = globalDefault.trim();
-  return [
-    { value: "", label: inherited ? `Default (${inherited})` : "(unset)" },
-    ...profile.models.map((m) => ({ value: m, label: m })),
-    { value: CUSTOM_MODEL, label: "Custom…" },
-  ];
+  return modelChoices(profile, globalDefault);
 }

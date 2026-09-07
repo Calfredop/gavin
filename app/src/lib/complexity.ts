@@ -131,22 +131,30 @@ export function complexityEntry(
   return isAttributed(shared) ? (shared as ComplexityAgent) : null;
 }
 
-/// The agent config a card of this complexity resolves through: the
-/// workspace's own, with the level's profile and/or model laid over it.
+/// The agent config an attributed card resolves through: the workspace's
+/// own, with the attribution's profile and/or model laid over it.
 ///
-/// Returns the base UNTOUCHED when the level names nothing, which is what
-/// makes this safe to put on every launch route -- a workspace with an
-/// empty table behaves exactly as it did before the field existed.
+/// Takes any `{profile, model}` pair rather than a level's, because two
+/// things now produce one -- the complexity table, and a card's own
+/// `agent:`/`model:` lines (cardAgent.ts). They differ only in where the
+/// pair came from; laying it over the workspace's config is the same
+/// operation, and a second copy of it is how the two answers start
+/// resolving by different rules.
+///
+/// Returns the base UNTOUCHED when the attribution names nothing, which
+/// is what makes this safe to put on every launch route -- a workspace
+/// with an empty table and unattributed cards behaves exactly as it did
+/// before either field existed.
 ///
 /// The overlay follows `candidateAgentConfig`'s rule and for the same
 /// reason: `command`, `file`, `mcpFile` and `modelFlag` describe the
 /// binary the WORKSPACE chose -- a pinned wrapper script, an absolute
 /// path, a hand-written MCP location -- so carrying them onto a
 /// DIFFERENT profile is garbage in that profile's argv and a config file
-/// written to the wrong place. A level that names only a model is
-/// therefore the gentle case: same agent, different model. A level that
+/// written to the wrong place. An attribution that names only a model is
+/// therefore the gentle case: same agent, different model. One that
 /// names another profile is a clean switch to it.
-export function agentConfigForComplexity(
+export function agentConfigWithAttribution(
   base: AgentConfig | null | undefined,
   entry: ComplexityAgent | null
 ): AgentConfig | null | undefined {

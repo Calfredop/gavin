@@ -194,6 +194,21 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
             parsed
         }
     };
+    // The other half of the same question `complexity` asks, said
+    // outright instead of through a level: which agent, at which model,
+    // runs THIS card. Kept raw and unvalidated, which is the `attachments`
+    // posture rather than the `complexity` one -- the profile table lives
+    // in the Tauri host and the model names belong to whichever CLI is
+    // installed, so there is nothing here to check either value against,
+    // and a rule invented at this layer would refuse writes the app knows
+    // are fine. A name the app cannot resolve reads back as itself on the
+    // card, which is what makes a typo visible rather than silent.
+    //
+    // Parsed on every kind, like `complexity` and for the same reason: a
+    // note is a fine place to record that something will need the big
+    // model, even though nothing will ever run it.
+    let agent = get("agent").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let model = get("model").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     let (checklist_done, checklist_total) = checklist_counts(content);
     PlanFileInfo {
         path: path.to_string_lossy().to_string(),
@@ -208,6 +223,8 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         labels,
         attachments,
         complexity,
+        agent,
+        model,
         checklist_done,
         checklist_total,
         parse_warning: warning,
@@ -781,13 +798,15 @@ pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<Pat
     // Empty value removes the line -- permitted only where the card model
     // needs it (status: nesting, parent: un-parenting, labels: clearing,
     // attachments: removing the last one, complexity: back to "nobody
-    // said", which is a different answer from "trivial"). Clearing
+    // said", which is a different answer from "trivial", agent/model:
+    // back to whatever the level or the workspace picks). Clearing
     // matters more for attachments than for labels: an empty
     // `attachments:` line would parse to nothing anyway, but leaving it
     // behind is a card that still LOOKS like it references a file.
     if value.is_empty() {
         match key {
-            "status" | "parent" | "labels" | "attachments" | "complexity" => {
+            "status" | "parent" | "labels" | "attachments" | "complexity" | "agent"
+            | "model" => {
                 write_plan_field(path, key, value)?;
                 return relocate_for_status(path);
             }
@@ -850,6 +869,18 @@ pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<Pat
                 .ok_or_else(|| anyhow::anyhow!("invalid complexity value: {value}"))?;
             write_plan_field(path, key, level.as_str())?;
             return relocate_for_status(path);
+        }
+        // Single-line and otherwise unvalidated, the `attachments`
+        // posture rather than `complexity`'s: the profile table lives in
+        // the Tauri host and a model name belongs to whichever CLI is
+        // installed, so the daemon has nothing to check either against.
+        // Refusing what it cannot check would refuse writes the app knows
+        // are fine; a name the app cannot resolve shows back on the card
+        // as what it says instead.
+        "agent" | "model" => {
+            if value.contains('\n') {
+                anyhow::bail!("{key} must be a single line");
+            }
         }
         other => anyhow::bail!("field not allowed: {other}"),
     }
@@ -2029,6 +2060,61 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "---\ntitle: T\n---\nbody\n");
 
         assert!(set_plan_field(&path, "complexity", "gnarly").is_err());
+    }
+
+    #[test]
+    fn card_agent_and_model_parse_raw_on_every_kind() {
+        let card = plan("---\nagent: codex\nmodel: gpt-5.1\n---\n");
+        assert_eq!(card.agent.as_deref(), Some("codex"));
+        assert_eq!(card.model.as_deref(), Some("gpt-5.1"));
+        // Padding is the human's; the value is not.
+        let padded = plan("---\nagent:   claude-code  \nmodel:  opus \n---\n");
+        assert_eq!(padded.agent.as_deref(), Some("claude-code"));
+        assert_eq!(padded.model.as_deref(), Some("opus"));
+        // Either half alone is meaningful: a model with no agent runs the
+        // workspace's own binary at that model, which is the commonest
+        // override of the two.
+        assert_eq!(plan("---\nmodel: opus\n---\n").agent, None);
+        assert_eq!(plan("---\nmodel: opus\n---\n").model.as_deref(), Some("opus"));
+        // A note is a fine place to record which agent will be needed.
+        assert_eq!(plan("---\nkind: note\nagent: codex\n---\n").agent.as_deref(), Some("codex"));
+        assert_eq!(plan("---\ntitle: A\n---\n").agent, None);
+        assert_eq!(plan("---\ntitle: A\n---\n").model, None);
+        // The `attachments` posture, NOT `complexity`'s: the profile
+        // table lives in the Tauri host and the model names belong to
+        // whichever CLI is installed, so an unknown value is kept and
+        // shown back rather than dropped -- that is what makes a typo
+        // visible instead of silently running the workspace default.
+        let unknown = plan("---\nagent: not-a-profile\n---\n");
+        assert_eq!(unknown.agent.as_deref(), Some("not-a-profile"));
+        assert!(!unknown.parse_warning);
+    }
+
+    #[test]
+    fn set_plan_field_writes_and_clears_the_card_agent_and_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.md");
+        std::fs::write(&path, "---\ntitle: T\n---\nbody\n").unwrap();
+
+        set_plan_field(&path, "agent", "codex").unwrap();
+        set_plan_field(&path, "model", "gpt-5.1").unwrap();
+        let info = plan_file_info(&path, &std::fs::read_to_string(&path).unwrap());
+        assert_eq!(info.agent.as_deref(), Some("codex"));
+        assert_eq!(info.model.as_deref(), Some("gpt-5.1"));
+
+        // The sixth and seventh keys an empty value may clear. Clearing
+        // is what "back to inheriting" IS: the card returns to whatever
+        // its complexity level, or the workspace, picks -- and a leftover
+        // `agent:` line with nothing after it would read as a card that
+        // still names one.
+        set_plan_field(&path, "agent", "").unwrap();
+        set_plan_field(&path, "model", "").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "---\ntitle: T\n---\nbody\n");
+
+        // Unvalidated per value, single-line by shape: a second line
+        // would corrupt the frontmatter rather than express anything.
+        assert!(set_plan_field(&path, "agent", "codex\nclaude-code").is_err());
+        assert!(set_plan_field(&path, "model", "opus\nsonnet").is_err());
     }
 
     #[test]

@@ -176,9 +176,9 @@ fn tool_definitions() -> Value {
             "attachments": { "type": "string", "description": "Comma-separated files the card points at; relative resolves against the workspace root, absolute is kept as-is" },
             "complexity": { "type": "string", "enum": ["trivial", "simple", "moderate", "complex", "intricate"], "description": "How hard the work is. The human maps each level to an agent and model, so this picks what executes the card; omit it and the card runs the workspace's own agent" }
         }, "required": ["context_folder", "file_name", "title"] } },
-        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, integer order, or complexity) of a plan file, preserving every other byte. Setting status to In Progress claims the card for your session, so the board stops offering to start a second agent on it — write it when you START, not only when you finish. Setting status to Done files the card under plans/done/ (and any status off Done brings it back), and every nested task under it travels with it — a nested task has no status of its own, so filing the plan files them; the reply carries the card's path afterwards, and names any that went with it.", "inputSchema": { "type": "object", "properties": {
+        { "name": "gavin_set_plan_field", "description": "Update one frontmatter field (status, priority, integer order, complexity, or the agent/model this card runs on) of a plan file, preserving every other byte. `agent` is an agent profile id and `model` a model name; either one overrides what the complexity level and the workspace would otherwise launch, and an empty value clears it back to inheriting. Setting status to In Progress claims the card for your session, so the board stops offering to start a second agent on it — write it when you START, not only when you finish. Setting status to Done files the card under plans/done/ (and any status off Done brings it back), and every nested task under it travels with it — a nested task has no status of its own, so filing the plan files them; the reply carries the card's path afterwards, and names any that went with it.", "inputSchema": { "type": "object", "properties": {
             "path": { "type": "string" },
-            "key": { "type": "string", "enum": ["status", "priority", "order", "complexity"] },
+            "key": { "type": "string", "enum": ["status", "priority", "order", "complexity", "agent", "model"] },
             "value": { "type": "string" }
         }, "required": ["path", "key", "value"] } },
         { "name": "gavin_create_context", "description": "Turn a folder into a gavin context (.gavin scaffold) for a feature/library.", "inputSchema": { "type": "object", "properties": {
@@ -1247,6 +1247,8 @@ mod tests {
             modified_at: None,
             attachments: vec![],
             complexity: None,
+            agent: None,
+            model: None,
         };
         protocol::GavinTree {
             root_path: "/ws".into(),
