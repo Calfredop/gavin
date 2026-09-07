@@ -59,7 +59,7 @@
     toggleHubTabsUnlocked,
   } from "$lib/hubTabPrefs";
   import { getDragKind, getDragPayload, setDragPayload } from "$lib/dragDrop";
-  import { ArrowLeftRight } from "@lucide/svelte";
+  import { Lock, LockOpen } from "@lucide/svelte";
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";
   import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration";
   import { tooltip } from "$lib/tooltip";
@@ -396,9 +396,12 @@
                    narrow window must never be able to push it out of
                    reach. Locked is the resting state -- a tab row that
                    rearranged itself whenever a click drifted would move
-                   the thing you were aiming at. -->
+                   the thing you were aiming at. The padlock shows the
+                   state it is IN, not the action -- open means the row
+                   is loose right now, which is the thing worth noticing
+                   at a glance. -->
               <IconButton
-                icon={ArrowLeftRight}
+                icon={$hubTabsUnlocked ? LockOpen : Lock}
                 label={$hubTabsUnlocked ? "Lock the tab order" : "Rearrange the tabs"}
                 size={12}
                 class="arrange-toggle"
