@@ -29,6 +29,8 @@ import {
   effectiveCycle,
   loadAgentPause,
   mayStartWork,
+  nowStore,
+  pausedWorkspaces,
   pauseFor,
   profilesInUse,
   refreshUsage,
@@ -199,5 +201,43 @@ describe("the gate", () => {
     expect(startBlockedReason("w1")).toBe(
       "work is paused: the Weekly limit is 97% used, and it has not said when that clears"
     );
+  });
+});
+
+describe("pausedWorkspaces", () => {
+  function atLimit(percent: number): AgentUsageReport {
+    return {
+      state: "ready",
+      windows: [{ id: "seven_day", label: "Weekly", usedPercent: percent, resetsAt: null }],
+      plan: null,
+      observedAt: 1,
+      cached: false,
+    };
+  }
+
+  it("names every held workspace, not only the one in front of you", () => {
+    // The hub is about the whole fleet: a workspace can be at its limit
+    // while the active one has room, and `activePause` cannot say so.
+    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    agentUsageStore.set({ "claude-code": atLimit(97) });
+    layoutState.set({
+      workspaces: [
+        { id: "w1", name: "One" },
+        { id: "w2", name: "Two" },
+      ],
+      activeWorkspaceId: "w1",
+    } as never);
+    nowStore.set(ANCHOR);
+    const held = get(pausedWorkspaces);
+    expect(held.map((w) => w.name)).toEqual(["One", "Two"]);
+    expect(held[0].verdict.why).toContain("97% used");
+  });
+
+  it("is empty while nothing is held", () => {
+    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    agentUsageStore.set({ "claude-code": atLimit(12) });
+    layoutState.set({ workspaces: [{ id: "w1", name: "One" }], activeWorkspaceId: "w1" } as never);
+    nowStore.set(ANCHOR);
+    expect(get(pausedWorkspaces)).toEqual([]);
   });
 });

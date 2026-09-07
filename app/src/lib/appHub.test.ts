@@ -7,6 +7,11 @@ import {
   runningTasks,
   runningTaskCount,
   fleetSummary,
+  sessionsRecap,
+  sessionsAttentionLine,
+  usageRecap,
+  usageRowNote,
+  worstUsageRow,
   APP_LINKS,
   APP_VERSION,
   type AppLink,
@@ -14,6 +19,9 @@ import {
   type FleetState,
   type WorkspaceRunning,
 } from "./appHub";
+import { totalUsage, type SessionRow } from "./sessionsManager";
+import type { AgentUsageReport } from "./agentUsage";
+import type { AgentProfileInfo } from "./settings";
 import type { WorkspaceAgentsSummary } from "./sidebarSummary";
 import { UNFILED_WORKSPACE_ID, type Page, type Workspace } from "./workspace";
 import type { LayoutNode } from "./layout";
@@ -548,5 +556,223 @@ describe("fleetSummary", () => {
     });
     expect(fleetSummary(bundle).tasks).toBe(runningTaskCount(runningTasks(bundle)));
     expect(fleetSummary(bundle).tasks).toBe(2);
+  });
+});
+
+// ---- the two recaps under the fleet ----------------------------------
+
+function row(over: Partial<SessionRow> = {}): SessionRow {
+  return {
+    id: "s1",
+    label: "shell",
+    command: null,
+    cwd: "/ws",
+    status: "idle",
+    workspaceName: "A",
+    where: "Page",
+    visible: true,
+    staleness: null,
+    stale: false,
+    state: "idle",
+    note: null,
+    cpuPercent: null,
+    memBytes: null,
+    processCount: 1,
+    pid: 100,
+    orphan: null,
+    ...over,
+  };
+}
+
+function staleRow(id: string, kind: "orphaned" | "exited" | "interrupted"): SessionRow {
+  return row({ id, staleness: kind, stale: true, state: kind, visible: false });
+}
+
+describe("sessionsRecap", () => {
+  it("counts hidden and stale over every row, not over the ones it shows", () => {
+    const rows = [
+      staleRow("a", "exited"),
+      staleRow("b", "exited"),
+      staleRow("c", "orphaned"),
+      staleRow("d", "interrupted"),
+      staleRow("e", "exited"),
+      row({ id: "live" }),
+    ];
+    const recap = sessionsRecap(rows, 2);
+    expect(recap.sessions).toBe(6);
+    expect(recap.stale).toBe(5);
+    // Five stale rows are invisible, and the live one is on a page.
+    expect(recap.hidden).toBe(5);
+    expect(recap.attention.map((r) => r.id)).toEqual(["a", "b"]);
+    expect(recap.more).toBe(3);
+  });
+
+  it("keeps the order sessionRows handed over rather than ranking by cost", () => {
+    // A recap whose rows reshuffled every poll would be unreadable
+    // precisely when it matters, and these rows sit under a pointer.
+    const rows = [
+      staleRow("first", "orphaned"),
+      staleRow("second", "exited"),
+      staleRow("third", "interrupted"),
+    ];
+    rows[2].memBytes = 9_000_000_000;
+    expect(sessionsRecap(rows).attention.map((r) => r.id)).toEqual(["first", "second", "third"]);
+  });
+
+  it("never reports more rows than it left out", () => {
+    const recap = sessionsRecap([staleRow("a", "exited")], 4);
+    expect(recap.attention).toHaveLength(1);
+    expect(recap.more).toBe(0);
+  });
+
+  it("totals through the task manager's own sum, so the two surfaces agree", () => {
+    const rows = [
+      row({ id: "a", cpuPercent: 12.5, memBytes: 1000, processCount: 2 }),
+      row({ id: "b", cpuPercent: 7.5, memBytes: 500, processCount: 3 }),
+    ];
+    expect(sessionsRecap(rows).totals).toEqual(totalUsage(rows));
+    expect(sessionsRecap(rows).totals.cpuPercent).toBe(20);
+  });
+
+  it("has nothing to say about a daemon holding only visible, healthy sessions", () => {
+    const recap = sessionsRecap([row({ id: "a" }), row({ id: "b" })]);
+    expect(recap.attention).toEqual([]);
+    expect(sessionsAttentionLine(recap)).toBeNull();
+  });
+
+  it("names only the buckets that are not empty", () => {
+    expect(sessionsAttentionLine(sessionsRecap([staleRow("a", "exited")]))).toBe("1 hidden · 1 stale");
+    expect(sessionsAttentionLine(sessionsRecap([row({ id: "a", visible: false })]))).toBe("1 hidden");
+  });
+});
+
+function profile(id: string, over: Partial<AgentProfileInfo> = {}): AgentProfileInfo {
+  return {
+    id,
+    label: id.toUpperCase(),
+    instructionsFile: "",
+    command: id,
+    mcpSupported: true,
+    mcpConfigFile: "",
+    promptArgs: "",
+    headlessArgs: "",
+    modelFlag: "",
+    models: [],
+    failurePatterns: [],
+    failureCauses: [],
+    sessionIdArgs: "",
+    resumeArgs: "",
+    usageProbe: null,
+    ...over,
+  };
+}
+
+function ready(...windows: Array<[string, number, number | null]>): AgentUsageReport {
+  return {
+    state: "ready",
+    windows: windows.map(([label, usedPercent, resetsAt]) => ({
+      id: label,
+      label,
+      usedPercent,
+      resetsAt,
+    })),
+    plan: null,
+    observedAt: 0,
+    cached: false,
+  };
+}
+
+describe("usageRecap", () => {
+  const profiles = [profile("claude-code"), profile("codex"), profile("gemini")];
+
+  it("lists only the agents some workspace actually runs", () => {
+    const rows = usageRecap({
+      profiles,
+      profileByWorkspace: { a: "codex", b: "codex", c: null },
+      reports: {},
+    });
+    expect(rows.map((r) => r.profileId)).toEqual(["codex"]);
+    expect(rows[0].workspaces).toBe(2);
+  });
+
+  it("keeps the profile table's order rather than ranking by percentage", () => {
+    // The hub is one modal away from the usage panel, which lists them
+    // in this order; and a list that ranked by percentage would reorder
+    // itself as the numbers moved.
+    const rows = usageRecap({
+      profiles,
+      profileByWorkspace: { a: "codex", b: "claude-code" },
+      reports: { codex: ready(["weekly", 91, null]), "claude-code": ready(["5-hour", 4, null]) },
+    });
+    expect(rows.map((r) => r.profileId)).toEqual(["claude-code", "codex"]);
+  });
+
+  it("reports the window nearest its ceiling, not the first one", () => {
+    const rows = usageRecap({
+      profiles,
+      profileByWorkspace: { a: "codex" },
+      reports: { codex: ready(["5-hour", 30, 10], ["weekly", 95, 20]) },
+    });
+    expect(rows[0].worst?.label).toBe("weekly");
+    expect(rows[0].severity).toBe("critical");
+  });
+
+  it("holds a profile nobody has read yet apart from one with no limits", () => {
+    const rows = usageRecap({
+      profiles,
+      profileByWorkspace: { a: "codex", b: "gemini" },
+      reports: { gemini: { state: "unsupported" } },
+    });
+    const [codex, gemini] = rows.filter((r) => r.profileId !== "claude-code");
+    expect(codex.report).toBeNull();
+    expect(codex.severity).toBeNull();
+    expect(usageRowNote(codex, 0)).toBe("Checking…");
+    expect(usageRowNote(gemini, 0)).toContain("does not publish its limits");
+  });
+
+  it("says something rather than nothing for a reading that carried no windows", () => {
+    const rows = usageRecap({
+      profiles,
+      profileByWorkspace: { a: "codex" },
+      reports: { codex: ready() },
+    });
+    expect(rows[0].worst).toBeNull();
+    expect(usageRowNote(rows[0], 0)).toBe("No limits reported.");
+  });
+
+  it("keeps quiet where there is a bar to draw", () => {
+    const rows = usageRecap({
+      profiles,
+      profileByWorkspace: { a: "codex" },
+      reports: { codex: ready(["weekly", 12, null]) },
+    });
+    expect(usageRowNote(rows[0], 0)).toBeNull();
+  });
+});
+
+describe("worstUsageRow", () => {
+  const profiles = [profile("claude-code"), profile("codex")];
+
+  it("picks the agent nearest its ceiling across the fleet", () => {
+    const rows = usageRecap({
+      profiles,
+      profileByWorkspace: { a: "claude-code", b: "codex" },
+      reports: {
+        "claude-code": ready(["5-hour", 20, null]),
+        codex: ready(["weekly", 88, null]),
+      },
+    });
+    expect(worstUsageRow(rows)?.profileId).toBe("codex");
+  });
+
+  it("has no answer at all when nothing has a reading", () => {
+    // Null, never an "ok" row: "gavin cannot see" must not render in the
+    // colour of "plenty left".
+    const rows = usageRecap({
+      profiles,
+      profileByWorkspace: { a: "claude-code", b: "codex" },
+      reports: { "claude-code": { state: "unsupported" } },
+    });
+    expect(worstUsageRow(rows)).toBeNull();
   });
 });

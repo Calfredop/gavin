@@ -5,6 +5,7 @@
   // workspaceCreate.ts (the one creation flow) -- it decides nothing
   // itself, which is what keeps a hub row and the sidebar row for the
   // same workspace from ever disagreeing.
+  import { onDestroy, onMount } from "svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import {
     Plus,
@@ -16,14 +17,20 @@
     Check,
     PanelsTopLeft,
     SquareTerminal,
+    CircleDashed,
+    TriangleAlert,
   } from "@lucide/svelte";
+  import * as backend from "./backend";
   import {
     layoutState,
     switchWorkspace,
     switchWorkspaceView,
     switchToSessionInPage,
     daemonCompat,
+    agentProfilesStore,
+    resolvedAgents,
   } from "./layoutState";
+  import { featureBlockedReason } from "./daemonCompat";
   import { workspaceAgentsSummary, kanbanColumnChips, railStripStats, showGitChip } from "./sidebarSummary";
   import type { FleetSummary, RunningTask, TaskPhase, WorkspaceRunning } from "./appHub";
   import StatusBadge from "./ui/StatusBadge.svelte";
@@ -42,9 +49,26 @@
     workspaceRecapLine,
     runningTasks,
     fleetSummary,
+    sessionsRecap,
+    sessionsAttentionLine,
+    usageRecap,
+    usageRowNote,
+    worstUsageRow,
     PHASE_LABEL,
     APP_VERSION,
   } from "./appHub";
+  import {
+    sessionRows,
+    formatCpu,
+    formatMemory,
+    totalsCoverage,
+    totalsNote,
+    type ManagedSessions,
+    type SessionRow,
+  } from "./sessionsManager";
+  import { barPercent, displayPercent, formatResetsIn } from "./agentUsage";
+  import { agentUsageStore, nowStore, pausedWorkspaces } from "./agentPauseState";
+  import { openAppPanel, showAppPanel } from "./appPanels";
   import {
     newWorkspaceFlow,
     startCreatingWorkspace,
@@ -152,6 +176,126 @@
       now
     )
   );
+
+  // ---- what the daemon is holding ------------------------------------
+  //
+  // The one thing on this surface with a reader of its own: no store
+  // keeps the daemon's session list, so the recap has to ask. It runs
+  // only while the hub is mounted -- +page.svelte draws it behind
+  // `{#if $appHubOpen}`, so leaving the hub stops the sampling -- and at
+  // four seconds rather than the task manager's two, because this panel
+  // answers "what is the fleet costing" and not "what is it doing this
+  // instant".
+  const SESSIONS_POLL_MS = 4000;
+
+  let sample = $state<ManagedSessions | null>(null);
+  let previousSample = $state<ManagedSessions | null>(null);
+  /// Nothing has come back yet. Held apart from an empty list because
+  /// "the daemon is holding no sessions" is the one answer this panel
+  /// must never give wrongly, and it is exactly what an unfilled list
+  /// looks like.
+  let sessionsLoaded = $state(false);
+  let sessionsError = $state<string | null>(null);
+  /// Svelte 5 proxies $state objects, so `sample !== next` can never
+  /// decide whether a reply is still wanted. A counter can.
+  let sessionsEpoch = 0;
+  let sessionsTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function pollSessions(): Promise<void> {
+    // The task manager polls at two seconds while it is open, and it is
+    // drawn over this. Two walks of the process table for one screen,
+    // one of them behind a modal, is what this guard is for.
+    if ($openAppPanel === "sessions") return;
+    const mine = ++sessionsEpoch;
+    let next: ManagedSessions;
+    try {
+      next = await backend.listManagedSessions();
+    } catch (e) {
+      if (mine !== sessionsEpoch) return;
+      sessionsError = e instanceof Error ? e.message : String(e);
+      return;
+    }
+    if (mine !== sessionsEpoch) return;
+    // The CPU rate needs the reading BEFORE this one, so the shift
+    // happens here rather than at the top: a failed poll must not become
+    // the baseline the next one divides against.
+    previousSample = sample;
+    sample = next;
+    sessionsLoaded = true;
+    sessionsError = null;
+  }
+
+  onMount(() => {
+    void pollSessions();
+    sessionsTimer = setInterval(() => void pollSessions(), SESSIONS_POLL_MS);
+  });
+
+  onDestroy(() => {
+    // The only reason the daemon is walking the process table is that
+    // this is on screen, so leaving has to actually stop it.
+    sessionsEpoch += 1;
+    if (sessionsTimer !== null) clearInterval(sessionsTimer);
+  });
+
+  // Through the task manager's own row builder, so a session is named,
+  // placed and called stale by exactly one set of rules wherever it is
+  // shown. Unsorted here: sessionRows already hands them back
+  // attention-first, which is the order the recap wants.
+  const managed: SessionRow[] = $derived(
+    sample
+      ? sessionRows({
+          sample,
+          previous: previousSample,
+          workspaces: $layoutState.workspaces,
+          sessionNames: $layoutState.sessionNames,
+        })
+      : []
+  );
+  const sessions = $derived(sessionsRecap(managed));
+  const sessionsLine = $derived(sessionsAttentionLine(sessions));
+  /// The daemon is too old to measure anything. Said in words, because
+  /// blank figures would read as "these sessions cost nothing" -- a
+  /// measurement nobody took.
+  const metricsBlocked = $derived(featureBlockedReason($daemonCompat, "sessionMetrics"));
+
+  // ---- what the agents have left to spend ----------------------------
+  //
+  // Fetches nothing: startPauseClock already reads every profile the
+  // fleet runs, app-wide, whether or not the hub is open.
+  const usage = $derived(
+    usageRecap({
+      profiles: $agentProfilesStore,
+      profileByWorkspace: Object.fromEntries(
+        $layoutState.workspaces.map((w) => [w.id, $resolvedAgents(w.id).profileId ?? null])
+      ),
+      reports: $agentUsageStore,
+    })
+  );
+  const worstAgent = $derived(worstUsageRow(usage));
+
+  /// What the heading's badge means, spelled out. The percentage alone
+  /// says nothing about WHICH window is nearly full, and the weekly and
+  /// the five-hour are different problems.
+  function worstAgentTip(): string {
+    if (!worstAgent?.worst) return "";
+    const resets = formatResetsIn(worstAgent.worst.resetsAt, $nowStore);
+    const head = `${worstAgent.label}: ${worstAgent.worst.label} ${displayPercent(worstAgent.worst.usedPercent)}% used`;
+    return resets ? `${head}, ${resets}` : head;
+  }
+
+  /// Every held workspace, named with its own reason. One line per
+  /// workspace because the reasons genuinely differ -- one can be at a
+  /// weekly limit while another is inside a scheduled pause.
+  function pausedTip(): string {
+    return $pausedWorkspaces.map((w) => `${w.name} — ${w.verdict.why ?? "held"}`).join("\n");
+  }
+
+  /// What a stale row is, in the sentence sessionsManager.ts already
+  /// writes for it, plus where to act on it.
+  function staleTip(row: SessionRow): string {
+    const where = row.workspaceName ? `${row.workspaceName} · ${row.cwd}` : row.cwd;
+    return `${row.note ?? row.state}\n${where}\nOpen the task manager to end it.`;
+  }
 
   function recap(workspaceId: string): string {
     const ws = $layoutState.workspaces.find((w) => w.id === workspaceId);
@@ -538,6 +682,152 @@
         </div>
       {/if}
     </section>
+
+    <!-- What the agents the fleet runs have left to spend. One row per
+         PROFILE, not per workspace: a limit belongs to the subscription,
+         and four workspaces on Claude Code share one window between
+         them. Absence is never zero here -- a profile nobody has read
+         yet, one that publishes nothing, and one at 0% are three
+         different sentences (appHub's usageRowNote). -->
+    <section class="panel usage">
+      <h2>
+        Agent usage
+        {#if worstAgent?.worst}
+          <!-- The fleet's nearest ceiling, since the heading has room
+               for exactly one number. Omitted rather than drawn "ok"
+               when nothing has a reading: "gavin cannot see" must never
+               render in the colour of "plenty left". -->
+          <span
+            class="tally usage-{worstAgent.severity}"
+            use:tooltip={worstAgentTip()}
+            aria-label={worstAgentTip()}>{displayPercent(worstAgent.worst.usedPercent)}%</span
+          >
+        {/if}
+        <button type="button" class="panel-link" onclick={() => showAppPanel("usage")}>
+          Details…
+        </button>
+      </h2>
+
+      {#if usage.length === 0}
+        <p class="empty">No workspace is running an agent yet.</p>
+      {:else}
+        <div class="usage-rows">
+          {#each usage as row (row.profileId)}
+            {@const note = usageRowNote(row, $nowStore)}
+            {@const worst = row.worst}
+            <div class="usage-row">
+              <span
+                class="usage-name"
+                use:tooltip={plural(row.workspaces, "workspace", "workspaces") +
+                  " running this agent"}>{row.label}</span
+              >
+              {#if worst && !note}
+                <span class="usage-window">{worst.label}</span>
+                <div class="track">
+                  <!-- The bands are agentUsage.ts's; the colours only
+                       name them, exactly as the usage panel draws them. -->
+                  <div
+                    class="fill {row.severity}"
+                    style="width: {barPercent(worst.usedPercent)}%"
+                  ></div>
+                </div>
+                <span class="pct">{displayPercent(worst.usedPercent)}%</span>
+                <span class="resets">{formatResetsIn(worst.resetsAt, $nowStore) ?? ""}</span>
+              {:else}
+                <span class="usage-note">{note}</span>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+      {#if $pausedWorkspaces.length > 0}
+        <!-- A hold is the one thing on this panel that is not a
+             readout: work that would have started has not. Fleet-wide,
+             because a workspace on another agent is not held by this
+             one being full. -->
+        <p class="paused" use:tooltip={pausedTip()} aria-label={pausedTip()}>
+          {plural($pausedWorkspaces.length, "workspace", "workspaces")} paused
+        </p>
+      {/if}
+    </section>
+
+    <!-- Every session the daemon is holding, whether or not a tab is
+         showing it -- the task manager's list, folded to a recap. The
+         rows here name what is stale; ending one is the panel's job, so
+         nothing on the home screen kills a process. -->
+    <section class="panel sessions">
+      <h2>
+        Sessions
+        <span class="tally" class:stale={sessions.stale > 0}>{sessions.sessions}</span>
+        <button type="button" class="panel-link" onclick={() => showAppPanel("sessions")}>
+          Task manager…
+        </button>
+      </h2>
+
+      <!-- The failure is a line ABOVE the figures, never in place of
+           them, exactly as the task manager reports its own: a poll that
+           failed does not unmake the last one that worked, and blanking
+           the recap would lose the numbers it is still honest about. -->
+      {#if sessionsError}
+        <p class="session-line">Couldn’t read the session list: {sessionsError}</p>
+      {/if}
+
+      {#if !sessionsLoaded}
+        {#if !sessionsError}
+          <p class="empty">Reading what the daemon is holding…</p>
+        {/if}
+      {:else if sessions.sessions === 0}
+        <p class="empty">The daemon is holding no sessions.</p>
+      {:else}
+        <div class="cost">
+          {#if metricsBlocked}
+            <span class="coverage">{metricsBlocked}</span>
+          {:else}
+            <!-- The task manager's own sums over the task manager's own
+                 rows, so the hub and the panel it opens can never state
+                 different totals for one daemon. -->
+            <span class="figure" use:tooltip={totalsNote(sessions.totals)}>
+              CPU <span class="count">{formatCpu(sessions.totals.cpuPercent)}</span>
+            </span>
+            <span class="figure" use:tooltip={totalsNote(sessions.totals)}>
+              MEM <span class="count">{formatMemory(sessions.totals.memBytes)}</span>
+            </span>
+          {/if}
+          <span class="coverage">{totalsCoverage(sessions.totals)}</span>
+        </div>
+
+        {#if sessionsLine}
+          <p class="session-line">{sessionsLine}</p>
+        {/if}
+
+        {#each sessions.attention as row (row.id)}
+          <button
+            type="button"
+            class="stale-row"
+            class:survivor={row.staleness === "orphaned"}
+            use:tooltip={staleTip(row)}
+            aria-label={staleTip(row)}
+            onclick={() => showAppPanel("sessions")}
+          >
+            <!-- The task manager's own marks: a triangle for the one
+                 case with a live process nobody is hosting, a hollow
+                 ring for a row whose run is over. -->
+            {#if row.staleness === "orphaned"}
+              <TriangleAlert size={11} />
+            {:else}
+              <CircleDashed size={11} />
+            {/if}
+            <span class="stale-state">{row.state}</span>
+            <span class="stale-name">{row.label}</span>
+            <span class="stale-where">{row.workspaceName ?? "no workspace"}</span>
+          </button>
+        {/each}
+        {#if sessions.more > 0}
+          <p class="session-line">+{sessions.more} more stale</p>
+        {/if}
+      {/if}
+    </section>
   </div>
 
   <footer>
@@ -722,10 +1012,11 @@
     /* minmax(0, …) on both, or a long root path in the left column
        stretches the track instead of ellipsing inside it. */
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    /* The inbox takes only the height its rows need; the two panels
-       under it take the rest. An `auto auto` pair would have the grid
-       hand the inbox half the hub for two rows. */
-    grid-template-rows: auto minmax(0, 1fr);
+    /* The inbox takes only the height its rows need, the two lists under
+       it take the rest, and the two recaps at the foot take only theirs.
+       An `auto auto` pair would have the grid hand the inbox half the
+       hub for two rows; three `auto`s would do the same to the recaps. */
+    grid-template-rows: auto minmax(0, 1fr) auto;
     gap: 16px;
     align-items: stretch;
   }
@@ -837,8 +1128,16 @@
       grid-template-rows: none;
       align-items: start;
     }
-    .panel {
+    /* Stacked, nothing is competing for the height any more, so every
+       panel says what it has to say in full and the page scrolls. The
+       two recaps need naming as well as .panel: their own cap is
+       declared later in the file, so equal specificity would let it
+       win here. */
+    .panel,
+    .usage,
+    .sessions {
       max-height: none;
+      overflow-y: visible;
     }
   }
   .panel {
@@ -1118,6 +1417,198 @@
     margin: 6px 0 2px;
     color: var(--text-subtle);
     font-size: 0.75em;
+  }
+
+  /* --- agent usage and sessions --- */
+  /* The panel's own action, at the end of its heading: the recap says
+     what there is, the panel it opens is where anything is done about
+     it. Sits in the heading rather than under the rows so it stays put
+     while the list under it changes. */
+  .panel-link {
+    margin-left: auto;
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 1em;
+    letter-spacing: inherit;
+    text-transform: none;
+  }
+  .panel-link:hover {
+    color: var(--text);
+  }
+  /* Both recaps are read at a glance and never scrolled to: they take
+     the height of their content and cap it, rather than stretching to a
+     track the way the two lists above them do. */
+  .usage,
+  .sessions {
+    flex: 0 0 auto;
+    max-height: 32vh;
+    overflow-y: auto;
+  }
+  .usage-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.8em;
+  }
+  .usage-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  /* The agent's name keeps its width so the bars line up down the list;
+     everything after it gives way first. */
+  .usage-name {
+    flex: 0 0 auto;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+  }
+  .usage-window {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+  }
+  .track {
+    flex: 1 1 auto;
+    min-width: 40px;
+    height: 5px;
+    background: var(--surface-sunken);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .fill {
+    height: 100%;
+    background: var(--accent);
+  }
+  .fill.warn {
+    background: var(--warning);
+  }
+  .fill.critical {
+    background: var(--danger);
+  }
+  .pct {
+    flex: 0 0 auto;
+    min-width: 34px;
+    text-align: right;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .resets {
+    flex: 0 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-subtle);
+  }
+  /* A sentence where a bar would be: no probe, no reading yet, or a
+     reading that carried no windows. Wraps, because every one of them is
+     a sentence rather than a figure. */
+  .usage-note {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--text-subtle);
+  }
+  /* The heading badge takes the bands' own tones -- the same three the
+     bars use, so the number at the top and the bar it came from can
+     never disagree. `ok` is left in the tally's default: a full window
+     is news, a half-empty one is not. */
+  .tally.usage-warn {
+    border-color: var(--border-warning);
+    color: var(--warning-text);
+  }
+  .tally.usage-critical {
+    border-color: var(--border-danger);
+    color: var(--danger-text);
+  }
+  /* Stale rows are the reason to open the panel, so the count says so.
+     Not `.live`, which is the accent every other tally uses for work in
+     flight -- a row whose run is over is the opposite of that. */
+  .tally.stale {
+    border-color: var(--border-warning);
+    color: var(--warning-text);
+  }
+  .paused {
+    margin: 8px 0 0;
+    color: var(--warning-text);
+    font-size: 0.78em;
+  }
+  /* The two sums and what they cover, on one line: the figures lead
+     because they are why anyone looks, and the coverage behind them says
+     how many things went into each. */
+  .cost {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 0.8em;
+    color: var(--text-muted);
+  }
+  .figure .count {
+    color: var(--text);
+  }
+  .coverage {
+    color: var(--text-subtle);
+    font-size: 0.92em;
+  }
+  .session-line {
+    margin: 6px 0 0;
+    color: var(--text-subtle);
+    font-size: 0.78em;
+  }
+  /* One stale session. A button because it goes somewhere -- the task
+     manager, which is where a row can be ended -- and never because it
+     ends anything itself. */
+  .stale-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 5px;
+    padding: 5px 7px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--surface-sunken);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.78em;
+    text-align: left;
+  }
+  .stale-row:hover {
+    border-color: var(--border-strong);
+    color: var(--text);
+  }
+  /* The one kind with a live process nobody is hosting. The only row
+     here that earns an edge of its own. */
+  .stale-row.survivor {
+    border-color: var(--border-warning);
+    color: var(--warning-text);
+  }
+  .stale-state {
+    flex: 0 0 auto;
+  }
+  .stale-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+  }
+  .stale-where {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-subtle);
   }
 
   footer {

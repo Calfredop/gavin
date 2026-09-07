@@ -6,6 +6,13 @@
   import AgentUsageModal from "./AgentUsageModal.svelte";
   import { activePause } from "./agentPauseState";
   import { pauseLabel } from "./agentPause";
+  // Which of the two app-level panels is open. A store rather than this
+  // component's own `$state`, because the app hub's recaps open the same
+  // two panels and a flag inside Sidebar.svelte can only be flipped from
+  // inside Sidebar.svelte. The mount stays here: the sidebar is on
+  // screen for the life of the window, and one mount point is what keeps
+  // two openers from putting two panels on top of each other.
+  import { closeAppPanel, openAppPanel, showAppPanel } from "./appPanels";
   import {
     layoutState,
     switchWorkspace,
@@ -640,20 +647,10 @@
   /// renders inside one workspace, which is the wrong shape for a
   /// preference that spans all of them.
   let showGlobalSettings = $state(false);
-  /// The task manager, opened from the footer row above Settings. It
-  /// polls while it is mounted, so it is created on demand rather than
-  /// kept hidden -- an always-mounted panel would have the daemon
-  /// walking the process table for the life of the app.
-  let showSessionsManager = $state(false);
 
   // The pending "Close Idle Tabs" confirmation: the frozen id list and
   // the copy describing it, both built when the menu entry was picked.
   let closeIdle = $state<CloseIdleRequest | null>(null);
-
-  /// The agent usage panel. A modal beside Settings for the same reason:
-  /// it is about the app's agents, not about whichever workspace happens
-  /// to be open.
-  let showAgentUsage = $state(false);
 
   function startEditingWorkspace(workspaceId: string, currentName: string): void {
     editingWorkspaceId = workspaceId;
@@ -1673,11 +1670,11 @@
       <span>Gavin</span>
     </button>
     <div class="footer-divider"></div>
-    <button class="footer-row" onclick={() => (showSessionsManager = true)}>
+    <button class="footer-row" onclick={() => showAppPanel("sessions")}>
       <Activity size={12} />
       <span>Task manager</span>
     </button>
-    <button class="footer-row" onclick={() => (showAgentUsage = true)}>
+    <button class="footer-row" onclick={() => showAppPanel("usage")}>
       <Gauge size={12} />
       <span>Usage</span>
       <!-- The pause state lives on the row that explains it. A workspace
@@ -1737,12 +1734,15 @@
   />
 {/if}
 
-{#if showSessionsManager}
-  <SessionsManagerModal onClose={() => (showSessionsManager = false)} />
+<!-- Created on demand, never kept hidden: the task manager polls while
+     it is mounted, and an always-mounted panel would have the daemon
+     walking the process table for the life of the app. -->
+{#if $openAppPanel === "sessions"}
+  <SessionsManagerModal onClose={closeAppPanel} />
 {/if}
 
-{#if showAgentUsage}
-  <AgentUsageModal onClose={() => (showAgentUsage = false)} />
+{#if $openAppPanel === "usage"}
+  <AgentUsageModal onClose={closeAppPanel} />
 {/if}
 
 {#if showGlobalSettings}

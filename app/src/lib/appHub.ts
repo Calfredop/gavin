@@ -28,6 +28,16 @@ import { cardSessionState, type CardSessionState } from "./columnRunAction";
 import { cardIsOnARail, type LinkedCard } from "./cardTabLink";
 import { cardIndex, effectiveStatus, planIndex, type Orchestration } from "./orchestration";
 import { slugStatus } from "./planBoard";
+import { totalUsage, type SessionRow, type Totals } from "./sessionsManager";
+import {
+  reportSeverity,
+  unavailableReason,
+  worstWindow,
+  type AgentUsageReport,
+  type UsageSeverity,
+  type UsageWindow,
+} from "./agentUsage";
+import type { AgentProfileInfo } from "./settings";
 import type { Board } from "./kanban";
 import type { GavinTree } from "./gavin";
 import type { SessionStatus } from "./notifications";
@@ -144,7 +154,7 @@ function plural(n: number, noun: string): string {
 //
 // Everything below is one pure walk over stores the app already keeps
 // filled (the sidebar's recap effect fetches every rooted workspace's
-// board and orchestration), so the hub introduces no polling of its own
+// board and orchestration), so the fleet costs no traffic of its own
 // and can never disagree with the sidebar sitting beside it -- the two
 // go through the same tallies (sidebarSummary.ts) and the same liveness
 // vocabulary (columnRunAction's cardSessionState).
@@ -454,4 +464,170 @@ function mergeKanbanSummaries(list: KanbanSummary[]): KanbanSummary {
     }
   }
   return merged;
+}
+
+// ---------------------------------------------------------------------
+// The two recaps the hub carries under the fleet: what the daemon is
+// holding, and what the agents have left to spend.
+//
+// Both are folds over lists somebody else already built --
+// `sessionRows` from the task manager, `agentUsageStore` from the pause
+// clock -- for the reason the whole file gives: the hub sits one modal
+// away from the panels these numbers come from, and a second arithmetic
+// is the shape that drifts. Nothing here re-derives a state, a rate or a
+// percentage.
+//
+// The usage side costs nothing: `startPauseClock` already reads every
+// profile in use, app-wide, whether or not the hub is open. The session
+// side is the one thing on this surface with a reader of its own -- no
+// store holds the daemon's session list -- and the template owns that
+// poll, for exactly as long as the hub is mounted.
+// ---------------------------------------------------------------------
+
+/// How many stale sessions the hub names before it stops and counts the
+/// rest. Four: enough that the usual case (one survivor, one exited row)
+/// is shown whole, few enough that a daemon full of dead rows cannot
+/// push the fleet off the screen.
+export const RECAP_ROWS = 4;
+
+export interface SessionsRecap {
+  /// Every session the daemon is holding, whether or not a tab is
+  /// showing it.
+  sessions: number;
+  /// Sessions nothing on screen is showing. Not a fault -- a commit run
+  /// and an orchestration Organize are both meant to be invisible -- but
+  /// it is the number that says how much of the fleet is off-screen.
+  hidden: number;
+  stale: number;
+  /// What the whole list costs, through the task manager's own sum, so
+  /// the hub and the panel can never state different totals for one
+  /// daemon.
+  totals: Totals;
+  /// The stale rows themselves, in the order `sessionRows` already put
+  /// them in -- attention first. Never re-sorted here: the rows are
+  /// rebuilt on every poll, and a recap that ranked them by cost would
+  /// reshuffle under the pointer.
+  attention: SessionRow[];
+  /// Stale rows the cap left out, so the panel can say "+3 more" rather
+  /// than quietly showing four of seven.
+  more: number;
+}
+
+/// The task manager, folded to what fits on the hub.
+///
+/// `stale` and `hidden` are counted over EVERY row, not over the capped
+/// list, because they are the two numbers that decide whether the panel
+/// is worth opening at all.
+export function sessionsRecap(rows: SessionRow[], limit = RECAP_ROWS): SessionsRecap {
+  const cap = Math.max(0, limit);
+  const stale = rows.filter((r) => r.stale);
+  return {
+    sessions: rows.length,
+    hidden: rows.filter((r) => !r.visible).length,
+    stale: stale.length,
+    totals: totalUsage(rows),
+    attention: stale.slice(0, cap),
+    more: Math.max(0, stale.length - cap),
+  };
+}
+
+/// The hub's one line about sessions worth a second look.
+///
+/// Only the parts that are non-zero, the rule `workspaceRecapLine`
+/// already follows: a line that always reads "0 hidden · 0 stale" trains
+/// the eye to skip the one place those two numbers appear. Null when
+/// there is nothing to say, so a quiet daemon costs no line at all.
+export function sessionsAttentionLine(recap: SessionsRecap): string | null {
+  const parts: string[] = [];
+  if (recap.hidden > 0) parts.push(`${recap.hidden} hidden`);
+  if (recap.stale > 0) parts.push(`${recap.stale} stale`);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+export interface UsageRecapRow {
+  profileId: string;
+  label: string;
+  /// How many workspaces launch this agent. The reason the row is on the
+  /// hub at all: one window's limits are shared by every workspace
+  /// pointed at that agent, and the count is what says how much of the
+  /// fleet stops when it runs out.
+  workspaces: number;
+  /// Null while the first read is still in flight. Deliberately NOT
+  /// `unsupported`, which is a probe that answered "there is nothing to
+  /// read" -- "checking…" and "this agent publishes no limits" are
+  /// different sentences.
+  report: AgentUsageReport | null;
+  /// The window nearest its ceiling, which is the one that will stop
+  /// work first. Null whenever there are no numbers.
+  worst: UsageWindow | null;
+  severity: UsageSeverity | null;
+}
+
+export interface UsageRecapInput {
+  /// The profile table, in its own order.
+  profiles: AgentProfileInfo[];
+  /// The profile each workspace actually launches, by workspace id. A
+  /// null value is a workspace whose agent has not resolved yet.
+  profileByWorkspace: Record<string, string | null>;
+  /// The newest reading per profile id, as agentUsageStore holds it.
+  reports: Record<string, AgentUsageReport>;
+}
+
+/// One row per agent the fleet actually runs.
+///
+/// Only profiles some workspace launches, exactly as the usage panel
+/// filters: a bar for an agent nobody here uses means nothing, and for
+/// the profiles with no probe it would be a paragraph of apology on the
+/// home screen.
+///
+/// In the PROFILE TABLE's order rather than worst-first. The two
+/// surfaces are one modal apart, and a hub that ranked by percentage
+/// would list the same two agents in a different order from the panel it
+/// opens -- and would reorder itself as the numbers moved.
+export function usageRecap(input: UsageRecapInput): UsageRecapRow[] {
+  const counts = new Map<string, number>();
+  for (const profileId of Object.values(input.profileByWorkspace)) {
+    if (!profileId) continue;
+    counts.set(profileId, (counts.get(profileId) ?? 0) + 1);
+  }
+  return input.profiles
+    .filter((p) => counts.has(p.id))
+    .map((p) => {
+      const report = input.reports[p.id] ?? null;
+      return {
+        profileId: p.id,
+        label: p.label,
+        workspaces: counts.get(p.id) ?? 0,
+        report,
+        worst: report ? worstWindow(report) : null,
+        severity: report ? reportSeverity(report) : null,
+      };
+    });
+}
+
+/// The agent nearest its ceiling, for the one badge a heading has room
+/// for. Null when nothing in the fleet has a number -- which must read
+/// as "gavin cannot see", never as "plenty left", so a caller omits the
+/// badge rather than drawing an "ok" one.
+export function worstUsageRow(rows: UsageRecapRow[]): UsageRecapRow | null {
+  let worst: UsageRecapRow | null = null;
+  for (const row of rows) {
+    const window = row.worst;
+    if (!window) continue;
+    if (!worst || window.usedPercent > (worst.worst?.usedPercent ?? -1)) worst = row;
+  }
+  return worst;
+}
+
+/// What a usage row says INSTEAD of a bar, or null when it has one.
+///
+/// Three absences, three sentences, and the one that must never be
+/// collapsed into the others is the first: a profile nobody has read yet
+/// is not a profile with no limits. The last case -- a report that
+/// arrived `ready` and carried no windows -- has no reason of its own to
+/// print, and would otherwise render as an empty row.
+export function usageRowNote(row: UsageRecapRow, nowMs: number): string | null {
+  if (row.report === null) return "Checking\u2026";
+  if (row.worst) return null;
+  return unavailableReason(row.report, row.label, nowMs) ?? "No limits reported.";
 }

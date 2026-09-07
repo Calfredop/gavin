@@ -100,3 +100,122 @@ describe("the running-tasks column", () => {
     expect(source(HUB)).toContain("group.looseAgents > 0");
   });
 });
+
+describe("the agent usage recap", () => {
+  it("folds it through appHub.ts rather than reading the reports itself", () => {
+    const hub = source(HUB);
+    expect(hub).toContain("usageRecap({");
+    expect(hub).toContain("worstUsageRow(usage)");
+    // Three absences, one place that words them: a profile nobody has
+    // read yet, one that publishes nothing, and a reading with no
+    // windows are different sentences, and a template that tested
+    // `report == null` itself would collapse two of them.
+    expect(hub).toContain("usageRowNote(row, $nowStore)");
+  });
+
+  it("fetches nothing: the pause clock already reads every profile in use", () => {
+    // startPauseClock polls app-wide whether or not the hub is open, so
+    // a second requester here would double the calls against a route
+    // that 429s.
+    expect(source(HUB)).not.toContain("refreshUsage");
+    expect(source(HUB)).toContain('from "./agentPauseState"');
+  });
+
+  it("draws the bar in the bands agentUsage.ts owns, never a percentage of its own", () => {
+    const hub = source(HUB);
+    expect(hub).toContain("barPercent(worst.usedPercent)");
+    expect(hub).toContain("displayPercent(worst.usedPercent)");
+    expect(hub).toContain('class="fill {row.severity}"');
+  });
+
+  it("reports a hold across the whole fleet, not just the active workspace", () => {
+    // `activePause` answers for the workspace in front of you, which on
+    // an app-level surface is the wrong question.
+    const hub = source(HUB);
+    expect(hub).toContain("$pausedWorkspaces.length > 0");
+    expect(hub).not.toContain("$activePause");
+  });
+});
+
+describe("the sessions recap", () => {
+  it("builds its rows with the task manager's own builder", () => {
+    // One set of rules for naming, placing and calling a session stale,
+    // wherever it is shown.
+    const hub = source(HUB);
+    expect(hub).toContain("sessionRows({");
+    expect(hub).toContain("sessionsRecap(managed)");
+    expect(hub).toContain("totalsCoverage(sessions.totals)");
+    expect(hub).toContain("formatCpu(sessions.totals.cpuPercent)");
+    expect(hub).toContain("formatMemory(sessions.totals.memBytes)");
+  });
+
+  it("stops sampling the process table when the hub goes away", () => {
+    // No store holds the session list, so this surface polls -- and the
+    // daemon walks every session's process tree to answer. +page.svelte
+    // mounts the hub behind `{#if $appHubOpen}`, so the teardown is what
+    // makes leaving it stop.
+    const hub = source(HUB);
+    expect(hub).toContain("onDestroy");
+    expect(hub).toContain("clearInterval(sessionsTimer)");
+  });
+
+  it("does not poll behind the panel that is already polling", () => {
+    // The task manager samples at two seconds while it is open, drawn
+    // over this. Two walks of the process table for one screen is what
+    // the guard prevents.
+    expect(source(HUB)).toContain('if ($openAppPanel === "sessions") return;');
+  });
+
+  it("guards a late reply with a counter, never with identity", () => {
+    // Svelte 5 proxies $state objects, so `sample !== next` is always
+    // true and cannot decide whether a reply is still wanted.
+    expect(source(HUB)).toContain("mine !== sessionsEpoch");
+  });
+
+  it("does not let a failed poll become the baseline for the next rate", () => {
+    const hub = source(HUB);
+    const failure = hub.indexOf("sessionsError = e instanceof Error");
+    const shift = hub.indexOf("previousSample = sample;");
+    expect(failure).toBeGreaterThan(-1);
+    expect(shift).toBeGreaterThan(failure);
+  });
+
+  it("holds an empty list back until a reply has actually arrived", () => {
+    // "The daemon is holding no sessions" is the one answer this recap
+    // must never give wrongly, and it is what an unfilled list looks
+    // like.
+    const hub = source(HUB);
+    expect(hub).toContain("{#if !sessionsLoaded}");
+    expect(hub.indexOf("{#if !sessionsLoaded}")).toBeLessThan(
+      hub.indexOf("The daemon is holding no sessions.")
+    );
+  });
+
+  it("reports a failed poll beside the figures rather than instead of them", () => {
+    // A poll that failed does not unmake the last one that worked, and
+    // blanking the recap would lose numbers it is still honest about --
+    // the same shape the task manager's own error banner has.
+    const hub = source(HUB);
+    expect(hub.indexOf("{#if sessionsError}")).toBeLessThan(hub.indexOf("{#if !sessionsLoaded}"));
+  });
+
+  it("says why the figures are missing rather than drawing blank ones", () => {
+    // Blank cells would read as "these sessions cost nothing", which is
+    // a measurement nobody took.
+    expect(source(HUB)).toContain('featureBlockedReason($daemonCompat, "sessionMetrics")');
+  });
+
+  it("names what is stale but never ends it from the home screen", () => {
+    // Ending a session is the task manager's job -- it is where the
+    // confirmations name the process being killed.
+    const hub = source(HUB);
+    expect(hub).toContain('showAppPanel("sessions")');
+    expect(hub).not.toContain("endSession");
+    expect(hub).not.toContain("endStaleSessions");
+    expect(hub).not.toContain("restartDaemon");
+  });
+
+  it("says how many stale rows it left out rather than quietly showing four", () => {
+    expect(source(HUB)).toContain("sessions.more > 0");
+  });
+});

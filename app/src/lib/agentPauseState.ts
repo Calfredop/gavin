@@ -161,6 +161,31 @@ export const activePause: Readable<PauseVerdict> = derived(
   ([now, , , state]) => pauseFor(state.activeWorkspaceId, now)
 );
 
+export interface PausedWorkspace {
+  id: string;
+  name: string;
+  verdict: PauseVerdict;
+}
+
+/// Every workspace being held right now, fleet-wide.
+///
+/// `activePause` above answers for ONE workspace because the surfaces
+/// that read it -- the sidebar strip, the title bar -- are only ever
+/// about the one in front of you. The app hub is about all of them at
+/// once, and the answers genuinely differ: a workspace on codex is not
+/// held by a Claude window being full, and a per-workspace cycle
+/// override holds only its own.
+///
+/// Same inputs as `activePause`, so it moves on the same clock tick and
+/// cannot lag behind the strip.
+export const pausedWorkspaces: Readable<PausedWorkspace[]> = derived(
+  [nowStore, agentPauseStore, agentUsageStore, layoutState],
+  ([now, , , state]) =>
+    state.workspaces
+      .map((w) => ({ id: w.id, name: w.name, verdict: pauseFor(w.id, now) }))
+      .filter((w) => w.verdict.paused)
+);
+
 /// The active workspace's paused flag, emitting ONLY when it flips.
 ///
 /// `activePause` rides the clock, so it emits every thirty seconds

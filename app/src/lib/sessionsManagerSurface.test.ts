@@ -23,25 +23,37 @@ function source(name: string): string {
 }
 
 const SIDEBAR = "Sidebar.svelte";
+const HUB = "AppHubView.svelte";
 const PANEL = "SessionsManagerModal.svelte";
 const MODAL = "Modal.svelte";
 
 describe("the sidebar footer", () => {
   it("opens the task manager from its own row", () => {
-    expect(source(SIDEBAR)).toContain("(showSessionsManager = true)");
+    expect(source(SIDEBAR)).toContain('showAppPanel("sessions")');
     expect(source(SIDEBAR)).toContain("<SessionsManagerModal");
   });
 
   it("puts that row above Settings, which is where the card asked for it", () => {
     const footer = source(SIDEBAR).slice(source(SIDEBAR).indexOf('class="sidebar-footer"'));
-    expect(footer.indexOf("showSessionsManager")).toBeLessThan(footer.indexOf("showGlobalSettings"));
+    expect(footer.indexOf('showAppPanel("sessions")')).toBeLessThan(
+      footer.indexOf("showGlobalSettings")
+    );
   });
 
   it("mounts the panel only while it is open", () => {
     // It polls the daemon, which walks the process table for every
     // session. A panel kept mounted and merely hidden would have that
     // running for the life of the app.
-    expect(source(SIDEBAR)).toContain("{#if showSessionsManager}");
+    expect(source(SIDEBAR)).toContain('{#if $openAppPanel === "sessions"}');
+  });
+
+  it("keeps the one mount, now that the hub opens the same panel", () => {
+    // The flag left this component for appPanels.ts so the app hub's
+    // recap could open the same panel. Mounting it in both places would
+    // put two pollers on the daemon and two modals on the screen.
+    expect(source(SIDEBAR)).toContain('from "./appPanels"');
+    expect(source(HUB)).not.toContain("<SessionsManagerModal");
+    expect(source(HUB)).not.toContain("<AgentUsageModal");
   });
 });
 
