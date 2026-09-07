@@ -216,12 +216,11 @@ select {
    sidebar, every modal and every list: the one strip in the window that
    was not the app's own grey.
 
-   `scrollbar-color` inherits, so naming it once on :root reaches every
-   scroller, the viewport's included. A transparent track leaves only the
-   handle, which is the part that carries information.
-
-   `scrollbar-width` does NOT inherit, hence the universal selector; at
-   zero specificity it still yields to the two tab strips that set
+   `scrollbar-color` is what fixes that, and a transparent track leaves
+   only the handle, which is the part that carries information. Neither
+   it nor `scrollbar-width` is named on a scroller: both go on the
+   universal selector, which reaches the viewport's bar too, and at zero
+   specificity still yields to the two tab strips that set
    `scrollbar-width: none` to keep a bar off the active-tab indicator.
    `thin` is what "a little narrower" costs: measured in WKWebView, a
    legacy bar goes 17px -> 13px and an overlay bar thins to match, while
@@ -232,13 +231,45 @@ select {
    system is in overlay mode (an 8px gutter appeared on a scroller that
    had none), so the whole app would permanently lose those pixels on
    every trackpad-only Mac. The standard properties keep the platform's
-   own choice. */
-:root {
-  scrollbar-color: var(--scrollbar-thumb) transparent;
-}
+   own choice.
 
+   The handle then FADES with the pointer, which is the platform's own
+   behaviour that a mouse takes away: plug one in and macOS switches to
+   legacy scrollers (`NSScroller.preferredScrollerStyle`), so every
+   scroller in the window wears a permanent grey bar — a dozen of them at
+   rest on a busy page, none of them being read. The terminal was already
+   the exception, because xterm draws its bar in the DOM and inherits VS
+   Code's `ScrollbarVisibility.Auto`: 100ms in on mouse-over, 800ms out.
+   These two rules give every other scroller the same manners, and the
+   same timings, so the window behaves one way rather than two.
+
+   The resting value has to be set on `*`, not inherited from `:root`.
+   `scrollbar-color` DOES inherit, but `:hover` matches the whole
+   ancestor chain, so a value inherited from the hovered element would
+   light up every scroller nested under the pointer as well as the one
+   it is on. A declaration at every element beats inheritance, which
+   leaves exactly the hovered chain lit — each of which the pointer is
+   genuinely over.
+
+   `scrollbar-color` is transitionable in this WebKit: seeking the
+   transition in a WKWebView probe walks the thumb through 25%/50%/75%
+   alpha, so the fade is real rather than a two-frame step. Only the
+   PAINT fades — the 13px a legacy bar reserves stays reserved, because
+   reclaiming it means sizing `::-webkit-scrollbar`, which is the thing
+   the paragraph above rules out. With a transparent track there is
+   nothing to see in that column anyway. */
 * {
   scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 800ms linear;
+}
+
+/* The after-change style carries the transition, so this duration is the
+   one the fade IN runs at and the rule above is the one the fade OUT
+   runs at. */
+*:hover {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+  transition-duration: 100ms;
 }
 
 /* A terminal is the one scroller neither rule above can reach. xterm does

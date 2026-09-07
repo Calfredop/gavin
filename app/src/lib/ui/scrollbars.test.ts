@@ -91,6 +91,35 @@ describe("custom WebKit scrollbars", () => {
   });
 });
 
+// theme.css hides every handle at rest and brings it back under the
+// pointer, as two rules on the universal selector -- `scrollbar-color:
+// transparent transparent` at zero specificity, then the app's grey on
+// `*:hover`. Both halves live on selectors ANY component rule outranks:
+// svelte scopes a component's `.foo` with its own hash, so `.foo {
+// scrollbar-color: ... }` is 0,2,0 against the hover rule's 0,1,0 and
+// pins that scroller's bar to one state for good -- permanently on if
+// the colour is opaque, permanently gone if it is not.
+//
+// Nothing about that is visible: the scroller still scrolls, the suites
+// still pass, and the bar simply stops behaving like every other bar in
+// the window. So `scrollbar-color` belongs to theme.css alone, and this
+// is the rule that says so. A component that genuinely needs its own
+// handle colour has to say it there, beside the fade it has to keep.
+describe("the pointer-driven fade", () => {
+  it("leaves scrollbar-color to theme.css, which no component rule may outrank", () => {
+    const offenders: string[] = [];
+    for (const [file, text] of Object.entries(SOURCES)) {
+      const css = text.replace(/\/\*[\s\S]*?\*\//g, "");
+      if (/(^|[;{\s])scrollbar-color\s*:/.test(css)) offenders.push(file);
+    }
+    expect(
+      offenders,
+      `${offenders.join(", ")} — a scoped rule beats theme.css's \`*:hover\`, so this scroller's ` +
+        `handle is stuck on or stuck off instead of fading with the pointer.`,
+    ).toEqual([]);
+  });
+});
+
 // The terminal's handle is the one theme.css cannot reach with either
 // property above: xterm hides the viewport's native bar and draws its own
 // in the DOM, colouring it from a <style> block it injects at runtime.
