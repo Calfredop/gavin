@@ -26,6 +26,15 @@ import {
   pauseVerdict,
 } from "./agentPause";
 import type { AgentUsageReport } from "./agentUsage";
+import {
+  loadUsageHistory,
+  projectUsage,
+  recordUsage,
+  saveUsageHistory,
+  worstProjection,
+  type UsageHistory,
+  type UsageProjection,
+} from "./usageProjection";
 import { layoutState, resolvedAgentFor } from "./layoutState";
 
 /// The app-wide cycle, or null for no cycle at all -- the shipped
@@ -36,6 +45,16 @@ export const agentPauseStore = writable<PauseCycle | null>(null);
 /// which is deliberately NOT the same as `unsupported`: a surface must be
 /// able to say "checking…" instead of "this agent has no limits".
 export const agentUsageStore = writable<Record<string, AgentUsageReport>>({});
+
+/// Every reading kept, per profile and window, so the projection can
+/// measure a burn rate off something other than a single number.
+///
+/// Loaded from localStorage at startup and written back whenever a
+/// sample is actually stored. Persisting matters more here than for any
+/// other view preference: a weekly window's first rate costs three hours
+/// of samples, so a history that started again on every reload would
+/// never once produce a weekly projection.
+export const usageHistoryStore = writable<UsageHistory>({});
 
 /// Ticks so countdowns move and the gate re-reads. Thirty seconds: a
 /// "resets in 2h 14m" is wrong by at most half a minute, and a pause that
@@ -109,6 +128,7 @@ export async function refreshUsage(profileId: string, force = false): Promise<vo
   try {
     const report = await backend.agentUsage(profileId, force);
     agentUsageStore.update((all) => ({ ...all, [profileId]: report }));
+    recordSample(profileId, report);
   } catch (e) {
     // A failed IPC is an unavailability like any other. It must never
     // leave a stale `ready` in the store reading as current -- a bar
@@ -118,6 +138,22 @@ export async function refreshUsage(profileId: string, force = false): Promise<vo
       [profileId]: { state: "unavailable", reason: String(e), retryAfter: null },
     }));
   }
+}
+
+/// Folds one reading into the history, and persists only when it
+/// actually became a sample.
+///
+/// `recordUsage` returns the SAME object when the reading was inside the
+/// window's sampling interval, which most of them are -- the poller runs
+/// every three minutes against a five-minute cadence. Comparing
+/// identity is what keeps that from writing localStorage twenty times an
+/// hour to store nothing.
+function recordSample(profileId: string, report: AgentUsageReport): void {
+  const before = get(usageHistoryStore);
+  const after = recordUsage(before, profileId, report);
+  if (after === before) return;
+  usageHistoryStore.set(after);
+  saveUsageHistory(after);
 }
 
 /// Every profile any workspace actually runs. The panel lists these and
@@ -159,6 +195,34 @@ export function pauseFor(workspaceId: string | null, nowMs: number): PauseVerdic
 export const activePause: Readable<PauseVerdict> = derived(
   [nowStore, agentPauseStore, agentUsageStore, layoutState],
   ([now, , , state]) => pauseFor(state.activeWorkspaceId, now)
+);
+
+// ---- The projection ----------------------------------------------------------
+
+/// Every window of every profile in use, projected forward.
+///
+/// The same inputs `activePause` rides, so the semaphore and the
+/// pause badge that share a sidebar row can never disagree about what
+/// time it is or which reading they are looking at.
+export const usageProjections: Readable<UsageProjection[]> = derived(
+  [nowStore, agentUsageStore, usageHistoryStore, layoutState],
+  ([now, reports, history]) =>
+    projectUsage({
+      // Recomputed rather than closed over: `profilesInUse` reads the
+      // workspace list, which is the fourth dependency above.
+      profileIds: profilesInUse(),
+      reports,
+      history,
+      nowMs: now,
+    })
+);
+
+/// The single projection a semaphore stands for: the worst band, and
+/// within it the tightest margin. Null while nothing is known, which is
+/// the signal to draw no badge at all.
+export const worstUsageProjection: Readable<UsageProjection | null> = derived(
+  usageProjections,
+  (projections) => worstProjection(projections)
 );
 
 export interface PausedWorkspace {
@@ -228,6 +292,9 @@ export function startPauseClock(): () => void {
   clockTimer = setInterval(() => nowStore.set(Date.now()), CLOCK_TICK_MS);
   pollTimer = setInterval(() => void pollAll(), POLL_MS);
   void loadAgentPause();
+  // Before the first poll, so the reading that lands has yesterday's
+  // samples to continue rather than starting an epoch of its own.
+  usageHistoryStore.set(loadUsageHistory());
   void pollAll();
   return stopPauseClock;
 }

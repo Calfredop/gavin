@@ -4,8 +4,9 @@
   import SessionsManagerModal from "./SessionsManagerModal.svelte";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import AgentUsageModal from "./AgentUsageModal.svelte";
-  import { activePause } from "./agentPauseState";
+  import { activePause, nowStore, worstUsageProjection } from "./agentPauseState";
   import { pauseLabel } from "./agentPause";
+  import { projectionTooltip } from "./usageProjection";
   // Which of the two app-level panels is open. A store rather than this
   // component's own `$state`, because the app hub's recaps open the same
   // two panels and a flag inside Sidebar.svelte can only be flipped from
@@ -28,6 +29,7 @@
     setPagePinned,
     appHubOpen,
     openAppHub,
+    agentProfilesStore,
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
   // Naming a workspace into existence is the app hub's action now; the
@@ -72,7 +74,12 @@
   import { themeState } from "./ui/themeState.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
-  import { agentIndicator, agentIndicatorByState, gitIndicator } from "./ui/indicators";
+  import {
+    agentIndicator,
+    agentIndicatorByState,
+    gitIndicator,
+    usageProjectionIndicator,
+  } from "./ui/indicators";
 
   import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "./paths";
   import { resolveHubView, visibleHubViewIds } from "./hubViewMeta";
@@ -324,6 +331,27 @@
   function pressedRail(): void {
     if (showsRail) peekSidebar();
   }
+
+  /// The usage semaphore: whether the limits gavin can see will survive
+  /// to their own reset at the burn it has measured. Null until there is
+  /// something honest to draw, which is also what the pause badge beside
+  /// it reads to decide who owns the push to the end of the row.
+  ///
+  /// The agent's display name is looked up here rather than carried on
+  /// the projection (usageProjection.ts): naming the agents is the
+  /// surface's job, and keeping it out is what stops the pause module
+  /// importing the profile table into its whole dependency graph.
+  const usageSemaphore = $derived.by(() => {
+    const projection = $worstUsageProjection;
+    if (!projection) return null;
+    const label =
+      $agentProfilesStore.find((p) => p.id === projection.profileId)?.label ??
+      projection.profileId;
+    return usageProjectionIndicator(
+      projection.band,
+      projectionTooltip(projection, label, $nowStore)
+    );
+  });
 
   const searchOpen = $derived($sidebarSearchOpen && !showsRail);
 
@@ -1692,12 +1720,26 @@
     <button class="footer-row" onclick={() => showAppPanel("usage")}>
       <Gauge size={12} />
       <span>Usage</span>
+      <!-- The semaphore, and the one thing on this row that is about the
+           FUTURE: whether the limits gavin can see will survive to their
+           own reset at the burn it has measured (usageProjection.ts).
+           Nothing is drawn until there is a rate, so an ordinary start-up
+           shows an unadorned row rather than a mark meaning "wait".
+
+           It sits before the pause badge because it is the earlier
+           warning of the two: amber here is the moment to throttle, and
+           "At limit" is what happens to somebody who did not. -->
+      {#if usageSemaphore}
+        <StatusBadge indicator={usageSemaphore} size={11} class="footer-semaphore" />
+      {/if}
       <!-- The pause state lives on the row that explains it. A workspace
            holding for a limit or a scheduled window is the one thing here
            worth seeing without opening anything. -->
       {#if pauseLabel($activePause)}
-        <span class="footer-badge" use:tooltip={$activePause.why ?? ""}
-          >{pauseLabel($activePause)}</span
+        <span
+          class="footer-badge"
+          class:after-semaphore={usageSemaphore !== null}
+          use:tooltip={$activePause.why ?? ""}>{pauseLabel($activePause)}</span
         >
       {/if}
     </button>
@@ -2425,6 +2467,13 @@
     opacity: 0.45;
     cursor: default;
   }
+  /* Pushed to the end of the row. Anchored to .footer-row rather than
+     left as a bare :global: the class rides on StatusBadge's own element,
+     so only :global can reach it, and only the anchor keeps the reach
+     inside this component. */
+  .footer-row :global(.footer-semaphore) {
+    margin-left: auto;
+  }
   .footer-badge {
     margin-left: auto;
     padding: 0 5px;
@@ -2432,5 +2481,14 @@
     background: var(--surface-sunken);
     color: var(--warning-text);
     font-size: 0.85em;
+  }
+  /* Two `margin-left: auto` in one flex row split the slack between them,
+     which would strand the semaphore in the middle of the row. With both
+     drawn it is the semaphore that owns the push and the badge follows
+     it -- said with a class rather than a sibling selector, because the
+     semaphore's class rides on StatusBadge's element and :global() may
+     not sit in the middle of a selector. */
+  .footer-badge.after-semaphore {
+    margin-left: 4px;
   }
 </style>

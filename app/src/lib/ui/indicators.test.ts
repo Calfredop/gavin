@@ -19,6 +19,7 @@ import {
   shellOrphanIndicator,
   shellRestartedIndicator,
   unsavedEditsIndicator,
+  usageProjectionIndicator,
   worktreeStaleIndicator,
   type Indicator,
 } from "./indicators";
@@ -272,5 +273,44 @@ describe("priorityIndicator", () => {
     for (const empty of ["none", "", null, undefined, "  ", "High", "critical"]) {
       expect(priorityIndicator(empty), `"${empty}" produced a badge`).toBeNull();
     }
+  });
+});
+
+describe("usageProjectionIndicator", () => {
+  // A traffic light read as the app's five meanings: the window survives
+  // (clean), the window wants a decision (a human's), the window will be
+  // hit (broken work).
+  it("spends the three tones the semaphore was asked for", () => {
+    expect(usageProjectionIndicator("clear")?.tone).toBe("success");
+    expect(usageProjectionIndicator("tight")?.tone).toBe("warning");
+    expect(usageProjectionIndicator("over")?.tone).toBe("danger");
+  });
+
+  // One glyph, three tones -- the git axis's shape, because all three
+  // answer the same question. The axis test above proves the hourglass
+  // belongs to nobody else.
+  it("keeps all three on one glyph and one axis", () => {
+    const bands = (["clear", "tight", "over"] as const).map(
+      (b) => usageProjectionIndicator(b) as Indicator
+    );
+    expect(new Set(bands.map(glyphClass)).size).toBe(1);
+    for (const badge of bands) expect(badge.axis).toBe("usage");
+  });
+
+  // "Gavin has no idea yet" and "you have room" must never share a
+  // colour, so a band the projection could not reach draws nothing at
+  // all rather than a quiet fourth state meaning "ignore me".
+  it("draws nothing without a band", () => {
+    expect(usageProjectionIndicator(null)).toBeNull();
+  });
+
+  // The specific sentence replaces the generic one and keeps the axis
+  // prefix, exactly as agentFailedIndicator's reason does -- a surface
+  // gets to be precise without starting a second vocabulary.
+  it("takes a specific sentence without losing the axis", () => {
+    const badge = usageProjectionIndicator("over", "Claude Code · Weekly runs out first") as Indicator;
+    expect(badge.tip).toBe("Usage · Claude Code · Weekly runs out first");
+    expect(badge.label).toBe(badge.tip);
+    expect(badge.tone).toBe("danger");
   });
 });

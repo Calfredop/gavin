@@ -43,6 +43,7 @@ import {
   FileWarning,
   GitBranch,
   History,
+  Hourglass,
   LoaderCircle,
   MessageCircleQuestionMark,
   Minus,
@@ -67,6 +68,9 @@ import type { SessionStatus } from "../notifications";
 // The rails already own these three; re-declaring them here would be a
 // second definition free to drift from the one the scheduler runs on.
 import type { RailState, StepAttention, StepState } from "../orchestration";
+// Same reason: usageProjection.ts owns the three bands and the rule that
+// produces them, so this file names them rather than defining a second set.
+import type { ProjectionBand } from "../usageProjection";
 
 /// The five meanings colour is allowed to carry. Matches IconButton's own
 /// tone scale one for one, so a badge and a button beside it never
@@ -75,7 +79,16 @@ export type IndicatorTone = "neutral" | "accent" | "success" | "warning" | "dang
 
 /// The questions the app's badges answer. One glyph family each; the
 /// test enforces that no glyph is shared between two of them.
-export type IndicatorAxis = "agent" | "priority" | "git" | "edits" | "shell" | "step" | "rail" | "run";
+export type IndicatorAxis =
+  | "agent"
+  | "priority"
+  | "git"
+  | "edits"
+  | "shell"
+  | "step"
+  | "rail"
+  | "run"
+  | "usage";
 
 /// The human-readable name of each axis. Every tooltip leads with it,
 /// which is the whole point: the old badges said "amber" and left the
@@ -89,6 +102,7 @@ export const AXIS_LABEL: Record<IndicatorAxis, string> = {
   step: "Step",
   rail: "Rail",
   run: "Run",
+  usage: "Usage",
 };
 
 export interface Indicator {
@@ -506,6 +520,51 @@ export function runIndicator(outcome: string, exitCode: number | null): Indicato
 
 export const RUN_OUTCOME_STATES = RUN_OUTCOMES;
 
+// ---- usage -------------------------------------------------------------
+// Whether an agent's subscription limits will HOLD -- not how full they
+// are, which the panel's bars already say. The question is a race
+// between two clocks (usageProjection.ts): the burn measured against the
+// window, and the window's own reset. Hence an hourglass, and hence one
+// glyph for all three answers with the tone carrying the verdict, the
+// same shape the git axis uses.
+//
+// The tones are the traffic light this was asked for, read as the app's
+// five meanings rather than as a severity ramp: `clear` is success
+// because the window comes out the other side intact, `tight` is the
+// wants-a-human amber (throttle, and it is a human who decides what to
+// stop), `over` is danger because work started now will hit a wall.
+//
+// There is deliberately no badge for "gavin is still measuring". A
+// fourth, quieter hourglass on the sidebar row for the first five
+// minutes of every session would be a mark that means "ignore me", and
+// the surfaces simply draw nothing until there is something to say.
+
+const USAGE: Record<ProjectionBand, Indicator> = {
+  clear: make("usage", "clear", Hourglass, "success", "projected to last past its reset"),
+  tight: make("usage", "tight", Hourglass, "warning", "projected to run out close to its reset"),
+  over: make("usage", "over", Hourglass, "danger", "projected to run out before its reset"),
+};
+
+/// The semaphore for a projected limit. Null in, null out: a band the
+/// projection could not reach draws nothing at all.
+///
+/// `detail` replaces the generic sentence with the specific one the
+/// projection produced, keeping the axis prefix -- the same trick
+/// `agentFailedIndicator` uses so a surface can be precise without
+/// inventing a second vocabulary.
+export function usageProjectionIndicator(
+  band: ProjectionBand | null,
+  detail?: string | null
+): Indicator | null {
+  if (!band) return null;
+  const base = USAGE[band];
+  if (!detail) return base;
+  const tip = `${AXIS_LABEL.usage} · ${detail}`;
+  return { ...base, tip, label: tip };
+}
+
+export const PROJECTION_BANDS = ["clear", "tight", "over"] as const;
+
 // ---- attention ---------------------------------------------------------
 // What a RUNNING step is waiting on a human for. Not an axis of its own:
 // all three answers are facts about the agent, so they are agent badges,
@@ -554,5 +613,6 @@ export function allIndicators(): Indicator[] {
     shellRestartedIndicator(),
     shellRestartedIndicator(true),
     shellOrphanIndicator(),
+    ...PROJECTION_BANDS.map((band) => USAGE[band]),
   ];
 }

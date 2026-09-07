@@ -3,7 +3,16 @@
   import Modal from "./Modal.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { agentProfilesStore } from "./layoutState";
-  import { agentUsageStore, nowStore, profilesInUse, refreshUsage } from "./agentPauseState";
+  import StatusBadge from "./ui/StatusBadge.svelte";
+  import { usageProjectionIndicator } from "./ui/indicators";
+  import { projectWindow, projectionSentence } from "./usageProjection";
+  import {
+    agentUsageStore,
+    nowStore,
+    profilesInUse,
+    refreshUsage,
+    usageHistoryStore,
+  } from "./agentPauseState";
   import {
     barPercent,
     displayPercent,
@@ -41,6 +50,18 @@
   function reportFor(profileId: string): AgentUsageReport | undefined {
     return $agentUsageStore[profileId];
   }
+
+  /// How the rate was measured, said in words beside it.
+  ///
+  /// The panel is where a projection has to be arguable rather than just
+  /// coloured: a burn read off eight minutes and the same burn read off
+  /// six hours deserve very different amounts of trust, and only this
+  /// line can tell them apart.
+  function measuredOver(spanMs: number, samples: number): string {
+    const minutes = Math.round(spanMs / 60000);
+    const span = minutes >= 120 ? `${Math.round(minutes / 60)}h` : `${minutes}m`;
+    return `measured over ${span}, ${samples} samples`;
+  }
 </script>
 
 <Modal {onClose}>
@@ -74,6 +95,17 @@
           <p class="hint">Checking…</p>
         {:else if report.state === "ready"}
           {#each report.windows as window (window.id)}
+            <!-- The projection for this window, computed here rather
+                 than read off a store: the panel already has the reading
+                 and the history, and a second derived store would be a
+                 copy of `usageProjections` free to fall behind it. -->
+            {@const projection = projectWindow(
+              window,
+              $usageHistoryStore[profile.id]?.[window.id],
+              profile.id,
+              $nowStore
+            )}
+            {@const indicator = usageProjectionIndicator(projection.band)}
             <div class="window">
               <span class="label">{window.label}</span>
               <div class="track">
@@ -85,6 +117,24 @@
               <span class="pct">{displayPercent(window.usedPercent)}%</span>
               <span class="resets">{formatResetsIn(window.resetsAt, $nowStore) ?? ""}</span>
             </div>
+            <!-- Under the bar it is about: the bar says where the window
+                 stands, this says where it is going, which is the
+                 question somebody opening this panel actually has --
+                 start the big rail, or throttle. -->
+            <p class="projection">
+              {#if indicator}
+                <StatusBadge {indicator} size={11} tip={null} />
+              {/if}
+              <span>{projectionSentence(projection, $nowStore)}</span>
+              <!-- Only where the rate is what is talking. Beside "already
+                   at its ceiling" the measurement qualifies nothing, and
+                   a span with no claim attached reads as a claim. -->
+              {#if projection.status !== "measuring" && projection.status !== "exhausted" && projection.spanMs > 0}
+                <span class="measured"
+                  >({measuredOver(projection.spanMs, projection.samples)})</span
+                >
+              {/if}
+            </p>
           {/each}
           {#if formatObservedAge(report.observedAt, $nowStore)}
             <!-- The codex route reports last-seen, not live. A number
@@ -96,6 +146,19 @@
         {/if}
       </section>
     {/each}
+
+    <!-- Said once, at the foot, because it explains a difference a
+         reader WILL notice: a 5-hour row can carry a projection while
+         the weekly row above it still says it is measuring. The cadences
+         differ on purpose (usageProjection.ts), and without this the gap
+         reads as a bug. -->
+    {#if profiles.length > 0}
+      <p class="hint footnote">
+        Short windows are sampled every 5 minutes, weekly ones every 3 hours and
+        measured over a day — a week's burn read off five minutes is rounding
+        noise, and a quiet weekend has to count as quiet.
+      </p>
+    {/if}
 
     <div class="actions">
       <button onclick={onClose}>Close</button>
@@ -182,6 +245,24 @@
   .hint {
     color: var(--text-subtle);
     margin: 4px 0 0;
+  }
+  /* Indented to the bar it belongs to: the label column's width plus the
+     row's gap, so the sentence starts where the track does rather than
+     under the window's name. */
+  .projection {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    margin: -1px 0 7px 70px;
+    color: var(--text-muted);
+    font-size: 0.85em;
+  }
+  .measured {
+    color: var(--text-subtle);
+  }
+  .footnote {
+    margin: 0;
+    max-width: 46ch;
   }
   .actions {
     display: flex;
