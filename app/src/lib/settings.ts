@@ -1,6 +1,7 @@
 import { composeLaunchCommand } from "./agentModel";
 import type { FailureCausePattern } from "./autoResume";
 import type { AgentConfig } from "./gavin";
+import { isAbsolutePath } from "./paths";
 import type { EffectiveTheme } from "./ui/theme";
 
 /// Mirrors AgentProfileDto from agent_setup.rs, fetched via
@@ -110,7 +111,7 @@ export function validateAgentFileName(name: string): string | null {
 export function validateMcpConfigPath(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return "Enter a file path.";
-  if (trimmed.startsWith("/") || /^[a-z]:[\\/]/i.test(trimmed)) {
+  if (isAbsolutePath(trimmed)) {
     return "Must be inside the root, not an absolute path.";
   }
   if (trimmed.split(/[\\/]/).some((part) => part === "..")) {
@@ -133,7 +134,7 @@ export const DEFAULT_PRD_PATH = ".gavin-root/PRD.md";
 export function validatePrdPath(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return "Enter a file path.";
-  if (trimmed.startsWith("/") || /^[a-z]:[\\/]/i.test(trimmed)) {
+  if (isAbsolutePath(trimmed)) {
     return "Must be inside the root, not an absolute path.";
   }
   if (trimmed.split(/[\\/]/).some((part) => part === ".." || part === ".")) {

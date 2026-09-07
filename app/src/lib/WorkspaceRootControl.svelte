@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { pickPath } from "./picker";
   import { setWorkspaceRoot, switchWorkspaceView } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { agentProfilesStore, agentModelDefaultsStore } from "./layoutState";
@@ -41,7 +41,7 @@
 
   async function pickRoot(): Promise<void> {
     errorMessage = null;
-    const picked = await open({ directory: true, multiple: false, title: "Choose workspace root" });
+    const picked = await pickPath({ directory: true, title: "Choose workspace root" });
     if (typeof picked !== "string") return;
     if (await backend.gavinRootExists(picked)) {
       await setWorkspaceRoot(workspace.id, picked);

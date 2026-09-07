@@ -14,7 +14,7 @@
 // reason it is gone.
 
 import { get, writable } from "svelte/store";
-import { open } from "@tauri-apps/plugin-dialog";
+import { pickPath } from "./picker";
 import * as backend from "./backend";
 import {
   createWorkspace,
@@ -61,7 +61,7 @@ export function nameForRoot(rootPath: string): string {
 /// Opens the folder picker and takes it from there. Silent on a
 /// cancelled pick, which is not an error.
 export async function openWorkspaceFolder(): Promise<void> {
-  const picked = await open({ directory: true, multiple: false, title: "Open workspace" });
+  const picked = await pickPath({ directory: true, title: "Open workspace" });
   if (typeof picked !== "string") return;
 
   const already = workspaceForRoot(get(layoutState), picked);

@@ -14,6 +14,7 @@
 // constants here and never reach the daemon; everything else is stored
 // per workspace or global to the machine.
 
+import { isAbsolutePath } from "./paths";
 import { composeReviewPrompt, REVIEW_RULES_LABEL } from "./codeReview";
 
 /// `gavin` is the odd one out: an action the APP performs, with no
@@ -894,7 +895,10 @@ export function toRecord(tool: Tool, workspaceId: string, position: number): Too
 /// directory the app happens to have.
 export function resolveToolCwd(tool: Pick<Tool, "cwd">, rootPath: string | null): string | null {
   const own = tool.cwd?.trim() ?? "";
-  if (own.startsWith("/")) return own;
+  // Absolute on either alphabet: a tool committed to a repo may name a
+  // `C:\tools\x` directory, and treating that as relative would join it
+  // onto the root and start the session somewhere that does not exist.
+  if (isAbsolutePath(own)) return own;
   if (!rootPath) return null;
   if (!own || own === ".") return rootPath;
   // Plain join: a `..` segment is the human's own business, and

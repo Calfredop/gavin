@@ -18,6 +18,10 @@ vi.mock("./dialog", () => ({ askConfirm: vi.fn().mockResolvedValue(false) }));
 
 vi.mock("./backend", () => ({
   createSession: vi.fn(),
+  // Resolved by default: bootstrap asks the host where its temp directory
+  // is (for a `until` step's check log) and never awaits the answer, so a
+  // mock returning undefined would reject inside a floating promise.
+  tempDir: vi.fn().mockResolvedValue("/tmp"),
   // Resolved by default: handleAgentSessionSpawned calls .catch() on this.
   killSession: vi.fn().mockResolvedValue(undefined),
   getWorkspacesState: vi.fn(),

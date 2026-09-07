@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { pickPath } from "./picker";
 
   interface Props {
     /// The path this tab is editing, relative to the workspace root.
@@ -29,9 +29,8 @@
     error = null;
     busy = true;
     try {
-      const picked = await open({
+      const picked = await pickPath({
         directory: false,
-        multiple: false,
         defaultPath: root,
         title,
       });

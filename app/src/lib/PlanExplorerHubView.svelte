@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { pickPath } from "./picker";
   import { daemonCompat, layoutState, openFileInSplit, switchWorkspaceView } from "./layoutState";
   import { gavinTrees, refreshGavinTree } from "./gavinState";
   import type { GavinTree } from "./gavin";
@@ -249,9 +249,8 @@
   async function createContext(): Promise<void> {
     error = null;
     if (!root) return;
-    const picked = await open({
+    const picked = await pickPath({
       directory: true,
-      multiple: false,
       title: "Folder for the new gavin context",
     });
     if (typeof picked !== "string") return;

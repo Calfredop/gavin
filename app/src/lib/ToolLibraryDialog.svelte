@@ -12,7 +12,7 @@
   // type at all. `toolBodyEditor` answers that per kind, and the three
   // branches below draw its three shapes.
   import { Plus, Copy, Pencil, Trash2, Group, FolderOpen } from "@lucide/svelte";
-  import { open as openPicker } from "@tauri-apps/plugin-dialog";
+  import { pickPath as openPicker } from "./picker";
   import Modal from "./Modal.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import {
@@ -249,7 +249,6 @@
     if (!editing || cwdBlocked) return;
     const picked = await openPicker({
       directory: true,
-      multiple: false,
       title: "Where this tool runs",
     });
     if (typeof picked !== "string") return;

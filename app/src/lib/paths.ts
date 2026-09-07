@@ -1,5 +1,28 @@
+// Every path gavin holds uses forward slashes: the daemon and the Tauri
+// host both normalise on the way out (protocol::wire_path), which is
+// what lets the ~40 modules that take a path apart with split("/") stay
+// correct on Windows. These helpers accept a backslash anyway, because
+// the one path that does NOT come through that boundary is the one a
+// human types into a field.
+export function toPosixPath(path: string): string {
+  return path.replace(/\\/g, "/");
+}
+
+// A path that names its own root: `/x` on unix, `C:\x` or `C:/x` or a
+// `\\server\share` UNC on Windows. Both alphabets on both platforms,
+// deliberately -- the app runs on one OS but reads paths written on
+// another (a card's `cwd`, a tool's directory, a config committed by a
+// colleague), and judging those by the running platform would call a
+// perfectly good absolute path relative.
+export function isAbsolutePath(path: string): boolean {
+  const trimmed = path.trim();
+  return (
+    trimmed.startsWith("/") || trimmed.startsWith("\\\\") || /^[a-z]:[\\/]/i.test(trimmed)
+  );
+}
+
 export function folderName(cwd: string): string {
-  const segments = cwd.split("/").filter(Boolean);
+  const segments = cwd.split(/[\\/]/).filter(Boolean);
   return segments.length > 0 ? segments[segments.length - 1] : cwd;
 }
 

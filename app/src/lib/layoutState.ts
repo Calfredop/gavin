@@ -4,6 +4,7 @@ import { askConfirm, showAlert } from "./dialog";
 import type { LayoutNode } from "./layout";
 import * as layout from "./layout";
 import * as backend from "./backend";
+import { setTempRoot } from "./orchestrationLoop";
 import type { PauseCycle } from "./agentPause";
 import * as terminalRegistry from "./terminalRegistry";
 import { hotState } from "./hotState";
@@ -1046,6 +1047,15 @@ export async function bootstrap(): Promise<void> {
   // Ahead of the workspace listeners: the theme should be correct on the
   // first painted frame, and it has no dependency on workspace state.
   await themeState.init();
+  // Where a `until` step's check tees its output, from the host rather
+  // than assumed: `/tmp` is not a directory on Windows, and the check
+  // and the app have to name the same file. Not awaited -- nothing on
+  // the first frame reads it, and the first loop step is many seconds
+  // away.
+  void backend
+    .tempDir()
+    .then(setTempRoot)
+    .catch(() => {});
   // Started before the ready paths that await it, so the maps are already
   // in flight by the time either of them has a payload to apply.
   tabMapsLoaded = loadTabMaps();

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { pickPath } from "../picker";
   import {
     layoutState,
     daemonCompat,
@@ -72,9 +72,8 @@
     note = null;
     busy = true;
     try {
-      const picked = await open({
+      const picked = await pickPath({
         directory: false,
-        multiple: false,
         defaultPath: root,
         title: "Choose the PRD file",
       });

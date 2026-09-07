@@ -15,7 +15,7 @@
   // drops the body entirely.
   import { untrack } from "svelte";
   import { get } from "svelte/store";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { pickPath } from "./picker";
   import Modal from "./Modal.svelte";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import type { Column } from "./kanban";
@@ -164,9 +164,8 @@
       return;
     }
     try {
-      const picked = await open({
+      const picked = await pickPath({
         directory: false,
-        multiple: false,
         defaultPath: root,
         title: "Attach a file to this card",
       });
