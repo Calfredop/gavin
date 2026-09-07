@@ -469,13 +469,12 @@
 <div class="pane-wrapper">
   <div class="tab-bar">
     <!-- Before the tabs, and outside the scroller: this is the window's
-         top-left corner on a terminal page, and the collapse toggle is
-         the only way back from a collapsed rail. A rule after it, so the
-         chrome that acts on the WINDOW is not read as the first tab of
-         the page. -->
+         top-left corner on a terminal page. It brings its own rule with
+         it, so the chrome that acts on the WINDOW is not read as the
+         first tab of the page -- and so a collapsed rail, which draws no
+         chrome here at all, does not leave a rule leading the tabs. -->
     {#if leadsWindow}
       <SidebarActions />
-      <span class="divider"></span>
     {/if}
     <!-- The tabs scroll under the actions rather than pushing them off
          the pane: a pane with six tabs open must still offer Close Pane.

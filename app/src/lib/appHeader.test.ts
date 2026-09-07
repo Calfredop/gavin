@@ -1,14 +1,15 @@
 import { describe, it, expect } from "vitest";
 
 // The app's top edge is three bars in three files that have to agree:
-// the strip over the sidebar (TitleBar.svelte), the workspace's hub tabs
-// (routes/+page.svelte) and a page's session tabs (Pane.svelte). Nothing
-// links them, so the drift is invisible to every other suite and to a
-// reader of any one of them -- and the drift MATTERS now in a way it did
-// not before this milestone: the title bar used to span the window and
-// push everything down by its own height, so a page's tabs and a hub's
-// tabs never met. They do now. Whichever is on screen is the top edge,
-// and the sidebar beside them starts on the line the strip ends on.
+// the window's corner and the rail's top line (TitleBar.svelte), the
+// workspace's hub tabs (routes/+page.svelte) and a page's session tabs
+// (Pane.svelte). Nothing links them, so the drift is invisible to every
+// other suite and to a reader of any one of them -- and the drift
+// MATTERS now in a way it did not before this milestone: the title bar
+// used to span the window and push everything down by its own height, so
+// a page's tabs and a hub's tabs never met. They do now. Whichever is on
+// screen is the top edge, and the sidebar beside them starts on the line
+// that row ends on.
 //
 // This reads the sources rather than the rendered DOM on purpose: a
 // component <style> is compiled away, and vite hands SSR an empty string
@@ -86,7 +87,9 @@ describe("the app's three header rows", () => {
     for (const name of METRICS) {
       expect(shared).toContain(`var(${name})`);
     }
-    expect(rule(TITLE_BAR, ".titlebar").height).toBe("var(--header-height)");
+    for (const strip of [rule(TITLE_BAR, ".corner"), rule(TITLE_BAR, ".rail-top")]) {
+      expect(strip.height).toBe("var(--header-height)");
+    }
     for (const bar of [rule(PAGE, ".tabs"), rule(PANE, ".tab-bar")]) {
       expect(bar.height).toBe("var(--header-height)");
       // Without border-box the padding would be added to the height and
@@ -104,16 +107,22 @@ describe("the app's three header rows", () => {
     expect(pageTab["font-family"]).toBe(hubTab["font-family"]);
   });
 
-  // Both rows are the surface the view under them is, so the top of the
-  // window is one unbroken colour whichever row is on screen. A page's
-  // row used to be --surface-raised: a grey band with the active tab cut
-  // out of it in black, whose padding read as a margin of the sidebar's
-  // grey leaking over the page. Only the strip over the sidebar stays
-  // raised, because the sidebar under it is.
+  // Every row across the top of the window is the surface of the view
+  // under it, so that top line is one unbroken colour whichever row is on
+  // screen -- the window's own corner included. A page's row used to be
+  // --surface-raised: a grey band with the active tab cut out of it in
+  // black, whose padding read as a margin of the sidebar's grey leaking
+  // over the page.
   it("paints both tab rows the surface of the view they open", () => {
     expect(rule(PAGE, ".tabs").background).toBe("var(--surface-base)");
     expect(rule(PANE, ".tab-bar").background).toBe("var(--surface-base)");
-    expect(rule(TITLE_BAR, ".titlebar").background).toBe("var(--surface-raised)");
+    // The window's own line is that surface too, corner and all: the
+    // controls belong to the bar across the top of the window now, not
+    // to the sidebar's column, and a raised block would read as a piece
+    // of the sidebar that had slipped out of it -- most of all while the
+    // rail is collapsed, when the corner is the wider of the two.
+    expect(rule(TITLE_BAR, ".corner").background).toBe("var(--surface-base)");
+    expect(rule(TITLE_BAR, ".rail-top").background).toBe("var(--surface-base)");
   });
 
   // What a flat row costs: the active tab can no longer be a differently
@@ -163,7 +172,8 @@ describe("the hub and the page reach the top of the window", () => {
   // height, twice over once a page's tabs sat below it as well.
   it("puts the title strip in the rail beside the view, not above it", () => {
     expect(PAGE).toMatch(/<div class="rail">\s*<TitleBar \/>/);
-    expect(rule(PAGE, ".rail").width).toBe("var(--sidebar-width)");
+    expect(rule(PAGE, ".rail").width).toBe("var(--rail-width)");
+    expect(rule(PAGE, ".app")["--rail-width"]).toBe("var(--sidebar-width)");
     // The divider between the columns runs the full height, so it has to
     // belong to the column rather than to the sidebar inside it.
     expect(rule(PAGE, ".rail")["border-right"]).toBe("1px solid var(--border)");
@@ -180,6 +190,74 @@ describe("the hub and the page reach the top of the window", () => {
     expect(rail).toBeGreaterThan(-1);
     expect(main).toBeGreaterThan(rail);
     expect(banner).toBeGreaterThan(main);
+  });
+});
+
+// The one geometry that lets the rail collapse to what IT draws: the
+// window's controls stopped being part of the sidebar's column and
+// became a corner of the top line, free to be wider than the column
+// under it. Nothing else may be drawn in the strip that corner hangs
+// over -- which is the head of whichever header row is on screen.
+describe("the window's corner and the rail under it", () => {
+  const ACTIONS = source("SidebarActions.svelte");
+
+  it("takes the corner out of the column's flow, so it sets no floor", () => {
+    const corner = rule(TITLE_BAR, ".corner");
+    expect(corner.position).toBe("absolute");
+    expect(corner.top).toBe("0");
+    expect(corner.left).toBe("0");
+    expect(corner.width).toBe("var(--window-corner-width)");
+    // The view column's header row is painted later in tree order and
+    // would otherwise cover whatever of the corner overhangs the rail.
+    expect(corner["z-index"]).toBe("1");
+    // The rail is positioned, so "the rail's top-left corner" is what
+    // (0, 0) means here -- and it is the window's, the rail being the
+    // first thing in the body row.
+    expect(rule(PAGE, ".rail").position).toBe("relative");
+  });
+
+  it("leaves room at the head of the header row for the overhang", () => {
+    // The same two variables the corner and the column are sized from,
+    // and the subtraction between them: room for exactly what hangs
+    // over, and none at all when the rail is the wider of the two.
+    expect(rule(ACTIONS, ".corner-overhang").width).toBe(
+      "max(0px, calc(var(--window-corner-width) - var(--rail-width)))"
+    );
+    expect(rule(PAGE, ".app")["--window-corner-width"]).toBe("76px");
+    expect(rule(PAGE, ".app.wide-window-controls")["--window-corner-width"]).toBe("120px");
+    expect(PAGE).toContain("class:wide-window-controls={!isMacSync()}");
+  });
+
+  it("collapses the rail to what the rail draws, not to the platform's width", () => {
+    expect(rule(PAGE, ".app.sidebar-collapsed")["--rail-width"]).toBe(
+      "var(--rail-collapsed-width)"
+    );
+    // The old floor, gone: the strip inside the column is no longer
+    // allowed to decide how narrow the column can be.
+    expect(rule(PAGE, ".rail")["min-width"]).toBeUndefined();
+    expect(rule(PAGE, ".rail")["max-width"]).toBeUndefined();
+  });
+
+  // Collapsed, the header row draws nothing but that room: the toggle
+  // moves into the rail itself, where it costs what a workspace row
+  // costs, and the two actions that need a full-width column stand down.
+  it("moves the collapse toggle into the rail while the rail is collapsed", () => {
+    expect(ACTIONS).toContain("{#if !collapsed}");
+    expect(ACTIONS).toContain("const collapsed = $derived($sidebarCollapsed);");
+    const SIDEBAR = source("Sidebar.svelte");
+    expect(SIDEBAR).toMatch(/\{#if showsRail\}[\s\S]*?class="rail-chrome"/);
+    expect(SIDEBAR).toContain('aria-label="Expand sidebar"');
+    expect(SIDEBAR).toContain("onclick={toggleSidebarCollapsed}");
+    // Above the scrolling list rather than in it: it is the only way
+    // back to the open column, so it must not scroll away.
+    expect(rule(SIDEBAR, ".rail-chrome").flex).toBe("0 0 auto");
+  });
+
+  // A rule with nothing before it reads as the first tab's left edge.
+  it("gives the rule to the chrome it separates, not to the row", () => {
+    expect(ACTIONS).toContain('<span class="divider"></span>');
+    expect(PANE).not.toMatch(/<SidebarActions \/>\s*<span class="divider">/);
+    expect(PAGE).not.toMatch(/<SidebarActions \/>\s*<span class="divider">/);
   });
 });
 
@@ -305,4 +383,5 @@ describe("what the bars carry", () => {
     expect(PANE).toContain("ondragstart={(e) => handleTabDragStart(e, sessionId)}");
     expect(PANE).not.toContain("handlePaneDragStart");
   });
+
 });

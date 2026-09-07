@@ -44,6 +44,7 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import Sidebar from "$lib/Sidebar.svelte";
   import SidebarActions from "$lib/SidebarActions.svelte";
+  import { isMacSync } from "$lib/platform";
   import AppHubView from "$lib/AppHubView.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
   import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
@@ -281,12 +282,18 @@
      marker inside (Pane.svelte's var(--ws-accent)). On .app rather than
      on the body row below it, so the strip over the sidebar is inside
      it too. -->
-<div class="app" class:sidebar-collapsed={$sidebarCollapsed} style:--ws-accent={accent}>
+<div
+  class="app"
+  class:sidebar-collapsed={$sidebarCollapsed}
+  class:wide-window-controls={!isMacSync()}
+  style:--ws-accent={accent}
+>
   <div class="body">
-    <!-- The window's own column: the title strip, and the sidebar under
-         it. It is the whole reason the hub and the page beside it reach
-         the top of the window -- the strip used to span the app and push
-         everything down by its own height.
+    <!-- The window's own column: its top line -- the window's controls
+         in a corner of their own, over the rail's own top row -- and the
+         sidebar under both. It is the whole reason the hub and the page
+         beside it reach the top of the window: the strip used to span
+         the app and push everything down by its own height.
 
          Ahead of the connection branches, not inside the working one: a
          window that cannot reach its daemon still has to be movable,
@@ -364,7 +371,6 @@
                    back. A rule after it, so what acts on the WINDOW is
                    not read as the first tab of the workspace. -->
               <SidebarActions />
-              <span class="divider"></span>
               <!-- The tabs scroll; what follows them does not. A
                    workspace with a root offers nine of them, and the
                    button that adds a page must not be the first thing a
@@ -558,6 +564,23 @@
     flex-direction: column;
     border-radius: 10px;
     overflow: hidden;
+    /* How wide the window's own column is, open and collapsed. A
+       variable rather than two rules on .rail because the head of the
+       header row reads it too: it has to know how much of the window's
+       corner overhangs a narrow rail to leave room for it. */
+    --rail-width: var(--sidebar-width);
+    /* And how wide that corner is -- the platform's own controls. macOS
+       draws three 12px lights 8px apart inside a 12px pad; everything
+       else three 40px buttons. Stated rather than measured because the
+       row beside the corner has to leave room for it before either has
+       been laid out. Keep in step with WindowControls.svelte. */
+    --window-corner-width: 76px;
+  }
+  .app.wide-window-controls {
+    --window-corner-width: 120px;
+  }
+  .app.sidebar-collapsed {
+    --rail-width: var(--rail-collapsed-width);
   }
   .body {
     flex: 1 1 auto;
@@ -565,13 +588,22 @@
     flex-direction: row;
     min-height: 0;
   }
-  /* The window's column: title strip on top, sidebar filling the rest.
-     The width and the divider live here rather than on the sidebar, so
-     the strip above it is the same width and the rule between the two
-     columns runs the full height of the window. */
+  /* The window's column: the rail's top line, then the sidebar filling
+     the rest -- and, floated over its top-left corner and out of its
+     flow, the window's own controls (TitleBar.svelte). The width and the
+     divider live here rather than on the sidebar so the rule between the
+     two columns runs the full height of the window.
+
+     Collapsed, this narrows to an icon rail; it never goes away. It
+     cannot: it is the only place the workspace list exists, and the
+     toggle back out of the rail is a row in it. What sets the collapsed
+     width is what the rail draws -- a chip and its padding. It used to
+     be the platform's: the window controls sat in a strip inside this
+     column, so 76px of traffic lights (120 off macOS) was the narrowest
+     it could ever go, whatever the rows measured. */
   .rail {
     flex: 0 0 auto;
-    width: var(--sidebar-width);
+    width: var(--rail-width);
     display: flex;
     flex-direction: column;
     min-height: 0;
@@ -582,26 +614,6 @@
        rather than widening this one, so the anchor has to be the column
        and the overlay has to be inside it. */
     position: relative;
-  }
-  /* Collapsed, the column narrows to an icon rail -- it never goes away.
-     It cannot: the window's traffic lights live in the strip at the top
-     of this very column, so a hidden sidebar would be a window with no
-     controls. The class rides .app rather than .rail so the rail's own
-     rule stays the one statement of the expanded width.
-
-     Sized by its content rather than to a literal, because the width
-     that has to fit is the window controls', and that is the platform's
-     to decide -- macOS draws three 12px lights, Windows three 40px
-     buttons. Capped at the expanded width so nothing inside the sidebar
-     can make "collapsed" wider than "open". */
-  .app.sidebar-collapsed .rail {
-    width: auto;
-    /* The floor is the strip's own content -- the window controls plus
-       the expand toggle. Shrink-to-fit above would normally land there
-       anyway; stating it means the column cannot end up narrower than
-       the controls it has to keep reachable. */
-    min-width: min-content;
-    max-width: var(--sidebar-width);
   }
   /* Everything that is not the window's own column, from the top of the
      window down: the banners, and whichever of the app hub, a hub tab or

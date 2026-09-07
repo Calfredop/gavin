@@ -27,7 +27,7 @@
   // sidebar's is "Open workspace…", which starts from a folder. The
   // prompt below is the one question that flow can ask.
   import { pendingOpen, initAndOpen, bindWithoutInit, cancelOpen } from "./workspaceOpen";
-  import { sidebarCollapsed, scratchpadEnabled } from "./sidebarPrefs";
+  import { sidebarCollapsed, scratchpadEnabled, toggleSidebarCollapsed } from "./sidebarPrefs";
   import { endSidebarPeek, peekSidebar, sidebarPeek, sidebarShowsRail } from "./sidebarPeek";
   import {
     closeSidebarSearch,
@@ -60,6 +60,7 @@
     AppWindow,
     Search,
     Pin,
+    PanelLeftOpen,
   } from "@lucide/svelte";
   import { themeState } from "./ui/themeState.svelte";
   import IconButton from "./ui/IconButton.svelte";
@@ -1450,6 +1451,25 @@
     </div>
   {/if}
   {#if showsRail}
+    <!-- The way back out of the rail, and the first row of it. The
+         header row beside this column carries that toggle while the
+         sidebar is open; collapsed, there is no room for a row of chrome
+         over a 36px column and none is spent -- the toggle costs exactly
+         what a workspace row costs, in the column it acts on, and the
+         other two chrome buttons stand down until the column is open
+         again. -->
+    <div class="rail-chrome">
+      <button
+        type="button"
+        class="collapsed-row"
+        use:tooltip={"Expand sidebar"}
+        aria-label="Expand sidebar"
+        onclick={toggleSidebarCollapsed}
+      >
+        <span class="collapsed-initial"><PanelLeftOpen size={13} /></span>
+      </button>
+      <div class="footer-divider"></div>
+    </div>
     {@render collapsedList()}
   {:else if searchHits}
     {@render searchResults(searchHits)}
@@ -1858,6 +1878,17 @@
     margin: 0;
     padding: 8px;
     color: var(--text-muted);
+  }
+  /* The rail's own first row, above the list rather than in it: the
+     workspaces scroll and this must not scroll away with them -- it is
+     the only way back to the open column. */
+  .rail-chrome {
+    flex: 0 0 auto;
+  }
+  /* Tighter than the footer's rule, which is inset for a 200px column:
+     the same 10px each side of a 36px one leaves a stub. */
+  .rail-chrome .footer-divider {
+    margin: 4px 6px;
   }
   /* The collapsed rail's rows. Centred rather than left-aligned: with no
      names to line up, a left edge would only make the initials look

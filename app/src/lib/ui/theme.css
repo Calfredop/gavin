@@ -264,4 +264,12 @@ select {
      has to be exactly that wide from a different file. Two literals
      would drift the moment one of them was tuned. */
   --sidebar-width: 200px;
+  /* And how wide it is collapsed: one row's chip and the padding around
+     it, and nothing else. The floor used to be the window controls --
+     they sat in a strip inside this column, so the platform's own width
+     was the narrowest the rail could ever be and the initials rattled
+     around in it. The controls have their own corner of the header row
+     now (TitleBar.svelte), which is what lets this be the size of what
+     the rail actually draws. */
+  --rail-collapsed-width: 36px;
 }
