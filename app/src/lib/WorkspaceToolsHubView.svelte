@@ -19,20 +19,7 @@
   // would make the human who switches one to Loop-until watch it
   // disappear from under the cursor.
   import { onMount } from "svelte";
-  import {
-    Bot,
-    Copy,
-    FileCode2,
-    FolderOpen,
-    GitPullRequest,
-    Pencil,
-    Play,
-    Plus,
-    Repeat,
-    Settings2,
-    Terminal,
-    Zap,
-  } from "@lucide/svelte";
+  import { Copy, FolderOpen, Pencil, Play, Plus, Settings2 } from "@lucide/svelte";
   import { daemonCompat, layoutState, workspaceRootPath } from "./layoutState";
   import { revealSession } from "./cardRunActions";
   import { toolRecords, fetchTools, renderLibraryFor } from "./toolsState";
@@ -43,7 +30,7 @@
   } from "./groupTemplatesState";
   import { toolRunsStore, refreshToolRuns } from "./toolRunsState";
   import { requestToolRun } from "./workspaceToolsActions";
-  import { emptyTool, toolKindLabel, type Tool, type ToolKind } from "./orchestrationTools";
+  import { emptyTool, toolKindLabel, type Tool } from "./orchestrationTools";
   import {
     editDraftFor,
     lastRunsFor,
@@ -64,6 +51,7 @@
   import ToolLibraryDialog from "./ToolLibraryDialog.svelte";
   import ToolRunDialog from "./ToolRunDialog.svelte";
   import { tooltip } from "./tooltip";
+  import { toolKindIcon } from "./ui/toolKindIcon";
 
   interface Props {
     workspaceId: string;
@@ -113,18 +101,7 @@
   const shown = $derived(listedTools(library).filter((t) => matchesToolSearch(t, search)));
   const emptyMessage = $derived(toolsEmptyMessage(shown, search));
 
-  const iconFor = (kind: ToolKind) =>
-    kind === "agent"
-      ? Bot
-      : kind === "command"
-        ? Terminal
-        : kind === "gavin"
-          ? Zap
-          : kind === "until"
-            ? Repeat
-            : kind === "pr"
-              ? GitPullRequest
-              : FileCode2;
+  const iconFor = toolKindIcon;
 
   function blockedFor(tool: Tool): string | null {
     return runBlockedReason({

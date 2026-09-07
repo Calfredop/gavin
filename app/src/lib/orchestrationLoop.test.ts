@@ -646,9 +646,10 @@ describe("the until step's wiring", () => {
   // plain command. `toolBodyEditor` gives the kind its own, so the chip
   // is offered and the field it opens says Check command.
   it("is a kind a human can author, with a body field of its own", () => {
-    expect(SOURCES["./orchestrationTools.ts"]).toContain(
-      'export const TOOL_KINDS: ToolKind[] = ["agent", "command", "script", "until", "pr", "gavin"];'
-    );
+    // The membership itself is asserted against the TYPE in
+    // orchestrationTools.test.ts ("leaves no kind unauthorable"); what
+    // this pins is the two halves that make the chip usable.
+    expect(SOURCES["./orchestrationTools.ts"]).toContain('"until",');
     expect(SOURCES["./orchestrationTools.ts"]).toContain('label: "Check command"');
     expect(SOURCES["./ToolLibraryDialog.svelte"]).toContain("toolBodyEditor(editing.kind)");
   });
@@ -662,14 +663,20 @@ describe("the until step's wiring", () => {
     expect(SOURCES["./ToolLibraryDialog.svelte"]).toContain("toolKindParamNote(editing.kind)");
   });
 
+  // The four sites that draw a tool by its kind used to carry a private
+  // ternary each, and this asserted the `until` arm in three of them.
+  // They now share `toolKindIcon`, so what is worth pinning is that they
+  // still go through it -- which glyph each kind gets, and that no two
+  // share one, is ui/toolKindIcon.test.ts.
   for (const path of [
     "./OrchestrationDrawer.svelte",
     "./ToolLibraryDialog.svelte",
     "./OrchestrationStepChip.svelte",
+    "./WorkspaceToolsHubView.svelte",
   ]) {
-    it(`${path} draws an until tool with its own icon`, () => {
-      expect(SOURCES[path], path).toContain('kind === "until"');
-      expect(SOURCES[path], path).toContain("Repeat");
+    it(`${path} draws a tool's icon from its kind`, () => {
+      expect(SOURCES[path], path).toContain("toolKindIcon");
     });
   }
+
 });

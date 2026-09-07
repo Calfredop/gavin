@@ -68,11 +68,10 @@ describe("editing a tool from the Tools tab", () => {
     const tab = source(TAB);
     expect(tab).toContain("listedTools(library)");
     expect(tab).not.toContain("runnableTools(");
-    // And the three that cannot run still need a glyph, or they draw as
-    // scripts.
-    for (const kind of ["gavin", "until", "pr"]) {
-      expect(tab, kind).toContain(`kind === "${kind}"`);
-    }
+    // And the kinds that cannot run still need a glyph, or they draw as
+    // scripts. One lookup rather than a ternary here since 2026-09-07;
+    // its own coverage is ui/toolKindIcon.test.ts.
+    expect(tab).toContain("toolKindIcon");
   });
 });
 

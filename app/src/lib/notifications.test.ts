@@ -19,6 +19,8 @@ import {
   setRailNotificationVoice,
   parseSessionStatus,
   failureBody,
+  maybeNotifyReviewWait,
+  reviewWaitBody,
   __resetForTesting,
 } from "./notifications";
 
@@ -313,5 +315,49 @@ describe("a failed session", () => {
   it("says nothing at all for a status this build cannot read", async () => {
     await maybeNotifyStatusChange("s1", "working", "unknown", "rail step", ALL_ON);
     expect(sendNotification).not.toHaveBeenCalled();
+  });
+});
+
+// A rail's manual-review gate has no session, so no status ever changes
+// and maybeNotifyStatusChange can never speak for it. Without its own
+// call a rail running unattended stops at its gate and tells nobody --
+// which is the exact failure the gate exists to prevent, from the other
+// side.
+describe("maybeNotifyReviewWait", () => {
+  it("names the rail and the step, so a fleet of them stays legible", async () => {
+    await maybeNotifyReviewWait("backend", "Manual review", ALL_ON);
+    const call = vi.mocked(sendNotification).mock.calls[0][0] as { body: string };
+    expect(call.body).toContain("backend");
+    expect(call.body).toContain("Manual review");
+  });
+
+  // `needsInput`, not `finished`: nothing finished. The sentence is
+  // "come and look at this", which is the fact that toggle answers for.
+  it("rides the needs-input toggle", async () => {
+    await maybeNotifyReviewWait("backend", "Manual review", { needsInput: false, finished: true });
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  // Checked before the window and before permission, so a silenced
+  // workspace never prompts the OS either.
+  it("does not ask the OS for permission when it is silenced", async () => {
+    vi.mocked(isPermissionGranted).mockResolvedValue(false);
+    await maybeNotifyReviewWait("backend", "Manual review", { needsInput: false, finished: false });
+    expect(requestPermission).not.toHaveBeenCalled();
+  });
+
+  // The rail draws a "needs you" badge and the step a Skip button. A
+  // tray notification for something already on screen is noise.
+  it("stays quiet while gavin is frontmost", async () => {
+    mockWindow(true);
+    await maybeNotifyReviewWait("backend", "Manual review", ALL_ON);
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  // A rail with no name and a tool with none are both possible -- the
+  // rail's name is free text -- and "  is waiting for you — " is not a
+  // sentence.
+  it("still says something when neither has a name", () => {
+    expect(reviewWaitBody("  ", "")).toBe("a rail is waiting for you — a review step");
   });
 });

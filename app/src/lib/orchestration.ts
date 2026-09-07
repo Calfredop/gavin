@@ -34,6 +34,24 @@ export function isToolStep(step: Step): boolean {
   return Boolean(step.toolId);
 }
 
+/// Whether a step is a MANUAL REVIEW: a hold on the rail that runs
+/// nothing, takes no session and ends only when a human presses Skip or
+/// Mark done on it.
+///
+/// Null kinds means the library is still loading, which must never read
+/// as "no step is a review" -- the same cold-start rule launchBlocker and
+/// isPrStep both follow. An unknown tool id answers false for the same
+/// reason: a tool that cannot be identified must not be assumed to be
+/// this one, and guessing wrong here would leave a rail waiting on a
+/// person nobody told.
+export function isReviewStep(
+  step: Step,
+  kinds: ReadonlyMap<string, ToolSummary["kind"]> | null
+): boolean {
+  if (!step.toolId || !kinds) return false;
+  return kinds.get(step.toolId) === "review";
+}
+
 /// The overrides a step carries, tolerating the field being absent --
 /// steps written by an agent that predates tools have no `toolParams`.
 export function stepParams(step: Step): Record<string, string> {
@@ -156,7 +174,7 @@ export interface ConflictNote {
 export interface ToolSummary {
   id: string;
   name: string;
-  kind: "agent" | "command" | "script" | "gavin" | "until" | "pr";
+  kind: "agent" | "command" | "script" | "gavin" | "until" | "pr" | "review";
   params?: { name: string; default: string }[];
 }
 
@@ -825,7 +843,20 @@ function deadSessionAction(
 ///   The one mark that names a cause rather than a symptom, and the only
 ///   one that holds while the agent is still working: nothing it does
 ///   from here can reach the board.
-export type StepAttention = "asking" | "turn-ended" | "stale" | "failed" | "decoy-edit";
+/// - `review` -- a `review` step: the rail was TOLD to stop here until a
+///   human has looked. The only mark that is not a fault of any kind,
+///   and the only one that does not read a session -- there is no agent
+///   behind it and never was. It belongs in this vocabulary all the
+///   same, because the question every one of these answers is "why is
+///   this rail not moving", and this is the one case where the answer is
+///   "because you asked it not to".
+export type StepAttention =
+  | "asking"
+  | "turn-ended"
+  | "stale"
+  | "failed"
+  | "decoy-edit"
+  | "review";
 
 /// How long a turn has to have been over before `turn-ended` becomes
 /// `stale`.
@@ -850,18 +881,25 @@ export const STALE_AFTER_MS = 10 * 60_000;
 ///
 /// The rule is one line: a mark that means "this will not finish by
 /// itself" outranks a mark that means "it still might". `failed`,
-/// `decoy-edit` and `stale` are the first kind; `asking` (a question
-/// with a human on the other end) and `turn-ended` (a turn that ended a
-/// moment ago, possibly with a status write in flight) are the second.
+/// `decoy-edit`, `stale` and `review` are the first kind; `asking` (a
+/// question with a human on the other end) and `turn-ended` (a turn that
+/// ended a moment ago, possibly with a status write in flight) are the
+/// second.
 ///
 /// Within the first kind, `failed` leads because the daemon witnessed it
 /// and it carries the agent's own words; `decoy-edit` follows because
-/// gavin can name the exact mistake; `stale` last because it only knows
-/// that nothing happened.
+/// gavin can name the exact mistake; `stale` next because it only knows
+/// that nothing happened. `review` comes last of the four, and that is
+/// the one place the rule needs a second line: it is as certain as any of
+/// them -- nothing but a person will ever end it -- but it is the only
+/// one that is not a FAULT. A rail carrying a broken step and a review
+/// gate at once wants the human sent to the break first; the gate will
+/// still be there.
 const ATTENTION_RANK: Record<StepAttention, number> = {
-  failed: 5,
-  "decoy-edit": 4,
-  stale: 3,
+  failed: 6,
+  "decoy-edit": 5,
+  stale: 4,
+  review: 3,
   asking: 2,
   "turn-ended": 1,
 };
@@ -934,6 +972,13 @@ export function stepAttentions(
         // everything it does from here still lands in a file the board
         // never reads.
         if (decoyEdits.has(step.id)) candidates.push("decoy-edit");
+        // A `review` step has no session AT ALL -- gavin launches
+        // nothing for it -- so it is marked off the plan alone. Every
+        // test below reads a status and would therefore be silent about
+        // the one step on a rail that is guaranteed to want a human,
+        // leaving a rail that had stopped on purpose looking exactly
+        // like one that was busy.
+        if (isReviewStep(step, toolKind)) candidates.push("review");
         const sessionId = runByStep.get(step.id)?.sessionId ?? null;
         const status = sessionId ? sessionStatuses.get(sessionId) : undefined;
         // No status at all is "nothing reported yet", not "finished":
@@ -995,6 +1040,11 @@ export function attentionTip(attention: StepAttention, doneName: string): string
   switch (attention) {
     case "asking":
       return "the agent is asking you something";
+    // Says what ends it, because unlike every other mark here nothing
+    // will: the rail is doing exactly what the step told it to, and the
+    // reader's next move is a button rather than a diagnosis.
+    case "review":
+      return "this step is a manual review — look at the work, then Skip the step to send the rail on";
     // No reason here, deliberately. The mark lasts one tick: rule 3d
     // stalls the step on the same pass, and the STALL carries the
     // agent's own line (failedStepReason), which is the durable place
@@ -1162,6 +1212,15 @@ export function nextActions(
             });
             continue;
           }
+          // A `review` step has no session either, and unlike the wait
+          // above it is NOT waiting on something that has stopped
+          // looking at it: it waits on a person, and a person can Skip
+          // it or mark it done from any rail state -- skipStep even puts
+          // a paused rail back to running as it goes. So a paused rail
+          // holding one is an honest state rather than a wedge, and
+          // stalling it would replace "waiting for you" with a failure
+          // nobody caused.
+          if (isReviewStep(step, toolKind)) continue;
           const sessionId = runByStep.get(step.id)?.sessionId ?? null;
           // A tool step running with NO session, before the library has
           // loaded. It is almost certainly the `pr` step above -- the
@@ -1313,6 +1372,21 @@ export function nextActions(
         // chance to call it done. For a TOOL step the exit code is the
         // whole verdict (tools spec T5).
         if (state === "running") {
+          // Rule 3g -- a `review` step, waiting on a HUMAN. Checked
+          // before everything below for the reason 3f is: all of that
+          // asks what a SESSION did, and this step has none. Nothing is
+          // emitted and the step stays `running` -- the wait ends when
+          // somebody presses Skip (skipStep) or Mark done
+          // (markStepDone), and neither of those is a verdict this
+          // scheduler could ever reach on its own.
+          //
+          // The one rule in this function whose whole content is to
+          // emit nothing. That is not an omission: a rail is expected to
+          // move, so "this step will never finish by itself" has to be
+          // stated somewhere, and stating it here is what keeps the
+          // session rules below from stalling a step that is doing
+          // exactly what it was told.
+          if (isReviewStep(step, toolKind)) break stepBody;
           // Rule 3f -- a `pr` step, waiting on a pull request. Checked
           // before everything below because all of that asks what a
           // SESSION did, and this step has none: gavin does the waiting

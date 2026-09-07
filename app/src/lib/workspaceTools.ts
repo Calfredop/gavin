@@ -12,11 +12,12 @@
 //
 // Three rules run through the file.
 //
-// **Only three kinds run alone.** `gavin`, `until` and `pr` are
-// completion rules, not work: an `until` step's verdict SENDS THE RAIL
-// BACKWARDS and a `pr` step is nothing but waiting, so both are
-// meaningless without a rail to act on, and a `gavin` tool's whole body
-// is the name of a rail action. `isRunnableStandalone` is that fact, and
+// **Only three kinds run alone.** `gavin`, `until`, `pr` and `review`
+// are completion rules, not work: an `until` step's verdict SENDS THE
+// RAIL BACKWARDS, a `pr` step is nothing but waiting on GitHub and a
+// `review` step nothing but waiting on a person, so none of them is
+// meaningful without a rail to hold, and a `gavin` tool's whole body is
+// the name of a rail action. `isRunnableStandalone` is that fact, and
 // every launch path asks it.
 //
 // They are LISTED all the same, with Run dark and the reason on the row.
@@ -63,10 +64,10 @@ export interface ToolRun {
   outcome: string;
 }
 
-/// The kinds that mean anything on their own. The three that are missing
-/// are the three whose bodies are completion rules rather than work: a
-/// human can author all six (TOOL_KINDS), and this is the narrower
-/// question of which of them a Run button can start.
+/// The kinds that mean anything on their own. The ones that are missing
+/// are those whose bodies are completion rules rather than work: a human
+/// can author every kind (TOOL_KINDS), and this is the narrower question
+/// of which of them a Run button can start.
 export const RUNNABLE_TOOL_KINDS: ToolKind[] = ["agent", "command", "script"];
 
 /// A type predicate, not just a boolean: every caller's next move is to
@@ -85,12 +86,12 @@ export function isRunnableStandalone<T extends Pick<Tool, "kind">>(
 ///
 /// Scope-first because that is the order of ownership -- a tool the
 /// human wrote for this repository is the one they came here to run, and
-/// sixteen built-ins above it would bury it. Alphabetical within a block
+/// seventeen built-ins above it would bury it. Alphabetical within a block
 /// rather than by the library's own order, because that order is a
 /// stored `position` the Tools tab has no way to change and would look
 /// arbitrary from here.
 ///
-/// Every kind, including the three that cannot run alone: see the header.
+/// Every kind, including the ones that cannot run alone: see the header.
 export function listedTools(library: Tool[]): Tool[] {
   const rank: Record<Tool["scope"], number> = { workspace: 0, global: 1, builtin: 2 };
   return library
@@ -260,6 +261,9 @@ const CANNOT_RUN_ALONE: Partial<Record<ToolKind, string>> = {
   gavin:
     "A Gavin action acts on a rail — its body names something to do to one, so it only means " +
     "something as a step.",
+  review:
+    "A Manual-review tool runs nothing and waits for you — there is nothing for a Run button " +
+    "to start, so it only means something as a step.",
 };
 
 /// The sentence for a kind that never runs alone, or null for one that

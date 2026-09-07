@@ -38,11 +38,18 @@ import type { Workspace, WorkspacesData } from "./workspace";
 import type { Board } from "./kanban";
 import type { GavinTree } from "./gavin";
 
-/// Why a row is in the inbox. The rails' own three answers, reused
-/// rather than re-spelled: a running step marked `asking` and a bare
-/// terminal waiting for input are one fact, and the app has exactly one
-/// word for it.
-export type AttentionReason = StepAttention;
+/// Why a row is in the inbox. The rails' own answers, reused rather than
+/// re-spelled: a running step marked `asking` and a bare terminal
+/// waiting for input are one fact, and the app has exactly one word for
+/// it.
+///
+/// `review` is the one mark that cannot reach this list, and the type
+/// says so rather than leaving a label nothing can draw. Every row here
+/// IS a session -- that is what the list is -- and a `review` step has
+/// none: gavin launches nothing for it and waits on the person instead.
+/// The rail, its chip and the hub's attention pip all show that wait;
+/// this list is about sessions, and a rail gate is not one.
+export type AttentionReason = Exclude<StepAttention, "review">;
 
 /// When a session entered the status it currently holds.
 ///
