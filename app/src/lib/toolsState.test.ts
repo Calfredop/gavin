@@ -118,8 +118,8 @@ describe("saveToolAction", () => {
   });
 
   it("returns the daemon's message rather than throwing", async () => {
-    vi.mocked(backend.saveTool).mockRejectedValue(new Error("unknown tool kind wasm"));
-    expect(await saveToolAction("ws-1", tool)).toBe("unknown tool kind wasm");
+    vi.mocked(backend.saveTool).mockRejectedValue(new Error("a tool needs a kind"));
+    expect(await saveToolAction("ws-1", tool)).toBe("a tool needs a kind");
   });
 
   // A GLOBAL tool belongs to every workspace, and there is no push for

@@ -23,7 +23,7 @@ one that WRITES it, and still nothing that reads it.*
 | # | Decision |
 |---|---|
 | T1 | A step is a reference to **a card OR a tool** — never both. `toolId` set means a tool step; `cardPath` is `""` there. |
-| T2 | A tool's **body is text**, and its `kind` says how to run it: `agent` (prompt for the workspace's agent), `command` (a shell command line), `script` (a multi-line bash script). |
+| T2 | A tool's **body is text**, and its `kind` says how to run it: `agent` (prompt for the workspace's agent), `command` (a shell command line), `script` (a multi-line bash script). **Amended 2026-09-07:** the kind vocabulary belongs to the **app**. The daemon stores the string and refuses only an *empty* one — it branches on `kind` nowhere, and the allow-list it used to keep silently drifted three times as kinds were added. See §11.4. |
 | T3 | Tools take **string parameters** substituted into the body as `{{name}}`. Substitution is **literal** — the tool author owns the quoting. Each step carries its own overrides. |
 | T4 | Tools live in **three scopes**: `builtin` (shipped, read-only, TypeScript constants), `global` (this machine, every workspace), `workspace` (this workspace only). A workspace tool wins a name clash. |
 | T5 | A tool step is **done when its session exits 0**, stalled on any other exit — including an exit gavin did not witness. There is no card and therefore no done column to reach. **Amended 2026-08-25:** true for `command` and `script` tools only. An `agent` tool's session never exits, so it is done when **its turn ends** — see §3.1. |
@@ -774,6 +774,35 @@ refuse after the human had typed.
 `initialEdit` is read at **construction**, not in an effect. An effect
 that re-ran for any reason would overwrite what the human had typed with
 the draft they started from.
+
+### 11.4 The daemon was a second obstacle (fixed 2026-09-07)
+
+§11.1 said the obstacle was the form and not the scheduler. That was true
+and incomplete: `save_tool` in the daemon kept its own allow-list —
+`agent | command | script` — so four of the seven kinds could be
+authored, validated and previewed, and then died at the store with
+"unknown tool kind pr", after the human had typed.
+
+The list had drifted three times without anything failing: `gavin`
+(2026-09-02), `until` and `pr` (2026-09-03), `review` (2026-09-04). That
+is the diagnosis, not just the history — it was a **second copy of a
+vocabulary this layer does not own**. The daemon reads `kind` in exactly
+one place, that guard, and branches on it nowhere: every rule about what
+a kind *does* is in the app's scheduler, and `protocol::ToolKind` is a
+raw `String` for precisely that reason.
+
+It also bought nothing. `command` was always on the list, so it never
+protected against a body that runs; the app is what refuses a body its
+kind cannot express (`validateTool`) and what offers the chips. Against
+it, a **newer app is a supported client** — the compat band reaches back
+to v5 — so the list refused saves the app was entitled to make.
+
+So the guard is now "a tool needs a kind" and nothing more. The empty
+case stays refused because the app reads an unrecognised kind as a shell
+command line, so a blank one would quietly run an agent prompt in a
+terminal. The coverage that was missing is a round-trip **per kind**, in
+the store and through `SaveTool`, so the next kind the app adds fails
+there rather than in the human's hands.
 
 ---
 

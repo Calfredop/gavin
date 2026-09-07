@@ -635,8 +635,34 @@ impl OrchestrationStore {
         if tool.name.trim().is_empty() {
             anyhow::bail!("a tool needs a name");
         }
-        if !matches!(tool.kind.as_str(), "agent" | "command" | "script") {
-            anyhow::bail!("unknown tool kind {}", tool.kind);
+        // NOT an allow-list of kinds, deliberately, and it was one until
+        // 2026-09-07. The daemon does not branch on `kind` anywhere --
+        // this function is the only place it reads one, and every rule
+        // about what a kind DOES (an `until` step sending a rail
+        // backwards, a `pr` step waiting on GitHub, a `gavin` step
+        // resolving inside its own launch) lives in the app's scheduler.
+        // So the list here was a second copy of a vocabulary this layer
+        // does not own, and it drifted three times without anything
+        // failing: `gavin` (2026-09-02), `until` and `pr` (2026-09-03)
+        // and `review` (2026-09-04) each became authorable in the app
+        // while this still read agent|command|script. Duplicating "Wait
+        // for the pull request" and pressing Save died here, after the
+        // human had typed.
+        //
+        // It also bought nothing. The allow-list never protected against
+        // a bad body -- `command` was always on it -- and the app is
+        // what refuses a body its kind cannot express (`validateTool`)
+        // and what offers the chips a human picks from. Meanwhile a
+        // NEWER app is a supported client: the compat band reaches back
+        // to v5, so a list here refuses saves the app is entitled to
+        // make. Same reasoning as `icon` one field down, and the same as
+        // `ToolKind` being a raw `String` on the wire.
+        //
+        // An EMPTY kind is still refused: nothing means it, and the app
+        // reads an unrecognised kind as a shell command line, so a blank
+        // one would quietly run a prompt in a terminal.
+        if tool.kind.trim().is_empty() {
+            anyhow::bail!("a tool needs a kind");
         }
         // An empty string is not a directory, it is an untouched text
         // field: stored as NULL so "runs at the workspace root" has one
@@ -1290,13 +1316,50 @@ mod tests {
         assert!(err.contains("built-in"), "{err}");
     }
 
+    /// Every kind the app can author, saved and read back.
+    ///
+    /// This is the test that was missing while `save_tool` kept an
+    /// allow-list of three: `gavin` (2026-09-02), `until` and `pr`
+    /// (2026-09-03) and `review` (2026-09-04) each became authorable in
+    /// the app without anything here noticing, so duplicating "Wait for
+    /// the pull request" and pressing Save failed with "unknown tool
+    /// kind pr" -- after the human had typed.
     #[test]
-    fn an_unknown_tool_kind_is_refused() {
+    fn every_kind_the_app_can_author_round_trips() {
+        for kind in ["agent", "command", "script", "gavin", "until", "pr", "review"] {
+            let mut s = store();
+            let mut t = tool("u1", Some("ws-1"));
+            t.kind = kind.into();
+            s.save_tool(&t).unwrap_or_else(|e| panic!("saving a {kind} tool: {e}"));
+            assert_eq!(s.tools("ws-1").unwrap()[0].kind, kind);
+        }
+    }
+
+    /// The one thing left of the old allow-list, and the only part of it
+    /// that was ever protecting anything: the app reads a kind it does
+    /// not recognise as a shell command line, so a blank one would
+    /// quietly run an agent prompt in a terminal.
+    #[test]
+    fn a_tool_with_no_kind_at_all_is_still_refused() {
         let mut s = store();
         let mut bad = tool("u1", None);
-        bad.kind = "wasm".into();
+        bad.kind = "   ".into();
         let err = s.save_tool(&bad).unwrap_err().to_string();
-        assert!(err.contains("wasm"), "{err}");
+        assert!(err.contains("kind"), "{err}");
+    }
+
+    /// A kind a NEWER app authored is stored, not refused. The compat
+    /// band reaches back to v5, so an app several versions ahead of this
+    /// daemon is a supported client -- and every rule about what a kind
+    /// DOES lives in that app, which is the half that would know how to
+    /// judge one.
+    #[test]
+    fn a_kind_this_daemon_has_never_heard_of_is_stored() {
+        let mut s = store();
+        let mut t = tool("u1", Some("ws-1"));
+        t.kind = "teleport".into();
+        s.save_tool(&t).unwrap();
+        assert_eq!(s.tools("ws-1").unwrap()[0].kind, "teleport");
     }
 
     #[test]

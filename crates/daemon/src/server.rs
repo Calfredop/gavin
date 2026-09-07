@@ -3703,14 +3703,42 @@ mod tests {
         }
     }
 
+    /// A refusal from the store reaches the client as `Response::Error`
+    /// rather than as an `Ok` that stored nothing.
+    ///
+    /// The refusal it uses is a tool with NO KIND, which since
+    /// 2026-09-07 is the only kind-shaped thing `save_tool` refuses: it
+    /// used to hold an allow-list of three kinds while the app authored
+    /// seven, so this test was riding on a rejection that was itself the
+    /// bug.
     #[test]
     fn a_refused_save_tool_answers_with_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let manager = test_manager(&dir);
         let mut bad = a_tool("u1", None);
-        bad.kind = "wasm".into();
+        bad.kind = String::new();
         match handle_request(&manager, Request::SaveTool { tool: bad }) {
-            Response::Error { message } => assert!(message.contains("wasm"), "{message}"),
+            Response::Error { message } => assert!(message.contains("kind"), "{message}"),
+            other => panic!("wrong response: {other:?}"),
+        }
+    }
+
+    /// And the save the allow-list used to refuse: every kind the app
+    /// offers a chip for goes through `SaveTool` and comes back.
+    #[test]
+    fn save_tool_accepts_every_kind_the_app_can_author() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        for kind in ["agent", "command", "script", "gavin", "until", "pr", "review"] {
+            let mut tool = a_tool(&format!("u-{kind}"), Some("ws-1"));
+            tool.kind = kind.into();
+            match handle_request(&manager, Request::SaveTool { tool }) {
+                Response::Ok => {}
+                other => panic!("saving a {kind} tool: {other:?}"),
+            }
+        }
+        match handle_request(&manager, Request::GetTools { workspace_id: "ws-1".into() }) {
+            Response::Tools { tools } => assert_eq!(tools.len(), 7),
             other => panic!("wrong response: {other:?}"),
         }
     }
