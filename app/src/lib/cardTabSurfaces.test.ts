@@ -109,7 +109,10 @@ describe("the plan panel in a pane", () => {
     // Escape meant for a real dialog above it.
     const text = source(MODAL);
     expect(text).toContain("if (inline) return;\n    const mine = pushModal();");
-    expect(text).toContain("function handleBackdropClick(event: MouseEvent): void {\n    if (inline) return;");
+    // The backdrop is a window-drag surface now (it covers every bar
+    // the window's own drag lives on), so what an inline panel withholds
+    // is the action's callback rather than an early return in a handler.
+    expect(text).toContain("const backdropClick = $derived(inline ? null : () => onClose());");
     expect(text).toContain('if (event.key !== "Escape") return;');
   });
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { pushModal, popModal, isTopModal } from "./modalStack";
+  import { windowDragOrClick } from "./windowDrag";
 
   interface Props {
     onClose: () => void;
@@ -57,10 +58,16 @@
     return () => popModal(mine);
   });
 
-  function handleBackdropClick(event: MouseEvent): void {
-    if (inline) return;
-    if (event.target === event.currentTarget) onClose();
-  }
+  // The backdrop is fixed over the whole window while a dialog is up --
+  // including every bar `windowDrag` puts the window's own drag on -- so
+  // it has to offer that drag itself, or the window cannot be moved at
+  // all until the dialog is answered. Press and move moves the window;
+  // press and release, without moving, is still the dismissal.
+  //
+  // An inline panel is a PANE rather than a dialog: it covers nothing,
+  // it takes no part in the modal stack, and a click outside must not
+  // close it -- so it hands the action nothing to do.
+  const backdropClick = $derived(inline ? null : () => onClose());
 
   function handleKeydown(event: KeyboardEvent): void {
     if (inline) return;
@@ -72,7 +79,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="backdrop" class:inline onclick={handleBackdropClick} role="presentation">
+<div class="backdrop" class:inline use:windowDragOrClick={backdropClick} role="presentation">
   <div
     class="panel"
     class:wide

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { doubleClickAction, createDoubleClickTracker } from "./titleBarGesture";
+import { doubleClickAction, createDoubleClickTracker, createDragIntent } from "./titleBarGesture";
 
 describe("doubleClickAction", () => {
   // Values of the macOS global default `AppleActionOnDoubleClick`
@@ -65,5 +65,68 @@ describe("createDoubleClickTracker", () => {
     t.mousedown(ev(2));
     expect(t.mouseup(ev(2))).toBe(true);
     expect(t.mouseup(ev(2))).toBe(false);
+  });
+});
+
+// A press on the modal backdrop is two gestures in one: a click that
+// dismisses the dialog, and a drag that moves the window out from under
+// it. What separates them is travel, and nothing else -- the dismissal
+// cannot be decided on mousedown (it is not one yet) and the drag cannot
+// wait for mouseup (a native drag swallows it).
+describe("createDragIntent", () => {
+  const at = (x: number, y: number, button = 0) => ({ button, detail: 1, clientX: x, clientY: y });
+
+  it("reads a press that never moves as a click", () => {
+    const g = createDragIntent();
+    expect(g.down(at(100, 100))).toBe(true);
+    expect(g.move(at(100, 100))).toBe(false);
+    expect(g.up(at(100, 100))).toBe(true);
+  });
+
+  it("tolerates the hand-shake inside a click", () => {
+    const g = createDragIntent();
+    g.down(at(100, 100));
+    expect(g.move(at(103, 102))).toBe(false);
+    expect(g.up(at(103, 102))).toBe(true);
+  });
+
+  it("becomes a drag once the press travels past the slop", () => {
+    const g = createDragIntent();
+    g.down(at(100, 100));
+    expect(g.move(at(120, 100))).toBe(true);
+    // Once, so a press cannot ask the window manager twice.
+    expect(g.move(at(140, 100))).toBe(false);
+  });
+
+  it("never clicks after it has dragged", () => {
+    const g = createDragIntent();
+    g.down(at(100, 100));
+    g.move(at(100, 140));
+    expect(g.up(at(100, 140))).toBe(false);
+  });
+
+  it("ignores a press that is not the left button", () => {
+    const g = createDragIntent();
+    expect(g.down(at(100, 100, 2))).toBe(false);
+    expect(g.move(at(140, 100))).toBe(false);
+    expect(g.up(at(140, 100, 2))).toBe(false);
+  });
+
+  it("reports no click for a mouseup that was never armed", () => {
+    const g = createDragIntent();
+    expect(g.up(at(100, 100))).toBe(false);
+  });
+
+  it("forgets a press it was told to cancel", () => {
+    const g = createDragIntent();
+    g.down(at(100, 100));
+    g.cancel();
+    expect(g.up(at(100, 100))).toBe(false);
+  });
+
+  it("takes the slop as a parameter, so a surface can be stricter", () => {
+    const g = createDragIntent(0);
+    g.down(at(100, 100));
+    expect(g.move(at(101, 100))).toBe(true);
   });
 });

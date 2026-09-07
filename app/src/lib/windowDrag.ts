@@ -20,7 +20,7 @@
 // dragging a tab is what the row keeps.
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { createDoubleClickTracker, doubleClickAction } from "./titleBarGesture";
+import { createDoubleClickTracker, createDragIntent, doubleClickAction } from "./titleBarGesture";
 
 /// `use:windowDrag` on any element whose empty space should move the
 /// window. data-tauri-drag-region alone is unreliable depending on the
@@ -65,6 +65,73 @@ export function windowDrag(node: HTMLElement): { destroy: () => void } {
     destroy() {
       node.removeEventListener("mousedown", onMouseDown);
       node.removeEventListener("mouseup", up);
+    },
+  };
+}
+
+/// `use:windowDragOrClick={onClick}` on a surface that a click ACTS on
+/// but that is also, while it is up, the only thing covering the window's
+/// title bar: the modal backdrop. Press and move it and the window moves;
+/// press and release without moving and the click runs.
+///
+/// A modal used to freeze the window in place. The backdrop is fixed over
+/// the whole window -- the tab row, the strip over the sidebar, every
+/// surface `windowDrag` is on -- so with a dialog up there was nowhere
+/// left to grab, and the one gesture the backdrop did have was the one
+/// that dismissed it. Reaching for the window and getting a discard
+/// prompt is the bug this closes: a drag is not a dismissal.
+///
+/// Only a press that STARTS on the node itself counts, so a selection
+/// dragged out of the panel and released over the backdrop neither moves
+/// the window nor closes the dialog.
+export function windowDragOrClick(
+  node: HTMLElement,
+  onClick: (() => void) | null
+): { update: (next: (() => void) | null) => void; destroy: () => void } {
+  const intent = createDragIntent();
+  let act = onClick;
+  let watching = false;
+
+  function stopWatching(): void {
+    if (!watching) return;
+    watching = false;
+    window.removeEventListener("mousemove", onMouseMove, true);
+    window.removeEventListener("mouseup", onMouseUp, true);
+  }
+
+  // On the window and in capture, not on the node: once the press is
+  // armed the pointer is free to leave the backdrop -- over the panel,
+  // over a tab row -- and the gesture still belongs to this press.
+  function onMouseMove(event: MouseEvent): void {
+    if (!intent.move(event)) return;
+    stopWatching();
+    intent.cancel();
+    void getCurrentWindow().startDragging();
+  }
+
+  function onMouseUp(event: MouseEvent): void {
+    const click = intent.up(event);
+    stopWatching();
+    if (click) act?.();
+  }
+
+  function onMouseDown(event: MouseEvent): void {
+    if (!act) return;
+    if (event.target !== node) return;
+    if (!intent.down(event)) return;
+    watching = true;
+    window.addEventListener("mousemove", onMouseMove, true);
+    window.addEventListener("mouseup", onMouseUp, true);
+  }
+
+  node.addEventListener("mousedown", onMouseDown);
+  return {
+    update(next) {
+      act = next;
+    },
+    destroy() {
+      stopWatching();
+      node.removeEventListener("mousedown", onMouseDown);
     },
   };
 }

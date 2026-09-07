@@ -384,4 +384,17 @@ describe("what the bars carry", () => {
     expect(PANE).not.toContain("handlePaneDragStart");
   });
 
+  // And what a dialog took back: the backdrop is fixed over the whole
+  // window, so while one is up it covers every row above -- there was
+  // nowhere left to grab the window, and the one gesture the backdrop
+  // did have dismissed the dialog. A press that MOVES is a window drag
+  // now; a press that does not is still the dismissal.
+  it("lets a modal backdrop move the window it covers", () => {
+    const modal = source("Modal.svelte");
+    expect(modal).toContain("use:windowDragOrClick={backdropClick}");
+    expect(modal).not.toContain("onclick={handleBackdropClick}");
+    // An inline panel is a pane, not a dialog: it covers nothing, and a
+    // click outside must not close it.
+    expect(modal).toContain("const backdropClick = $derived(inline ? null : () => onClose());");
+  });
 });
