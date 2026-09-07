@@ -1906,18 +1906,100 @@ pub fn read_message<R: BufRead, T: for<'de> Deserialize<'de>>(
     Ok(Some(msg))
 }
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
-pub fn app_support_dir() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME not set");
-    PathBuf::from(home)
-        .join("Library")
-        .join("Application Support")
-        .join("gavin")
+/// The longest path `bind(2)` will accept for a Unix socket, in bytes.
+///
+/// `sockaddr_un::sun_path` is a fixed 104-byte array on macOS and 108 on
+/// Linux, one of which must be the terminating NUL -- so 103 is the
+/// figure that holds on both. It is not a limit anything reports well:
+/// the kernel answers a long path with EINVAL on macOS and
+/// ENAMETOOLONG on Linux, neither of which mentions a length, which is
+/// why `socket_path` checks it here instead of letting the daemon die
+/// on an opaque bind failure. `crates/daemon/tests/shutdown.rs` builds
+/// its fake $HOME under /tmp for exactly this reason.
+pub const SUN_PATH_MAX: usize = 103;
+
+/// Where gavin keeps its socket and its three SQLite stores.
+///
+/// Per-OS on purpose, and macOS deliberately does NOT consult XDG:
+/// every existing install already has its registry, kanban and
+/// orchestration databases under `~/Library/Application Support/gavin`,
+/// and a developer with `XDG_DATA_HOME` exported for some unrelated tool
+/// must not silently start a second, empty daemon beside the one holding
+/// their work. Linux (and any other unix) follows the XDG base
+/// directory spec: `$XDG_DATA_HOME/gavin`, defaulting to
+/// `~/.local/share/gavin`.
+///
+/// Fallible rather than panicking. `HOME` is missing in a launchd job,
+/// a systemd unit without `User=`, and a container that never set it;
+/// the old `expect` turned that into a daemon that aborts before it
+/// prints anything and an app whose only symptom is "daemon did not
+/// become reachable". An Err travels up through `bootstrap` instead and
+/// reaches the human as the connection banner, naming the variable.
+pub fn app_support_dir() -> anyhow::Result<PathBuf> {
+    resolve_app_support_dir(
+        std::env::var_os("HOME"),
+        std::env::var_os("XDG_DATA_HOME"),
+        cfg!(target_os = "macos"),
+    )
 }
 
-pub fn socket_path() -> PathBuf {
-    app_support_dir().join("daemon.sock")
+/// The decision behind `app_support_dir`, with the environment passed in.
+///
+/// Split out so the per-OS rule can be tested at every interesting
+/// value without `set_var`: the suite runs multi-threaded, the daemon
+/// tests spawn real processes that read `HOME`, and mutating the
+/// process environment under that is how a green suite starts failing
+/// only on someone else's machine.
+pub fn resolve_app_support_dir(
+    home: Option<OsString>,
+    xdg_data_home: Option<OsString>,
+    macos: bool,
+) -> anyhow::Result<PathBuf> {
+    let home = home.filter(|h| !h.is_empty());
+    if macos {
+        let home = home.ok_or_else(|| {
+            anyhow::anyhow!("HOME is not set, so gavin cannot find ~/Library/Application Support")
+        })?;
+        return Ok(PathBuf::from(home).join("Library").join("Application Support").join("gavin"));
+    }
+    // "If $XDG_DATA_HOME is either not set or empty, a default equal to
+    // $HOME/.local/share should be used" -- and the spec also says a
+    // relative value is invalid and must be ignored, which matters here
+    // because a relative data dir would put the socket somewhere that
+    // moves with the daemon's cwd.
+    let xdg = xdg_data_home
+        .filter(|x| !x.is_empty())
+        .map(PathBuf::from)
+        .filter(|x| x.is_absolute());
+    if let Some(xdg) = xdg {
+        return Ok(xdg.join("gavin"));
+    }
+    let home = home.ok_or_else(|| {
+        anyhow::anyhow!("neither XDG_DATA_HOME nor HOME is set, so gavin has nowhere to keep its socket and databases")
+    })?;
+    Ok(PathBuf::from(home).join(".local").join("share").join("gavin"))
+}
+
+pub fn socket_path() -> anyhow::Result<PathBuf> {
+    let path = app_support_dir()?.join("daemon.sock");
+    check_sun_path(&path)?;
+    Ok(path)
+}
+
+/// Rejects a socket path the kernel would refuse, while there is still
+/// something useful to say about it.
+fn check_sun_path(path: &Path) -> anyhow::Result<()> {
+    let len = path.as_os_str().as_encoded_bytes().len();
+    if len > SUN_PATH_MAX {
+        anyhow::bail!(
+            "the daemon socket path is {len} bytes ({}), over the {SUN_PATH_MAX}-byte limit a unix socket address can hold -- point XDG_DATA_HOME at a shorter directory",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3544,5 +3626,92 @@ mod tests {
         })
         .unwrap();
         assert!(json.contains(r#""mode":"sequence""#), "{json}");
+    }
+
+    // ---- the data directory seam ------------------------------------
+
+    fn os(s: &str) -> Option<OsString> {
+        Some(OsString::from(s))
+    }
+
+    #[test]
+    fn macos_keeps_application_support_and_ignores_xdg() {
+        // The compatibility promise of the Linux port: nobody who has
+        // XDG_DATA_HOME exported for some other tool wakes up on a
+        // second, empty daemon while their real one still holds the
+        // registry.
+        let dir = resolve_app_support_dir(os("/Users/x"), os("/Users/x/.local/share"), true).unwrap();
+        assert_eq!(dir, PathBuf::from("/Users/x/Library/Application Support/gavin"));
+    }
+
+    #[test]
+    fn linux_defaults_to_the_xdg_default_when_the_variable_is_unset() {
+        let dir = resolve_app_support_dir(os("/home/x"), None, false).unwrap();
+        assert_eq!(dir, PathBuf::from("/home/x/.local/share/gavin"));
+    }
+
+    #[test]
+    fn linux_honours_an_absolute_xdg_data_home() {
+        let dir = resolve_app_support_dir(os("/home/x"), os("/data/gavin-home"), false).unwrap();
+        assert_eq!(dir, PathBuf::from("/data/gavin-home/gavin"));
+    }
+
+    #[test]
+    fn an_empty_or_relative_xdg_data_home_is_ignored_the_way_the_spec_says() {
+        // The XDG base directory spec: empty means unset, and a relative
+        // value "is invalid and must be ignored". Honouring a relative
+        // one would put the socket somewhere that moves with whatever
+        // cwd the daemon happened to be spawned from.
+        for bad in ["", ".local/share", "gavin-data"] {
+            let dir = resolve_app_support_dir(os("/home/x"), os(bad), false).unwrap();
+            assert_eq!(dir, PathBuf::from("/home/x/.local/share/gavin"), "XDG_DATA_HOME={bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_missing_home_is_an_error_naming_the_variable_not_a_panic() {
+        // The old code was `expect("HOME not set")`, which aborts the
+        // daemon before it prints anything -- the app then only ever
+        // saw "daemon did not become reachable".
+        for macos in [true, false] {
+            let err = resolve_app_support_dir(None, None, macos).unwrap_err().to_string();
+            assert!(err.contains("HOME"), "{err}");
+        }
+        // Empty is the same as unset: an exported-but-blank HOME would
+        // otherwise resolve the whole tree under "/".
+        assert!(resolve_app_support_dir(os(""), None, false).is_err());
+    }
+
+    #[test]
+    fn an_absolute_xdg_data_home_is_enough_on_its_own() {
+        // A systemd user unit sets XDG_DATA_HOME and may not set HOME.
+        let dir = resolve_app_support_dir(None, os("/run/user/1000/gavin-data"), false).unwrap();
+        assert_eq!(dir, PathBuf::from("/run/user/1000/gavin-data/gavin"));
+    }
+
+    #[test]
+    fn the_socket_fits_sun_path_under_a_long_xdg_data_home() {
+        // The budget, stated as a test because nothing else reports it:
+        // bind() answers an over-long path with EINVAL on macOS and
+        // ENAMETOOLONG on Linux, and neither mentions a length. Linux
+        // adds "/gavin/daemon.sock" (18 bytes) to the data home against
+        // macOS's "/Library/Application Support/gavin/daemon.sock" (46),
+        // so the XDG layout is the roomier of the two -- a data home as
+        // long as this one still leaves headroom.
+        let long = format!("/home/{}/.local/share", "a".repeat(60));
+        assert_eq!(long.len(), 79);
+        let socket = resolve_app_support_dir(None, os(&long), false).unwrap().join("daemon.sock");
+        let len = socket.as_os_str().as_encoded_bytes().len();
+        assert!(len <= SUN_PATH_MAX, "{} is {len} bytes", socket.display());
+        assert!(check_sun_path(&socket).is_ok());
+    }
+
+    #[test]
+    fn an_over_long_socket_path_is_refused_with_the_limit_in_the_message() {
+        let long = format!("/{}", "a".repeat(SUN_PATH_MAX));
+        let socket = PathBuf::from(long).join("daemon.sock");
+        let err = check_sun_path(&socket).unwrap_err().to_string();
+        assert!(err.contains(&SUN_PATH_MAX.to_string()), "{err}");
+        assert!(err.contains("XDG_DATA_HOME"), "{err}");
     }
 }

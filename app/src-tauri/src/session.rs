@@ -1389,12 +1389,13 @@ fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
         *state.0.lock().unwrap() = None;
     }
 
+    let socket = socket_path()?;
     let stream_conn = crate::daemon::connect_or_spawn(
-        &socket_path(),
+        &socket,
         Duration::from_secs(3),
         crate::daemon::spawn_real_daemon,
     )?;
-    let probe = Mutex::new(UnixStream::connect(socket_path())?);
+    let probe = Mutex::new(UnixStream::connect(&socket)?);
     // Verified before ANYTHING is swapped in: a daemon that fails the
     // version probe must leave a named error and an app that is merely
     // disconnected, never one wired half onto each daemon.
@@ -2818,15 +2819,16 @@ fn carry_over_agent_command(root_path: &str, legacy: Option<&str>) -> anyhow::Re
 }
 
 pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
+    let socket = socket_path()?;
     let stream_conn = crate::daemon::connect_or_spawn(
-        &socket_path(),
+        &socket,
         Duration::from_secs(3),
         crate::daemon::spawn_real_daemon,
     )?;
     // The daemon is confirmed reachable by the connect above (which may
     // have just spawned it) — this second connection should succeed
     // immediately, no retry/backoff needed.
-    let command_stream = UnixStream::connect(socket_path())?;
+    let command_stream = UnixStream::connect(&socket)?;
     let command_conn = Mutex::new(command_stream);
     let compat = verify_daemon_protocol(&command_conn)?;
     *app_handle.state::<DaemonCompatState>().0.lock().unwrap() = Some(compat);
@@ -3070,7 +3072,11 @@ fn create_fresh_session(
     command: Option<&str>,
     compat: &DaemonCompat,
 ) -> anyhow::Result<String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    // "/" only when there is no home at all: the point of the fallback
+    // is a directory that certainly exists, and every OS has that one.
+    let home = crate::home::home_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "/".to_string());
     let target = cwd.map(str::to_string).unwrap_or_else(|| home.clone());
     let command = command.map(str::to_string);
 

@@ -6,6 +6,7 @@ mod daemon;
 mod edge_expand;
 mod fileviewer;
 mod git;
+mod home;
 mod layout;
 mod mac_window;
 mod pull_request;

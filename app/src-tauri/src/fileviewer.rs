@@ -100,12 +100,7 @@ pub fn write_file_for_editor(path: String, content: String) -> Result<(), String
 /// dead-end this check exists to prevent.
 #[tauri::command]
 pub fn resolve_path_under_cursor(candidate: String, cwd: String) -> Option<String> {
-    let expanded = if let Some(rest) = candidate.strip_prefix("~/") {
-        let home = std::env::var("HOME").ok()?;
-        PathBuf::from(home).join(rest)
-    } else {
-        PathBuf::from(&candidate)
-    };
+    let expanded = crate::home::expand_tilde(&candidate)?;
     let absolute = if expanded.is_absolute() { expanded } else { PathBuf::from(&cwd).join(expanded) };
     let canonical = std::fs::canonicalize(&absolute).ok()?;
     if !canonical.is_file() {

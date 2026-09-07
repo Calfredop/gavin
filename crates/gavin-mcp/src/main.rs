@@ -36,13 +36,24 @@ struct Connection {
 /// the window is USED, with the requests it predates gated off, rather
 /// than refused outright.
 struct SocketTransport {
-    socket_path: PathBuf,
+    /// The resolved socket path, or the reason there isn't one.
+    ///
+    /// A `Result` in a field rather than a fallible constructor because
+    /// the only way to resolve it can fail is a missing `HOME`/
+    /// `XDG_DATA_HOME`, and the honest response to that is to keep
+    /// answering on stdio with the real reason -- an MCP server that
+    /// exits at startup reaches the agent as "server failed to start",
+    /// which names nothing.
+    socket_path: Result<PathBuf, String>,
     conn: Option<Connection>,
 }
 
 impl SocketTransport {
     fn new() -> Self {
-        Self::at(protocol::socket_path())
+        Self {
+            socket_path: protocol::socket_path().map_err(|e| e.to_string()),
+            conn: None,
+        }
     }
 
     /// Takes the socket path rather than resolving one itself, so the
@@ -52,14 +63,18 @@ impl SocketTransport {
     /// `protocol::socket_path()`, would be racing every other test in the
     /// process for one global.
     fn at(socket_path: PathBuf) -> Self {
-        Self { socket_path, conn: None }
+        Self { socket_path: Ok(socket_path), conn: None }
     }
 
     fn connect(&mut self) -> anyhow::Result<()> {
         // Dropped before the probe, not after it: a failed connect must
         // not leave the previous daemon's version behind for the gate.
         self.conn = None;
-        let stream = UnixStream::connect(&self.socket_path)
+        let socket_path = match &self.socket_path {
+            Ok(path) => path,
+            Err(why) => anyhow::bail!("{why}"),
+        };
+        let stream = UnixStream::connect(socket_path)
             .map_err(|_| anyhow::anyhow!("gavin daemon isn't running — open the gavin app"))?;
         let mut reader = BufReader::new(stream);
         write_message(reader.get_mut(), &Request::GetProtocolVersion)

@@ -17,27 +17,37 @@ use std::time::{Duration, Instant};
 #[test]
 fn shutdown_replies_over_the_socket_then_the_daemon_process_exits() {
     // A fake $HOME so the daemon binds its socket (and opens its sqlite
-    // stores) under a tempdir instead of the developer's real
-    // ~/Library/Application Support/gavin. Getting this wrong would send a
-    // live Shutdown to -- and kill -- whatever real daemon happens to be
-    // running on the machine this test executes on.
+    // stores) under a tempdir instead of the developer's real data
+    // directory. Getting this wrong would send a live Shutdown to -- and
+    // kill -- whatever real daemon happens to be running on the machine
+    // this test executes on.
     //
     // Built directly under /tmp rather than tempfile::tempdir()'s default
     // (macOS's $TMPDIR, something like
     // /var/folders/xx/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/T/): appended to
-    // "/Library/Application Support/gavin/daemon.sock" (47 chars), that
+    // "/Library/Application Support/gavin/daemon.sock" (46 chars), that
     // default overflows sockaddr_un's ~103-byte sun_path limit and bind()
     // fails outright. /tmp keeps the prefix short enough to leave room.
     let home = tempfile::Builder::new().prefix("gavin-shutdown-test-").tempdir_in("/tmp").unwrap();
-    let socket_path = home
-        .path()
-        .join("Library")
-        .join("Application Support")
-        .join("gavin")
-        .join("daemon.sock");
+    // The same rule the daemon will apply to the HOME set below, asked
+    // of the same function rather than spelled out again: the two
+    // layouts differ per OS, and a hardcoded one would leave this test
+    // polling for a socket the daemon is not binding.
+    let socket_path = protocol::resolve_app_support_dir(
+        Some(home.path().as_os_str().to_os_string()),
+        None,
+        cfg!(target_os = "macos"),
+    )
+    .unwrap()
+    .join("daemon.sock");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_gavin-daemon"))
         .env("HOME", home.path())
+        // Off macOS the fake HOME is not enough on its own: an inherited
+        // XDG_DATA_HOME outranks it, and the daemon would bind the
+        // developer's REAL socket -- the exact "kill the running daemon"
+        // accident the tempdir exists to prevent.
+        .env_remove("XDG_DATA_HOME")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

@@ -415,9 +415,7 @@ fn opencode_config_paths(root: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty())
-}
+use crate::home::home_dir;
 
 /// Turns a detector's answer plus the human's marker into the row.
 /// Separated from `detect` so it can be tested without a machine: the
