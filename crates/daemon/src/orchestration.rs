@@ -533,6 +533,60 @@ impl OrchestrationStore {
         Ok(())
     }
 
+    /// Removes every step aimed at a card whose file was DELETED, the
+    /// stage any of them emptied, and the run and conflict-note rows
+    /// that named them. Answers how many steps went.
+    ///
+    /// The counterpart to `rename_card_path`: a move re-keys a step
+    /// because the card is still somewhere, a delete has nothing left to
+    /// point at. Left behind, the step would render as "card file is
+    /// missing" on a rail forever -- a chip naming a file no restore can
+    /// ever bring back.
+    ///
+    /// A stage left with no steps goes too, matching `removeSteps` in
+    /// the app (orchestration.ts): an empty stage draws nothing in the
+    /// rail grid, so one left behind is a gap the scheduler steps over
+    /// and nobody can see to remove. Only the stages THIS card emptied
+    /// -- an empty stage an agent authored through the MCP is not this
+    /// function's to collect.
+    ///
+    /// Unconditional, unlike `set_orchestration`'s refusal to remove a
+    /// RUNNING step. That guard can say "wait" because the human is
+    /// editing a plan and the card is still on disk to come back to; by
+    /// the time this runs the file is already gone, so refusing would
+    /// only keep a step pointing at nothing.
+    pub fn remove_card_steps(&mut self, card_path: &str) -> anyhow::Result<usize> {
+        let tx = self.conn.transaction()?;
+        // Read the stages BEFORE the delete: afterwards there is no row
+        // left to say which ones this card was in.
+        let touched: Vec<String> = tx
+            .prepare("SELECT DISTINCT stage_id FROM orch_steps WHERE card_path = ?1")?
+            .query_map(params![card_path], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        let removed = tx.execute("DELETE FROM orch_steps WHERE card_path = ?1", params![card_path])?;
+        if removed > 0 {
+            for stage_id in &touched {
+                tx.execute(
+                    "DELETE FROM orch_stages WHERE id = ?1
+                     AND NOT EXISTS (SELECT 1 FROM orch_steps WHERE stage_id = ?1)",
+                    params![stage_id],
+                )?;
+            }
+            // The same orphan sweep set_orchestration ends with, and for
+            // the same reason: ids are UUIDs, so a global sweep is safe.
+            // The note-step link matters beyond tidiness -- a note naming
+            // a step that no longer exists is what Guard 4 refuses on the
+            // next save.
+            tx.execute(
+                "DELETE FROM orch_conflict_note_steps WHERE step_id NOT IN (SELECT id FROM orch_steps)",
+                [],
+            )?;
+            tx.execute("DELETE FROM orch_step_runs WHERE step_id NOT IN (SELECT id FROM orch_steps)", [])?;
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
     pub fn set_rail_run(
         &mut self,
         rail_id: &str,
@@ -1083,6 +1137,68 @@ mod tests {
         assert_eq!(steps[0].card_path, "/x/done/a.md");
         assert_eq!(steps[1].card_path, "/x/b.md");
         assert_eq!(s.get("ws-2").unwrap().rails[0].stages[0].steps[0].card_path, "/x/done/a.md");
+    }
+
+    #[test]
+    fn remove_card_steps_takes_the_step_on_every_rail_and_leaves_the_others() {
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md"), ("t2", "/x/b.md")])], &[], &none()).unwrap();
+        s.replace_plan("ws-2", &[rail("r2", &[("t3", "/x/a.md")])], &[], &none()).unwrap();
+
+        assert_eq!(s.remove_card_steps("/x/a.md").unwrap(), 2);
+
+        let steps = &s.get("ws-1").unwrap().rails[0].stages[0].steps;
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].card_path, "/x/b.md");
+        // ws-2's stage held nothing else, so the stage went with the step
+        // -- but the rail itself stays: an empty rail is a real thing the
+        // human made, an empty stage is not.
+        let rails = s.get("ws-2").unwrap().rails;
+        assert_eq!(rails.len(), 1);
+        assert!(rails[0].stages.is_empty());
+    }
+
+    #[test]
+    fn remove_card_steps_takes_the_run_row_and_note_link_with_the_step() {
+        let mut s = store();
+        s.replace_plan(
+            "ws-1",
+            &[rail("r1", &[("t1", "/x/a.md"), ("t2", "/x/b.md")])],
+            &[ConflictNote { id: "n1".into(), note: "same file".into(), step_ids: vec!["t1".into(), "t2".into()] }],
+            &none(),
+        )
+        .unwrap();
+        s.set_step_run("t1", "running", Some("sess-1"), None, None, None, None).unwrap();
+
+        s.remove_card_steps("/x/a.md").unwrap();
+
+        let o = s.get("ws-1").unwrap();
+        assert!(o.step_runs.iter().all(|r| r.step_id != "t1"), "the run row named a step that no longer exists");
+        // Guard 4 refuses a note naming an unknown step, so a stale link
+        // would wedge the very next save of this plan.
+        assert_eq!(o.conflict_notes[0].step_ids, vec!["t2".to_string()]);
+    }
+
+    /// The delete is unconditional where an EDIT would be refused: by the
+    /// time it runs the card's file is already gone, so keeping the step
+    /// would only preserve a chip pointing at nothing.
+    #[test]
+    fn remove_card_steps_does_not_refuse_a_running_step() {
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
+        s.set_step_run("t1", "running", Some("sess-1"), None, None, None, None).unwrap();
+
+        assert_eq!(s.remove_card_steps("/x/a.md").unwrap(), 1);
+        assert!(s.get("ws-1").unwrap().rails[0].stages.is_empty());
+    }
+
+    #[test]
+    fn remove_card_steps_leaves_a_stage_it_did_not_empty() {
+        let mut s = store();
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
+
+        assert_eq!(s.remove_card_steps("/x/nothing.md").unwrap(), 0);
+        assert_eq!(s.get("ws-1").unwrap().rails[0].stages.len(), 1);
     }
 
     #[test]

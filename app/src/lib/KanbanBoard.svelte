@@ -11,24 +11,35 @@
   import { planCommitFromMerged } from "./planDrop";
   import { runCard, resumeCard, developCard, sendToMainAgent } from "./cardRunActions";
   import { layoutState, daemonCompat } from "./layoutState";
-  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
+  import { columnDeletionPlan, deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
-  import { fetchOrchestration, orchestrations } from "./orchestrationState";
+  import { fetchOrchestration, refreshOrchestration, orchestrations } from "./orchestrationState";
   import { cardSessionFor } from "./kanbanState";
   import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
   import { requestedCompose, takeComposeRequest, type ComposeTarget } from "./composeRequest";
   import { defaultComposeStatus } from "./cardCompose";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import BoardSelectionBar from "./BoardSelectionBar.svelte";
-  import { toggleCardSelected, clearBoardSelection } from "./boardSelection";
+  import ArchiveSelectionBar from "./ArchiveSelectionBar.svelte";
+  import { boardSelection, selectedCards, toggleCardSelected, clearBoardSelection } from "./boardSelection";
   import { dragState, buildColumnSlots, type ActiveDrag } from "./kanbanDrag";
   import SearchInput from "./ui/SearchInput.svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { Archive } from "@lucide/svelte";
   import ArchiveGrid from "./ArchiveGrid.svelte";
+  import ArchiveDeleteButton from "./ArchiveDeleteButton.svelte";
   import { archiveView } from "./archive";
+  import {
+    archivePurgeLines,
+    archivePurgeTitle,
+    bucketSubject,
+    railStepsFor,
+    SELECTION_SUBJECT,
+    undatedCards,
+    type AgeBucket,
+  } from "./archiveDelete";
   import { executeUnarchive } from "./archiveActions";
   import { featureBlockedReason } from "./daemonCompat";
   import { filterBoard, AUTO_KEY_PREFIX } from "./boardSearch";
@@ -143,6 +154,25 @@
   const archive = $derived(archiveView(filterCards(merged?.archived ?? [], facets, rails), search));
   const archiveBlocked = $derived(featureBlockedReason($daemonCompat, "archive"));
 
+  // Select mode, the Delete dropdown's "selected" route. Not a store:
+  // it is one surface's way of reading clicks, and it must not survive
+  // the human leaving the archive -- a grid that quietly kept picking
+  // instead of opening cards is the worst mode to be stuck in.
+  let archiveSelectMode = $state(false);
+
+  function leaveArchiveSelectMode(): void {
+    archiveSelectMode = false;
+    clearBoardSelection();
+  }
+
+  // Every route out of the archive goes through here, including the
+  // toggle -- the picks are meaningless off this grid, and Delete is the
+  // one action they feed.
+  function closeArchive(): void {
+    showingArchive = false;
+    leaveArchiveSelectMode();
+  }
+
   // --- the card composer (CardComposeModal) ----------------------------
   // One per board, wherever the request came from: a column's "+ Add
   // card", its header menu, the board's own menu, or ⌘N. `composeStatus`
@@ -158,7 +188,7 @@
     // cannot see -- the archive toggle, and equally a facet the new card
     // will not match (its context, its kind, and a card is born on no
     // rail at all). Every lens comes off with the composer.
-    showingArchive = false;
+    closeArchive();
     facets = { ...NO_FACETS };
     composeStatus = defaultComposeStatus(board.columns.map((c) => c.name), preferred);
     if (composeStatus === null) planWriteError = "Add a column first — a card needs a status to live in";
@@ -268,6 +298,68 @@
     planWriteError = null;
     const err = await resumeCard(workspaceId, card);
     if (err) planWriteError = err;
+  }
+
+  // --- deleting from the archive (archiveDelete.ts) --------------------
+  // The archive is the one board surface whose cards nothing else will
+  // ever clear: every other column empties into it. So it owns the only
+  // BULK delete in the app, and it asks the same way a single card's
+  // does -- one ConfirmPrompt, a `danger` choice, and lines that spell
+  // out everything the grid cannot show.
+  let pendingPurge = $state<{ cards: CardView[]; subject: string; undated: number } | null>(null);
+  const purgeBlocked = $derived(featureBlockedReason($daemonCompat, "cardPurge"));
+  const purgePlan = $derived<DeletionPlan | null>(
+    pendingPurge ? columnDeletionPlan(pendingPurge.cards, allCards) : null
+  );
+  const purgeLines = $derived.by(() => {
+    if (!pendingPurge || !purgePlan) return [];
+    return archivePurgeLines({
+      cards: pendingPurge.cards.length,
+      files: purgePlan.files.length,
+      unparent: purgePlan.unparent.length,
+      railSteps: railStepsFor(orch, purgePlan.files),
+      boundSessions: purgePlan.files.filter((f) => cardSessionFor(board, f.id) !== null).length,
+      undated: pendingPurge.undated,
+      purgeBlocked,
+    });
+  });
+
+  function requestPurge(cards: CardView[], subject: string, undated: number): void {
+    if (cards.length === 0) return;
+    pendingPurge = { cards, subject, undated };
+  }
+
+  function requestBucketPurge(bucket: AgeBucket, matched: CardView[]): void {
+    // The undated cards are named in the prompt because they are the one
+    // thing an age sweep silently will NOT take.
+    requestPurge(matched, bucketSubject(bucket), undatedCards(archive.cards).length);
+  }
+
+  // How many of the grid's own cards are picked. Named because three
+  // surfaces read it -- the dropdown's row, the bar's presence, and the
+  // delete itself -- and they must never disagree.
+  const archivePicked = $derived(selectedCards(archive.cards, $boardSelection).length);
+
+  function requestSelectionPurge(): void {
+    // Intersected with the grid: the selection is app-wide, so a card
+    // picked on the board behind the archive must never ride along.
+    requestPurge(selectedCards(archive.cards, $boardSelection), SELECTION_SUBJECT, 0);
+  }
+
+  async function confirmPurge(): Promise<void> {
+    const plan = purgePlan;
+    pendingPurge = null;
+    if (!plan) return;
+    planWriteError = null;
+    const err = await executeDeletion(workspaceId, plan);
+    if (err) planWriteError = err;
+    // The picks named files that are gone; leaving them would let a
+    // second Delete count cards nobody can see.
+    clearBoardSelection();
+    // Rails lost their steps daemon-side (v34), and the app holds its own
+    // copy until it is told -- the daemon pushes, and this covers the
+    // window before that push lands.
+    void refreshOrchestration(workspaceId);
   }
 
   async function handleRestore(card: CardView): Promise<void> {
@@ -469,10 +561,29 @@
         (showingArchive
           ? "Back to the board"
           : `Archive — ${archive.total} ${archive.total === 1 ? "card" : "cards"} filed away, newest first`)}
-      onclick={() => (showingArchive = !showingArchive)}
+      onclick={() => (showingArchive ? closeArchive() : (showingArchive = true))}
     >
       {#if archive.total > 0}<span class="archive-count">{archive.total}</span>{/if}
     </IconButton>
+    <!-- Only over the archive: the buckets measure archived cards, and a
+         Delete button sitting on the board would be a second, blunter
+         way to do what every card's own menu already offers. -->
+    {#if showingArchive}
+      <ArchiveDeleteButton
+        cards={archive.cards}
+        filtered={filtering || archive.shown < archive.total}
+        selectMode={archiveSelectMode}
+        selectedCount={archivePicked}
+        blocked={archiveBlocked}
+        onEnterSelectMode={() => {
+          clearBoardSelection();
+          archiveSelectMode = true;
+        }}
+        onLeaveSelectMode={leaveArchiveSelectMode}
+        onDeleteSelected={requestSelectionPurge}
+        onDeleteBucket={requestBucketPurge}
+      />
+    {/if}
   </div>
   {#if showingArchive}
     <ArchiveGrid
@@ -480,6 +591,7 @@
       cards={archive.cards}
       labels={board.labels}
       hiddenCount={archive.total - archive.shown}
+      selectMode={archiveSelectMode}
       onOpenCard={(path) => (openPlanPath = path)}
       onRestore={(card) => void handleRestore(card)}
       onDeleteCard={(card) => (pendingDelete = card)}
@@ -532,7 +644,20 @@
   </div>
   {/if}
   </div>
-  <BoardSelectionBar {workspaceId} {allCards} onRunCard={handleRun} />
+  <!-- The archive's own bar stands INSTEAD of the board's: "Run
+       selected" over cards the human archived is not a thing anyone
+       means. It appears with the mode, and also for a bare shift+click
+       selection, which is the other way picks get made here. -->
+  {#if showingArchive && (archiveSelectMode || archivePicked > 0)}
+    <ArchiveSelectionBar
+      cards={archive.cards}
+      onSelectAll={() => boardSelection.set(archive.cards.map((c) => c.id))}
+      onDelete={requestSelectionPurge}
+      onExit={leaveArchiveSelectMode}
+    />
+  {:else if !showingArchive}
+    <BoardSelectionBar {workspaceId} {allCards} onRunCard={handleRun} />
+  {/if}
   <KanbanDragPreview {board} {merged} labels={board.labels} root={boardEl} />
   {#if pendingDelete}
     <ConfirmPrompt
@@ -540,6 +665,14 @@
       lines={pendingDeleteLines}
       choices={[{ label: "Delete", danger: true, onPick: () => void confirmDelete() }]}
       onCancel={() => (pendingDelete = null)}
+    />
+  {/if}
+  {#if pendingPurge}
+    <ConfirmPrompt
+      title={archivePurgeTitle(pendingPurge.cards.length, pendingPurge.subject)}
+      lines={purgeLines}
+      choices={[{ label: "Delete permanently", danger: true, onPick: () => void confirmPurge() }]}
+      onCancel={() => (pendingPurge = null)}
     />
   {/if}
   {#if composeStatus !== null}

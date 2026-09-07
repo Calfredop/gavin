@@ -290,6 +290,25 @@ export const FEATURE_MIN_VERSION = {
   // gate there is; the card detail modal and the Plans tab strip both
   // read it through featureBlockedReason.
   cardAgent: 32,
+  // What DELETING a card actually takes with it. Not a request type and
+  // not a widened payload -- v34 changed what `DeleteCardFile` DOES, so
+  // `min_version_for` is blind to it in principle and this entry is the
+  // only gate there is.
+  //
+  // A v33 daemon deletes the file, clears the session bindings, and
+  // leaves the rest: the run history stays keyed to a path nothing can
+  // open, and every rail step aimed at the card stays on its rail as a
+  // chip reading "card file is missing" that no restore can fix, because
+  // the file is gone for good.
+  //
+  // Its consumer is the delete confirmation's COPY rather than a
+  // disabled button, and deliberately so: the delete still does the
+  // thing the human asked for, so greying it out would refuse the whole
+  // action over the half that degrades. What must not happen is a prompt
+  // that promises to take the rail steps along against a daemon that
+  // will not -- an archive purge is the one screen where being wrong
+  // cannot be undone.
+  cardPurge: 34,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

@@ -11,7 +11,7 @@
 
   import BoardCard from "./BoardCard.svelte";
   import IconButton from "./ui/IconButton.svelte";
-  import { ArchiveRestore } from "@lucide/svelte";
+  import { ArchiveRestore, Check } from "@lucide/svelte";
   import { attachBoardDrag } from "./kanbanDragGlue";
   import { boardSelection, toggleCardSelected, clearBoardSelection } from "./boardSelection";
   import { archivedOn } from "./archive";
@@ -25,6 +25,11 @@
     labels: Label[];
     /// Cards the search box is hiding; 0 when unfiltered.
     hiddenCount?: number;
+    /// Picking mode, for the Delete dropdown's "selected" route. A plain
+    /// click TOGGLES instead of opening the card, which is the whole
+    /// point of a mode: shift+click alone would make the human learn a
+    /// chord to answer a question the menu just asked them.
+    selectMode?: boolean;
     onOpenCard: (path: string) => void;
     onRestore: (card: CardView) => void;
     onDeleteCard: ((card: CardView) => void) | null;
@@ -37,6 +42,7 @@
     cards,
     labels,
     hiddenCount = 0,
+    selectMode = false,
     onOpenCard,
     onRestore,
     onDeleteCard,
@@ -55,7 +61,11 @@
       cardsLocked: () => true,
       click: (kind, id, mods) => {
         if (kind !== "plan") return;
-        if (mods.shift) {
+        // `selectMode` is read HERE rather than in the effect body on
+        // purpose: a prop read inside a callback gives the live value
+        // without making the mode a dependency, so toggling it does not
+        // tear the drag engine down and rebuild it under the pointer.
+        if (mods.shift || selectMode) {
           toggleCardSelected(id);
         } else {
           clearBoardSelection();
@@ -104,6 +114,17 @@
           >
             {#snippet adornment()}
               <div class="stamp">
+                {#if selectMode}
+                  <!-- A box, not a tick alone: an empty one has to read
+                       as "not picked" rather than as a missing glyph. -->
+                  <span
+                    class="tick"
+                    class:on={$boardSelection.includes(card.id)}
+                    aria-hidden="true"
+                  >
+                    {#if $boardSelection.includes(card.id)}<Check size={9} />{/if}
+                  </span>
+                {/if}
                 <span class="when" use:tooltip={on ? `Archived ${on}` : "This card's file date couldn't be read"}>
                   {on ?? "—"}
                 </span>
@@ -112,9 +133,11 @@
                   label="Restore from archive"
                   size={11}
                   class="restore"
-                  disabled={restoreBlocked !== null}
+                  disabled={restoreBlocked !== null || selectMode}
                   tip={restoreBlocked ??
-                    "Restore — files the card back on the board by its status"}
+                    (selectMode
+                      ? "Leave select mode to restore a card"
+                      : "Restore — files the card back on the board by its status")}
                   onclick={() => onRestore(card)}
                 />
               </div>
@@ -151,6 +174,21 @@
     border-radius: 8px;
     outline: 1px solid var(--border-accent);
     outline-offset: 2px;
+  }
+  .tick {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    height: 12px;
+    flex: none;
+    border: 1px solid var(--border-strong);
+    border-radius: 3px;
+    color: var(--accent-fg, #fff);
+  }
+  .tick.on {
+    background: var(--accent);
+    border-color: var(--accent);
   }
   .stamp {
     display: flex;

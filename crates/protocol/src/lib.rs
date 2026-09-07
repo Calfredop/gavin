@@ -13,6 +13,25 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v34 makes `DeleteCardFile` mean it. A card's path is its identity in
+/// both local databases, and deleting the file only ever cleared the
+/// session bindings: the run history stayed keyed to a path nothing can
+/// open, and every rail step aimed at the card stayed on the rail as a
+/// chip reading "card file is missing" that no restore can ever fix.
+/// The daemon now removes both, drops a stage its last step left empty,
+/// and pushes `OrchestrationChanged` to every workspace whose rails
+/// changed -- the same courtesy `archive_card`'s re-key already paid.
+///
+/// No new Request variant and no widened payload: this is a change to
+/// what an existing request DOES, which `min_version_for` (a gate on
+/// request TYPES) cannot see at all. A v33 daemon deletes the file and
+/// leaves the rows, which is not a failure the human can spot from the
+/// board -- so the gate that matters is the app's
+/// FEATURE_MIN_VERSION.cardPurge, and its consumer is the delete
+/// confirmation's COPY. A prompt that promises to take the rail steps
+/// with the card, against a daemon that will not, is the one screen
+/// where being wrong is unrecoverable.
+///
 /// v33 lets a tool carry its OWN icon. `ToolDef` gains `icon`, a name
 /// from the app's icon library, and a tool that has one draws that glyph
 /// wherever tools are listed -- the drawer, the library dialog, the Tools
@@ -270,7 +289,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 33;
+pub const PROTOCOL_VERSION: u32 = 34;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -2787,6 +2806,12 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v34: DeleteCardFile now removes the card's run history and
+        // every rail step aimed at it, not just its session bindings.
+        // Neither a new variant nor a widened payload -- a change to
+        // what an existing request DOES, which this match cannot see in
+        // principle -- so daemonCompat.ts's `cardPurge` is its only
+        // gate, and its consumer is the delete confirmation's copy.
         // v33: ToolDef.icon -- a tool's own glyph, named from the app's
         // icon library, drawn in place of the one its kind imposes. No
         // new variant: it widens SaveTool's payload exactly as `cwd` did
@@ -2895,7 +2920,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 33);
+        assert_eq!(PROTOCOL_VERSION, 34);
     }
 
     #[test]

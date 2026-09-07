@@ -1984,9 +1984,47 @@ impl SessionManager {
         Ok(true)
     }
 
+    /// Deletes a card's file and every database row keyed to it: its
+    /// bindings and run history in kanban.sqlite, its rail steps in
+    /// orchestration.sqlite.
+    ///
+    /// A card's path IS its identity in both stores, which is why
+    /// `archive_card` re-keys them rather than letting a move orphan
+    /// anything. A delete has the same obligation and no destination:
+    /// rows left behind name a file that will never exist again, and a
+    /// rail carrying one shows a step whose card "is missing" with no
+    /// way to fix it.
+    ///
+    /// The file goes first, and neither cleanup can undo that -- so a
+    /// failure in either is reported and the delete stands, the same
+    /// contract `rename_card_everywhere` has.
     pub fn delete_card_file(&self, path: &str) -> anyhow::Result<()> {
         crate::gavin::delete_card_file(std::path::Path::new(path))?;
-        self.kanban.lock().unwrap().unlink_card_session_all(path)
+        if let Err(e) = self.kanban.lock().unwrap().purge_card(path) {
+            eprintln!("card {path} deleted but its bindings didn't go with it: {e}");
+        }
+        let affected = {
+            let mut orchestration = self.orchestration.lock().unwrap();
+            // Read while the steps still exist to be counted.
+            let affected = orchestration.workspaces_with_card(path).unwrap_or_default();
+            match orchestration.remove_card_steps(path) {
+                Ok(_) => affected,
+                Err(e) => {
+                    eprintln!("card {path} deleted but its rail steps didn't go with it: {e}");
+                    Vec::new()
+                }
+            }
+        };
+        // Outside the lock: push_orchestration re-reads the store.
+        //
+        // The app holds its own copy of every rail and re-reads it only
+        // on mount, so a removal it is never told about leaves it
+        // scheduling a step whose card this daemon has just deleted --
+        // the same staleness follow_card_move exists to prevent.
+        for workspace_id in affected {
+            self.push_orchestration(&workspace_id);
+        }
+        Ok(())
     }
 
     /// Writes one frontmatter field and returns the card's path
@@ -5516,6 +5554,102 @@ mod tests {
                 assert_eq!(orchestration.rails[0].stages[0].steps[0].card_path, after);
             }
             other => panic!("expected OrchestrationChanged, got {other:?}"),
+        }
+    }
+
+    /// The archive's bulk delete is the one action that ends a card for
+    /// good, so the rows keyed to it have to end with it -- the binding,
+    /// the run history, and the rail step, which would otherwise sit
+    /// there naming a file no restore can bring back.
+    #[test]
+    fn deleting_a_card_takes_its_rail_step_and_tells_the_watching_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let root = ws.path().canonicalize().unwrap();
+        let archive = root.join(".gavin-root").join("plans").join("archive");
+        std::fs::create_dir_all(&archive).unwrap();
+        let card = archive.join("ship.md");
+        std::fs::write(&card, "---\ntitle: Ship\nstatus: Done\n---\n").unwrap();
+        let path = card.to_string_lossy().to_string();
+
+        manager.link_card_session("ws-1", &path, "s-1", "/p", None, None, None, None, None).unwrap();
+        manager.set_orchestration("ws-1", vec![orch_rail_at("r1", "t1", &path)], vec![]).unwrap();
+
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        SessionManager::watch_gavin_root(
+            &manager,
+            "ws-1",
+            &root.to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+        );
+        let mut reader = BufReader::new(ours);
+        assert!(matches!(
+            read_message::<_, Response>(&mut reader).unwrap().unwrap(),
+            Response::GavinTreeChanged { .. }
+        ));
+
+        manager.delete_card_file(&path).unwrap();
+
+        assert!(!card.exists());
+        assert!(manager.get_board("ws-1").unwrap().card_sessions.is_empty());
+        assert!(manager.card_runs("ws-1", &path).unwrap().is_empty());
+        // The stage went with its only step; the rail itself stays.
+        let orch = manager.get_orchestration("ws-1").unwrap();
+        assert_eq!(orch.rails.len(), 1);
+        assert!(orch.rails[0].stages.is_empty());
+
+        // The app holds its own copy of every step, so the removal has to
+        // reach it -- otherwise it keeps scheduling a card this daemon
+        // has just deleted.
+        match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+            Response::OrchestrationChanged { orchestration, .. } => {
+                assert!(orchestration.rails[0].stages.is_empty());
+            }
+            other => panic!("expected OrchestrationChanged, got {other:?}"),
+        }
+    }
+
+    /// A card on no rail must not provoke a push: the app would take a
+    /// whole orchestration it already has, and the no-op scan test below
+    /// makes the same point about the watcher.
+    #[test]
+    fn deleting_a_card_no_rail_carries_pushes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let root = ws.path().canonicalize().unwrap();
+        let card = root.join(".gavin-root").join("plans").join("ship.md");
+        std::fs::write(&card, "---\ntitle: Ship\n---\n").unwrap();
+
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        SessionManager::watch_gavin_root(
+            &manager,
+            "ws-1",
+            &root.to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+        );
+        let mut reader = BufReader::new(ours);
+        assert!(matches!(
+            read_message::<_, Response>(&mut reader).unwrap().unwrap(),
+            Response::GavinTreeChanged { .. }
+        ));
+
+        manager.delete_card_file(&card.to_string_lossy()).unwrap();
+
+        // Whatever the watcher makes of the vanished file, none of it is
+        // an orchestration the rails never carried.
+        while let Ok(Some(resp)) = read_message::<_, Response>(&mut reader) {
+            assert!(
+                !matches!(resp, Response::OrchestrationChanged { .. }),
+                "a card on no rail pushed an orchestration"
+            );
         }
     }
 

@@ -520,29 +520,34 @@ impl KanbanStore {
     }
 
     /// Closes a card's open run because its BINDING went away -- an
-    /// unlink, a delete, an archive. Distinct from `exited` on purpose:
-    /// the session may well still be running, and a history that called
-    /// this an exit would be inventing one.
-    fn finish_runs_for_card(&mut self, workspace_id: Option<&str>, path: &str) -> anyhow::Result<()> {
-        match workspace_id {
-            Some(ws) => self.conn.execute(
-                "UPDATE card_runs SET outcome = 'unlinked', ended_at = ?3
-                 WHERE workspace_id = ?1 AND path = ?2 AND outcome = 'running'",
-                params![ws, path, now_secs()],
-            )?,
-            None => self.conn.execute(
-                "UPDATE card_runs SET outcome = 'unlinked', ended_at = ?2
-                 WHERE path = ?1 AND outcome = 'running'",
-                params![path, now_secs()],
-            )?,
-        };
+    /// unlink. Distinct from `exited` on purpose: the session may well
+    /// still be running, and a history that called this an exit would be
+    /// inventing one.
+    fn finish_runs_for_card(&mut self, workspace_id: &str, path: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE card_runs SET outcome = 'unlinked', ended_at = ?3
+             WHERE workspace_id = ?1 AND path = ?2 AND outcome = 'running'",
+            params![workspace_id, path, now_secs()],
+        )?;
         Ok(())
     }
 
-    /// Removes a deleted card's bindings in EVERY workspace.
-    pub fn unlink_card_session_all(&mut self, path: &str) -> anyhow::Result<()> {
-        self.finish_runs_for_card(None, path)?;
-        self.conn.execute("DELETE FROM card_sessions WHERE path = ?1", params![path])?;
+    /// Removes every trace of a DELETED card from this store, in every
+    /// workspace: its live bindings and the whole run history behind
+    /// them.
+    ///
+    /// Removed, not closed -- the one place that treats a run this way.
+    /// `unlink_card_session` marks a run `unlinked` and keeps the row
+    /// because the card is still there to show it: the detail modal
+    /// reads a card's history by path. A deleted card has no modal and
+    /// never will, so those rows are unreachable prose about work
+    /// nobody can look up -- and the path keying them is one a new card
+    /// can take tomorrow, which would hand it somebody else's runs.
+    pub fn purge_card(&mut self, path: &str) -> anyhow::Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM card_sessions WHERE path = ?1", params![path])?;
+        tx.execute("DELETE FROM card_runs WHERE path = ?1", params![path])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -573,7 +578,7 @@ impl KanbanStore {
 
     /// Removes a binding; absent is a no-op.
     pub fn unlink_card_session(&mut self, workspace_id: &str, path: &str) -> anyhow::Result<()> {
-        self.finish_runs_for_card(Some(workspace_id), path)?;
+        self.finish_runs_for_card(workspace_id, path)?;
         self.conn.execute(
             "DELETE FROM card_sessions WHERE workspace_id = ?1 AND path = ?2",
             params![workspace_id, path],
@@ -700,14 +705,17 @@ mod tests {
         assert_eq!(runs[0].exit_code, None);
     }
 
+    /// Unlinking keeps the run; DELETING the card takes it. The row is
+    /// keyed by a path that no longer names anything, and the only
+    /// surface that reads it is the card's own detail modal.
     #[test]
-    fn deleting_a_card_everywhere_closes_the_runs_it_had() {
+    fn deleting_a_card_everywhere_takes_the_runs_it_had() {
         let (_dir, mut store) = store();
         link(&mut store, "/p/t.md", "s-1");
 
-        store.unlink_card_session_all("/p/t.md").unwrap();
+        store.purge_card("/p/t.md").unwrap();
 
-        assert_eq!(store.card_runs("ws-1", "/p/t.md").unwrap()[0].outcome, "unlinked");
+        assert!(store.card_runs("ws-1", "/p/t.md").unwrap().is_empty());
     }
 
     /// The history belongs to the CARD, not to the path it had while the
@@ -1042,14 +1050,14 @@ mod tests {
     }
 
     #[test]
-    fn unlink_all_clears_a_path_across_workspaces() {
+    fn purge_clears_a_path_across_workspaces() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
         store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", None, None, None, None, None).unwrap();
         store.link_card_session("ws-2", "/p/t.md", "s-2", "/p", None, None, None, None, None).unwrap();
         store.link_card_session("ws-1", "/p/other.md", "s-3", "/p", None, None, None, None, None).unwrap();
 
-        store.unlink_card_session_all("/p/t.md").unwrap();
+        store.purge_card("/p/t.md").unwrap();
 
         assert!(store.get_board("ws-1").unwrap().card_sessions.iter().all(|cs| cs.path != "/p/t.md"));
         assert!(store.get_board("ws-2").unwrap().card_sessions.is_empty());
