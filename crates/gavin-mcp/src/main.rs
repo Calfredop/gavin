@@ -1746,6 +1746,7 @@ mod tests {
                 }],
                 position: 0,
                 cwd: None,
+                icon: None,
             }],
         }
     }

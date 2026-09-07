@@ -13,6 +13,30 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v33 lets a tool carry its OWN icon. `ToolDef` gains `icon`, a name
+/// from the app's icon library, and a tool that has one draws that glyph
+/// wherever tools are listed -- the drawer, the library dialog, the Tools
+/// tab and the rail's step chip -- in place of the one its KIND imposes.
+/// Six `command` tools on one rail are six identical terminals today, and
+/// at chip size the name is truncated to a few characters, so the glyph
+/// is the only thing left that could tell them apart and it is the one
+/// thing they all share.
+///
+/// A NAME, never an image, and kept raw at this layer for the reason
+/// `agent` and `model` are: the library is a curated list of lucide names
+/// in the app (`ui/iconLibrary.ts`), and the daemon has nothing to
+/// validate one against. A rule it invented would refuse a name a newer
+/// app knows -- and the app already falls back to the kind's glyph for a
+/// name it cannot resolve, which is the honest reading of one it has
+/// never heard of.
+///
+/// No new Request variant: `icon` widens SaveTool's `ToolDef` exactly as
+/// `cwd` did at v30, and `min_version_for` gates by request TYPE. A v32
+/// daemon takes the save, drops the icon and hands the tool back wearing
+/// its kind's glyph -- the human's choice gone with no error -- so
+/// `daemonCompat.ts` owes a `toolIcon: 33` entry, and the library
+/// dialog's picker is the one surface that can produce the payload.
+///
 /// v32 lets ONE card say which agent and which model runs it, overriding
 /// both the complexity table and the workspace's own `[agent]` block.
 /// `PlanFileInfo` gains `agent` and `model`, and `SetPlanFrontmatterField`
@@ -246,7 +270,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 32;
+pub const PROTOCOL_VERSION: u32 = 33;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -826,7 +850,9 @@ pub fn min_version_for(req: &Request) -> u32 {
         // app's FEATURE_MIN_VERSION carries both halves -- `toolRuns`
         // so the tab can say why Run is dark, and `toolCwd` so the
         // dialog's field is disabled rather than accepting a value the
-        // daemon throws away.
+        // daemon throws away. v33 widened the same payload again with
+        // `icon`, which this match is blind to for the same reason and
+        // which `toolIcon` gates for the same reason.
         Request::SetToolRunOutcome { .. }
         | Request::StartToolRun { .. }
         | Request::ToolRuns { .. } => 30,
@@ -1638,6 +1664,20 @@ pub struct ToolDef {
     /// and "no directory of its own" is exactly what those tools mean.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The glyph this tool draws wherever tools are listed (v33): a NAME
+    /// from the app's own icon library, never an image. None means
+    /// "whatever this tool's KIND draws", which is what every tool
+    /// authored before v33 means and what a tool nobody picked an icon
+    /// for still means.
+    ///
+    /// Raw here, like `kind`: the library is a curated list of lucide
+    /// names in the app, so the daemon has nothing to validate a name
+    /// against and a rule it invented would refuse one a newer app
+    /// knows. The app falls back to the kind's glyph for a name it
+    /// cannot resolve, which is the honest reading of one it has never
+    /// heard of.
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 /// One standalone run of a library tool, launched from the Tools hub tab
@@ -2747,6 +2787,12 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v33: ToolDef.icon -- a tool's own glyph, named from the app's
+        // icon library, drawn in place of the one its kind imposes. No
+        // new variant: it widens SaveTool's payload exactly as `cwd` did
+        // at v30, so this match is blind to it and daemonCompat.ts's
+        // `toolIcon` is its only gate. A v32 daemon takes the save and
+        // drops the icon, handing the tool back wearing its kind's glyph.
         // v32: a card's OWN agent -- PlanFileInfo.agent/model, and the
         // ninth and tenth SetPlanFrontmatterField keys. Neither is a new
         // variant, and both fields are serde(default), so this match is
@@ -2849,7 +2895,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 32);
+        assert_eq!(PROTOCOL_VERSION, 33);
     }
 
     #[test]
@@ -3157,6 +3203,7 @@ mod tests {
                     params: vec![],
                     position: 0,
                     cwd: None,
+                    icon: None,
                 },
             },
             Request::DeleteTool { id: "t".into() },
@@ -3403,6 +3450,27 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(tool.cwd, None);
+        assert_eq!(tool.icon, None);
+    }
+
+    #[test]
+    fn a_tool_def_written_before_v33_parses_with_no_icon_of_its_own() {
+        // Absent is not "no icon at all": it is "draw whatever this
+        // tool's kind draws", which is what every tool authored before
+        // v33 has always meant.
+        let tool: ToolDef = serde_json::from_value(serde_json::json!({
+            "id": "u1",
+            "workspaceId": null,
+            "name": "Push",
+            "description": "",
+            "kind": "command",
+            "body": "git push",
+            "params": [],
+            "position": 0,
+            "cwd": null
+        }))
+        .unwrap();
+        assert_eq!(tool.icon, None);
     }
 
     #[test]
@@ -3752,6 +3820,7 @@ mod tests {
             }],
             position: 0,
             cwd: Some("apps/web".into()),
+            icon: Some("rocket".into()),
         };
         assert_eq!(
             serde_json::to_value(&tool).unwrap(),
@@ -3764,7 +3833,8 @@ mod tests {
                 "body": "git push -u {{remote}} HEAD",
                 "params": [{ "name": "remote", "label": "Remote", "default": "origin" }],
                 "position": 0,
-                "cwd": "apps/web"
+                "cwd": "apps/web",
+                "icon": "rocket"
             })
         );
     }

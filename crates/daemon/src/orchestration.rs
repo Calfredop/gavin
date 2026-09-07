@@ -154,6 +154,14 @@ impl OrchestrationStore {
         // NULL is the honest reading: a tool authored before v30 has no
         // directory of its own and runs at the workspace root.
         add_column_if_missing(&conn, "orch_tools", "cwd", "TEXT")?;
+        // v33: the tool's own glyph, named from the app's icon library.
+        // Same migration for the same reason as `cwd` above -- `tools()`
+        // selects it by name, so without the ALTER the first library
+        // read on a v32 file fails with "no such column: icon" and takes
+        // the whole library with it. NULL is the honest reading: a tool
+        // authored before v33 never picked one, and draws whatever its
+        // KIND draws.
+        add_column_if_missing(&conn, "orch_tools", "icon", "TEXT")?;
         // Every tool run still open belongs to a daemon that is gone.
         // This runs once per process, before any launch of this lifetime
         // has reached the store, so an open row here is by construction
@@ -587,7 +595,7 @@ impl OrchestrationStore {
         let tools = self
             .conn
             .prepare(
-                "SELECT id, workspace_id, name, description, kind, body, params, position, cwd
+                "SELECT id, workspace_id, name, description, kind, body, params, position, cwd, icon
                  FROM orch_tools
                  WHERE workspace_id = ?1 OR workspace_id IS NULL
                  ORDER BY workspace_id IS NULL, position, name",
@@ -607,6 +615,7 @@ impl OrchestrationStore {
                     params: serde_json::from_str::<Vec<ToolParam>>(&params_json).unwrap_or_default(),
                     position: row.get(7)?,
                     cwd: row.get(8)?,
+                    icon: row.get(9)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -633,12 +642,19 @@ impl OrchestrationStore {
         // field: stored as NULL so "runs at the workspace root" has one
         // representation rather than two the readers have to agree on.
         let cwd = tool.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty());
+        // An empty icon is not an icon, on the same rule as `cwd`: NULL
+        // is "draw whatever this tool's kind draws", and it must have one
+        // spelling rather than two the readers have to agree on. The NAME
+        // itself is not validated here -- the library it comes from lives
+        // in the app, and a daemon that invented a rule would refuse a
+        // glyph a newer app knows about.
+        let icon = tool.icon.as_deref().map(str::trim).filter(|c| !c.is_empty());
         self.conn.execute(
-            "INSERT INTO orch_tools (id, workspace_id, name, description, kind, body, params, position, cwd)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO orch_tools (id, workspace_id, name, description, kind, body, params, position, cwd, icon)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET
                workspace_id = ?2, name = ?3, description = ?4, kind = ?5,
-               body = ?6, params = ?7, position = ?8, cwd = ?9",
+               body = ?6, params = ?7, position = ?8, cwd = ?9, icon = ?10",
             params![
                 tool.id,
                 tool.workspace_id,
@@ -648,7 +664,8 @@ impl OrchestrationStore {
                 tool.body,
                 serde_json::to_string(&tool.params)?,
                 tool.position,
-                cwd
+                cwd,
+                icon
             ],
         )?;
         Ok(())
@@ -1176,6 +1193,7 @@ mod tests {
             }],
             position: 0,
             cwd: None,
+            icon: None,
         }
     }
 
@@ -1392,6 +1410,93 @@ mod tests {
         let got = s.group_templates("ws-1").unwrap();
         assert_eq!(got.len(), 1);
         assert!(got[0].steps.is_empty());
+    }
+
+    // ---- The tool's own icon (v33) ----------------------------------
+
+    #[test]
+    fn a_tools_icon_round_trips() {
+        let mut s = store();
+        let mut t = tool("u1", Some("ws-1"));
+        t.icon = Some("rocket".into());
+        s.save_tool(&t).unwrap();
+        assert_eq!(s.tools("ws-1").unwrap()[0].icon.as_deref(), Some("rocket"));
+    }
+
+    /// The daemon does not know what a glyph name means and deliberately
+    /// does not check: the library is a curated list in the app, and a
+    /// rule invented here would refuse a name a newer app knows about.
+    /// The app resolves what it can and falls back to the kind's glyph
+    /// for the rest.
+    #[test]
+    fn an_icon_name_this_daemon_has_never_heard_of_is_still_stored() {
+        let mut s = store();
+        let mut t = tool("u1", Some("ws-1"));
+        t.icon = Some("teleporter".into());
+        s.save_tool(&t).unwrap();
+        assert_eq!(s.tools("ws-1").unwrap()[0].icon.as_deref(), Some("teleporter"));
+    }
+
+    /// "No icon" has to have ONE spelling, the same rule the working
+    /// directory follows: every reader turns absence into "draw this
+    /// tool's kind", and an empty string would be a second absence they
+    /// would each have to remember.
+    #[test]
+    fn a_blank_icon_is_stored_as_absent() {
+        let mut s = store();
+        let mut t = tool("u1", Some("ws-1"));
+        t.icon = Some("  ".into());
+        s.save_tool(&t).unwrap();
+        assert_eq!(s.tools("ws-1").unwrap()[0].icon, None);
+    }
+
+    /// Clearing the icon has to REACH the row -- `icon` is in the
+    /// upsert's UPDATE list for the reason `cwd` is: a re-save that
+    /// dropped the column would leave a tool wearing a glyph the human
+    /// just took off it.
+    #[test]
+    fn clearing_an_icon_on_re_save_removes_it() {
+        let mut s = store();
+        let mut t = tool("u1", Some("ws-1"));
+        t.icon = Some("rocket".into());
+        s.save_tool(&t).unwrap();
+        t.icon = None;
+        s.save_tool(&t).unwrap();
+        assert_eq!(s.tools("ws-1").unwrap()[0].icon, None);
+    }
+
+    /// The migration CREATE TABLE IF NOT EXISTS cannot perform, the
+    /// second time around: a live orch_tools keeps its v32 shape, and
+    /// `tools()` names `icon` in its SELECT -- so without the ALTER the
+    /// first library read on that file fails with "no such column: icon"
+    /// and takes every tool with it.
+    #[test]
+    fn opening_a_pre_v33_database_adds_the_tool_icon_column() {
+        let dir = std::env::temp_dir().join(format!("gavin-tool-icon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("orchestration.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE orch_tools (
+                    id TEXT PRIMARY KEY, workspace_id TEXT, name TEXT NOT NULL,
+                    description TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL,
+                    params TEXT NOT NULL, position INTEGER NOT NULL, cwd TEXT);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO orch_tools (id, workspace_id, name, description, kind, body, params, position)
+                 VALUES ('u1','ws-1','Old','','command','echo hi','[]',0)",
+                [],
+            )
+            .unwrap();
+        }
+        let s = OrchestrationStore::open(&path).unwrap();
+        let tools = s.tools("ws-1").unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].icon, None);
+        let _ = std::fs::remove_file(&path);
     }
 
     // ---- The tool's working directory and its standalone runs (v30) ----
