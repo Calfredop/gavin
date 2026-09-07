@@ -241,6 +241,34 @@ select {
   scrollbar-width: thin;
 }
 
+/* A terminal is the one scroller neither rule above can reach. xterm does
+   not use the platform's bar: it hides the viewport's and draws its own
+   in the DOM — a VS Code scrollable element whose handle is a plain
+   `<div class="slider">` filling a 14px lane, square-cornered, coloured
+   by a <style> block xterm injects into the head at runtime.
+
+   Colour is settled where xterm expects it, in terminalTheme.ts's ITheme;
+   trying to win it back here would mean out-specifying an injected rule
+   that also carries the :hover and .active steps. What is left is the
+   shape, and that is CSS's to fix, because none of these properties are
+   ones xterm sets.
+
+   The handle keeps its full 14px lane to grab — only the PAINT is inset.
+   3px a side is the inset the platform itself uses (its 13px thin bar
+   draws a 7px handle), which lands this at 8px against that 7px, and the
+   radius rounds the ends the same way. The alternative on offer was
+   `overviewRuler.width`, xterm's only real handle on the lane: it is the
+   wrong lever twice over — it stands up a decoration-ruler canvas per
+   terminal for a feature nothing here uses, and that canvas paints its
+   outline unconditionally, a 1px black rule down the edge of every
+   terminal. */
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  box-sizing: border-box;
+  border-inline: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 7px;
+}
+
 /* ---- Chevrons --------------------------------------------------------
    Lucide draws every icon with round caps and round joins, which suits
    glyphs whose character comes from their curves. A chevron is not one

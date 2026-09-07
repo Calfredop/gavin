@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 
+import { xtermTheme } from "./terminalTheme";
+
 // theme.css gives every scroller the app's own grey handle with the two
 // STANDARD properties, `scrollbar-color` and `scrollbar-width`, and the
 // choice is not a stylistic one. Measured in WKWebView (the engine the
@@ -87,4 +89,49 @@ describe("custom WebKit scrollbars", () => {
       expect(decls.height, `${file} — the strip's bar is back`).toBe("0");
     }
   });
+});
+
+// The terminal's handle is the one theme.css cannot reach with either
+// property above: xterm hides the viewport's native bar and draws its own
+// in the DOM, colouring it from a <style> block it injects at runtime.
+// Left alone that block reads `background: #eeeeee33` -- ITheme.foreground
+// at 20%, measured #484848 over the dark background -- so the one scroller
+// inside a terminal wore a translucent near-white block while every other
+// scroller in the window wore --scrollbar-thumb.
+//
+// The fix has to be split, and this is the half a suite can hold: colour
+// goes through xterm's own ITheme (out-specifying an injected rule that
+// also carries :hover and .active is not a fight worth having), while the
+// SHAPE stays in theme.css, which insets the slider's paint 3px a side --
+// the platform's own inset -- without narrowing the lane it is grabbed by.
+//
+// Nothing else notices if these three slots go missing. The terminal just
+// quietly wears the near-white block again.
+describe("the terminal's own scroll handle", () => {
+  // theme.css's --scrollbar-thumb per theme, restated: the stylesheet is
+  // unreadable from here, and xterm needs a resolved string anyway.
+  const THUMB = { dark: "#555", light: "#bbb" } as const;
+
+  for (const theme of ["dark", "light"] as const) {
+    it(`wears --scrollbar-thumb on the ${theme} theme, with a step for hover and one for press`, () => {
+      const { scrollbarSliderBackground, scrollbarSliderHoverBackground, scrollbarSliderActiveBackground } =
+        xtermTheme(theme);
+
+      expect(
+        scrollbarSliderBackground,
+        `the ${theme} terminal handle is not --scrollbar-thumb — it will not match the app's other scrollers`,
+      ).toBe(THUMB[theme]);
+
+      // Without these two the slot still defaults to foreground-at-40%/50%
+      // on hover and press, so the handle would flash near-white under the
+      // pointer even with the resting colour fixed.
+      for (const [name, value] of [
+        ["hover", scrollbarSliderHoverBackground],
+        ["active", scrollbarSliderActiveBackground],
+      ] as const) {
+        expect(value, `the ${theme} terminal handle has no ${name} colour — xterm falls back to foreground`).toBeTruthy();
+        expect(value, `the ${theme} terminal handle does not react on ${name}`).not.toBe(scrollbarSliderBackground);
+      }
+    });
+  }
 });

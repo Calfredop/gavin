@@ -10,12 +10,25 @@ import type { EffectiveTheme } from "./theme";
 /// The light arm is not the dark arm inverted -- the same reason D46 gives
 /// for the neutral ramp. Mid-brightness ANSI colours tuned to sit on
 /// #1e1e1e wash out on white, so light uses the darker end of each family.
+///
+/// The three `scrollbarSlider*` slots are here for a different reason than
+/// the rest: a terminal does NOT get the app's scroll handle. xterm draws
+/// its own in the DOM (a VS Code scrollable element, not the platform's
+/// bar), so theme.css's `scrollbar-color` never reaches it, and the
+/// default it falls back to is `foreground` at 20% -- a translucent
+/// near-white block, measured #484848 on this background, against #555
+/// everywhere else in the window. These three restate --scrollbar-thumb
+/// and the two steps a handle takes under the pointer. theme.css narrows
+/// the same slider; colour is xterm's to set, geometry is CSS's.
 const DARK: ITheme = {
   background: "#1e1e1e",
   foreground: "#eee",
   cursor: "#eee",
   cursorAccent: "#1e1e1e",
   selectionBackground: "#3a3a3a",
+  scrollbarSliderBackground: "#555",
+  scrollbarSliderHoverBackground: "#666",
+  scrollbarSliderActiveBackground: "#888",
   black: "#1a1a1a",
   red: "#e0524a",
   green: "#8bc98b",
@@ -40,6 +53,9 @@ const LIGHT: ITheme = {
   cursor: "#1a1a1a",
   cursorAccent: "#fff",
   selectionBackground: "#ddd",
+  scrollbarSliderBackground: "#bbb",
+  scrollbarSliderHoverBackground: "#999",
+  scrollbarSliderActiveBackground: "#888",
   black: "#1a1a1a",
   red: "#b03a32",
   green: "#3f7d47",
