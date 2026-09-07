@@ -1488,6 +1488,29 @@ pub fn watch_targets(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
     targets
 }
 
+/// What the human is told when the kernel runs out of watches.
+///
+/// It has to name the sysctl, because nothing else on the machine will:
+/// `inotify_add_watch` answers ENOSPC, which every tool renders as "No
+/// space left on device" and sends people looking at `df`. And it has to
+/// say what is BROKEN, not just what failed -- a workspace missing part
+/// of its watch set still shows every card, it just stops noticing edits
+/// made outside the app, which is indistinguishable from gavin being
+/// slow until you know.
+///
+/// Pure, and separate from `sync_watches`, so the wording is testable
+/// without exhausting a real kernel's watch table.
+fn watch_limit_message(root: &Path, wanted: usize, refused: usize) -> String {
+    format!(
+        "gavin could not watch {refused} of the {wanted} folders under {} — the kernel's inotify \
+         watch limit is exhausted, so edits made to cards outside gavin will not show up in this \
+         workspace until it restarts. Raise the limit with `sudo sysctl -w \
+         fs.inotify.max_user_watches=524288` (and add it to /etc/sysctl.d/ to keep it across \
+         reboots).",
+        root.display()
+    )
+}
+
 /// Whether a filesystem event can possibly have changed the scanned tree.
 ///
 /// The old rule was "some path component is `.gavin*`", which silently
@@ -1609,6 +1632,13 @@ struct WatcherInner {
     /// The watch set currently registered, so re-arming after a rescan
     /// can diff instead of tearing every watch down and rebuilding it.
     watched: HashMap<PathBuf, notify::RecursiveMode>,
+    /// Whether the app has already been told the OS watch limit is
+    /// exhausted. A latch, because `sync_watches` runs after EVERY scan
+    /// and the condition persists until the human changes a sysctl: one
+    /// banner is a report, one per rescan is a fault of its own. Cleared
+    /// when the whole set arms again, so a second exhaustion is reported
+    /// afresh.
+    watch_limit_reported: bool,
 }
 
 /// One per watched workspace root. Owns the debouncer; dropping the
@@ -1652,6 +1682,7 @@ impl GavinWatcher {
                 last_scan: None,
                 burst: 0,
                 watched: HashMap::new(),
+                watch_limit_reported: false,
             }),
             debouncer: Mutex::new(None),
             on_scan,
@@ -1691,11 +1722,26 @@ impl GavinWatcher {
         if let Ok(d) = debounce_result {
             *watcher.debouncer.lock().unwrap() = Some(d);
             let mut inner = watcher.inner.lock().unwrap();
-            watcher.sync_watches(&mut inner);
+            let limit = watcher.sync_watches(&mut inner);
+            drop(inner);
+            watcher.report_watch_limit(limit);
         }
 
         watcher.rescan_and_push();
         watcher
+    }
+
+    /// Tells the app the OS refused part of the watch set.
+    ///
+    /// `Response::Error` on the streaming connection, which the app
+    /// surfaces as the dismissible daemon-request-error strip over a
+    /// still-working window -- not `daemon-error`, which means the
+    /// connection is gone. That is the honest shape: the watch request
+    /// was only partly honoured, everything else about the workspace
+    /// still works, and the human is the only one who can fix it.
+    fn report_watch_limit(&self, message: Option<String>) {
+        let Some(message) = message else { return };
+        self.push_response(&Response::Error { message });
     }
 
     /// Registers the current watch set and drops what is no longer in it,
@@ -1708,11 +1754,21 @@ impl GavinWatcher {
     /// old whole-watch behaviour: that subtree stops updating live rather
     /// than the whole watcher failing, and GetGavinTree still works.
     ///
+    /// With ONE exception, and it is why this returns anything at all.
+    /// Off macOS the set is one inotify watch PER scanned directory, and
+    /// a kernel that has run out of them refuses every remaining watch
+    /// with ENOSPC -- which `notify` reports as `MaxFilesWatch`. Silently
+    /// leaving those out would mean a workspace where card edits made
+    /// outside gavin never appear, with nothing anywhere to say why; the
+    /// only fix is a sysctl, so the human has to be told. Returns the
+    /// message to push, once per onset -- see `watch_limit_reported`.
+    ///
     /// Takes the caller's `inner` guard rather than locking itself, so
     /// the lock order is always inner -> debouncer.
-    fn sync_watches(&self, inner: &mut WatcherInner) {
+    #[must_use = "an exhausted watch limit has to reach the app"]
+    fn sync_watches(&self, inner: &mut WatcherInner) -> Option<String> {
         let mut guard = self.debouncer.lock().unwrap();
-        let Some(debouncer) = guard.as_mut() else { return };
+        let Some(debouncer) = guard.as_mut() else { return None };
         let fs_watcher = debouncer.watcher();
 
         let desired: HashMap<PathBuf, notify::RecursiveMode> =
@@ -1725,17 +1781,34 @@ impl GavinWatcher {
                 let _ = fs_watcher.unwatch(path);
             }
         }
+        let wanted = desired.len();
+        let mut refused_for_limit = 0usize;
         let mut registered = HashMap::with_capacity(desired.len());
         for (path, mode) in desired {
             if inner.watched.get(&path) == Some(&mode) {
                 registered.insert(path, mode); // already armed, leave it alone
                 continue;
             }
-            if fs_watcher.watch(&path, mode).is_ok() {
-                registered.insert(path, mode);
+            match fs_watcher.watch(&path, mode) {
+                Ok(()) => {
+                    registered.insert(path, mode);
+                }
+                Err(e) if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) => {
+                    refused_for_limit += 1;
+                }
+                Err(_) => {}
             }
         }
         inner.watched = registered;
+
+        if refused_for_limit == 0 {
+            inner.watch_limit_reported = false;
+            return None;
+        }
+        if std::mem::replace(&mut inner.watch_limit_reported, true) {
+            return None;
+        }
+        Some(watch_limit_message(&self.root_path, wanted, refused_for_limit))
     }
 
     /// The entire floor-check + scan + compare + emit sequence runs under
@@ -1755,13 +1828,14 @@ impl GavinWatcher {
         inner.last_scan = Some(Instant::now());
         // Re-arm against the tree we just scanned, whether or not it
         // changed shape -- an unchanged tree diffs to zero watch calls.
-        self.sync_watches(&mut inner);
+        let watch_limit = self.sync_watches(&mut inner);
         // Ahead of the change gate, because what the hook answers about
         // depends on the STORES as much as on the tree -- a scan that
         // found the same tree can still be the one that re-keys a step
         // an arrangement wrote a moment ago. And ahead of the tree push,
         // because the tree is what re-runs the app's scheduler: it must
         // not tick on a re-keyed path the app has not been told about.
+        self.report_watch_limit(watch_limit);
         if let Some(resp) = self.on_scan.as_ref().and_then(|hook| hook(&self.workspace_id, &tree)) {
             let mut writer = self.writer.lock().unwrap();
             let _ = protocol::write_message(&mut *writer, &resp);
@@ -1808,7 +1882,9 @@ impl GavinWatcher {
         let tree = scan_root(&self.root_path);
         inner.last_scan = Some(Instant::now());
         inner.last_tree = Some(tree.clone());
-        self.sync_watches(&mut inner);
+        let watch_limit = self.sync_watches(&mut inner);
+        drop(inner);
+        self.report_watch_limit(watch_limit);
         tree
     }
 }
@@ -2792,6 +2868,110 @@ mod tests {
             .collect();
         v.sort();
         v
+    }
+
+    /// The Linux port's watch-set measurement, kept runnable rather than
+    /// written down once as a number.
+    ///
+    /// Off macOS the set is one inotify watch PER scanned directory, and
+    /// the question the port had to answer was whether a real repo can
+    /// reach `fs.inotify.max_user_watches`. This builds the shape that
+    /// would: 3000 directories the scanner descends into, next to the
+    /// `node_modules`/`target`/`.git` churn it skips, and reports how
+    /// many watches that costs and how long arming them takes.
+    ///
+    /// `#[ignore]`d because it creates several thousand directories and
+    /// arms several thousand OS watches -- a fine thing to run on
+    /// purpose (`cargo test -p gavin-daemon -- --ignored measure_watch`)
+    /// and a poor one to run on every commit.
+    ///
+    /// Off macOS only: on FSEvents `watch_targets` returns the root and
+    /// nothing else, so there is no per-directory cost to measure.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    #[ignore = "builds a 3000-folder repo and arms the real watch set; run with --ignored"]
+    fn measure_watch_set_on_a_large_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(GAVIN_ROOT_DIR).join("plans")).unwrap();
+
+        // 30 packages x 100 folders each, four levels deep -- the shape a
+        // monorepo actually has, well inside MAX_SCAN_DEPTH.
+        let mut scanned = 0;
+        for pkg in 0..30 {
+            for i in 0..100 {
+                let p = root
+                    .join(format!("pkg-{pkg}"))
+                    .join(format!("src-{}", i / 25))
+                    .join(format!("mod-{}", i % 25));
+                std::fs::create_dir_all(&p).unwrap();
+                scanned += 1;
+            }
+            // The churn the walk must NOT be paying for.
+            std::fs::create_dir_all(root.join(format!("pkg-{pkg}")).join("node_modules").join("a"))
+                .unwrap();
+            std::fs::create_dir_all(root.join(format!("pkg-{pkg}")).join("target").join("debug"))
+                .unwrap();
+        }
+
+        let t = Instant::now();
+        let targets = watch_targets(root);
+        let listed = t.elapsed();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher =
+            notify::recommended_watcher(move |e| { let _ = tx.send(e); }).unwrap();
+        let t = Instant::now();
+        let mut armed = 0usize;
+        let mut refused_for_limit = 0usize;
+        let mut refused_other = 0usize;
+        for (path, mode) in &targets {
+            match notify::Watcher::watch(&mut watcher, path, *mode) {
+                Ok(()) => armed += 1,
+                Err(e) if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) => {
+                    refused_for_limit += 1
+                }
+                Err(_) => refused_other += 1,
+            }
+        }
+        let arm_time = t.elapsed();
+        drop(rx);
+
+        println!(
+            "{scanned} scanned folders created\n\
+             {} watch targets listed in {listed:?}\n\
+             {armed} armed in {arm_time:?} ({refused_for_limit} refused for the OS limit, \
+             {refused_other} for other reasons)",
+            targets.len()
+        );
+        // The point of the exercise: the set is the SCANNED tree, not the
+        // repo. If this ever starts counting node_modules the arm cost
+        // stops being bounded by anything -- so the assertion is about
+        // what must be ABSENT, which the count alone cannot express (the
+        // set also holds the intermediate directories the leaves hang
+        // off, and `scanned` counts only the leaves).
+        assert!(armed > scanned, "{armed} armed for {scanned} leaf folders");
+        for (path, _) in &targets {
+            let p = path.to_string_lossy();
+            assert!(
+                !p.contains("node_modules") && !p.contains("/target"),
+                "the churny directories must never be watched: {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_watch_limit_message_names_the_sysctl_and_what_it_costs() {
+        // The only reason this string exists: ENOSPC from
+        // inotify_add_watch renders everywhere as "No space left on
+        // device", which sends people to `df`.
+        let msg = watch_limit_message(Path::new("/home/x/monorepo"), 3012, 2951);
+        assert!(msg.contains("fs.inotify.max_user_watches"), "{msg}");
+        assert!(msg.contains("2951"), "{msg}");
+        assert!(msg.contains("3012"), "{msg}");
+        assert!(msg.contains("/home/x/monorepo"), "{msg}");
+        // And what actually breaks, in the human's terms.
+        assert!(msg.contains("outside gavin"), "{msg}");
     }
 
     #[test]
