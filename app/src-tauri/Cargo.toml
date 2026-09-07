@@ -40,9 +40,19 @@ notify-debouncer-mini = "0.7"
 protocol = { path = "../../crates/protocol" }
 # The OS Trash, not `rm`: the delete wizard removes somebody's cards, and
 # a card in plans/done/ that git never tracked is otherwise gone for good.
-# default-features off drops the `chrono` feature, which only exists to
-# read Trash timestamps back -- gavin only ever puts things in.
+# default-features off drops `coinit_apartmentthreaded` (Windows COM) and
+# `chrono`; on macOS, where NsFileManager does the whole job, chrono only
+# exists to read Trash timestamps back and gavin only ever puts things in.
 trash = { version = "5", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# chrono back on, and NOT for reading. The freedesktop backend gates the
+# `DeletionDate=` line of the `.trashinfo` file it writes on this feature
+# (trash-5.2.6 src/freedesktop.rs:521), and the trash spec makes that key
+# mandatory -- without it a trashed workspace is one file managers list
+# with no date and, depending on the implementation, decline to put back.
+# "Restorable" is the entire promise trash_path makes over `rm`.
+trash = { version = "5", default-features = false, features = ["chrono"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

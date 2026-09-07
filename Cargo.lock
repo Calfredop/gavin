@@ -4713,6 +4713,7 @@ version = "5.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7602e0c7d66ec2d92a8c917219fbc7894039efa2063b9064260110828a356f46"
 dependencies = [
+ "chrono",
  "libc",
  "log",
  "objc2",
