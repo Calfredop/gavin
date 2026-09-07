@@ -7204,16 +7204,13 @@ mod tests {
         manager
             .write_input("leftover-1", b"echo recovered_ok\n")
             .unwrap();
-        let mut reader = manager.reader_for("leftover-1").unwrap();
-
-        let mut collected = String::new();
-        let mut buf = [0u8; 4096];
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !collected.contains("recovered_ok") {
-            let n = reader.read(&mut buf).unwrap();
-            collected.push_str(&String::from_utf8_lossy(&buf[..n]));
-            assert!(std::time::Instant::now() < deadline, "got: {collected}");
-        }
+        // Through read_until, not a bare read loop: the deadline has to
+        // bound the READ, not merely the gap between two of them.
+        let collected =
+            read_until(&manager, "leftover-1", Duration::from_secs(2), |c| {
+                c.matches("recovered_ok").count() > 1
+            });
+        assert!(collected.matches("recovered_ok").count() > 1, "got: {collected}");
     }
 
     /// A registry row exactly as a killed daemon would have left it: no
@@ -7270,28 +7267,74 @@ mod tests {
         manager
     }
 
+    /// Everything a session has said, up to `enough` or a real deadline.
+    ///
+    /// The read runs on a thread and comes back over a channel because
+    /// `Read::read` on a PTY master has NO timeout: it blocks until the
+    /// child writes, and a shell that has finished talking never will.
+    /// A loop that checks the clock only BETWEEN reads therefore does
+    /// not time out at all -- it hangs, and a failing assertion becomes
+    /// a CI job that runs until the runner kills it hours later.
+    ///
+    /// Found porting to Linux, where it is not hypothetical: `/bin/sh`
+    /// is dash, which echoes a typed line exactly once, while macOS's
+    /// bash echoes it twice (tty driver, then readline's redisplay). A
+    /// helper below counted on the second copy, and on Linux waited for
+    /// it forever.
+    fn read_until(
+        manager: &SessionManager,
+        id: &str,
+        within: Duration,
+        enough: impl Fn(&str) -> bool,
+    ) -> String {
+        let mut reader = manager.reader_for(id).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Deliberately detached: if the deadline passes, this thread is
+        // still parked in read() and cannot be woken. The send fails
+        // once the receiver drops, which is how it finally ends.
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        let deadline = std::time::Instant::now() + within;
+        let mut collected = String::new();
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let Ok(chunk) = rx.recv_timeout(left) else { break };
+            collected.push_str(&String::from_utf8_lossy(&chunk));
+            if enough(&collected) {
+                break;
+            }
+        }
+        collected
+    }
+
     /// Reads from a recovered session until `needle` shows up, or gives
     /// up. Proves there is a real interactive shell behind the id rather
     /// than merely a registry row.
+    ///
+    /// TWICE, because the tty echoes the typed line back before the
+    /// shell has run it -- so one occurrence proves only that the PTY
+    /// exists. The needle must therefore be a LITERAL the shell prints
+    /// unchanged; a needle the shell expands (`$PWD`) can only ever
+    /// appear once, in the echo.
     fn shell_echoes(manager: &SessionManager, id: &str, needle: &str) -> bool {
         manager.write_input(id, format!("echo {needle}\n").as_bytes()).unwrap();
-        let mut reader = manager.reader_for(id).unwrap();
-        let mut collected = String::new();
-        let mut buf = [0u8; 4096];
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline {
-            let Ok(n) = reader.read(&mut buf) else { break };
-            if n == 0 {
-                break;
-            }
-            collected.push_str(&String::from_utf8_lossy(&buf[..n]));
-            // The echo of the typed line contains the needle too, so the
-            // marker is assembled at runtime by the shell instead.
-            if collected.matches(needle).count() > 1 {
-                return true;
-            }
-        }
-        false
+        let seen = |c: &str| c.matches(needle).count() > 1;
+        seen(&read_until(manager, id, Duration::from_secs(3), seen))
     }
 
     #[test]
@@ -7406,21 +7449,22 @@ mod tests {
         let manager = recovered_manager(&dir);
 
         assert!(
-            shell_echoes(&manager, "moved-1", "$PWD"),
-            "the recovered shell should print a directory at all"
+            shell_echoes(&manager, "moved-1", "recovered_shell_ok"),
+            "the recovered shell should answer at all"
         );
-        manager.write_input("moved-1", b"case \"$PWD\" in *elsewhere) echo CWDMARK_yes;; *) echo CWDMARK_no;; esac\n").unwrap();
-        let mut reader = manager.reader_for("moved-1").unwrap();
-        let mut collected = String::new();
-        let mut buf = [0u8; 4096];
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline && collected.matches("CWDMARK_").count() < 2 {
-            let Ok(n) = reader.read(&mut buf) else { break };
-            if n == 0 {
-                break;
-            }
-            collected.push_str(&String::from_utf8_lossy(&buf[..n]));
-        }
+        // The verdict is assembled in a variable and echoed, so neither
+        // CWDMARK_yes nor CWDMARK_no appears in the line the tty echoes
+        // back: the only way to see one is for the shell to have RUN
+        // this, which is the whole assertion.
+        manager
+            .write_input(
+                "moved-1",
+                b"case \"$PWD\" in *elsewhere) M=yes;; *) M=no;; esac; echo \"CWDMARK_$M\"\n",
+            )
+            .unwrap();
+        let collected = read_until(&manager, "moved-1", Duration::from_secs(3), |c| {
+            c.contains("CWDMARK_yes") || c.contains("CWDMARK_no")
+        });
         assert!(
             collected.contains("CWDMARK_yes"),
             "recovery must land in the session's own cwd, got: {collected}"
