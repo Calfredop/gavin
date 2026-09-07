@@ -1,7 +1,7 @@
 ---
 order: 1024
 title: [feat] workspace tools
-status: To Do
+status: Done
 ---
 A set of workspace wide tools, launchable from the hub. Some examples: deploy
 pipeline, agent repo consolidation, agent repo reconciliation — something
@@ -38,14 +38,14 @@ Decisions taken — do not re-derive:
   takes effect only after a daemon rebuild and restart, which is the owner's
   call — every `gavin_*` MCP tool fails closed until then.
 
-- [ ] Protocol: bump `PROTOCOL_VERSION` to 30. A `ToolRun` wire type mirroring
+- [x] Protocol: bump `PROTOCOL_VERSION` to 30. A `ToolRun` wire type mirroring
       `CardRun` (id, tool id, session id, command, launch cwd, conversation id,
       started/ended, exit code, outcome), and three new requests —
       `StartToolRun`, `SetToolRunOutcome`, `ToolRuns` — each at
       `min_version_for` 30. Separately, `SaveTool`'s tool record gains
       `cwd: Option<String>`: that one **widens an existing request**, which
       `min_version_for` cannot see.
-- [ ] Daemon store: a `tool_runs` table in `orchestration.rs` with `card_runs`'
+- [x] Daemon store: a `tool_runs` table in `orchestration.rs` with `card_runs`'
       columns keyed on tool id, plus its index; and `orch_tools` gains `cwd`
       by `ALTER TABLE` after `PRAGMA table_info` — a column added only to
       `CREATE TABLE IF NOT EXISTS` never reaches a live database. Extend the
@@ -53,58 +53,58 @@ Decisions taken — do not re-derive:
       at startup, and `exited` + exit code from `finish_runs_for_session`.
       Store tests over a tempdir, including the migration against a DB built at
       the old shape.
-- [ ] Host + `backend.ts` wrappers for the three requests; `Tool` and
+- [x] Host + `backend.ts` wrappers for the three requests; `Tool` and
       `ToolRecord` gain `cwd`.
-- [ ] The compat gate, **with a real consumer** — the entry alone is a dead
+- [x] The compat gate, **with a real consumer** — the entry alone is a dead
       gate. `FEATURE_MIN_VERSION` gains `toolRuns: 30` and `toolCwd: 30`. The
       Tools tab greys Run and says why against an older daemon; the dialog's
       working-directory field is disabled with a reason, because a v29 daemon
       accepts the save and silently drops the field. Hang each reason on a
       non-disabled ancestor — a disabled element never fires `mouseenter`.
-- [ ] `orchestrationTools.ts`: the `cwd` field, `toRecord` validation, and
+- [x] `orchestrationTools.ts`: the `cwd` field, `toRecord` validation, and
       `resolveToolCwd(tool, rootPath)` — relative resolves against the root,
       absolute is kept as-is. `ToolLibraryDialog.svelte` gains the field with a
       folder picker via `dialog:allow-open`, the only OS dialog still
       permitted. Unit tests.
-- [ ] A test that pins the rail's behaviour: a tool with a cwd launched as a
+- [x] A test that pins the rail's behaviour: a tool with a cwd launched as a
       rail step still runs in the rail's checkout, with the comment saying why.
-- [ ] `workspaceTools.ts` — the pure module: which library tools are runnable
+- [x] `workspaceTools.ts` — the pure module: which library tools are runnable
       standalone, the last-run summary per tool (outcome, relative age, session
       id), and its badge shape and tone through `ui/indicators.ts`, the app's
       one badge vocabulary. Unit tests; the component keeps no rules.
-- [ ] `toolRunsState.ts` — the store: fetch on tab mount, and re-read when a
+- [x] `toolRunsState.ts` — the store: fetch on tab mount, and re-read when a
       session exits. The daemon closes a command or script run by itself and
       pushes nothing, so without that re-read the row the human is looking at
       says `running` forever.
-- [ ] `WorkspaceToolsHubView.svelte` plus a `{ id: "tools", label: "Tools",
+- [x] `WorkspaceToolsHubView.svelte` plus a `{ id: "tools", label: "Tools",
       requiresRoot: true }` entry in `hubViewMeta.ts` after `orchestration`,
       bound in `workspaceViews.ts`. Rows carry kind, description, cwd, the
       last-run chip and Run; "Manage tools…" opens the existing
       `ToolLibraryDialog`. Update the tab-strip and keyboard-router tests that
       enumerate the tabs.
-- [ ] `workspaceToolsActions.ts` — the launch, modelled on
+- [x] `workspaceToolsActions.ts` — the launch, modelled on
       `codeReviewActions.confirmReview`, which is the existing
       standalone-launch seam: prompt for params when the tool has any (defaults
       prefilled), build the line with `buildToolCommand` / `buildRunCommand`
       exactly as the rail does, `createSession` at the resolved cwd,
       `handleAgentSessionSpawned`, `revealSession`, name the tab after the
       tool, arm failure detection for `agent` kinds, and file `StartToolRun`.
-- [ ] The verdict, reusing the rail's rules so a tool means the same thing
+- [x] The verdict, reusing the rail's rules so a tool means the same thing
       wherever it runs: a command or script run passes on exit 0 and fails on
       anything else (the daemon's hook); an agent run passes when its session
       goes `idle` — its turn ended — and fails when failure detection fires. No
       auto-resume: there is no rail to advance.
-- [ ] Two built-in `agent` tools in `BUILTIN_TOOLS`: **Consolidate repo**
+- [x] Two built-in `agent` tools in `BUILTIN_TOOLS`: **Consolidate repo**
       (commit the dirty tree feature by feature, only the files each change
       touches, never `git add -A`, never push) and **Reconcile repo** (report
       branches and worktrees against `{{base}}`, default `main`: what is
       merged, what is behind, what is abandoned). Deploy stays the human's to
       author — a pipeline is per-project.
-- [ ] Amend `docs/superpowers/specs/2026-08-21-orchestration-tools-design.md`
+- [x] Amend `docs/superpowers/specs/2026-08-21-orchestration-tools-design.md`
       rather than starting a new spec: T11 (a tool carries a cwd; the rail's
       checkout still wins) and T12 (a tool runs standalone from the Tools tab,
       with a tracked run).
-- [ ] Suites green — `cargo test --workspace`, and in `app/`: `npm test && npm
+- [x] Suites green — `cargo test --workspace`, and in `app/`: `npm test && npm
       run check && npm run build`. Then add to `smokeChecklist.ts`: a command
       tool's row settles on passed or failed; an agent tool's settles on turn
       end; a tool with a cwd runs there; the same tool on a rail still runs in

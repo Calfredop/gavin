@@ -2,7 +2,7 @@
 order: 5120
 kind: task
 title: [fix] the fork dialog cannot say why it failed
-status: To Do
+status: Done
 priority: medium
 ---
 `GitForkDialog` reports a failed `git worktree add` only through the Git
