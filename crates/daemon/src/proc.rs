@@ -93,12 +93,136 @@ pub fn identify(pid: u32) -> Option<ProcessHandle> {
     })
 }
 
-/// Gavin is a macOS app (`protocol::app_support_dir` resolves under
-/// `~/Library/Application Support`), so there is no second platform to be
-/// correct on yet. Answering "gone" everywhere else is the honest
-/// placeholder: it makes recovery behave exactly as it did before this
-/// module existed, rather than inventing a liveness claim from nothing.
-#[cfg(not(target_os = "macos"))]
+/// The same question of `/proc`, which answers it in one file.
+///
+/// `/proc/<pid>/stat` carries both halves of the identity: the state (so
+/// a zombie can be refused, as on macOS) and `starttime`, the boot-
+/// relative tick count that makes a pid an identity. Boot-relative is
+/// not directly comparable to anything -- a handle stored before a
+/// reboot must not match a pid after one -- so it is turned into an
+/// absolute stamp with `/proc/stat`'s `btime`, giving the same units the
+/// macOS arm records.
+///
+/// The uid check is what libproc gives macOS for free: `proc_pidinfo`
+/// refuses another user's process, while `/proc` is world-readable. Same
+/// rule on both, then -- a process that is not ours is not one gavin
+/// spawned, and `terminate` would only earn an EPERM for asking.
+#[cfg(target_os = "linux")]
+pub fn identify(pid: u32) -> Option<ProcessHandle> {
+    let stat = read_proc_stat(pid)?;
+    if stat.state == 'Z' {
+        return None;
+    }
+    if !owned_by_us(pid) {
+        return None;
+    }
+    Some(ProcessHandle { pid, started_at_us: absolute_start_us(stat.starttime_ticks)? })
+}
+
+/// The fields of `/proc/<pid>/stat` this module reads, already past the
+/// one parse that is easy to get wrong.
+#[cfg(target_os = "linux")]
+struct ProcStat {
+    state: char,
+    /// utime + stime, in clock ticks.
+    cpu_ticks: u64,
+    /// Field 22: ticks since boot at which the process started.
+    starttime_ticks: u64,
+    /// Field 24: resident set size, in PAGES.
+    rss_pages: u64,
+}
+
+#[cfg(target_os = "linux")]
+fn read_proc_stat(pid: u32) -> Option<ProcStat> {
+    parse_proc_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// Splits `/proc/<pid>/stat` at the LAST `)`, not on whitespace.
+///
+/// Field 2 is the executable name in parentheses and is neither escaped
+/// nor length-limited in a way that helps: `sh -c 'exec -a "a) b" sleep 5'`
+/// is a legal process name, and so is one containing a newline. Scanning
+/// from the left is the classic bug -- it shifts every subsequent field
+/// by however many spaces the name held, so `starttime` reads as
+/// something else entirely and every identity silently stops matching.
+/// The kernel guarantees exactly one `)` after the name at the end of
+/// field 2, so the last one in the line is that one.
+#[cfg(target_os = "linux")]
+fn parse_proc_stat(line: &str) -> Option<ProcStat> {
+    let rest = &line[line.rfind(')')? + 1..];
+    // Field N of the file is index N-3 here: the split begins at field 3.
+    let f: Vec<&str> = rest.split_whitespace().collect();
+    let at = |n: usize| f.get(n - 3).copied();
+    let num = |n: usize| at(n)?.parse::<u64>().ok();
+    Some(ProcStat {
+        state: at(3)?.chars().next()?,
+        cpu_ticks: num(14)?.saturating_add(num(15)?),
+        starttime_ticks: num(22)?,
+        rss_pages: num(24)?,
+    })
+}
+
+/// Clock ticks since boot, as microseconds since the epoch.
+///
+/// `btime` is read once and cached: it is a constant for the life of the
+/// kernel, and a value that drifted between two reads of the same
+/// process would make its identity look changed -- i.e. permanently
+/// "gone", which is the failure this whole module is built to avoid.
+#[cfg(target_os = "linux")]
+fn absolute_start_us(ticks: u64) -> Option<i64> {
+    static BOOT_TIME_S: std::sync::OnceLock<Option<i64>> = std::sync::OnceLock::new();
+    let boot = (*BOOT_TIME_S.get_or_init(|| {
+        let stat = std::fs::read_to_string("/proc/stat").ok()?;
+        stat.lines().find_map(|l| l.strip_prefix("btime ")?.trim().parse::<i64>().ok())
+    }))?;
+    Some(boot * 1_000_000 + (ticks as i64) * 1_000_000 / clock_ticks_per_second())
+}
+
+/// `USER_HZ`, which is 100 on every mainstream build and is still read
+/// rather than assumed -- it is a compile-time kernel choice, and
+/// hardcoding it would misreport CPU on a kernel built at 250 or 1000
+/// with nothing to show for it but plausible-looking numbers (the same
+/// shape as the mach-timebase bug on the macOS side).
+#[cfg(target_os = "linux")]
+fn clock_ticks_per_second() -> i64 {
+    static HZ: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *HZ.get_or_init(|| {
+        // SAFETY: sysconf takes a name and returns a long; no pointers.
+        let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        if hz > 0 {
+            hz
+        } else {
+            100
+        }
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn page_size() -> u64 {
+    static SIZE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| {
+        // SAFETY: as above.
+        let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if size > 0 {
+            size as u64
+        } else {
+            4096
+        }
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn owned_by_us(pid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid cannot fail and takes no arguments.
+    let me = unsafe { libc::geteuid() };
+    std::fs::metadata(format!("/proc/{pid}")).map(|m| m.uid() == me).unwrap_or(false)
+}
+
+/// Every other platform. Answering "gone" is the honest placeholder: it
+/// makes recovery behave exactly as it did before this module existed,
+/// rather than inventing a liveness claim from nothing.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn identify(_pid: u32) -> Option<ProcessHandle> {
     None
 }
@@ -230,7 +354,19 @@ fn ticks_to_micros(ticks: u64) -> u64 {
     ((ticks as u128 * numer as u128) / (denom as u128 * 1_000)) as u64
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Both figures out of the same `/proc/<pid>/stat` the identity came
+/// from -- one read rather than a second from `statm`, which reports the
+/// same RSS in the same pages.
+#[cfg(target_os = "linux")]
+pub fn usage(pid: u32) -> Option<Usage> {
+    let stat = read_proc_stat(pid)?;
+    Some(Usage {
+        rss_bytes: stat.rss_pages.saturating_mul(page_size()),
+        cpu_time_us: stat.cpu_ticks.saturating_mul(1_000_000) / clock_ticks_per_second() as u64,
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn usage(_pid: u32) -> Option<Usage> {
     None
 }
@@ -275,7 +411,56 @@ pub fn children(pid: u32) -> Vec<u32> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// `/proc/<pid>/task/<tid>/children`, per thread, with a full `/proc`
+/// scan behind it.
+///
+/// That file needs `CONFIG_PROC_CHILDREN`, which Ubuntu and Fedora both
+/// ship enabled -- but a kernel without it would make this return an
+/// empty list for every process, and `tree_usage` would then report the
+/// root alone: a session whose agent is pinning four cores measured as
+/// one idle shell. The fallback costs a directory listing and answers
+/// the same question from `ppid`, which no kernel option can remove.
+#[cfg(target_os = "linux")]
+pub fn children(pid: u32) -> Vec<u32> {
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    let mut have_file = false;
+    for task in tasks.flatten() {
+        let Ok(line) = std::fs::read_to_string(task.path().join("children")) else { continue };
+        have_file = true;
+        found.extend(line.split_whitespace().filter_map(|p| p.parse::<u32>().ok()));
+    }
+    if have_file {
+        found.sort_unstable();
+        found.dedup();
+        return found;
+    }
+    children_by_ppid(pid)
+}
+
+/// Field 4 of every `/proc/<pid>/stat`, for a kernel with no `children`
+/// file. Same last-`)` parse as everywhere else.
+#[cfg(target_os = "linux")]
+fn children_by_ppid(parent: u32) -> Vec<u32> {
+    let Ok(entries) = std::fs::read_dir("/proc") else { return Vec::new() };
+    entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|pid| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|line| {
+                    let rest = &line[line.rfind(')')? + 1..];
+                    rest.split_whitespace().nth(1)?.parse::<u32>().ok()
+                })
+                .is_some_and(|ppid| ppid == parent)
+        })
+        .collect()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn children(_pid: u32) -> Vec<u32> {
     Vec::new()
 }
@@ -546,5 +731,97 @@ mod tests {
             !terminate(handle),
             "a process that has already gone is reported as such, not signalled again"
         );
+    }
+
+    /// The one parse that has no macOS counterpart, and the one place a
+    /// silent field shift would hide: every figure this module reports
+    /// comes out of this line.
+    #[cfg(target_os = "linux")]
+    mod linux_stat {
+        use super::*;
+
+        /// Fields 1..=24 of a real `/proc/<pid>/stat`, with the comm
+        /// field substituted in. Everything after 24 is elided -- the
+        /// parse never looks past it.
+        fn stat_line(comm: &str) -> String {
+            let mut fields = vec!["4172".to_string(), format!("({comm})"), "S".to_string()];
+            // 4..=24, with the four the parse actually reads pinned to
+            // recognisable values.
+            for n in 4..=24u32 {
+                fields.push(
+                    match n {
+                        14 => 700,   // utime ticks
+                        15 => 300,   // stime ticks
+                        22 => 90_000, // starttime ticks
+                        24 => 512,   // rss pages
+                        _ => 0,
+                    }
+                    .to_string(),
+                );
+            }
+            fields.join(" ")
+        }
+
+        #[test]
+        fn a_comm_full_of_parens_and_spaces_does_not_shift_the_fields() {
+            // `exec -a` lets any process call itself this, and a
+            // left-to-right scan would read `starttime` out of the NAME.
+            for comm in ["sleep", "a) b", "((", "node (worker) 3", ") ) )"] {
+                let stat = parse_proc_stat(&stat_line(comm)).expect(comm);
+                assert_eq!(stat.state, 'S', "{comm}");
+                assert_eq!(stat.cpu_ticks, 1000, "{comm}");
+                assert_eq!(stat.starttime_ticks, 90_000, "{comm}");
+                assert_eq!(stat.rss_pages, 512, "{comm}");
+            }
+        }
+
+        #[test]
+        fn a_truncated_or_shapeless_line_is_no_answer_rather_than_a_guess() {
+            assert!(parse_proc_stat("").is_none());
+            assert!(parse_proc_stat("4172 (sleep) S 1 0").is_none());
+            assert!(parse_proc_stat("no parens here at all").is_none());
+        }
+
+        #[test]
+        fn the_start_time_is_absolute_and_ahead_of_boot() {
+            // Boot-relative ticks would compare equal across a reboot,
+            // which is exactly the false "alive" the identity exists to
+            // prevent. Anchored to btime, a live process's stamp has to
+            // sit between boot and now.
+            let me = identify(std::process::id()).unwrap();
+            let now_us = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros() as i64;
+            let boot_us = absolute_start_us(0).unwrap();
+            assert!(me.started_at_us >= boot_us, "{} < boot {boot_us}", me.started_at_us);
+            assert!(me.started_at_us <= now_us, "{} > now {now_us}", me.started_at_us);
+        }
+
+        #[test]
+        fn another_users_process_is_not_ours() {
+            // pid 1 is root's on every Linux the app will run on, and
+            // this is the guard libproc gives macOS for free.
+            if unsafe { libc::geteuid() } == 0 {
+                return; // running as root: everything is ours, nothing to prove
+            }
+            assert_eq!(identify(1), None);
+        }
+
+        #[test]
+        fn the_ppid_fallback_finds_the_same_children_as_the_kernel_file() {
+            // The fallback only runs on a kernel without
+            // CONFIG_PROC_CHILDREN, which is not the one CI uses -- so
+            // it is checked here against the file it stands in for,
+            // rather than never being executed at all.
+            let mut child =
+                std::process::Command::new("/bin/sh").args(["-c", "sleep 5"]).spawn().unwrap();
+            let mut by_ppid = children_by_ppid(std::process::id());
+            by_ppid.sort_unstable();
+            assert!(by_ppid.contains(&child.id()), "{by_ppid:?} should contain {}", child.id());
+            assert_eq!(by_ppid, children(std::process::id()));
+            child.kill().ok();
+            child.wait().ok();
+        }
     }
 }
