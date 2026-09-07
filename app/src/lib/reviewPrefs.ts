@@ -53,7 +53,25 @@ export interface ReviewPrefs {
   /// into (`resolveSelection`), never trusted: a card filed, archived or
   /// deleted between two sessions is the normal case here.
   selected: string | null;
+  /// What the first column shows: the card's agent, or the card itself.
+  ///
+  /// Remembered rather than reset per card, which is where this parts
+  /// company with ReviewFilePane's diff/edit switch. That one is a
+  /// question about the file in front of you, so landing in Edit on a
+  /// file you have not read is an invitation to type into it by
+  /// accident. This one is a question about how you are reading the
+  /// board -- watching agents work, or reading what they were asked for
+  /// -- and it holds for the whole pass down the list. Re-answering it
+  /// on every card would be answering it forty times.
+  pane: ReviewPane;
 }
+
+/// The first column's two answers. A union rather than a boolean so the
+/// stored value says what it means and a third view could be added
+/// without rewriting every read of it.
+export type ReviewPane = "session" | "plan";
+
+const REVIEW_PANES: ReviewPane[] = ["session", "plan"];
 
 export const DEFAULT_REVIEW_PREFS: ReviewPrefs = {
   columns: null,
@@ -61,6 +79,7 @@ export const DEFAULT_REVIEW_PREFS: ReviewPrefs = {
   listCollapsed: false,
   query: "",
   selected: null,
+  pane: "session",
 };
 
 function readJson(storage: MaybeStorage, key: string): unknown {
@@ -111,6 +130,9 @@ export function normalizeReviewPrefs(value: unknown): ReviewPrefs {
     listCollapsed: raw.listCollapsed === true,
     query: typeof raw.query === "string" ? raw.query : "",
     selected: typeof raw.selected === "string" && raw.selected !== "" ? raw.selected : null,
+    pane: REVIEW_PANES.includes(raw.pane as ReviewPane)
+      ? (raw.pane as ReviewPane)
+      : DEFAULT_REVIEW_PREFS.pane,
   };
 }
 
@@ -152,7 +174,8 @@ function isDefault(prefs: ReviewPrefs): boolean {
     !prefs.includeArchived &&
     !prefs.listCollapsed &&
     prefs.query === "" &&
-    prefs.selected === null
+    prefs.selected === null &&
+    prefs.pane === DEFAULT_REVIEW_PREFS.pane
   );
 }
 

@@ -70,6 +70,16 @@ describe("normalizeReviewPrefs", () => {
     expect(got.includeArchived).toBe(false);
     expect(got.listCollapsed).toBe(false);
   });
+
+  it("takes only a pane it knows, and falls back to the session", () => {
+    // The stored value outlives the build that wrote it, and a record
+    // naming a view this gavin no longer draws must land somewhere real
+    // rather than leaving the first column blank.
+    expect(normalizeReviewPrefs({ pane: "plan" }).pane).toBe("plan");
+    expect(normalizeReviewPrefs({ pane: "changes" }).pane).toBe("session");
+    expect(normalizeReviewPrefs({ pane: 3 }).pane).toBe("session");
+    expect(normalizeReviewPrefs({}).pane).toBe("session");
+  });
 });
 
 describe("load / save", () => {
@@ -84,6 +94,14 @@ describe("load / save", () => {
     const store = storage();
     saveReviewPrefs({ ws1: prefs({ query: "rail" }) }, store);
     expect(loadReviewPrefs(store).ws1.query).toBe("rail");
+  });
+
+  it("counts a chosen pane as worth storing", () => {
+    // The point of persisting it: a reviewer reading plans down the list
+    // answers "session or plan" once, not once per card.
+    const store = storage();
+    saveReviewPrefs({ ws1: prefs({ pane: "plan" }) }, store);
+    expect(loadReviewPrefs(store).ws1.pane).toBe("plan");
   });
 
   it("does not store an entry that says nothing", () => {

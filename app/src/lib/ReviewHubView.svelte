@@ -18,7 +18,7 @@
   import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "./kanbanState";
   import { gavinTrees } from "./gavinState";
   import { layoutState, daemonCompat } from "./layoutState";
-  import { mergePlanCards, type CardView } from "./planBoard";
+  import { indexCardViews, mergePlanCards, type CardView } from "./planBoard";
   import GitFileRow from "./GitFileRow.svelte";
   import ReviewAgentPane from "./ReviewAgentPane.svelte";
   import ReviewCardList from "./ReviewCardList.svelte";
@@ -80,6 +80,16 @@
   const columns = $derived(board?.columns ?? []);
   const reviewColumns = $derived(resolveReviewColumns(columns, prefs.columns));
   const reviewColumnIds = $derived(reviewColumns.map((c) => c.id));
+
+  // Every card in the projection, for the detail panel the first column
+  // can show. Deliberately NOT `listed`: the panel's Tasks list and its
+  // "Part of" row name cards by path, and most of those are not up for
+  // review -- a nested task has no status of its own, and a finished
+  // card's parent plan may be anywhere. Handing it the filtered list
+  // would draw a panel whose own links resolve to nothing.
+  const allCards = $derived<CardView[]>(
+    merged ? [...indexCardViews(merged).values()].map((placed) => placed.view) : []
+  );
 
   const listed = $derived<CardView[]>(
     merged
@@ -264,7 +274,19 @@
       {#if summary}<span class="summary">{summary}</span>{/if}
     </div>
     <div class="cols" bind:this={colsEl}>
-      <ReviewAgentPane bind:this={agentPane} {workspaceId} {card} {binding} />
+      <ReviewAgentPane
+        bind:this={agentPane}
+        {workspaceId}
+        {card}
+        {binding}
+        pane={prefs.pane}
+        onPane={(next) => setReviewPrefs(workspaceId, { pane: next })}
+        {columns}
+        labels={board?.labels ?? []}
+        {allCards}
+        onOpenCard={select}
+        onPathChange={select}
+      />
 
       <div class="files">
         <div class="head"><span class="label">Touched files</span></div>
@@ -322,6 +344,32 @@
     grid-template-rows: minmax(0, 1fr);
     height: 100%;
     min-height: 0;
+    /* The tab's own text colour, and the reason it has to be said at
+       all: nothing in the app sets a root one. theme.css defines the
+       tokens and two base rules and stops, and no stylesheet declares
+       `color-scheme`, so an element with no `color` inherits the user
+       agent's black -- which on this ground is a card title at 1.1:1.
+       Every other component pays for that by naming its own (BoardCard
+       sets `color: var(--text)` on `.card` for exactly this reason);
+       four rules in this tab did not, and the card list rendered
+       invisible. Said once here so the panes below inherit it, and
+       again on each pane's own root so none of them depends on being
+       mounted inside this one.
+
+       Both header rows are pinned rather than left to their content:
+       the tab has two of them, drawn twice each -- the card list's
+       search row beside the strip, its column picker beside the three
+       column heads -- and a few pixels of difference between the halves
+       puts two rules across the window at two heights. Measured in
+       WKWebView (root font-size 13px): the heads came to 20px, 20px,
+       26px with the diff/edit group in them, and 23px, so the rules
+       landed at three different y. 28px is what the 19px switch needs
+       to sit in with 4px above and below it -- and `padding-top: 0`,
+       which every head had, is what glued that switch to the top
+       border. reviewTabStyles.test.ts holds all four to these. */
+    color: var(--text);
+    --review-strip-height: 28px;
+    --review-head-height: 28px;
   }
   /* The rail is as narrow as the one button it holds. A collapsed list
      that kept its 280px would be a column of nothing. */
@@ -336,9 +384,11 @@
   }
   .strip {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 10px;
-    padding: 4px 10px 8px;
+    height: var(--review-strip-height);
+    box-sizing: border-box;
+    padding: 0 10px;
     border-bottom: 1px solid var(--border);
     flex: none;
   }
@@ -378,7 +428,11 @@
     min-height: 0;
   }
   .head {
-    padding: 0 8px 6px;
+    display: flex;
+    align-items: center;
+    height: var(--review-head-height);
+    box-sizing: border-box;
+    padding: 0 8px;
     border-bottom: 1px solid var(--border);
     flex: none;
   }

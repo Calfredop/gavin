@@ -226,6 +226,9 @@
     padding: 4px;
     height: 100%;
     border-right: 1px solid var(--border);
+    /* See ReviewHubView's `.review`: the app has no root text colour, so
+       a rule that names none renders black. */
+    color: var(--text);
   }
   .rail-count {
     font-size: 0.75em;
@@ -238,21 +241,39 @@
     min-height: 0;
     height: 100%;
     border-right: 1px solid var(--border);
+    /* This is the rule the owner's screenshot was about: the card titles
+       below inherit from here, and with no colour named they came out
+       #2a2a2a on #1e1e1e. See ReviewHubView's `.review`. */
+    color: var(--text);
   }
+  /* The strip's opposite number -- this column has no strip over it, so
+     its search row IS the tab's first row and has to be the same height
+     or the two halves of the window start at different y. */
   .head {
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 0 6px 6px;
+    height: var(--review-strip-height);
+    box-sizing: border-box;
+    padding: 0 6px;
     flex: none;
   }
   .head :global(.grow) {
     flex: 1;
     min-width: 0;
   }
+  /* The three column heads' opposite number. `min-height` rather than
+     `height`: the picker expands inside this block, and a fixed one
+     would clip the checkboxes. Closed, it measures the same as a head,
+     so all four rules land on one y. */
   .columns {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
     flex: none;
-    padding: 0 6px 6px;
+    min-height: var(--review-head-height);
+    box-sizing: border-box;
+    padding: 0 6px;
     border-bottom: 1px solid var(--border);
   }
   .picker-toggle {
@@ -284,7 +305,7 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 4px 4px 2px;
+    padding: 4px 4px 6px;
   }
   .picker label {
     display: flex;

@@ -160,9 +160,17 @@ describe("the agent column", () => {
     // TerminalPane binds its session in onMount and never re-reads it:
     // handed a new id in place it keeps showing the old session while
     // fit() reports that terminal's measurements to the new one.
+    //
+    // Only the {#key} is asserted verbatim. The call itself used to be
+    // pinned as one line of source, which made this test fail when the
+    // pane's `bind:this` was renamed and the tag wrapped -- neither of
+    // which can break anything. What that line was reaching for is held
+    // properly by terminalPaneSession.test.ts, which walks the enclosing
+    // block stack of EVERY call site in the app rather than matching one
+    // component's formatting.
     const text = source(AGENT);
     expect(text).toContain("{#key sessionId}");
-    expect(text).toContain("<TerminalPane bind:this={pane} {sessionId}");
+    expect(text).toMatch(/<TerminalPane\b[\s\S]*?\{sessionId\}/);
   });
 
   it("starts the review launch, never the ordinary run or resume", () => {

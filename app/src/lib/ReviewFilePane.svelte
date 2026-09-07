@@ -153,12 +153,17 @@
     min-width: 0;
     min-height: 0;
     height: 100%;
+    /* See ReviewHubView's `.review`: the app has no root text colour, so
+       a rule that names none renders black. */
+    color: var(--text);
   }
   .head {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 0 8px 6px;
+    height: var(--review-head-height);
+    box-sizing: border-box;
+    padding: 0 8px;
     border-bottom: 1px solid var(--border);
     flex: none;
   }
