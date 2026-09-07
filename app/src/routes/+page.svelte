@@ -373,162 +373,191 @@
              the daemon refused is a caveat on a working app, not a lost
              connection, so it never belongs in the error branch above. -->
         <DaemonRequestErrorBanner />
-        <!-- Ahead of every workspace branch, not inside one: the hub is
-             app-level -- it belongs to no workspace, and it must be
-             reachable with one open as well as with none. Switching to a
-             workspace clears the flag (layoutState's activateWorkspace),
-             so nothing here has to close it. -->
-        {#if $appHubOpen}
-          <div class="view">
-            <AppHubView />
-          </div>
-        {:else if !activeWorkspace}
-          <div class="overlay">
-            <button onclick={createFirstWorkspace}>New Workspace</button>
-          </div>
-        {:else if activeView === "terminal"}
-          <div class="view">
-            <TerminalView workspaceId={activeWorkspace.id} />
-          </div>
-        {:else}
-          <div class="content">
-            <!-- Above the tabs: an unbound or missing root is the whole
-                 workspace's problem, not a property of whichever page is
-                 open. A healthy root renders nothing here (D64) -- the path
-                 itself is Settings' to state. The Settings tab embeds this
-                 control itself; showing the banner there too would double
-                 it up. -->
-            {#if activeView !== "settings"}
-              <WorkspaceRootControl workspace={activeWorkspace} />
-            {/if}
-            <div class="tabs">
-              <!-- The window's own chrome leads the row, before the
-                   workspace's tabs and outside the scroller: this row is
-                   the top edge of the window, and a collapse toggle that
-                   could scroll out of reach would be a rail with no way
-                   back. A rule after it, so what acts on the WINDOW is
-                   not read as the first tab of the workspace. -->
-              <CornerOverhang />
-              <!-- The tabs scroll; what follows them does not. A
-                   workspace with a root offers nine of them, and the
-                   button that adds a page must not be the first thing a
-                   narrow window pushes out of reach. -->
-              <div class="tab-strip" use:wheelScrollsSideways>
-                {#each tabViews as view, viewIndex (view.id)}
-                  {@const busy = hubViewBusy(view.id, activity)}
-                  {@const wantsYou = hubViewAttention(view.id, activity)}
-                  <button
-                    type="button"
-                    class="tab"
-                    class:active={activeViewDef?.id === view.id}
-                    class:arrangeable={$hubTabsUnlocked}
-                    class:drop-before={hubTabDrop?.viewId === view.id &&
-                      hubTabDrop.position === "before"}
-                    class:drop-after={hubTabDrop?.viewId === view.id &&
-                      hubTabDrop.position === "after"}
-                    use:tooltip={busy
-                      ? "An agent is committing"
-                      : wantsYou
-                        ? "A rail is waiting on you"
-                        : ""}
-                    aria-label={busy
-                      ? `${hubLabel(view, activeAgent.file)} — an agent is committing`
-                      : wantsYou
-                        ? `${hubLabel(view, activeAgent.file)} — a rail is waiting on you`
-                        : undefined}
-                    draggable={$hubTabsUnlocked}
-                    ondragstart={(e) => handleHubTabDragStart(e, view.id)}
-                    ondragover={(e) => handleHubTabDragOver(e, view.id)}
-                    ondragleave={clearHubTabDrop}
-                    ondragend={clearHubTabDrop}
-                    ondrop={(e) => handleHubTabDrop(e, view.id)}
-                    oncontextmenu={(e) => handleHubTabMenu(e, view.id)}
-                    onclick={() => switchWorkspaceView(activeWorkspace.id, view.id)}
-                  >
-                    <!-- In the icon's place, not beside it: the tab row must
-                         not reflow when a run starts or ends. -->
-                    {#if busy}
-                      <span class="tab-spinner" aria-hidden="true"></span>
-                    {:else}
-                      <view.icon size={14} />
-                    {/if}
-                    {hubLabel(view, activeAgent.file)}
-                    <!-- A dot, not a spinner: the rail is not the one working,
-                         the human is. Absolutely positioned so the tab row
-                         never reflows when a rail starts or stops wanting
-                         something. -->
-                    {#if wantsYou}
-                      <span class="tab-attention" aria-hidden="true"></span>
-                    {/if}
-                    {#if $hintMode === "cmd"}
-                      {@const digit = hintDigitFor(viewIndex, tabViews.length)}
-                      {#if digit !== null}
-                        <ShortcutHint text={String(digit)} />
-                      {/if}
-                    {/if}
-                  </button>
-                {/each}
-              </div>
-              <!-- At the end of the tabs, and OUTSIDE the scroller: the
-                   lock is what makes the row draggable at all, so a
-                   narrow window must never be able to push it out of
-                   reach. Locked is the resting state -- a tab row that
-                   rearranged itself whenever a click drifted would move
-                   the thing you were aiming at. The padlock shows the
-                   state it is IN, not the action -- open means the row
-                   is loose right now, which is the thing worth noticing
-                   at a glance. It is also the gate on the tabs'
-                   right-click menu, which is why the locked label says
-                   what the unlock is FOR rather than just "rearrange". -->
-              <IconButton
-                icon={$hubTabsUnlocked ? LockOpen : Lock}
-                label={$hubTabsUnlocked ? "Lock the tab row" : "Rearrange or hide the tabs"}
-                size={12}
-                class="arrange-toggle"
-                active={$hubTabsUnlocked}
-                onclick={toggleHubTabsUnlocked}
-              />
-              <!-- What the window lost when the title strip came down to
-                   the sidebar's width: somewhere roomy to grab it. The
-                   run of bar after the last tab moves the window, the way
-                   an empty toolbar does on macOS. A pane's tab row now
-                   does the same with its own leftover -- see
-                   windowDrag.ts. -->
-              <div class="drag-spacer" use:windowDrag></div>
-              <div class="tab-actions">
-                <!-- The workspace's own settings, off the strip and into
-                     the actions: it is the thing you open to change
-                     something and then leave, not a view you work in,
-                     and as a tab it ranked with Kanban and Git and cost
-                     every one of them a place. `active` is what says it
-                     is the view on screen, since it has no tab left to
-                     underline. -->
-                {#if settingsView}
-                  <IconButton
-                    icon={settingsView.icon}
-                    label="Workspace settings"
-                    size={14}
-                    active={activeViewDef?.id === settingsView.id}
-                    onclick={() => switchWorkspaceView(activeWorkspace.id, settingsView.id)}
-                  />
-                {/if}
-                <!-- Last before the rule, and deliberately: it acts on
-                     the workspace rather than on what is inside it, and it
-                     decides WHERE the workspace is before the + adds to
-                     it. -->
-                <OpenInWindowButton />
-                <!-- Behind a rule, like the pane row's own: everything
-                     left of it acts on THIS workspace, and what follows
-                     adds a page to it. -->
-                <span class="divider"></span>
-                <NewPageButton />
-              </div>
+        <!-- Every view the window can draw, under one boundary.
+             Deliberately NOT around the banners above it: those are the
+             app's own report channel and have to survive whatever this
+             catches.
+
+             Without it a view that throws while it is being CREATED is
+             invisible. Svelte builds the new branch of an `{#if}` before
+             it tears the old one down (BranchManager.ensure, then
+             #commit), so a throw on the way in leaves the previous
+             branch exactly where it was -- while the chrome row above,
+             a separate block that already committed, flips to the new
+             branch's shape. Pressing the sidebar's Gavin row then puts
+             a blank header bar over the page you were already on, which
+             is indistinguishable from a dead button and leaves nothing
+             to report but "nothing happened".
+
+             So: say what broke, keep the rest of the window alive, and
+             offer the retry -- `reset()` re-renders the children, which
+             is the whole recovery when the cause was a hot reload that
+             left one module half-applied. -->
+        <svelte:boundary onerror={(error) => console.error("view render failed", error)}>
+          {#snippet failed(error, reset)}
+            <div class="overlay">
+              <p>This view couldn&rsquo;t be drawn.</p>
+              <p class="detail">{error instanceof Error ? error.message : String(error)}</p>
+              <button onclick={reset}>Try again</button>
             </div>
+          {/snippet}
+          <!-- Ahead of every workspace branch, not inside one: the hub is
+               app-level -- it belongs to no workspace, and it must be
+               reachable with one open as well as with none. Switching to a
+               workspace clears the flag (layoutState's activateWorkspace),
+               so nothing here has to close it. -->
+          {#if $appHubOpen}
             <div class="view">
-              <activeViewDef.component workspaceId={activeWorkspace.id} />
+              <AppHubView />
             </div>
-          </div>
-        {/if}
+          {:else if !activeWorkspace}
+            <div class="overlay">
+              <button onclick={createFirstWorkspace}>New Workspace</button>
+            </div>
+          {:else if activeView === "terminal"}
+            <div class="view">
+              <TerminalView workspaceId={activeWorkspace.id} />
+            </div>
+          {:else}
+            <div class="content">
+              <!-- Above the tabs: an unbound or missing root is the whole
+                   workspace's problem, not a property of whichever page is
+                   open. A healthy root renders nothing here (D64) -- the path
+                   itself is Settings' to state. The Settings tab embeds this
+                   control itself; showing the banner there too would double
+                   it up. -->
+              {#if activeView !== "settings"}
+                <WorkspaceRootControl workspace={activeWorkspace} />
+              {/if}
+              <div class="tabs">
+                <!-- The window's own chrome leads the row, before the
+                     workspace's tabs and outside the scroller: this row is
+                     the top edge of the window, and a collapse toggle that
+                     could scroll out of reach would be a rail with no way
+                     back. A rule after it, so what acts on the WINDOW is
+                     not read as the first tab of the workspace. -->
+                <CornerOverhang />
+                <!-- The tabs scroll; what follows them does not. A
+                     workspace with a root offers nine of them, and the
+                     button that adds a page must not be the first thing a
+                     narrow window pushes out of reach. -->
+                <div class="tab-strip" use:wheelScrollsSideways>
+                  {#each tabViews as view, viewIndex (view.id)}
+                    {@const busy = hubViewBusy(view.id, activity)}
+                    {@const wantsYou = hubViewAttention(view.id, activity)}
+                    <button
+                      type="button"
+                      class="tab"
+                      class:active={activeViewDef?.id === view.id}
+                      class:arrangeable={$hubTabsUnlocked}
+                      class:drop-before={hubTabDrop?.viewId === view.id &&
+                        hubTabDrop.position === "before"}
+                      class:drop-after={hubTabDrop?.viewId === view.id &&
+                        hubTabDrop.position === "after"}
+                      use:tooltip={busy
+                        ? "An agent is committing"
+                        : wantsYou
+                          ? "A rail is waiting on you"
+                          : ""}
+                      aria-label={busy
+                        ? `${hubLabel(view, activeAgent.file)} — an agent is committing`
+                        : wantsYou
+                          ? `${hubLabel(view, activeAgent.file)} — a rail is waiting on you`
+                          : undefined}
+                      draggable={$hubTabsUnlocked}
+                      ondragstart={(e) => handleHubTabDragStart(e, view.id)}
+                      ondragover={(e) => handleHubTabDragOver(e, view.id)}
+                      ondragleave={clearHubTabDrop}
+                      ondragend={clearHubTabDrop}
+                      ondrop={(e) => handleHubTabDrop(e, view.id)}
+                      oncontextmenu={(e) => handleHubTabMenu(e, view.id)}
+                      onclick={() => switchWorkspaceView(activeWorkspace.id, view.id)}
+                    >
+                      <!-- In the icon's place, not beside it: the tab row must
+                           not reflow when a run starts or ends. -->
+                      {#if busy}
+                        <span class="tab-spinner" aria-hidden="true"></span>
+                      {:else}
+                        <view.icon size={14} />
+                      {/if}
+                      {hubLabel(view, activeAgent.file)}
+                      <!-- A dot, not a spinner: the rail is not the one working,
+                           the human is. Absolutely positioned so the tab row
+                           never reflows when a rail starts or stops wanting
+                           something. -->
+                      {#if wantsYou}
+                        <span class="tab-attention" aria-hidden="true"></span>
+                      {/if}
+                      {#if $hintMode === "cmd"}
+                        {@const digit = hintDigitFor(viewIndex, tabViews.length)}
+                        {#if digit !== null}
+                          <ShortcutHint text={String(digit)} />
+                        {/if}
+                      {/if}
+                    </button>
+                  {/each}
+                </div>
+                <!-- At the end of the tabs, and OUTSIDE the scroller: the
+                     lock is what makes the row draggable at all, so a
+                     narrow window must never be able to push it out of
+                     reach. Locked is the resting state -- a tab row that
+                     rearranged itself whenever a click drifted would move
+                     the thing you were aiming at. The padlock shows the
+                     state it is IN, not the action -- open means the row
+                     is loose right now, which is the thing worth noticing
+                     at a glance. It is also the gate on the tabs'
+                     right-click menu, which is why the locked label says
+                     what the unlock is FOR rather than just "rearrange". -->
+                <IconButton
+                  icon={$hubTabsUnlocked ? LockOpen : Lock}
+                  label={$hubTabsUnlocked ? "Lock the tab row" : "Rearrange or hide the tabs"}
+                  size={12}
+                  class="arrange-toggle"
+                  active={$hubTabsUnlocked}
+                  onclick={toggleHubTabsUnlocked}
+                />
+                <!-- What the window lost when the title strip came down to
+                     the sidebar's width: somewhere roomy to grab it. The
+                     run of bar after the last tab moves the window, the way
+                     an empty toolbar does on macOS. A pane's tab row now
+                     does the same with its own leftover -- see
+                     windowDrag.ts. -->
+                <div class="drag-spacer" use:windowDrag></div>
+                <div class="tab-actions">
+                  <!-- The workspace's own settings, off the strip and into
+                       the actions: it is the thing you open to change
+                       something and then leave, not a view you work in,
+                       and as a tab it ranked with Kanban and Git and cost
+                       every one of them a place. `active` is what says it
+                       is the view on screen, since it has no tab left to
+                       underline. -->
+                  {#if settingsView}
+                    <IconButton
+                      icon={settingsView.icon}
+                      label="Workspace settings"
+                      size={14}
+                      active={activeViewDef?.id === settingsView.id}
+                      onclick={() => switchWorkspaceView(activeWorkspace.id, settingsView.id)}
+                    />
+                  {/if}
+                  <!-- Last before the rule, and deliberately: it acts on
+                       the workspace rather than on what is inside it, and it
+                       decides WHERE the workspace is before the + adds to
+                       it. -->
+                  <OpenInWindowButton />
+                  <!-- Behind a rule, like the pane row's own: everything
+                       left of it acts on THIS workspace, and what follows
+                       adds a page to it. -->
+                  <span class="divider"></span>
+                  <NewPageButton />
+                </div>
+              </div>
+              <div class="view">
+                <activeViewDef.component workspaceId={activeWorkspace.id} />
+              </div>
+            </div>
+          {/if}
+        </svelte:boundary>
       {/if}
     </div>
   </div>
