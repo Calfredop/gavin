@@ -61,6 +61,63 @@ export function openContextMenuFromEvent(e: MouseEvent, entries: ContextMenuEntr
   openContextMenu(e.clientX, e.clientY, entries);
 }
 
+/// The parts of a right-click this layer reads. Duck-typed rather than a
+/// MouseEvent for the same reason keyboard.ts and lineClipboard.ts
+/// duck-type theirs: the suite runs under node with no DOM at all, so a
+/// hand-built object has to be able to stand in.
+export interface NativeMenuEvent {
+  target?: EventTarget | null;
+  altKey?: boolean;
+  defaultPrevented?: boolean;
+}
+
+/// The <input> types the OS menu can actually act on. This app also
+/// ships checkboxes, radios, a colour well and hundreds of buttons, and
+/// WebKit's Cut/Copy/Paste over one of those is noise.
+const NATIVE_EDIT_INPUT_TYPES = new Set(["", "text", "search", "url", "tel", "email", "password", "number"]);
+
+/// True when the click landed in something the browser edits itself: an
+/// <input>, a <textarea>, or a contenteditable (the plan editor). Mirrors
+/// keyboard.ts's isTextFieldTarget, exception included -- xterm focuses a
+/// hidden <textarea>, but a terminal is not a text field: its clipboard
+/// travels to the pty, and ⌘C/⌘V there are already ours.
+function isNativeEditTarget(target: EventTarget | null | undefined): boolean {
+  const el = target as
+    | { tagName?: string; type?: string; isContentEditable?: boolean; closest?: (s: string) => unknown }
+    | null
+    | undefined;
+  if (!el || typeof el !== "object") return false;
+  if (el.closest?.(".xterm")) return false;
+  if (el.tagName === "TEXTAREA") return true;
+  if (el.tagName === "INPUT") return NATIVE_EDIT_INPUT_TYPES.has((el.type ?? "").toLowerCase());
+  return el.isContentEditable === true;
+}
+
+/// Whether this right-click's native menu has to be taken away. gavin
+/// draws its own menus, and openContextMenuFromEvent claims those events
+/// before the window ever sees them -- so anything reaching this test
+/// landed on a surface with NO menu of its own, where WKWebView answered
+/// with its own: Reload, Back/Forward, Services, Inspect Element. None of
+/// those mean anything over a terminal or a kanban column, and a web
+/// page's menu in a desktop app reads as a bug.
+///
+/// Two things still get it, both because nothing else in the app does
+/// their job:
+///
+/// - a text field, whose menu is the OS editing menu (cut/copy/paste,
+///   spelling, substitutions) and has no gavin replacement;
+/// - ⌥-right-click anywhere, which hands the click straight to WebKit.
+///   That is the escape hatch: gavin binds no devtools chord, so the
+///   inspector is reachable only from the native menu, and a dev build
+///   that cannot open it is a worse app than one with a stray menu.
+export function suppressesNativeMenu(event: NativeMenuEvent): boolean {
+  // Something nearer the target already answered -- our own menu layer,
+  // or a surface that prevented without stopping propagation.
+  if (event.defaultPrevented) return false;
+  if (event.altKey) return false;
+  return !isNativeEditTarget(event.target);
+}
+
 /// Swaps the entries of the menu that is already open, keeping its
 /// position. What a `keepOpen` toggle needs: its own click changed the
 /// state the entries were built from, and the list is a plain array

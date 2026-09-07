@@ -7,6 +7,8 @@ import {
   openContextMenuFromEvent,
   openMenuUnder,
   setContextMenuEntries,
+  suppressesNativeMenu,
+  type NativeMenuEvent,
 } from "./contextMenu";
 
 beforeEach(() => closeContextMenu());
@@ -79,5 +81,62 @@ describe("setContextMenuEntries", () => {
   it("does nothing when no menu is up, rather than opening one nobody asked for", () => {
     setContextMenuEntries([{ label: "With agent", onPick: () => {} }]);
     expect(get(contextMenu)).toBeNull();
+  });
+});
+
+/// A right-click target, duck-typed the way the module reads it.
+/// `closest` answers nothing by default -- only the terminal case says yes.
+function on(el: Record<string, unknown>): NativeMenuEvent["target"] {
+  return { closest: () => null, ...el } as unknown as NativeMenuEvent["target"];
+}
+
+function rightClick(target: NativeMenuEvent["target"], extra: Partial<NativeMenuEvent> = {}): NativeMenuEvent {
+  return { target, altKey: false, defaultPrevented: false, ...extra };
+}
+
+describe("suppressesNativeMenu", () => {
+  it("takes the native menu off a plain surface", () => {
+    expect(suppressesNativeMenu(rightClick(on({ tagName: "DIV" })))).toBe(true);
+  });
+
+  it("takes it off a right-click that hit nothing", () => {
+    expect(suppressesNativeMenu(rightClick(null))).toBe(true);
+  });
+
+  it("leaves a text input its editing menu", () => {
+    expect(suppressesNativeMenu(rightClick(on({ tagName: "INPUT", type: "text" })))).toBe(false);
+  });
+
+  it("leaves an input with no type its editing menu", () => {
+    expect(suppressesNativeMenu(rightClick(on({ tagName: "INPUT" })))).toBe(false);
+  });
+
+  it("leaves a textarea its editing menu", () => {
+    expect(suppressesNativeMenu(rightClick(on({ tagName: "TEXTAREA" })))).toBe(false);
+  });
+
+  it("leaves a contenteditable its editing menu", () => {
+    expect(suppressesNativeMenu(rightClick(on({ tagName: "DIV", isContentEditable: true })))).toBe(false);
+  });
+
+  // A checkbox, a radio, a colour well and hundreds of buttons all take a
+  // right-click in this app; Cut/Copy/Paste over one of them is noise.
+  it.each(["checkbox", "radio", "color", "button", "submit"])("takes it off an <input type=%s>", (type) => {
+    expect(suppressesNativeMenu(rightClick(on({ tagName: "INPUT", type })))).toBe(true);
+  });
+
+  // xterm focuses a hidden <textarea>, but a terminal is not a text
+  // field -- its clipboard travels to the pty, and ⌘C/⌘V there are ours.
+  it("takes it off the terminal, hidden textarea and all", () => {
+    const inTerminal = on({ tagName: "TEXTAREA", closest: (s: string) => (s === ".xterm" ? {} : null) });
+    expect(suppressesNativeMenu(rightClick(inTerminal))).toBe(true);
+  });
+
+  it("lets ⌥ through to WebKit, which is the only route to the inspector", () => {
+    expect(suppressesNativeMenu(rightClick(on({ tagName: "DIV" }), { altKey: true }))).toBe(false);
+  });
+
+  it("stands down when something nearer the target already answered", () => {
+    expect(suppressesNativeMenu(rightClick(on({ tagName: "DIV" }), { defaultPrevented: true }))).toBe(false);
   });
 });

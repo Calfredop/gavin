@@ -4,6 +4,7 @@
     closeContextMenu,
     isSeparator,
     isHeading,
+    suppressesNativeMenu,
     type ContextMenuItem,
   } from "./contextMenu";
 
@@ -43,10 +44,15 @@
     if ($contextMenu) closeContextMenu();
   }
 
+  // The app's answer to WKWebView's own menu. Every gavin menu claims its
+  // event at the target (openContextMenuFromEvent stops propagation), so
+  // a right-click that reaches this window listener is one no surface
+  // offered anything for -- and the browser's Reload/Back/Services menu
+  // is not the app's answer to it. suppressesNativeMenu holds the two
+  // exceptions: a text field's editing menu, and ⌥ as the way through to
+  // WebKit (the inspector has no chord in this app).
   function onWindowContextMenu(e: MouseEvent): void {
-    // A second right-click outside replaces the menu via the target's
-    // own handler; inside the menu it is just noise.
-    if ($contextMenu && menuEl && menuEl.contains(e.target as Node)) e.preventDefault();
+    if (suppressesNativeMenu(e)) e.preventDefault();
   }
 </script>
 
