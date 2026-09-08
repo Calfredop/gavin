@@ -339,6 +339,36 @@ pub struct Workspace {
     /// ordinary case of a workspace with nothing to approve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trusted_config_hash: Option<String>,
+    /// The human's recorded answer to a distinct SET of foreign MCP
+    /// servers `setup_agent_integration` found already declared in this
+    /// workspace's target MCP config file (AG-07) -- "keep" (merge
+    /// gavin's entry beside them) or "isolate" (refused today, see
+    /// `agent_setup::isolate_refusal`) -- and the digest of exactly that
+    /// set (`mcpServerTrust.ts` owns the hash and the comparison).
+    ///
+    /// Same shape and reason as `trusted_config_hash` one field up: a
+    /// changed set -- an edited `mcp_file`, a `git pull`, a colleague's
+    /// change to the target file -- changes the digest, and the question
+    /// is asked again rather than a decision nobody was shown being
+    /// replayed. Machine-local for the same reason too: a copy in the
+    /// repo would let the repo vouch for itself.
+    /// `skip_serializing_if` keeps the key out of config.json for the
+    /// ordinary case of a workspace with nothing foreign to decide on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_foreign_servers_choice: Option<McpForeignServersChoice>,
+}
+
+/// One recorded decision on `Workspace::mcp_foreign_servers_choice`.
+/// `action` is "keep" or "isolate", passed straight through to
+/// `setup_agent_integration`'s `mcp_foreign_choice` -- an unrecognised
+/// value there is treated as undecided (`McpForeignChoice::from_str`),
+/// so a value written by a newer frontend never makes an older one act
+/// on a choice it does not understand.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpForeignServersChoice {
+    pub hash: String,
+    pub action: String,
 }
 
 fn default_true() -> bool {
@@ -760,6 +790,7 @@ mod tests {
             complexity_agents: HashMap::new(),
             git_tracking_asked: false,
             trusted_config_hash: None,
+            mcp_foreign_servers_choice: None,
         }
     }
 

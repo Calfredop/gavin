@@ -548,12 +548,36 @@ export function setCardTabs(cardTabs: Record<string, CardTab>): Promise<void> {
   return invoke("set_card_tabs", { cardTabs });
 }
 
+/// One server entry a target MCP config already named that is not
+/// gavin's own (AG-07) — command and args verbatim, the shape it would
+/// actually launch in.
+export interface ForeignMcpServer {
+  name: string;
+  command: string;
+  args: string[];
+}
+
+/// What `setupAgentIntegration` found in the target MCP config that is
+/// not gavin's, and where. Present on the result only while a decision
+/// is outstanding; see `mcpServerTrust.ts`. `isolateRefusal` is set when
+/// "isolate" is not available for this profile, so the UI can say why
+/// beside the button rather than only after a click fails; absent would
+/// mean isolate is available (not reachable for any stock profile yet).
+export interface McpForeignServers {
+  file: string;
+  servers: ForeignMcpServer[];
+  isolateRefusal?: string;
+}
+
 /// What a setup run wrote, and what it could not (spec §6). `skipped` is
 /// [what, why] pairs, rendered verbatim so an unavailable MCP config is
-/// visible rather than silent.
+/// visible rather than silent. `mcpForeign` is set instead of the MCP
+/// config being written when the target file already names servers
+/// gavin did not add and no `mcpForeignChoice` was supplied or matched.
 export interface IntegrationResult {
   written: string[];
   skipped: Array<[string, string]>;
+  mcpForeign?: McpForeignServers;
 }
 
 /// `instructionsFile` is the workspace's RESOLVED agent file — the one
@@ -561,11 +585,18 @@ export interface IntegrationResult {
 /// side because `[agent] file` ships with the repository: pass what
 /// `resolveAgentConfig` gave you, which workspace trust has already
 /// gated, so the file gavin writes is the file its panels name.
+///
+/// `mcpForeignChoice` is "keep", "isolate", or omitted — the answer to
+/// a foreign-server disclosure a previous call's `mcpForeign` returned.
+/// Omit it (or pass a value that does not match what is on disk right
+/// now) to have the MCP write held back and `mcpForeign` reported
+/// instead, rather than assume any particular answer.
 export function setupAgentIntegration(
   rootPath: string,
-  instructionsFile: string
+  instructionsFile: string,
+  mcpForeignChoice?: "keep" | "isolate"
 ): Promise<IntegrationResult> {
-  return invoke("setup_agent_integration", { rootPath, instructionsFile });
+  return invoke("setup_agent_integration", { rootPath, instructionsFile, mcpForeignChoice });
 }
 
 export function createPlan(

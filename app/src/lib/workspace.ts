@@ -190,6 +190,14 @@ export interface Workspace {
   /// about THIS checkout, and a copy of it in the repo would let the repo
   /// vouch for itself.
   trustedConfigHash?: string;
+  /// The human's recorded answer to a distinct SET of foreign MCP
+  /// servers `setupAgentIntegration` found already declared in this
+  /// workspace's target MCP config file (AG-07, `mcpServerTrust.ts`) --
+  /// "keep" or "isolate" -- and the digest of exactly that set. Same
+  /// shape and reason as `trustedConfigHash` one field up: a changed set
+  /// puts the question back until it is answered again, and it is
+  /// machine-local for the same reason.
+  mcpForeignServersChoice?: { hash: string; action: "keep" | "isolate" };
 }
 
 /// A workspace that left the app through the sidebar X, kept so its

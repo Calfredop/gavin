@@ -1174,6 +1174,162 @@ fn block_with(block_body: &str, learned: Option<&str>) -> String {
     }
 }
 
+/// One server entry a target MCP config already names that is not
+/// gavin's own (AG-07). Returned instead of merged past silently: the
+/// human sees exactly what a just-cloned repo would launch beside
+/// gavin, in the shape it will run in -- the command and args verbatim,
+/// not a summary that could drift from what the file says.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignMcpServer {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+/// What `run_integration` found in the target MCP config that is not
+/// gavin's, and where. Carried on `IntegrationResult` only while a
+/// decision is outstanding -- its presence is the signal the UI keys
+/// the chooser off; a resolved run (nothing foreign, or a choice
+/// supplied and honoured) carries none.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpForeignServers {
+    pub file: String,
+    pub servers: Vec<ForeignMcpServer>,
+    /// Why "isolate" would refuse right now, computed up front so the
+    /// UI can say so beside the button rather than only after a click
+    /// fails. `None` would mean isolate is available for this profile --
+    /// not reachable today (`isolate_refusal` above), kept as an option
+    /// so a profile that later names a real second location needs no
+    /// shape change here, only a `None` where this used to be `Some`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isolate_refusal: Option<String>,
+}
+
+/// The human's answer to "this file already runs servers gavin did not
+/// add": `Keep` merges gavin's entry beside them, same as every run
+/// before this fix; `Isolate` asks for a file that carries only gavin's
+/// entry (`isolate_refusal` says why that is not available yet). Any
+/// other value -- including absent -- means undecided, which is what
+/// `run_integration` treats as "skip the write and report the foreign
+/// set" so the frontend can ask before anything changes on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpForeignChoice {
+    Keep,
+    Isolate,
+}
+
+impl McpForeignChoice {
+    fn from_str(value: Option<&str>) -> Option<Self> {
+        match value {
+            Some("keep") => Some(Self::Keep),
+            Some("isolate") => Some(Self::Isolate),
+            _ => None,
+        }
+    }
+}
+
+/// The server entries a target MCP config already names that are not
+/// gavin's own, in the shape `write_mcp_config` would otherwise merge
+/// past without a word. Empty for an absent file -- there is nothing to
+/// disclose about a file gavin is about to create -- and an unparsable
+/// one errors the same way `write_mcp_config` does, so a scan never
+/// reports "nothing here" about a file it could not actually read.
+fn foreign_mcp_servers(path: &Path, layout: &ResolvedMcp) -> anyhow::Result<Vec<ForeignMcpServer>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    match layout.format {
+        McpFormat::TomlServers => foreign_mcp_servers_toml(path, layout.server_key),
+        McpFormat::JsonServers | McpFormat::JsonServersStdio | McpFormat::JsonLocal => {
+            foreign_mcp_servers_json(path, layout)
+        }
+    }
+}
+
+fn foreign_mcp_servers_json(
+    path: &Path,
+    layout: &ResolvedMcp,
+) -> anyhow::Result<Vec<ForeignMcpServer>> {
+    let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)
+        .map_err(|_| {
+            anyhow::anyhow!("existing {} is not valid JSON — fix or remove it first", path.display())
+        })?;
+    let Some(servers) = doc.get(layout.format.json_container()).and_then(|v| v.as_object()) else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<ForeignMcpServer> = servers
+        .iter()
+        .filter(|(name, _)| name.as_str() != layout.server_key)
+        .map(|(name, entry)| json_foreign_entry(name, entry, layout.format))
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// Reads a JSON array of strings, dropping anything that is not one --
+/// a defensively-read foreign file, not gavin's own, so a malformed
+/// entry degrades to an empty list rather than failing the whole scan.
+fn json_string_array(value: Option<&serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+fn json_foreign_entry(name: &str, entry: &serde_json::Value, format: McpFormat) -> ForeignMcpServer {
+    if format == McpFormat::JsonLocal {
+        // opencode's shape: the executable and its args share one array,
+        // command first -- the same layout `json_entry` writes.
+        let mut parts = json_string_array(entry.get("command")).into_iter();
+        let command = parts.next().unwrap_or_default();
+        return ForeignMcpServer { name: name.to_string(), command, args: parts.collect() };
+    }
+    let command = entry.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    ForeignMcpServer { name: name.to_string(), command, args: json_string_array(entry.get("args")) }
+}
+
+fn foreign_mcp_servers_toml(path: &Path, server_key: &str) -> anyhow::Result<Vec<ForeignMcpServer>> {
+    let doc = std::fs::read_to_string(path)?.parse::<toml_edit::DocumentMut>().map_err(|_| {
+        anyhow::anyhow!("existing {} is not valid TOML — fix or remove it first", path.display())
+    })?;
+    let Some(table) = doc.get("mcp_servers").and_then(|i| i.as_table_like()) else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<ForeignMcpServer> = table
+        .iter()
+        .filter(|(name, _)| *name != server_key)
+        .map(|(name, item)| ForeignMcpServer {
+            name: name.to_string(),
+            command: item.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            args: item
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).map(str::to_string).collect())
+                .unwrap_or_default(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// Why "isolate" refuses today. It would write gavin's entry to a file
+/// that carries only it, leaving the repo's own config untouched -- for
+/// a CLI whose docs name a SECOND file it reads automatically beside
+/// the project one. None of the five stock dialects have one gavin has
+/// verified: each CLI's own "second scope" (a user/global config) lives
+/// under the human's home directory, which gavin's writes never reach
+/// on purpose (`usable_mcp_path`, `validate_agent_file_path`) -- so this
+/// refuses rather than writing to a path nobody confirmed the agent CLI
+/// reads. "keep" stays available regardless.
+fn isolate_refusal(layout: &ResolvedMcp) -> String {
+    format!(
+        "gavin knows no second file this agent reads automatically alongside {} — \"keep\" is the only option until one is verified",
+        layout.config_file
+    )
+}
+
 /// What a setup run wrote, and what it could not. Rendered verbatim by
 /// the wizard's Integration step: a profile with no McpLayout still gets
 /// its instructions block, and the two omissions are named with reasons
@@ -1183,6 +1339,11 @@ fn block_with(block_body: &str, learned: Option<&str>) -> String {
 pub struct IntegrationResult {
     pub written: Vec<String>,
     pub skipped: Vec<(String, String)>,
+    /// The foreign MCP servers a decision is still outstanding for, so
+    /// the caller can show them and re-run with a choice. Absent once
+    /// there is nothing left to ask (AG-07).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_foreign: Option<McpForeignServers>,
 }
 
 #[tauri::command]
@@ -1196,11 +1357,23 @@ pub struct IntegrationResult {
 /// the file its Settings panel says it will write. `None` falls back to
 /// reading the root, which is what an older frontend does and what
 /// `validate_agent_file_path` still contains to the workspace.
+///
+/// `mcp_foreign_choice` is "keep", "isolate", or absent -- the answer to
+/// a foreign-server disclosure a previous call returned, recorded by
+/// the frontend (`mcpServerTrust.ts`) and replayed here so the question
+/// is asked once per distinct set (AG-07). Meaningless, and ignored,
+/// when there is nothing foreign to ask about.
 pub fn setup_agent_integration(
     root_path: String,
     instructions_file: Option<String>,
+    mcp_foreign_choice: Option<String>,
 ) -> Result<IntegrationResult, String> {
-    run_integration(Path::new(&root_path), resolve_mcp_binary_path, instructions_file.as_deref())
+    run_integration(
+        Path::new(&root_path),
+        resolve_mcp_binary_path,
+        instructions_file.as_deref(),
+        McpForeignChoice::from_str(mcp_foreign_choice.as_deref()),
+    )
 }
 
 /// The command's body, with the binary lookup injected. Injected because
@@ -1212,6 +1385,7 @@ fn run_integration(
     root: &Path,
     resolve_binary: impl Fn() -> anyhow::Result<PathBuf>,
     instructions_file: Option<&str>,
+    mcp_choice: Option<McpForeignChoice>,
 ) -> Result<IntegrationResult, String> {
     if !root.is_dir() {
         return Err(format!("root does not exist: {}", root.display()));
@@ -1226,6 +1400,7 @@ fn run_integration(
     let prd = prd_relative_path(root);
     let mut written = Vec::new();
     let mut skipped = Vec::new();
+    let mut mcp_foreign = None;
 
     // Written for EVERY profile -- the change W4 makes. Before this, a
     // profile without an McpLayout errored out and got nothing at all.
@@ -1266,12 +1441,50 @@ fn run_integration(
                         .map(|p| p.to_string_lossy().to_string()),
                 );
             }
-            written.push(
-                write_mcp_config(root, layout, &binary)
-                    .map_err(|e| e.to_string())?
-                    .to_string_lossy()
-                    .to_string(),
-            );
+            let mcp_path = root.join(&layout.config_file);
+            let foreign = foreign_mcp_servers(&mcp_path, layout).map_err(|e| e.to_string())?;
+            if foreign.is_empty() {
+                written.push(
+                    write_mcp_config(root, layout, &binary)
+                        .map_err(|e| e.to_string())?
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            } else {
+                match mcp_choice {
+                    Some(McpForeignChoice::Keep) => {
+                        written.push(
+                            write_mcp_config(root, layout, &binary)
+                                .map_err(|e| e.to_string())?
+                                .to_string_lossy()
+                                .to_string(),
+                        );
+                    }
+                    Some(McpForeignChoice::Isolate) => {
+                        skipped.push(("MCP config".to_string(), isolate_refusal(layout)));
+                    }
+                    None => {
+                        let count = foreign.len();
+                        skipped.push((
+                            "MCP config".to_string(),
+                            format!(
+                                "{} already names {} gavin did not add — choose keep or isolate before it writes here",
+                                layout.config_file,
+                                if count == 1 {
+                                    "a server".to_string()
+                                } else {
+                                    format!("{count} servers")
+                                }
+                            ),
+                        ));
+                        mcp_foreign = Some(McpForeignServers {
+                            file: mcp_path.to_string_lossy().to_string(),
+                            isolate_refusal: Some(isolate_refusal(layout)),
+                            servers: foreign,
+                        });
+                    }
+                }
+            }
         }
         None => {
             skipped.push(no_skill_file());
@@ -1296,7 +1509,7 @@ fn run_integration(
                 .to_string(),
         );
     }
-    Ok(IntegrationResult { written, skipped })
+    Ok(IntegrationResult { written, skipped, mcp_foreign })
 }
 
 // --- What a setup run installed, for the delete wizard to undo ---------
@@ -2048,7 +2261,8 @@ mod tests {
     // The surviving refusal is a root that is not there at all.
     #[test]
     fn setup_refuses_a_root_that_does_not_exist() {
-        let err = setup_agent_integration("/no/such/root".to_string(), None).unwrap_err();
+        let err =
+            setup_agent_integration("/no/such/root".to_string(), None, None).unwrap_err();
         assert!(err.contains("root does not exist"), "got: {err}");
     }
 
@@ -2073,7 +2287,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "codex");
 
-        let result = run_integration(dir.path(), fake_binary(), None).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
 
         // The agent file IS written, which was the whole point of W4.
         assert!(dir.path().join("AGENTS.md").is_file());
@@ -2085,6 +2299,121 @@ mod tests {
         let skipped: Vec<&str> = result.skipped.iter().map(|(what, _)| what.as_str()).collect();
         assert_eq!(skipped, ["skill file"], "MCP config is no longer skipped");
         assert!(result.skipped[0].1.contains("Codex CLI"), "the reason names the profile");
+    }
+
+    /// AG-07, the "no existing file" case: nothing to disclose about a
+    /// file gavin is about to create, so the write proceeds exactly as
+    /// it did before this fix and no decision is asked for.
+    #[test]
+    fn integration_writes_mcp_straight_through_when_there_is_no_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+
+        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+
+        assert!(dir.path().join(".mcp.json").is_file());
+        assert!(result.written.iter().any(|w| w.ends_with(".mcp.json")));
+        assert!(result.mcp_foreign.is_none());
+        let skipped: Vec<&str> = result.skipped.iter().map(|(what, _)| what.as_str()).collect();
+        assert!(!skipped.contains(&"MCP config"));
+    }
+
+    /// AG-07, the "existing with only gavin" case: a re-run over a file
+    /// that already carries nothing but gavin's own (stale) entry has
+    /// nothing to disclose either, so it still needs no decision.
+    #[test]
+    fn integration_writes_mcp_straight_through_when_only_gavin_is_present() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{ "mcpServers": { "gavin": { "command": "/old/gavin-mcp", "args": [] } } }"#,
+        )
+        .unwrap();
+
+        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
+        assert!(result.written.iter().any(|w| w.ends_with(".mcp.json")));
+        assert!(result.mcp_foreign.is_none());
+    }
+
+    /// AG-07, the "existing with a foreign server" case: the write is
+    /// held back and the foreign entry -- name, command, args, verbatim
+    /// -- comes back instead of being silently merged past. Then both
+    /// answers: "keep" merges beside it same as before, and "isolate"
+    /// refuses (no verified second location yet) without touching the
+    /// file or writing anything else in its place.
+    #[test]
+    fn integration_discloses_a_foreign_mcp_server_and_honours_the_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{ "mcpServers": { "evil": { "command": "/bin/sh", "args": ["-c", "curl x"] } } }"#,
+        )
+        .unwrap();
+
+        // No decision yet -> the write is held back and the foreign
+        // entry is reported, verbatim.
+        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+        assert!(!result.written.iter().any(|w| w.ends_with(".mcp.json")));
+        let foreign = result.mcp_foreign.expect("a foreign server was present");
+        assert!(foreign.file.ends_with(".mcp.json"));
+        assert_eq!(
+            foreign.servers,
+            vec![ForeignMcpServer {
+                name: "evil".to_string(),
+                command: "/bin/sh".to_string(),
+                args: vec!["-c".to_string(), "curl x".to_string()],
+            }]
+        );
+        // The refusal reason comes back up front, not only after a
+        // failed "isolate" attempt -- the chooser can show it beside the
+        // button instead of the human learning it by trying.
+        assert!(foreign.isolate_refusal.unwrap().contains("second file"));
+        assert!(result.skipped.iter().any(|(what, why)| what == "MCP config" && why.contains(".mcp.json")));
+        // Untouched while undecided.
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert!(v.pointer("/mcpServers/gavin").is_none());
+
+        // "keep": merges beside it, same as every run before this fix.
+        let result =
+            run_integration(dir.path(), fake_binary(), None, Some(McpForeignChoice::Keep)).unwrap();
+        assert!(result.written.iter().any(|w| w.ends_with(".mcp.json")));
+        assert!(result.mcp_foreign.is_none());
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(v.pointer("/mcpServers/evil/command").unwrap(), "/bin/sh");
+        assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
+
+        // "isolate": refuses (claude-code has no verified second
+        // location), and the file gains nothing new.
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{ "mcpServers": { "evil": { "command": "/bin/sh" } } }"#,
+        )
+        .unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None, Some(McpForeignChoice::Isolate))
+            .unwrap();
+        assert!(!result.written.iter().any(|w| w.ends_with(".mcp.json")));
+        let reason = result
+            .skipped
+            .iter()
+            .find(|(what, _)| what == "MCP config")
+            .map(|(_, why)| why.as_str())
+            .expect("isolate refuses with a reason");
+        assert!(reason.contains("second file"), "{reason}");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert!(v.pointer("/mcpServers/gavin").is_none(), "isolate must not merge");
     }
 
     /// The marker block goes into the file the CALLER named, and a repo's
@@ -2105,7 +2434,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = run_integration(dir.path(), fake_binary(), Some("CLAUDE.md")).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), Some("CLAUDE.md"), None).unwrap();
 
         assert!(dir.path().join("CLAUDE.md").is_file());
         assert!(!dir.path().join("REPO_CHOSE_THIS.md").exists());
@@ -2120,7 +2449,7 @@ mod tests {
             "[agent]\nprofile = \"claude-code\"\nfile = \"REPO_CHOSE_THIS.md\"\n",
         )
         .unwrap();
-        run_integration(other.path(), fake_binary(), None).unwrap();
+        run_integration(other.path(), fake_binary(), None, None).unwrap();
         assert!(other.path().join("REPO_CHOSE_THIS.md").is_file());
     }
 
@@ -2135,7 +2464,7 @@ mod tests {
         let base = "[agent]\nprofile = \"custom\"\nfile = \"RULES.md\"\n";
         std::fs::write(g.join("config.toml"), base).unwrap();
 
-        let result = run_integration(dir.path(), fake_binary(), None).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
 
         assert!(dir.path().join("RULES.md").is_file());
         let skipped: Vec<&str> = result.skipped.iter().map(|(what, _)| what.as_str()).collect();
@@ -2147,7 +2476,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "codex");
 
-        run_integration(dir.path(), fake_binary(), None).unwrap();
+        run_integration(dir.path(), fake_binary(), None, None).unwrap();
 
         let body = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
         assert!(body.contains(MARKER_START) && body.contains(MARKER_END));
@@ -2182,7 +2511,7 @@ mod tests {
                 &format!("mcp_file = \"{config_file}\"\nmcp_format = \"{format}\"\n"),
             );
 
-            let result = run_integration(dir.path(), fake_binary(), None).unwrap();
+            let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
 
             let written = dir.path().join(config_file);
             assert!(written.is_file(), "{format} did not write {config_file}");
@@ -2201,7 +2530,7 @@ mod tests {
             dir.path(),
             "mcp_file = \".myagent/config.toml\"\nmcp_format = \"toml-servers\"\n",
         );
-        run_integration(dir.path(), fake_binary(), None).unwrap();
+        run_integration(dir.path(), fake_binary(), None, None).unwrap();
         let text = std::fs::read_to_string(dir.path().join(".myagent/config.toml")).unwrap();
         let parsed = text.parse::<toml::Table>().unwrap();
         assert_eq!(parsed["mcp_servers"]["gavin"]["command"].as_str().unwrap(), "/apps/gavin-mcp");
@@ -2216,7 +2545,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             custom_rooted(dir.path(), extra);
-            run_integration(dir.path(), fake_binary(), None).unwrap();
+            run_integration(dir.path(), fake_binary(), None, None).unwrap();
             let written = std::fs::read_to_string(dir.path().join("agent.json")).unwrap();
             let v: serde_json::Value = serde_json::from_str(&written).unwrap();
             assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
@@ -2235,7 +2564,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         custom_rooted(dir.path(), "mcp_file = \"../escaped.json\"\n");
-        let result = run_integration(dir.path(), fake_binary(), None).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
         let skipped: Vec<&str> = result.skipped.iter().map(|(w, _)| w.as_str()).collect();
         assert_eq!(skipped, ["skill file", "MCP config"]);
         assert!(!dir.path().parent().unwrap().join("escaped.json").exists());
@@ -2258,7 +2587,7 @@ mod tests {
             )
             .unwrap();
 
-            let err = run_integration(dir.path(), fake_binary(), None).unwrap_err();
+            let err = run_integration(dir.path(), fake_binary(), None, None).unwrap_err();
 
             assert!(err.contains(escape), "error should name the value {escape}: {err}");
             assert!(
@@ -2449,7 +2778,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "opencode");
 
-        let result = run_integration(dir.path(), fake_binary(), None).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -2485,7 +2814,7 @@ mod tests {
     fn the_opencode_agent_file_carries_the_git_only_grant() {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "opencode");
-        run_integration(dir.path(), fake_binary(), None).unwrap();
+        run_integration(dir.path(), fake_binary(), None, None).unwrap();
 
         let body =
             std::fs::read_to_string(dir.path().join(".opencode/agent/gavin-commit.md")).unwrap();
@@ -2679,6 +3008,53 @@ mod tests {
         std::fs::write(&p, "[[[not toml").unwrap();
         assert!(write_mcp_config(dir.path(), &layout("codex"), binary).is_err());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "[[[not toml");
+    }
+
+    /// `foreign_mcp_servers` reads every dialect's own shape: opencode's
+    /// command array splits into command + args, and codex's TOML table
+    /// reads the same fields the writer would replace.
+    #[test]
+    fn foreign_mcp_servers_reads_every_dialect() {
+        let dir = tempfile::tempdir().unwrap();
+
+        std::fs::write(
+            dir.path().join("opencode.json"),
+            r#"{ "mcp": { "gavin": { "type": "local", "command": ["/apps/gavin-mcp"] },
+                          "other": { "type": "local", "command": ["/bin/other", "--flag"] } } }"#,
+        )
+        .unwrap();
+        let found = foreign_mcp_servers(&dir.path().join("opencode.json"), &layout("opencode")).unwrap();
+        assert_eq!(
+            found,
+            vec![ForeignMcpServer {
+                name: "other".to_string(),
+                command: "/bin/other".to_string(),
+                args: vec!["--flag".to_string()],
+            }]
+        );
+
+        let codex_path = dir.path().join(".codex/config.toml");
+        std::fs::create_dir_all(codex_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &codex_path,
+            "[mcp_servers.gavin]\ncommand = \"/apps/gavin-mcp\"\nargs = []\n\n\
+             [mcp_servers.linty]\ncommand = \"/bin/linty\"\nargs = [\"--fix\"]\n",
+        )
+        .unwrap();
+        let found = foreign_mcp_servers(&codex_path, &layout("codex")).unwrap();
+        assert_eq!(
+            found,
+            vec![ForeignMcpServer {
+                name: "linty".to_string(),
+                command: "/bin/linty".to_string(),
+                args: vec!["--fix".to_string()],
+            }]
+        );
+
+        // Unparsable -> an error, the same as the writer gives, never a
+        // silent "nothing foreign here".
+        std::fs::write(&codex_path, "[[[not toml").unwrap();
+        assert!(foreign_mcp_servers(&codex_path, &layout("codex")).is_err());
     }
 
     #[test]

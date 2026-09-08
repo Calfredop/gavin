@@ -62,6 +62,7 @@ import {
   trustedAgentConfig,
   type ExecutionKeys,
 } from "./workspaceTrust";
+import type { McpForeignChoice } from "./mcpServerTrust";
 import {
   activeWorkspaceForWindow,
   isInAnotherWindow,
@@ -1829,6 +1830,22 @@ async function stampConfigTrust(workspaceId: string, hash: string | undefined): 
   if (!current || current.trustedConfigHash === hash) return;
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, trustedConfigHash: hash } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// Records the human's answer to a distinct set of foreign MCP servers
+/// (AG-07, `mcpServerTrust.ts`), so `setupAgentIntegration` can be
+/// re-run with it and the question is asked once per set rather than on
+/// every "Set up / update" click. Same shape as `stampConfigTrust` one
+/// function up, for the sibling gate.
+export async function recordMcpForeignChoice(workspaceId: string, choice: McpForeignChoice): Promise<void> {
+  const state = get(layoutState);
+  const current = state.workspaces.find((w) => w.id === workspaceId);
+  if (!current) return;
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, mcpForeignServersChoice: choice } : w
   );
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
