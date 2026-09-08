@@ -1,6 +1,8 @@
 import {
+  effectiveStatus,
   finishedRails,
   isToolStep,
+  planIndex,
   railCardPaths,
   railDoneStepIds,
   railStateOf,
@@ -9,6 +11,7 @@ import {
   stepStateOf,
 } from "./orchestration";
 import type { CardEntry, Orchestration, Rail, Stage } from "./orchestration";
+import { slugStatus } from "./planBoard";
 import { estimateLines, type LaunchEstimate } from "./launchEstimate";
 
 /// What a destructive rail action asks before it runs: the prompt's
@@ -180,6 +183,76 @@ export function clearFinishedRailsConfirm(
     title: `Remove ${count(finished.length, "finished rail")}?`,
     lines,
     confirmLabel: `Remove ${count(finished.length, "rail")}`,
+  };
+}
+
+/// The archiving sibling of `clearFinishedRailsConfirm`: the same rails
+/// go, but the cards among them that the board already calls Done move
+/// to `plans/archive/` too, instead of merely "staying". Narrowed to
+/// Done, not every card a finished rail happened to carry -- a skip
+/// finishes a rail without finishing its card (see `finishedRails`), and
+/// archiving a card still sitting in some other column is not what
+/// "archive done" promises.
+export function clearAndArchiveFinishedRailsConfirm(
+  orch: Orchestration,
+  cards: Map<string, CardEntry>,
+  doneColumnName: string | null
+): RailConfirm {
+  const finished = finishedRails(orch);
+  const finishedIds = new Set(finished.map((r) => r.id));
+  const cardPaths = new Set(
+    finished.flatMap((r) => railCardPaths(r)).filter((path) => cards.has(path))
+  );
+  const target = doneColumnName ? slugStatus(doneColumnName) : null;
+  const plans = planIndex(cards);
+  const archived = [...cardPaths].filter((path) => {
+    const entry = cards.get(path);
+    const status = entry ? effectiveStatus(entry, plans) : null;
+    return target !== null && status !== null && slugStatus(status) === target;
+  });
+  const staying = cardPaths.size - archived.length;
+  const skipped = finished
+    .flatMap((r) => r.stages.flatMap((s) => s.steps))
+    .filter((step) => stepStateOf(orch, step.id) === "skipped").length;
+  const worktrees = finished.filter((r) => r.worktreePath);
+  const held = orch.rails.filter(
+    (r) =>
+      !finishedIds.has(r.id) &&
+      railStateOf(orch, r.id) !== "idle" &&
+      r.stages.some((s) => s.steps.length > 0) &&
+      firstUnfinishedStageId(r, orch) === null
+  ).length;
+
+  const lines = [`Removes: ${finished.map((r) => r.name).join(", ")}.`];
+  if (archived.length > 0)
+    lines.push(`${count(archived.length, "card")} ${archived.length === 1 ? "is" : "are"} archived — filed away, not deleted.`);
+  if (staying > 0)
+    lines.push(
+      `${count(staying, "card")} ${staying === 1 ? "stays" : "stay"} — not in the Done column, so only the step goes.`
+    );
+  if (skipped > 0)
+    lines.push(
+      `${count(skipped, "step")} ${skipped === 1 ? "was" : "were"} skipped rather than done — nothing is left to run either way.`
+    );
+  if (worktrees.length === 1)
+    lines.push(
+      `The worktree ${worktrees[0].worktreePath} is left as it is — only the rail's binding to it goes.`
+    );
+  else if (worktrees.length > 1)
+    lines.push(
+      `${count(worktrees.length, "worktree")} are left as they are — only the rails' bindings to them go.`
+    );
+  if (held > 0)
+    lines.push(
+      `${count(held, "rail")} with nothing left to do ${held === 1 ? "is" : "are"} running or paused, so ${held === 1 ? "it stays" : "they stay"}.`
+    );
+  return {
+    title: `Remove and archive ${count(finished.length, "finished rail")}?`,
+    lines,
+    confirmLabel:
+      archived.length > 0
+        ? `Remove and archive ${count(archived.length, "card")}`
+        : `Remove ${count(finished.length, "rail")}`,
   };
 }
 

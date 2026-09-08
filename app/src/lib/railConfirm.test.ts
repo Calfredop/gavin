@@ -3,6 +3,7 @@ import {
   railDeleteConfirm,
   railClearDoneConfirm,
   clearFinishedRailsConfirm,
+  clearAndArchiveFinishedRailsConfirm,
   groupRemoveConfirm,
   runAllConfirm,
 } from "./railConfirm";
@@ -423,5 +424,74 @@ describe("clearFinishedRailsConfirm", () => {
     const c = clearFinishedRailsConfirm(o, cards);
     expect(c.lines[0]).toBe("Removes: docs.");
     expect(c.lines.some((l) => l.includes("running or paused"))).toBe(false);
+  });
+});
+
+describe("clearAndArchiveFinishedRailsConfirm", () => {
+  function named(id: string, name: string, position: number, steps = 1): Rail {
+    const stages = [
+      Array.from({ length: steps }, (_, i): [string, string] => [
+        `${id}-t${i}`,
+        `/ws/.gavin-root/plans/${id}-${i}.md`,
+      ]),
+    ];
+    return { ...rail(id, stages), name, position };
+  }
+
+  function orchOfMany(rails: Rail[], over: Partial<Orchestration> = {}): Orchestration {
+    return { rails, conflictNotes: [], railRuns: [], stepRuns: [], ...over };
+  }
+
+  const done = (stepId: string): Orchestration["stepRuns"][number] => ({
+    stepId,
+    state: "done",
+    sessionId: null,
+    reason: null,
+  });
+
+  // Same three cards clearFinishedRailsConfirm's suite uses, but with a
+  // real board status: only the ones filed "Done" are eligible to be
+  // archived -- the whole point of this function over its sibling.
+  const cards = cardIndexOf([
+    plan("r1-0.md", { status: "Done" }),
+    plan("r2-0.md", { status: "Done" }),
+    plan("r2-1.md", { status: "In Progress" }),
+  ]);
+
+  it("promises the Done cards get archived, not merely kept", () => {
+    const o = orchOfMany([named("r1", "docs", 0), named("r2", "daemon", 1, 2)], {
+      stepRuns: [done("r1-t0"), done("r2-t0"), done("r2-t1")],
+    });
+    const c = clearAndArchiveFinishedRailsConfirm(o, cards, "Done");
+    expect(c.title).toBe("Remove and archive 2 finished rails?");
+    expect(c.lines).toContain("2 cards are archived — filed away, not deleted.");
+    expect(c.lines).toContain("1 card stays — not in the Done column, so only the step goes.");
+    expect(c.confirmLabel).toBe("Remove and archive 2 cards");
+  });
+
+  it("archives nothing when the workspace has no Done column", () => {
+    const o = orchOfMany([named("r1", "docs", 0)], { stepRuns: [done("r1-t0")] });
+    const c = clearAndArchiveFinishedRailsConfirm(o, cards, null);
+    expect(c.lines.some((l) => l.includes("archived"))).toBe(false);
+    expect(c.confirmLabel).toBe("Remove 1 rail");
+  });
+
+  it("still says out loud when a step was skipped rather than done", () => {
+    const o = orchOfMany([named("r1", "docs", 0)], {
+      stepRuns: [{ stepId: "r1-t0", state: "skipped", sessionId: null, reason: null }],
+    });
+    expect(clearAndArchiveFinishedRailsConfirm(o, cards, "Done").lines).toContain(
+      "1 step was skipped rather than done — nothing is left to run either way."
+    );
+  });
+
+  it("still leaves a held rail's worktree and run state out of the promise", () => {
+    const o = orchOfMany([named("r1", "docs", 0), named("r2", "daemon", 1)], {
+      railRuns: [{ railId: "r2", state: "paused", currentStageId: "r2-s0" }],
+      stepRuns: [done("r1-t0"), done("r2-t0")],
+    });
+    const c = clearAndArchiveFinishedRailsConfirm(o, cards, "Done");
+    expect(c.lines[0]).toBe("Removes: docs.");
+    expect(c.lines).toContain("1 rail with nothing left to do is running or paused, so it stays.");
   });
 });
