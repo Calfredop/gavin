@@ -1,0 +1,219 @@
+# The repo's CI, and the thing that keeps the ports green. Every developer
+# here is on a mac, so macOS is the platform that gets exercised by hand a
+# hundred times a day and the other two are the ones that would silently
+# rot between releases.
+#
+# The two jobs are deliberately at different stages. Linux is DONE: its
+# suites are green and every step is a gate. Windows is a port in flight,
+# so only the thing that has been made to work is a gate -- that the three
+# Rust crates COMPILE for the target -- and everything past it reports
+# without failing the build, until the verification pass on a real Windows
+# machine turns each one into a gate.
+#
+# Every third-party action below is pinned to a full commit SHA (tag noted
+# in a trailing comment) rather than a mutable tag -- a tag can be moved by
+# whoever holds it, a SHA cannot. Bump the SHA (and the comment) by hand
+# when a new release is wanted; that is a deliberate, reviewable diff
+# instead of an invisible one. `permissions: contents: read` at the top
+# level is the least this workflow needs: it only reads the repo, never
+# writes back to it, uploads nothing, and touches no secret.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run's answer stale.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux (Rust + app)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # `app/src-tauri` is a workspace member, so `cargo test --workspace`
+      # links against the whole WebKitGTK stack even though nothing here
+      # opens a window. This is the Tauri v2 Ubuntu list.
+      - name: Install the GTK/WebKit stack tauri links against
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: npm ci
+        working-directory: app
+        run: npm ci
+
+      # `--locked` everywhere below: CI resolves exactly the Cargo.lock /
+      # package-lock.json committed to the branch, never a fresher
+      # dependency picked up because the lockfile happened to be stale.
+      - name: cargo build --workspace --locked
+        run: cargo build --workspace --locked
+
+      # The daemon's fs-watcher module first and by itself, retried a
+      # couple of times before it's allowed to fail the build. It is flaky
+      # under full-suite cargo parallelism -- watcher timing, not the code
+      # (CLAUDE.md says to re-run it alone before calling a failure a
+      # regression). Running it alone up front and excluding it from the
+      # sweep removes the CAUSE rather than retrying after the symptom, but
+      # the isolated run itself can still lose the odd race, so it gets the
+      # retry CLAUDE.md asks for on top of the isolation.
+      - name: cargo test — the fs-watcher module, alone (retried)
+        run: |
+          for attempt in 1 2 3; do
+            if cargo test -p gavin-daemon gavin:: --locked -- --test-threads=1; then
+              exit 0
+            fi
+            echo "fs-watcher module attempt $attempt failed" >&2
+          done
+          echo "fs-watcher module still red after 3 attempts" >&2
+          exit 1
+
+      - name: cargo test --workspace --locked
+        # Quoted: a plain YAML scalar can't end in a bare colon, and
+        # "--skip gavin::" does. Unquoted, this line fails to parse.
+        run: "cargo test --workspace --locked -- --skip gavin::"
+
+      - name: npm test
+        working-directory: app
+        run: npm test
+
+      - name: npm run check
+        working-directory: app
+        run: npm run check
+
+      - name: npm run build
+        working-directory: app
+        run: npm run build
+
+  windows:
+    name: Windows (compiles)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: npm ci
+        working-directory: app
+        run: npm ci
+
+      # THE GATE. `std::os::unix` does not exist on this target, so before
+      # the windows-port card these three crates did not fail to run on
+      # Windows -- they failed to parse. Keeping that answer honest is what
+      # this job is for, and it is the one step here allowed to be red.
+      #
+      # These three and not `--workspace`: app/src-tauri drags in the whole
+      # WebView2 and tauri-build chain, which is a different question with a
+      # different failure mode. It is checked below, where a failure reports
+      # instead of blocking.
+      - name: cargo check — the daemon, the MCP server and the protocol
+        run: cargo check -p protocol -p gavin-daemon -p gavin-mcp --locked
+
+      # Everything below reports. A red step here is a piece of the port
+      # that is not finished; promote it to a gate when it goes green.
+      - name: cargo check --workspace --tests
+        continue-on-error: true
+        run: cargo check --workspace --tests --locked
+
+      # Same carve-out as the Linux job: the fs-watcher module is flaky
+      # under full-suite parallelism (watcher timing, not the code), so it
+      # runs alone and is skipped in the sweep. This job already reports
+      # instead of gating, so it doesn't need the Linux job's retry loop.
+      - name: cargo test — the fs-watcher module, alone
+        continue-on-error: true
+        # Quoted: "gavin:: --locked" contains a colon-space, which a plain
+        # YAML scalar can't carry without being mistaken for a mapping key.
+        run: "cargo test -p gavin-daemon gavin:: --locked -- --test-threads=1"
+
+      - name: cargo test --workspace --locked
+        continue-on-error: true
+        # Quoted for the same reason as the Linux job's equivalent step: a
+        # plain scalar can't end in a bare colon, and this one does.
+        run: "cargo test --workspace --locked -- --skip gavin::"
+
+      - name: npm test
+        continue-on-error: true
+        working-directory: app
+        run: npm test
+
+      - name: npm run check
+        continue-on-error: true
+        working-directory: app
+        run: npm run check
+
+      - name: npm run build
+        continue-on-error: true
+        working-directory: app
+        run: npm run build
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      # cargo-audit's default exit code is non-zero only for advisories
+      # without an informational tag -- an actual vulnerability. Advisories
+      # tagged "unmaintained" (and other informational tags) print as
+      # warnings and don't fail the step. That split is the behaviour the
+      # card asks for; it comes free of any --deny flag, and adding one
+      # would turn "unmaintained" into a build-breaker instead of a warning.
+      - name: cargo audit
+        run: cargo audit
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: npm ci
+        working-directory: app
+        run: npm ci
+
+      # npm has no "unmaintained" class to downgrade to a warning the way
+      # cargo-audit does -- every reported advisory is a vulnerability, and
+      # npm audit's default exit code already fails on any of them.
+      - name: npm audit (production dependencies)
+        working-directory: app
+        run: npm audit --omit=dev
