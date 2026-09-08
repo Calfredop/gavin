@@ -74,6 +74,19 @@ describe("buildExplorerTree", () => {
     expect(node.groups[1].files[0].label).toBe("guides/setup.md");
   });
 
+  it("carries a card's kind for the kind facet, and null for docs and specs", () => {
+    const t = tree([
+      ctx("/ws", "root", {
+        kind: "root",
+        plans: [plan("reminder.md", { kind: "note" })],
+        docs: [{ path: "/ws/.gavin-root/docs/readme.md", relPath: "readme.md" }],
+      }),
+    ]);
+    const [node] = buildExplorerTree(t);
+    expect(node.groups[0].files[0].kind).toBe("note");
+    expect(node.groups[1].files[0].kind).toBeNull();
+  });
+
   it("collects done/ plans under one archived node and leaves flat plans in place", () => {
     const t = tree([
       ctx("/ws", "root", {

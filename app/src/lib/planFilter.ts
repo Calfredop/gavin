@@ -1,11 +1,16 @@
 // The Plans tab's filter: free text over every file in the navigator,
-// plus two facets that only plans can answer -- the card's STATUS and
-// the orchestration RAIL it sits on.
+// plus four facets. STATUS is exclusive to this tab; CONTEXT, KIND and
+// RAIL are the trio the Kanban and Review tabs answer the same way
+// (boardFilters.ts's BoardFacets, shared across tabs by hubFacets.ts) --
+// two surfaces asking "which rail?" must not answer it two ways, and
+// nor should a third.
 //
-// The two facets are ANDed with the text, and they are exclusive to
+// STATUS, KIND and RAIL are ANDed with the text, and are exclusive to
 // CARDS -- plans and the archive alike: docs and specs have no
-// frontmatter contract, so setting either facet takes those groups out
-// of the tree rather than showing them as unexplained empties.
+// frontmatter contract, so setting any of them takes those groups out of
+// the tree rather than showing them as unexplained empties. CONTEXT is
+// different: it narrows which CONTEXT NODES appear at all, docs and
+// specs included, since it answers "where" rather than "what".
 
 import { matchesFields, queryTokens } from "./search";
 import { slugStatus } from "./planBoard";
@@ -23,6 +28,16 @@ export interface RailIndex {
   /// one rail (addStep removes it from any other), so this is 1:1.
   byCard: Map<string, string>;
   rails: { id: string; name: string }[];
+}
+
+/// Path-segment aware containment: "/a/auth2" is not under "/a/auth".
+/// Shared by the context facet here and in boardFilters.ts -- a card's
+/// context and a tree node's folder path are the same kind of string, so
+/// one test serves both.
+export function underContext(folder: string, contextFolder: string): boolean {
+  if (folder === contextFolder) return true;
+  const base = contextFolder.endsWith("/") ? contextFolder : `${contextFolder}/`;
+  return folder.startsWith(base);
 }
 
 export function railIndex(orch: Orchestration | null): RailIndex {
@@ -64,6 +79,11 @@ export interface PlanFilterState {
   status: string;
   /// A rail id, NO_RAIL, or ANY.
   rail: string;
+  /// A context's folder path, or ANY for every context -- same meaning
+  /// as BoardFacets.context.
+  context: string;
+  /// A card kind ("plan" | "task" | "note"), or ANY.
+  kind: string;
 }
 
 export interface FilteredExplorer {
@@ -84,12 +104,14 @@ function fileKeeper(state: PlanFilterState, rails: RailIndex): (file: ExplorerFi
   const tokens = queryTokens(state.query);
   const wantStatus = state.status === ANY ? null : slugStatus(state.status);
   const wantRail = state.rail === ANY ? null : state.rail;
+  const wantKind = state.kind === ANY ? null : state.kind;
 
   return (file) => {
     if (!matchesFields(tokens, [file.label, file.path, file.status])) return false;
-    // Archived cards answer both facets: they are ordinary plan files
-    // that happen to be filed away, and they keep the status they were
-    // archived with. Only docs and specs are taken out of the tree.
+    // Archived cards answer every card-only facet: they are ordinary
+    // plan files that happen to be filed away, and they keep the status
+    // they were archived with. Only docs and specs are taken out of the
+    // tree.
     if (wantStatus !== null) {
       if (!isCardGroup(file.group)) return false;
       if (slugStatus(file.status ?? "") !== wantStatus) return false;
@@ -98,6 +120,10 @@ function fileKeeper(state: PlanFilterState, rails: RailIndex): (file: ExplorerFi
       if (!isCardGroup(file.group)) return false;
       const on = rails.byCard.get(file.path);
       if (wantRail === NO_RAIL ? on !== undefined : on !== wantRail) return false;
+    }
+    if (wantKind !== null) {
+      if (!isCardGroup(file.group)) return false;
+      if ((file.kind ?? null) !== wantKind) return false;
     }
     return true;
   };
@@ -109,13 +135,23 @@ export function filterExplorer(
   rails: RailIndex
 ): FilteredExplorer {
   const total = countFiles(contexts);
-  const filtering = queryTokens(state.query).length > 0 || state.status !== ANY || state.rail !== ANY;
+  const filtering =
+    queryTokens(state.query).length > 0 ||
+    state.status !== ANY ||
+    state.rail !== ANY ||
+    state.context !== ANY ||
+    state.kind !== ANY;
   if (!filtering) return { contexts, filtering: false, shown: total, total };
 
   const keep = fileKeeper(state, rails);
   const out: ExplorerContextNode[] = [];
   let shown = 0;
   for (const ctx of contexts) {
+    // Answers "where", not "what": a context outside the chosen folder
+    // drops whole, docs and specs included -- unlike the card-only
+    // facets below, which narrow a context's contents rather than the
+    // set of contexts.
+    if (state.context !== ANY && !underContext(ctx.folderPath, state.context)) continue;
     const groups: ExplorerGroupNode[] = [];
     for (const group of ctx.groups) {
       // Archived cards are searched too, and a hit is promoted into the

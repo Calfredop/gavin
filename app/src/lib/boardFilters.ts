@@ -14,13 +14,13 @@
 // card-path -> rail index behind the rail facet. Two surfaces asking the
 // same question must not answer it two ways.
 
-import { ANY, NO_RAIL, type RailIndex } from "./planFilter";
+import { ANY, NO_RAIL, underContext, type RailIndex } from "./planFilter";
 import type { GavinTree } from "./gavin";
 import type { CardView } from "./planBoard";
 import { AUTO_KEY_PREFIX } from "./boardSearch";
 import type { MergedBoard } from "./boardSearch";
 
-export { ANY, NO_RAIL };
+export { ANY, NO_RAIL, underContext };
 
 export interface BoardFacets {
   /// A context's folder path, or ANY for every context. The ROOT
@@ -48,16 +48,6 @@ export const KIND_FACETS: { value: CardView["kind"]; label: string }[] = [
   { value: "task", label: "Tasks" },
   { value: "note", label: "Notes" },
 ];
-
-/// Path-segment aware containment: "/a/auth2" is not under "/a/auth".
-/// The same test `nearestContext` applies, spelled out here because a
-/// context folder is compared against a CARD's context folder rather
-/// than against a cwd.
-export function underContext(cardFolder: string, contextFolder: string): boolean {
-  if (cardFolder === contextFolder) return true;
-  const base = contextFolder.endsWith("/") ? contextFolder : `${contextFolder}/`;
-  return cardFolder.startsWith(base);
-}
 
 export interface ContextFacet {
   /// What the <option> carries: ANY for the root, the folder path

@@ -47,17 +47,14 @@
   import { railIndex } from "./planFilter";
   import { dropAgainstWholeBoard } from "./pageBoard";
   import {
-    ANY,
-    KIND_FACETS,
-    NO_FACETS,
-    NO_RAIL,
     contextFacets,
     facetsActive,
     filterBoardByFacets,
     filterCards,
     pruneFacets,
-    type BoardFacets,
   } from "./boardFilters";
+  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "./hubFacets";
+  import FacetFilters from "./FacetFilters.svelte";
   import { flip } from "svelte/animate";
   import { tooltip } from "./tooltip";
   import type { DropTarget } from "./pointerDrag";
@@ -109,7 +106,15 @@
   // detail modal and the drop path all commit against the whole board --
   // and the lenses compose facets first, then search, so a column's
   // "hidden" count keeps meaning "hidden by your query".
-  let facets = $state<BoardFacets>({ ...NO_FACETS });
+  //
+  // The facets themselves live in hubFacets.ts, not component `$state`:
+  // Kanban, Review and Plans share one answer by default (a module-level
+  // store survives this tab being torn down and rebuilt, which its own
+  // `$state` would not), and this tab's Link button decides whether it is
+  // reading the shared one or its own.
+  const hub = $derived($hubFacetState[workspaceId]);
+  const facets = $derived(facetsFor(hub, "kanban"));
+  const facetsLinked = $derived(isTabLinked(hub, "kanban"));
   const orch = $derived($orchestrations[workspaceId]);
   const rails = $derived(railIndex(orch ?? null));
   const contexts = $derived(contextFacets(tree));
@@ -127,7 +132,7 @@
       tree && !tree.rootMissing ? contexts : null,
       orch === undefined ? null : rails
     );
-    if (next.context !== facets.context || next.rail !== facets.rail) facets = next;
+    if (next.context !== facets.context || next.rail !== facets.rail) setTabFacets(workspaceId, "kanban", next);
   });
 
   // The search lens, over what the facets left standing.
@@ -189,7 +194,7 @@
     // will not match (its context, its kind, and a card is born on no
     // rail at all). Every lens comes off with the composer.
     closeArchive();
-    facets = { ...NO_FACETS };
+    resetTabFacets(workspaceId, "kanban");
     composeStatus = defaultComposeStatus(board.columns.map((c) => c.name), preferred);
     if (composeStatus === null) planWriteError = "Add a column first — a card needs a status to live in";
   }
@@ -496,37 +501,20 @@
       hint={showingArchive ? null : "filtered: clear to drag cards"}
     />
     <!-- The three facets, in the order a human narrows: WHERE the card
-         lives, WHAT it is, WHICH rail runs it. Every one is always
-         rendered, the way the Plans tab renders its own two -- a control
-         that comes and goes with the workspace's shape is a control the
-         human has to go looking for. -->
+         lives, WHAT it is, WHICH rail runs it -- shared with Review and
+         Plans (hubFacets.ts) unless the Link button says otherwise.
+         Every one is always rendered, the way the Plans tab renders its
+         own two -- a control that comes and goes with the workspace's
+         shape is a control the human has to go looking for. -->
     <div class="facets">
-      <select
-        bind:value={facets.context}
-        aria-label="Filter by context"
-        use:tooltip={"Show only the cards in one context and its subfolders — the root is every card"}
-      >
-        {#each contexts as ctx (ctx.value)}
-          <option value={ctx.value} title={ctx.folderPath}>{ctx.label}</option>
-        {/each}
-      </select>
-      <select bind:value={facets.kind} aria-label="Filter by kind" use:tooltip={"Show only one kind of card"}>
-        <option value={ANY}>Any kind</option>
-        {#each KIND_FACETS as facet (facet.value)}
-          <option value={facet.value}>{facet.label}</option>
-        {/each}
-      </select>
-      <select
-        bind:value={facets.rail}
-        aria-label="Filter by rail"
-        use:tooltip={"Show only the cards one orchestration rail carries"}
-      >
-        <option value={ANY}>Any rail</option>
-        <option value={NO_RAIL}>On no rail</option>
-        {#each rails.rails as rail (rail.id)}
-          <option value={rail.id}>{rail.name}</option>
-        {/each}
-      </select>
+      <FacetFilters
+        {facets}
+        {contexts}
+        {rails}
+        linked={facetsLinked}
+        onChange={(next) => setTabFacets(workspaceId, "kanban", next)}
+        onToggleLink={() => setTabLinked(workspaceId, "kanban", !facetsLinked)}
+      />
       {#if filtering}
         <!-- Says how much the facets took off the BOARD, so a board that
              went short has a stated reason. Not shown over the archive,
@@ -542,7 +530,7 @@
           class="reset"
           use:tooltip={"Clear the search and every filter"}
           onclick={() => {
-            facets = { ...NO_FACETS };
+            resetTabFacets(workspaceId, "kanban");
             search = "";
           }}>Reset</button
         >
@@ -727,17 +715,8 @@
     gap: 4px;
     min-width: 0;
   }
-  .facets select {
-    flex: 0 1 auto;
-    min-width: 0;
-    max-width: 160px;
-    background: var(--surface-raised);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text);
-    font-family: monospace;
-    font-size: 0.72rem;
-    padding: 2px 4px;
+  .facets :global(.facet-link) {
+    flex: 0 0 auto;
   }
   .facet-count {
     flex: 0 0 auto;

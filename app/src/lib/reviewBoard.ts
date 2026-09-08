@@ -23,6 +23,8 @@ import { doneColumnOf } from "./orchestration";
 import { slugStatus, type CardView, type MergedProjection } from "./planBoard";
 import { cardMatches } from "./boardSearch";
 import { queryTokens } from "./search";
+import { cardPasses, type BoardFacets } from "./boardFilters";
+import type { RailIndex } from "./planFilter";
 
 /// One card up for review, with what its run touched.
 ///
@@ -190,13 +192,20 @@ export interface ReviewCardOptions {
   /// of work taken off it would bury the work that is actually waiting.
   includeArchived: boolean;
   query: string;
+  /// The context/kind/rail trio Kanban and Plans answer the same way
+  /// (boardFilters.ts, shared across tabs by hubFacets.ts).
+  facets: BoardFacets;
+  rails: RailIndex;
 }
 
 /// The cards the tab lists, in board order, before grouping.
 ///
 /// Notes are left out. The card asked for "tasks and plan", and a note
 /// is right: it is a reminder, not work -- it has no run, no diff and no
-/// session, so every column of this tab would be empty for it.
+/// session, so every column of this tab would be empty for it. A kind
+/// facet set to "note" is therefore an honest empty list here, not a
+/// bug: the same three dropdowns answer a question this tab can only
+/// ever answer "none" to.
 ///
 /// An archived card is matched by its own `status:` rather than by a
 /// column, because it has none -- `mergePlanCards` pulls it out before
@@ -220,7 +229,7 @@ export function reviewCards(
       if (card.status !== null && slugs.has(slugStatus(card.status))) cards.push(card);
     }
   }
-  const reviewable = cards.filter((c) => c.kind !== "note");
+  const reviewable = cards.filter((c) => c.kind !== "note" && cardPasses(c, options.facets, options.rails));
   const tokens = queryTokens(options.query);
   if (tokens.length === 0) return reviewable;
   return reviewable.filter((card) => cardMatches(card, tokens));

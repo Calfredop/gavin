@@ -25,6 +25,11 @@ import {
 } from "./reviewBoard";
 import type { CardView, MergedProjection } from "./planBoard";
 import type { Column } from "./kanban";
+import { ANY, NO_FACETS, type BoardFacets } from "./boardFilters";
+import { railIndex } from "./planFilter";
+import type { Orchestration, Rail } from "./orchestration";
+
+const NO_RAILS = railIndex(null);
 
 function card(title: string, over: Partial<CardView> = {}): CardView {
   const fileName = `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.md`;
@@ -112,6 +117,15 @@ describe("resolveReviewColumns", () => {
   });
 });
 
+function opts(over: {
+  includeArchived: boolean;
+  query: string;
+  facets?: BoardFacets;
+  rails?: ReturnType<typeof railIndex>;
+}) {
+  return { facets: NO_FACETS, rails: NO_RAILS, ...over };
+}
+
 describe("reviewCards", () => {
   const done = COLUMNS[2];
 
@@ -122,7 +136,7 @@ describe("reviewCards", () => {
         { column: done, planCards: [card("First"), card("Second")] },
       ],
     });
-    const got = reviewCards(projection, [done], { includeArchived: false, query: "" });
+    const got = reviewCards(projection, [done], opts({ includeArchived: false, query: "" }));
     expect(got.map((c) => c.title)).toEqual(["First", "Second"]);
   });
 
@@ -130,7 +144,7 @@ describe("reviewCards", () => {
     const projection = merged({
       columns: [{ column: done, planCards: [card("A plan"), card("A note", { kind: "note" })] }],
     });
-    const got = reviewCards(projection, [done], { includeArchived: false, query: "" });
+    const got = reviewCards(projection, [done], opts({ includeArchived: false, query: "" }));
     expect(got.map((c) => c.title)).toEqual(["A plan"]);
   });
 
@@ -139,7 +153,7 @@ describe("reviewCards", () => {
       columns: [{ column: done, planCards: [card("On the board")] }],
       archived: [card("Archived")],
     });
-    const got = reviewCards(projection, [done], { includeArchived: false, query: "" });
+    const got = reviewCards(projection, [done], opts({ includeArchived: false, query: "" }));
     expect(got.map((c) => c.title)).toEqual(["On the board"]);
   });
 
@@ -148,7 +162,7 @@ describe("reviewCards", () => {
       columns: [{ column: done, planCards: [card("On the board")] }],
       archived: [card("Archived done"), card("Archived early", { status: "To Do" })],
     });
-    const got = reviewCards(projection, [done], { includeArchived: true, query: "" });
+    const got = reviewCards(projection, [done], opts({ includeArchived: true, query: "" }));
     expect(got.map((c) => c.title)).toEqual(["On the board", "Archived done"]);
   });
 
@@ -156,8 +170,83 @@ describe("reviewCards", () => {
     const projection = merged({
       columns: [{ column: done, planCards: [card("Rail branch seed"), card("Terminal font size")] }],
     });
-    const got = reviewCards(projection, [done], { includeArchived: false, query: "rail" });
+    const got = reviewCards(projection, [done], opts({ includeArchived: false, query: "rail" }));
     expect(got.map((c) => c.title)).toEqual(["Rail branch seed"]);
+  });
+
+  // The trio Kanban and Plans answer the same way (boardFilters.ts,
+  // shared across tabs by hubFacets.ts) has to narrow this list too, or
+  // linking the Review tab to the other two would do nothing.
+  describe("the shared context/kind/rail facets", () => {
+    it("narrows by context, the same way the board does", () => {
+      const projection = merged({
+        columns: [
+          {
+            column: done,
+            planCards: [card("Auth work", { contextFolder: "/ws/auth" }), card("Other work", { contextFolder: "/ws/api" })],
+          },
+        ],
+      });
+      const got = reviewCards(
+        projection,
+        [done],
+        opts({ includeArchived: false, query: "", facets: { context: "/ws/auth", kind: ANY, rail: ANY } })
+      );
+      expect(got.map((c) => c.title)).toEqual(["Auth work"]);
+    });
+
+    it("narrows by kind, and an empty list is the honest answer for notes", () => {
+      const projection = merged({
+        columns: [{ column: done, planCards: [card("A task", { kind: "task" }), card("A plan", { kind: "plan" })] }],
+      });
+      const tasksOnly = reviewCards(
+        projection,
+        [done],
+        opts({ includeArchived: false, query: "", facets: { context: ANY, kind: "task", rail: ANY } })
+      );
+      expect(tasksOnly.map((c) => c.title)).toEqual(["A task"]);
+
+      const notesOnly = reviewCards(
+        projection,
+        [done],
+        opts({ includeArchived: false, query: "", facets: { context: ANY, kind: "note", rail: ANY } })
+      );
+      expect(notesOnly).toEqual([]);
+    });
+
+    it("narrows by rail", () => {
+      const on: Rail = {
+        id: "r1",
+        name: "Backend",
+        position: 0,
+        worktreePath: null,
+        pageId: null,
+        stages: [{ id: "r1-s0", position: 0, steps: [{ id: "r1-t0", cardPath: "/ws/.gavin-root/plans/on-rail.md", position: 0 }] }],
+      };
+      const orch: Orchestration = { rails: [on], conflictNotes: [], railRuns: [], stepRuns: [] };
+      const projection = merged({
+        columns: [
+          {
+            column: done,
+            planCards: [
+              card("On rail", { id: "/ws/.gavin-root/plans/on-rail.md" }),
+              card("Off rail", { id: "/ws/.gavin-root/plans/off-rail.md" }),
+            ],
+          },
+        ],
+      });
+      const got = reviewCards(
+        projection,
+        [done],
+        opts({
+          includeArchived: false,
+          query: "",
+          facets: { context: ANY, kind: ANY, rail: "r1" },
+          rails: railIndex(orch),
+        })
+      );
+      expect(got.map((c) => c.title)).toEqual(["On rail"]);
+    });
   });
 });
 

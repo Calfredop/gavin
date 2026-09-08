@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { railIndex, statusFacets, filterExplorer, NO_RAIL, ANY } from "./planFilter";
+import { railIndex, statusFacets, filterExplorer, underContext, NO_RAIL, ANY } from "./planFilter";
 import type { ExplorerContextNode } from "./planExplorer";
 import type { Orchestration, Rail } from "./orchestration";
 
@@ -7,9 +7,10 @@ function file(
   path: string,
   label: string,
   status: string | null,
-  group: "plans" | "docs" | "specs" | "archive" = "plans"
+  group: "plans" | "docs" | "specs" | "archive" = "plans",
+  kind: "plan" | "task" | "note" | null = "plan"
 ) {
-  return { path, label, group, status, priority: null, parseWarning: false } as const;
+  return { path, label, group, status, priority: null, parseWarning: false, kind } as const;
 }
 
 function context(over: Partial<ExplorerContextNode> = {}): ExplorerContextNode {
@@ -28,7 +29,7 @@ function context(over: Partial<ExplorerContextNode> = {}): ExplorerContextNode {
 
 const gitTab = file("/ws/.gavin-root/plans/git-tab.md", "Git tab", "To Do");
 const kanban = file("/ws/.gavin-root/plans/kanban.md", "Kanban search", "Done");
-const readme = file("/ws/.gavin-root/docs/readme.md", "readme.md", null, "docs");
+const readme = file("/ws/.gavin-root/docs/readme.md", "readme.md", null, "docs", null);
 
 const contexts: ExplorerContextNode[] = [
   context({
@@ -91,26 +92,28 @@ const withArchive: ExplorerContextNode[] = [
 ];
 
 describe("filterExplorer with archived plans", () => {
+  const base = { query: "", status: ANY, rail: ANY, context: ANY, kind: ANY };
+
   it("counts archived cards in the total", () => {
-    const out = filterExplorer(withArchive, { query: "", status: ANY, rail: ANY }, railIndex(orch));
+    const out = filterExplorer(withArchive, base, railIndex(orch));
     expect(out.total).toBe(2);
   });
 
   it("searches archived cards and surfaces a hit flat, not behind the Done fold", () => {
-    const out = filterExplorer(withArchive, { query: "shipped", status: ANY, rail: ANY }, railIndex(orch));
+    const out = filterExplorer(withArchive, { ...base, query: "shipped" }, railIndex(orch));
     expect(out.shown).toBe(1);
     expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Shipped thing"]);
     expect(out.contexts[0].groups[0].archived).toEqual([]);
   });
 
   it("drops a group whose only match was neither live nor archived", () => {
-    const out = filterExplorer(withArchive, { query: "nothing", status: ANY, rail: ANY }, railIndex(orch));
+    const out = filterExplorer(withArchive, { ...base, query: "nothing" }, railIndex(orch));
     expect(out.contexts).toEqual([]);
   });
 });
 
 describe("filterExplorer", () => {
-  const base = { query: "", status: ANY, rail: ANY };
+  const base = { query: "", status: ANY, rail: ANY, context: ANY, kind: ANY };
 
   it("passes the tree straight through when nothing is set", () => {
     const out = filterExplorer(contexts, base, railIndex(orch));
@@ -217,5 +220,70 @@ describe("filterExplorer", () => {
       ];
       expect(statusFacets(["To Do", "Done"], odd)).toEqual(["To Do", "Done", "Shipped"]);
     });
+  });
+
+  describe("the context facet", () => {
+    const auth = context({
+      folderPath: "/ws/auth",
+      name: "auth",
+      kind: "context",
+      groups: [{ group: "plans", label: "Plans", files: [file("/ws/auth/.gavin/plans/login.md", "Login", "To Do")], archived: [] }],
+    });
+    const two = [...contexts, auth];
+
+    it("drops a context outside the chosen folder, docs and specs included", () => {
+      const out = filterExplorer(two, { ...base, context: "/ws/auth" }, railIndex(orch));
+      expect(out.contexts.map((c) => c.name)).toEqual(["auth"]);
+      expect(out.contexts[0].groups.map((g) => g.group)).toEqual(["plans"]);
+    });
+
+    it("keeps a context's own subfolders, not just an exact path match", () => {
+      const nested = context({
+        folderPath: "/ws/auth/oauth",
+        name: "oauth",
+        kind: "context",
+        groups: [{ group: "plans", label: "Plans", files: [file("/ws/auth/oauth/.gavin/plans/x.md", "X", "To Do")], archived: [] }],
+      });
+      const out = filterExplorer([...two, nested], { ...base, context: "/ws/auth" }, railIndex(orch));
+      expect(out.contexts.map((c) => c.name)).toEqual(["auth", "oauth"]);
+    });
+
+    it("does not treat a sibling with a shared prefix as under the folder", () => {
+      const authTwo = context({ folderPath: "/ws/auth2", name: "auth2", kind: "context", groups: [] });
+      const out = filterExplorer([...two, authTwo], { ...base, context: "/ws/auth" }, railIndex(orch));
+      expect(out.contexts.map((c) => c.name)).toEqual(["auth"]);
+    });
+  });
+
+  describe("the kind facet", () => {
+    const reminder = file("/ws/.gavin-root/plans/reminder.md", "Reminder", null, "plans", "note");
+    const withKinds: ExplorerContextNode[] = [
+      context({ groups: [{ group: "plans", label: "Plans", files: [gitTab, kanban, reminder], archived: [] }] }),
+    ];
+
+    it("keeps only cards of the chosen kind", () => {
+      const out = filterExplorer(withKinds, { ...base, kind: "note" }, railIndex(orch));
+      expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Reminder"]);
+    });
+
+    it("drops docs and specs entirely, like status and rail", () => {
+      const out = filterExplorer(
+        [context({ groups: [{ group: "plans", label: "Plans", files: [gitTab], archived: [] }, { group: "docs", label: "Docs", files: [readme], archived: [] }] })],
+        { ...base, kind: "plan" },
+        railIndex(orch)
+      );
+      expect(out.contexts[0].groups.map((g) => g.group)).toEqual(["plans"]);
+    });
+  });
+});
+
+describe("underContext", () => {
+  it("matches the folder itself and its subfolders", () => {
+    expect(underContext("/ws/auth", "/ws/auth")).toBe(true);
+    expect(underContext("/ws/auth/oauth", "/ws/auth")).toBe(true);
+  });
+
+  it("does not match a sibling with a shared prefix", () => {
+    expect(underContext("/ws/auth2", "/ws/auth")).toBe(false);
   });
 });

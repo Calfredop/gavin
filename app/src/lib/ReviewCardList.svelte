@@ -21,6 +21,9 @@
   import IconButton from "./ui/IconButton.svelte";
   import { tooltip } from "./tooltip";
   import { everyGroupExpanded, isGroupExpanded, type ReviewGroup } from "./reviewBoard";
+  import { facetsActive, type BoardFacets, type ContextFacet } from "./boardFilters";
+  import type { RailIndex } from "./planFilter";
+  import FacetFilters from "./FacetFilters.svelte";
   import type { Column } from "./kanban";
 
   interface Props {
@@ -47,6 +50,12 @@
     /// see `reviewPrefs.expandedGroups` for why the OPEN set is the one
     /// that gets remembered.
     expandedGroups: string[];
+    /// The context/kind/rail trio, shared with Kanban and Plans unless
+    /// `linked` is false (hubFacets.ts).
+    facets: BoardFacets;
+    contexts: ContextFacet[];
+    rails: RailIndex;
+    linked: boolean;
     onSelect: (path: string) => void;
     onQuery: (next: string) => void;
     onToggleArchived: () => void;
@@ -55,6 +64,9 @@
     onToggleGroup: (id: string) => void;
     onSetAllGroups: (open: boolean) => void;
     onRefresh: () => void;
+    onFacets: (next: BoardFacets) => void;
+    onToggleLink: () => void;
+    onResetFilters: () => void;
   }
   let {
     groups,
@@ -68,6 +80,10 @@
     loadingPaths,
     archivedPaths,
     expandedGroups,
+    facets,
+    contexts,
+    rails,
+    linked,
     onSelect,
     onQuery,
     onToggleArchived,
@@ -76,7 +92,12 @@
     onToggleGroup,
     onSetAllGroups,
     onRefresh,
+    onFacets,
+    onToggleLink,
+    onResetFilters,
   }: Props = $props();
+
+  const filtering = $derived(facetsActive(facets) || query.trim().length > 0);
 
   // Groups start CLOSED, and which ones the human opened is remembered
   // per workspace rather than held here: the hub destroys this view on
@@ -170,10 +191,19 @@
       {/if}
     </div>
 
+    <div class="facets">
+      <FacetFilters {facets} {contexts} {rails} {linked} onChange={onFacets} {onToggleLink} />
+      {#if filtering}
+        <button type="button" class="reset" use:tooltip={"Clear the search and every filter"} onclick={onResetFilters}
+          >Reset</button
+        >
+      {/if}
+    </div>
+
     <div class="groups">
       {#if groups.length === 0}
         <p class="empty">
-          {query.trim()
+          {filtering
             ? "No card up for review matches that."
             : "Nothing is waiting for review."}
         </p>
@@ -336,6 +366,33 @@
     gap: 6px;
     font-size: 0.85em;
     cursor: pointer;
+  }
+  .facets {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 6px;
+    border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  .facets :global(.facet-link) {
+    flex: 0 0 auto;
+  }
+  .reset {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-family: monospace;
+    font-size: 0.72rem;
+    padding: 2px 6px;
+    cursor: pointer;
+  }
+  .reset:hover {
+    border-color: var(--border-strong);
+    color: var(--text);
   }
   .groups {
     flex: 1;

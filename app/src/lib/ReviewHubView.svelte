@@ -49,20 +49,27 @@
     type TouchRequest,
   } from "./reviewState";
   import { runBaseline, type RunBaseline } from "./runChanges";
+  import { orchestrations, fetchOrchestration } from "./orchestrationState";
+  import { railIndex } from "./planFilter";
+  import { contextFacets, pruneFacets } from "./boardFilters";
+  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "./hubFacets";
 
   interface Props {
     workspaceId: string;
   }
   let { workspaceId }: Props = $props();
 
-  // The two fetches this tab would otherwise never make. Both no-op once
-  // loaded; the refresh on reveal is how a card filed in another window
-  // reaches this list.
+  // The three fetches this tab would otherwise never make. All no-op
+  // once loaded; the refresh on reveal is how a card filed in another
+  // window reaches this list.
   $effect(() => {
     void fetchBoard(workspaceId);
   });
   $effect(() => {
     void refreshBoard(workspaceId);
+  });
+  $effect(() => {
+    void fetchOrchestration(workspaceId);
   });
 
   // Records for workspaces that are gone, dropped once per mount. The
@@ -84,6 +91,27 @@
   const reviewColumns = $derived(resolveReviewColumns(columns, prefs.columns));
   const reviewColumnIds = $derived(reviewColumns.map((c) => c.id));
 
+  // The context/kind/rail trio Kanban and Plans answer the same way
+  // (boardFilters.ts, shared across tabs by hubFacets.ts). Lives in
+  // hubFacets.ts rather than component `$state` for the reason
+  // ReviewCardList's own comment gives: the hub destroys this view on
+  // every tab switch, and "shared with Kanban and Plans" cannot mean
+  // that.
+  const hub = $derived($hubFacetState[workspaceId]);
+  const facets = $derived(facetsFor(hub, "review"));
+  const facetsLinked = $derived(isTabLinked(hub, "review"));
+  const orch = $derived($orchestrations[workspaceId]);
+  const rails = $derived(railIndex(orch ?? null));
+  const contexts = $derived(contextFacets(tree));
+
+  // A facet whose option disappeared (the rail was deleted, the context
+  // folder renamed) filters on a value the dropdown no longer offers --
+  // reset it instead, the same rule the Kanban and Plans tabs follow.
+  $effect(() => {
+    const next = pruneFacets(facets, tree && !tree.rootMissing ? contexts : null, orch === undefined ? null : rails);
+    if (next.context !== facets.context || next.rail !== facets.rail) setTabFacets(workspaceId, "review", next);
+  });
+
   // Every card in the projection, for the detail panel the first column
   // can show. Deliberately NOT `listed`: the panel's Tasks list and its
   // "Part of" row name cards by path, and most of those are not up for
@@ -99,6 +127,8 @@
       ? reviewCards(merged, reviewColumns, {
           includeArchived: prefs.includeArchived,
           query: prefs.query,
+          facets,
+          rails,
         })
       : []
   );
@@ -279,9 +309,19 @@
     {loadingPaths}
     {archivedPaths}
     expandedGroups={prefs.expandedGroups}
+    {facets}
+    {contexts}
+    {rails}
+    linked={facetsLinked}
     onSelect={select}
     onQuery={(next) => setReviewPrefs(workspaceId, { query: next })}
     onToggleArchived={() => setReviewPrefs(workspaceId, { includeArchived: !prefs.includeArchived })}
+    onFacets={(next) => setTabFacets(workspaceId, "review", next)}
+    onToggleLink={() => setTabLinked(workspaceId, "review", !facetsLinked)}
+    onResetFilters={() => {
+      setReviewPrefs(workspaceId, { query: "" });
+      resetTabFacets(workspaceId, "review");
+    }}
     onToggleColumn={(id) =>
       setReviewPrefs(workspaceId, {
         columns: toggleReviewColumn(prefs.columns, reviewColumnIds, id),

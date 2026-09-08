@@ -122,6 +122,11 @@ export interface ExplorerFile {
   status: string | null;
   priority: PlanFileInfo["priority"];
   parseWarning: boolean;
+  // The card's kind ("plan" | "task" | "note"), for the kind facet
+  // (planFilter.ts) -- null for docs and specs, which carry no
+  // frontmatter contract. Optional so a fixture built before this field
+  // existed stays valid; absent reads the same as null.
+  kind?: PlanFileInfo["kind"] | null;
 }
 
 export interface ExplorerGroupNode {
@@ -236,6 +241,7 @@ export function buildExplorerTree(tree: GavinTree | undefined): ExplorerContextN
       status: p.status,
       priority: p.priority,
       parseWarning: p.parseWarning,
+      kind: p.kind,
     });
     const archiveCards = ctx.plans.filter((p) => isArchivedCard(p.path));
     const boardCards = ctx.plans.filter((p) => !isArchivedCard(p.path));
@@ -269,6 +275,7 @@ export function buildExplorerTree(tree: GavinTree | undefined): ExplorerContextN
           status: null,
           priority: null,
           parseWarning: false,
+          kind: null,
         })),
         archived: [],
       });

@@ -32,7 +32,10 @@
   import FormatHelpModal from "./FormatHelpModal.svelte";
   import SearchInput from "./ui/SearchInput.svelte";
   import { orchestrations, fetchOrchestration } from "./orchestrationState";
-  import { ANY, NO_RAIL, filterExplorer, railIndex, statusFacets } from "./planFilter";
+  import { ANY, filterExplorer, railIndex, statusFacets } from "./planFilter";
+  import { contextFacets, pruneFacets } from "./boardFilters";
+  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "./hubFacets";
+  import FacetFilters from "./FacetFilters.svelte";
   import * as backend from "./backend";
 
   interface Props {
@@ -91,7 +94,8 @@
   let editor = $state<{ flush: () => Promise<void> } | null>(null);
 
   const root = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath ?? null);
-  const allContexts = $derived(buildExplorerTree($gavinTrees[workspaceId]));
+  const tree = $derived($gavinTrees[workspaceId]);
+  const allContexts = $derived(buildExplorerTree(tree));
 
   const allPaths = $derived(
     new Set(
@@ -151,26 +155,46 @@
 
   const columnNames = $derived(($kanbanState[workspaceId]?.columns ?? []).map((c) => c.name));
 
-  // Search + two facets only a plan can answer: its status, and the
-  // orchestration rail it sits on (planFilter.ts).
+  // Search, a facet only a plan can answer (status), and the trio Kanban
+  // and Review answer the same way -- context, kind, rail (planFilter.ts,
+  // boardFilters.ts). The trio lives in hubFacets.ts rather than
+  // component `$state`, the same reason the selection above is
+  // remembered outside the component: this view is destroyed on every
+  // tab switch, and "shared with Kanban and Review" cannot mean that.
   let query = $state("");
   let statusFacet = $state(ANY);
-  let railFacet = $state(ANY);
-  const rails = $derived(railIndex($orchestrations[workspaceId] ?? null));
+  const hub = $derived($hubFacetState[workspaceId]);
+  const sharedFacets = $derived(facetsFor(hub, "plans"));
+  const facetsLinked = $derived(isTabLinked(hub, "plans"));
+  const orch = $derived($orchestrations[workspaceId]);
+  const rails = $derived(railIndex(orch ?? null));
+  const contextOptions = $derived(contextFacets(tree));
   const statuses = $derived(statusFacets(columnNames, allContexts));
   const filtered = $derived(
-    filterExplorer(allContexts, { query, status: statusFacet, rail: railFacet }, rails)
+    filterExplorer(
+      allContexts,
+      { query, status: statusFacet, rail: sharedFacets.rail, context: sharedFacets.context, kind: sharedFacets.kind },
+      rails
+    )
   );
   const contexts = $derived(filtered.contexts);
 
-  // A facet whose option disappeared (the rail was deleted, the column
-  // renamed) would silently filter everything away -- reset it instead.
+  // A facet whose option disappeared would silently filter everything
+  // away -- reset it instead. Status is this tab's own and pruned
+  // locally; context and rail are the shared trio's, pruned the same way
+  // Kanban prunes them (boardFilters.ts's pruneFacets), so the two tabs
+  // agree on when a vanished option gets cleared.
   $effect(() => {
     if (statusFacet !== ANY && !statuses.includes(statusFacet)) statusFacet = ANY;
   });
   $effect(() => {
-    if (railFacet !== ANY && railFacet !== NO_RAIL && !rails.rails.some((r) => r.id === railFacet)) {
-      railFacet = ANY;
+    const next = pruneFacets(
+      sharedFacets,
+      tree && !tree.rootMissing ? contextOptions : null,
+      orch === undefined ? null : rails
+    );
+    if (next.context !== sharedFacets.context || next.rail !== sharedFacets.rail) {
+      setTabFacets(workspaceId, "plans", next);
     }
   });
   // The selected file's PlanFileInfo, when it is a plan -- docs and specs
@@ -423,22 +447,23 @@
               <option value={name}>{name}</option>
             {/each}
           </select>
-          <select bind:value={railFacet} aria-label="Filter by rail" title="Filter plans by orchestration rail">
-            <option value={ANY}>Any rail</option>
-            <option value={NO_RAIL}>On no rail</option>
-            {#each rails.rails as rail (rail.id)}
-              <option value={rail.id}>{rail.name}</option>
-            {/each}
-          </select>
+          <FacetFilters
+            facets={sharedFacets}
+            contexts={contextOptions}
+            {rails}
+            linked={facetsLinked}
+            onChange={(next) => setTabFacets(workspaceId, "plans", next)}
+            onToggleLink={() => setTabLinked(workspaceId, "plans", !facetsLinked)}
+          />
           {#if filtered.filtering}
             <button
               type="button"
               class="reset"
-              title="Clear the search and both facets"
+              title="Clear the search and every filter"
               onclick={() => {
                 query = "";
                 statusFacet = ANY;
-                railFacet = ANY;
+                resetTabFacets(workspaceId, "plans");
               }}
             >Reset</button>
           {/if}
@@ -566,6 +591,9 @@
   .facets {
     display: flex;
     gap: 4px;
+  }
+  .facets :global(.facet-link) {
+    flex: 0 0 auto;
   }
   .facets select {
     flex: 1 1 0;
