@@ -2,6 +2,24 @@ use crate::proc::ProcessHandle;
 use protocol::QueuedInput;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::os::unix::fs::PermissionsExt;
+
+/// Tightens a database file to owner-only (0600), matching the socket
+/// beside it (`server::bind_server`) and the app-support directory around
+/// it (`main`). Same-user reading is the accepted boundary here (see
+/// `docs/security`), so this closes the one gap left: a `registry.sqlite`,
+/// `kanban.sqlite` or `orchestration.sqlite` created at the OS default
+/// (0644 under a typical umask) is readable by every other account on the
+/// machine.
+///
+/// Called on every open, not just the first that creates the file, and
+/// there is no on-disk marker for a file mode the way there is for a
+/// schema version -- so reasserting the mode unconditionally is the whole
+/// migration for a database written before this existed.
+pub fn secure_db_file(path: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
 
 /// The daemon's clock, in microseconds since the epoch.
 ///
@@ -258,6 +276,7 @@ impl Registry {
              ON CONFLICT(key) DO UPDATE SET value = ?1",
             params![generation],
         )?;
+        secure_db_file(path)?;
         Ok(Self { conn, generation })
     }
 
@@ -321,6 +340,25 @@ impl Registry {
             "UPDATE sessions SET orphan_pid = ?1, orphan_started_at_us = ?2 WHERE id = ?3",
             params![orphan.map(|p| p.pid as i64), orphan.map(|p| p.started_at_us), id],
         )?;
+        Ok(())
+    }
+
+    /// `end_orphan`'s write: clears the orphan record and reaps this
+    /// session's queued follow-ups together, in one transaction.
+    ///
+    /// Confirming the leftover process is gone is confirming the
+    /// conversation it belonged to is over -- a follow-up still held for
+    /// it can never be delivered into anything real, so letting it survive
+    /// this call would be the same plaintext-retention bug the orphan
+    /// clear is fixing, just one column over.
+    pub fn clear_orphan_and_reap_queue(&mut self, id: &str) -> anyhow::Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE sessions SET orphan_pid = NULL, orphan_started_at_us = NULL WHERE id = ?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM queued_inputs WHERE session_id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -688,6 +726,42 @@ mod tests {
         assert_eq!(registry.list().unwrap().len(), 0);
     }
 
+    fn mode_of(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn a_freshly_opened_database_is_owner_only() {
+        // R7: the socket beside it is 0600 (`bind_server`); the database
+        // must match rather than be readable by every other account on
+        // the machine.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+
+        Registry::open(&db_path).unwrap();
+
+        assert_eq!(mode_of(&db_path), 0o600);
+    }
+
+    #[test]
+    fn opening_a_database_already_at_0644_tightens_it_to_0600() {
+        // The upgrade path: a file this fix predates sits on disk at the
+        // OS default. There is no schema version for a file mode, so the
+        // only migration is reasserting it on every open.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY)").unwrap();
+        }
+        std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(mode_of(&db_path), 0o644, "the file must start out loose for this test to mean anything");
+
+        Registry::open(&db_path).unwrap();
+
+        assert_eq!(mode_of(&db_path), 0o600);
+    }
+
     #[test]
     fn registry_survives_reopen() {
         let dir = tempfile::tempdir().unwrap();
@@ -906,6 +980,23 @@ mod tests {
     }
 
     #[test]
+    fn clear_orphan_and_reap_queue_clears_both_together() {
+        // R7: a follow-up queued for the conversation an orphan belonged
+        // to can never reach it once that orphan is confirmed gone -- the
+        // clear and the reap are one fact, not two calls that might drift.
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        registry.set_orphan("s1", Some(handle(4172, 999))).unwrap();
+        registry.queue_input("s1", "pasted while busy").unwrap();
+
+        registry.clear_orphan_and_reap_queue("s1").unwrap();
+
+        assert_eq!(registry.get("s1").unwrap().unwrap().orphan, None);
+        assert!(registry.queued_inputs_for("s1").unwrap().is_empty());
+    }
+
+    #[test]
     fn a_half_written_handle_reads_as_unknown_rather_than_as_a_pid() {
         // The lenient reading -- "we have a pid, close enough" -- is what
         // would put an unverifiable number behind a kill button. A pid
@@ -1121,6 +1212,23 @@ mod tests {
         // delivered, and would sit in every listing forever.
         assert!(queue_texts(&registry, "s1").is_empty());
         assert_eq!(queue_texts(&registry, "s2"), ["stays"]);
+    }
+
+    #[test]
+    fn killing_a_session_leaves_no_queued_rows_behind() {
+        // R7: `KillSession` reaches this through `forget_session` ->
+        // `remove`, and is exactly the path a security review has to
+        // trust -- pasted text must not outlive the session it was typed
+        // for by sitting in the database under an id nothing hosts any
+        // more.
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        registry.queue_input("s1", "pasted secret").unwrap();
+
+        registry.remove("s1").unwrap();
+
+        assert!(registry.queued_inputs().unwrap().is_empty());
     }
 
     #[test]

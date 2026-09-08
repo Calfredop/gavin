@@ -1613,7 +1613,10 @@ impl SessionManager {
         }
         let still_running = crate::proc::still_running(orphan);
         if !still_running {
-            self.registry.lock().unwrap().set_orphan(id, None)?;
+            // The conversation this orphan belonged to is confirmed over,
+            // so a follow-up still queued for it can never be delivered --
+            // reap it in the same write that clears the orphan (R7).
+            self.registry.lock().unwrap().clear_orphan_and_reap_queue(id)?;
         }
         Ok(Response::OrphanEnded {
             id: id.to_string(),
@@ -8173,6 +8176,34 @@ mod tests {
     }
 
     #[test]
+    fn end_orphan_reaps_the_sessions_queued_follow_ups_once_the_process_is_gone() {
+        // R7: a follow-up queued before the daemon restart is typed for a
+        // conversation that ending the orphan confirms is over. It must
+        // not keep sitting on disk under an id nothing will ever deliver
+        // it to.
+        let dir = tempfile::tempdir().unwrap();
+        let (survivor, handle) = spawn_survivor();
+        leftover_row_running(
+            &dir.path().join("registry.sqlite"),
+            "orphan-7",
+            "/tmp",
+            Some("claude"),
+            SessionStatus::Working,
+            Some(handle),
+        );
+        let manager = recovered_manager(&dir);
+        manager.registry.lock().unwrap().queue_input("orphan-7", "pasted while busy").unwrap();
+
+        manager.end_orphan("orphan-7").unwrap();
+
+        assert!(
+            manager.registry.lock().unwrap().queued_inputs_for("orphan-7").unwrap().is_empty(),
+            "the queue must not outlive the conversation it was typed for"
+        );
+        kill_and_reap(survivor);
+    }
+
+    #[test]
     fn end_orphan_is_a_harmless_no_op_when_there_is_nothing_recorded() {
         // Two presses of the same button, or a press after the orphan
         // exited by itself. Neither is an error: an error here would
@@ -8666,6 +8697,21 @@ mod tests {
              per session -- must be dropped on teardown, not leaked for the \
              daemon's lifetime"
         );
+    }
+
+    #[test]
+    fn kill_session_reaps_its_queued_follow_ups() {
+        // R7: the RPC path, not just `Registry::remove` underneath it --
+        // a follow-up queued for a session must not survive the request
+        // that ends that session.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let id = manager.create_session("/tmp", "/tmp", None).unwrap();
+        manager.registry.lock().unwrap().queue_input(&id, "pasted secret").unwrap();
+
+        manager.kill_session(&id).unwrap();
+
+        assert!(manager.registry.lock().unwrap().queued_inputs().unwrap().is_empty());
     }
 
     #[test]
