@@ -161,9 +161,15 @@
     min-width: 140px;
     max-width: 220px;
   }
+  /* Capped at the select's own ceiling so the pair reads as one control
+     group. Without it the input is the row's only greedy box, and on the
+     workspace Settings tab -- a full-width hub tab, not a modal -- it
+     stretched a field that never holds more than a model id across the
+     whole pane. */
   input.model {
     flex: 1 1 auto;
     min-width: 0;
+    max-width: 220px;
   }
   /* Kept in the flow even when there is nothing to clear, so the four
      rows above and below it stay on one grid. */
