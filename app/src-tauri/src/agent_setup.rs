@@ -148,6 +148,44 @@ fn usable_mcp_path(value: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+/// A configured `[agent] file` must name a spot INSIDE the root, the same
+/// promise `usable_mcp_path` makes for `mcp_file`. There is no fallback
+/// destination for gavin's own marker block, though -- it is written for
+/// EVERY profile, never skipped -- so a bad value is a loud error naming
+/// the value, not a silent downgrade.
+///
+/// Canonicalizes the parent directory and checks containment rather than
+/// components alone, the same way fileviewer's `resolve_new` does: a
+/// symlinked directory leading out of the root is caught, not just a
+/// literal `..`. Safe to canonicalize eagerly here -- unlike an MCP
+/// config's directory, this write never creates the parent, so it must
+/// already exist for a valid value.
+fn validate_agent_file_path(root: &Path, value: &str) -> Result<(), String> {
+    let trimmed = value.trim();
+    let path = Path::new(trimmed);
+    let outside = || format!("[agent] file {trimmed:?} would write outside the workspace root");
+    if trimmed.is_empty() || path.is_absolute() {
+        return Err(outside());
+    }
+    // Rejects `..` anywhere, and the Windows prefixes/root-dir components
+    // an absolute check on a foreign separator would miss.
+    if !path.components().all(|c| matches!(c, std::path::Component::Normal(_))) {
+        return Err(outside());
+    }
+    let root_canonical = std::fs::canonicalize(root)
+        .map_err(|e| format!("workspace root {} is unreadable: {e}", root.display()))?;
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    let canonical_parent = match parent {
+        Some(p) => std::fs::canonicalize(root_canonical.join(p)).map_err(|_| outside())?,
+        None => root_canonical.clone(),
+    };
+    if canonical_parent == root_canonical || canonical_parent.starts_with(&root_canonical) {
+        Ok(())
+    } else {
+        Err(outside())
+    }
+}
+
 /// The layout to write for this root: the profile's own, or -- for
 /// `custom`, which has none -- the one its config describes. None when
 /// `custom` has not been pointed at a file yet, which is what leaves MCP
@@ -1096,6 +1134,7 @@ fn write_instructions_block(
     instructions_file: &str,
     block_body: &str,
 ) -> anyhow::Result<PathBuf> {
+    validate_agent_file_path(root, instructions_file).map_err(|e| anyhow::anyhow!(e))?;
     let path = root.join(instructions_file);
     let content = if path.exists() {
         let existing = std::fs::read_to_string(&path)?;
@@ -2145,6 +2184,33 @@ mod tests {
         let skipped: Vec<&str> = result.skipped.iter().map(|(w, _)| w.as_str()).collect();
         assert_eq!(skipped, ["skill file", "MCP config"]);
         assert!(!dir.path().parent().unwrap().join("escaped.json").exists());
+    }
+
+    /// R3: `[agent] file` got no containment at all before this test --
+    /// reproduced by writing gavin's marker block through it to a file
+    /// beside the repo. Now it gets the same refusal `mcp_file` does, but
+    /// louder: there is no "skipped" to degrade to for the one file every
+    /// profile writes, so a bad value fails the whole run.
+    #[test]
+    fn an_agent_file_that_escapes_the_root_is_refused() {
+        for escape in ["/etc/motd", "../victim.txt", "a/../../victim.txt"] {
+            let dir = tempfile::tempdir().unwrap();
+            let g = dir.path().join(".gavin-root");
+            std::fs::create_dir_all(&g).unwrap();
+            std::fs::write(
+                g.join("config.toml"),
+                format!("[agent]\nprofile = \"custom\"\nfile = \"{escape}\"\n"),
+            )
+            .unwrap();
+
+            let err = run_integration(dir.path(), fake_binary()).unwrap_err();
+
+            assert!(err.contains(escape), "error should name the value {escape}: {err}");
+            assert!(
+                !dir.path().parent().unwrap().join("victim.txt").exists(),
+                "must never write outside the root"
+            );
+        }
     }
 
     /// Without an MCP config there are no tools to name, so the plain
