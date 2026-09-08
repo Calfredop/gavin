@@ -57,6 +57,12 @@ describe("validateBranchName", () => {
     expect(validateBranchName("x.lock")).toMatch(/lock/i);
     expect(validateBranchName("bad~name")).toMatch(/character/i);
   });
+
+  it("rejects names starting with - to prevent git flag injection (R10)", () => {
+    expect(validateBranchName("--upload-pack=x")).toMatch(/start/i);
+    expect(validateBranchName("--force")).toMatch(/start/i);
+    expect(validateBranchName("-a")).toMatch(/start/i);
+  });
 });
 
 describe("branchNameFrom", () => {

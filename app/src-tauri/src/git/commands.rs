@@ -207,12 +207,12 @@ pub fn worktrees(cwd: &str) -> Result<Vec<WorktreeInfo>, String> {
 pub fn worktree_add(cwd: &str, path: &str, branch: &str, from: Option<&str>, new_branch: bool) -> Result<(), String> {
     let mut args = vec!["worktree", "add"];
     if new_branch {
-        args.extend(["-b", branch, path]);
+        args.extend(["-b", branch, "--", path]);
         if let Some(f) = from {
             args.push(f);
         }
     } else {
-        args.extend([path, branch]);
+        args.extend(["--", path, branch]);
     }
     ok(run_git(cwd, &args, None)?).map(|_| ())
 }
@@ -267,7 +267,7 @@ pub fn diff_at(cwd: &str, path: &str, old_path: Option<&str>, staged: bool, untr
         let parent_ref = format!("{rev}^");
         let has_parent = run_git_ro(cwd, &["rev-parse", "--verify", "-q", &parent_ref])?.code == 0;
         parent = if has_parent { parent_ref } else { EMPTY_TREE.to_string() };
-        args.extend(["-M", &parent, rev, "--"]);
+        args.extend(["-M", &parent, "--", rev]);
         if let Some(old) = old_path {
             args.push(old);
         }
@@ -391,12 +391,12 @@ pub fn checkout(cwd: &str, name: &str, track_remote: Option<&str>) -> Result<(),
             let upstream = format!("{remote}/{name}");
             ok(run_git(cwd, &["switch", "-c", name, "--track", &upstream], None)?).map(|_| ())
         }
-        _ => ok(run_git(cwd, &["switch", name], None)?).map(|_| ()),
+        _ => ok(run_git(cwd, &["switch", "--", name], None)?).map(|_| ()),
     }
 }
 
 pub fn create_branch(cwd: &str, name: &str, from: Option<&str>, checkout_after: bool) -> Result<(), String> {
-    let mut args = vec!["branch", name];
+    let mut args = vec!["branch", "--", name];
     if let Some(f) = from {
         args.push(f);
     }
@@ -408,7 +408,7 @@ pub fn create_branch(cwd: &str, name: &str, from: Option<&str>, checkout_after: 
 }
 
 pub fn delete_branch(cwd: &str, name: &str, force: bool) -> Result<(), String> {
-    ok(run_git(cwd, &["branch", if force { "-D" } else { "-d" }, name], None)?).map(|_| ())
+    ok(run_git(cwd, &["branch", if force { "-D" } else { "-d" }, "--", name], None)?).map(|_| ())
 }
 
 /// Local branches whose every commit is already on `base` — `git branch
@@ -435,7 +435,7 @@ pub fn merged_branches(cwd: &str, base: &str) -> Result<Vec<String>, String> {
 /// `merge --no-edit <branch>`; a conflict exits non-zero with MERGE_HEAD
 /// left behind, which `repo_info` reports as `in_progress: "merge"`.
 pub fn merge(cwd: &str, branch: &str) -> Result<(), String> {
-    ok(run_git(cwd, &["merge", "--no-edit", branch], None)?).map(|_| ())
+    ok(run_git(cwd, &["merge", "--no-edit", "--", branch], None)?).map(|_| ())
 }
 
 pub fn abort_in_progress(cwd: &str, kind: &str) -> Result<(), String> {
