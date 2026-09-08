@@ -60,6 +60,24 @@ describe("attachments in the composed prompts", () => {
     expect(composePlanPrompt("/p/plan.md", [])).toBe(composePlanPrompt("/p/plan.md"));
     expect(composeTaskPrompt("/p/t.md", "T", "b")).not.toContain("attached to this card");
   });
+
+  it("a withheld entry is named on every composer, without handing over a path to read", () => {
+    const withheld = ["~/Desktop/shot.png"];
+    expect(composeTaskPrompt("/p/t.md", "T", "b", [], null, withheld)).toContain(
+      "~/Desktop/shot.png"
+    );
+    expect(composePlanPrompt("/p/plan.md", [], null, withheld)).toContain("~/Desktop/shot.png");
+    expect(composeResumeTaskPrompt("/p/t.md", "T", "b", [], withheld)).toContain(
+      "~/Desktop/shot.png"
+    );
+    expect(composeResumePlanPrompt("/p/plan.md", [], withheld)).toContain("~/Desktop/shot.png");
+  });
+
+  it("no withheld entries leaves every prompt byte-identical to before the field existed", () => {
+    expect(composeTaskPrompt("/p/t.md", "T", "b", files, null, [])).toBe(
+      composeTaskPrompt("/p/t.md", "T", "b", files)
+    );
+  });
 });
 
 describe("composePlanPrompt", () => {

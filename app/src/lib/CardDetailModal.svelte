@@ -455,6 +455,13 @@
   let attachmentsError = $state<string | null>(null);
   let attachmentsBusy = $state(false);
 
+  // What a chip reads as before the host has stat'd it, or when it
+  // couldn't: unknown beats a confident lie, so it reads the same as a
+  // `refused` entry -- broken, with no absolute path to open.
+  function unresolvedAttachmentStatus(path: string): AttachmentStatus {
+    return { path, absolutePath: null, exists: false, location: "refused", refusedReason: null };
+  }
+
   // Stat'd HERE rather than on scan: the daemon never touches these
   // paths, so the board card face can only show a count and this modal
   // is the first place brokenness can be seen at all.
@@ -473,7 +480,7 @@
       return;
     }
     if (root === null) {
-      attachmentStatuses = paths.map((path) => ({ path, absolutePath: null, exists: false }));
+      attachmentStatuses = paths.map((path) => unresolvedAttachmentStatus(path));
       return;
     }
     void backend
@@ -485,7 +492,7 @@
         // Unknown beats a confident lie: an unresolved chip reads
         // broken, which is also what the run gate will say.
         if (mine === statToken) {
-          attachmentStatuses = paths.map((path) => ({ path, absolutePath: null, exists: false }));
+          attachmentStatuses = paths.map((path) => unresolvedAttachmentStatus(path));
         }
       });
   });
@@ -1444,17 +1451,23 @@
                 {#each attachments as path (path)}
                   {@const status = attachmentStatuses.find((s) => s.path === path) ?? null}
                   {@const broken = status !== null && !status.exists}
-                  <span class="attachment" class:broken>
+                  {@const refused = status !== null && status.location === "refused"}
+                  {@const withheld = status !== null && !broken && status.location === "outside"}
+                  <span class="attachment" class:broken class:withheld>
                     <button
                       type="button"
                       class="attachment-open"
                       disabled={status === null || broken}
-                      title={broken
-                        ? `${path} — not found. Fix or remove it: a missing attachment blocks every run of this card.`
-                        : path}
+                      title={refused
+                        ? `${path} — refused: ${status?.refusedReason}. Remove it: gavin will never read this file.`
+                        : broken
+                          ? `${path} — not found. Fix or remove it: a missing attachment blocks every run of this card.`
+                          : withheld
+                            ? `${path} — outside the workspace. Gavin does not read this automatically; a launched agent is told the card named it, but not what it contains.`
+                            : path}
                       onclick={() => status && void openAttachment(status)}
                     >
-                      {broken ? "⚠ " : ""}{attachmentName(path)}
+                      {broken ? "⚠ " : withheld ? "↗ " : ""}{attachmentName(path)}
                     </button>
                     <button
                       type="button"
@@ -1918,6 +1931,12 @@
   }
   .attachment.broken {
     border-color: var(--border-warning);
+  }
+  .attachment.withheld {
+    border-style: dashed;
+  }
+  .attachment.withheld .attachment-open {
+    color: var(--text-subtle);
   }
   .attachment-open,
   .attachment-remove {

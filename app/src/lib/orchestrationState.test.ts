@@ -1302,7 +1302,13 @@ describe("executeActions", () => {
     // with a dead path would carry the damage into every later stage.
     cardAttachments.a = ["docs/spec.md"];
     vi.mocked(backend.attachmentStatus).mockResolvedValue([
-      { path: "docs/spec.md", absolutePath: "/ws/docs/spec.md", exists: false },
+      {
+        path: "docs/spec.md",
+        absolutePath: "/ws/docs/spec.md",
+        exists: false,
+        location: "root",
+        refusedReason: null,
+      },
     ]);
 
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
@@ -1322,7 +1328,13 @@ describe("executeActions", () => {
   it("a step whose attachments resolve puts their absolute paths in the prompt", async () => {
     cardAttachments.a = ["docs/spec.md"];
     vi.mocked(backend.attachmentStatus).mockResolvedValue([
-      { path: "docs/spec.md", absolutePath: "/ws/docs/spec.md", exists: true },
+      {
+        path: "docs/spec.md",
+        absolutePath: "/ws/docs/spec.md",
+        exists: true,
+        location: "root",
+        refusedReason: null,
+      },
     ]);
     vi.mocked(backend.readFileForViewer).mockResolvedValue({
       content: "---\ntitle: Wire the API\n---\ndo the thing",

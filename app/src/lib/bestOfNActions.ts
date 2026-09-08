@@ -119,9 +119,16 @@ export async function startBestOfN(
   if (card.kind === "task") {
     const file = await backend.readFileForViewer(path);
     if (!file.exists) return `Card file not found: ${path}`;
-    prompt = composeTaskPrompt(path, card.title, stripFrontmatter(file.content).trim(), resolved.paths);
+    prompt = composeTaskPrompt(
+      path,
+      card.title,
+      stripFrontmatter(file.content).trim(),
+      resolved.paths,
+      null,
+      resolved.withheld
+    );
   } else {
-    prompt = composePlanPrompt(path, resolved.paths);
+    prompt = composePlanPrompt(path, resolved.paths, null, resolved.withheld);
   }
 
   // `[worktree] setup` runs in every candidate's checkout, chained ahead

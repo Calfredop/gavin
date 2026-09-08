@@ -10,13 +10,26 @@
 
 import { relativeToRoot } from "./settings";
 
-/// One entry as the host resolved it. `absolutePath` is null when gavin
-/// refuses to resolve the entry at all (a `..` traversal), which reads
+/// Where the host resolved and canonicalized an entry to. `"root"` and
+/// `"extraContext"` are what gavin already trusts and reads exactly as
+/// before. `"outside"` is a legal reference -- a screenshot on the
+/// Desktop, a spec on a shared volume -- that is no longer read
+/// silently: see `resolvedAttachmentPaths` / `withheldAttachmentPaths`.
+/// `"refused"` is neither: a `..` traversal or a path under a directory
+/// gavin never hands an agent (`~/Library`, `~/.ssh`, `~/.aws`,
+/// `~/.config`), which no future confirmation can unlock.
+export type AttachmentLocation = "root" | "extraContext" | "outside" | "refused";
+
+/// One entry as the host resolved it. `absolutePath` is null only for a
+/// `"refused"` entry -- gavin will not resolve it at all, which reads
 /// the same as a file that moved: a broken chip, and a blocked run.
+/// `refusedReason` names why, for exactly those entries; null otherwise.
 export interface AttachmentStatus {
   path: string;
   absolutePath: string | null;
   exists: boolean;
+  location: AttachmentLocation;
+  refusedReason: string | null;
 }
 
 /// Splits the frontmatter line exactly as the daemon does
@@ -74,35 +87,75 @@ export function attachmentName(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
 }
 
-/// The block appended to a launched agent's prompt. Absolute paths, one
-/// per line: the agent's cwd is a rail's worktree or the card's context
-/// folder depending on how it was launched, and a relative path would
-/// mean something different in each. Empty string for no attachments, so
-/// the composers can concatenate unconditionally.
-export function attachmentPromptBlock(absolutePaths: string[]): string {
-  if (absolutePaths.length === 0) return "";
-  const list = absolutePaths.map((p) => `- ${p}`).join("\n");
-  return (
-    `\n\nFiles attached to this card — read them before you start:\n${list}`
-  );
+/// The block appended to a launched agent's prompt. `readablePaths` are
+/// absolute, one per line, and are what the agent is told to read: the
+/// agent's cwd is a rail's worktree or the card's context folder
+/// depending on how it was launched, and a relative path would mean
+/// something different in each. `withheldPaths` are the raw card entries
+/// gavin resolved to a real, existing file OUTSIDE the workspace and did
+/// NOT hand over -- named so the agent (and a human reading the prompt)
+/// knows the card referenced them, without gavin having read them on
+/// anyone's behalf. Empty string for no attachments at all, so the
+/// composers can concatenate unconditionally.
+export function attachmentPromptBlock(
+  readablePaths: string[],
+  withheldPaths: string[] = []
+): string {
+  if (readablePaths.length === 0 && withheldPaths.length === 0) return "";
+  const sections: string[] = [];
+  if (readablePaths.length > 0) {
+    const list = readablePaths.map((p) => `- ${p}`).join("\n");
+    sections.push(`Files attached to this card — read them before you start:\n${list}`);
+  }
+  if (withheldPaths.length > 0) {
+    const list = withheldPaths.map((p) => `- ${p}`).join("\n");
+    sections.push(
+      `This card also names these files, but they live outside the workspace and gavin ` +
+        `withheld them rather than read them automatically — it has not read them, and you ` +
+        `should not assume they say what the card implies:\n${list}`
+    );
+  }
+  return `\n\n${sections.join("\n\n")}`;
 }
 
-/// The absolute paths to hand an agent, in card order. Entries the host
-/// could not resolve are dropped, which is safe only because
-/// `missingAttachmentReason` refuses the launch first.
+/// The absolute paths to hand an agent, in card order: entries the host
+/// classified `root` or `extraContext` -- what gavin already trusts.
+/// `outside` entries resolve to a real file too, but are withheld here
+/// on purpose (`withheldAttachmentPaths` names them instead); `refused`
+/// entries never got an absolute path at all. Everything not `exists`
+/// is dropped, which is safe only because `missingAttachmentReason`
+/// refuses the launch first.
 export function resolvedAttachmentPaths(statuses: AttachmentStatus[]): string[] {
   return statuses
-    .filter((s) => s.exists && s.absolutePath !== null)
+    .filter((s) => s.exists && s.absolutePath !== null && s.location !== "outside")
     .map((s) => s.absolutePath as string);
 }
 
-/// Why this card must not be launched, or null. A missing attachment
-/// blocks the run -- board Run and rail step alike -- rather than
-/// launching without it: an agent handed a dead path burns a whole
-/// session before anyone notices, and the card is the cheap thing to
-/// fix. Names the files, because "an attachment is missing" sends the
-/// human back to the card to work out which.
+/// The raw card entries gavin resolved to a real file OUTSIDE the
+/// workspace (or a registered extra context) and is withholding rather
+/// than reading. The raw text, not the absolute path: it is what the
+/// card actually says, and is what the first-Run review will list this
+/// entry by once that confirmation exists (`sec-fix-first-run-review`).
+export function withheldAttachmentPaths(statuses: AttachmentStatus[]): string[] {
+  return statuses.filter((s) => s.exists && s.location === "outside").map((s) => s.path);
+}
+
+/// Why this card must not be launched, or null. A missing file and a
+/// `refused` entry (a `..` traversal, or a path under a directory gavin
+/// never hands an agent) both block the run -- board Run and rail step
+/// alike -- rather than launching without it: an agent handed a dead
+/// path burns a whole session before anyone notices, and the card is the
+/// cheap thing to fix. The two get separate messages: a missing file is
+/// a typo to go fix, a refused one never will be, confirmation included.
 export function missingAttachmentReason(statuses: AttachmentStatus[]): string | null {
+  const refused = statuses.filter((s) => s.location === "refused");
+  if (refused.length > 0) {
+    const noun = refused.length === 1 ? "Attachment" : "Attachments";
+    const detail = refused.map((s) => `${s.path} (${s.refusedReason})`).join(", ");
+    return `${noun} refused: ${detail} — fix or remove ${
+      refused.length === 1 ? "it" : "them"
+    } on the card before running.`;
+  }
   const missing = statuses.filter((s) => !s.exists).map((s) => s.path);
   if (missing.length === 0) return null;
   const noun = missing.length === 1 ? "Attachment" : "Attachments";

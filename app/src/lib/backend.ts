@@ -20,6 +20,7 @@ import type { OrphanProcess } from "./orphan";
 import type { QueuedInput } from "./queuedInput";
 import type { ManagedSessions } from "./sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "./workspaceDelete";
+import type { AttachmentStatus } from "./attachments";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -93,14 +94,11 @@ export function viewableExtensions(): Promise<string[]> {
   return invoke("viewable_extensions");
 }
 
-/// One entry per requested path, in the order given. `absolutePath` is
-/// null for an entry gavin refuses to resolve (a `..` traversal); every
-/// other entry carries the path an agent would be handed, resolved
-/// against the WORKSPACE ROOT rather than any session's cwd.
-export function attachmentStatus(
-  root: string,
-  paths: string[]
-): Promise<{ path: string; absolutePath: string | null; exists: boolean }[]> {
+/// One entry per requested path, in the order given, classified by
+/// `location` (`attachments.ts` owns what each value means and what to
+/// do with it). `absolutePath` is null only for a `refused` entry --
+/// resolved against the WORKSPACE ROOT rather than any session's cwd.
+export function attachmentStatus(root: string, paths: string[]): Promise<AttachmentStatus[]> {
   return invoke("attachment_status", { root, paths });
 }
 

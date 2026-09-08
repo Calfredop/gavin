@@ -1314,7 +1314,13 @@ describe("attachments gate the run", () => {
 
   it("runCard: an attachment that resolves reaches the prompt as an absolute path", async () => {
     vi.mocked(backend.attachmentStatus).mockResolvedValue([
-      { path: "docs/spec.md", absolutePath: "/ws/docs/spec.md", exists: true },
+      {
+        path: "docs/spec.md",
+        absolutePath: "/ws/docs/spec.md",
+        exists: true,
+        location: "root",
+        refusedReason: null,
+      },
     ]);
 
     const err = await runCard("ws-1", attached());
@@ -1328,7 +1334,13 @@ describe("attachments gate the run", () => {
 
   it("runCard: a missing attachment refuses by name, spawns nothing, and leaves the status alone", async () => {
     vi.mocked(backend.attachmentStatus).mockResolvedValue([
-      { path: "docs/spec.md", absolutePath: "/ws/docs/spec.md", exists: false },
+      {
+        path: "docs/spec.md",
+        absolutePath: "/ws/docs/spec.md",
+        exists: false,
+        location: "root",
+        refusedReason: null,
+      },
     ]);
 
     const err = await runCard("ws-1", attached());
@@ -1342,7 +1354,13 @@ describe("attachments gate the run", () => {
 
   it("resumeCard: the same gate, so a resume cannot slip past it", async () => {
     vi.mocked(backend.attachmentStatus).mockResolvedValue([
-      { path: "docs/spec.md", absolutePath: null, exists: false },
+      {
+        path: "docs/spec.md",
+        absolutePath: null,
+        exists: false,
+        location: "refused",
+        refusedReason: "contains a `..` component",
+      },
     ]);
 
     const err = await resumeCard("ws-1", attached());
@@ -1357,7 +1375,13 @@ describe("attachments gate the run", () => {
       workspaces: s.workspaces.map((w) => ({ ...w, mainSessionId: "s-main" })),
     }));
     vi.mocked(backend.attachmentStatus).mockResolvedValue([
-      { path: "docs/spec.md", absolutePath: "/ws/docs/spec.md", exists: false },
+      {
+        path: "docs/spec.md",
+        absolutePath: "/ws/docs/spec.md",
+        exists: false,
+        location: "root",
+        refusedReason: null,
+      },
     ]);
 
     const err = await sendToMainAgent("ws-1", attached());

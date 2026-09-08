@@ -378,32 +378,94 @@ pub fn unwatch_file_for_viewer(
     Ok(())
 }
 
+/// Where a resolved attachment landed relative to what gavin trusts.
+/// `Root` and `ExtraContext` are read and handed to the agent exactly as
+/// before; `Outside` is not -- see `attachment_status`'s doc comment.
+/// `Refused` is neither: gavin will not resolve it at all, and no future
+/// confirmation changes that.
+#[derive(Debug, Serialize, PartialEq, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub enum AttachmentLocation {
+    Root,
+    ExtraContext,
+    Outside,
+    Refused,
+}
+
 /// One card attachment, resolved and stat'd. `path` echoes the raw
 /// frontmatter entry (the UI's identity for the chip and the string it
-/// removes); `absolute_path` is what an agent is handed and what a chip
-/// opens, and is None for an entry gavin refuses to resolve at all.
+/// removes); `absolute_path` is what a chip opens, and is None for a
+/// `Refused` entry -- gavin will not resolve it at all. `refused_reason`
+/// is the human-readable "why" for exactly those entries, and None for
+/// every other one, `Outside` included: lying outside the workspace is
+/// not by itself a refusal, only a reason to withhold the bytes (the
+/// pure `attachments.ts` module is what decides that; this command only
+/// classifies).
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentStatus {
     pub path: String,
     pub absolute_path: Option<String>,
     pub exists: bool,
+    pub location: AttachmentLocation,
+    pub refused_reason: Option<String>,
+}
+
+/// Sensitive directories under the human's home folder, by name --
+/// `sensitive_home_roots` turns these into canonical paths. An
+/// attachment resolving inside any of them is refused outright,
+/// confirmation included: a card that names `~/.ssh/id_rsa` is not a
+/// screenshot on the Desktop, and no first-Run review is the right place
+/// to ask a human to bless handing an agent their private key.
+const SENSITIVE_HOME_DIRS: &[&str] = &["Library", ".ssh", ".aws", ".config"];
+
+/// `SENSITIVE_HOME_DIRS`, resolved against `$HOME` through
+/// `resolve_for_containment` -- so a directory that does not exist yet
+/// (a fresh machine has no `~/.aws` until the first `aws configure`)
+/// still refuses, and one reached through a symlinked home mount is
+/// canonicalized the same way every other containment check here is. No
+/// `$HOME` means nothing to refuse against, not a refusal of everything.
+fn sensitive_home_roots() -> Vec<(&'static str, PathBuf)> {
+    let Some(home) = std::env::var_os("HOME") else { return Vec::new() };
+    let home = PathBuf::from(home);
+    SENSITIVE_HOME_DIRS
+        .iter()
+        .filter_map(|name| resolve_for_containment(&home.join(name).to_string_lossy()).ok().map(|p| (*name, p)))
+        .collect()
 }
 
 /// Resolves a card's `attachments:` entries against the workspace root
-/// and says which ones are actually there.
+/// and classifies each one -- `Root`/`ExtraContext` inside what gavin
+/// already trusts, `Outside` a legal reference gavin will not read
+/// silently, `Refused` one it will never read at all.
 ///
 /// The root, never the session's cwd: a card bound to a rail runs in a
 /// worktree, and resolving `docs/spec.md` against wherever the agent
 /// happens to start would hand two sessions two different files (or one
 /// of them nothing at all) from the same card.
 ///
+/// EVERY resolvable candidate is canonicalized (`resolve_for_containment`,
+/// the same walk-up-and-follow-symlinks the five raw-path commands above
+/// use), not just the ones inside the root: an absolute entry outside
+/// the root used to reach the agent unresolved, which is exactly the gap
+/// this closes -- a symlink planted inside the root that points at
+/// `~/.ssh` must classify by where it actually leads, not by the root-
+/// relative name that names it.
+///
 /// A `..` entry is REFUSED rather than stat'd -- `usable_attachment_path`
-/// is the authority, shared with the daemon so both sides agree -- and
-/// comes back with no absolute path and `exists: false`. That is the
-/// same shape as a file that moved, which is what the caller wants: both
-/// are a broken chip and both block a run. Stat'ing it instead would
-/// make gavin read outside the root on behalf of a line in a card file.
+/// is the authority, shared with the daemon so both sides agree. So is
+/// one that canonicalizes into a sensitive home directory
+/// (`sensitive_home_roots`). Both come back with no absolute path,
+/// `exists: false`, and a reason naming why -- the same broken-chip shape
+/// a missing file has, so both block a run the same way, but a distinct
+/// message says this one is not a typo to go fix.
+///
+/// `Outside` is NOT stat'd into `exists: false` the way a refusal is --
+/// `attachments.ts` decides from `location` whether to read it, this
+/// command only classifies. It stays the common case it always was (a
+/// screenshot on the Desktop, a spec on a shared volume), just no longer
+/// a silent one: the pure module withholds its bytes and notes it by
+/// name in the prompt instead of handing it over unread.
 ///
 /// Called on demand -- the modal opening, the run gate just before
 /// spawning -- never on scan: the daemon does not stat attachments, so
@@ -411,23 +473,64 @@ pub struct AttachmentStatus {
 #[tauri::command]
 pub fn attachment_status(root: String, paths: Vec<String>) -> Vec<AttachmentStatus> {
     let root = PathBuf::from(root);
+    let root_canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+    let extra_roots = extra_context_roots(&root_canonical);
+    let sensitive_roots = sensitive_home_roots();
+    attachment_status_impl(&root_canonical, paths, &extra_roots, &sensitive_roots)
+}
+
+fn attachment_status_impl(
+    root: &Path,
+    paths: Vec<String>,
+    extra_roots: &[PathBuf],
+    sensitive_roots: &[(&'static str, PathBuf)],
+) -> Vec<AttachmentStatus> {
     paths
         .into_iter()
         .map(|raw| {
             let Some(usable) = protocol::usable_attachment_path(&raw) else {
-                return AttachmentStatus { path: raw, absolute_path: None, exists: false };
+                return AttachmentStatus {
+                    path: raw,
+                    absolute_path: None,
+                    exists: false,
+                    location: AttachmentLocation::Refused,
+                    refused_reason: Some("contains a `..` component".to_string()),
+                };
             };
             let candidate = PathBuf::from(&usable);
-            let absolute =
-                if candidate.is_absolute() { candidate } else { root.join(&candidate) };
-            // is_file, not exists: an attachment names a file to read.
-            // A directory that happens to sit at the path would pass
+            let absolute = if candidate.is_absolute() { candidate } else { root.join(&candidate) };
+            let resolved = resolve_for_containment(&absolute.to_string_lossy())
+                .unwrap_or_else(|_| absolute.clone());
+
+            if let Some((name, _)) = sensitive_roots.iter().find(|(_, s)| inside_root(s, &resolved)) {
+                return AttachmentStatus {
+                    path: raw,
+                    absolute_path: None,
+                    exists: false,
+                    location: AttachmentLocation::Refused,
+                    refused_reason: Some(format!(
+                        "lies inside ~/{name}, which gavin refuses to hand an agent"
+                    )),
+                };
+            }
+
+            // is_file, not exists: an attachment names a file to read. A
+            // directory that happens to sit at the path would pass
             // `exists` and then hand the agent something it cannot read.
-            let exists = absolute.is_file();
+            let exists = resolved.is_file();
+            let location = if inside_root(root, &resolved) {
+                AttachmentLocation::Root
+            } else if extra_roots.iter().any(|r| inside_root(r, &resolved)) {
+                AttachmentLocation::ExtraContext
+            } else {
+                AttachmentLocation::Outside
+            };
             AttachmentStatus {
                 path: raw,
-                absolute_path: Some(absolute.to_string_lossy().to_string()),
+                absolute_path: Some(resolved.to_string_lossy().to_string()),
                 exists,
+                location,
+                refused_reason: None,
             }
         })
         .collect()
@@ -659,8 +762,18 @@ mod tests {
         vec![std::fs::canonicalize(dir.path()).unwrap()]
     }
 
+    /// The `sensitive_roots` slice `attachment_status_impl` takes in place
+    /// of the real `sensitive_home_roots` -- one sensitive-looking name
+    /// pointed at a tempdir subdirectory, canonicalized the same way the
+    /// real function resolves `~/.ssh` and friends.
+    fn sensitive_roots_of(dir: &tempfile::TempDir, name: &'static str) -> Vec<(&'static str, PathBuf)> {
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        vec![(name, std::fs::canonicalize(&path).unwrap())]
+    }
+
     #[test]
-    fn attachment_status_resolves_against_the_root_and_refuses_traversal() {
+    fn attachment_status_resolves_against_the_root_and_classifies_by_location() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("ws");
         std::fs::create_dir_all(root.join("docs")).unwrap();
@@ -668,41 +781,132 @@ mod tests {
         // Deliberately REAL and reachable via `..` from the root, so the
         // refusal below cannot be mistaken for "the file wasn't there".
         std::fs::write(dir.path().join("outside.md"), "secret").unwrap();
-        let outside = dir.path().join("outside.md").to_string_lossy().to_string();
+        let outside = dir.path().join("outside.md");
+        let root_canonical = std::fs::canonicalize(&root).unwrap();
 
-        let got = attachment_status(
-            root.to_string_lossy().to_string(),
+        let got = attachment_status_impl(
+            &root_canonical,
             vec![
                 "docs/spec.md".to_string(),
                 "docs/gone.md".to_string(),
-                outside.clone(),
+                outside.to_string_lossy().to_string(),
                 "../outside.md".to_string(),
                 "docs".to_string(),
             ],
+            &[],
+            &[],
         );
 
-        // Relative, present: resolved against the root.
+        // Relative, present: resolved against the root, classified Root.
         assert_eq!(got[0].path, "docs/spec.md");
-        assert_eq!(got[0].absolute_path.as_deref(), Some(root.join("docs/spec.md").to_string_lossy().as_ref()));
+        assert_eq!(
+            got[0].absolute_path.as_deref(),
+            Some(root_canonical.join("docs/spec.md").to_string_lossy().as_ref())
+        );
         assert!(got[0].exists);
+        assert_eq!(got[0].location, AttachmentLocation::Root);
+        assert_eq!(got[0].refused_reason, None);
 
-        // Relative, moved away: resolved, and honestly missing.
+        // Relative, moved away: resolved, still Root, and honestly missing.
         assert!(!got[1].exists);
         assert!(got[1].absolute_path.is_some());
+        assert_eq!(got[1].location, AttachmentLocation::Root);
 
         // Absolute outside the root is the COMMON case, not an escape --
-        // a screenshot on the Desktop, a spec on a shared volume.
-        assert_eq!(got[2].absolute_path.as_deref(), Some(outside.as_str()));
+        // a screenshot on the Desktop, a spec on a shared volume -- but it
+        // is now classified Outside rather than treated as freely
+        // readable. `attachments.ts` is what decides not to hand it over.
+        assert_eq!(
+            got[2].absolute_path.as_deref(),
+            Some(std::fs::canonicalize(&outside).unwrap().to_string_lossy().as_ref())
+        );
         assert!(got[2].exists);
+        assert_eq!(got[2].location, AttachmentLocation::Outside);
+        assert_eq!(got[2].refused_reason, None);
 
         // `..` is refused, not stat'd: no absolute path comes back at
-        // all, even though the file it points at exists.
+        // all, even though the file it points at exists, and the reason
+        // says why.
         assert_eq!(got[3].path, "../outside.md");
         assert_eq!(got[3].absolute_path, None);
         assert!(!got[3].exists);
+        assert_eq!(got[3].location, AttachmentLocation::Refused);
+        assert!(got[3].refused_reason.as_deref().unwrap().contains(".."));
 
         // A directory is not a file to read.
         assert!(!got[4].exists);
+        assert_eq!(got[4].location, AttachmentLocation::Root);
+    }
+
+    #[test]
+    fn attachment_status_classifies_an_extra_context_and_refuses_a_sensitive_home_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize({
+            let root = dir.path().join("ws");
+            std::fs::create_dir(&root).unwrap();
+            root
+        })
+        .unwrap();
+        let context = dir.path().join("registered-context");
+        std::fs::create_dir(&context).unwrap();
+        std::fs::write(context.join("shared.md"), "shared").unwrap();
+        let extra_root = std::fs::canonicalize(&context).unwrap();
+
+        let ssh = sensitive_roots_of(&dir, ".ssh");
+        std::fs::write(ssh[0].1.join("id_rsa"), "not-a-real-key").unwrap();
+        let key_path = ssh[0].1.join("id_rsa").to_string_lossy().to_string();
+
+        let got = attachment_status_impl(
+            &root,
+            vec![context.join("shared.md").to_string_lossy().to_string(), key_path],
+            &[extra_root],
+            &ssh,
+        );
+
+        // A registered extra context is trusted the same way the root is.
+        assert_eq!(got[0].location, AttachmentLocation::ExtraContext);
+        assert!(got[0].exists);
+        assert!(got[0].absolute_path.is_some());
+
+        // A sensitive home directory is refused outright, whatever a
+        // future confirmation might say -- no absolute path, a reason
+        // naming which directory, and blocked the same way a missing
+        // file is.
+        assert_eq!(got[1].location, AttachmentLocation::Refused);
+        assert_eq!(got[1].absolute_path, None);
+        assert!(!got[1].exists);
+        assert!(got[1].refused_reason.as_deref().unwrap().contains(".ssh"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_status_classifies_by_where_a_symlink_inside_the_root_actually_leads() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("secret.txt"), "s3cr3t").unwrap();
+        // A link INSIDE the root pointing OUT of it: the root-relative
+        // name says "escape/secret.txt", but where it actually leads is
+        // what has to decide the classification.
+        std::os::unix::fs::symlink(&elsewhere, root.join("escape")).unwrap();
+        let root_canonical = std::fs::canonicalize(&root).unwrap();
+        let elsewhere_canonical = std::fs::canonicalize(&elsewhere).unwrap();
+
+        let got = attachment_status_impl(
+            &root_canonical,
+            vec!["escape/secret.txt".to_string()],
+            &[],
+            &[],
+        );
+
+        assert_eq!(got[0].location, AttachmentLocation::Outside);
+        assert!(got[0].exists);
+        assert_eq!(
+            got[0].absolute_path.as_deref(),
+            Some(elsewhere_canonical.join("secret.txt").to_string_lossy().as_ref())
+        );
     }
 
     #[test]

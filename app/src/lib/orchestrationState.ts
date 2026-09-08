@@ -1252,10 +1252,11 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
       entry.plan.title,
       stripFrontmatter(file.content).trim(),
       resolved.paths,
-      cwd
+      cwd,
+      resolved.withheld
     );
   } else {
-    prompt = composePlanPrompt(step.cardPath, resolved.paths, cwd);
+    prompt = composePlanPrompt(step.cardPath, resolved.paths, cwd, resolved.withheld);
   }
   // A card step re-run by a loop opens with what failed. Null except on
   // a retry, and then this is the whole difference between "do the card"

@@ -32,13 +32,14 @@ import {
   recordDevelopingCard,
 } from "./developingCardsState";
 import { stripFrontmatter } from "./planChecklist";
-import { missingAttachmentReason, resolvedAttachmentPaths } from "./attachments";
+import { missingAttachmentReason, resolvedAttachmentPaths, withheldAttachmentPaths } from "./attachments";
 import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "./queuedInput";
 import { queueFollowUp, queueTargetFor } from "./queuedInputActions";
 import { cardViewForPath, type CardView } from "./planBoard";
 
 /// The run gate for a card's attachments: the absolute paths to hand the
-/// agent, or the reason this launch must not happen.
+/// agent (and the ones it named but gavin is withholding), or the reason
+/// this launch must not happen.
 ///
 /// Stat'd HERE, immediately before spawning, rather than trusted from
 /// the last scan: the daemon never stats attachments, and a file the
@@ -46,13 +47,17 @@ import { cardViewForPath, type CardView } from "./planBoard";
 /// the agent as a dead path. An agent handed one burns a whole session
 /// before anybody notices; the card is the cheap thing to fix.
 ///
+/// `paths` never includes an entry the host classified `outside` the
+/// workspace -- `withheld` names those instead, by the raw text the card
+/// used, so a launcher can tell the agent they were named but not read.
+///
 /// Shared with the orchestration scheduler so a rail step and a board
 /// Run refuse on exactly the same evidence.
 export async function resolveAttachmentsForRun(
   workspaceId: string,
   attachments: string[]
-): Promise<{ paths: string[] } | { error: string }> {
-  if (attachments.length === 0) return { paths: [] };
+): Promise<{ paths: string[]; withheld: string[] } | { error: string }> {
+  if (attachments.length === 0) return { paths: [], withheld: [] };
   const root = workspaceRootPath(workspaceId);
   // Only reachable with attachments to resolve: a relative one has
   // nothing to resolve against, and guessing a base is how a card ends
@@ -68,7 +73,7 @@ export async function resolveAttachmentsForRun(
   }
   const missing = missingAttachmentReason(statuses);
   if (missing) return { error: missing };
-  return { paths: resolvedAttachmentPaths(statuses) };
+  return { paths: resolvedAttachmentPaths(statuses), withheld: withheldAttachmentPaths(statuses) };
 }
 
 /// Put the human in front of a session: the terminal view, on whichever
@@ -396,7 +401,8 @@ async function launchCard(
       card.title,
       card.kind,
       stripFrontmatter(file.content).trim(),
-      resolved.paths
+      resolved.paths,
+      resolved.withheld
     );
   } else if (card.kind === "task") {
     const file = await backend.readFileForViewer(path);
@@ -404,13 +410,13 @@ async function launchCard(
     const body = stripFrontmatter(file.content).trim();
     prompt =
       mode === "resume"
-        ? composeResumeTaskPrompt(path, card.title, body, resolved.paths)
-        : composeTaskPrompt(path, card.title, body, resolved.paths);
+        ? composeResumeTaskPrompt(path, card.title, body, resolved.paths, resolved.withheld)
+        : composeTaskPrompt(path, card.title, body, resolved.paths, null, resolved.withheld);
   } else {
     prompt =
       mode === "resume"
-        ? composeResumePlanPrompt(path, resolved.paths)
-        : composePlanPrompt(path, resolved.paths);
+        ? composeResumePlanPrompt(path, resolved.paths, resolved.withheld)
+        : composePlanPrompt(path, resolved.paths, null, resolved.withheld);
   }
 
   const conversationId = conversationIdForLaunch(agent);
@@ -587,9 +593,16 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   if (card.kind === "task") {
     const file = await backend.readFileForViewer(path);
     if (!file.exists) return `Card file not found: ${path}`;
-    prompt = composeTaskPrompt(path, card.title, stripFrontmatter(file.content).trim(), resolved.paths);
+    prompt = composeTaskPrompt(
+      path,
+      card.title,
+      stripFrontmatter(file.content).trim(),
+      resolved.paths,
+      null,
+      resolved.withheld
+    );
   } else {
-    prompt = composePlanPrompt(path, resolved.paths);
+    prompt = composePlanPrompt(path, resolved.paths, null, resolved.withheld);
   }
   const pasteError = await pasteToMainAgent(workspaceId, prompt);
   if (pasteError) return pasteError;
