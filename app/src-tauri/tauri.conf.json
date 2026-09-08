@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "cargo build -p gavin-daemon -p gavin-mcp && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "cargo build --release -p gavin-daemon -p gavin-mcp && npm run build",
+    "beforeBuildCommand": "node src-tauri/stage-sidecars.mjs --release && npm run build",
     "frontendDist": "../build"
   },
   "app": {
@@ -34,6 +34,14 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist"
+    },
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com"
+    }
   }
 }

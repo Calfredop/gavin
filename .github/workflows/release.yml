@@ -1,0 +1,394 @@
+# Builds the artefacts a human could hand to somebody else, and refuses to
+# build anything else.
+#
+# The audit's R6 (SC-06/07/08) is one sentence: nothing distinguishes
+# gavin's bundle from a modified one. The daemon owns every session's PTY,
+# stdin and queued input, and the absolute path of `gavin-mcp` is written
+# into each workspace's agent config, so both ride inside the bundle and
+# both are what an attacker would want to replace. A signature over the
+# whole bundle is the only thing that makes such a replacement detectable,
+# and notarization is the only thing that lets a first launch succeed
+# without teaching the human the "Open Anyway" habit that makes a modified
+# bundle indistinguishable from the real one.
+#
+# Three deliberate choices:
+#
+# * `preflight` fails the run when a signing secret is missing, BEFORE any
+#   platform starts building. Tauri's bundler treats a missing identity as
+#   "skip signing" and prints a line; that is the right default for a
+#   developer build and exactly the wrong one here, because the output
+#   still looks like a release. The gate is what makes an unsigned release
+#   impossible rather than merely unlikely.
+#
+# * Every job's verification step runs AFTER the build and fails the job.
+#   Building it signed and checking it is signed are different claims.
+#
+# * The workflow token stays `contents: read` and this workflow publishes
+#   nothing. It produces verified artefacts; attaching them to a release is
+#   a deliberate human act, and giving a tag-triggered workflow write
+#   access to the repository is a bigger hole than the one it would close.
+#   See docs/RELEASING.md.
+#
+# Third-party actions are pinned to a full commit SHA (tag in a trailing
+# comment) for the reason ci.yml states: a tag can be moved by whoever
+# holds it, a SHA cannot.
+#
+# WHAT HAS ACTUALLY RUN. The macOS path was exercised end to end on a
+# developer Mac with an ad-hoc identity: the bundler signs both sidecars
+# and then seals the bundle around them, a replaced
+# `Contents/MacOS/gavin-daemon` makes `codesign --verify --deep --strict`
+# report "nested code is modified or invalid", and
+# scripts/verify-macos-bundle.sh catches both that and a missing sidecar.
+# Everything that needs a real Developer ID (notarization, stapling, the
+# Gatekeeper assessment) and the whole of the Linux and Windows jobs have
+# never run: there is no certificate, no key and no runner yet. Expect the
+# first tagged release to need fixes here, and treat a red job on it as
+# information rather than as a regression.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Preflight (secrets and version)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # A tag that disagrees with the version inside the bundle is a
+      # release nobody can trace back to a commit. Check it before paying
+      # for three build hosts.
+      - name: The tag and bundle.version agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          conf=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
+          if [ "$tag" != "$conf" ]; then
+            echo "tag $GITHUB_REF_NAME says $tag, tauri.conf.json says $conf" >&2
+            exit 1
+          fi
+          echo "version $conf"
+
+      # Named one at a time so the failure says WHICH one is missing. A
+      # secret is never echoed -- only whether it is empty.
+      - name: Every signing secret is present
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          LINUX_GPG_KEY: ${{ secrets.LINUX_GPG_KEY }}
+          LINUX_GPG_KEY_ID: ${{ secrets.LINUX_GPG_KEY_ID }}
+        run: |
+          missing=0
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                      APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_P8 \
+                      WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD \
+                      LINUX_GPG_KEY LINUX_GPG_KEY_ID; do
+            if [ -z "${!name}" ]; then
+              echo "missing secret: $name" >&2
+              missing=1
+            fi
+          done
+          if [ "$missing" = 1 ]; then
+            echo "see docs/RELEASING.md for what each one is and who holds it" >&2
+            exit 1
+          fi
+          echo "all signing secrets present"
+
+  macos:
+    name: macOS (${{ matrix.arch }})
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One runner per architecture rather than a universal binary:
+          # stage-sidecars.mjs stages `gavin-daemon`/`gavin-mcp` under the
+          # HOST triple from `rustc -vV`, which is the target triple only
+          # when the two match. A universal build would need the sidecars
+          # lipo'd under a fourth name; two runners cost less than that
+          # machinery and produce the same two downloads.
+          - runner: macos-15
+            arch: aarch64
+          - runner: macos-13
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: npm ci
+        working-directory: app
+        run: npm ci
+
+      # The App Store Connect key has to be a FILE on disk: the bundler
+      # passes APPLE_API_KEY_PATH to `notarytool --key`. Written outside
+      # the workspace so no later step can sweep it into an artefact, and
+      # removed again whatever happens.
+      - name: Write the notarization key
+        env:
+          # Through `env:`, never `${{ }}` inside `run:`. An expression is
+          # pasted into the script before the shell sees it, so a secret
+          # is one stray quote away from being executed rather than
+          # written; an environment variable is only ever data.
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/notary"
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/notary/AuthKey.p8"
+
+      # APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD: the Tauri CLI
+      # imports the base64 .p12 into a throwaway keychain itself, so
+      # nothing here touches the login keychain.
+      # APPLE_API_* present means the bundler notarizes and staples in the
+      # same run; absent, it signs and silently skips notarization, which
+      # is what preflight exists to prevent.
+      - name: Build, sign, notarize
+        working-directory: app
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/notary/AuthKey.p8
+          CI: true
+        run: npm run bundle
+
+      - name: Delete the notarization key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/notary"
+
+      # No --allow-adhoc: signed, hardened, one team, no entitlement
+      # granted, Gatekeeper-accepted and stapled, or the job is red.
+      - name: Verify the bundle
+        run: ./scripts/verify-macos-bundle.sh "target/release/bundle/macos/Gavin.app"
+
+      # And again on the copy inside the .dmg, because that is the one a
+      # human downloads. Verifying the build directory proves the bundler
+      # signed something; verifying the disk image proves the thing that
+      # ships is what was signed.
+      - name: Verify the app inside the disk image
+        run: |
+          set -euo pipefail
+          dmg=$(find target/release/bundle/dmg -name '*.dmg' | head -1)
+          mnt=$(mktemp -d)
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mnt"
+          trap 'hdiutil detach "$mnt" -quiet || true' EXIT
+          ./scripts/verify-macos-bundle.sh "$mnt/Gavin.app"
+
+      # The .dmg only. A .app is a directory of symlinks and extended
+      # attributes, and actions/upload-artifact zips it: what comes back
+      # down no longer verifies. The disk image survives the round trip
+      # with its signature and its stapled ticket intact.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gavin-macos-${{ matrix.arch }}
+          path: target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  linux:
+    name: Linux
+    needs: preflight
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      # Same list ci.yml installs; the bundler additionally wants patchelf
+      # and the AppImage tooling's fuse dependency.
+      - name: Install the GTK/WebKit stack and the bundler's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf
+
+      - name: npm ci
+        working-directory: app
+        run: npm ci
+
+      - name: Build
+        working-directory: app
+        env:
+          CI: true
+        run: npm run bundle
+
+      # Linux has no OS-level code signature to attach, so the artefacts
+      # get a detached OpenPGP signature over each file and a signed
+      # checksum list. That is the whole trust story on this platform:
+      # publish the public key once, and `gpg --verify` is what a
+      # downloader runs. If gavin ever ships an apt/dnf repository, this is
+      # the key that signs its metadata too -- see docs/RELEASING.md.
+      - name: Sign every artefact
+        env:
+          LINUX_GPG_KEY: ${{ secrets.LINUX_GPG_KEY }}
+          LINUX_GPG_KEY_ID: ${{ secrets.LINUX_GPG_KEY_ID }}
+          LINUX_GPG_KEY_PASSWORD: ${{ secrets.LINUX_GPG_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"
+          printf '%s' "$LINUX_GPG_KEY" | base64 --decode | gpg --batch --import
+          cd target/release/bundle
+          find . -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) -print0 \
+            | sort -z | xargs -0 sha256sum > SHA256SUMS
+          sign() {
+            gpg --batch --yes --pinentry-mode loopback \
+                --passphrase "${LINUX_GPG_KEY_PASSWORD:-}" \
+                --local-user "$LINUX_GPG_KEY_ID" \
+                --armor --detach-sign "$1"
+          }
+          sign SHA256SUMS
+          while IFS= read -r f; do sign "$f"; done < <(
+            find . -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \)
+          )
+          gpg --verify SHA256SUMS.asc SHA256SUMS
+
+      # Same check the macOS script's step [1] makes, in the one form a
+      # .deb allows. On a first run, the listing is printed when it fails
+      # so the real install prefix is visible rather than guessed at.
+      - name: The sidecars shipped
+        run: |
+          set -uo pipefail
+          deb=$(find target/release/bundle -name '*.deb' | head -1)
+          listing=$(dpkg-deb -c "$deb")
+          missing=0
+          for bin in gavin-daemon gavin-mcp; do
+            if printf '%s' "$listing" | grep -qE "/$bin\$"; then
+              echo "ok    $bin is in the package"
+            else
+              echo "FAIL  $bin is not in the package"
+              missing=1
+            fi
+          done
+          if [ "$missing" = 1 ]; then printf '%s\n' "$listing"; exit 1; fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gavin-linux-x86_64
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/SHA256SUMS*
+            target/release/bundle/**/*.asc
+          if-no-files-found: error
+
+  windows:
+    name: Windows
+    needs: preflight
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: npm ci
+        working-directory: app
+        run: npm ci
+
+      # Tauri's Windows signing wants a certificate THUMBPRINT in the
+      # config and the key in the machine's store -- there is no env var
+      # for it, unlike macOS. So: import the PFX, read the thumbprint the
+      # import produced, and hand it to `tauri build` as a config overlay.
+      # A generated overlay rather than a committed one because a
+      # thumbprint identifies the certificate and belongs with the secret,
+      # not in the repository.
+      #
+      # This PFX route works for a private or legacy certificate. A
+      # publicly trusted code-signing certificate bought today cannot be
+      # exported into a secret at all: since mid-2023 the CA/Browser Forum
+      # requires its private key to live on certified hardware or in a
+      # cloud signing service. For one of those, replace this step with the
+      # provider's authentication and set `bundle.windows.signCommand`
+      # instead of a thumbprint. See docs/RELEASING.md.
+      - name: Import the code-signing certificate
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'code-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $pw = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
+          Remove-Item $pfx -Force
+          $overlay = @{ bundle = @{ windows = @{ certificateThumbprint = $cert.Thumbprint } } }
+          $overlay | ConvertTo-Json -Depth 5 |
+            Set-Content -Path 'app/src-tauri/tauri.signing.conf.json' -Encoding utf8
+          "thumbprint length: $($cert.Thumbprint.Length)"
+
+      # Not `npm run bundle`: the extra --config has to sit before the
+      # `--` that starts cargo's own arguments, and npm appends whatever
+      # follows `--` to the END of the script.
+      - name: Build and sign
+        working-directory: app
+        env:
+          CI: true
+        run: >
+          npx tauri build
+          --config src-tauri/tauri.bundle.conf.json
+          --config src-tauri/tauri.signing.conf.json
+          -- --locked
+
+      - name: Remove the generated overlay
+        if: always()
+        shell: pwsh
+        run: Remove-Item 'app/src-tauri/tauri.signing.conf.json' -ErrorAction SilentlyContinue
+
+      # signtool is the only thing that can answer "is this actually
+      # signed": the bundler prints a line either way.
+      - name: Verify the installer is signed and timestamped
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' |
+            Sort-Object FullName | Select-Object -Last 1
+          $failed = $false
+          # -Filter, not -Include: with -Recurse, -Include only matches
+          # when the path itself ends in a wildcard, so the naive spelling
+          # silently finds nothing and the loop "passes".
+          Get-ChildItem -Path 'target/release/bundle' -Recurse -Filter '*.exe' | ForEach-Object {
+            & $signtool.FullName verify /pa /tw $_.FullName
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+          }
+          if ($failed) { throw 'an artefact is unsigned or untimestamped' }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gavin-windows-x86_64
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
