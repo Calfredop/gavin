@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 import { svelteStyleCache } from "./vite-svelte-style-cache.js";
+import { devCspMirror } from "./vite-dev-csp.js";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
@@ -10,7 +11,7 @@ export default defineConfig(async () => ({
   // Before sveltekit(), because the warm half has to reach load() first
   // and the guard half has to reach it last -- see the file for what a
   // cold CSS cache does to the app.
-  plugins: [svelteStyleCache(), sveltekit()],
+  plugins: [svelteStyleCache(), sveltekit(), devCspMirror()],
   test: {
     include: ["src/**/*.{test,spec}.ts"],
   },

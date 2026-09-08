@@ -757,11 +757,77 @@ pub fn rename_path(root: String, from: String, to: String) -> Result<(), String>
 /// canonicalizes for the containment check only, and what is handed to
 /// the trash is that canonical path -- so a link is refused when its
 /// target lies outside the root, which is the conservative direction.
+///
+/// `token` is the grant `confirm_gate` minted for THIS path when the
+/// human answered the Trash prompt, spent before anything moves: the
+/// confirmation is the product's promise here, and a direct `invoke`
+/// used to walk straight past it (AS-05/R5).
 #[tauri::command]
-pub fn trash_entry(root: String, path: String) -> Result<(), String> {
-    let root = canonical_root(&root)?;
-    let target = resolve_existing(&root, &path, false)?;
+pub fn trash_entry(
+    root: String,
+    path: String,
+    token: String,
+    gate: State<crate::confirm_gate::ConfirmGate>,
+) -> Result<(), String> {
+    crate::confirm_gate::spend(&gate, &token, "trash_entry", &path)?;
+    trash_entry_impl(&root, &path)
+}
+
+/// The containment half, without the `State` a unit test cannot build.
+fn trash_entry_impl(root: &str, path: &str) -> Result<(), String> {
+    let root = canonical_root(root)?;
+    let target = resolve_existing(&root, path, false)?;
     crate::trash::trash_path(&target.to_string_lossy())
+}
+
+// ---- handing a path to the OS ----------------------------------------
+//
+// `open` LAUNCHES things: on macOS it starts an `.app` bundle outright
+// and hands anything else to its registered handler, which is a second
+// program of the attacker's choosing. That is why the frontend no longer
+// holds `opener:allow-open-path` at all -- the capability's scope is
+// static (`tauri-plugin-opener`'s `Entry` is deserialized once from
+// capabilities/default.json and has no runtime setter), so the only way
+// to scope it to something as mutable as "the workspaces open right now"
+// is to put the check on this side of the IPC (AS-09/R5).
+//
+// Both commands answer against `allowed_roots` -- the same set the five
+// raw-path viewer commands use -- so what gavin will OPEN and what it
+// will READ agree. Before this, `resolve_path_under_cursor` would
+// underline a Cmd+clickable file under a terminal's cwd outside every
+// workspace and `read_file_for_viewer` would then refuse it; now the
+// external-open half refuses it too, which is the coherent direction:
+// the boundary is the same one, named once.
+
+/// Hands `path` to the OS's default application for it.
+///
+/// Refuses a path outside every open workspace. The error carries the
+/// path, because every call site of this shows the human a message --
+/// "Couldn't open in Finder", the editor's `openError`, the card's
+/// `errorMessage` -- and a refusal has to read as a refusal rather than
+/// as a click that did nothing.
+#[tauri::command]
+pub fn open_path_externally(path: String, workspaces: State<WorkspacesState>) -> Result<(), String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    let resolved = ensure_within_open_workspaces(&path, &roots)?;
+    tauri_plugin_opener::open_path(&resolved, None::<&str>).map_err(|e| e.to_string())
+}
+
+/// Selects `path` in the OS file manager (Finder on macOS).
+///
+/// Guarded on the same set as `open_path_externally` even though
+/// revealing is the milder of the two -- it selects an entry rather than
+/// running anything. `opener:default` grants `allow-reveal-item-in-dir`
+/// with no scope whatsoever, so leaving that permission in place would
+/// have left an unscoped raw-path opener command behind the one that was
+/// just taken away; the capability now carries `allow-open-url` and
+/// `allow-default-urls` (which is where the mailto/tel/http/https scheme
+/// scope lives) and no path permission at all.
+#[tauri::command]
+pub fn reveal_path_externally(path: String, workspaces: State<WorkspacesState>) -> Result<(), String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    let resolved = ensure_within_open_workspaces(&path, &roots)?;
+    tauri_plugin_opener::reveal_item_in_dir(&resolved).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -1595,16 +1661,16 @@ mod tests {
         std::fs::write(dir.path().join("outside.md"), "out").unwrap();
         let root_s = root.to_string_lossy().to_string();
 
-        let err = trash_entry(root_s.clone(), dir.path().join("outside.md").to_string_lossy().to_string());
+        let err = trash_entry_impl(&root_s, &dir.path().join("outside.md").to_string_lossy());
         assert!(err.unwrap_err().contains("outside the workspace root"));
         assert!(dir.path().join("outside.md").exists());
 
-        let err = trash_entry(root_s.clone(), root_s.clone());
+        let err = trash_entry_impl(&root_s, &root_s);
         assert!(err.unwrap_err().contains("workspace root itself"));
         assert!(root.is_dir());
 
         // A path that isn't there at all fails to resolve rather than
         // reporting a delete that never happened.
-        assert!(trash_entry(root_s, root.join("ghost.md").to_string_lossy().to_string()).is_err());
+        assert!(trash_entry_impl(&root_s, &root.join("ghost.md").to_string_lossy()).is_err());
     }
 }

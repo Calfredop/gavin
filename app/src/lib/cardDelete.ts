@@ -63,12 +63,22 @@ export function columnDeletionPlan(planCards: CardView[], allCards: CardView[]):
 // Sequential, patch-on-success; stops on the first failure and names the
 // file (the watcher reconciles whatever landed). Refreshes the board at
 // the end so binding rows removed daemon-side leave the store too.
-export async function executeDeletion(workspaceId: string, plan: DeletionPlan): Promise<string | null> {
+//
+// `token` is the caller's grant from `confirmGate.ts`, minted over every
+// path in `plan.files` -- one prompt, because deleting a plan card takes
+// its nested tasks with it and the human answered for all of them. Each
+// file spends it once; a token that names a different set is refused by
+// the host, so this cannot be handed a plan it was not shown.
+export async function executeDeletion(
+  workspaceId: string,
+  plan: DeletionPlan,
+  token: string
+): Promise<string | null> {
   let current = "";
   try {
     for (const card of plan.files) {
       current = card.id;
-      await backend.deleteCardFile(card.id);
+      await backend.deleteCardFile(card.id, token);
       patchPlanRemoved(workspaceId, card.id);
     }
     for (const card of plan.unparent) {

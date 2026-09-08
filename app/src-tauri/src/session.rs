@@ -1739,8 +1739,26 @@ pub fn get_bootstrap_error(state: State<BootstrapError>) -> Option<String> {
 /// survives, reparented to init (verified under a temp $HOME). That is
 /// precisely why recovery must not re-run a command -- the alternative is
 /// two agents editing one checkout.
+///
+/// `token` is the grant `confirm_gate` minted when the human answered
+/// the restart prompt. BOTH branches below run `kill_running_daemons`
+/// (`pkill -x gavin-daemon`), and that daemon is shared with every other
+/// gavin window: an in-page script calling this used to be a one-line
+/// denial of service on somebody else's sessions (AS-05/R5). All four
+/// routes to it -- Settings, the sessions manager, the compat banner and
+/// the connection-error overlay -- now ask first.
 #[tauri::command]
-pub fn restart_daemon(app_handle: AppHandle) -> Result<(), String> {
+pub fn restart_daemon(
+    app_handle: AppHandle,
+    token: String,
+    gate: State<crate::confirm_gate::ConfirmGate>,
+) -> Result<(), String> {
+    crate::confirm_gate::spend(
+        &gate,
+        &token,
+        "restart_daemon",
+        crate::confirm_gate::DAEMON_SUBJECT,
+    )?;
     if app_handle.try_state::<DaemonConnection>().is_some() {
         return reconnect(&app_handle).map_err(|e| e.to_string());
     }
@@ -4164,16 +4182,19 @@ pub fn gavin_root_exists(root_path: String) -> bool {
     std::path::Path::new(&root_path).join(".gavin-root").is_dir()
 }
 
-/// Plan authoring from the app (the explorer's "New plan"). Routes
-/// through the same daemon request MCP agents use, so validation and the
-/// never-overwrite guarantee are identical no matter who creates a plan.
-/// Returns the created path.
+/// `token` is the grant `confirm_gate` minted for THIS card path when
+/// the human answered the delete prompt. Deleting a plan card takes its
+/// nested tasks' files with it, so one prompt names several paths and
+/// the caller spends the same token once per file (AS-05/R5).
 #[tauri::command]
 pub fn delete_card_file(
     path: String,
+    token: String,
+    gate: State<crate::confirm_gate::ConfirmGate>,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
+    crate::confirm_gate::spend(&gate, &token, "delete_card_file", &path)?;
     let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::DeleteCardFile { path })
         .map_err(|e| e.to_string())?;
     match resp {
@@ -4283,6 +4304,10 @@ pub fn promote_checklist_item(
     }
 }
 
+/// Plan authoring from the app (the explorer's "New plan"). Routes
+/// through the same daemon request MCP agents use, so validation and the
+/// never-overwrite guarantee are identical no matter who creates a plan.
+/// Returns the created path.
 #[tauri::command]
 pub fn create_plan(
     context_folder: String,

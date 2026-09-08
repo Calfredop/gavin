@@ -12,6 +12,7 @@
   import { runCard, resumeCard, developCard, sendToMainAgent } from "./cardRunActions";
   import { layoutState, daemonCompat } from "./layoutState";
   import { columnDeletionPlan, deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
+  import { grantForAnsweredPrompt } from "./confirmGate";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
@@ -249,7 +250,8 @@
     pendingDelete = null;
     if (!plan) return;
     planWriteError = null;
-    const err = await executeDeletion(workspaceId, plan);
+    const token = await grantForAnsweredPrompt("delete_card_file", plan.files.map((f) => f.id));
+    const err = await executeDeletion(workspaceId, plan, token);
     if (err) planWriteError = err;
   }
 
@@ -356,7 +358,8 @@
     pendingPurge = null;
     if (!plan) return;
     planWriteError = null;
-    const err = await executeDeletion(workspaceId, plan);
+    const token = await grantForAnsweredPrompt("delete_card_file", plan.files.map((f) => f.id));
+    const err = await executeDeletion(workspaceId, plan, token);
     if (err) planWriteError = err;
     // The picks named files that are gone; leaving them would let a
     // second Delete count cards nobody can see.

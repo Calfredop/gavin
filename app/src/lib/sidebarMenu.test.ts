@@ -2,13 +2,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // The tab row's menu delegates to the REAL buildTabMenuEntries, so this
 // file has to stand in for everything that builder reaches for too.
-vi.mock("@tauri-apps/plugin-opener", () => ({
-  openPath: vi.fn().mockResolvedValue(undefined),
-  revealItemInDir: vi.fn().mockResolvedValue(undefined),
-}));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
-vi.mock("./backend", () => ({ gavinRootExists: vi.fn() }));
+vi.mock("./backend", () => ({
+  gavinRootExists: vi.fn(),
+  openPathExternally: vi.fn().mockResolvedValue(undefined),
+  revealPathExternally: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("./layoutState", () => ({
   closeWorkspace: vi.fn().mockResolvedValue(undefined),
   closePage: vi.fn().mockResolvedValue(undefined),
@@ -46,10 +46,9 @@ vi.mock("./confirmClose", () => ({
   confirmTabClose: vi.fn().mockResolvedValue(true),
 }));
 
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
-import { gavinRootExists } from "./backend";
+import { gavinRootExists, openPathExternally, revealPathExternally } from "./backend";
 import {
   closeWorkspace,
   closePage,
@@ -194,7 +193,7 @@ describe("buildWorkspaceMenuEntries", () => {
   it("disables Open Root without a root and opens it with one", () => {
     expect(find(buildWorkspaceMenuEntries(ws("w1", []), hooks()), "Open Root in Finder").disabled).toBe(true);
     find(buildWorkspaceMenuEntries(ws("w1", [], "/r"), hooks()), "Open Root in Finder").onPick();
-    expect(openPath).toHaveBeenCalledWith("/r");
+    expect(openPathExternally).toHaveBeenCalledWith("/r");
   });
   it("renames, adds pages, and closes (danger) through the right calls", async () => {
     const h = hooks();
@@ -376,7 +375,7 @@ describe("buildSessionRowMenuEntries", () => {
     find(entries, "Rename…").onPick();
     expect(h.startRenameSession).toHaveBeenCalledWith("s1");
     find(entries, "Open Folder in Finder").onPick();
-    expect(openPath).toHaveBeenCalledWith("/cwd");
+    expect(openPathExternally).toHaveBeenCalledWith("/cwd");
     find(entries, "Copy Path").onPick();
     expect(writeText).toHaveBeenCalledWith("/cwd");
   });
@@ -388,7 +387,7 @@ describe("buildSessionRowMenuEntries", () => {
     expect(labels).not.toContain("Split Right");
     expect(labels).not.toContain("Rename…");
     find(entries, "Reveal in Finder").onPick();
-    expect(revealItemInDir).toHaveBeenCalledWith("/repo/a.md");
+    expect(revealPathExternally).toHaveBeenCalledWith("/repo/a.md");
   });
 
   it("disables the path entries when the row has no path", () => {

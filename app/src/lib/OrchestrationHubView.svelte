@@ -19,6 +19,7 @@
   import { mergePlanCards, indexCardViews, type CardView, type PlacedCardView } from "./planBoard";
   import { runCard, sendToMainAgent } from "./cardRunActions";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
+  import { grantForAnsweredPrompt } from "./confirmGate";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
@@ -400,7 +401,8 @@
     pendingDelete = null;
     if (!plan) return;
     cardWriteError = null;
-    const err = await executeDeletion(workspaceId, plan);
+    const token = await grantForAnsweredPrompt("delete_card_file", plan.files.map((f) => f.id));
+    const err = await executeDeletion(workspaceId, plan, token);
     if (err) cardWriteError = err;
   }
 

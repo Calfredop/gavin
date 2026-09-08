@@ -86,8 +86,31 @@ export function renamePath(root: string, from: string, to: string): Promise<void
 /// Moves an entry to the OS Trash, through the same route the workspace
 /// delete wizard takes. Nothing gavin removes on the human's behalf is
 /// unrecoverable.
-export function trashEntry(root: string, path: string): Promise<void> {
-  return invoke("trash_entry", { root, path });
+///
+/// `token` comes from `confirmGate.ts` and names this exact path: the
+/// host refuses the call without one, so the Trash prompt is a
+/// precondition rather than a convention (AS-05/R5). Same for
+/// `deleteCardFile`, `removeGavinFootprint` and `restartDaemon` below.
+export function trashEntry(root: string, path: string, token: string): Promise<void> {
+  return invoke("trash_entry", { root, path, token });
+}
+
+/// Hands `path` to the OS's default application, and `revealPath` selects
+/// it in the file manager. Both used to be the opener plugin's own
+/// `openPath`/`revealItemInDir`, invoked straight from the page: one was
+/// scoped to `/**` and `**`, the other to nothing at all, so from a
+/// compromised page they launched any app or file on disk (AS-09/R5).
+/// The host now answers them against the open workspace roots, a scope
+/// that changes while the app runs and so cannot be a static capability.
+///
+/// A path outside every open workspace rejects with a message naming it;
+/// every call site already has somewhere to show that.
+export function openPathExternally(path: string): Promise<void> {
+  return invoke("open_path_externally", { path });
+}
+
+export function revealPathExternally(path: string): Promise<void> {
+  return invoke("reveal_path_externally", { path });
 }
 
 export function viewableExtensions(): Promise<string[]> {
@@ -404,8 +427,8 @@ export function getBootstrapError(): Promise<string | null> {
 
 // Resolves true when the app is fully reconnected, false when the daemon
 // was restarted but this app process needs a relaunch to rewire.
-export function restartDaemon(): Promise<void> {
-  return invoke("restart_daemon");
+export function restartDaemon(token: string): Promise<void> {
+  return invoke("restart_daemon", { token });
 }
 
 // The compat verdict from the most recent connect/reconnect. null before
@@ -667,8 +690,8 @@ export function setBoard(workspaceId: string, columns: Column[], labels: Label[]
   return invoke("set_board", { workspaceId, columns, labels });
 }
 
-export function deleteCardFile(path: string): Promise<void> {
-  return invoke("delete_card_file", { path });
+export function deleteCardFile(path: string, token: string): Promise<void> {
+  return invoke("delete_card_file", { path, token });
 }
 
 /// Moves a card into its context's `plans/archive/` (children included)
@@ -765,9 +788,10 @@ export function scanGavinFootprint(rootPath: string): Promise<GavinFootprint> {
 /// names what did not land and why.
 export function removeGavinFootprint(
   rootPath: string,
-  plan: { trash: string[]; stripMcpKey: McpFootprint[]; cutBlock: string[] }
+  plan: { trash: string[]; stripMcpKey: McpFootprint[]; cutBlock: string[] },
+  token: string
 ): Promise<RemovalReport> {
-  return invoke("remove_gavin_footprint", { rootPath, plan });
+  return invoke("remove_gavin_footprint", { rootPath, plan, token });
 }
 
 export function agentProfiles(): Promise<

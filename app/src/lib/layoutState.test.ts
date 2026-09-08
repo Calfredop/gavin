@@ -16,6 +16,15 @@ import { toolRecords } from "./toolsState";
 // Defaults to "Start fresh" so every test that is not about the reclaim
 // takes the ordinary binding path.
 vi.mock("./dialog", () => ({ askConfirm: vi.fn().mockResolvedValue(false) }));
+// retryConnect asks before it restarts: the daemon it kills is shared
+// with every other gavin window (AS-05/R5). Granting by default keeps
+// every other test in this file about what it was about; the two that
+// care drive the answer themselves.
+vi.mock("./confirmGate", () => ({
+  DAEMON_SUBJECT: "",
+  confirmDestructive: vi.fn().mockResolvedValue("grant"),
+  grantForAnsweredPrompt: vi.fn().mockResolvedValue("grant"),
+}));
 
 vi.mock("./backend", () => ({
   createSession: vi.fn(),
@@ -218,6 +227,7 @@ import {
   stampCardReview,
   type LayoutState,
 } from "./layoutState";
+import { confirmDestructive } from "./confirmGate";
 
 function leaf(tabs: string[], activeTabIndex = 0): LayoutNode {
   return { type: "leaf", tabs, activeTabIndex };
@@ -471,10 +481,24 @@ describe("retryConnect", () => {
 
     await retryConnect();
 
-    expect(backend.restartDaemon).toHaveBeenCalled();
+    expect(backend.restartDaemon).toHaveBeenCalledWith("grant");
     await vi.waitFor(() => {
       expect(get(layoutState).status).toBe("ready");
     });
+  });
+
+  it("restarts nothing when the confirmation is declined", async () => {
+    setState([], null, null);
+    layoutState.update((s) => ({ ...s, status: "error", errorMessage: "older than this app" }));
+    vi.mocked(confirmDestructive).mockResolvedValueOnce(null);
+
+    await retryConnect();
+
+    expect(backend.restartDaemon).not.toHaveBeenCalled();
+    // Still on the error overlay: a declined restart leaves the human
+    // exactly where they were, not in a "connecting" state nothing will
+    // resolve.
+    expect(get(layoutState).status).toBe("error");
   });
 
   it("surfaces a failed restart", async () => {
@@ -3665,7 +3689,7 @@ describe("restartDaemonInPlace", () => {
       activeWorkspaceId: "ws-1",
     });
 
-    await restartDaemonInPlace();
+    await restartDaemonInPlace("grant");
 
     expect(backend.restartDaemon).toHaveBeenCalled();
     expect(backend.getWorkspacesState).toHaveBeenCalled();
@@ -3679,7 +3703,7 @@ describe("restartDaemonInPlace", () => {
     layoutState.update((s) => ({ ...s, status: "ready" }));
     vi.mocked(backend.restartDaemon).mockRejectedValue(new Error("pkill unavailable"));
 
-    await expect(restartDaemonInPlace()).rejects.toThrow("pkill unavailable");
+    await expect(restartDaemonInPlace("grant")).rejects.toThrow("pkill unavailable");
     expect(get(layoutState).status).toBe("ready");
   });
 
@@ -3703,7 +3727,7 @@ describe("restartDaemonInPlace", () => {
       degraded: false,
     });
 
-    const after = await restartDaemonInPlace();
+    const after = await restartDaemonInPlace("grant");
 
     expect(after).toEqual({ daemonVersion: 17, appVersion: 17, degraded: false });
     expect(get(daemonCompat)).toEqual(after);
@@ -3724,7 +3748,7 @@ describe("restartDaemonInPlace", () => {
     });
     vi.mocked(backend.daemonCompat).mockRejectedValue(new Error("ipc hiccup"));
 
-    expect(await restartDaemonInPlace()).toEqual(retained);
+    expect(await restartDaemonInPlace("grant")).toEqual(retained);
   });
 
   // The regression this guards: DaemonCompatBanner's "Restart daemon"
@@ -3741,7 +3765,7 @@ describe("restartDaemonInPlace", () => {
     daemonCompat.set(previousCompat);
     vi.mocked(backend.restartDaemon).mockRejectedValue(new Error("pkill unavailable"));
 
-    await expect(restartDaemonInPlace()).rejects.toThrow("pkill unavailable");
+    await expect(restartDaemonInPlace("grant")).rejects.toThrow("pkill unavailable");
 
     expect(get(layoutState).status).toBe("ready");
     // The verdict the banner is still showing must survive a failed

@@ -1,7 +1,7 @@
 // Right-click menus for the sidebar: workspace rows, page rows, and the
 // tab rows inside an expanded page. Pure builders; the Sidebar supplies
 // inline-rename / new-page / error hooks.
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openPathExternally } from "./backend";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as backend from "./backend";
 import {
@@ -66,7 +66,7 @@ export function buildWorkspaceMenuEntries(ws: Workspace, hooks: SidebarMenuHooks
       label: "Open Root in Finder",
       disabled: root === null,
       onPick: () => {
-        if (root) openPath(root).catch(fail(hooks.reportError, "Couldn't open in Finder"));
+        if (root) openPathExternally(root).catch(fail(hooks.reportError, "Couldn't open in Finder"));
       },
     },
     { label: "Change Root Folder…", onPick: () => void changeWorkspaceRoot(ws.id, hooks.reportError) },

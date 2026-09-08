@@ -22,6 +22,7 @@
   import { NEW_CARD_STATUS } from "./cardCompose";
   import { placeCardAtColumnEnd } from "./planDrop";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
+  import { grantForAnsweredPrompt } from "./confirmGate";
   import { executeUnarchive } from "./archiveActions";
   import { featureBlockedReason } from "./daemonCompat";
   import { defaultMode } from "./fileEditing";
@@ -346,11 +347,13 @@
     error = null;
     const deleted = plan ? plan.files.map((f) => f.id) : [target.path];
     if (plan) {
-      const err = await executeDeletion(workspaceId, plan);
+      const token = await grantForAnsweredPrompt("delete_card_file", plan.files.map((f) => f.id));
+      const err = await executeDeletion(workspaceId, plan, token);
       if (err) error = err;
     } else {
       try {
-        await backend.deleteCardFile(target.path);
+        const token = await grantForAnsweredPrompt("delete_card_file", [target.path]);
+        await backend.deleteCardFile(target.path, token);
       } catch (e) {
         error = String(e instanceof Error ? e.message : e);
       }

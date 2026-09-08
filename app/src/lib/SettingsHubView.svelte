@@ -21,6 +21,7 @@
     markGitTrackingAsked,
     trustedAgentConfigs,
   } from "./layoutState";
+  import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "./confirmGate";
   import ComplexityTable from "./ComplexityTable.svelte";
   import type { Complexity, ComplexityAgent } from "./complexity";
   import { fontSizeOptions, resolveTerminalFontSize } from "./terminalFont";
@@ -281,7 +282,11 @@
     restartNote = null;
     const before = $daemonCompat?.daemonVersion ?? null;
     try {
-      restartNote = restartOutcome(before, await restartDaemonInPlace());
+      // This panel draws its own ConfirmPrompt (a named danger choice
+      // rather than askConfirm's pair), so the grant is taken here, in
+      // the handler that choice fires.
+      const token = await grantForAnsweredPrompt("restart_daemon", [DAEMON_SUBJECT]);
+      restartNote = restartOutcome(before, await restartDaemonInPlace(token));
       restartedAt = new Date().toLocaleTimeString();
     } catch (e) {
       restartError = String(e instanceof Error ? e.message : e);

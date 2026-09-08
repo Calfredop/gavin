@@ -3,7 +3,7 @@
 // Surfaces supply the hooks (modal, delete prompt, run, error strip).
 
 import { get } from "svelte/store";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openPathExternally } from "./backend";
 import * as backend from "./backend";
 import { kanbanState, cardSessionFor } from "./kanbanState";
 import { layoutState, daemonCompat, switchWorkspaceView } from "./layoutState";
@@ -63,7 +63,7 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
   entries.push({
     label: "Open externally",
     onPick: () => {
-      openPath(card.id).catch((e) => hooks.reportError(`Couldn't open externally: ${e}`));
+      openPathExternally(card.id).catch((e) => hooks.reportError(`Couldn't open externally: ${e}`));
     },
   });
 

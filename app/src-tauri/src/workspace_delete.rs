@@ -371,11 +371,22 @@ pub fn scan_gavin_footprint(root_path: String) -> Result<GavinFootprint, String>
     scan(Path::new(&root_path))
 }
 
+/// `token` is the grant `confirm_gate` minted when the human reached the
+/// end of the six-screen delete wizard, bound to the root about to be
+/// emptied. The wizard IS the confirmation for this command, and a
+/// direct `invoke` used to skip all six screens (AS-05/R5).
+///
+/// The subject is the root, not the plan: which workspace is being
+/// deleted is the question the human answered, and every switch in the
+/// plan is a choice made inside that answer.
 #[tauri::command]
 pub fn remove_gavin_footprint(
     root_path: String,
     plan: RemovalPlan,
+    token: String,
+    gate: tauri::State<crate::confirm_gate::ConfirmGate>,
 ) -> Result<RemovalReport, String> {
+    crate::confirm_gate::spend(&gate, &token, "remove_gavin_footprint", &root_path)?;
     remove(Path::new(&root_path), &plan)
 }
 

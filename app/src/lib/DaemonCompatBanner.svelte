@@ -8,7 +8,8 @@
   // "something's off, here's what to do about it."
   import { TriangleAlert } from "@lucide/svelte";
   import { layoutState, daemonCompat, restartDaemonInPlace, runningSessionCount } from "./layoutState";
-  import { compatMessage, restartOutcome } from "./daemonCompat";
+  import { compatMessage, restartConfirmLines, restartOutcome } from "./daemonCompat";
+  import { confirmDestructive, DAEMON_SUBJECT } from "./confirmGate";
 
   const message = $derived(compatMessage($daemonCompat, runningSessionCount($layoutState)));
 
@@ -45,6 +46,18 @@
   const note = $derived(restartNote && restartNote.forMessage === message ? restartNote.text : null);
 
   async function restart(): Promise<void> {
+    // Asks, where it used to restart on the press. Both branches of the
+    // Rust command run `pkill -x gavin-daemon`, and that daemon is
+    // shared with every other gavin window -- so this button ends
+    // somebody else's sessions too, and the host now requires the grant
+    // a prompt mints (AS-05/R5).
+    const token = await confirmDestructive("restart_daemon", [DAEMON_SUBJECT], {
+      title: "Restart gavin-daemon?",
+      lines: restartConfirmLines($daemonCompat),
+      confirmLabel: "Restart daemon",
+      danger: true,
+    });
+    if (token === null) return;
     restarting = true;
     restartError = null;
     restartNote = null;
@@ -55,7 +68,7 @@
       // above goes null on its own and this banner disappears -- and
       // restartOutcome returns null to match, so the note never flashes
       // on the way out.
-      const text = restartOutcome(before, await restartDaemonInPlace());
+      const text = restartOutcome(before, await restartDaemonInPlace(token));
       // `message` is re-derived from the refreshed verdict on read, so
       // this keys the note to the wording it is standing under.
       restartNote = text && message ? { forMessage: message, text } : null;

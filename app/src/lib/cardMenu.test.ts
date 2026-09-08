@@ -4,7 +4,6 @@ import { get, writable } from "svelte/store";
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
-vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./dialog", () => ({
   askConfirm: vi.fn(),
   askConfirmChecked: vi.fn(),
@@ -18,6 +17,7 @@ vi.mock("./backend", () => ({
   unlinkCardSession: vi.fn(),
   getOrchestration: vi.fn(),
   setOrchestration: vi.fn().mockResolvedValue(undefined),
+  openPathExternally: vi.fn().mockResolvedValue(undefined),
 }));
 /// Hoisted so the `vi.mock` factory below (which is hoisted above every
 /// import) can close over it, and so `resolvedAgentFor` and

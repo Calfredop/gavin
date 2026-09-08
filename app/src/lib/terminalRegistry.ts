@@ -2,7 +2,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import * as backend from "./backend";
 import { isViewableInApp } from "./fileTypes";
 import { hotState } from "./hotState";
@@ -102,7 +102,7 @@ async function activatePath(resolvedPath: string, sessionId: string): Promise<vo
   // a silent no-op here is indistinguishable from "the click didn't
   // register," which is how the missing opener:allow-open-path
   // capability originally presented.
-  await openPath(resolvedPath).catch((e) => {
+  await backend.openPathExternally(resolvedPath).catch((e) => {
     console.error(`failed to open ${resolvedPath} externally:`, e);
   });
 }

@@ -3,6 +3,7 @@ mod agent_setup;
 mod agent_tokens;
 mod agent_usage;
 mod config;
+mod confirm_gate;
 mod daemon;
 mod edge_expand;
 mod fileviewer;
@@ -43,6 +44,7 @@ pub fn run() {
         .manage(session::BootstrapError(std::sync::Mutex::new(None)))
         .manage(session::ConnectionEpoch(std::sync::atomic::AtomicU64::new(0)))
         .manage(session::DaemonCompatState(std::sync::Mutex::new(None)))
+        .manage(confirm_gate::ConfirmGate::default())
         .manage(fileviewer::FileWatchers::default())
         .manage(git::GitWatchers::default())
         .manage(git::GitOps::default())
@@ -101,11 +103,15 @@ pub fn run() {
             fileviewer::create_directory,
             fileviewer::rename_path,
             fileviewer::trash_entry,
+            fileviewer::open_path_externally,
+            fileviewer::reveal_path_externally,
             session::signal_frontend_ready,
             mac_window::title_bar_double_click_action,
             session::get_bootstrap_error,
             session::restart_daemon,
             daemon_compat,
+            confirm_gate::open_confirmation,
+            confirm_gate::answer_confirmation,
             session::get_board,
             session::card_runs,
             session::set_board,

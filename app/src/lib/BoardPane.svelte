@@ -12,6 +12,7 @@
   import { runCard, resumeCard, developCard, sendToMainAgent } from "./cardRunActions";
   import { layoutState } from "./layoutState";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
+  import { grantForAnsweredPrompt } from "./confirmGate";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
@@ -190,7 +191,8 @@
     pendingDelete = null;
     if (!plan) return;
     planWriteError = null;
-    const err = await executeDeletion(workspaceId, plan);
+    const token = await grantForAnsweredPrompt("delete_card_file", plan.files.map((f) => f.id));
+    const err = await executeDeletion(workspaceId, plan, token);
     if (err) planWriteError = err;
   }
 

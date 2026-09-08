@@ -1,7 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { RefreshCw } from "@lucide/svelte";
-  import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import {
     layoutState,
@@ -10,7 +9,8 @@
     switchWorkspaceView,
   } from "./layoutState";
   import * as backend from "./backend";
-  import { askConfirm, showAlert } from "./dialog";
+  import { showAlert } from "./dialog";
+  import { confirmDestructive } from "./confirmGate";
   import { isViewableExtension, loadViewableExtensions } from "./fileTypes";
   import { defaultMode } from "./fileEditing";
   import {
@@ -245,7 +245,7 @@
     }
     // Images, video, binaries, anything unrecognized: the OS's default
     // application, which is the PRD's standing rule for them.
-    await openPath(node.path).catch((e) => {
+    await backend.openPathExternally(node.path).catch((e) => {
       void showAlert({ title: `Couldn't open ${node.name}`, lines: [String(e)] });
     });
   }
@@ -314,7 +314,10 @@
 
   async function trashEntry(node: FileNode): Promise<void> {
     if (!root) return;
-    const confirmed = await askConfirm({
+    // confirmDestructive rather than askConfirm: the host refuses
+    // trash_entry without the grant this mints, so the prompt is a
+    // precondition of the command rather than a habit of this function.
+    const token = await confirmDestructive("trash_entry", [node.path], {
       title: `Move ${node.name} to the Trash?`,
       lines: trashPromptLines(node),
       confirmLabel: "Move to Trash",
@@ -322,10 +325,10 @@
       // reflex.
       danger: true,
     });
-    if (!confirmed) return;
+    if (token === null) return;
     error = null;
     try {
-      await backend.trashEntry(root, node.path);
+      await backend.trashEntry(root, node.path, token);
     } catch (e) {
       report(e);
       return;
@@ -345,7 +348,7 @@
     // revealItemInDir selects the entry in its parent window, which is
     // what "Reveal" means; openPath on a folder would open the folder
     // itself and on a file would launch its application.
-    await revealItemInDir(node.path).catch((e) => {
+    await backend.revealPathExternally(node.path).catch((e) => {
       void showAlert({ title: "Couldn't reveal in Finder", lines: [String(e)] });
     });
   }

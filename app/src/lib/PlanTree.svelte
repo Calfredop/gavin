@@ -13,7 +13,7 @@
   import IconButton from "./ui/IconButton.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import { priorityIndicator } from "./ui/indicators";
-  import { openPath } from "@tauri-apps/plugin-opener";
+  import { openPathExternally } from "./backend";
   import { showAlert } from "./dialog";
   import { openContextMenuFromEvent } from "./contextMenu";
   import {
@@ -127,7 +127,7 @@
   }
 
   function showInFinder(folderPath: string): void {
-    openPath(folderPath).catch((e) => {
+    openPathExternally(folderPath).catch((e) => {
       const text = `Couldn't open in Finder: ${e}`;
       console.error(text);
       void showAlert({ title: "Couldn't open in Finder", lines: [String(e)] });

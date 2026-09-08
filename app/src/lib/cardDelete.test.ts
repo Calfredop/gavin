@@ -79,7 +79,7 @@ describe("executeDeletion", () => {
     const err = await executeDeletion("ws", {
       files: [view("/p/a.md", "plan", "To Do"), view("/p/b.md", "task", null)],
       unparent: [view("/p/c.md", "task", "Done")],
-    });
+    }, "grant");
     expect(err).toBeNull();
     expect(vi.mocked(backend.deleteCardFile).mock.calls.map((c) => c[0])).toEqual(["/p/a.md", "/p/b.md"]);
     expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([["/p/c.md", "parent", ""]]);
@@ -92,7 +92,7 @@ describe("executeDeletion", () => {
     const err = await executeDeletion("ws", {
       files: [view("/p/a.md", "note", null), view("/p/b.md", "note", null), view("/p/c.md", "note", null)],
       unparent: [],
-    });
+    }, "grant");
     expect(err).toContain("b.md");
     expect(err).toContain("locked");
     expect(backend.deleteCardFile).toHaveBeenCalledTimes(2);

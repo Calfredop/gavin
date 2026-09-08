@@ -1,6 +1,6 @@
 // Builds a pane tab's right-click menu. Pure: state in, entries out;
 // side effects go through store actions (mockable) or the hooks.
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openPathExternally, revealPathExternally } from "./backend";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { setTabPinned, splitPane, closeSession, setSessionRead } from "./layoutState";
 import { closeTabs } from "./tabActions";
@@ -108,14 +108,14 @@ export function buildTabMenuEntries(ctx: TabMenuContext, hooks: TabMenuHooks): C
           label: "Reveal in Finder",
           disabled: path === null,
           onPick: () => {
-            if (path) revealItemInDir(path).catch(fail("Couldn't reveal in Finder"));
+            if (path) revealPathExternally(path).catch(fail("Couldn't reveal in Finder"));
           },
         }
       : {
           label: "Open Folder in Finder",
           disabled: path === null,
           onPick: () => {
-            if (path) openPath(path).catch(fail("Couldn't open in Finder"));
+            if (path) openPathExternally(path).catch(fail("Couldn't open in Finder"));
           },
         },
     {

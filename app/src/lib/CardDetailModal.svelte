@@ -3,7 +3,6 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import DOMPurify from "dompurify";
   import { renderMarkdown } from "./markdown";
-  import { openPath } from "@tauri-apps/plugin-opener";
   import { open } from "@tauri-apps/plugin-dialog";
   import type { CardView } from "./planBoard";
   import type { Column, Label, Priority } from "./kanban";
@@ -83,6 +82,7 @@
     removeCardFromRailAction,
   } from "./orchestrationState";
   import { deletionPlanFor, executeDeletion } from "./cardDelete";
+  import { grantForAnsweredPrompt } from "./confirmGate";
   import { breakOutChildren, guardCompletion, subjectFromCard } from "./cardCompletion";
   import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "./archiveActions";
   import { featureBlockedReason } from "./daemonCompat";
@@ -570,7 +570,7 @@
         onClose();
         return;
       }
-      await openPath(path);
+      await backend.openPathExternally(path);
     } catch (e) {
       attachmentsError = `Couldn't open ${attachmentName(path)}: ${e instanceof Error ? e.message : e}`;
     }
@@ -774,7 +774,11 @@
 
   async function confirmDelete(): Promise<void> {
     confirmingDelete = false;
-    const err = await executeDeletion(workspaceId, delPlan);
+    const token = await grantForAnsweredPrompt(
+      "delete_card_file",
+      delPlan.files.map((f) => f.id)
+    );
+    const err = await executeDeletion(workspaceId, delPlan, token);
     if (err) errorMessage = err;
     else onClose();
   }
@@ -864,7 +868,7 @@
   async function openExternally(): Promise<void> {
     errorMessage = null;
     try {
-      await openPath(card.id);
+      await backend.openPathExternally(card.id);
     } catch (e) {
       errorMessage = `Couldn't open externally: ${e}`;
     }

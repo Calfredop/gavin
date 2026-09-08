@@ -36,7 +36,8 @@ import { normalizeAutoCommit, resolveAutoCommit } from "./autoCommit";
 import { normalizeGitTracking } from "./gitTracking";
 import type { AgentConfig, BoardTab, CardTab, CardTabView, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
-import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
+import { featureBlockedReason, restartConfirmLines, type DaemonCompat } from "./daemonCompat";
+import { confirmDestructive, DAEMON_SUBJECT } from "./confirmGate";
 import type { OrphanProcess } from "./orphan";
 import type { StatusSince } from "./attentionInbox";
 import {
@@ -1367,9 +1368,21 @@ export function teardown(): void {
 // pollForStartupState below) ignore payloads unless the status is
 // "connecting", so without this the retry would succeed invisibly.
 export async function retryConnect(): Promise<void> {
+  // Asks first, like the other three routes to a restart. Both branches
+  // of the Rust command run `pkill -x gavin-daemon`, and that daemon is
+  // shared with every other gavin window -- so even from an error
+  // overlay this is somebody else's sessions, and the host now requires
+  // the grant a prompt mints (AS-05/R5).
+  const token = await confirmDestructive("restart_daemon", [DAEMON_SUBJECT], {
+    title: "Restart gavin-daemon?",
+    lines: restartConfirmLines(get(daemonCompat)),
+    confirmLabel: "Restart daemon",
+    danger: true,
+  });
+  if (token === null) return;
   layoutState.update((s) => ({ ...s, status: "connecting", errorMessage: "" }));
   try {
-    await backend.restartDaemon();
+    await backend.restartDaemon(token);
   } catch (e) {
     setError(String(e));
     return;
@@ -1386,8 +1399,8 @@ export async function retryConnect(): Promise<void> {
 // Throws on failure so the caller can render it beside the button --
 // silently swallowing it would leave the human with a dead daemon and no
 // sign of it.
-export async function restartDaemonInPlace(): Promise<DaemonCompat | null> {
-  await backend.restartDaemon();
+export async function restartDaemonInPlace(token: string): Promise<DaemonCompat | null> {
+  await backend.restartDaemon(token);
   // The workspaces payload is re-derived by the daemon on reconnect
   // (recover() spawns a fresh BARE SHELL per surviving record -- never
   // the command it carried, which for an agent is the whole task), so

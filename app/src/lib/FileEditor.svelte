@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { openPath } from "@tauri-apps/plugin-opener";
   import DOMPurify from "dompurify";
   import { renderMarkdown } from "./markdown";
   import {
@@ -204,7 +203,7 @@
   async function openExternally(): Promise<void> {
     try {
       openError = null;
-      await openPath(path);
+      await backend.openPathExternally(path);
     } catch (e) {
       openError = String(e instanceof Error ? e.message : e);
     }
