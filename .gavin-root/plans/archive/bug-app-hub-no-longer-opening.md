@@ -2,7 +2,7 @@
 order: 6144
 kind: task
 title: [bug] app hub no longer opening
-status: In Progress
+status: Done
 ---
 Pressing the 'Gavin' item in the sidebar, make a blank bar appears in the main area, but the app hub is not showing. The current content keep showing instead.
 

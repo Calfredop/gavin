@@ -1,10 +1,10 @@
 ---
-order: 3072
+order: 6144
 kind: task
-title: [fix] screen locked
-status: In Progress
+title: [ui] model input
+status: Done
 ---
-make terminals works on screen locked
+In worskpace’s settings, the model input in complexity group is  full width. Give it a reasonable max width
 
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.
