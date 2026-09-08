@@ -1,0 +1,120 @@
+# Crates in Cargo.lock that ship a build.rs (checked in /Users/coalpila/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f)
+# generated 2026-09-08T08:51:28Z;      571 locked crate versions scanned
+
+ahash-0.8.12
+anyhow-1.0.104 [mentions http/download]
+app-0.1.0 [workspace path crate, not a registry crate; app has its own build.rs (app/src-tauri/build.rs -> tauri_build::build())]
+async-io-2.6.0
+atk-sys-0.18.2 [mentions http/download]
+cairo-sys-rs-0.18.2
+camino-1.2.5 [mentions http/download]
+cookie-0.18.1
+crc32fast-1.5.0 [mentions http/download]
+crossbeam-utils-0.8.22
+crunchy-0.2.4
+erased-serde-0.4.10
+field-offset-0.3.6
+gavin-daemon-0.1.0 [workspace path crate, not a registry crate; app has its own build.rs (app/src-tauri/build.rs -> tauri_build::build())]
+gavin-mcp-0.1.0 [workspace path crate, not a registry crate; app has its own build.rs (app/src-tauri/build.rs -> tauri_build::build())]
+gdk-pixbuf-sys-0.18.0 [mentions http/download]
+gdk-sys-0.18.2
+gdkx11-sys-0.18.2 [mentions http/download]
+generic-array-0.14.7
+getrandom-0.3.4
+getrandom-0.4.3
+gio-0.18.4
+gio-sys-0.18.1 [mentions http/download]
+glib-sys-0.18.1 [mentions http/download]
+gobject-sys-0.18.0 [mentions http/download]
+gtk-0.18.2
+gtk-sys-0.18.2 [mentions http/download]
+httparse-1.10.1
+iana-time-zone-haiku-0.1.2 [invokes cc]
+icu_normalizer_data-2.2.0 [mentions http/download]
+icu_properties_data-2.2.0 [mentions http/download]
+indexmap-1.9.3
+inotify-sys-0.1.8
+javascriptcore-rs-sys-1.1.1 [mentions http/download]
+jni-sys-0.3.1
+libc-0.2.189
+libdbus-sys-0.2.7 [mentions http/download]
+libsqlite3-sys-0.28.0 [invokes cc] [mentions http/download]
+mac-notification-sys-0.6.15 [invokes cc] [mentions http/download]
+memoffset-0.6.5
+memoffset-0.9.1
+nix-0.31.3
+num-traits-0.2.19
+objc2-0.6.4
+objc2-exception-helper-0.1.1 [invokes cc]
+pango-sys-0.18.0 [mentions http/download]
+parking_lot_core-0.9.12
+proc-macro-error-1.0.4
+proc-macro-error-attr-1.0.4
+proc-macro2-1.0.107 [mentions http/download]
+protocol-0.1.0 [workspace path crate, not a registry crate; app has its own build.rs (app/src-tauri/build.rs -> tauri_build::build())]
+quote-1.0.47 [mentions http/download]
+ref-cast-1.0.26
+rfd-0.16.0
+rustix-1.1.4 [mentions http/download]
+schemars-0.8.22 [mentions http/download]
+selectors-0.36.1 [mentions http/download]
+serde_core-1.0.229 [mentions http/download]
+serde_json-1.0.151
+serde-1.0.229 [mentions http/download]
+soup3-sys-0.5.0 [mentions http/download]
+syn-1.0.109
+target-lexicon-0.12.16
+tauri-2.11.5 [mentions http/download]
+tauri-plugin-clipboard-manager-2.3.2
+tauri-plugin-dialog-2.7.2
+tauri-plugin-fs-2.5.1 [mentions http/download]
+tauri-plugin-notification-2.3.3
+tauri-plugin-opener-2.5.4 [mentions http/download]
+tauri-plugin-os-2.3.2
+tauri-runtime-2.11.3
+tauri-runtime-wry-2.11.4
+thiserror-1.0.69 [mentions http/download]
+thiserror-2.0.19 [mentions http/download]
+typeid-1.0.3 [mentions http/download]
+vswhom-sys-0.1.3 [invokes cc]
+wasm-bindgen-0.2.126
+wasm-bindgen-shared-0.2.126
+wayland-backend-0.3.16 [invokes cc]
+wayland-client-0.31.15
+wayland-sys-0.31.11
+web_atoms-0.2.5 [mentions http/download]
+webkit2gtk-sys-2.0.2 [mentions http/download]
+webview2-com-sys-0.38.2
+winapi-0.3.9 [mentions http/download]
+winapi-i686-pc-windows-gnu-0.4.0 [mentions http/download]
+winapi-x86_64-pc-windows-gnu-0.4.0 [mentions http/download]
+windows_aarch64_gnullvm-0.42.2
+windows_aarch64_gnullvm-0.52.6
+windows_aarch64_gnullvm-0.53.1
+windows_aarch64_msvc-0.42.2
+windows_aarch64_msvc-0.52.6
+windows_aarch64_msvc-0.53.1
+windows_i686_gnu-0.42.2
+windows_i686_gnu-0.52.6
+windows_i686_gnu-0.53.1
+windows_i686_gnullvm-0.52.6
+windows_i686_gnullvm-0.53.1
+windows_i686_msvc-0.42.2
+windows_i686_msvc-0.52.6
+windows_i686_msvc-0.53.1
+windows_x86_64_gnu-0.42.2
+windows_x86_64_gnu-0.52.6
+windows_x86_64_gnu-0.53.1
+windows_x86_64_gnullvm-0.42.2
+windows_x86_64_gnullvm-0.52.6
+windows_x86_64_gnullvm-0.53.1
+windows_x86_64_msvc-0.42.2
+windows_x86_64_msvc-0.52.6
+windows_x86_64_msvc-0.53.1
+winreg-0.10.1
+wit-bindgen-0.57.1
+wry-0.55.1
+x11-2.21.0
+x11-dl-2.21.0
+zerocopy-0.8.55 [mentions http/download]
+zmij-1.0.23 [mentions http/download]

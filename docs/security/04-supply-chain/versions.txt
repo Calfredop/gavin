@@ -1,0 +1,20 @@
+Supply-chain pass (04) — tool and toolchain versions
+date: 2026-09-08T08:57:05Z
+commit: 944eae2 (944eae2b4714aa64512fb33e346ef60f05e2dfb9) on sec/review-2026090801
+worktree: /Users/coalpila/CloudStation/Coding/gavin-sec-review-2026090801
+
+rustc: rustc 1.97.1 (8bab26f4f 2026-07-14)
+cargo: cargo 1.97.1 (c980f4866 2026-06-30)
+node: v22.22.3
+npm: 10.9.8
+cargo-audit: cargo-audit 0.22.2  (installed with 'cargo install --root <tmp>' into the session scratchpad, not ~/.cargo)
+cargo-deny: cargo-deny 0.20.2   (same)
+
+cargo audit: advisory DB fetched from https://github.com/RustSec/advisory-db.git into cargo-audit's default cache ~/.cargo/advisory-db (1242 advisories loaded); Cargo.lock: 571 packages
+cargo deny: run twice — once with cargo-deny's built-in default config (2 MB of output, not filed: "advisories FAILED, bans ok, licenses FAILED, sources ok", 568 errors of which 556 were license rejections caused by the default empty allow-list — noise) and once with the scratch config filed here as deny.toml.used (cargo-deny.txt). No deny.toml was added to the repo.
+npm audit: 'npm audit --json' and 'npm audit' in app/ against package-lock.json (lockfileVersion 3, 270 packages: 63 prod, 208 dev, 109 optional); node_modules is NOT installed in this worktree, npm audit works from the lockfile. No 'npm audit fix', no 'npm install'.
+build-scripts.txt: every Cargo.lock entry checked for a build.rs in the local registry cache /Users/coalpila/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f
+ci.yml.a538312.txt: '.github/workflows/ci.yml' as it exists on branch Feat/multi-os-support (commits 7a03dcc, a538312); absent from main and from HEAD.
+
+lockfiles after the run:
+  (empty above = unmodified)

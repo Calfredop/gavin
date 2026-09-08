@@ -1,0 +1,149 @@
+    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+      Loaded 1242 security advisories (from /Users/coalpila/.cargo/advisory-db)
+    Updating crates.io index
+    Scanning Cargo.lock for vulnerabilities (571 crate dependencies)
+Crate:     atk
+Version:   0.18.2
+Warning:   unmaintained
+Title:     gtk-rs GTK3 bindings - no longer maintained
+Date:      2024-03-04
+ID:        RUSTSEC-2024-0413
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0413
+
+Crate:     atk-sys
+Version:   0.18.2
+Warning:   unmaintained
+Title:     gtk-rs GTK3 bindings - no longer maintained
+Date:      2024-03-04
+ID:        RUSTSEC-2024-0416
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0416
+
+Crate:     gdk
+Version:   0.18.2
+Warning:   unmaintained
+Title:     gtk-rs GTK3 bindings - no longer maintained
+Date:      2024-03-04
+ID:        RUSTSEC-2024-0412
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0412
+
+Crate:     gdk-sys
+Version:   0.18.2
+Warning:   unmaintained
+Title:     gtk-rs GTK3 bindings - no longer maintained
+Date:      2024-03-04
+ID:        RUSTSEC-2024-0418
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0418
+
+Crate:     gdkwayland-sys
+Version:   0.18.2
+Warning:   unmaintained
+Title:     gtk-rs GTK3 bindings - no longer maintained
+Date:      2024-03-04
+ID:        RUSTSEC-2024-0411
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0411
+
+Crate:     gdkx11
+Version:   0.18.2
+Warning:   unmaintained
+Title:     gtk-rs GTK3 bindings - no longer maintained
+Date:      2024-03-04
+ID:        RUSTSEC-2024-0417
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0417
+
+Crate:     gdkx11-sys
+Version:   0.18.2
+Warning:   unmaintained
+Title:     gtk-rs GTK3 bindings - no longer maintained
+Date:      2024-03-04
+ID:        RUSTSEC-2024-0414
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0414
+
+Crate:     gtk
+Version:   0.18.2
+Warning:   unmaintained
+Title:     gtk-rs GTK3 bindings - no longer maintained
+Date:      2024-03-04
+ID:        RUSTSEC-2024-0415
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0415
+
+Crate:     gtk-sys
+Version:   0.18.2
+Warning:   unmaintained
+Title:     gtk-rs GTK3 bindings - no longer maintained
+Date:      2024-03-04
+ID:        RUSTSEC-2024-0420
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0420
+
+Crate:     gtk3-macros
+Version:   0.18.2
+Warning:   unmaintained
+Title:     gtk-rs GTK3 bindings - no longer maintained
+Date:      2024-03-04
+ID:        RUSTSEC-2024-0419
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0419
+
+Crate:     proc-macro-error
+Version:   1.0.4
+Warning:   unmaintained
+Title:     proc-macro-error is unmaintained
+Date:      2024-09-01
+ID:        RUSTSEC-2024-0370
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0370
+
+Crate:     serial
+Version:   0.4.0
+Warning:   unmaintained
+Title:     `serial` crate is unmaintained
+Date:      2017-07-02
+ID:        RUSTSEC-2017-0008
+URL:       https://rustsec.org/advisories/RUSTSEC-2017-0008
+
+Crate:     unic-char-property
+Version:   0.9.0
+Warning:   unmaintained
+Title:     `unic-char-property` is unmaintained
+Date:      2025-10-18
+ID:        RUSTSEC-2025-0081
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0081
+
+Crate:     unic-char-range
+Version:   0.9.0
+Warning:   unmaintained
+Title:     `unic-char-range` is unmaintained
+Date:      2025-10-18
+ID:        RUSTSEC-2025-0075
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0075
+
+Crate:     unic-common
+Version:   0.9.0
+Warning:   unmaintained
+Title:     `unic-common` is unmaintained
+Date:      2025-10-18
+ID:        RUSTSEC-2025-0080
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0080
+
+Crate:     unic-ucd-ident
+Version:   0.9.0
+Warning:   unmaintained
+Title:     `unic-ucd-ident` is unmaintained
+Date:      2025-10-18
+ID:        RUSTSEC-2025-0100
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0100
+
+Crate:     unic-ucd-version
+Version:   0.9.0
+Warning:   unmaintained
+Title:     `unic-ucd-version` is unmaintained
+Date:      2025-10-18
+ID:        RUSTSEC-2025-0098
+URL:       https://rustsec.org/advisories/RUSTSEC-2025-0098
+
+Crate:     glib
+Version:   0.18.5
+Warning:   unsound
+Title:     Unsoundness in `Iterator` and `DoubleEndedIterator` impls for `glib::VariantStrIter`
+Date:      2024-03-30
+ID:        RUSTSEC-2024-0429
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0429
+
+warning: 18 allowed warnings found
