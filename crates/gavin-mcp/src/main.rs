@@ -1,6 +1,6 @@
-use protocol::{read_message, write_message, Request, Response, PROTOCOL_VERSION};
+use protocol::{read_message, write_message, Request, Response, MAX_LINE_BYTES, PROTOCOL_VERSION};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
@@ -1022,6 +1022,27 @@ fn handle_line(line: &str, root: Option<&Path>, transport: &mut dyn DaemonTransp
     }
 }
 
+/// Reads one line from `reader`, capped at `MAX_LINE_BYTES` exactly like
+/// the socket side (`protocol::read_message`). This stdin's only writer
+/// is the agent CLI that spawned this process, which already holds a
+/// shell as the user, so the cap is symmetry rather than a defence
+/// (SC-10) — but a runaway line should still fail loudly instead of the
+/// process growing an unbounded buffer.
+///
+/// `Ok(None)` is EOF; `Err` is an unterminated line at the cap, same as
+/// `read_message`.
+fn read_capped_line<R: BufRead>(reader: &mut R) -> anyhow::Result<Option<String>> {
+    let mut line = String::new();
+    let bytes_read = reader.by_ref().take(MAX_LINE_BYTES).read_line(&mut line)?;
+    if bytes_read == 0 {
+        return Ok(None);
+    }
+    if !line.ends_with('\n') && (bytes_read as u64) >= MAX_LINE_BYTES {
+        anyhow::bail!("stdin line exceeded {MAX_LINE_BYTES} bytes without a newline");
+    }
+    Ok(Some(line))
+}
+
 fn main() {
     let root = std::env::current_dir().ok().and_then(|cwd| find_gavin_root(&cwd));
     match &root {
@@ -1031,12 +1052,21 @@ fn main() {
     let mut transport = SocketTransport::new();
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
-        if line.trim().is_empty() {
+    let mut stdin_lock = stdin.lock();
+    loop {
+        let line = match read_capped_line(&mut stdin_lock) {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(e) => {
+                eprintln!("gavin-mcp: {e} — exiting");
+                break;
+            }
+        };
+        let line = line.trim_end();
+        if line.is_empty() {
             continue;
         }
-        if let Some(reply) = handle_line(&line, root.as_deref(), &mut transport) {
+        if let Some(reply) = handle_line(line, root.as_deref(), &mut transport) {
             let mut out = stdout.lock();
             let _ = writeln!(out, "{reply}");
             let _ = out.flush();
@@ -2279,5 +2309,21 @@ mod tests {
         let v: Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(v.pointer("/result/isError").unwrap(), true);
         assert!(reply.contains("workspace not open in gavin"));
+    }
+
+    #[test]
+    fn read_capped_line_reads_ordinary_lines_and_then_eof() {
+        let mut cursor = std::io::Cursor::new(b"hello\nworld\n".to_vec());
+        assert_eq!(read_capped_line(&mut cursor).unwrap().unwrap(), "hello\n");
+        assert_eq!(read_capped_line(&mut cursor).unwrap().unwrap(), "world\n");
+        assert!(read_capped_line(&mut cursor).unwrap().is_none());
+    }
+
+    #[test]
+    fn read_capped_line_rejects_an_unterminated_line_at_the_cap() {
+        let data = vec![b'x'; (MAX_LINE_BYTES as usize) + 10];
+        let mut cursor = std::io::Cursor::new(data);
+        let err = read_capped_line(&mut cursor).unwrap_err();
+        assert!(err.to_string().contains("exceeded"), "{err}");
     }
 }

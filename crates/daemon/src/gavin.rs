@@ -1432,13 +1432,75 @@ pub fn remove_external_context(root: &Path, folder: &Path) -> anyhow::Result<()>
     Ok(())
 }
 
-fn list_md_files(dir: &Path) -> Vec<MdFileInfo> {
-    fn walk(dir: &Path, base: &Path, out: &mut Vec<MdFileInfo>) {
+/// Whether a directory entry found during a root-scoped walk is safe to
+/// descend into. A plain directory always is; a symlinked one only when
+/// its target's canonical path stays under `boundary` -- otherwise a
+/// hostile repo could point a directory anywhere inside itself (even a
+/// top-level `.gavin-root`) at `/etc`, the user's home directory, or an
+/// unrelated project, and the scan would read whatever it found there
+/// and report it as the repo's own plans/docs/specs (DP-05, read
+/// amplification within the uid). A symlinked FILE is unaffected: only
+/// directory descent is guarded.
+fn safe_to_descend(path: &Path, boundary: &Path) -> bool {
+    let is_symlink = std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    if !is_symlink {
+        return true;
+    }
+    let Ok(canonical_boundary) = boundary.canonicalize() else { return false };
+    path.canonicalize().is_ok_and(|c| c.starts_with(&canonical_boundary))
+}
+
+/// Per-file cap for a plan card read during a `.gavin*` scan, mirroring
+/// `MAX_PRD_BYTES`: a hostile repo's `plans/*.md` is re-read on every
+/// debounced rescan, so an unbounded file forces a full read into memory
+/// every time a watched directory so much as flickers (DP-05). An
+/// oversize file still appears in the tree -- as a `parse_warning`,
+/// never actually read -- rather than vanishing silently.
+const MAX_SCANNED_FILE_BYTES: u64 = 1024 * 1024;
+
+/// A `PlanFileInfo` for a card too large to read, built from its path
+/// alone. Mirrors `plan_file_info`'s defaults for everything the content
+/// would otherwise have supplied.
+fn oversize_plan_file_info(path: &Path) -> PlanFileInfo {
+    let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| file_name.clone());
+    PlanFileInfo {
+        path: path.to_string_lossy().to_string(),
+        modified_at: file_modified_at(path),
+        file_name,
+        title: stem,
+        status: None,
+        priority: None,
+        order: None,
+        kind: CardKind::Plan,
+        parent: None,
+        labels: Vec::new(),
+        checklist_done: 0,
+        checklist_total: 0,
+        parse_warning: true,
+        attachments: Vec::new(),
+        complexity: None,
+        agent: None,
+        model: None,
+    }
+}
+
+/// Lists every `.md` file under `dir`, refusing to follow a directory
+/// symlink whose canonical path leaves `boundary` (see `safe_to_descend`).
+fn list_md_files(dir: &Path, boundary: &Path) -> Vec<MdFileInfo> {
+    fn walk(dir: &Path, base: &Path, boundary: &Path, out: &mut Vec<MdFileInfo>) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                walk(&path, base, out);
+                if safe_to_descend(&path, boundary) {
+                    walk(&path, base, boundary, out);
+                }
             } else if path.extension().map(|e| e == "md").unwrap_or(false) {
                 out.push(MdFileInfo {
                     path: path.to_string_lossy().to_string(),
@@ -1451,13 +1513,21 @@ fn list_md_files(dir: &Path) -> Vec<MdFileInfo> {
             }
         }
     }
+    if !safe_to_descend(dir, boundary) {
+        return Vec::new();
+    }
     let mut out = Vec::new();
-    walk(dir, dir, &mut out);
+    walk(dir, dir, boundary, &mut out);
     out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     out
 }
 
-fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> GavinContext {
+fn build_context(
+    folder: &Path,
+    gavin_dir: &Path,
+    kind: GavinContextKind,
+    root: &Path,
+) -> GavinContext {
     let config_path = gavin_dir.join("config.toml");
     let (config_name, agent_config, config_warning) = parse_context_config(&config_path);
     // Root-only, like the agent block: a `.gavin` sub-context scopes
@@ -1469,12 +1539,17 @@ fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> Gav
     };
     let folder_name =
         folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let plans = list_md_files(&gavin_dir.join("plans"))
+    let plans = list_md_files(&gavin_dir.join("plans"), root)
         .into_iter()
         .map(|md| {
             let path = PathBuf::from(&md.path);
-            let content = std::fs::read_to_string(&path).unwrap_or_default();
-            plan_file_info(&path, &content)
+            match std::fs::metadata(&path) {
+                Ok(meta) if meta.len() > MAX_SCANNED_FILE_BYTES => oversize_plan_file_info(&path),
+                _ => {
+                    let content = std::fs::read_to_string(&path).unwrap_or_default();
+                    plan_file_info(&path, &content)
+                }
+            }
         })
         .collect();
     GavinContext {
@@ -1482,8 +1557,8 @@ fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> Gav
         kind: kind.clone(),
         name: config_name.unwrap_or(folder_name),
         plans,
-        docs: list_md_files(&gavin_dir.join("docs")),
-        specs: list_md_files(&gavin_dir.join("specs")),
+        docs: list_md_files(&gavin_dir.join("docs"), root),
+        specs: list_md_files(&gavin_dir.join("specs"), root),
         // Resolved, not configured: "is there a PRD" has to answer for
         // the file the workspace actually points at, or a project with
         // its own docs/PRD.md reads as having none.
@@ -1509,11 +1584,13 @@ pub fn scan_root(root: &Path) -> GavinTree {
     }
 
     let mut contexts = Vec::new();
-    // Root context: `.gavin-root` recognized ONLY directly under the root.
+    // Root context: `.gavin-root` recognized ONLY directly under the root,
+    // and only when it isn't a symlink escaping the root itself (DP-05) --
+    // a hostile repo controls its own top level too.
     let root_gavin = root.join(GAVIN_ROOT_DIR);
-    let root_has_gavin_root = root_gavin.is_dir();
+    let root_has_gavin_root = root_gavin.is_dir() && safe_to_descend(&root_gavin, root);
     if root_has_gavin_root {
-        contexts.push(build_context(root, &root_gavin, GavinContextKind::Root));
+        contexts.push(build_context(root, &root_gavin, GavinContextKind::Root, root));
     }
 
     fn walk(
@@ -1521,6 +1598,7 @@ pub fn scan_root(root: &Path) -> GavinTree {
         depth: usize,
         skip_gavin_here: bool,
         contexts: &mut Vec<GavinContext>,
+        root: &Path,
     ) {
         if depth > MAX_SCAN_DEPTH {
             return;
@@ -1528,7 +1606,11 @@ pub fn scan_root(root: &Path) -> GavinTree {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            // Refuses a directory symlink whose target leaves `root`
+            // before even asking whether it's a `.gavin*` marker -- a
+            // symlinked marker directory is exactly the shape of trap
+            // this guards (DP-05).
+            if !path.is_dir() || !safe_to_descend(&path, root) {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
@@ -1537,7 +1619,7 @@ pub fn scan_root(root: &Path) -> GavinTree {
             // descends into `.gavin*` directories themselves.
             if name == GAVIN_DIR {
                 if !skip_gavin_here {
-                    contexts.push(build_context(dir, &path, GavinContextKind::Context));
+                    contexts.push(build_context(dir, &path, GavinContextKind::Context, root));
                 }
                 continue;
             }
@@ -1547,14 +1629,14 @@ pub fn scan_root(root: &Path) -> GavinTree {
             {
                 continue;
             }
-            walk(&path, depth + 1, false, contexts);
+            walk(&path, depth + 1, false, contexts, root);
         }
     }
     // Depth 1 = the root's immediate children. skip_gavin_here applies the
     // spec §1 both-markers rule to the root level only: when `.gavin-root`
     // exists, a root-level `.gavin` is ignored rather than double-listing
     // the root folder as two contexts.
-    walk(root, 1, root_has_gavin_root, &mut contexts);
+    walk(root, 1, root_has_gavin_root, &mut contexts, root);
 
     // Root context first, then by folder path.
     contexts.sort_by(|a, b| {
@@ -1581,7 +1663,7 @@ pub fn scan_root(root: &Path) -> GavinTree {
             if !gavin_dir.is_dir() {
                 continue;
             }
-            let mut ctx = build_context(&path, &gavin_dir, GavinContextKind::Context);
+            let mut ctx = build_context(&path, &gavin_dir, GavinContextKind::Context, root);
             ctx.outside = true;
             contexts.push(ctx);
         }
@@ -1656,14 +1738,23 @@ pub fn watch_targets(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
         return targets;
     }
 
-    fn walk(dir: &Path, depth: usize, targets: &mut Vec<(PathBuf, notify::RecursiveMode)>) {
+    fn walk(
+        dir: &Path,
+        depth: usize,
+        targets: &mut Vec<(PathBuf, notify::RecursiveMode)>,
+        root: &Path,
+    ) {
         if depth > MAX_SCAN_DEPTH {
             return;
         }
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            // Mirrors scan_root's own symlink guard (DP-05): a watch is
+            // cheap to register but pointless -- and, on a re-scan,
+            // actively misleading -- for a directory the scanner itself
+            // will never descend into.
+            if !path.is_dir() || !safe_to_descend(&path, root) {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
@@ -1675,10 +1766,10 @@ pub fn watch_targets(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
                 continue;
             }
             targets.push((path.clone(), NonRecursive));
-            walk(&path, depth + 1, targets);
+            walk(&path, depth + 1, targets, root);
         }
     }
-    walk(root, 1, &mut targets);
+    walk(root, 1, &mut targets, root);
     targets
 }
 
@@ -2810,6 +2901,70 @@ mod tests {
 
         let tree = scan_root(dir.path());
         assert_eq!(tree.contexts.len(), 0);
+    }
+
+    /// DP-05: a hostile repo's oversize plan file must not be read into
+    /// memory on every rescan. It still appears in the tree -- never
+    /// silently dropped -- but as a warning, with none of its claimed
+    /// frontmatter believed.
+    #[test]
+    fn oversize_plan_file_is_reported_as_a_warning_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let mut body = "---\ntitle: should-not-be-read\nstatus: Done\n---\n".to_string();
+        body.push_str(&"x".repeat(MAX_SCANNED_FILE_BYTES as usize + 1));
+        write_card(&plans, "big.md", &body);
+
+        let tree = scan_root(dir.path());
+        let big = tree.contexts[0]
+            .plans
+            .iter()
+            .find(|p| p.file_name == "big.md")
+            .expect("oversize card still listed");
+        assert!(big.parse_warning);
+        assert_eq!(big.title, "big");
+        assert_eq!(big.status, None);
+        assert_eq!(big.checklist_total, 0);
+    }
+
+    /// DP-05: a directory symlink inside the repo must not let the scan
+    /// wander outside the watched root and read whatever it finds there.
+    #[test]
+    fn symlinked_directory_leaving_the_root_is_not_followed() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        // A `.gavin` context sitting entirely outside the watched root --
+        // the content a hostile repo's symlink is trying to reach.
+        write_card(&outside.path().join(GAVIN_DIR).join("plans"), "leak.md", "---\ntitle: Leak\n---\n");
+
+        let link = root.path().join("escape");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        let tree = scan_root(root.path());
+        // Only the Root context -- the symlink was never descended into,
+        // so the `.gavin` context beyond it was never found, let alone
+        // its plan read.
+        assert_eq!(tree.contexts.len(), 1);
+        assert_eq!(tree.contexts[0].kind, GavinContextKind::Root);
+        assert!(tree.contexts.iter().all(|c| c.plans.iter().all(|p| p.title != "Leak")));
+    }
+
+    /// The same guard has to apply to a symlinked FILE's plain sibling
+    /// content too -- i.e. a symlinked file itself must still be read
+    /// normally, only directory descent is restricted.
+    #[test]
+    fn symlinked_file_inside_a_context_is_still_read() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let plans = root.path().join(GAVIN_ROOT_DIR).join("plans");
+        let real = write_card(&plans, "real.md", "---\ntitle: Real\n---\n");
+        let link = plans.join("linked.md");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let tree = scan_root(root.path());
+        assert!(tree.contexts[0].plans.iter().any(|p| p.file_name == "linked.md" && p.title == "Real"));
     }
 
     #[test]

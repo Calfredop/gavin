@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -25,6 +25,26 @@ use uuid::Uuid;
 /// currently branch on the value -- it reuses the exact same
 /// SessionExited handling as any other exit either way.
 const ATTACH_FAILURE_EXIT_CODE: i32 = -2;
+
+/// Ceiling on live sessions (`SessionManager::sessions`, one entry per PTY
+/// this daemon currently holds open) that `create_session` will allow
+/// before refusing with a named error instead of silently accumulating
+/// shells, pump threads, and PTY fds without bound (DP-05: nothing stopped
+/// A1/A2 from exhausting all three). Generous -- ordinary use is a handful
+/// of terminals per open workspace, dozens across every workspace at once.
+///
+/// Held on the manager as an `AtomicUsize` seeded from this constant,
+/// rather than compared against the bare constant, so the boundary test
+/// can lower it directly (tests share this module and can already reach
+/// private fields) instead of spawning hundreds of real PTYs.
+const MAX_LIVE_SESSIONS: usize = 256;
+
+/// Ceiling on connections `handle_connection` will admit to its request
+/// loop before refusing the rest with the same named error. `serve` spawns
+/// one thread per accepted connection with no other limit (DP-05), so
+/// this is what actually bounds thread count. Generous, for the same
+/// reason as `MAX_LIVE_SESSIONS`, and overridable the same way.
+const MAX_CONNECTIONS: usize = 512;
 
 /// How often the heuristic idle-timeout companion thread (see
 /// spawn_heuristic_idle_timer) wakes to check whether a session has gone
@@ -1205,6 +1225,17 @@ pub struct SessionManager {
     /// pump, which must not have to lock `sessions` to decide what a
     /// chunk of output means.
     provoked_repaint_at: Mutex<HashMap<String, Instant>>,
+    /// See `MAX_LIVE_SESSIONS`. Compared against `sessions.len()` in
+    /// `create_session`.
+    session_ceiling: AtomicUsize,
+    /// Connections currently past `handle_connection`'s ceiling check and
+    /// into its request loop -- incremented on entry, decremented on every
+    /// exit path via the `ConnectionSlot` guard, so a connection that never
+    /// sends a request still frees its slot when it closes.
+    active_connections: AtomicUsize,
+    /// See `MAX_CONNECTIONS`. Compared against `active_connections` in
+    /// `handle_connection`.
+    connection_ceiling: AtomicUsize,
 }
 
 impl SessionManager {
@@ -1230,6 +1261,9 @@ impl SessionManager {
             delivering_queued: Mutex::new(std::collections::HashSet::new()),
             last_pty_size: Mutex::new(HashMap::new()),
             provoked_repaint_at: Mutex::new(HashMap::new()),
+            session_ceiling: AtomicUsize::new(MAX_LIVE_SESSIONS),
+            active_connections: AtomicUsize::new(0),
+            connection_ceiling: AtomicUsize::new(MAX_CONNECTIONS),
         }
     }
 
@@ -1443,6 +1477,13 @@ impl SessionManager {
     ) -> anyhow::Result<String> {
         if !std::path::Path::new(cwd).is_dir() {
             anyhow::bail!("cwd does not exist or is not a directory: {cwd}");
+        }
+
+        let ceiling = self.session_ceiling.load(Ordering::SeqCst);
+        if self.sessions.lock().unwrap().len() >= ceiling {
+            anyhow::bail!(
+                "gavin-daemon: session ceiling reached ({ceiling} already open) — close one before starting another"
+            );
         }
 
         let id = Uuid::new_v4().to_string();
@@ -3494,9 +3535,40 @@ fn serve(listener: UnixListener, manager: Arc<SessionManager>) -> anyhow::Result
     Ok(())
 }
 
+/// Decrements `active_connections` when a connection's thread ends, no
+/// matter which of `handle_connection`'s several return points got it
+/// there -- a manual decrement at each one is what a future added return
+/// forgets.
+struct ConnectionSlot<'a>(&'a AtomicUsize);
+
+impl Drop for ConnectionSlot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow::Result<()> {
     let writer = Arc::new(Mutex::new(stream.try_clone()?));
     let mut reader = BufReader::new(stream);
+
+    // Counted before anything else on this connection runs, so a client
+    // that never sends a request still costs a slot for as long as it
+    // stays open (DP-05: `serve` spawns one thread per accepted
+    // connection with no other limit).
+    let count = manager.active_connections.fetch_add(1, Ordering::SeqCst) + 1;
+    let _slot = ConnectionSlot(&manager.active_connections);
+    let ceiling = manager.connection_ceiling.load(Ordering::SeqCst);
+    if count > ceiling {
+        let _ = write_message(
+            &mut *writer.lock().unwrap(),
+            &Response::Error {
+                message: format!(
+                    "gavin-daemon: connection ceiling reached ({ceiling} already open) — refusing this one"
+                ),
+            },
+        );
+        return Ok(());
+    }
 
     loop {
         let req: Option<Request> = read_message(&mut reader)?;
@@ -5153,6 +5225,71 @@ mod tests {
             },
         );
         assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    /// DP-05: `create_session` must refuse once it is already holding
+    /// `session_ceiling` live PTYs, with a named error rather than
+    /// spawning without bound. Driven against a lowered ceiling -- see
+    /// `MAX_LIVE_SESSIONS`'s doc comment -- so this doesn't spawn
+    /// hundreds of real shells.
+    #[test]
+    fn session_ceiling_refuses_the_nplus1th_and_frees_up_on_kill() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager.session_ceiling.store(2, Ordering::SeqCst);
+        let cwd = dir.path().to_string_lossy().to_string();
+
+        let s1 = manager.create_session("/ws", &cwd, Some("/bin/sh")).unwrap();
+        manager.create_session("/ws", &cwd, Some("/bin/sh")).unwrap();
+
+        let err = manager.create_session("/ws", &cwd, Some("/bin/sh")).unwrap_err();
+        assert!(err.to_string().contains("session ceiling reached"), "{err}");
+        assert_eq!(manager.sessions.lock().unwrap().len(), 2);
+
+        // Killing one frees the slot the ceiling was counting.
+        manager.kill_session(&s1).unwrap();
+        manager.create_session("/ws", &cwd, Some("/bin/sh")).unwrap();
+    }
+
+    /// DP-05: `handle_connection` must refuse to admit a connection past
+    /// `connection_ceiling` into its request loop, and the refusal has to
+    /// be the first thing that connection sees -- not silence. Each of
+    /// the first `max` connections sends one request before the next one
+    /// connects, so the server-side counter is guaranteed to have
+    /// already counted it (otherwise the accept and the increment race).
+    #[test]
+    fn connection_ceiling_refuses_the_nplus1th_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("daemon.sock");
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let manager = Arc::new(SessionManager::new(registry, kanban, test_orchestration_store()));
+        manager.connection_ceiling.store(2, Ordering::SeqCst);
+        let listener = bind_server(&socket_path).unwrap();
+        std::thread::spawn(move || {
+            serve(listener, manager).unwrap();
+        });
+
+        let mut kept = Vec::new();
+        for _ in 0..2 {
+            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            // Round-trips a harmless request so the connection's thread
+            // has definitely run past the ceiling check (and counted
+            // itself) before the next connection is opened.
+            let resp = request(&mut stream, &Request::GetProtocolVersion);
+            assert!(matches!(resp, Response::ProtocolVersion { .. }));
+            kept.push(stream);
+        }
+
+        let over = UnixStream::connect(&socket_path).unwrap();
+        let mut reader = line_reader(over.try_clone().unwrap());
+        let resp: Response = read_message(&mut reader).unwrap().unwrap();
+        match resp {
+            Response::Error { message } => assert!(message.contains("connection ceiling reached"), "{message}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+
+        drop(kept);
     }
 
     #[test]

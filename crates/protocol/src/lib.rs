@@ -3,8 +3,10 @@ use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 
 /// Cap on a single protocol line, so a client that never sends a newline
-/// can't grow the daemon's read buffer unbounded.
-const MAX_LINE_BYTES: u64 = 1024 * 1024;
+/// can't grow the daemon's read buffer unbounded. `pub` so gavin-mcp's
+/// stdin reader (SC-10) can enforce the exact same cap instead of
+/// carrying its own copy of the number.
+pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 
 /// Bumped on ANY wire-breaking change. The daemon reports it via
 /// Request::GetProtocolVersion; the app (at bootstrap) and gavin-mcp (at
