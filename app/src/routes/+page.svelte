@@ -69,7 +69,7 @@
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";
   import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration";
   import { tooltip } from "$lib/tooltip";
-  import { wheelScrollsSideways } from "$lib/wheelScroll";
+  import { wheelScrollsSideways, scrollsIntoLead } from "$lib/wheelScroll";
   import { windowDrag } from "$lib/windowDrag";
   import { isMainWindow } from "$lib/appWindowState";
 
@@ -472,6 +472,7 @@
                       ondrop={(e) => handleHubTabDrop(e, view.id)}
                       oncontextmenu={(e) => handleHubTabMenu(e, view.id)}
                       onclick={() => switchWorkspaceView(activeWorkspace.id, view.id)}
+                      use:scrollsIntoLead={activeViewDef?.id === view.id}
                     >
                       <!-- In the icon's place, not beside it: the tab row must
                            not reflow when a run starts or ends. -->

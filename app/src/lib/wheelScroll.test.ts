@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { horizontalDelta, nextScrollLeft, wheelScrollsSideways, type Scroller } from "./wheelScroll";
+import {
+  horizontalDelta,
+  nextScrollLeft,
+  wheelScrollsSideways,
+  scrollLeftToLead,
+  scrollsIntoLead,
+  type Scroller,
+  type LeadStrip,
+  type LeadTab,
+} from "./wheelScroll";
 
 /// A strip standing in for the DOM node: enough surface for the action,
 /// and a handle on the listener it registered so a test can fire one.
@@ -104,5 +113,97 @@ describe("wheelScrollsSideways", () => {
     wheelScrollsSideways(s.node);
     expect(s.wheel(40, 12).prevented).toBe(false);
     expect(s.node.scrollLeft).toBe(10);
+  });
+});
+
+describe("scrollLeftToLead", () => {
+  it("moves straight to the tab's own offset when the strip has room", () => {
+    const s = { scrollWidth: 400, clientWidth: 100 };
+    expect(scrollLeftToLead(s, 150)).toBe(150);
+  });
+
+  it("clamps to what the strip actually has to give", () => {
+    const s = { scrollWidth: 400, clientWidth: 100 };
+    expect(scrollLeftToLead(s, 1000)).toBe(300);
+    expect(scrollLeftToLead(s, -50)).toBe(0);
+  });
+
+  it("stays at 0 when the strip is not overflowing at all", () => {
+    expect(scrollLeftToLead({ scrollWidth: 100, clientWidth: 100 }, 60)).toBe(0);
+  });
+});
+
+describe("scrollsIntoLead", () => {
+  /// A strip and one of its tabs, standing in for the DOM. `screenLeft` is
+  /// the strip's own fixed position; a tab's `contentOffset` is its FIXED
+  /// distance into the strip's content, and its on-screen rect is derived
+  /// from that plus the strip's current scroll -- exactly as a real,
+  /// scrolled DOM element's getBoundingClientRect() would report it. That
+  /// coupling is what a static fake would miss, and it's the whole reason
+  /// the action reads the rect instead of trusting some cached offset: the
+  /// arithmetic has to come out the same content offset no matter how far
+  /// the strip has already scrolled.
+  function leadStrip(
+    over: { scrollLeft?: number; scrollWidth?: number; clientWidth?: number; screenLeft?: number } = {}
+  ): LeadStrip & { screenLeft: number } {
+    return {
+      screenLeft: over.screenLeft ?? 0,
+      scrollLeft: over.scrollLeft ?? 0,
+      scrollWidth: over.scrollWidth ?? 400,
+      clientWidth: over.clientWidth ?? 100,
+      getBoundingClientRect(): { left: number } {
+        return { left: this.screenLeft };
+      },
+    };
+  }
+  function leadTab(strip: (LeadStrip & { screenLeft: number }) | null, contentOffset: number): LeadTab {
+    return {
+      parentElement: strip,
+      getBoundingClientRect(): { left: number } {
+        return { left: strip ? strip.screenLeft + contentOffset - strip.scrollLeft : contentOffset };
+      },
+    };
+  }
+
+  it("scrolls a tab past the trailing edge flush against the strip's left edge", () => {
+    const s = leadStrip();
+    const tab = leadTab(s, 250);
+    scrollsIntoLead(tab, true);
+    expect(s.scrollLeft).toBe(250);
+  });
+
+  it("does nothing for a tab that is not the active one", () => {
+    const s = leadStrip({ scrollLeft: 20 });
+    const tab = leadTab(s, 250);
+    scrollsIntoLead(tab, false);
+    expect(s.scrollLeft).toBe(20);
+  });
+
+  it("accounts for the strip's own scroll and screen position, not just the tab's", () => {
+    const s = leadStrip({ screenLeft: 50, scrollLeft: 100, scrollWidth: 600, clientWidth: 100 });
+    const tab = leadTab(s, 230);
+    scrollsIntoLead(tab, true);
+    expect(s.scrollLeft).toBe(230);
+  });
+
+  it("clamps to the strip's own extent, same as scrollLeftToLead", () => {
+    const s = leadStrip({ scrollWidth: 400, clientWidth: 100 });
+    const tab = leadTab(s, 1000);
+    scrollsIntoLead(tab, true);
+    expect(s.scrollLeft).toBe(300);
+  });
+
+  it("applies immediately on mount, and stays put on a redundant update", () => {
+    const s = leadStrip();
+    const tab = leadTab(s, 90);
+    const action = scrollsIntoLead(tab, true);
+    expect(s.scrollLeft).toBe(90);
+    action.update(true);
+    expect(s.scrollLeft).toBe(90);
+  });
+
+  it("is a no-op when the tab has no parent strip", () => {
+    const tab = leadTab(null, 90);
+    expect(() => scrollsIntoLead(tab, true)).not.toThrow();
   });
 });

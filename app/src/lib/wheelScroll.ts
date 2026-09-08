@@ -65,3 +65,46 @@ export function wheelScrollsSideways(node: Scroller): { destroy: () => void } {
     destroy: () => node.removeEventListener("wheel", onWheel),
   };
 }
+
+/// Where a strip should land so the tab sitting `tabOffset` from its own
+/// left edge (in content coordinates, i.e. already including whatever
+/// the strip has scrolled) ends up flush against that edge -- the same
+/// "as far as it goes" clamp as `nextScrollLeft`: a tab near the end
+/// cannot reach the very left if there is not enough strip left to give.
+export function scrollLeftToLead(strip: { scrollWidth: number; clientWidth: number }, tabOffset: number): number {
+  const max = Math.max(0, strip.scrollWidth - strip.clientWidth);
+  return Math.max(0, Math.min(max, tabOffset));
+}
+
+/// The minimum a strip needs for `scrollsIntoLead` below -- both `Element`
+/// and the plain objects the tests drive satisfy it.
+export interface LeadStrip {
+  scrollLeft: number;
+  readonly scrollWidth: number;
+  readonly clientWidth: number;
+  getBoundingClientRect(): { left: number };
+}
+
+export interface LeadTab {
+  readonly parentElement: LeadStrip | null;
+  getBoundingClientRect(): { left: number };
+}
+
+/// Svelte action for one tab: `use:scrollsIntoLead={sessionId === active}`.
+/// Both tab strips hide their scrollbar (see the module comment), so a
+/// tab selected while sitting past the trailing edge leaves no cue that
+/// more tabs sit to its left, and nothing else in the row brings the
+/// viewport back. Fires on the transition to active, and once on mount
+/// for whichever tab already is one -- selecting a tab that is already
+/// active does nothing, since its own `active` parameter never changes.
+export function scrollsIntoLead(node: LeadTab, active: boolean): { update: (active: boolean) => void } {
+  function apply(isActive: boolean): void {
+    if (!isActive) return;
+    const strip = node.parentElement;
+    if (!strip) return;
+    const tabOffset = node.getBoundingClientRect().left - strip.getBoundingClientRect().left + strip.scrollLeft;
+    strip.scrollLeft = scrollLeftToLead(strip, tabOffset);
+  }
+  apply(active);
+  return { update: apply };
+}

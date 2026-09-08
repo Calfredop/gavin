@@ -67,7 +67,7 @@
   import { hintMode } from "./shortcutHints";
   import { hintDigitFor } from "./shortcuts";
   import { tooltip } from "./tooltip";
-  import { wheelScrollsSideways } from "./wheelScroll";
+  import { wheelScrollsSideways, scrollsIntoLead } from "./wheelScroll";
   import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "./paths";
   import { queueBlockedReason, queueTip } from "./queuedInput";
   import { queueTargetFor } from "./queuedInputActions";
@@ -596,6 +596,7 @@
           ondragstart={(e) => handleTabDragStart(e, sessionId)}
           ondragend={clearTabReorder}
           onclick={() => switchToTab(sessionId)}
+          use:scrollsIntoLead={sessionId === active}
           class:pinned={isPinnedTab(sessionId)}
           oncontextmenu={(e) => openTabMenu(e, sessionId)}
         >
