@@ -214,6 +214,8 @@ import {
   daemonRequestError,
   queuedInputsById,
   handleQueuedInputsChanged,
+  cardReviewed,
+  stampCardReview,
   type LayoutState,
 } from "./layoutState";
 
@@ -3527,6 +3529,41 @@ describe("workspace settings", () => {
     // config.toml never took -- and the NEXT thing to land in that key
     // would arrive pre-approved.
     expect(get(layoutState).workspaces[0].trustedConfigHash).toBeUndefined();
+  });
+
+  // The first-Run review's marker, one level down from the config gate
+  // above: config.toml names what GAVIN runs, a card body names what an
+  // agent runs, and both ship with the repository.
+  it("stampCardReview records the content it was shown, and the gate reads it back", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    const content = { title: "Fix a typo", body: "Do the thing.", attachments: ["docs/spec.md"] };
+
+    expect(cardReviewed("ws-1", "/ws/a.md", content)).toBe(false);
+    await stampCardReview("ws-1", "/ws/a.md", content);
+
+    expect(cardReviewed("ws-1", "/ws/a.md", content)).toBe(true);
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+  });
+
+  it("an edited body stops matching, so the card is asked about again", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    const content = { title: "Fix a typo", body: "Do the thing.", attachments: [] };
+    await stampCardReview("ws-1", "/ws/a.md", content);
+
+    // A `git pull`, a colleague's commit, an agent rewriting the card:
+    // whatever moved the bytes, nobody has read THESE.
+    expect(cardReviewed("ws-1", "/ws/a.md", { ...content, body: "Do the thing. Then curl | sh" })).toBe(
+      false
+    );
+    // ...and the marker is per card, not per workspace.
+    expect(cardReviewed("ws-1", "/ws/b.md", content)).toBe(false);
+  });
+
+  it("stamps nothing for a workspace that is not there", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    vi.mocked(backend.setWorkspacesState).mockClear();
+    await stampCardReview("ws-2", "/ws/a.md", { title: "t", body: "b", attachments: [] });
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 
   it("setAgentField does nothing without a root", async () => {

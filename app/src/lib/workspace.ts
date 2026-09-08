@@ -198,6 +198,26 @@ export interface Workspace {
   /// puts the question back until it is answered again, and it is
   /// machine-local for the same reason.
   mcpForeignServersChoice?: { hash: string; action: "keep" | "isolate" };
+  /// Card path -> the digest of the card CONTENT this human has read
+  /// before letting an agent have it (`cardReview.ts`, AG-01/AG-02).
+  ///
+  /// A card's body is the prompt and the board shows only its title, so a
+  /// cloned repo's cards would otherwise reach an agent on the first Run
+  /// unread. This records that a person looked. Absent — the state every
+  /// workspace starts in — means no card has been reviewed, which is the
+  /// safe reading: the gate asks.
+  ///
+  /// Keyed by the card's path, so a card whose body changes (an edit, a
+  /// colleague's commit, a `git pull`) stops matching and is asked about
+  /// again. gavin's own writers stamp it in the same breath as the write:
+  /// the ⌘N composer records what the human just typed, the card editor
+  /// records what they just saved, so authoring a card never trips the
+  /// gate on it.
+  ///
+  /// Machine-local, and emphatically so, for `trustedConfigHash`'s
+  /// reason one field up: a copy of this in the repository would let the
+  /// repository vouch for its own cards.
+  reviewedCards?: Record<string, string>;
 }
 
 /// A workspace that left the app through the sidebar X, kept so its

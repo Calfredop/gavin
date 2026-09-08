@@ -74,6 +74,10 @@ vi.mock("./layoutState", () => ({
   // The card-attachment run gate resolves relative paths against the
   // workspace ROOT, so the scheduler reaches for this before it spawns.
   workspaceRootPath: vi.fn(() => "/ws"),
+  // The first-Run review's marker read: a rail stalls a step whose card
+  // nobody has read. True by default, since almost every fixture here is
+  // about scheduling rather than about provenance.
+  cardReviewed: vi.fn(() => true),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   // tick() reads this through get(), so it has to be a real store.
   sessionExits: { subscribe: (fn: (v: unknown) => void) => (fn(new Map()), () => {}) },
@@ -261,6 +265,7 @@ import {
   __resetForTesting,
 } from "./orchestrationState";
 import { emptyOrchestration, addStep, findStage, stageMode } from "./orchestration";
+import { UNREVIEWED_STALL } from "./cardReview";
 import { askConfirmChecked } from "./dialog";
 import type { Orchestration, Rail, Stage } from "./orchestration";
 import type { GroupTemplate } from "./orchestrationGroups";
@@ -1073,6 +1078,34 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
     expect(get(orchestrations)["ws-1"].rails[0].pageId).toBe("pg-rail");
     // And that one session is the step's, not a shell beside it.
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0);
+  });
+
+  // AG-01: a rail is the one launcher nobody is standing in front of, so
+  // it cannot ASK. It stalls the step and names the card instead; the
+  // human answers on the card, and Retry starts it.
+  it("stalls a step whose card nobody has read, instead of launching it", async () => {
+    // Once: `mockReturnValue` would outlive clearAllMocks and leave every
+    // later test in this file waiting to be reviewed.
+    vi.mocked(layoutStateModule.cardReviewed).mockReturnValueOnce(false);
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(layoutStateModule.createSessionOnNewPage).not.toHaveBeenCalled();
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      null,
+      expect.stringContaining(UNREVIEWED_STALL),
+      null,
+      null,
+      null
+    );
+    // And the card is left where it was: no In Progress for a run that
+    // never happened.
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+    // Pausing the rail is rule 5's job on the next tick, the same as for
+    // every other stall -- this is the launch half.
   });
 
   it("the rail's second launch reuses that page", async () => {

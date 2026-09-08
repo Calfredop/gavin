@@ -38,11 +38,13 @@
     attachmentName,
     formatAttachments,
     removeAttachment,
+    resolvedAttachmentPaths,
+    withheldAttachmentPaths,
     type AttachmentStatus,
   } from "./attachments";
   import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "./autoCommit";
   import { isViewableInApp } from "./fileTypes";
-  import { ChevronDown, ChevronRight, SquareArrowOutUpRight } from "@lucide/svelte";
+  import { ChevronDown, ChevronRight, Lock, SquareArrowOutUpRight } from "@lucide/svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import {
     agentDevelopingIndicator,
@@ -64,7 +66,9 @@
   } from "./cardRunActions";
   import { developingRunIn } from "./developingCards";
   import { cardSessionState } from "./columnRunAction";
-  import { developAvailable, agentPromptBlocker } from "./cardRun";
+  import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker } from "./cardRun";
+  import { cardContentReviewed } from "./cardReview";
+  import { ensureCardReviewed } from "./cardReviewActions";
   import { resumeNoteFor } from "./autoResume";
   import { runBaseline } from "./runChanges";
   import RunChangesModal from "./RunChangesModal.svelte";
@@ -963,6 +967,59 @@
     }
   }
 
+  // --- first-Run review (cardReview.ts, AG-01) --------------------------
+  // A card's body IS an agent's prompt, and `.gavin-root/plans/*.md`
+  // ships with the repository -- so gavin will not hand a card to an
+  // agent until a human has read it. Every launch asks at the click; this
+  // is where the question can be answered WITHOUT one, which is what a
+  // rail needs: a rail step stalls on an unreviewed card rather than
+  // raising a modal into a window nobody may be watching, and the human
+  // comes here, reads the body that is already on screen, and answers.
+  //
+  // Read through the pure predicate off the store rather than through
+  // layoutState's one-shot helper, so the banner clears the instant the
+  // stamp lands instead of at the next remount.
+  const reviewedCards = $derived(
+    $layoutState.workspaces.find((w) => w.id === workspaceId)?.reviewedCards
+  );
+  const reviewContent = $derived({
+    title: card.title,
+    body: stripFrontmatter(content ?? "").trim(),
+    attachments: [...attachments],
+  });
+  // Never for a note -- nothing executes one -- and never before the file
+  // has been read, since "not loaded yet" must not draw as "not reviewed".
+  const needsReview = $derived(
+    card.kind !== "note" &&
+      content !== null &&
+      !cardContentReviewed(reviewContent, reviewedCards?.[card.id])
+  );
+  let reviewBusy = $state(false);
+
+  async function handleReview(): Promise<void> {
+    reviewBusy = true;
+    try {
+      // The same composer a launch would use, on the same resolved
+      // attachments the chips above are drawn from -- a sheet showing a
+      // different prompt from the one that will be sent is worse than no
+      // sheet at all.
+      const paths = resolvedAttachmentPaths(attachmentStatuses);
+      const withheld = withheldAttachmentPaths(attachmentStatuses);
+      await ensureCardReviewed({
+        workspaceId,
+        path: card.id,
+        content: reviewContent,
+        statuses: attachmentStatuses,
+        prompt:
+          card.kind === "task"
+            ? composeTaskPrompt(card.id, card.title, reviewContent.body, paths, null, withheld)
+            : composePlanPrompt(card.id, paths, null, withheld),
+      });
+    } finally {
+      reviewBusy = false;
+    }
+  }
+
   // --- folded sections --------------------------------------------------
   // The two blocks a human comes here to CHANGE rather than to read
   // start folded, and say what they hold while folded so the fold is not
@@ -1317,6 +1374,19 @@
            with a scrollbar of its own, above a session block nobody
            could reach: now the panel scrolls once and the text can be as
            long as it likes without pushing anything urgent out of view. -->
+      {#if needsReview}
+        <div class="review-banner" role="status">
+          <Lock size={14} aria-hidden="true" />
+          <span>
+            Nobody has read this card's body yet, and a card's body is what an agent is given.
+            gavin asks before the first run — and a rail holds its step until you answer.
+          </span>
+          <button type="button" disabled={reviewBusy} onclick={() => void handleReview()}>
+            Review…
+          </button>
+        </div>
+      {/if}
+
       {#if card.kind === "task" && bodyHtml !== null}
         <div class="section">
           <div class="section-title">Prompt</div>
@@ -2026,6 +2096,38 @@
     color: var(--text-muted);
     font-size: 0.8em;
     margin-bottom: 6px;
+  }
+  /* The same shape as ConfigTrustNotice's banner one level up: gavin is
+     holding something the repository wrote until a person looks. */
+  .review-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border-warning);
+    background: var(--surface-warning);
+    color: var(--warning-text);
+    border-radius: 6px;
+    font-size: 0.85em;
+  }
+  .review-banner span {
+    flex: 1;
+    min-width: 0;
+  }
+  .review-banner button {
+    flex: none;
+    background: var(--surface-overlay);
+    border: none;
+    color: var(--text);
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+  }
+  .review-banner button:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
   .check-item {
     display: flex;

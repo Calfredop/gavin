@@ -62,6 +62,7 @@ import {
   trustedAgentConfig,
   type ExecutionKeys,
 } from "./workspaceTrust";
+import { cardContentDigest, cardContentReviewed, type CardContent } from "./cardReview";
 import type { McpForeignChoice } from "./mcpServerTrust";
 import {
   activeWorkspaceForWindow,
@@ -1830,6 +1831,45 @@ async function stampConfigTrust(workspaceId: string, hash: string | undefined): 
   if (!current || current.trustedConfigHash === hash) return;
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, trustedConfigHash: hash } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// Whether this human has already read exactly this card's content
+/// (`cardReview.ts`). False for a card nobody has reviewed, for one whose
+/// body or attachments have changed since, and for a workspace that does
+/// not exist — every uncertain case fails closed, because the failure is
+/// a question rather than a refusal.
+export function cardReviewed(workspaceId: string, path: string, content: CardContent): boolean {
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  return cardContentReviewed(content, workspace?.reviewedCards?.[path]);
+}
+
+/// Records that the human has read exactly this content for this card.
+///
+/// Called from the review sheet, which showed it — and from gavin's own
+/// writers (the ⌘N composer, the card editor's save) in the same breath
+/// as the write, so a card the human authored never asks them to review
+/// their own typing. That is `stampConfigTrust`'s rule one level down,
+/// and it is what makes the gate about PROVENANCE rather than about
+/// having clicked recently.
+///
+/// The digest is taken from the content handed in rather than re-read
+/// from disk: the caller showed (or wrote) those exact bytes, and
+/// stamping a value nobody was shown is the one thing this gate exists to
+/// prevent.
+export async function stampCardReview(
+  workspaceId: string,
+  path: string,
+  content: CardContent
+): Promise<void> {
+  const digest = cardContentDigest(content);
+  const state = get(layoutState);
+  const current = state.workspaces.find((w) => w.id === workspaceId);
+  if (!current || current.reviewedCards?.[path] === digest) return;
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, reviewedCards: { ...(w.reviewedCards ?? {}), [path]: digest } } : w
   );
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);

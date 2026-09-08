@@ -39,6 +39,7 @@ import {
   switchWorkspaceView,
 } from "./layoutState";
 import { buildRunCommand, composePlanPrompt, composeTaskPrompt, noPromptReason, provisionalSessionName, runStatusNeeded } from "./cardRun";
+import { ensureCardReviewed } from "./cardReviewActions";
 import { developingBlocker } from "./developingCardsState";
 import { resolveAttachmentsForRun } from "./cardRunActions";
 import { cardSessionState } from "./columnRunAction";
@@ -101,6 +102,30 @@ export async function startBestOfN(
   const resolved = await resolveAttachmentsForRun(workspaceId, card.attachments ?? []);
   if ("error" in resolved) return resolved.error;
 
+  // The first-Run review, before the status write and before a single
+  // worktree exists -- with N times the reason a board Run has one: this
+  // is the launch that hands the same unread body to several agents at
+  // once, in checkouts of their own.
+  const file = await backend.readFileForViewer(card.id);
+  if (!file.exists) return `Card file not found: ${card.id}`;
+  const body = stripFrontmatter(file.content).trim();
+  const composePrompt = (at: string): string =>
+    card.kind === "task"
+      ? composeTaskPrompt(at, card.title, body, resolved.paths, null, resolved.withheld)
+      : composePlanPrompt(at, resolved.paths, null, resolved.withheld);
+  const reviewed = await ensureCardReviewed({
+    workspaceId,
+    path: card.id,
+    content: { title: card.title, body, attachments: card.attachments ?? [] },
+    statuses: resolved.statuses,
+    // The card's own prompt, not a candidate's: `composeCandidatePrompt`
+    // wraps this in gavin's "you are candidate 2 of 3" framing, which is
+    // gavin's text and identical for every card. What the human is being
+    // asked to read is what the REPOSITORY wrote.
+    prompt: composePrompt(card.id),
+  });
+  if (!reviewed) return null;
+
   // Status FIRST, exactly as a board Run does it: running a Done card
   // un-archives it out of `plans/done/`, and every candidate's prompt has
   // to name where the file ends up rather than where it was.
@@ -115,21 +140,7 @@ export async function startBestOfN(
     }
   }
 
-  let prompt: string;
-  if (card.kind === "task") {
-    const file = await backend.readFileForViewer(path);
-    if (!file.exists) return `Card file not found: ${path}`;
-    prompt = composeTaskPrompt(
-      path,
-      card.title,
-      stripFrontmatter(file.content).trim(),
-      resolved.paths,
-      null,
-      resolved.withheld
-    );
-  } else {
-    prompt = composePlanPrompt(path, resolved.paths, null, resolved.withheld);
-  }
+  const prompt = composePrompt(path);
 
   // `[worktree] setup` runs in every candidate's checkout, chained ahead
   // of its agent on one line. A fresh worktree has no node_modules and no

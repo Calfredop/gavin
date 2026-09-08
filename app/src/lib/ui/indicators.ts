@@ -45,6 +45,7 @@ import {
   History,
   Hourglass,
   LoaderCircle,
+  Lock,
   MessageCircleQuestionMark,
   Minus,
   OctagonAlert,
@@ -443,6 +444,21 @@ export function reviewWaitIndicator(): Indicator {
   return make("step", "review", Eye, "warning", "waiting for you to review it");
 }
 
+/// A step whose CARD nobody has read yet (`cardReview.ts`, AG-01). The
+/// step stalled rather than launching, so like the review gate above it
+/// names no agent -- but unlike it, nothing asked for this stop: a card
+/// arrived with the repository and gavin will not hand its body to an
+/// agent on nobody's authority.
+///
+/// A lock rather than an eye, and on the step axis for the same reason:
+/// the review gate is a hold somebody chose, this is a hold gavin
+/// imposed, and one glyph for both would read as "you asked for this".
+/// Warning, not danger -- nothing is broken, and reading a card is a
+/// minute's work.
+export function unreviewedCardIndicator(): Indicator {
+  return make("step", "unreviewed", Lock, "warning", "waiting for you to review the card");
+}
+
 // ---- rail --------------------------------------------------------------
 // The rail itself, one level up from its steps. Both surfaces that show
 // it already spell the state out in words, so the badge is not carrying
@@ -586,6 +602,9 @@ export function attentionIndicator(attention: StepAttention): Indicator {
   // The one attention mark that is not about an agent, because a
   // `review` step has none. See reviewWaitIndicator.
   if (attention === "review") return reviewWaitIndicator();
+  // Nor is this one, and for a stronger reason: the step never launched,
+  // so there is not even a session that has gone quiet.
+  if (attention === "unreviewed") return unreviewedCardIndicator();
   return AGENT.turn_ended;
 }
 
@@ -603,6 +622,7 @@ export function allIndicators(): Indicator[] {
     ...PRIORITY_LEVELS.map((p) => PRIORITY[p]),
     ...STEP_STATES.map(stepIndicator),
     reviewWaitIndicator(),
+    unreviewedCardIndicator(),
     ...RAIL_STATES.map(railIndicator),
     railRetryIndicator(),
     ...RUN_OUTCOME_STATES.map((state) => RUN[state]),

@@ -49,7 +49,12 @@ import type { GavinTree } from "./gavin";
 /// none: gavin launches nothing for it and waits on the person instead.
 /// The rail, its chip and the hub's attention pip all show that wait;
 /// this list is about sessions, and a rail gate is not one.
-export type AttentionReason = Exclude<StepAttention, "review">;
+///
+/// `unreviewed` is out for exactly the same reason and one step further:
+/// that step never launched at all, so there is not even a session to
+/// have gone quiet. It shows where a rail gate shows -- the step's chip,
+/// the rail header, the sidebar recap and the hub's attention count.
+export type AttentionReason = Exclude<StepAttention, "review" | "unreviewed">;
 
 /// When a session entered the status it currently holds.
 ///

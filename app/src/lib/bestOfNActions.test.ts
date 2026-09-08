@@ -80,7 +80,13 @@ vi.mock("./kanbanState", () => ({
 }));
 
 vi.mock("./columnRunAction", () => ({ cardSessionState: vi.fn(() => "none") }));
-vi.mock("./cardRunActions", () => ({ resolveAttachmentsForRun: vi.fn(async () => ({ paths: [] })) }));
+vi.mock("./cardRunActions", () => ({
+  resolveAttachmentsForRun: vi.fn(async () => ({ paths: [], withheld: [], statuses: [] })),
+}));
+// The first-Run review, as the launcher reaches it. A real one raises
+// the app's dialog and waits; this is the seam the answer is driven
+// through, and it says yes unless a test says otherwise.
+vi.mock("./cardReviewActions", () => ({ ensureCardReviewed: vi.fn(async () => true) }));
 vi.mock("./gavinState", () => ({
   gavinTrees: writable({ "ws-1": { rootPath: "/repos/gavin" } }),
   // The store, not a `worktreeSetup` call: the launch reads the same

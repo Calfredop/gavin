@@ -30,6 +30,14 @@ export interface AttachmentStatus {
   exists: boolean;
   location: AttachmentLocation;
   refusedReason: string | null;
+  /// The file's size in bytes, or null when gavin never stat'd it (a
+  /// refused entry, or one whose path resolves to nothing). Read for the
+  /// first-Run review sheet (`cardReview.ts`), which has to say how much
+  /// a card is about to put in an agent's context -- "read this file"
+  /// means something different for a 2 KB spec and a 40 MB log. Optional
+  /// so a status object built by a test fixture, or returned by a host
+  /// older than the field, still type-checks as one.
+  sizeBytes?: number | null;
 }
 
 /// Splits the frontmatter line exactly as the daemon does

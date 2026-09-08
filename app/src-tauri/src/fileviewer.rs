@@ -409,6 +409,13 @@ pub struct AttachmentStatus {
     pub exists: bool,
     pub location: AttachmentLocation,
     pub refused_reason: Option<String>,
+    /// The file's size in bytes, or None when there was nothing to stat
+    /// -- a refused entry, or a path that resolves to no file. Read by
+    /// the first-Run review sheet (`cardReview.ts`), which tells a human
+    /// how much a card is about to put into an agent's context: "read
+    /// this file" means one thing for a 2 KB spec and another for a
+    /// 40 MB log.
+    pub size_bytes: Option<u64>,
 }
 
 /// Sensitive directories under the human's home folder, by name --
@@ -495,6 +502,7 @@ fn attachment_status_impl(
                     exists: false,
                     location: AttachmentLocation::Refused,
                     refused_reason: Some("contains a `..` component".to_string()),
+                    size_bytes: None,
                 };
             };
             let candidate = PathBuf::from(&usable);
@@ -511,13 +519,19 @@ fn attachment_status_impl(
                     refused_reason: Some(format!(
                         "lies inside ~/{name}, which gavin refuses to hand an agent"
                     )),
+                    size_bytes: None,
                 };
             }
 
             // is_file, not exists: an attachment names a file to read. A
             // directory that happens to sit at the path would pass
             // `exists` and then hand the agent something it cannot read.
-            let exists = resolved.is_file();
+            //
+            // One stat rather than two: the size the review sheet quotes
+            // comes from the same call that answered `exists`, so the two
+            // can never describe different files.
+            let metadata = resolved.metadata().ok().filter(|m| m.is_file());
+            let exists = metadata.is_some();
             let location = if inside_root(root, &resolved) {
                 AttachmentLocation::Root
             } else if extra_roots.iter().any(|r| inside_root(r, &resolved)) {
@@ -531,6 +545,7 @@ fn attachment_status_impl(
                 exists,
                 location,
                 refused_reason: None,
+                size_bytes: metadata.map(|m| m.len()),
             }
         })
         .collect()
@@ -806,11 +821,15 @@ mod tests {
         assert!(got[0].exists);
         assert_eq!(got[0].location, AttachmentLocation::Root);
         assert_eq!(got[0].refused_reason, None);
+        // The size the first-Run review sheet quotes: taken from the same
+        // stat that answered `exists`, so the two can never disagree.
+        assert_eq!(got[0].size_bytes, Some(4));
 
         // Relative, moved away: resolved, still Root, and honestly missing.
         assert!(!got[1].exists);
         assert!(got[1].absolute_path.is_some());
         assert_eq!(got[1].location, AttachmentLocation::Root);
+        assert_eq!(got[1].size_bytes, None);
 
         // Absolute outside the root is the COMMON case, not an escape --
         // a screenshot on the Desktop, a spec on a shared volume -- but it
@@ -832,10 +851,14 @@ mod tests {
         assert!(!got[3].exists);
         assert_eq!(got[3].location, AttachmentLocation::Refused);
         assert!(got[3].refused_reason.as_deref().unwrap().contains(".."));
+        // Never stat'd, so there is no size to report -- a refused entry
+        // must not leak so much as the size of what it points at.
+        assert_eq!(got[3].size_bytes, None);
 
         // A directory is not a file to read.
         assert!(!got[4].exists);
         assert_eq!(got[4].location, AttachmentLocation::Root);
+        assert_eq!(got[4].size_bytes, None);
     }
 
     #[test]

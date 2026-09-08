@@ -624,6 +624,7 @@ mod workspaces_data_tests {
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
+            reviewed_cards: None,
         };
         ws.complexity_agents.insert(
             "trivial".to_string(),
@@ -845,6 +846,7 @@ mod workspace_migration_tests {
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
+            reviewed_cards: None,
         }
     }
 
@@ -2671,6 +2673,7 @@ mod resolve_workspaces_tests {
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
+            reviewed_cards: None,
         }
     }
 
@@ -3275,6 +3278,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 git_tracking_asked: false,
                 trusted_config_hash: None,
                 mcp_foreign_servers_choice: None,
+                reviewed_cards: None,
             },
         );
     }
@@ -4567,6 +4571,7 @@ mod main_session_tests {
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
+            reviewed_cards: None,
         }
     }
 
@@ -5108,6 +5113,7 @@ mod attach_target_tests {
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
+            reviewed_cards: None,
         }
     }
 

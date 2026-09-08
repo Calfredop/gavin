@@ -76,6 +76,7 @@ import {
   attentionTip,
   failedStepReason,
 } from "./orchestration";
+import { unreviewedStallReason } from "./cardReview";
 import type { CardEntry, Conflict, StepAttention, ToolSummary, UnplacedGroup } from "./orchestration";
 import { BUILTIN_TOOLS } from "./orchestrationTools";
 import { prKey } from "./pullRequest";
@@ -4307,6 +4308,64 @@ describe("stepAttentions", () => {
     // every other mark here, nothing is going to resolve it on its own.
     it("says what ends the wait", () => {
       expect(attentionTip("review", "Done")).toContain("Skip");
+    });
+  });
+
+  // AG-01. The one mark on a step that never ran: a card whose body
+  // nobody has read is refused BEFORE a session exists, so there is no
+  // status to read and nothing that will move on its own.
+  describe("a card nobody has read (`unreviewed`)", () => {
+    const REVIEW_LIBRARY: ToolSummary[] = [
+      ...TOOLS,
+      { id: "builtin:manual-review", name: "Manual review", kind: "review" },
+    ];
+    const stalledOnReview = (reason: string): Orchestration =>
+      running(cardRail, "r1-s0", [{ stepId: "t1", state: "stalled", sessionId: null, reason }]);
+
+    it("marks a step stalled by the review gate", () => {
+      const orch = stalledOnReview(unreviewedStallReason("Fix a typo"));
+      expect(attn(orch, new Map()).get("t1")).toBe("unreviewed");
+    });
+
+    it("leaves every other stall unmarked — those already say why on the chip", () => {
+      expect(attn(stalledOnReview("card file is missing"), new Map()).get("t1")).toBeUndefined();
+      expect(attn(stalledOnReview("could not start the agent"), new Map()).get("t1")).toBeUndefined();
+    });
+
+    // A rail is one row on the hub, so it shows one mark. Under
+    // `review`, the gate somebody ASKED for -- nothing here is broken,
+    // and of the two waits this is the longer errand.
+    it("is outranked by the manual review gate on the same rail", () => {
+      const both = running(
+        toolRail("r1", [[["t1", "builtin:manual-review"]]]),
+        "r1-s0",
+        [{ stepId: "t1", state: "running", sessionId: null, reason: null }]
+      );
+      const cards = rail("r2", [[["t2", A]]]);
+      const orch: Orchestration = {
+        ...both,
+        rails: [{ ...both.rails[0], stages: [...both.rails[0].stages, ...cards.stages] }],
+        stepRuns: [
+          ...both.stepRuns,
+          {
+            stepId: "t2",
+            state: "stalled",
+            sessionId: null,
+            reason: unreviewedStallReason("Fix a typo"),
+          },
+        ],
+      };
+      const marks = stepAttentions(orch, BOARD, CARDS, REVIEW_LIBRARY, new Map());
+      expect(marks.get("t2")).toBe("unreviewed");
+      expect(railAttention(orch.rails[0], marks)).toBe("review");
+    });
+
+    // Nothing on the rail ends this wait, so the tip has to send the
+    // reader to the card and back.
+    it("says where the answer is given", () => {
+      const tip = attentionTip("unreviewed", "Done");
+      expect(tip).toContain("card");
+      expect(tip).toContain("Retry");
     });
   });
 

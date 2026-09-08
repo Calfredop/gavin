@@ -6,7 +6,7 @@
 
 import { get } from "svelte/store";
 import * as backend from "./backend";
-import { agentForCard, armFailureDetection, baseShaForLaunch, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "./layoutState";
+import { agentForCard, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "./layoutState";
 import { gavinTrees } from "./gavinState";
 import { findSessionLocation } from "./workspace";
 import { cardSessionState } from "./columnRunAction";
@@ -32,7 +32,14 @@ import {
   recordDevelopingCard,
 } from "./developingCardsState";
 import { stripFrontmatter } from "./planChecklist";
-import { missingAttachmentReason, resolvedAttachmentPaths, withheldAttachmentPaths } from "./attachments";
+import {
+  missingAttachmentReason,
+  resolvedAttachmentPaths,
+  withheldAttachmentPaths,
+  type AttachmentStatus,
+} from "./attachments";
+import { ensureCardReviewed } from "./cardReviewActions";
+import { UNREVIEWED_UNATTENDED } from "./cardReview";
 import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "./queuedInput";
 import { queueFollowUp, queueTargetFor } from "./queuedInputActions";
 import { cardViewForPath, type CardView } from "./planBoard";
@@ -53,11 +60,18 @@ import { cardViewForPath, type CardView } from "./planBoard";
 ///
 /// Shared with the orchestration scheduler so a rail step and a board
 /// Run refuse on exactly the same evidence.
+///
+/// `statuses` comes back beside the two lists because the first-Run
+/// review sheet names each entry by where it RESOLVED and how big it is
+/// (`cardReview.ts`), and re-stat'ing for the sheet would let it describe
+/// a different set of files from the one about to be handed over.
 export async function resolveAttachmentsForRun(
   workspaceId: string,
   attachments: string[]
-): Promise<{ paths: string[]; withheld: string[] } | { error: string }> {
-  if (attachments.length === 0) return { paths: [], withheld: [] };
+): Promise<
+  { paths: string[]; withheld: string[]; statuses: AttachmentStatus[] } | { error: string }
+> {
+  if (attachments.length === 0) return { paths: [], withheld: [], statuses: [] };
   const root = workspaceRootPath(workspaceId);
   // Only reachable with attachments to resolve: a relative one has
   // nothing to resolve against, and guessing a base is how a card ends
@@ -73,7 +87,11 @@ export async function resolveAttachmentsForRun(
   }
   const missing = missingAttachmentReason(statuses);
   if (missing) return { error: missing };
-  return { paths: resolvedAttachmentPaths(statuses), withheld: withheldAttachmentPaths(statuses) };
+  return {
+    paths: resolvedAttachmentPaths(statuses),
+    withheld: withheldAttachmentPaths(statuses),
+    statuses,
+  };
 }
 
 /// Put the human in front of a session: the terminal view, on whichever
@@ -209,6 +227,14 @@ export async function developCard(
   // The card file is never read here: the skill's first move is to read
   // it, and inlining a task's body is what turns an interview into a
   // build.
+  //
+  // No first-Run review either, and that is a deliberate boundary rather
+  // than an oversight: `composeDevelopPrompt` carries no body, no
+  // attachments and no auto-commit block, so there is nothing to SHOW --
+  // a sheet promising "the prompt the agent receives" would show a
+  // prompt with none of the card in it. The develop agent still goes and
+  // reads the card, so a hostile body reaches it; that residue is real
+  // and is filed as its own card rather than half-covered here.
   // The CARD's agent, by the same rule every other launch follows
   // (`agentForCard` -> `cardAgentEntry`): its own `agent:`/`model:` if
   // it names either, else what its `complexity:` level is attributed to,
@@ -309,6 +335,99 @@ async function launchCard(
   const resolved = await resolveAttachmentsForRun(workspaceId, card.attachments ?? []);
   if ("error" in resolved) return resolved.error;
 
+  // Resume, where the CLI can do it, is the agent reopening its OWN
+  // conversation -- not a new agent reading an account of what the last
+  // one was doing. The transcript is still on disk and gavin holds its
+  // id because it minted it at launch, so there is nothing to
+  // reconstruct.
+  //
+  // Only ever by an id gavin itself recorded on THIS binding, which is
+  // the whole binding verification this needs: the id and the run are
+  // written together on every launch, so a stale id cannot outlive the
+  // run it belongs to. A resume against somebody else's conversation is
+  // how you get the silent fresh start this is trying to avoid.
+  //
+  // Resolved HERE, above the status write, rather than where it is used
+  // below: the review gate turns on it. Reopening a conversation is the
+  // one launch that hands an agent no card content at all -- no body, no
+  // attachment list, not even the card's path -- so there is nothing
+  // unread for a human to be shown, and asking would be a prompt with no
+  // question in it.
+  const resumeCommand =
+    mode === "resume" || mode === "review"
+      ? buildResumeCommand(agent.launchCommand, agent.resumeArgs, binding?.conversationId)
+      : null;
+  const reopening = resumeCommand !== null && binding !== null;
+
+  // The card file, read once, BEFORE anything is written. Two reasons
+  // that happen to want the same thing: the first-Run review has to
+  // happen before the status write (a declined review must leave the card
+  // exactly where it was), and the bytes it shows have to be the bytes
+  // that compose the prompt, or the sheet is a description of something
+  // else.
+  //
+  // A plan card is read too, though its prompt only names the file. The
+  // body is still what the agent goes on to execute; "the agent reads it
+  // rather than being handed it" is not a difference the human cares
+  // about, and a plan card's body is exactly where the auto-commit block
+  // hides from a rendered preview.
+  //
+  // Read at `card.id` rather than at the post-write `path`: running a
+  // Done card un-archives it, which MOVES the file, so the read has to
+  // happen before that or be a second read of the same bytes. What the
+  // status write changes is the path gavin's own framing names -- not
+  // card content, and not what the review digest covers.
+  let body = "";
+  // Captured before the closure: `card.kind` is narrowed to task-or-plan
+  // by the note refusal at the top of this function, and a closure over a
+  // parameter loses that.
+  const kind = card.kind;
+  const composePrompt = (at: string): string => {
+    if (mode === "review") {
+      return composeReviewLaunchPrompt(
+        at,
+        card.title,
+        kind,
+        body,
+        resolved.paths,
+        resolved.withheld
+      );
+    }
+    if (kind === "task") {
+      return mode === "resume"
+        ? composeResumeTaskPrompt(at, card.title, body, resolved.paths, resolved.withheld)
+        : composeTaskPrompt(at, card.title, body, resolved.paths, null, resolved.withheld);
+    }
+    return mode === "resume"
+      ? composeResumePlanPrompt(at, resolved.paths, resolved.withheld)
+      : composePlanPrompt(at, resolved.paths, null, resolved.withheld);
+  };
+  if (!reopening) {
+    const file = await backend.readFileForViewer(card.id);
+    if (!file.exists) return `Card file not found: ${card.id}`;
+    body = stripFrontmatter(file.content).trim();
+    const content = { title: card.title, body, attachments: card.attachments ?? [] };
+    if (options.automatic) {
+      // Unattended (auto-resume): refuse rather than ask. A modal raised
+      // with nobody watching holds the recovery open behind whatever
+      // window is in front, and this is the one launch the human did not
+      // press a button for.
+      if (!cardReviewed(workspaceId, card.id, content)) return UNREVIEWED_UNATTENDED;
+    } else if (
+      !(await ensureCardReviewed({
+        workspaceId,
+        path: card.id,
+        content,
+        statuses: resolved.statuses,
+        prompt: composePrompt(card.id),
+      }))
+    ) {
+      // Declined, which is an answer and not a failure: nothing has been
+      // written, so there is nothing to report on the error strip.
+      return null;
+    }
+  }
+
   // Status FIRST: running a Done card un-archives it out of `plans/done/`,
   // and the prompt has to name where the file ends up, not where it was.
   // A nested task gaining In Progress frees itself from its plan --
@@ -329,27 +448,11 @@ async function launchCard(
     }
   }
 
-  // Resume, where the CLI can do it, is the agent reopening its OWN
-  // conversation -- not a new agent reading an account of what the last
-  // one was doing. The transcript is still on disk and gavin holds its
-  // id because it minted it at launch, so there is nothing to
-  // reconstruct.
-  //
-  // Only ever by an id gavin itself recorded on THIS binding, which is
-  // the whole binding verification this needs: the id and the run are
-  // written together on every launch, so a stale id cannot outlive the
-  // run it belongs to. A resume against somebody else's conversation is
-  // how you get the silent fresh start this is trying to avoid.
-  //
   // The LAUNCH cwd, not the card's context folder and not the session's
   // cwd: `cwd` on the binding follows OSC 7 and drifts the moment the
   // agent moves into a worktree, and the resumed agent has to run where
   // the work is.
-  const resumeCommand =
-    mode === "resume" || mode === "review"
-      ? buildResumeCommand(agent.launchCommand, agent.resumeArgs, binding?.conversationId)
-      : null;
-  if (resumeCommand !== null && binding) {
+  if (reopening && resumeCommand !== null && binding) {
     const resumeCwd = binding.launchCwd ?? binding.cwd;
     let resumed: string;
     try {
@@ -387,37 +490,18 @@ async function launchCard(
     return null;
   }
 
-  let prompt: string;
-  // A review reads the card file for BOTH kinds, unlike a run or a
-  // resume: the reviewer's agent is being asked what the work was for,
-  // and a plan's body is where that is written. The other two modes send
-  // a plan agent to read the file itself, because they are about to
-  // rewrite its checklist.
-  if (mode === "review") {
-    const file = await backend.readFileForViewer(path);
-    if (!file.exists) return `Card file not found: ${path}`;
-    prompt = composeReviewLaunchPrompt(
-      path,
-      card.title,
-      card.kind,
-      stripFrontmatter(file.content).trim(),
-      resolved.paths,
-      resolved.withheld
-    );
-  } else if (card.kind === "task") {
-    const file = await backend.readFileForViewer(path);
-    if (!file.exists) return `Card file not found: ${path}`;
-    const body = stripFrontmatter(file.content).trim();
-    prompt =
-      mode === "resume"
-        ? composeResumeTaskPrompt(path, card.title, body, resolved.paths, resolved.withheld)
-        : composeTaskPrompt(path, card.title, body, resolved.paths, null, resolved.withheld);
-  } else {
-    prompt =
-      mode === "resume"
-        ? composeResumePlanPrompt(path, resolved.paths, resolved.withheld)
-        : composePlanPrompt(path, resolved.paths, null, resolved.withheld);
-  }
+  // The same composer the review sheet was shown, at the path the card
+  // ended up on. Identical strings for every card that did not move --
+  // which is every card except a Done one being re-run, where the one
+  // difference is gavin's own framing naming `plans/` instead of
+  // `plans/done/`.
+  //
+  // A review composes for BOTH kinds, unlike a run or a resume: the
+  // reviewer's agent is being asked what the work was for, and a plan's
+  // body is where that is written. The other two modes send a plan agent
+  // to read the file itself, because they are about to rewrite its
+  // checklist.
+  const prompt = composePrompt(path);
 
   const conversationId = conversationIdForLaunch(agent);
   const command = buildRunCommand(
@@ -577,6 +661,27 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   // session as spawning a dedicated one for it.
   const resolved = await resolveAttachmentsForRun(workspaceId, card.attachments ?? []);
   if ("error" in resolved) return resolved.error;
+  // And the same first-Run review, before the status write for the same
+  // reason every other gate is: a declined review must leave the card
+  // where it was. The main agent is not a smaller launch -- it is the
+  // human's own agent, already trusted with the workspace, being handed a
+  // repository's words -- so it asks exactly as a dedicated run does.
+  const file = await backend.readFileForViewer(card.id);
+  if (!file.exists) return `Card file not found: ${card.id}`;
+  const body = stripFrontmatter(file.content).trim();
+  const composePrompt = (at: string): string =>
+    card.kind === "task"
+      ? composeTaskPrompt(at, card.title, body, resolved.paths, null, resolved.withheld)
+      : composePlanPrompt(at, resolved.paths, null, resolved.withheld);
+  const reviewed = await ensureCardReviewed({
+    workspaceId,
+    path: card.id,
+    content: { title: card.title, body, attachments: card.attachments ?? [] },
+    statuses: resolved.statuses,
+    prompt: composePrompt(card.id),
+  });
+  // Declined is an answer, not a failure: nothing has been written.
+  if (!reviewed) return null;
   // Status FIRST, for the same reason as launchCard: sending a Done card
   // un-archives it, and the agent must be handed the path it lands on.
   let path = card.id;
@@ -589,22 +694,7 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
       return `Couldn't set In Progress: ${e instanceof Error ? e.message : e}`;
     }
   }
-  let prompt: string;
-  if (card.kind === "task") {
-    const file = await backend.readFileForViewer(path);
-    if (!file.exists) return `Card file not found: ${path}`;
-    prompt = composeTaskPrompt(
-      path,
-      card.title,
-      stripFrontmatter(file.content).trim(),
-      resolved.paths,
-      null,
-      resolved.withheld
-    );
-  } else {
-    prompt = composePlanPrompt(path, resolved.paths, null, resolved.withheld);
-  }
-  const pasteError = await pasteToMainAgent(workspaceId, prompt);
+  const pasteError = await pasteToMainAgent(workspaceId, composePrompt(path));
   if (pasteError) return pasteError;
   await switchWorkspaceView(workspaceId, "home");
   return null;
@@ -619,6 +709,12 @@ export async function relaunchCard(workspaceId: string, path: string): Promise<s
   // developed is the very text the develop agent is replacing -- so it is
   // the launch with the most to lose from ignoring this gate, not the
   // least.
+  //
+  // And no first-Run review, for the opposite reason to develop's: this
+  // replays the command the binding STORED, so the bytes it sends are the
+  // ones a human already read before the first launch. Re-reading the
+  // card here would be the wrong question -- the file may have moved on,
+  // and none of it is going anywhere.
   const developing = developingBlocker(workspaceId, path);
   if (developing) return developing;
   // Through the card's OWN agent, not the workspace's, because the

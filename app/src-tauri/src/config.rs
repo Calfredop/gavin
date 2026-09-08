@@ -356,6 +356,22 @@ pub struct Workspace {
     /// ordinary case of a workspace with nothing foreign to decide on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_foreign_servers_choice: Option<McpForeignServersChoice>,
+    /// Card path -> the digest of the card CONTENT the human has read
+    /// before letting an agent have it (the frontend's `cardReview.ts`
+    /// owns the hash and the comparison; AG-01/AG-02).
+    ///
+    /// A card's body IS the prompt a launch hands an agent, and the board
+    /// shows only its title -- so `.gavin-root/plans/*.md` arriving with a
+    /// clone would otherwise reach an agent unread on the first Run. This
+    /// records that a person looked at exactly this content. A body that
+    /// changes stops matching and is asked about again.
+    ///
+    /// Machine-local, like `trusted_config_hash` above and for the same
+    /// reason: a copy of it in the repository would let the repository
+    /// vouch for its own cards. `skip_serializing_if` keeps the key out of
+    /// config.json until something has actually been reviewed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_cards: Option<std::collections::HashMap<String, String>>,
 }
 
 /// One recorded decision on `Workspace::mcp_foreign_servers_choice`.
@@ -791,6 +807,7 @@ mod tests {
             git_tracking_asked: false,
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
+            reviewed_cards: None,
         }
     }
 
