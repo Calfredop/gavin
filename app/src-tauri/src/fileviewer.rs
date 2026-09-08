@@ -1,3 +1,4 @@
+use crate::session::{WorkspacesData, WorkspacesState};
 use notify_debouncer_mini::Debouncer;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -39,6 +40,110 @@ pub struct FileContent {
     pub exists: bool,
 }
 
+// ---- containment for the five raw-path commands ----------------------
+//
+// `read_file_for_viewer`, `write_file_for_editor`, `resolve_path_under_
+// cursor`, `watch_file_for_viewer` and `unwatch_file_for_viewer` take a
+// raw absolute path with no `root` argument -- unlike the six explorer
+// commands below, which the frontend always calls with the workspace
+// root alongside the target. These five instead check the path against
+// every OPEN workspace's root (State, not an argument the caller could
+// omit or forge) plus each root's own registered `extra_contexts`. A
+// compromised page can still invoke any of the ~165 commands (AS-01/R5),
+// but it can no longer name a path gavin was never pointed at.
+//
+// Traded away deliberately, per the fix card: an attachment/PRD/agent
+// file that lives outside every open root and every registered context
+// -- a screenshot on the Desktop, a spec on a shared volume, the case
+// `attachment_status`'s own doc comment calls "the common case, not an
+// escape" -- now refuses to open in-app too, where it previously worked.
+// `extra_contexts` is the only widening lever, and it scaffolds a
+// `.gavin` into whatever it is pointed at, so it is not a drop-in fix for
+// this case -- narrowing AS-04 shut this door along with the one that
+// mattered.
+
+/// Every directory the five commands may resolve into: each open
+/// workspace's canonical root, plus that root's own `extra_contexts` --
+/// external folders a human registered from inside an already-open
+/// workspace (`add_external_gavin_context`), read straight off
+/// `config.toml` the same way the delete wizard's footprint scan does
+/// (`workspace_delete::outside_contexts`). A workspace with no root, or a
+/// root that no longer resolves, contributes nothing rather than
+/// erroring -- one stale workspace must not break file access for every
+/// other open tab.
+fn allowed_roots(workspaces: &WorkspacesData) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for workspace in &workspaces.workspaces {
+        let Some(root_path) = workspace.root_path.as_deref() else { continue };
+        let Ok(root) = std::fs::canonicalize(root_path) else { continue };
+        roots.extend(extra_context_roots(&root));
+        roots.push(root);
+    }
+    roots
+}
+
+/// The root config's `extra_contexts`: absolute folders a human
+/// registered from inside an already-trusted, already-open workspace.
+/// Trusted for the whole folder, not just its `.gavin` planning
+/// metadata -- a registered context is where the file viewer and PRD/
+/// agent pickers legitimately follow a card into.
+fn extra_context_roots(root: &Path) -> Vec<PathBuf> {
+    let config = root.join(".gavin-root").join("config.toml");
+    let Ok(content) = std::fs::read_to_string(&config) else { return Vec::new() };
+    let Ok(table) = content.parse::<toml::Table>() else { return Vec::new() };
+    let Some(entries) = table.get("extra_contexts").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|v| v.as_str())
+        .filter_map(|s| std::fs::canonicalize(s).ok())
+        .collect()
+}
+
+/// Resolves an absolute path for containment even when it (or some
+/// ancestor of it) does not exist yet -- `write_file_for_editor` creates
+/// missing parent directories on save, and a PRD/agent-file tab opens
+/// before its file does. Walks up to the nearest EXISTING ancestor,
+/// canonicalizes it (so a symlinked directory anywhere in the existing
+/// prefix is caught exactly the way `resolve_existing` catches one for
+/// the six guarded explorer commands below), then reattaches the still-
+/// missing suffix unresolved -- there is nothing on disk yet for a
+/// symlink to be.
+fn resolve_for_containment(path: &str) -> Result<PathBuf, String> {
+    let mut existing = Path::new(path);
+    if !existing.is_absolute() {
+        return Err(format!("{path} is not an absolute path"));
+    }
+    let mut suffix: Vec<&std::ffi::OsStr> = Vec::new();
+    while !existing.exists() {
+        let name = existing.file_name().ok_or_else(|| format!("{path} could not be resolved"))?;
+        suffix.push(name);
+        existing = existing.parent().ok_or_else(|| format!("{path} could not be resolved"))?;
+    }
+    let mut canonical = std::fs::canonicalize(existing)
+        .map_err(|e| format!("{path} could not be resolved: {e}"))?;
+    for name in suffix.into_iter().rev() {
+        canonical.push(name);
+    }
+    Ok(canonical)
+}
+
+/// The guard shared by all five raw-path commands: resolves `path` and
+/// refuses it unless it lies inside one of `roots`, with a named error a
+/// refusal can be told apart by wherever it surfaces -- the frontend's
+/// existing error banner for the two commands that return one to it, a
+/// quiet no-op for watch/unwatch, which already treat an unmatched path
+/// that way.
+fn ensure_within_open_workspaces(path: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
+    let resolved = resolve_for_containment(path)?;
+    if roots.iter().any(|root| inside_root(root, &resolved)) {
+        Ok(resolved)
+    } else {
+        Err(format!("{path} is outside every open workspace"))
+    }
+}
+
 #[tauri::command]
 pub fn viewable_extensions() -> Vec<String> {
     VIEWABLE_EXTENSIONS.iter().map(|e| e.to_string()).collect()
@@ -50,9 +155,20 @@ pub fn viewable_extensions() -> Vec<String> {
 /// "too large to preview in full" notice. Non-UTF8 content is an error,
 /// not lossy-decoded garbage -- the frontend treats that identically to an
 /// unsupported extension and offers to open externally instead.
+///
+/// Refuses a path outside every open workspace (AS-04) before reading.
 #[tauri::command]
-pub fn read_file_for_viewer(path: String) -> Result<FileContent, String> {
-    let bytes = match std::fs::read(&path) {
+pub fn read_file_for_viewer(
+    path: String,
+    workspaces: State<WorkspacesState>,
+) -> Result<FileContent, String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    read_file_for_viewer_impl(&path, &roots)
+}
+
+fn read_file_for_viewer_impl(path: &str, roots: &[PathBuf]) -> Result<FileContent, String> {
+    let resolved = ensure_within_open_workspaces(path, roots)?;
+    let bytes = match std::fs::read(&resolved) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(FileContent { content: String::new(), truncated: false, exists: false })
@@ -80,14 +196,26 @@ pub fn read_file_for_viewer(path: String) -> Result<FileContent, String> {
 /// an over-cap file was loaded, so writing it back would destroy the
 /// rest. `FileEditor` enforces that by refusing to offer Edit mode at all
 /// when `truncated` is true.
+///
+/// Refuses a path outside every open workspace (AS-04) before writing.
 #[tauri::command]
-pub fn write_file_for_editor(path: String, content: String) -> Result<(), String> {
-    if let Some(parent) = std::path::Path::new(&path).parent() {
+pub fn write_file_for_editor(
+    path: String,
+    content: String,
+    workspaces: State<WorkspacesState>,
+) -> Result<(), String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    write_file_for_editor_impl(&path, content, &roots)
+}
+
+fn write_file_for_editor_impl(path: &str, content: String, roots: &[PathBuf]) -> Result<(), String> {
+    let resolved = ensure_within_open_workspaces(path, roots)?;
+    if let Some(parent) = resolved.parent() {
         if !parent.as_os_str().is_empty() && !parent.is_dir() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
     }
-    std::fs::write(&path, content).map_err(|e| e.to_string())
+    std::fs::write(&resolved, content).map_err(|e| e.to_string())
 }
 
 /// Resolves a path-shaped candidate string from terminal output against
@@ -99,16 +227,39 @@ pub fn write_file_for_editor(path: String, content: String) -> Result<(), String
 /// clickable directory that did nothing on click would be exactly the
 /// dead-end this check exists to prevent.
 #[tauri::command]
-pub fn resolve_path_under_cursor(candidate: String, cwd: String) -> Option<String> {
+pub fn resolve_path_under_cursor(
+    candidate: String,
+    cwd: String,
+    workspaces: State<WorkspacesState>,
+) -> Option<String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    resolve_path_under_cursor_impl(&candidate, &cwd, &roots)
+}
+
+/// Containment refuses by returning `None`, the same as every other
+/// invalid candidate this already handles (missing, a directory, no
+/// `HOME`) -- this command has no error channel to name a refusal on,
+/// and a hover link that silently fails to underline is indistinguishable
+/// from one that never matched.
+fn resolve_path_under_cursor_impl(candidate: &str, cwd: &str, roots: &[PathBuf]) -> Option<String> {
     let expanded = if let Some(rest) = candidate.strip_prefix("~/") {
         let home = std::env::var("HOME").ok()?;
         PathBuf::from(home).join(rest)
     } else {
-        PathBuf::from(&candidate)
+        PathBuf::from(candidate)
     };
-    let absolute = if expanded.is_absolute() { expanded } else { PathBuf::from(&cwd).join(expanded) };
+    let absolute = if expanded.is_absolute() { expanded } else { PathBuf::from(cwd).join(expanded) };
     let canonical = std::fs::canonicalize(&absolute).ok()?;
     if !canonical.is_file() {
+        return None;
+    }
+    // The terminal's Cmd+click legitimately resolves paths under the
+    // session's own cwd in addition to every open workspace (and its
+    // extra contexts) -- a shell running outside any workspace root is
+    // ordinary, and cwd here is the session's own tracked cwd
+    // (`cwdForSession` in terminalRegistry.ts), not caller-chosen text.
+    let under_cwd = std::fs::canonicalize(cwd).is_ok_and(|root| inside_root(&root, &canonical));
+    if !under_cwd && !roots.iter().any(|root| inside_root(root, &canonical)) {
         return None;
     }
     Some(canonical.to_string_lossy().to_string())
@@ -174,12 +325,18 @@ where
 /// every change until the last `unwatch_file_for_viewer` for it. Watching
 /// an already-watched path takes a second reference on the one OS watch
 /// rather than starting another; every watcher receives the same event.
+///
+/// Refuses a path outside every open workspace (AS-04) before touching
+/// `FileWatchers` at all.
 #[tauri::command]
 pub fn watch_file_for_viewer(
     path: String,
     app_handle: AppHandle,
     state: State<FileWatchers>,
+    workspaces: State<WorkspacesState>,
 ) -> Result<(), String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    ensure_within_open_workspaces(&path, &roots)?;
     let mut watchers = state.0.lock().unwrap();
     if let Some(entry) = watchers.get_mut(&path) {
         entry.1 += 1;
@@ -197,9 +354,16 @@ pub fn watch_file_for_viewer(
 /// Releases one reference on a file's watch, shutting it down when the
 /// last one goes. Dropping the `Debouncer` is what stops its background
 /// thread and releases the OS-level watch. Unwatching a path that isn't
-/// watched is a no-op, not an error.
+/// watched is a no-op, not an error -- but a path outside every open
+/// workspace (AS-04) IS one, same as `watch_file_for_viewer`.
 #[tauri::command]
-pub fn unwatch_file_for_viewer(path: String, state: State<FileWatchers>) -> Result<(), String> {
+pub fn unwatch_file_for_viewer(
+    path: String,
+    state: State<FileWatchers>,
+    workspaces: State<WorkspacesState>,
+) -> Result<(), String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    ensure_within_open_workspaces(&path, &roots)?;
     let mut watchers = state.0.lock().unwrap();
     let remove = match watchers.get_mut(&path) {
         Some(entry) => {
@@ -487,6 +651,14 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    /// The `roots` slice `read_file_for_viewer_impl`/`write_file_for_
+    /// editor_impl`/`resolve_path_under_cursor_impl` take in place of the
+    /// `WorkspacesState` the real commands read -- one open workspace
+    /// rooted at `dir`, canonicalized the same way `allowed_roots` would.
+    fn roots_of(dir: &tempfile::TempDir) -> Vec<PathBuf> {
+        vec![std::fs::canonicalize(dir.path()).unwrap()]
+    }
+
     #[test]
     fn attachment_status_resolves_against_the_root_and_refuses_traversal() {
         let dir = tempfile::tempdir().unwrap();
@@ -540,13 +712,14 @@ mod tests {
         // looks like: the tab opens empty and the first save has to make
         // the folder, not fail with ENOENT.
         let path = dir.path().join("docs").join("PRD.md");
-        write_file_for_editor(path.to_string_lossy().to_string(), "# theirs\n".to_string())
+        let roots = roots_of(&dir);
+        write_file_for_editor_impl(&path.to_string_lossy(), "# theirs\n".to_string(), &roots)
             .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# theirs\n");
 
         // An existing parent is untouched, and so is the rest of it.
         std::fs::write(dir.path().join("docs").join("other.md"), "keep").unwrap();
-        write_file_for_editor(path.to_string_lossy().to_string(), "# again\n".to_string())
+        write_file_for_editor_impl(&path.to_string_lossy(), "# again\n".to_string(), &roots)
             .unwrap();
         assert_eq!(std::fs::read_to_string(dir.path().join("docs/other.md")).unwrap(), "keep");
     }
@@ -557,7 +730,7 @@ mod tests {
         let path = dir.path().join("hello.txt");
         std::fs::write(&path, "hello world").unwrap();
 
-        let result = read_file_for_viewer(path.to_string_lossy().to_string()).unwrap();
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir)).unwrap();
 
         assert_eq!(
             result,
@@ -570,11 +743,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("notes.md");
         let p = path.to_string_lossy().to_string();
+        let roots = roots_of(&dir);
 
-        write_file_for_editor(p.clone(), "first".to_string()).unwrap();
+        write_file_for_editor_impl(&p, "first".to_string(), &roots).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
 
-        write_file_for_editor(p, "second".to_string()).unwrap();
+        write_file_for_editor_impl(&p, "second".to_string(), &roots).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
     }
 
@@ -583,9 +757,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("prd.md");
         let text = "# PRD — vision\n\nemoji: 🚀 accents: éàü\n";
-        write_file_for_editor(path.to_string_lossy().to_string(), text.to_string()).unwrap();
+        let roots = roots_of(&dir);
+        write_file_for_editor_impl(&path.to_string_lossy(), text.to_string(), &roots).unwrap();
 
-        let read = read_file_for_viewer(path.to_string_lossy().to_string()).unwrap();
+        let read = read_file_for_viewer_impl(&path.to_string_lossy(), &roots).unwrap();
         assert_eq!(read.content, text);
         assert!(read.exists);
         assert!(!read.truncated);
@@ -595,8 +770,11 @@ mod tests {
     fn write_to_an_unwritable_path_errors() {
         let dir = tempfile::tempdir().unwrap();
         // The directory itself is not a writable file target.
-        let result =
-            write_file_for_editor(dir.path().to_string_lossy().to_string(), "x".to_string());
+        let result = write_file_for_editor_impl(
+            &dir.path().to_string_lossy(),
+            "x".to_string(),
+            &roots_of(&dir),
+        );
         assert!(result.is_err());
     }
 
@@ -605,7 +783,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("CLAUDE.md");
 
-        let result = read_file_for_viewer(missing.to_string_lossy().to_string()).unwrap();
+        let result = read_file_for_viewer_impl(&missing.to_string_lossy(), &roots_of(&dir)).unwrap();
 
         assert!(!result.exists);
         assert_eq!(result.content, "");
@@ -624,7 +802,7 @@ mod tests {
         }
         drop(f);
 
-        let result = read_file_for_viewer(path.to_string_lossy().to_string()).unwrap();
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir)).unwrap();
 
         assert!(result.truncated);
         assert_eq!(result.content.len(), MAX_VIEWER_FILE_BYTES);
@@ -637,7 +815,7 @@ mod tests {
         // 0xFF is never valid UTF-8.
         std::fs::write(&path, [0xFF, 0xFE, 0x00, 0x01]).unwrap();
 
-        let result = read_file_for_viewer(path.to_string_lossy().to_string());
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir));
 
         assert!(result.is_err());
     }
@@ -650,7 +828,7 @@ mod tests {
         // other read failure still is: here, a directory.
         let dir = tempfile::tempdir().unwrap();
 
-        let result = read_file_for_viewer(dir.path().to_string_lossy().to_string());
+        let result = read_file_for_viewer_impl(&dir.path().to_string_lossy(), &roots_of(&dir));
 
         assert!(result.is_err());
     }
@@ -661,9 +839,10 @@ mod tests {
         let path = dir.path().join("real.txt");
         std::fs::write(&path, "x").unwrap();
 
-        let resolved = resolve_path_under_cursor(
-            path.to_string_lossy().to_string(),
-            dir.path().to_string_lossy().to_string(),
+        let resolved = resolve_path_under_cursor_impl(
+            &path.to_string_lossy(),
+            &dir.path().to_string_lossy(),
+            &[],
         );
 
         assert!(resolved.is_some());
@@ -675,7 +854,7 @@ mod tests {
         std::fs::write(dir.path().join("real.txt"), "x").unwrap();
 
         let resolved =
-            resolve_path_under_cursor("real.txt".to_string(), dir.path().to_string_lossy().to_string());
+            resolve_path_under_cursor_impl("real.txt", &dir.path().to_string_lossy(), &[]);
 
         assert!(resolved.is_some());
         assert!(resolved.unwrap().ends_with("real.txt"));
@@ -686,7 +865,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let resolved =
-            resolve_path_under_cursor("nope.txt".to_string(), dir.path().to_string_lossy().to_string());
+            resolve_path_under_cursor_impl("nope.txt", &dir.path().to_string_lossy(), &[]);
 
         assert_eq!(resolved, None);
     }
@@ -741,9 +920,196 @@ mod tests {
         std::fs::create_dir(&subdir).unwrap();
 
         let resolved =
-            resolve_path_under_cursor("subdir".to_string(), dir.path().to_string_lossy().to_string());
+            resolve_path_under_cursor_impl("subdir", &dir.path().to_string_lossy(), &[]);
 
         assert_eq!(resolved, None);
+    }
+
+    // ---- containment on the five raw-path commands (AS-04) ------------
+
+    #[test]
+    fn extra_context_roots_reads_registered_folders_and_skips_a_stale_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir_all(root.join(".gavin-root")).unwrap();
+        let registered = dir.path().join("registered");
+        std::fs::create_dir(&registered).unwrap();
+        let gone = dir.path().join("gone");
+        std::fs::write(
+            root.join(".gavin-root").join("config.toml"),
+            format!(
+                "name = \"ws\"\nextra_contexts = [\"{}\", \"{}\"]\n",
+                registered.display(),
+                gone.display(),
+            ),
+        )
+        .unwrap();
+
+        // A folder still on disk is included; one that moved on (`gone`
+        // was never created) is skipped rather than erroring the whole
+        // read, same as `workspace_delete::outside_contexts`'s reasoning
+        // for the same key.
+        let roots = extra_context_roots(&std::fs::canonicalize(&root).unwrap());
+        assert_eq!(roots, vec![std::fs::canonicalize(&registered).unwrap()]);
+    }
+
+    #[test]
+    fn extra_context_roots_is_empty_with_no_config_or_no_key() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(extra_context_roots(dir.path()).is_empty());
+
+        std::fs::create_dir_all(dir.path().join(".gavin-root")).unwrap();
+        std::fs::write(dir.path().join(".gavin-root").join("config.toml"), "name = \"ws\"\n")
+            .unwrap();
+        assert!(extra_context_roots(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn read_file_for_viewer_refuses_a_path_outside_every_open_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        // Deliberately REAL, so the refusal cannot be mistaken for "there
+        // was nothing there".
+        let outside = dir.path().join("secret.txt");
+        std::fs::write(&outside, "s3cr3t").unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        let err = read_file_for_viewer_impl(&outside.to_string_lossy(), &roots).unwrap_err();
+        assert!(err.contains("outside every open workspace"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_file_for_viewer_refuses_a_symlink_that_leaves_every_open_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("secret.txt"), "s3cr3t").unwrap();
+        // A link INSIDE the workspace pointing out of it -- canonicalizing
+        // the literal path (not just the workspace root) is what catches
+        // this, the same way `resolve_existing` catches it for the six
+        // guarded explorer commands.
+        std::os::unix::fs::symlink(&elsewhere, workspace.join("escape")).unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        let err = read_file_for_viewer_impl(
+            &workspace.join("escape/secret.txt").to_string_lossy(),
+            &roots,
+        )
+        .unwrap_err();
+        assert!(err.contains("outside every open workspace"), "{err}");
+    }
+
+    #[test]
+    fn write_file_for_editor_refuses_a_path_outside_every_open_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let outside = dir.path().join("leaked.txt");
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        let err =
+            write_file_for_editor_impl(&outside.to_string_lossy(), "owned".to_string(), &roots)
+                .unwrap_err();
+        assert!(err.contains("outside every open workspace"), "{err}");
+        // The refusal is the point: nothing was written outside the
+        // workspace on the way to reporting it.
+        assert!(!outside.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_file_for_editor_refuses_a_symlink_that_leaves_every_open_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, workspace.join("escape")).unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        // The target file does not exist yet -- the walk-up in
+        // `resolve_for_containment` must still catch the symlinked
+        // ancestor before anything is created through it.
+        let err = write_file_for_editor_impl(
+            &workspace.join("escape/new.md").to_string_lossy(),
+            "owned".to_string(),
+            &roots,
+        )
+        .unwrap_err();
+        assert!(err.contains("outside every open workspace"), "{err}");
+        assert!(!elsewhere.join("new.md").exists());
+    }
+
+    #[test]
+    fn resolve_path_under_cursor_refuses_a_path_outside_every_open_workspace_and_the_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let outside = dir.path().join("outside.txt");
+        std::fs::write(&outside, "secret").unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        // The session's cwd is the workspace, not the tempdir the file
+        // actually lives in: outside every open workspace AND outside the
+        // cwd carve-out, so it is refused.
+        let resolved = resolve_path_under_cursor_impl(
+            &outside.to_string_lossy(),
+            &workspace.to_string_lossy(),
+            &roots,
+        );
+        assert_eq!(resolved, None);
+
+        // The same file resolves once the terminal session's own cwd is
+        // where it lives -- Cmd+click legitimately follows a shell
+        // wherever it runs, workspace root or not.
+        let resolved = resolve_path_under_cursor_impl(
+            &outside.to_string_lossy(),
+            &dir.path().to_string_lossy(),
+            &roots,
+        );
+        assert!(resolved.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_path_under_cursor_refuses_a_symlink_that_leaves_every_open_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("secret.txt"), "s").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, workspace.join("escape")).unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        let resolved = resolve_path_under_cursor_impl(
+            &workspace.join("escape/secret.txt").to_string_lossy(),
+            &workspace.to_string_lossy(),
+            &roots,
+        );
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn watch_and_unwatch_file_for_viewer_refuse_a_path_outside_every_open_workspace() {
+        // The guard both commands run before touching `FileWatchers` --
+        // see their bodies, which call this directly. Exercised here
+        // rather than through the `#[tauri::command]` functions
+        // themselves, which need a live `AppHandle`/`State` the way every
+        // other command test in this module avoids.
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let outside = dir.path().join("secret.txt");
+        std::fs::write(&outside, "s").unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        let err = ensure_within_open_workspaces(&outside.to_string_lossy(), &roots).unwrap_err();
+        assert!(err.contains("outside every open workspace"), "{err}");
     }
 
     // ---- the Files tab's directory explorer ---------------------------
