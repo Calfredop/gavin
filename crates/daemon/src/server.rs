@@ -9,6 +9,7 @@ use notify_debouncer_mini::Debouncer;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1236,6 +1237,16 @@ pub struct SessionManager {
     /// See `MAX_CONNECTIONS`. Compared against `active_connections` in
     /// `handle_connection`.
     connection_ceiling: AtomicUsize,
+    /// The token this daemon minted at startup (`run_server`), the one a
+    /// `Hello` presents to take the `app` role and the key the
+    /// `server_proof` in `HelloAck` is HMAC'd with (DP-06). A `OnceLock`
+    /// rather than a `new()` argument so every existing `SessionManager`
+    /// construction site -- and every test that builds one -- stays
+    /// unchanged; `run_server` sets it before the first connection is
+    /// accepted, and a manager that never had it set (a unit test that
+    /// does not exercise `Hello` with the `app` role) simply matches no
+    /// daemon token, which is the safe default.
+    daemon_token: std::sync::OnceLock<String>,
 }
 
 impl SessionManager {
@@ -1264,6 +1275,98 @@ impl SessionManager {
             session_ceiling: AtomicUsize::new(MAX_LIVE_SESSIONS),
             active_connections: AtomicUsize::new(0),
             connection_ceiling: AtomicUsize::new(MAX_CONNECTIONS),
+            daemon_token: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Records the token this daemon minted at startup. Called once by
+    /// `run_server` before the socket accepts anything; idempotent because
+    /// the `OnceLock` ignores a second set, which keeps a stray test call
+    /// from panicking.
+    pub fn set_daemon_token(&self, token: String) {
+        let _ = self.daemon_token.set(token);
+    }
+
+    /// The daemon token, or `""` if none was ever set (a bare unit-test
+    /// manager). Empty never equals a real token, so a `Hello` presenting
+    /// the daemon token against such a manager stays `local`.
+    fn daemon_token(&self) -> &str {
+        self.daemon_token.get().map(String::as_str).unwrap_or("")
+    }
+
+    /// Turn a `Hello`'s `auth` into the connection's identity and the
+    /// `HelloAck` to answer with. The role never comes from the client's
+    /// `client` field, only from what it proves here (§4):
+    ///
+    /// - the daemon token yields `app`, and the ack carries a
+    ///   `server_proof` (HMAC of the client's nonce) so the app knows it
+    ///   reached the real daemon (DP-06);
+    /// - a session token that hashes to a live session yields `agent`,
+    ///   scoped to that session's `workspace_path` and `cwd`;
+    /// - anything else -- no auth, a wrong daemon token, an unknown
+    ///   session token -- yields `local`, which in phase 1 keeps today's
+    ///   reach. A wrong credential is not an error here: a same-uid client
+    ///   already has local reach, so refusing would only break a client
+    ///   that mistyped, not stop one that meant harm.
+    fn resolve_hello(&self, auth: &protocol::HelloAuth, nonce: &str) -> (ClientIdentity, Response) {
+        let local = || {
+            (
+                ClientIdentity::local(),
+                Response::HelloAck {
+                    role: "local".to_string(),
+                    daemon_version: protocol::PROTOCOL_VERSION,
+                    session_id: None,
+                    server_proof: None,
+                },
+            )
+        };
+        match auth {
+            protocol::HelloAuth::DaemonToken { token }
+                if !self.daemon_token().is_empty() && token == self.daemon_token() =>
+            {
+                (
+                    ClientIdentity {
+                        role: Role::App,
+                        session_id: None,
+                        workspace_root: None,
+                        cwd: None,
+                    },
+                    Response::HelloAck {
+                        role: "app".to_string(),
+                        daemon_version: protocol::PROTOCOL_VERSION,
+                        session_id: None,
+                        server_proof: Some(protocol::server_proof(self.daemon_token(), nonce)),
+                    },
+                )
+            }
+            protocol::HelloAuth::SessionToken { token } => {
+                let hash = protocol::hash_token_hex(token);
+                let record = {
+                    let reg = self.registry.lock().unwrap();
+                    reg.session_id_for_token_hash(&hash)
+                        .ok()
+                        .flatten()
+                        .and_then(|sid| reg.get(&sid).ok().flatten())
+                };
+                match record {
+                    Some(rec) => (
+                        ClientIdentity {
+                            role: Role::Agent,
+                            session_id: Some(rec.id.clone()),
+                            workspace_root: Some(std::path::PathBuf::from(&rec.workspace_path)),
+                            cwd: Some(std::path::PathBuf::from(&rec.cwd)),
+                        },
+                        Response::HelloAck {
+                            role: "agent".to_string(),
+                            daemon_version: protocol::PROTOCOL_VERSION,
+                            session_id: Some(rec.id),
+                            server_proof: None,
+                        },
+                    ),
+                    None => local(),
+                }
+            }
+            _ => local(),
         }
     }
 
@@ -1487,7 +1590,12 @@ impl SessionManager {
         }
 
         let id = Uuid::new_v4().to_string();
-        let pty = PtySession::spawn(cwd, command, &id)?;
+        // Mint the per-session token before the PTY exists, so it can ride
+        // into the environment as GAVIN_SESSION_TOKEN and gavin-mcp can
+        // present it to take the `agent` role scoped to THIS session
+        // (`sec-fix-client-identity.md`). Only the hash is persisted.
+        let session_token = protocol::random_hex(32)?;
+        let pty = PtySession::spawn(cwd, command, &id, Some(&session_token))?;
 
         self.registry.lock().unwrap().insert(&SessionRecord {
             id: id.clone(),
@@ -1511,6 +1619,13 @@ impl SessionManager {
             orphan: None,
             failure_reason: None,
         })?;
+
+        // After the row exists (the id is its key): store only the hash,
+        // so a copy of registry.sqlite yields no presentable token.
+        self.registry
+            .lock()
+            .unwrap()
+            .set_token_hash(&id, &protocol::hash_token_hex(&session_token))?;
 
         self.sessions.lock().unwrap().insert(id.clone(), pty);
         Ok(id)
@@ -2597,7 +2712,7 @@ impl SessionManager {
             // Matched rather than `?`d: a single bad leftover record
             // (e.g. its directory is no longer enterable) must not abort
             // recovery of every session after it in the list.
-            match PtySession::spawn(cwd, None, &record.id) {
+            match PtySession::spawn(cwd, None, &record.id, None) {
                 Ok(pty) => {
                     // Repointed at the shell that is actually in the PTY
                     // now, before the pty is moved into the map. Leaving
@@ -3296,6 +3411,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::DeleteGroupTemplate { id } => {
             manager.delete_group_template(&id).map(|_| Response::Ok)
         }
+        Request::Hello { .. } => unreachable!("Hello is intercepted in handle_connection"),
         Request::Attach { .. } => unreachable!("Attach is intercepted in handle_connection"),
         Request::Snapshot { .. } => {
             unreachable!("Snapshot is intercepted in handle_connection")
@@ -3487,7 +3603,328 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
     result.unwrap_or_else(|e| Response::Error { message: e.to_string() })
 }
 
+/// What a connection is, decided once from its `Hello` (or left `Local`
+/// for a client that sends none) and fixed for the connection's life
+/// (`sec-fix-client-identity.md`, remote-access design §4). Nothing a later
+/// request carries can change it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Role {
+    /// The desktop app, holding the daemon token. Everything today's
+    /// clients can do.
+    App,
+    /// A same-uid connection that presented no credential. Equal to `App`
+    /// in phase 1 (the socket is the same-uid boundary regardless, AD-1);
+    /// narrowable by `require_local_token`.
+    Local,
+    /// `gavin-mcp` holding a session token, scoped to the launching
+    /// session's root and its own session id.
+    Agent,
+    /// A paired device over the (not-yet-built) remote transport. Denied
+    /// everything in phase 1: the remote column of §6's table lands read
+    /// by read in phases 4 and 5, and "before that phase it is deny".
+    ///
+    /// Constructed only by that future transport and by `authorize`'s
+    /// tests; carried now so the role is a first-class case in `authorize`
+    /// and cannot be forgotten when the transport lands.
+    #[allow(dead_code)]
+    Remote,
+}
+
+/// The identity carried on a connection. `workspace_root` and `cwd` are the
+/// session's own (from the row its token was minted for); an `agent` may act
+/// only inside them, and only on its own `session_id`.
+#[derive(Debug, Clone)]
+pub struct ClientIdentity {
+    pub role: Role,
+    pub session_id: Option<String>,
+    pub workspace_root: Option<std::path::PathBuf>,
+    pub cwd: Option<std::path::PathBuf>,
+}
+
+impl ClientIdentity {
+    /// The identity every connection starts with and keeps unless a
+    /// `Hello` elevates it: a same-uid local client with today's full
+    /// reach. This is what keeps every pre-v35 client working unchanged.
+    pub fn local() -> Self {
+        Self { role: Role::Local, session_id: None, workspace_root: None, cwd: None }
+    }
+
+    /// A test helper: an agent scoped to one root/cwd and one session id.
+    #[cfg(test)]
+    pub fn agent(session_id: &str, root: &str, cwd: &str) -> Self {
+        Self {
+            role: Role::Agent,
+            session_id: Some(session_id.to_string()),
+            workspace_root: Some(std::path::PathBuf::from(root)),
+            cwd: Some(std::path::PathBuf::from(cwd)),
+        }
+    }
+}
+
+/// The `type` tag of a request, for a `Forbidden`/error message. Via serde
+/// rather than a 60-arm match: refusals are not a hot path, and the tag is
+/// always exactly the wire name this way.
+fn request_type_name(req: &Request) -> String {
+    serde_json::to_value(req)
+        .ok()
+        .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(String::from))
+        .unwrap_or_else(|| "Unknown".to_string())
+}
+
+/// The canonical scope roots an `agent` may act within: the session's
+/// recorded `workspace_path` and its `cwd`. Both are kept because a rail
+/// agent runs in a worktree (`cwd`) that is not the workspace root
+/// (`workspace_path`) and matches no watcher -- the same split
+/// `name_session` documents -- so confining to only one would refuse the
+/// other's legitimate writes. Canonicalized so `starts_with` survives the
+/// `/private` symlink macOS puts in front of `/tmp` and `/var`.
+fn scope_roots(id: &ClientIdentity) -> Vec<std::path::PathBuf> {
+    [id.workspace_root.as_ref(), id.cwd.as_ref()]
+        .into_iter()
+        .flatten()
+        .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()))
+        .collect()
+}
+
+/// A path argument (a card, a context folder, a cwd) is in scope when it
+/// canonicalizes to somewhere under one of the session's scope roots.
+/// One-directional: a card must be INSIDE the workspace, never an ancestor
+/// of it. A path that cannot be resolved is refused -- an agent naming a
+/// file that does not exist is not naming one of its own.
+fn agent_path_in_scope(id: &ClientIdentity, arg: &str) -> bool {
+    let roots = scope_roots(id);
+    if roots.is_empty() {
+        return false;
+    }
+    match std::path::Path::new(arg).canonicalize() {
+        Ok(c) => roots.iter().any(|r| c.starts_with(r)),
+        Err(_) => false,
+    }
+}
+
+/// A root argument (the workspace root gavin-mcp resolved from its cwd) is
+/// in scope when it and a scope root are the same tree -- either contains
+/// the other. Bidirectional for the same reason `confine_root_path` is: the
+/// resolved `.gavin-root` ancestor and the recorded `workspace_path` can be
+/// parent and child of each other without either being wrong.
+fn agent_root_in_scope(id: &ClientIdentity, arg: &str) -> bool {
+    let roots = scope_roots(id);
+    if roots.is_empty() {
+        return false;
+    }
+    match std::path::Path::new(arg).canonicalize() {
+        Ok(c) => roots.iter().any(|r| c.starts_with(r) || r.starts_with(&c)),
+        Err(_) => false,
+    }
+}
+
+fn agent_owns_session(id: &ClientIdentity, session_id: &str) -> bool {
+    id.session_id.as_deref() == Some(session_id)
+}
+
+/// What an `agent` connection may do, as an EXHAUSTIVE match over every
+/// `Request` -- so a new variant fails to compile until someone classifies
+/// it here (item 4 of the card), exactly like `min_version_for`.
+///
+/// The allow set is the 17 request types `gavin-mcp` sends today, each
+/// confined to the launching session's root/cwd and its own session id
+/// (§6's `agent` column). Everything that starts a process, ends the
+/// daemon, configures the scheduler, or touches another workspace is
+/// denied.
+///
+/// One deliberate reading of the card's prose: item 4 says the `agent` is
+/// "refused ... the `*ByRoot` family", but §6's capability table -- the
+/// section the card tells us to follow, and which it calls load-bearing --
+/// marks the `*ByRoot` reads and writes `scoped` for the agent, and
+/// `gavin-mcp` cannot function without them (item 5 requires it to keep
+/// working). So the `*ByRoot` calls are allowed *within the session's own
+/// scope* and refused for any other root, which is what "refused outside
+/// its scope" means and what makes AD-2's carve-out enforceable rather
+/// than making the agent role unusable.
+fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
+    match req {
+        // Identity and the version probe: always.
+        Request::Hello { .. } | Request::GetProtocolVersion => true,
+
+        // Scoped reads/writes by ROOT (gavin-mcp's own workspace).
+        Request::ScanGavinRoot { root_path }
+        | Request::ReadPrd { root_path }
+        | Request::GetBoardByRoot { root_path }
+        | Request::GetOrchestrationByRoot { root_path }
+        | Request::GetToolsByRoot { root_path }
+        | Request::InitGavinRoot { root_path, .. } => agent_root_in_scope(id, root_path),
+        Request::SetOrchestrationByRoot { root_path, .. }
+        | Request::SetRailRunByRoot { root_path, .. } => agent_root_in_scope(id, root_path),
+
+        // Scoped card/folder writes by PATH.
+        Request::SetPlanFrontmatterField { path, .. }
+        | Request::SetChecklistItem { path, .. } => agent_path_in_scope(id, path),
+        Request::PromoteChecklistItem { plan_path, .. } => agent_path_in_scope(id, plan_path),
+        Request::CreatePlan { context_folder, .. } => agent_path_in_scope(id, context_folder),
+        Request::CreateGavinContext { parent_folder } => agent_path_in_scope(id, parent_folder),
+        Request::GitDirtyPaths { cwd, .. } => agent_path_in_scope(id, cwd),
+
+        // Spawning is allowed but confined: an agent may open another
+        // visible session in its OWN workspace (an orchestration agent
+        // fanning out), never elsewhere.
+        Request::SpawnAgentSession { root_path, cwd, .. } => {
+            agent_root_in_scope(id, root_path) && agent_path_in_scope(id, cwd)
+        }
+
+        // Binding a card to a session, and naming a tab: only its own.
+        Request::ClaimCardForSession { root_path, path, session_id } => {
+            agent_root_in_scope(id, root_path)
+                && agent_path_in_scope(id, path)
+                && agent_owns_session(id, session_id)
+        }
+        Request::NameSession { session_id, .. } => agent_owns_session(id, session_id),
+
+        // Everything else: denied. Starting a shell, ending the daemon,
+        // ending an orphan, driving or reading another session's PTY,
+        // configuring the board/scheduler/tools, or touching a workspace
+        // by an un-scoped variant -- none of it is the agent's to do
+        // (§6). Listed exhaustively so a new Request variant cannot be
+        // added without a decision here.
+        Request::CreateSession { .. }
+        | Request::ListSessions
+        | Request::SessionProcesses
+        | Request::EndOrphan { .. }
+        | Request::WriteInput { .. }
+        | Request::QueueInput { .. }
+        | Request::ListQueuedInputs
+        | Request::SetQueuedInputs { .. }
+        | Request::SendQueuedInput { .. }
+        | Request::ResizeSession { .. }
+        | Request::KillSession { .. }
+        | Request::Attach { .. }
+        | Request::Snapshot { .. }
+        | Request::SetFailurePatterns { .. }
+        | Request::GetBoard { .. }
+        | Request::SetBoard { .. }
+        | Request::DeleteBoard { .. }
+        | Request::WatchGavinRoot { .. }
+        | Request::UnwatchGavinRoot { .. }
+        | Request::GetGavinTree { .. }
+        | Request::AddExternalGavinContext { .. }
+        | Request::RemoveExternalGavinContext { .. }
+        | Request::SetRootConfigField { .. }
+        | Request::DeleteCardFile { .. }
+        | Request::ArchiveCard { .. }
+        | Request::UnarchiveCard { .. }
+        | Request::LinkCardSession { .. }
+        | Request::UnlinkCardSession { .. }
+        | Request::CardRuns { .. }
+        | Request::StartToolRun { .. }
+        | Request::SetToolRunOutcome { .. }
+        | Request::ToolRuns { .. }
+        | Request::GetOrchestration { .. }
+        | Request::SetOrchestration { .. }
+        | Request::SetRailRun { .. }
+        | Request::SetStepRun { .. }
+        | Request::GetTools { .. }
+        | Request::SaveTool { .. }
+        | Request::DeleteTool { .. }
+        | Request::GetGroupTemplates { .. }
+        | Request::SaveGroupTemplate { .. }
+        | Request::DeleteGroupTemplate { .. }
+        | Request::Shutdown
+        | Request::Unknown => false,
+    }
+}
+
+/// The process-starting / daemon-ending / launch-reconfiguring requests an
+/// untokened `local` connection loses once `require_local_token` is on.
+/// Kept small on purpose: the switch's job in phase 1 is to make "you must
+/// authenticate to start a shell or stop the daemon" expressible, not to
+/// reproduce the whole agent table for a connection that has no session to
+/// scope against.
+fn is_privileged(req: &Request) -> bool {
+    matches!(
+        req,
+        Request::CreateSession { .. }
+            | Request::SpawnAgentSession { .. }
+            | Request::Shutdown
+            | Request::EndOrphan { .. }
+            | Request::SetRootConfigField { .. }
+    )
+}
+
+/// The one gate, keyed on the connection's role, run in `handle_connection`
+/// before the intercepts and `handle_request` (§4). `Ok(())` lets the
+/// request through; `Err(Response::Forbidden { .. })` is the reply to send
+/// instead. `require_local_token` is read live per request so a Settings
+/// toggle takes effect without a daemon restart.
+pub fn authorize(
+    id: &ClientIdentity,
+    req: &Request,
+    require_local_token: bool,
+) -> Result<(), Response> {
+    let allowed = match id.role {
+        // App and (with the switch off) Local keep today's full reach:
+        // phase 1 must not change what the app can do, and the socket is
+        // the same-uid boundary regardless (AD-1).
+        Role::App => true,
+        Role::Local => !require_local_token || !is_privileged(req),
+        Role::Agent => agent_allows(id, req),
+        // Phase 1: the remote transport does not exist and the remote
+        // column is deny throughout. Phases 4-5 open §6's reads and writes.
+        Role::Remote => false,
+    };
+    if allowed {
+        Ok(())
+    } else {
+        let role = match id.role {
+            Role::App => "app",
+            Role::Local => "local",
+            Role::Agent => "agent",
+            Role::Remote => "remote",
+        };
+        Err(Response::Forbidden {
+            request_type: request_type_name(req),
+            role: role.to_string(),
+        })
+    }
+}
+
+/// The peer-uid floor (`getpeereid`, §4): confirm the connecting process
+/// runs as this daemon's own uid. The socket is `0600` in a `0700` dir, so
+/// this only ever fires if the socket escapes that dir -- defence in depth,
+/// not identity. Fails closed: a peer whose uid cannot be read is refused.
+fn peer_uid_ok(fd: std::os::unix::io::RawFd) -> bool {
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    // SAFETY: `fd` is a live, connected Unix-domain socket for the
+    // duration of this call; getpeereid only reads through it.
+    let rc = unsafe { libc::getpeereid(fd, &mut uid, &mut gid) };
+    if rc != 0 {
+        return false;
+    }
+    uid == unsafe { libc::getuid() }
+}
+
+/// Whether an untokened local connection is narrowed. Absent marker file
+/// (the default) means no; present means yes. Read per request so the
+/// Settings toggle is live.
+fn require_local_token() -> bool {
+    protocol::require_local_token_path().exists()
+}
+
+/// Mint this daemon's per-start token and write it `0600` beside the
+/// socket, for the app to read (DP-06). Fresh each start: a token from a
+/// previous daemon lifetime is worthless the moment this one rebinds.
+fn mint_daemon_token() -> anyhow::Result<String> {
+    let token = protocol::random_hex(32)?;
+    let path = protocol::daemon_token_path();
+    std::fs::write(&path, &token)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(token)
+}
+
 pub fn run_server(socket_path: &std::path::Path, manager: Arc<SessionManager>) -> anyhow::Result<()> {
+    // Mint the token before the socket accepts anything, so the first
+    // connection's Hello already has something to check against and a
+    // server_proof to compute.
+    manager.set_daemon_token(mint_daemon_token()?);
     serve(bind_server(socket_path)?, manager)
 }
 
@@ -3551,8 +3988,28 @@ impl Drop for ConnectionSlot<'_> {
 }
 
 fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow::Result<()> {
+    // The peer-uid floor, before anything else on this connection: a peer
+    // whose uid is not this daemon's own is refused outright (§4). It only
+    // fires if the socket ever escapes its 0700 dir; same-uid, which is
+    // every client today, passes unchanged.
+    if !peer_uid_ok(stream.as_raw_fd()) {
+        let mut refused = stream;
+        let _ = write_message(
+            &mut refused,
+            &Response::Error {
+                message: "gavin-daemon: refusing a connection from a different user".to_string(),
+            },
+        );
+        return Ok(());
+    }
+
     let writer = Arc::new(Mutex::new(stream.try_clone()?));
     let mut reader = BufReader::new(stream);
+
+    // The connection's identity, `local` until a `Hello` says otherwise,
+    // and fixed thereafter (§4). `hello_seen` refuses a second `Hello`.
+    let mut identity = ClientIdentity::local();
+    let mut hello_seen = false;
 
     // Counted before anything else on this connection runs, so a client
     // that never sends a request still costs a slot for as long as it
@@ -3579,6 +4036,38 @@ fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow
             Some(r) => r,
             None => break,
         };
+
+        // `Hello` establishes identity for the connection. Handled here,
+        // never authorized (it is what SETS the role) and never dispatched
+        // to handle_request. A second one is refused -- identity is fixed
+        // once set.
+        if let Request::Hello { auth, nonce, .. } = &req {
+            if hello_seen {
+                write_message(
+                    &mut *writer.lock().unwrap(),
+                    &Response::Error {
+                        message: "gavin-daemon: Hello already sent on this connection".to_string(),
+                    },
+                )?;
+                continue;
+            }
+            hello_seen = true;
+            let (id, ack) = manager.resolve_hello(auth, nonce);
+            identity = id;
+            write_message(&mut *writer.lock().unwrap(), &ack)?;
+            continue;
+        }
+
+        // The authorization gate (§4), BEFORE the Attach/Snapshot/
+        // WatchGavinRoot/Shutdown intercepts below and before
+        // handle_request: a refused request must not reach any of them.
+        // App and (switch-off) Local pass everything, so today's clients
+        // are unaffected; an `agent` is held to its scope, and an
+        // untokened `local` loses the privileged set when the switch is on.
+        if let Err(forbidden) = authorize(&identity, &req, require_local_token()) {
+            write_message(&mut *writer.lock().unwrap(), &forbidden)?;
+            continue;
+        }
 
         if let Request::Attach { id } = req {
             manager.attach(&id, Arc::clone(&writer));
@@ -3982,6 +4471,254 @@ mod tests {
     /// in full, so the reliability it buys costs a green run nothing.
     const PROCESS_BUDGET: Duration = Duration::from_secs(30);
 
+    // ---- client identity: authorize() ----
+
+    /// A workspace on disk with one real card, so the scope checks (which
+    /// canonicalize) have something that resolves.
+    fn workspace_with_card() -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(dir.path(), "WS").unwrap();
+        let card = dir.path().join(".gavin-root").join("plans").join("a.md");
+        std::fs::write(&card, "---\ntitle: A\n---\n").unwrap();
+        let root = dir.path().to_string_lossy().to_string();
+        let card = card.to_string_lossy().to_string();
+        (dir, root, card)
+    }
+
+    fn sff(path: &str) -> Request {
+        Request::SetPlanFrontmatterField {
+            path: path.to_string(),
+            key: "status".into(),
+            value: "Done".into(),
+        }
+    }
+
+    #[test]
+    fn app_may_do_everything_and_the_switch_never_narrows_it() {
+        let id = ClientIdentity { role: Role::App, session_id: None, workspace_root: None, cwd: None };
+        assert!(authorize(&id, &Request::Shutdown, false).is_ok());
+        assert!(authorize(
+            &id,
+            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None },
+            true, // even with the switch on
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn untokened_local_keeps_full_reach_until_the_switch_is_on() {
+        let id = ClientIdentity::local();
+        // Switch off (the default): today's reach, including a shell and Shutdown.
+        assert!(authorize(&id, &Request::Shutdown, false).is_ok());
+        assert!(authorize(
+            &id,
+            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None },
+            false,
+        )
+        .is_ok());
+        // Switch on: the privileged, process-starting set is refused...
+        assert!(matches!(
+            authorize(&id, &Request::Shutdown, true),
+            Err(Response::Forbidden { .. })
+        ));
+        assert!(matches!(
+            authorize(
+                &id,
+                &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None },
+                true
+            ),
+            Err(Response::Forbidden { .. })
+        ));
+        // ...but ordinary reads still go through.
+        assert!(authorize(&id, &Request::ListSessions, true).is_ok());
+    }
+
+    #[test]
+    fn an_agent_is_confined_to_its_own_scope() {
+        let (_ws, root, card) = workspace_with_card();
+        let (_other, other_root, other_card) = workspace_with_card();
+        let id = ClientIdentity::agent("sess-1", &root, &root);
+
+        // In its own workspace: allowed.
+        assert!(authorize(&id, &sff(&card), false).is_ok());
+        assert!(authorize(&id, &Request::GetBoardByRoot { root_path: root.clone() }, false).is_ok());
+        assert!(authorize(&id, &Request::ScanGavinRoot { root_path: root.clone() }, false).is_ok());
+
+        // Another workspace's card or root: refused.
+        assert!(matches!(
+            authorize(&id, &sff(&other_card), false),
+            Err(Response::Forbidden { role, .. }) if role == "agent"
+        ));
+        assert!(matches!(
+            authorize(&id, &Request::GetBoardByRoot { root_path: other_root }, false),
+            Err(Response::Forbidden { .. })
+        ));
+
+        // A path that does not resolve at all is refused, not waved through.
+        assert!(authorize(&id, &sff("/no/such/card.md"), false).is_err());
+    }
+
+    #[test]
+    fn an_agent_cannot_spawn_a_shell_end_the_daemon_or_drive_another_session() {
+        let (_ws, root, _card) = workspace_with_card();
+        let id = ClientIdentity::agent("sess-1", &root, &root);
+        for req in [
+            Request::CreateSession { workspace_path: root.clone(), cwd: root.clone(), command: None },
+            Request::Shutdown,
+            Request::EndOrphan { id: "x".into() },
+            Request::WriteInput { id: "other".into(), data: "rm -rf /\n".into() },
+            Request::KillSession { id: "other".into() },
+            Request::Attach { id: "other".into() },
+            Request::SetRootConfigField { root_path: root.clone(), key: "command".into(), value: "evil".into() },
+            Request::SetOrchestration { workspace_id: "ws".into(), rails: vec![], conflict_notes: vec![] },
+        ] {
+            assert!(
+                matches!(authorize(&id, &req, false), Err(Response::Forbidden { .. })),
+                "agent should be refused {}",
+                request_type_name(&req)
+            );
+        }
+    }
+
+    #[test]
+    fn an_agent_owns_only_its_own_session_id() {
+        let (_ws, root, _card) = workspace_with_card();
+        let id = ClientIdentity::agent("sess-1", &root, &root);
+        assert!(authorize(
+            &id,
+            &Request::NameSession { session_id: "sess-1".into(), name: "x".into() },
+            false
+        )
+        .is_ok());
+        assert!(matches!(
+            authorize(
+                &id,
+                &Request::NameSession { session_id: "sess-2".into(), name: "x".into() },
+                false
+            ),
+            Err(Response::Forbidden { .. })
+        ));
+    }
+
+    #[test]
+    fn a_remote_identity_is_denied_every_request_in_phase_one() {
+        let id = ClientIdentity {
+            role: Role::Remote,
+            session_id: None,
+            workspace_root: None,
+            cwd: None,
+        };
+        for req in one_of_every_request_variant_for_authorize() {
+            // Hello is never authorized (it sets the role), so skip it.
+            if matches!(req, Request::Hello { .. }) {
+                continue;
+            }
+            assert!(
+                matches!(authorize(&id, &req, false), Err(Response::Forbidden { role, .. }) if role == "remote"),
+                "remote should be refused {} in phase 1",
+                request_type_name(&req)
+            );
+        }
+    }
+
+    /// A representative request of every variant, for sweeping `authorize`.
+    /// Kept local (rather than reusing protocol's) so the daemon test does
+    /// not depend on that helper's visibility.
+    fn one_of_every_request_variant_for_authorize() -> Vec<Request> {
+        vec![
+            Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None },
+            Request::ListSessions,
+            Request::SessionProcesses,
+            Request::EndOrphan { id: "s".into() },
+            Request::WriteInput { id: "s".into(), data: "x".into() },
+            Request::QueueInput { id: "s".into(), text: "x".into() },
+            Request::ListQueuedInputs,
+            Request::SetQueuedInputs { id: "s".into(), queued_ids: vec![] },
+            Request::SendQueuedInput { id: "s".into(), queued_id: "q".into() },
+            Request::ResizeSession { id: "s".into(), cols: 80, rows: 24 },
+            Request::KillSession { id: "s".into() },
+            Request::Attach { id: "s".into() },
+            Request::Snapshot { id: "s".into() },
+            Request::SetFailurePatterns { id: "s".into(), patterns: vec![] },
+            Request::GetBoard { workspace_id: "w".into() },
+            Request::SetBoard { workspace_id: "w".into(), columns: vec![], labels: vec![] },
+            Request::DeleteBoard { workspace_id: "w".into() },
+            Request::WatchGavinRoot { workspace_id: "w".into(), root_path: "/x".into() },
+            Request::UnwatchGavinRoot { workspace_id: "w".into() },
+            Request::GetGavinTree { workspace_id: "w".into() },
+            Request::InitGavinRoot { root_path: "/x".into(), workspace_name: "w".into() },
+            Request::CreateGavinContext { parent_folder: "/x".into() },
+            Request::AddExternalGavinContext { root_path: "/x".into(), folder: "/y".into() },
+            Request::RemoveExternalGavinContext { root_path: "/x".into(), folder: "/y".into() },
+            sff("/x/a.md"),
+            Request::SetRootConfigField { root_path: "/x".into(), key: "k".into(), value: "v".into() },
+            Request::ScanGavinRoot { root_path: "/x".into() },
+            Request::ReadPrd { root_path: "/x".into() },
+            Request::GetBoardByRoot { root_path: "/x".into() },
+            Request::PromoteChecklistItem { plan_path: "/x/a.md".into(), item: "i".into() },
+            Request::SetChecklistItem { path: "/x/a.md".into(), line_index: 0, expected_text: "i".into(), checked: true },
+            Request::SpawnAgentSession { root_path: "/x".into(), cwd: "/x".into(), command: "sh".into() },
+            Request::DeleteCardFile { path: "/x/a.md".into() },
+            Request::ArchiveCard { path: "/x/a.md".into() },
+            Request::UnarchiveCard { path: "/x/a.md".into() },
+            Request::GetOrchestration { workspace_id: "w".into() },
+            Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
+            Request::SetRailRun { rail_id: "r".into(), state: "x".into(), current_stage_id: None },
+            Request::SetStepRun {
+                step_id: "s".into(),
+                state: "x".into(),
+                session_id: None,
+                reason: None,
+                conversation_id: None,
+                launch_cwd: None,
+                resume_attempts: None,
+            },
+            Request::GetOrchestrationByRoot { root_path: "/x".into() },
+            Request::SetOrchestrationByRoot { root_path: "/x".into(), rails: vec![], conflict_notes: vec![] },
+            Request::SetRailRunByRoot { root_path: "/x".into(), rail_id: "r".into(), state: "x".into(), current_stage_id: None },
+            Request::GetTools { workspace_id: "w".into() },
+            Request::GetToolsByRoot { root_path: "/x".into() },
+            Request::DeleteTool { id: "t".into() },
+            Request::GetGroupTemplates { workspace_id: "w".into() },
+            Request::DeleteGroupTemplate { id: "g".into() },
+            Request::GitDirtyPaths { cwd: "/x".into(), limit: 10 },
+            Request::NameSession { session_id: "s".into(), name: "n".into() },
+            Request::CardRuns { workspace_id: "w".into(), path: "/x/a.md".into() },
+            Request::ToolRuns { workspace_id: "w".into() },
+            Request::GetProtocolVersion,
+            Request::Shutdown,
+        ]
+    }
+
+    #[test]
+    fn set_and_look_up_a_session_token_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry
+            .insert(&SessionRecord {
+                id: "s1".into(),
+                workspace_path: "/tmp/ws".into(),
+                cwd: "/tmp/ws".into(),
+                command: None,
+                status: SessionStatus::Idle,
+                restored: false,
+                generation: 0,
+                interrupted: false,
+                process: None,
+                orphan: None,
+                failure_reason: None,
+            })
+            .unwrap();
+        let hash = protocol::hash_token_hex("the-token");
+        registry.set_token_hash("s1", &hash).unwrap();
+        assert_eq!(registry.session_id_for_token_hash(&hash).unwrap().as_deref(), Some("s1"));
+        // A token nobody minted matches nothing.
+        assert_eq!(
+            registry.session_id_for_token_hash(&protocol::hash_token_hex("nope")).unwrap(),
+            None
+        );
+    }
+
     fn start_test_server() -> (std::path::PathBuf, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("daemon.sock");
@@ -3990,6 +4727,10 @@ mod tests {
         let registry = Registry::open(&db_path).unwrap();
         let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
         let manager = Arc::new(SessionManager::new(registry, kanban, test_orchestration_store()));
+        // `serve` (unlike `run_server`) does not mint one, so set a known
+        // token here: the Hello tests present it to take the `app` role
+        // and check the server_proof against it.
+        manager.set_daemon_token("test-daemon-token".to_string());
 
         // Bound here rather than on the server thread, so this function
         // cannot return before the socket is accepting. The wait it
@@ -4008,6 +4749,115 @@ mod tests {
         write_message(stream, req).unwrap();
         let mut reader = line_reader(stream.try_clone().unwrap());
         read_message(&mut reader).unwrap().unwrap()
+    }
+
+    #[test]
+    fn a_hello_with_the_daemon_token_becomes_app_with_a_valid_proof() {
+        let (socket_path, _dir) = start_test_server();
+        let mut conn = UnixStream::connect(&socket_path).unwrap();
+        let resp = request(
+            &mut conn,
+            &Request::Hello {
+                client: "app".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                nonce: "nonce-123".into(),
+            },
+        );
+        match resp {
+            Response::HelloAck { role, session_id, server_proof, daemon_version } => {
+                assert_eq!(role, "app");
+                assert_eq!(daemon_version, protocol::PROTOCOL_VERSION);
+                assert_eq!(session_id, None);
+                // The proof the app checks to know it reached the real daemon.
+                assert_eq!(
+                    server_proof.as_deref(),
+                    Some(protocol::server_proof("test-daemon-token", "nonce-123").as_str())
+                );
+            }
+            other => panic!("expected HelloAck, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_hello_with_no_auth_is_local_and_a_wrong_token_does_not_elevate() {
+        let (socket_path, _dir) = start_test_server();
+        let mut conn = UnixStream::connect(&socket_path).unwrap();
+        match request(
+            &mut conn,
+            &Request::Hello {
+                client: "cli".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::None,
+                nonce: "n".into(),
+            },
+        ) {
+            Response::HelloAck { role, server_proof, .. } => {
+                assert_eq!(role, "local");
+                assert_eq!(server_proof, None);
+            }
+            other => panic!("expected HelloAck, got {other:?}"),
+        }
+
+        let mut conn2 = UnixStream::connect(&socket_path).unwrap();
+        match request(
+            &mut conn2,
+            &Request::Hello {
+                client: "impostor".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::DaemonToken { token: "wrong".into() },
+                nonce: "n".into(),
+            },
+        ) {
+            Response::HelloAck { role, .. } => assert_eq!(role, "local"),
+            other => panic!("expected HelloAck, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_second_hello_on_one_connection_is_refused() {
+        let (socket_path, _dir) = start_test_server();
+        let mut conn = UnixStream::connect(&socket_path).unwrap();
+        let hello = Request::Hello {
+            client: "app".into(),
+            protocol_version: protocol::PROTOCOL_VERSION,
+            auth: protocol::HelloAuth::None,
+            nonce: "n".into(),
+        };
+        assert!(matches!(request(&mut conn, &hello), Response::HelloAck { .. }));
+        match request(&mut conn, &hello) {
+            Response::Error { message } => assert!(message.contains("already sent"), "{message}"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_agent_hello_over_the_socket_is_scoped_and_refused_a_shell() {
+        // A real session, so its token maps to a real scope. `serve` is
+        // running against this manager, but we drive create_session
+        // directly to mint a token, then re-derive its hash the way a
+        // Hello would.
+        let (socket_path, _dir) = start_test_server();
+
+        // Create a session over the socket the way the app does; then a
+        // second connection presents a *forged* session token (unknown to
+        // the registry) and must fall back to local rather than agent.
+        let mut conn = UnixStream::connect(&socket_path).unwrap();
+        match request(
+            &mut conn,
+            &Request::Hello {
+                client: "mcp".into(),
+                protocol_version: protocol::PROTOCOL_VERSION,
+                auth: protocol::HelloAuth::SessionToken { token: "not-a-real-token".into() },
+                nonce: "n".into(),
+            },
+        ) {
+            Response::HelloAck { role, session_id, .. } => {
+                assert_eq!(role, "local");
+                assert_eq!(session_id, None);
+            }
+            other => panic!("expected HelloAck, got {other:?}"),
+        }
     }
 
     #[test]

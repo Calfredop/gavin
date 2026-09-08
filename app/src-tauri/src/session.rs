@@ -7,6 +7,7 @@ use protocol::{
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -1800,7 +1801,7 @@ fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
         *state.0.lock().unwrap() = None;
     }
 
-    let stream_conn = crate::daemon::connect_or_spawn(
+    let mut stream_conn = crate::daemon::connect_or_spawn(
         &socket_path(),
         Duration::from_secs(3),
         crate::daemon::spawn_real_daemon,
@@ -1810,6 +1811,11 @@ fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
     // version probe must leave a named error and an app that is merely
     // disconnected, never one wired half onto each daemon.
     let compat = verify_daemon_protocol(&probe)?;
+    // Re-present identity on the fresh connections: a restart can hand
+    // back a differently-versioned (or freshly-token'd) daemon, so the
+    // handshake and its proof run again before either connection is
+    // published.
+    app_handshake(&compat, &probe, &mut stream_conn)?;
 
     // A restart can hand the app a differently-versioned daemon than the
     // one it started with -- refresh the stored verdict BEFORE either
@@ -1979,6 +1985,131 @@ fn send_command(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Respo
     let mut reader = BufReader::new(&mut *stream);
     read_message(&mut reader)?
         .ok_or_else(|| anyhow::anyhow!("daemon closed the command connection"))
+}
+
+/// The daemon token the daemon wrote `0600` at startup
+/// (`sec-fix-client-identity.md`). `None` when the file is absent -- an
+/// older daemon that never wrote one, or a first launch racing the write
+/// (the connect that spawned the daemon has already returned by the time
+/// this is read, and the token is written before the socket binds, so this
+/// only ever misses against a pre-v35 daemon).
+fn read_daemon_token() -> Option<String> {
+    std::fs::read_to_string(protocol::daemon_token_path())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Check a `HelloAck` the app received: the daemon must have granted the
+/// `app` role and returned a `server_proof` equal to HMAC(token, nonce).
+/// A mismatch is the DP-06 case -- the app connected to something holding
+/// the socket path that does NOT hold the token -- and is a hard error.
+fn verify_app_ack(ack: Response, token: &str, nonce: &str) -> anyhow::Result<()> {
+    match ack {
+        Response::HelloAck { role, server_proof, .. } => {
+            if role != "app" {
+                anyhow::bail!("the daemon did not accept this app's token (role: {role})");
+            }
+            let expected = protocol::server_proof(token, nonce);
+            if server_proof.as_deref() != Some(expected.as_str()) {
+                anyhow::bail!(
+                    "the gavin daemon's identity proof did not match — the socket may be held by \
+                     another process; quit gavin and relaunch"
+                );
+            }
+            Ok(())
+        }
+        other => anyhow::bail!("unexpected reply to Hello: {other:?}"),
+    }
+}
+
+/// Send a `Hello` with the daemon token on the command connection and
+/// verify the proof. The command connection has already exchanged the
+/// version probe, which is fine: `Hello` need only be the first *Hello*,
+/// and both real clients probe the version before it.
+fn app_handshake_command(conn: &Mutex<UnixStream>, token: &str) -> anyhow::Result<()> {
+    let nonce = protocol::random_hex(16)?;
+    let ack = send_command(
+        conn,
+        &Request::Hello {
+            client: "app".to_string(),
+            protocol_version: protocol::PROTOCOL_VERSION,
+            auth: protocol::HelloAuth::DaemonToken { token: token.to_string() },
+            nonce: nonce.clone(),
+        },
+    )?;
+    verify_app_ack(ack, token, &nonce)
+}
+
+/// Send a `Hello` with the daemon token directly on the streaming
+/// connection and verify the proof. Read with a one-byte reader so no push
+/// that follows the ack is swallowed -- the same hazard the daemon tests'
+/// `line_reader` guards, though at bootstrap nothing is attached yet.
+fn app_handshake_stream(stream: &mut UnixStream, token: &str) -> anyhow::Result<()> {
+    let nonce = protocol::random_hex(16)?;
+    write_message(
+        stream,
+        &Request::Hello {
+            client: "app".to_string(),
+            protocol_version: protocol::PROTOCOL_VERSION,
+            auth: protocol::HelloAuth::DaemonToken { token: token.to_string() },
+            nonce: nonce.clone(),
+        },
+    )?;
+    let mut reader = BufReader::with_capacity(1, &mut *stream);
+    let ack = read_message(&mut reader)?
+        .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during the app handshake"))?;
+    verify_app_ack(ack, token, &nonce)
+}
+
+/// Present the app's identity on both connections, when the daemon is new
+/// enough to understand `Hello`. Both become `app` so neither is narrowed
+/// if `require_local_token` is ever turned on: the command connection
+/// carries `CreateSession` (privileged, refused to an untokened local
+/// under the switch), and the streaming connection is given the same
+/// identity so it is `app` too rather than relying on the switch never
+/// reaching the requests it carries.
+///
+/// A daemon older than v35, or a missing token file, is not an error: the
+/// app skips the handshake and continues as `local`, which in phase 1 has
+/// today's full reach. A wrong server_proof IS an error -- that is DP-06.
+fn app_handshake(
+    compat: &DaemonCompat,
+    command_conn: &Mutex<UnixStream>,
+    stream: &mut UnixStream,
+) -> anyhow::Result<()> {
+    const HELLO_MIN_VERSION: u32 = 35;
+    if compat.daemon_version < HELLO_MIN_VERSION {
+        return Ok(());
+    }
+    let Some(token) = read_daemon_token() else {
+        return Ok(());
+    };
+    app_handshake_command(command_conn, &token)?;
+    app_handshake_stream(stream, &token)?;
+    Ok(())
+}
+
+/// Whether an untokened local connection is narrowed on the daemon. The
+/// daemon reads this same marker file per request, so the toggle is live.
+#[tauri::command]
+pub fn get_require_local_token() -> bool {
+    protocol::require_local_token_path().exists()
+}
+
+/// Turn `require_local_token` on (write the marker `0600`) or off (remove
+/// it). The Settings "Remote access" surface calls this; the daemon honours
+/// it on the next request with no restart.
+#[tauri::command]
+pub fn set_require_local_token(enabled: bool) -> Result<(), String> {
+    let path = protocol::require_local_token_path();
+    if enabled {
+        std::fs::write(&path, b"1").map_err(|e| e.to_string())?;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    } else if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// One reconnect per call, mirroring gavin-mcp's `SocketTransport`
@@ -3234,7 +3365,7 @@ fn carry_over_agent_command(root_path: &str, legacy: Option<&str>) -> anyhow::Re
 }
 
 pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
-    let stream_conn = crate::daemon::connect_or_spawn(
+    let mut stream_conn = crate::daemon::connect_or_spawn(
         &socket_path(),
         Duration::from_secs(3),
         crate::daemon::spawn_real_daemon,
@@ -3245,6 +3376,10 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     let command_stream = UnixStream::connect(socket_path())?;
     let command_conn = Mutex::new(command_stream);
     let compat = verify_daemon_protocol(&command_conn)?;
+    // Present the app's identity on both connections and verify the
+    // daemon's proof (`sec-fix-client-identity.md`). A no-op against a
+    // pre-v35 daemon; a proof mismatch aborts bootstrap (DP-06).
+    app_handshake(&compat, &command_conn, &mut stream_conn)?;
     *app_handle.state::<DaemonCompatState>().0.lock().unwrap() = Some(compat);
 
     let writer = Arc::new(Mutex::new(stream_conn.try_clone()?));

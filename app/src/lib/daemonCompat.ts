@@ -290,6 +290,20 @@ export const FEATURE_MIN_VERSION = {
   // gate there is; the card detail modal and the Plans tab strip both
   // read it through featureBlockedReason.
   cardAgent: 32,
+  // Client identity on the daemon socket (phase 1 of the remote-access
+  // design). `Request::Hello` is a new request TYPE, so `min_version_for`
+  // is the real wire gate -- against an older daemon the app never sends
+  // Hello, `app_handshake` skips it, and the app connects as `local` with
+  // today's full reach. Nothing is silently dropped: Hello carries no
+  // field an older daemon would parse-and-discard.
+  //
+  // The entry exists for the COPY, as `sessionMetrics` and `runHistory`
+  // do: the Settings "Remote access" surface -- the Require-a-token
+  // switch, and the pairing/device controls phases 2+ add -- reads it
+  // through featureBlockedReason, so against an older daemon it is greyed
+  // with the version it needs rather than offering a control the daemon
+  // cannot honour.
+  clientIdentity: 35,
   // What DELETING a card actually takes with it. Not a request type and
   // not a widened payload -- v34 changed what `DeleteCardFile` DOES, so
   // `min_version_for` is blind to it in principle and this entry is the

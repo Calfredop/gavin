@@ -64,6 +64,12 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   delete_card_file: ["gated", "removes a card from the board and from disk"],
   remove_gavin_footprint: ["gated", "empties a workspace of gavin, through the delete wizard"],
   restart_daemon: ["gated", "pkills a daemon shared with every other gavin window"],
+  // A read and a marker-file write for require_local_token. Ordinary: the
+  // read is pure, and the write flips a daemon setting the daemon reads
+  // per request -- it starts nothing and kills nothing, so it needs no
+  // confirm grant, only the Remote access surface's own reach.
+  get_require_local_token: ["ordinary"],
+  set_require_local_token: ["ordinary"],
 
   // ---- destructive, deliberately not gated ----
   kill_session: [

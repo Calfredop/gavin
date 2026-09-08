@@ -82,6 +82,34 @@ impl SocketTransport {
             // Degraded or at parity, the connection is the same; what
             // differs is only which requests the gate below lets through.
             protocol::VersionBand::Usable { .. } => {
+                // Present identity before the first real request rides
+                // this connection (`sec-fix-client-identity.md`). The
+                // session token comes from GAVIN_SESSION_TOKEN, injected
+                // into the PTY beside GAVIN_SESSION_ID; presenting it
+                // takes the `agent` role scoped to this session. No token
+                // (a bare `claude` in a terminal, or a test) sends
+                // `None` and stays `local`.
+                //
+                // Gated like every other request: a daemon older than 35
+                // cannot parse `Hello`, so we never put it on the wire
+                // and carry on untokened exactly as before (compat §7).
+                // The HelloAck is read to keep the connection aligned but
+                // otherwise ignored -- the role is enforced daemon-side,
+                // and only the app verifies a server_proof.
+                let hello = Request::Hello {
+                    client: "mcp".to_string(),
+                    protocol_version: PROTOCOL_VERSION,
+                    auth: match std::env::var("GAVIN_SESSION_TOKEN") {
+                        Ok(t) if !t.is_empty() => protocol::HelloAuth::SessionToken { token: t },
+                        _ => protocol::HelloAuth::None,
+                    },
+                    nonce: protocol::random_hex(16).unwrap_or_default(),
+                };
+                if protocol::gate_request(&hello, version).is_ok()
+                    && write_message(reader.get_mut(), &hello).is_ok()
+                {
+                    let _ = read_message::<_, Response>(&mut reader);
+                }
                 self.conn = Some(Connection { reader, daemon_version: version });
                 Ok(())
             }

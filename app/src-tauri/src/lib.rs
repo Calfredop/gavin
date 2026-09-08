@@ -109,6 +109,8 @@ pub fn run() {
             mac_window::title_bar_double_click_action,
             session::get_bootstrap_error,
             session::restart_daemon,
+            session::get_require_local_token,
+            session::set_require_local_token,
             daemon_compat,
             confirm_gate::open_confirmation,
             confirm_gate::answer_confirmation,

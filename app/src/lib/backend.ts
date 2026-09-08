@@ -30,6 +30,20 @@ export function killSession(sessionId: string): Promise<void> {
   return invoke("kill_session", { sessionId });
 }
 
+/// Whether the daemon narrows an untokened local connection
+/// (`require_local_token`). The daemon reads the same marker file per
+/// request, so this reflects the live state.
+export function getRequireLocalToken(): Promise<boolean> {
+  return invoke("get_require_local_token");
+}
+
+/// Turn `require_local_token` on or off. Off (the default) keeps today's
+/// full reach for untokened local connections; on refuses them the
+/// process-starting requests until they present a token.
+export function setRequireLocalToken(enabled: boolean): Promise<void> {
+  return invoke("set_require_local_token", { enabled });
+}
+
 export function getFileTabs(): Promise<Record<string, string>> {
   return invoke("get_file_tabs");
 }

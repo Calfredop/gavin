@@ -374,6 +374,34 @@
     if (focused !== "prd") prdDraft = prd;
   });
 
+  // --- client identity / remote access ---------------------------------
+  /// `Request::Hello` is a new request TYPE, so an older daemon simply has
+  /// no identity to offer; the surface below reads this and greys itself
+  /// with the version it needs rather than writing a setting the daemon
+  /// would not honour.
+  const clientIdentityBlocked = $derived(featureBlockedReason($daemonCompat, "clientIdentity"));
+  /// `require_local_token` is a daemon-GLOBAL setting -- a marker file the
+  /// daemon reads per request -- not a per-workspace one, so it is read
+  /// once and written straight back, independent of `ws`.
+  let requireLocalToken = $state(false);
+  let requireLocalTokenLoaded = false;
+  $effect(() => {
+    if (requireLocalTokenLoaded) return;
+    requireLocalTokenLoaded = true;
+    void backend
+      .getRequireLocalToken()
+      .then((v) => (requireLocalToken = v))
+      .catch(() => undefined);
+  });
+  async function toggleRequireLocalToken(enabled: boolean): Promise<void> {
+    requireLocalToken = enabled; // optimistic
+    try {
+      await backend.setRequireLocalToken(enabled);
+    } catch {
+      requireLocalToken = !enabled; // roll back a failed write
+    }
+  }
+
   async function commitPrd(): Promise<void> {
     prdError = null;
     const next = prdDraft.trim();
@@ -1097,6 +1125,38 @@
           </p>
         </div>
       {/if}
+    </section>
+
+    <section>
+      <h3>Remote access</h3>
+      <p class="hint">
+        Every connection to the daemon carries an identity now: the app holds a token the daemon
+        minted, and an agent gavin launches is scoped to the workspace and card it was started
+        for. Pairing a phone to reach the daemon from away builds on this; those controls will
+        appear here.
+      </p>
+      <!-- The reason hangs on the wrapping span, not the input: a disabled
+           element fires no mouseenter, so a tooltip on it never opens. -->
+      <span use:tooltip={clientIdentityBlocked ?? ""}>
+        <label class="check">
+          <input
+            type="checkbox"
+            disabled={clientIdentityBlocked !== null}
+            checked={requireLocalToken}
+            onchange={(e) => void toggleRequireLocalToken(e.currentTarget.checked)}
+          />
+          Require a token for full local access
+        </label>
+      </span>
+      <p class="hint">
+        Off by default, so nothing changes today. On, a same-user program that connects without
+        the app's token can still read the board and your sessions, but cannot start a shell,
+        spawn an agent, stop the daemon, or rewrite the launch command. Turn it on only if you run
+        tools you do not trust as your own user.
+        {#if clientIdentityBlocked}
+          <span class="warn">{clientIdentityBlocked}</span>
+        {/if}
+      </p>
     </section>
 
     <section>
