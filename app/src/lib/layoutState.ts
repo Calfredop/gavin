@@ -1248,6 +1248,14 @@ export async function bootstrap(): Promise<void> {
   // and module-level for the same reason both of those are.
   const { startLaunchQueue } = await import("./launchQueue");
   unlisteners.push(startLaunchQueue());
+  // ...and the one thing the wall may END: an idle agent of a done card,
+  // while memory is short. After the queue, because its closes are what
+  // make room for that queue's drain, and module-level for the sharpest
+  // reason of all -- the day it matters is the day the human is on
+  // another workspace and the machine is swapping. Dynamically imported
+  // for the cycle reason above (it closes through this module).
+  const { startDoneSessionReclaim } = await import("./doneSessionReclaimState");
+  unlisteners.push(startDoneSessionReclaim());
   // And the same again for the develop records: a "Develop into a plan…"
   // run that finishes while the human is on another tab still has to give
   // the card back, and this watch's first pass is also what ADOPTS a run

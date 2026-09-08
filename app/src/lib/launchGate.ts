@@ -9,11 +9,14 @@
 // gigabytes -- eleven idle-but-fat sessions thrash exactly as hard as
 // eleven busy ones.
 //
-// Neither ever stops anything. A hold gates STARTS, the same posture the
-// token pause already takes: gavin does not kill an agent, does not
-// suspend one, and does not decide that work already in flight was a
-// mistake. The queue in `launchQueue.ts` is what makes that bearable --
-// a refused launch is not lost, it waits.
+// Neither ever stops anything in flight. A hold gates STARTS, the same
+// posture the token pause already takes: gavin does not kill an agent
+// mid-turn, does not suspend one, and does not decide that work already
+// in flight was a mistake. The queue in `launchQueue.ts` is what makes
+// that bearable -- a refused launch is not lost, it waits. The ONE thing
+// the wall may end is an idle agent whose card is already done, and only
+// while memory is short: `doneSessionReclaim.ts` owns that rule, and
+// `reclaimDoneSessions` below is its switch.
 //
 // Pure and unit-tested. The whole value of this module is that the rule
 // is one function with the machine's state as arguments: every surface
@@ -31,13 +34,23 @@ import { formatGbPair } from "./memory";
 export interface LaunchConfig {
   maxInFlight: number | null;
   holdOnPressure: boolean;
+  /// Whether gavin may close an IDLE agent whose card is already in the
+  /// done column when memory runs short -- the one exception to "nothing
+  /// running is stopped". Its own switch rather than a mode of
+  /// `holdOnPressure`, because holding a start costs nothing and closing
+  /// a finished agent costs its transcript.
+  reclaimDoneSessions: boolean;
 }
 
-/// Four agents, and the pressure hold on. Mirrors
-/// `LaunchConfig::default()` in `config.rs`; shipped ON, unlike the
-/// pause cycle, because this is the guard that stands between eleven
-/// rails and a watchdog reset.
-export const DEFAULT_LAUNCH: LaunchConfig = { maxInFlight: 4, holdOnPressure: true };
+/// Four agents, the pressure hold on, and finished cards' idle agents
+/// reclaimable. Mirrors `LaunchConfig::default()` in `config.rs`;
+/// shipped ON, unlike the pause cycle, because this is the guard that
+/// stands between eleven rails and a watchdog reset.
+export const DEFAULT_LAUNCH: LaunchConfig = {
+  maxInFlight: 4,
+  holdOnPressure: true,
+  reclaimDoneSessions: true,
+};
 
 /// Why a launch is being held. `null` on an allowed verdict.
 ///

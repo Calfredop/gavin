@@ -347,8 +347,10 @@ export function fleetStrip(input: FleetStripInput): FleetStrip | null {
 ///
 /// It names what gavin's own agents hold rather than the machine's
 /// total, because that is the part the human can act on -- and because
-/// the two buttons under it (open the sessions panel, close idle tabs)
-/// only reach gavin's own.
+/// the buttons under it (open the sessions panel, close idle tabs, close
+/// the idle agents of done cards) only reach gavin's own. What the wall
+/// has already closed by itself is a second clause the banner appends
+/// from `reclaimedClause`, not part of this line.
 export function pressureBannerLine(input: {
   pressure: MemoryPressure;
   agents: number;

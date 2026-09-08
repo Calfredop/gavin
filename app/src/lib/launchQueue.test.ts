@@ -392,6 +392,6 @@ describe("draining", () => {
 
 describe("the config store", () => {
   it("starts at the shipped default -- four agents, pressure hold on", () => {
-    expect(get(launchConfigStore)).toEqual({ maxInFlight: 4, holdOnPressure: true });
+    expect(get(launchConfigStore)).toEqual({ maxInFlight: 4, holdOnPressure: true, reclaimDoneSessions: true });
   });
 });

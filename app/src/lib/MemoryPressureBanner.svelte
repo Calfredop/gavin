@@ -5,20 +5,26 @@
   // still works, and the one thing it must not do is take over the
   // window at the moment the human most needs to reach a tab.
   //
-  // It NEVER kills anything, and neither does either button. Gavin does
-  // not stop an agent it started; a hold gates starts, exactly as the
-  // token pause does. The two actions are the two things the human can
-  // do that gavin will not do for them: look at what is holding the
-  // memory, and close tabs that are not doing anything.
+  // Nothing here kills an agent mid-turn, and no button here ends
+  // anything without asking. A hold gates starts, exactly as the token
+  // pause does. The three actions are the three things the human can do
+  // that the wall will not do for them unasked: look at what is holding
+  // the memory, close tabs that are not doing anything, and close the
+  // idle agents of cards that are already done. The last of those the
+  // wall DOES do by itself under pressure when the setting allows it
+  // (doneSessionReclaimState.ts), and the second clause of the line
+  // says so when it has.
   import { MemoryStick } from "@lucide/svelte";
   import { get } from "svelte/store";
   import { pressureBannerLine } from "./memory";
-  import { fleetMemory, memoryPressure } from "./memoryState";
+  import { fleetMemory, memoryPressure, systemMemory } from "./memoryState";
   import { showAppPanel } from "./appPanels";
   import { layoutState } from "./layoutState";
   import { askConfirm } from "./dialog";
   import { closeIdlePrompt, idleTabsOnPage } from "./idleTabs";
   import { closeTabsNow } from "./tabActions";
+  import { reclaimNowLabel, reclaimedClause } from "./doneSessionReclaim";
+  import { reclaimDoneSessionsNow, reclaimLog, reclaimableNow } from "./doneSessionReclaimState";
 
   const line = $derived(
     pressureBannerLine({
@@ -27,6 +33,19 @@
       agentBytes: $fleetMemory.rssBytes,
     })
   );
+
+  /// What the wall closed lately.
+  const reclaimed = $derived.by(() => {
+    // Read for its timing only: the poller replaces the sample every few
+    // seconds, which is what lets the ten-minute window expire without a
+    // timer of this component's own.
+    void $systemMemory;
+    return reclaimedClause($reclaimLog, Date.now());
+  });
+
+  /// The manual close, present only while there is something it would
+  /// close (reclaimNowLabel is null otherwise).
+  const reclaimLabel = $derived(reclaimNowLabel($reclaimableNow));
 
   /// The active page's idle tabs, which is the set the sidebar's own
   /// "Close Idle Tabs" acts on. The same split and the same prompt: two
@@ -60,11 +79,16 @@
 {#if line}
   <div class="banner" role="status">
     <MemoryStick size={14} />
-    <span class="text">{line}</span>
+    <span class="text">{line}{#if reclaimed}{" "}{reclaimed}{/if}</span>
     <button type="button" class="action" onclick={() => showAppPanel("sessions", "memory")}>
       Open sessions
     </button>
     <button type="button" class="action" onclick={() => void closeIdle()}>Close idle tabs</button>
+    {#if reclaimLabel}
+      <button type="button" class="action" onclick={() => void reclaimDoneSessionsNow()}>
+        {reclaimLabel}
+      </button>
+    {/if}
   </div>
 {/if}
 

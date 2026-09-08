@@ -660,7 +660,11 @@ mod workspaces_data_tests {
     fn persist_workspaces_carries_the_launch_wall_through() {
         let dir = tempfile::tempdir().unwrap();
         let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
-        let launch = crate::config::LaunchConfig { max_in_flight: Some(2), hold_on_pressure: false };
+        let launch = crate::config::LaunchConfig {
+            max_in_flight: Some(2),
+            hold_on_pressure: false,
+            reclaim_done_sessions: false,
+        };
         persist_workspaces(
             dir.path(),
             &data,
@@ -690,7 +694,11 @@ mod workspaces_data_tests {
     fn persist_workspaces_keeps_an_explicitly_blank_ceiling_blank() {
         let dir = tempfile::tempdir().unwrap();
         let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
-        let launch = crate::config::LaunchConfig { max_in_flight: None, hold_on_pressure: true };
+        let launch = crate::config::LaunchConfig {
+            max_in_flight: None,
+            hold_on_pressure: true,
+            reclaim_done_sessions: true,
+        };
         persist_workspaces(
             dir.path(),
             &data,
@@ -712,6 +720,22 @@ mod workspaces_data_tests {
         let loaded = crate::config::load(dir.path()).unwrap().launch.unwrap();
         assert_eq!(loaded.max_in_flight, None);
         assert!(loaded.hold_on_pressure);
+    }
+
+    /// A config.json written before the reclaim switch existed carries
+    /// only the ceiling and the hold. It has to parse as the shipped
+    /// answer, not as a refusal: a machine that upgraded is the machine
+    /// with six idle agents of done cards already on it.
+    #[test]
+    fn launch_config_written_before_the_reclaim_switch_reads_as_on() {
+        let launch: crate::config::LaunchConfig =
+            serde_json::from_str(r#"{"maxInFlight":4,"holdOnPressure":true}"#).unwrap();
+        assert!(launch.reclaim_done_sessions);
+        assert!(launch.hold_on_pressure);
+        assert_eq!(launch.max_in_flight, Some(4));
+        // And the wire name is the one launchGate.ts reads.
+        let json = serde_json::to_value(crate::config::LaunchConfig::default()).unwrap();
+        assert_eq!(json["reclaimDoneSessions"], serde_json::Value::Bool(true));
     }
 
     #[test]

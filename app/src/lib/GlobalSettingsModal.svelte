@@ -370,8 +370,9 @@
       <h3>Memory wall</h3>
       <p class="hint">
         A ceiling on how many agents may be taking a turn at once, and a hold while the
-        machine is under memory pressure. Nothing already running is ever stopped — only
-        new starts wait, and they start by themselves when a slot frees.
+        machine is under memory pressure. Nothing mid-turn is ever stopped — new starts
+        wait, and they start by themselves when a slot frees. The one thing gavin may
+        close is an idle agent whose card is already done, when memory runs short.
       </p>
       <div class="row">
         <span>Agents running at once</span>
@@ -394,6 +395,20 @@
             onchange={(e) => editLaunch({ holdOnPressure: e.currentTarget.checked })}
           />
           <span>Hold new agents when memory is under pressure</span>
+        </label>
+      </div>
+      <!-- Its own switch rather than a mode of the hold above: holding a
+           start costs nothing, closing a finished agent costs its
+           transcript, and a human may want one without the other. -->
+      <div class="row">
+        <span>Finished cards</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={launch.reclaimDoneSessions}
+            onchange={(e) => editLaunch({ reclaimDoneSessions: e.currentTarget.checked })}
+          />
+          <span>Close idle agents of done cards when memory runs short</span>
         </label>
       </div>
     </section>

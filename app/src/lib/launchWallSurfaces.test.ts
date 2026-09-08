@@ -167,7 +167,7 @@ describe("the fleet strip and the banner", () => {
     expect(source("appHub.ts")).toContain("memory: input.memory ?? null");
   });
 
-  it("raises the banner from pressureBannerLine and never kills anything", () => {
+  it("raises the banner from pressureBannerLine and ends nothing without asking", () => {
     const banner = source("MemoryPressureBanner.svelte");
     expect(banner).toContain("pressureBannerLine(");
     expect(banner).toContain('showAppPanel("sessions", "memory")');
@@ -176,7 +176,11 @@ describe("the fleet strip and the banner", () => {
     // `dialog:allow-open`, and every prompt names its own action.
     expect(banner).toContain("askConfirm(");
     expect(banner).not.toContain("plugin-dialog");
-    // It gates starts; it does not end anything of gavin's own.
+    // Its one close of finished agents goes through the reclaim module's
+    // own asking path, never a kill of its own.
+    expect(banner).toContain("reclaimDoneSessionsNow()");
+    expect(banner).toContain("reclaimNowLabel(");
+    expect(banner).toContain("reclaimedClause(");
     expect(banner).not.toContain("killSession");
     expect(banner).not.toContain("endSession");
   });
@@ -208,6 +212,45 @@ describe("the fleet strip and the banner", () => {
     expect(panel).toContain("dropRootsConfirm(droppable)");
     expect(panel).toContain("askConfirm(prompt)");
     expect(panel).toContain("backend.watchmanForget(root)");
+  });
+});
+
+describe("the done-session reclaim", () => {
+  // The one thing the wall may END. Every judgement is pure and covered
+  // in doneSessionReclaim.test.ts; what no suite can see is that the
+  // watcher is started at all, that it closes through the app's one
+  // close path, and that the rule reads a nested task's status through
+  // its parent -- the trap that once made rails re-run finished work.
+  it("starts from bootstrap, after the queue it makes room for", () => {
+    const layout = source("layoutState.ts");
+    expect(layout).toContain('await import("./doneSessionReclaimState")');
+    expect(layout).toContain("unlisteners.push(startDoneSessionReclaim());");
+    expect(layout.indexOf("startDoneSessionReclaim()")).toBeGreaterThan(
+      layout.indexOf("startLaunchQueue()")
+    );
+  });
+
+  it("closes through closeSession, never a bare kill, and asks before a manual close", () => {
+    const state = source("doneSessionReclaimState.ts");
+    expect(state).toContain("await closeSession(next.sessionId)");
+    expect(state).not.toContain("killSession");
+    expect(state).toContain("askConfirm(reclaimNowPrompt(candidates))");
+    expect(state).toContain("closeTabsNow(candidates.map((c) => c.sessionId))");
+    expect(state).not.toContain("plugin-dialog");
+  });
+
+  it("reads the done column through effectiveStatus and spares pinned tabs", () => {
+    const rule = source("doneSessionReclaim.ts");
+    expect(rule).toContain("effectiveStatus(entry, plans)");
+    expect(rule).toContain("isPinned(page.layout, id)");
+    expect(rule).toContain("countsInFlight(state.sessionStatusById[id])");
+    expect(rule).toContain("ws.mainSessionId === id");
+  });
+
+  it("has its own switch in the settings, written through the launch config", () => {
+    const settings = source("GlobalSettingsModal.svelte");
+    expect(settings).toContain("Close idle agents of done cards when memory runs short");
+    expect(settings).toContain("editLaunch({ reclaimDoneSessions: e.currentTarget.checked })");
   });
 });
 

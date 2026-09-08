@@ -444,8 +444,9 @@ fn default_limit_percent() -> f64 {
     95.0
 }
 
-/// The launch wall: how many agent turns may be in flight at once, and
-/// whether memory pressure holds new ones.
+/// The launch wall: how many agent turns may be in flight at once,
+/// whether memory pressure holds new ones, and whether it may reclaim
+/// the idle agents of cards that are already done.
 ///
 /// Mirrors `LaunchConfig` in `launchGate.ts`, which owns every judgement
 /// made from it -- this is storage. Machine-local like `agent_pause`
@@ -466,17 +467,31 @@ pub struct LaunchConfig {
     pub max_in_flight: Option<u32>,
     #[serde(default = "default_true")]
     pub hold_on_pressure: bool,
+    /// Whether gavin may close an IDLE agent whose card is already in
+    /// the done column when memory runs short (`doneSessionReclaim.ts`
+    /// owns the rule). The one thing the wall is allowed to stop, and
+    /// it is a bool of its own rather than a mode of `hold_on_pressure`
+    /// because the two answer different questions: holding a start
+    /// costs nothing, closing a finished agent costs its transcript.
+    /// Defaulted so a config.json written before this field parses as
+    /// the shipped answer rather than as a refusal.
+    #[serde(default = "default_true")]
+    pub reclaim_done_sessions: bool,
 }
 
-/// Four agents, and the pressure hold on.
+/// Four agents, the pressure hold on, and finished cards' idle agents
+/// reclaimable.
 ///
 /// Shipped ON, unlike `agent_pause`, and that asymmetry is the whole
 /// point of this card: the pause is a spending preference, and this is
 /// the guard that stands between eleven rails and a watchdog reset. A
-/// default of "no ceiling" would have shipped the crash again.
+/// default of "no ceiling" would have shipped the crash again. The
+/// reclaim is on for the same reason: a machine at critical pressure
+/// with six idle agents of done cards on it is the machine that reboots,
+/// and the cost of closing them is a transcript the card can re-launch.
 impl Default for LaunchConfig {
     fn default() -> Self {
-        Self { max_in_flight: Some(4), hold_on_pressure: true }
+        Self { max_in_flight: Some(4), hold_on_pressure: true, reclaim_done_sessions: true }
     }
 }
 
