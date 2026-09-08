@@ -1,8 +1,8 @@
 ---
-order: 9216
+order: 7168
 kind: task
 title: [sec] resource caps on sessions, connections, and scans
-status: To Do
+status: Done
 priority: low
 complexity: moderate
 ---

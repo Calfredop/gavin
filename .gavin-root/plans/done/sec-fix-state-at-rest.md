@@ -1,8 +1,8 @@
 ---
-order: 11264
+order: 9216
 kind: task
 title: [sec] 0600 database files and reap queued input
-status: To Do
+status: Done
 priority: low
 complexity: simple
 ---

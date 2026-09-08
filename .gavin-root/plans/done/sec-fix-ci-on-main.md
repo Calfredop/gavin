@@ -2,7 +2,7 @@
 order: 5120
 kind: task
 title: [sec] CI on main with pinned actions
-status: To Do
+status: Done
 priority: low
 complexity: moderate
 ---

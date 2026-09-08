@@ -1,7 +1,7 @@
 ---
-order: 10240
+order: 8192
 title: [sec] sign, notarize, and bundle the sidecars
-status: To Do
+status: Done
 priority: medium
 complexity: complex
 ---
@@ -11,10 +11,10 @@ complexity: complex
 
 **The fix**, gated on deciding to distribute:
 
-- [ ] Land the sidecar staging from `Feat/multi-os-support` on `main` (or re-derive it: `externalBin` with target-triple-suffixed `gavin-daemon` and `gavin-mcp`) and confirm `daemon.rs::resolve_daemon_binary_path` and `agent_setup.rs`'s MCP path find them in a built `Gavin.app`.
-- [ ] macOS: signing identity, hardened runtime, entitlements (the app spawns PTYs and reads the Keychain item for usage probes — list exactly what it needs), notarization in the release job; Windows: certificate; Linux: a signed AppImage or a repo with a key.
-- [ ] `plugins.updater` with a pinned public key and a release endpoint; without it, every update is a fresh unsigned download.
-- [ ] A release checklist in `docs/` that names the build host, the key custody, and the `--locked` build.
+- [x] Land the sidecar staging from `Feat/multi-os-support` on `main` (or re-derive it: `externalBin` with target-triple-suffixed `gavin-daemon` and `gavin-mcp`) and confirm `daemon.rs::resolve_daemon_binary_path` and `agent_setup.rs`'s MCP path find them in a built `Gavin.app`.
+- [x] macOS: signing identity, hardened runtime, entitlements (the app spawns PTYs and reads the Keychain item for usage probes — list exactly what it needs), notarization in the release job; Windows: certificate; Linux: a signed AppImage or a repo with a key.
+- [ ] [`plugins.updater` with a pinned public key and a release endpoint; without it, every update is a fresh unsigned download.](./sec-fix-updater-channel.md) — promoted; blocked on a keypair and an endpoint the human has to decide on.
+- [x] A release checklist in `docs/` that names the build host, the key custody, and the `--locked` build.
 
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.

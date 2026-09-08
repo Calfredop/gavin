@@ -2,7 +2,7 @@
 order: 7168
 kind: task
 title: [sec] one path-confinement helper for every daemon writer
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 ---
