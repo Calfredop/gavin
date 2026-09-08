@@ -23,6 +23,7 @@
     queuedInputsById,
     repairUnknownTabs,
     terminalFontSize,
+    attentionStatusById,
   } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { kanbanState, cardSessionFor, fetchBoard } from "./kanbanState";
@@ -294,7 +295,11 @@
   // to the same session and the sidebar row under it all say it with the
   // same glyph and the same tone.
   function tabStatusBadge(sessionId: string): Indicator | null {
-    const status = $layoutState.sessionStatusById[sessionId];
+    // The acknowledged view (layoutState's attentionStatusById): a wait
+    // the human marked as read draws no badge, which is the whole point
+    // of the mark. Everything else on this tab -- the follow-up queue's
+    // gate below, most of all -- still reads the daemon's own status.
+    const status = $attentionStatusById[sessionId];
     // Before every other status: this is the one that used to be
     // indistinguishable from idle -- i.e. from no badge at all -- so a tab
     // whose agent had broken looked exactly like one whose agent was
@@ -387,7 +392,20 @@
     openContextMenuFromEvent(
       e,
       buildTabMenuEntries(
-        { tabId: sessionId, kind, path, pinned: isPinnedTab(sessionId), tabs: leaf.tabs, pinnedTabs: leaf.pinned ?? [] },
+        {
+          tabId: sessionId,
+          kind,
+          path,
+          pinned: isPinnedTab(sessionId),
+          tabs: leaf.tabs,
+          pinnedTabs: leaf.pinned ?? [],
+          // The DAEMON's status, not the masked one the badge above
+          // draws: "Mark as Read" has to be offered for the very wait it
+          // hides, and reading the masked map would make the entry
+          // vanish the moment it was used.
+          status: $layoutState.sessionStatusById[sessionId],
+          read: $layoutState.readSessionIds?.has(sessionId) === true,
+        },
         { startRename: startEditing, reportError: reportMenuError }
       )
     );

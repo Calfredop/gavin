@@ -29,6 +29,7 @@
     daemonCompat,
     agentProfilesStore,
     resolvedAgents,
+    attentionState,
   } from "./layoutState";
   import { featureBlockedReason } from "./daemonCompat";
   import { workspaceAgentsSummary, kanbanColumnChips, railStripStats, showGitChip } from "./sidebarSummary";
@@ -148,8 +149,12 @@
     return out;
   });
 
+  // `attentionState` rather than `layoutState`: every figure this hub
+  // draws is a reason to go and look at something, and a wait the human
+  // has already marked as read is not one. Nothing that ACTS on a
+  // session reads this view -- see sessionRead.ts.
   const fleet = $derived({
-    state: $layoutState,
+    state: $attentionState,
     boards: $kanbanState,
     trees: $gavinTrees,
     orchestrations: $orchestrations,
@@ -167,7 +172,7 @@
   const inbox: AttentionRow[] = $derived(
     attentionInbox(
       {
-        state: $layoutState,
+        state: $attentionState,
         boards: $kanbanState,
         trees: $gavinTrees,
         orchestrations: $orchestrations,
@@ -299,7 +304,7 @@
 
   function recap(workspaceId: string): string {
     const ws = $layoutState.workspaces.find((w) => w.id === workspaceId);
-    return ws ? workspaceRecapLine(workspaceAgentsSummary(ws, $layoutState)) : "";
+    return ws ? workspaceRecapLine(workspaceAgentsSummary(ws, $attentionState)) : "";
   }
 
   function accentOf(workspaceId: string): string {

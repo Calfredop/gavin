@@ -23,6 +23,7 @@
     liveSessionIds,
     agentDefaultsStore,
     agentProfilesStore,
+    attentionStatusById,
   } from "./layoutState";
   import {
     COMPLEXITY_LABELS,
@@ -616,7 +617,7 @@
       : bindingFailed
         ? "stopped — something broke"
         : binding && bindingLive
-          ? ($layoutState.sessionStatusById[binding.sessionId] ?? "idle")
+          ? ($attentionStatusById[binding.sessionId] ?? "idle")
           : "exited"
   );
   // The same badge the board card, the terminal tab and the sidebar row
@@ -631,7 +632,7 @@
       : bindingFailed
         ? agentFailedIndicator(failureReason)
         : binding && bindingLive
-          ? agentIndicator($layoutState.sessionStatusById[binding.sessionId])
+          ? agentIndicator($attentionStatusById[binding.sessionId])
           : agentExitedIndicator()
   );
 
@@ -884,7 +885,7 @@
               // session id NOW, so it is consulted only while the run is
               // live -- an interrupted id holds a bare shell.
               status: bindingLive
-                ? ($layoutState.sessionStatusById[binding.sessionId] ?? "idle")
+                ? ($attentionStatusById[binding.sessionId] ?? "idle")
                 : null,
               orphan: bindingOrphan !== null,
             }
@@ -1176,7 +1177,7 @@
               <div class="candidate-row">
                 <StatusBadge
                   indicator={row.live
-                    ? agentIndicator($layoutState.sessionStatusById[row.candidate.sessionId])
+                    ? agentIndicator($attentionStatusById[row.candidate.sessionId])
                     : agentExitedIndicator()}
                   size={12}
                   text={row.live ? "running" : "stopped"}

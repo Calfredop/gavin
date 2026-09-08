@@ -804,7 +804,10 @@ describe("Sidebar attention badge wiring", () => {
   )["./Sidebar.svelte"];
 
   it("counts a workspace's waiting agents with workspaceAgentsSummary", () => {
-    expect(source).toContain("return workspaceAgentsSummary(ws, $layoutState).waiting;");
+    // Off `attentionState` -- the layout with a wait the human has marked
+    // as read shown as idle (sessionRead.ts). This badge exists to make
+    // somebody look; a wait they have already looked at is not one.
+    expect(source).toContain("return workspaceAgentsSummary(ws, $attentionState).waiting;");
   });
 
   it("draws the page badge off the recap that row already computed", () => {

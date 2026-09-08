@@ -9,6 +9,7 @@ vi.mock("./layoutState", () => ({
   setTabPinned: vi.fn().mockResolvedValue(undefined),
   splitPane: vi.fn().mockResolvedValue(undefined),
   closeSession: vi.fn().mockResolvedValue(undefined),
+  setSessionRead: vi.fn(),
 }));
 vi.mock("./tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
@@ -16,7 +17,7 @@ vi.mock("./bestOfNActions", () => ({ pickCandidate: vi.fn().mockResolvedValue(nu
 
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { setTabPinned, splitPane, closeSession } from "./layoutState";
+import { setTabPinned, splitPane, closeSession, setSessionRead } from "./layoutState";
 import { closeTabs } from "./tabActions";
 import { buildTabMenuEntries, type TabMenuContext, type TabMenuHooks } from "./tabMenu";
 import { bestOfNRuns } from "./bestOfNState";
@@ -182,5 +183,44 @@ describe("a best-of-N candidate's tab", () => {
       .filter((e) => !isSeparator(e))
       .map((e) => (e as ContextMenuItem).label);
     expect(labels.join()).not.toContain("Keep this candidate");
+  });
+});
+
+// "Mark as Read" -- see sessionRead.ts for why acknowledging a wait is
+// deliberately not a status write.
+describe("marking a wait as read", () => {
+  it("offers the entry beside Pin on a waiting session", () => {
+    const labels = items(
+      buildTabMenuEntries(ctx({ status: "waiting_for_input" }), hooks())
+    ).map((e) => e.label);
+    expect(labels.indexOf("Mark as Read")).toBe(labels.indexOf("Pin") + 1);
+  });
+
+  it("marks the session the menu was opened on", () => {
+    find(buildTabMenuEntries(ctx({ status: "waiting_for_input" }), hooks()), "Mark as Read").onPick();
+    expect(setSessionRead).toHaveBeenCalledWith("b", true);
+  });
+
+  it("offers the way back once marked, and unmarks", () => {
+    // The mark hides the very status the entry is offered for, so it has
+    // to stay on the menu -- otherwise a mis-click could only be undone
+    // by waiting for the agent to ask something else.
+    const entries = buildTabMenuEntries(ctx({ status: "waiting_for_input", read: true }), hooks());
+    find(entries, "Mark as Unread").onPick();
+    expect(setSessionRead).toHaveBeenCalledWith("b", false);
+  });
+
+  it.each(["working", "idle", "failed"] as const)("stays off a %s session", (status) => {
+    const labels = items(buildTabMenuEntries(ctx({ status }), hooks())).map((e) => e.label);
+    expect(labels.join()).not.toContain("Mark as");
+  });
+
+  it("stays off a tab with no session behind it", () => {
+    // File, board and card tab ids share the session id space, and a
+    // status looked up for one of them can only ever be another tab's.
+    const labels = items(
+      buildTabMenuEntries(ctx({ kind: "file", path: "/repo/a.md", status: "waiting_for_input" }), hooks())
+    ).map((e) => e.label);
+    expect(labels.join()).not.toContain("Mark as");
   });
 });

@@ -147,6 +147,9 @@ import {
   handleSessionExited,
   handleCwdChanged,
   handleSessionStatusChanged,
+  setSessionRead,
+  attentionStatusById,
+  attentionState,
   handleGitStatusChanged,
   handleSessionRestored,
   handleSessionInterrupted,
@@ -241,6 +244,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     sessionNames: {},
     sessionStatusById: {},
     statusSinceById: {},
+    readSessionIds: new Set(),
     gitStatusById: {},
     restoredSessionIds: new Set(),
     interruptedSessionIds: new Set(),
@@ -282,6 +286,7 @@ beforeEach(() => {
     sessionNames: {},
     sessionStatusById: {},
     statusSinceById: {},
+    readSessionIds: new Set(),
     gitStatusById: {},
     restoredSessionIds: new Set(),
     interruptedSessionIds: new Set(),
@@ -1307,6 +1312,71 @@ describe("handleSessionStatusChanged", () => {
       { needsInput: true, finished: true },
       undefined
     );
+  });
+});
+
+// "Mark as Read": the human acknowledging a wait the daemon will not take
+// back on its own. See sessionRead.ts for why this is an acknowledgement
+// and not a status write.
+describe("setSessionRead", () => {
+  it("marks and unmarks one session", () => {
+    setSessionRead("a", true);
+    expect([...get(layoutState).readSessionIds]).toEqual(["a"]);
+    setSessionRead("a", false);
+    expect([...get(layoutState).readSessionIds]).toEqual([]);
+  });
+
+  it("leaves the daemon's own status exactly as it was", () => {
+    // The load-bearing half. A rail completes an `agent` step when its
+    // session goes idle, and the follow-up queue refuses to deliver into
+    // a waiting one -- both read `sessionStatusById`, and both would act
+    // on a silenced badge if this wrote to it.
+    handleSessionStatusChanged("a", "waiting_for_input");
+    setSessionRead("a", true);
+    expect(get(layoutState).sessionStatusById["a"]).toBe("waiting_for_input");
+  });
+
+  it("shows an acknowledged wait as idle to the attention surfaces", () => {
+    handleSessionStatusChanged("a", "waiting_for_input");
+    handleSessionStatusChanged("b", "waiting_for_input");
+    setSessionRead("a", true);
+    expect(get(attentionStatusById)).toEqual({ a: "idle", b: "waiting_for_input" });
+    expect(get(attentionState).sessionStatusById).toEqual({ a: "idle", b: "waiting_for_input" });
+  });
+
+  // The pure modules read a whole state object, so the masked view has to
+  // BE one -- and be the same one in every other respect.
+  it("changes nothing else about the state it masks", () => {
+    handleSessionStatusChanged("a", "waiting_for_input");
+    setSessionRead("a", true);
+    const masked = get(attentionState);
+    const live = get(layoutState);
+    expect({ ...masked, sessionStatusById: null }).toEqual({ ...live, sessionStatusById: null });
+  });
+
+  it("hands back the live state itself while nothing is marked", () => {
+    handleSessionStatusChanged("a", "waiting_for_input");
+    expect(get(attentionState)).toBe(get(layoutState));
+  });
+
+  // A mark acknowledges ONE wait. The next thing the daemon says about
+  // that session ends it -- including a repeat of `waiting_for_input`,
+  // which the daemon re-emits per notification bell rather than only on a
+  // change, and which IS the agent asking again.
+  it("is dropped by the next status the daemon reports", () => {
+    handleSessionStatusChanged("a", "waiting_for_input");
+    setSessionRead("a", true);
+    handleSessionStatusChanged("a", "waiting_for_input");
+    expect([...get(layoutState).readSessionIds]).toEqual([]);
+    expect(get(attentionStatusById)["a"]).toBe("waiting_for_input");
+  });
+
+  it("does not drop another session's mark", () => {
+    handleSessionStatusChanged("a", "waiting_for_input");
+    handleSessionStatusChanged("b", "waiting_for_input");
+    setSessionRead("a", true);
+    handleSessionStatusChanged("b", "working");
+    expect([...get(layoutState).readSessionIds]).toEqual(["a"]);
   });
 });
 
@@ -3614,6 +3684,7 @@ describe("runningSessionCount", () => {
       sessionNames: {},
       sessionStatusById: {},
       statusSinceById: {},
+      readSessionIds: new Set(),
       gitStatusById: {},
       restoredSessionIds: new Set(),
       interruptedSessionIds: new Set(),

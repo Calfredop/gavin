@@ -2,13 +2,15 @@
 // side effects go through store actions (mockable) or the hooks.
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { setTabPinned, splitPane, closeSession } from "./layoutState";
+import { setTabPinned, splitPane, closeSession, setSessionRead } from "./layoutState";
 import { closeTabs } from "./tabActions";
 import { confirmTabClose } from "./confirmClose";
 import { bulkCloseTargets } from "./layout";
 import { bestOfNRuns, runForSessionAnywhere } from "./bestOfNState";
 import { pickCandidate } from "./bestOfNActions";
 import { get } from "svelte/store";
+import { readEntryApplies, readEntryLabel } from "./sessionRead";
+import type { SessionStatus } from "./notifications";
 import type { ContextMenuEntry } from "./contextMenu";
 
 export interface TabMenuContext {
@@ -20,6 +22,12 @@ export interface TabMenuContext {
   /** The owning leaf's tabs in order, and which of them are pinned. */
   tabs: string[];
   pinnedTabs: string[];
+  /** The DAEMON's status for a terminal tab's session, unmasked -- read
+   * at right-click time like `pinned`. Undefined for a tab with no
+   * session behind it, and for one the app has heard nothing about. */
+  status?: SessionStatus;
+  /** Whether this session's current wait has already been acknowledged. */
+  read?: boolean;
 }
 
 export interface TabMenuHooks {
@@ -46,6 +54,16 @@ export function buildTabMenuEntries(ctx: TabMenuContext, hooks: TabMenuHooks): C
     { separator: true },
     { label: ctx.pinned ? "Unpin" : "Pin", onPick: () => void setTabPinned(ctx.tabId, !ctx.pinned) },
   ];
+
+  // Beside Pin, and shaped like it: one entry naming the action, never
+  // the state. Conditional rather than greyed because the question it
+  // answers only exists while an agent is asking one -- a permanent
+  // "Mark as Read" on a tab with nothing to read would be a menu entry
+  // that means nothing on almost every tab in the app.
+  const read = ctx.read === true;
+  if (ctx.kind === "terminal" && readEntryApplies(ctx.status, read)) {
+    entries.push({ label: readEntryLabel(read), onPick: () => setSessionRead(ctx.tabId, !read) });
+  }
 
   // A best-of-N candidate, decided from where the human is actually
   // watching them: the pane. The card detail modal has the same action

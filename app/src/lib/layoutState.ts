@@ -39,6 +39,12 @@ import { themeState } from "./ui/themeState.svelte";
 import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
 import type { OrphanProcess } from "./orphan";
 import type { StatusSince } from "./attentionInbox";
+import {
+  attentionStatuses,
+  clearSessionRead,
+  withSessionRead,
+  type ReadSessions,
+} from "./sessionRead";
 import { indexQueued, type QueuedInput } from "./queuedInput";
 import { candidateAgentConfig, type Candidate } from "./bestOfN";
 import {
@@ -137,6 +143,13 @@ export interface LayoutState {
   ///
   /// Never cleared on exit, like the sibling maps above.
   statusSinceById: Record<string, StatusSince>;
+  /// The sessions whose CURRENT wait the human has acknowledged -- the
+  /// "Mark as Read" tab action. Membership hides the wait from every
+  /// surface that nags about it and from nothing else; see
+  /// sessionRead.ts for why the daemon's status is deliberately left
+  /// alone. Dropped again by the next status the daemon reports for that
+  /// session, and never persisted.
+  readSessionIds: ReadSessions;
   fileTabsById: Record<string, FileTab>;
   boardTabsById: Record<string, BoardTab>;
   cardTabsById: Record<string, CardTab>;
@@ -161,6 +174,7 @@ const initialState: LayoutState = {
   orphanBySessionId: {},
   failureReasonById: {},
   statusSinceById: {},
+  readSessionIds: new Set(),
   fileTabsById: {},
   boardTabsById: {},
   cardTabsById: {},
@@ -188,6 +202,18 @@ const initialState: LayoutState = {
 const hotBag = import.meta.hot?.data;
 
 export const layoutState = hotState("layoutState", () => writable<LayoutState>(initialState), hotBag);
+
+/// The read marks of a state that may predate the field.
+///
+/// The hot bag above parks the LayoutState OBJECT, so a dev session that
+/// was already running when `readSessionIds` landed carries a state
+/// without it. A missing sibling MAP degrades to an undefined lookup and
+/// nothing more; a missing Set throws the moment anything asks it a
+/// question. This one is asked on every status push -- the hottest path
+/// in the file -- so it gets the one line that keeps a stale remount from
+/// throwing on each of them.
+const NO_READ_MARKS: ReadSessions = new Set();
+const readMarks = (s: LayoutState): ReadSessions => s.readSessionIds ?? NO_READ_MARKS;
 
 // The compat verdict Rust negotiated with the daemon at connect time.
 // null until the first successful probe -- DaemonCompatBanner
@@ -2654,6 +2680,13 @@ export function handleSessionStatusChanged(sessionId: string, rawStatus: string)
       sessionStatusById: { ...s.sessionStatusById, [sessionId]: status },
       statusSinceById,
       failureReasonById,
+      // A read mark acknowledges ONE wait, so anything the daemon says
+      // about this session afterwards ends it -- including a repeat of
+      // `waiting_for_input`, which the notification path re-emits per
+      // bell rather than only on a change. That repeat IS the agent
+      // asking again, and it has to be able to raise the badge the human
+      // silenced last time.
+      readSessionIds: clearSessionRead(readMarks(s), sessionId),
     };
   });
   if (status === "failed") {
@@ -2670,6 +2703,44 @@ export function handleSessionStatusChanged(sessionId: string, rawStatus: string)
   pendingFailureNotice.delete(sessionId);
   notifyStatus(state, sessionId, previousStatus, status);
 }
+
+/// Acknowledges (or un-acknowledges) one session's wait -- the tab
+/// menu's "Mark as Read".
+///
+/// Writes nothing to the daemon on purpose: the session really is still
+/// waiting, and every rule that acts on that fact has to keep seeing it.
+/// See sessionRead.ts for the full split between what this hides and
+/// what it deliberately does not.
+export function setSessionRead(sessionId: string, read: boolean): void {
+  layoutState.update((s) => {
+    const readSessionIds = withSessionRead(readMarks(s), sessionId, read);
+    return readSessionIds === s.readSessionIds ? s : { ...s, readSessionIds };
+  });
+}
+
+/// Every session's status as the ATTENTION surfaces read it: the daemon's
+/// own map, with an acknowledged wait showing as idle.
+///
+/// The badge on a tab, the sidebar's dots and tallies, the hub's fleet
+/// figures and its inbox all go through this; orchestration, the
+/// follow-up queue, auto-resume, the idle-tab sweep and the task manager
+/// all keep reading `sessionStatusById` directly. That is the whole
+/// distinction "Mark as Read" rests on, and reading the wrong one is how
+/// a silenced badge would come to advance a rail.
+export const attentionStatusById = derived(layoutState, ($layout) =>
+  attentionStatuses($layout.sessionStatusById, readMarks($layout))
+);
+
+/// The same substitution for the pure modules that take a whole state
+/// object (sidebarSummary, attentionInbox, appHub): one masked map
+/// dropped into the state they already read, so their call sites say
+/// which view they are asking for and nothing inside them has to change.
+export const attentionState = derived(layoutState, ($layout) => {
+  const sessionStatusById = attentionStatuses($layout.sessionStatusById, readMarks($layout));
+  return sessionStatusById === $layout.sessionStatusById
+    ? $layout
+    : { ...$layout, sessionStatusById };
+});
 
 /// The status a session held just before it went `failed`, kept only
 /// until the reason arrives. See handleSessionStatusChanged.

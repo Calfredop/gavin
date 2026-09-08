@@ -31,6 +31,7 @@
     openAppHub,
     agentProfilesStore,
     gitTrackingDefault,
+    attentionState,
   } from "./layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
   // Naming a workspace into existence is the app hub's action now; the
@@ -365,7 +366,9 @@
     return searchSidebar(
       {
         workspaces: visibleWorkspaces,
-        tabs: $layoutState,
+        // The acknowledged view, so a hit's badge says the same thing as
+        // the row it jumps to.
+        tabs: $attentionState,
         sessionNames: $layoutState.sessionNames,
         cwdBySessionId: $layoutState.cwdBySessionId,
       },
@@ -437,8 +440,13 @@
   // agent with a question on screen earned no badge anywhere in the
   // sidebar, which is precisely the session a human has no other row to
   // notice.
+  //
+  // Through `attentionState` -- the layout with acknowledged waits shown
+  // as idle -- like every other tally and dot in this sidebar. A wait the
+  // human has marked as read is one they have already looked at, and this
+  // badge exists to make them look.
   function workspaceWaitingCount(ws: Workspace): number {
-    return workspaceAgentsSummary(ws, $layoutState).waiting;
+    return workspaceAgentsSummary(ws, $attentionState).waiting;
   }
 
   // Whether this row's workspace is on screen in a different window. The
@@ -473,14 +481,14 @@
   // A page's own half of the recap: what it holds, rather than what the
   // workspace adds up to. Same pure-tally shape as the three above.
   function tabsRecap(page: Page): PageAgentsSummary {
-    return pageAgentsSummary(page, $layoutState);
+    return pageAgentsSummary(page, $attentionState);
   }
 
   // What a page expands into: one row per tab, in layout order. Same
   // projection the recap counts, so the rows revealed here always add up
   // to the numbers on the row above them.
   function tabRows(page: Page): PageTabRow[] {
-    return pageTabRows(page, $layoutState);
+    return pageTabRows(page, $attentionState);
   }
 
   // The card this row's agent is running, if any -- the reverse lookup
@@ -831,6 +839,11 @@
       pinned: leaf.pinned.includes(row.id),
       tabs: leaf.tabs,
       pinnedTabs: leaf.pinned,
+      // Unmasked, for the reason Pane.svelte's own context spells out:
+      // the entry exists to hide this wait, so it has to be able to see
+      // it. `row.status` is the masked view the dot beside it draws.
+      status: $layoutState.sessionStatusById[row.id],
+      read: $layoutState.readSessionIds?.has(row.id) === true,
     };
   }
 

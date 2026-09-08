@@ -22,7 +22,7 @@
   import { cardSessionState } from "./columnRunAction";
   import { boardSelection } from "./boardSelection";
   import { tooltip } from "./tooltip";
-  import { layoutState, resolvedAgents } from "./layoutState";
+  import { layoutState, resolvedAgents, attentionStatusById } from "./layoutState";
   import { agentPromptBlocker } from "./cardRun";
   import { jumpToBoundSession, revealDevelopingCard } from "./cardRunActions";
   import { developingRunIn, DEVELOPING_BLOCK } from "./developingCards";
@@ -118,7 +118,9 @@
       };
     if (state === "exited")
       return { indicator: agentExitedIndicator(), action: "open the card for Re-launch" };
-    const indicator = agentIndicator($layoutState.sessionStatusById[binding.sessionId]);
+    // The acknowledged view, like the tab badge and the sidebar dot: one
+    // session, one answer, wherever it is drawn.
+    const indicator = agentIndicator($attentionStatusById[binding.sessionId]);
     return { indicator, action: "click to open the session" };
   });
 
