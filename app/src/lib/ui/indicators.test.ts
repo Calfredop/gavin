@@ -8,6 +8,8 @@ import {
   STEP_STATES,
   agentIndicator,
   agentIndicatorByState,
+  agentQueuedIndicator,
+  queuedBadgeText,
   agentExitedIndicator,
   agentFailedIndicator,
   allIndicators,
@@ -37,6 +39,43 @@ function glyphClass(indicator: Indicator): string {
   expect(named.length, `${indicator.axis}/${indicator.state} rendered no lucide-<name> class`).toBeGreaterThan(0);
   return named[named.length - 1];
 }
+
+describe("the queued badge", () => {
+  // The two halves of one hold. Same glyph -- same question, "what is
+  // the agent on this card doing" -- and the tone carries which answer,
+  // which is the rule this whole module encodes.
+  it("shares a glyph across both holds and separates them by tone", () => {
+    const queued = agentQueuedIndicator("ceiling");
+    const held = agentQueuedIndicator("pressure");
+    expect(glyphClass(queued)).toBe(glyphClass(held));
+    expect(queued.tone).toBe("neutral");
+    expect(held.tone).toBe("warning");
+  });
+
+  it("says which hold it is, in two words", () => {
+    expect(queuedBadgeText("ceiling")).toBe("Queued");
+    expect(queuedBadgeText("pressure")).toBe("Held");
+  });
+
+  // The gate's sentence names counts and gigabytes; no badge has room
+  // for that, so it goes in the bubble.
+  it("puts the gate's own sentence in the tooltip when there is one", () => {
+    const indicator = agentQueuedIndicator("ceiling", "Waiting for a slot: 4 of 4 agents running");
+    expect(indicator.tip).toBe("Agent · Waiting for a slot: 4 of 4 agents running");
+    expect(indicator.label).toBe(indicator.tip);
+  });
+
+  it("keeps its own words when the gate has nothing to add", () => {
+    expect(agentQueuedIndicator("pressure", null).tip).toBe("Agent · held — memory pressure");
+  });
+
+  // Through AGENT_STATES, so the tally and every invariant test above
+  // cover it rather than it being a badge only one surface knows about.
+  it("is part of the agent vocabulary", () => {
+    expect(AGENT_STATES).toContain("queued");
+    expect(agentIndicatorByState("queued")).toEqual(agentQueuedIndicator("ceiling"));
+  });
+});
 
 describe("the indicator vocabulary", () => {
   it("names its axis in every tooltip", () => {

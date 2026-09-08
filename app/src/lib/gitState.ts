@@ -28,6 +28,7 @@ import {
   resumeDelayMs,
 } from "./autoResume";
 import { featureBlockedReason } from "./daemonCompat";
+import { holdOrQueue, type CommitIntent } from "./launchQueue";
 import type {
   ApplyMode,
   Area,
@@ -566,10 +567,21 @@ export async function commitViaAgent(
   /// on the one gavin starts itself after a transient failure (see
   /// retryCommitRun); a human's press always begins at zero, because it
   /// is a new run and a new budget.
-  retries = 0
+  retries = 0,
+  /// The drain calling back in with an intent that has already cleared
+  /// the launch wall. Asking again there would re-queue it for ever.
+  options: { queued?: boolean } = {}
 ): Promise<boolean> {
   const s = current(workspaceId);
   if (!s || s.busy || s.op || s.agentCommit) return false;
+  // The launch wall. Hidden or not, this is an agent process tree, and
+  // what it competes with for memory is a build somebody else's agent
+  // started. Before the `agentCommit` marker is written, so a queued
+  // commit leaves the Git tab exactly as it found it rather than
+  // spinning on a run that has not started.
+  if (!options.queued && holdOrQueue({ kind: "commit", workspaceId, label: "commit", retries })) {
+    return false;
+  }
   const agent = resolvedAgentFor(workspaceId);
   const command = buildHeadlessCommand(agent.launchCommand, agent.headlessArgs, COMMIT_PROMPT);
   if (!command) {
@@ -1344,4 +1356,14 @@ export async function startWatching(workspaceId: string): Promise<() => void> {
     unlisten();
     void backend.gitUnwatch(cwd).catch(() => {});
   };
+}
+
+/// The queue's way back in: run a commit intent that has already cleared
+/// the gate.
+///
+/// The retry count travels with the intent, because it is what bounds
+/// gavin's own automatic retries -- a queued retry that came back as a
+/// human's press would restore a budget the run had already spent.
+export async function launchQueuedCommit(intent: CommitIntent): Promise<void> {
+  await commitViaAgent(intent.workspaceId, intent.retries, { queued: true });
 }

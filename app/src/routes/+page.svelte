@@ -52,6 +52,7 @@
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
   import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
   import DaemonRequestErrorBanner from "$lib/DaemonRequestErrorBanner.svelte";
+  import MemoryPressureBanner from "$lib/MemoryPressureBanner.svelte";
   import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/gitState";
   import { hubViewBusy, hubViewAttention, moveHubViewId } from "$lib/hubViewMeta";
   import {
@@ -373,6 +374,12 @@
              the daemon refused is a caveat on a working app, not a lost
              connection, so it never belongs in the error branch above. -->
         <DaemonRequestErrorBanner />
+        <!-- And beside those two for the same reason again: the machine
+             is at critical pressure and gavin is holding new launches,
+             which is a caveat on a working app. It never kills anything.
+             Above the boundary, like the other two: this is the app's own
+             report channel and has to survive whatever the views throw. -->
+        <MemoryPressureBanner />
         <!-- Every view the window can draw, under one boundary.
              Deliberately NOT around the banners above it: those are the
              app's own report channel and have to survive whatever this

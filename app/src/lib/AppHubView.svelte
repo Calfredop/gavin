@@ -15,6 +15,7 @@
     Kanban,
     Route,
     Check,
+    MemoryStick,
     PanelsTopLeft,
     SquareTerminal,
     CircleDashed,
@@ -87,6 +88,7 @@
   import { openLinkedCard } from "./cardTabLink";
   import { revealSession } from "./cardRunActions";
   import { kanbanState } from "./kanbanState";
+  import { fleetStripLine } from "./launchQueue";
   import { gavinTrees } from "./gavinState";
   import { orchestrations, stepAttentionsByWorkspace } from "./orchestrationState";
   import { railsWantingAttention } from "./orchestration";
@@ -160,6 +162,10 @@
     orchestrations: $orchestrations,
     attention,
     committing,
+    // The sidebar footer's own strip, passed rather than recomputed: the
+    // hub and the footer are on screen together, and two arithmetics for
+    // one number is the shape that drifts.
+    memory: $fleetStripLine,
   });
 
   const stats: FleetSummary = $derived(fleetSummary(fleet));
@@ -453,6 +459,21 @@
         {/if}
       {/if}
     </span>
+
+    <!-- The memory group, beside the agents it is about. Drawn only when
+         there is something to say (fleetStrip), so a quiet machine costs
+         the strip no width at all. -->
+    {#if stats.memory}
+      <span
+        class="stat-group memory-group tone-{stats.memory.tone}"
+        role="group"
+        use:tooltip={"Agents running now against the ceiling, and how full this machine is. Set the ceiling in Settings."}
+        aria-label={stats.memory.text}
+      >
+        <MemoryStick size={12} />
+        <span class="stat-label">{stats.memory.text}</span>
+      </span>
+    {/if}
 
     {#if showGitChip(stats.git)}
       <span class="stat-group" role="group" use:tooltip={gitTip()} aria-label={gitTip()}>
@@ -947,6 +968,17 @@
     border-radius: 6px;
     background: var(--surface-sunken);
     white-space: nowrap;
+  }
+  /* Colour only when the machine is saying something -- the same three
+     tokens IndicatorTone maps to, so this group and a badge beside it
+     are the same amber. */
+  .memory-group.tone-warning {
+    color: var(--warning-text);
+    border-color: var(--warning-text);
+  }
+  .memory-group.tone-danger {
+    color: var(--danger-text);
+    border-color: var(--danger-text);
   }
   /* The hub has width the sidebar does not, so a group can say what its
      leading number counts instead of leaving the glyph to carry it. */

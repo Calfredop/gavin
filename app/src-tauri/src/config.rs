@@ -444,6 +444,42 @@ fn default_limit_percent() -> f64 {
     95.0
 }
 
+/// The launch wall: how many agent turns may be in flight at once, and
+/// whether memory pressure holds new ones.
+///
+/// Mirrors `LaunchConfig` in `launchGate.ts`, which owns every judgement
+/// made from it -- this is storage. Machine-local like `agent_pause`
+/// (D35), and for a sharper version of the same reason: how many agents
+/// this machine can carry is a fact about its RAM, not about the
+/// project, and a 32 GB laptop and a 128 GB desktop opening the same
+/// repo must not inherit each other's ceiling.
+///
+/// `max_in_flight` is an `Option` because BLANK is a real answer: no
+/// ceiling at all, which is what somebody with memory to spare wants and
+/// what every install had before this shipped. Zero is not that answer
+/// and is not expressible -- a ceiling of zero would hold every launch
+/// for ever, which is not a setting, it is a broken app.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_in_flight: Option<u32>,
+    #[serde(default = "default_true")]
+    pub hold_on_pressure: bool,
+}
+
+/// Four agents, and the pressure hold on.
+///
+/// Shipped ON, unlike `agent_pause`, and that asymmetry is the whole
+/// point of this card: the pause is a spending preference, and this is
+/// the guard that stands between eleven rails and a watchdog reset. A
+/// default of "no ceiling" would have shipped the crash again.
+impl Default for LaunchConfig {
+    fn default() -> Self {
+        Self { max_in_flight: Some(4), hold_on_pressure: true }
+    }
+}
+
 /// One complexity level's answer to "which agent, at which model".
 /// Mirrors `ComplexityAgent` in `complexity.ts`, which owns every
 /// judgement made from it -- this is storage.
@@ -631,6 +667,19 @@ pub struct AppConfig {
     /// tool reads.
     #[serde(default)]
     pub git_tracking: GitTrackingDefault,
+    /// The app-wide launch wall. The TENTH carry-through field: like
+    /// session_names/file_tabs/board_tabs/theme/agent_models/
+    /// removed_workspaces/agent_pause/superpowers/agent_defaults/
+    /// git_tracking it must be carried through `persist_workspaces`, or
+    /// it silently resets on the next save.
+    ///
+    /// `None` means nobody has expressed a preference and
+    /// `LaunchConfig::default()` applies -- absence rather than the
+    /// struct, the convention `theme` and `auto_commit` follow, so a
+    /// later change to the shipped ceiling reaches every install that
+    /// never touched it.
+    #[serde(default)]
+    pub launch: Option<LaunchConfig>,
 }
 
 /// The app-wide git-tracking default, wrapped in a type of its own.
@@ -842,6 +891,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -870,6 +920,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -912,6 +963,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -1030,6 +1082,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1077,6 +1130,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1110,6 +1164,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1146,6 +1201,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1196,6 +1252,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1221,6 +1278,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(&nested, &config).unwrap();
 
@@ -1254,6 +1312,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -1398,6 +1457,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1441,6 +1501,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1479,6 +1540,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1542,6 +1604,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            launch: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);

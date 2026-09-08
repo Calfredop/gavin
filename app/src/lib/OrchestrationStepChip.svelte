@@ -14,7 +14,8 @@
   import { highlightedConflict } from "./orchestrationState";
   import IconButton from "./ui/IconButton.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
-  import { attentionIndicator, stepIndicator } from "./ui/indicators";
+  import { agentQueuedIndicator, attentionIndicator, stepIndicator } from "./ui/indicators";
+  import { launchGateVerdict } from "./launchQueue";
   import { describeOverrides, toolKindLabel } from "./orchestrationTools";
   import type { Tool } from "./orchestrationTools";
   import { attentionTip } from "./orchestration";
@@ -49,6 +50,12 @@
     /// board has no columns, in which case the rail header already says
     /// nothing can complete.
     doneColumnName: string | null;
+    /// True when this step is one the rail WOULD have launched by now
+    /// and the launch wall is holding it (launchGate.ts). Passed rather
+    /// than read from the store, because the answer needs the stage:
+    /// only the beat the rail is actually on is being held -- a pending
+    /// step three stages away is waiting on the rail, not on memory.
+    held?: boolean;
     /// Badge numbers this step belongs to, and the highest severity
     /// among them. Empty/null when the step is in no conflict.
     badges: number[];
@@ -87,6 +94,7 @@
     resumeNote = null,
     attention,
     doneColumnName,
+    held = false,
     badges,
     severity,
     onRetry,
@@ -173,6 +181,16 @@
     size={13}
     tip={state === "stalled" && reason ? `Step · stalled: ${reason}` : undefined}
   />
+  <!-- After the run state, never instead of it: the step really is
+       pending, and the rail really is running -- this only says WHY
+       nothing has started yet. A readout, not an intent: a rail is not
+       queued, the scheduler is its queue. -->
+  {#if held}
+    <StatusBadge
+      indicator={agentQueuedIndicator($launchGateVerdict.reason ?? "ceiling", $launchGateVerdict.why)}
+      size={13}
+    />
+  {/if}
   {#if state === "stalled"}
     <IconButton icon={RotateCw} label="Retry" size={13} onclick={onRetry} />
   {/if}

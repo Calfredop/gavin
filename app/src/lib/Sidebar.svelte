@@ -6,6 +6,7 @@
   import AgentUsageModal from "./AgentUsageModal.svelte";
   import { activePause, nowStore, worstUsageProjection } from "./agentPauseState";
   import { pauseLabel } from "./agentPause";
+  import { fleetStripLine, launchGateVerdict } from "./launchQueue";
   import { projectionTooltip } from "./usageProjection";
   // Which of the two app-level panels is open. A store rather than this
   // component's own `$state`, because the app hub's recaps open the same
@@ -1741,6 +1742,20 @@
     <button class="footer-row" onclick={() => showAppPanel("sessions")}>
       <Activity size={12} />
       <span>Task manager</span>
+      <!-- The fleet strip. On the Task manager row because that is where
+           the answer to it is: the panel behind this row is the one that
+           can say WHICH agent is holding the memory. Drawn only when
+           there is something to say (launchQueue.fleetStripLine), so a
+           quiet machine keeps a plain row rather than a permanent
+           "Agents 0/4" the eye learns to skip. -->
+      {#if $fleetStripLine}
+        <span
+          class="footer-badge fleet-strip tone-{$fleetStripLine.tone}"
+          use:tooltip={$launchGateVerdict.why ??
+            "Agents running now, against the ceiling — and how full the machine is"}
+          >{$fleetStripLine.text}</span
+        >
+      {/if}
     </button>
     <button class="footer-row" onclick={() => showAppPanel("usage")}>
       <Gauge size={12} />
@@ -2535,5 +2550,18 @@
      not sit in the middle of a selector. */
   .footer-badge.after-semaphore {
     margin-left: 4px;
+  }
+  /* The fleet strip carries its own tone: quiet by default, and only
+     coloured when the machine is actually saying something. Same three
+     tokens IndicatorTone maps to, so the strip and a badge beside it are
+     the same amber. */
+  .fleet-strip.tone-neutral {
+    color: var(--text-muted);
+  }
+  .fleet-strip.tone-warning {
+    color: var(--warning-text);
+  }
+  .fleet-strip.tone-danger {
+    color: var(--danger-text);
   }
 </style>

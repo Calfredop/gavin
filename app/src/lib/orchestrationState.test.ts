@@ -184,6 +184,43 @@ vi.mock("./dialog", () => ({
 // and the real one reaches for the OS window and the permission API.
 // Only the two functions orchestrationState imports -- every other
 // importer in this graph takes a TYPE from here, which is erased.
+/// The launch wall, with a switch a test can throw.
+///
+/// Hoisted for the reason `agentMock` above is: the `vi.mock` factory is
+/// lifted over every import. `launchHolding` is a REAL store, because
+/// the scheduler subscribes to it as one of its tick inputs -- that
+/// subscription is precisely what makes a lifted hold re-emit the launch
+/// the pass before it skipped.
+const gateMock = vi.hoisted(() => {
+  // A minimal writable, hand-rolled: `vi.hoisted` runs before every
+  // import in the file, so it cannot import svelte's own -- and the
+  // scheduler subscribes to this one for real. The store contract is
+  // three methods; these are them.
+  let holding = false;
+  const subscribers = new Set<(v: boolean) => void>();
+  return {
+    allowed: { value: true },
+    launchHolding: {
+      subscribe(run: (v: boolean) => void) {
+        subscribers.add(run);
+        run(holding);
+        return () => void subscribers.delete(run);
+      },
+      set(next: boolean) {
+        holding = next;
+        for (const run of [...subscribers]) run(holding);
+      },
+    },
+  };
+});
+
+vi.mock("./launchQueue", () => ({
+  holdOrQueue: vi.fn(() => null),
+  mayLaunch: () => gateMock.allowed.value,
+  launchBlockedReason: () => (gateMock.allowed.value ? null : "Waiting for a slot"),
+  launchHolding: gateMock.launchHolding,
+}));
+
 vi.mock("./notifications", () => ({
   setRailNotificationVoice: vi.fn(),
   maybeNotifyReviewWait: vi.fn().mockResolvedValue(undefined),
@@ -3193,6 +3230,43 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
     layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
     await settle();
     expect(backend.setStepRun).not.toHaveBeenCalled();
+  });
+
+  // The launch wall, at the same seam the pause uses and with the same
+  // shape of proof. A rail step is NOT queued -- the scheduler is the
+  // rail's queue -- so the whole of "resume" is that `launchHolding` is
+  // a tick input: the pass that runs when a slot frees emits the very
+  // action the held pass skipped.
+  //
+  // The bookkeeping still happens while the gate holds. Marking a
+  // finished step done is not a start, and holding it would leave the
+  // rail describing a state it is no longer in.
+  it("skips a launch the wall refuses and emits it again when a slot frees", async () => {
+    gateMock.allowed.value = false;
+    try {
+      layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
+      await vi.waitFor(() =>
+        expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null, null)
+      );
+      expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+
+      gateMock.allowed.value = true;
+      // The flip a lifted hold makes: the deduped flag goes true while
+      // starts are held and false when they may resume, and it is that
+      // second emission the scheduler ticks on.
+      gateMock.launchHolding.set(true);
+      gateMock.launchHolding.set(false);
+      await vi.waitFor(() =>
+        expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+          "ws-1",
+          "p1",
+          "/x/wt",
+          expect.stringContaining("git push -u origin HEAD")
+        )
+      );
+    } finally {
+      gateMock.allowed.value = true;
+    }
   });
 });
 

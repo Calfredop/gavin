@@ -277,8 +277,36 @@ export function mayStartWork(workspaceId: string): boolean {
 }
 
 /// The reason it may not, phrased for an audit trail. Null while running.
+///
+/// The PAUSE first, then the launch wall. Both can hold at once and only
+/// one sentence fits on a badge, so the order has to be a decision: the
+/// pause is the human's own instruction ("don't spend between 2 and 4"),
+/// and telling somebody they are waiting for a slot when they are
+/// actually waiting for their own schedule would send them to the wrong
+/// setting.
+///
+/// Read through a hook the queue installs at startup rather than by
+/// importing it: `launchQueue` reads `memoryState`, which reads
+/// `layoutState`, which starts THIS module -- so a static import the
+/// other way would close a cycle for one string.
 export function startBlockedReason(workspaceId: string): string | null {
-  return pauseBlockedReason(pauseFor(workspaceId, get(nowStore)));
+  const paused = pauseBlockedReason(pauseFor(workspaceId, get(nowStore)));
+  if (paused) return paused;
+  return gateReason();
+}
+
+/// The launch wall's reason, read through a hook the queue installs at
+/// startup. Null until it does, which is exactly the answer before the
+/// wall is running: nothing is being held by a gate that does not exist
+/// yet.
+let gateReasonHook: (() => string | null) | null = null;
+
+export function setGateReasonHook(hook: (() => string | null) | null): void {
+  gateReasonHook = hook;
+}
+
+function gateReason(): string | null {
+  return gateReasonHook ? gateReasonHook() : null;
 }
 
 // ---- Lifecycle ---------------------------------------------------------------

@@ -40,6 +40,7 @@ import {
   type ReviewedCard,
 } from "./codeReview";
 import type { CardView } from "./planBoard";
+import { holdOrQueue, type ReviewIntent } from "./launchQueue";
 
 /// A review the human has been asked to confirm the base for. Everything
 /// the prompt needs except the base itself, resolved when the dialog
@@ -218,6 +219,42 @@ export async function confirmReview(base: string): Promise<string | null> {
   const trimmed = base.trim();
   if (!trimmed) return "Name a branch, tag or commit to compare against";
 
+  // The launch wall. Queued rather than refused, and the dialog closes
+  // either way: the human has answered the only question it was asking,
+  // and holding a modal open until memory frees would be a modal nobody
+  // can dismiss without losing the answer.
+  if (
+    holdOrQueue({
+      kind: "review",
+      workspaceId: request.workspaceId,
+      label: request.card ? `review: ${request.card.title}` : "review",
+      cwd: request.cwd,
+      base: trimmed,
+      rulesPath: request.rulesPath,
+      contextFolder: request.contextFolder,
+      plansFolder: request.plansFolder,
+      card: request.card,
+    })
+  ) {
+    pending.set(null);
+    return null;
+  }
+  return launchReview({ ...request, base: trimmed });
+}
+
+/// The launch itself, shared by the dialog and by the queue's drain.
+/// Takes everything it needs rather than reading the pending store, so
+/// an intent that waited out a hold can run with no dialog on screen.
+async function launchReview(request: {
+  workspaceId: string;
+  cwd: string;
+  base: string;
+  rulesPath: string;
+  contextFolder: string;
+  plansFolder: string;
+  card: ReviewedCard | null;
+}): Promise<string | null> {
+  const trimmed = request.base;
   const agent = resolvedAgentFor(request.workspaceId);
   const prompt = composeReviewPrompt({
     base: trimmed,
@@ -261,4 +298,12 @@ export async function confirmReview(base: string): Promise<string | null> {
   );
   if (name) await setSessionName(sessionId, name);
   return null;
+}
+
+/// The queue's way back in: run a review intent that has already cleared
+/// the gate. Nothing is re-resolved -- unlike a card or a tool, a review
+/// is a question about a checkout at a base the human typed, and both of
+/// those are exactly as true after the wait as before it.
+export async function launchQueuedReview(intent: ReviewIntent): Promise<void> {
+  await launchReview(intent);
 }

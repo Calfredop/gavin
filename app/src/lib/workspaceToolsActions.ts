@@ -50,6 +50,7 @@ import {
   toolRunsStore,
 } from "./toolRunsState";
 import { resolveToolBody, resolveToolCwd, type Tool } from "./orchestrationTools";
+import { holdOrQueue, type ToolIntent } from "./launchQueue";
 import { renderLibraryFor, toolRecords } from "./toolsState";
 import { cannotRunAloneReason, isRunnableStandalone, runBlockedReason } from "./workspaceTools";
 
@@ -129,13 +130,24 @@ async function launch(
   workspaceId: string,
   tool: Tool,
   values: Record<string, string>,
-  cwd: string
+  cwd: string,
+  /// The drain calling back in with an intent that has already cleared
+  /// the launch wall. Asking again there would re-queue it for ever.
+  queued = false
 ): Promise<string | null> {
   if (!isRunnableStandalone(tool)) {
     // The same sentence the dark Run button carries, from the same
     // table: this path is only reachable when something bypassed that
     // button, and two wordings for one fact is two things to keep true.
     return cannotRunAloneReason(tool.kind) ?? `A ${tool.kind} tool only means something as a step.`;
+  }
+  // The launch wall. Every tool kind, not only `agent`: a script tool
+  // that runs the test suite is a build, and a build under memory
+  // pressure is exactly what the hold exists for. Before the command is
+  // composed, so a queued run composes its body from the tool as it is
+  // when it actually starts.
+  if (!queued && holdOrQueue({ kind: "tool", workspaceId, label: tool.name, toolId: tool.id, values })) {
+    return null;
   }
   const body = resolveToolBody(tool, values);
   const agent = resolvedAgentFor(workspaceId);
@@ -300,4 +312,20 @@ export function __resetForTesting(): void {
   stopVerdictWatch = null;
   filed.clear();
   pending.set(null);
+}
+
+/// The queue's way back in: run a tool intent that has already cleared
+/// the gate.
+///
+/// The tool is re-resolved from the library rather than carried in the
+/// intent, for the reason `launchQueuedCard` gives: a queued run can
+/// wait minutes, and the tool may have been edited or deleted. A tool
+/// that is gone does not run, and the intent is already off the queue.
+export async function launchQueuedTool(intent: ToolIntent): Promise<void> {
+  const rootPath = workspaceRootPath(intent.workspaceId);
+  const tool = renderLibraryFor(get(toolRecords), intent.workspaceId).find((t) => t.id === intent.toolId);
+  if (!tool) return;
+  const cwd = resolveToolCwd(tool, rootPath);
+  if (!cwd) return;
+  await launch(intent.workspaceId, tool, intent.values, cwd, true);
 }

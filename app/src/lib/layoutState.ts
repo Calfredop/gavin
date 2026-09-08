@@ -1235,6 +1235,19 @@ export async function bootstrap(): Promise<void> {
   // mounted is the bug that made rails tick only on their own tab.
   const { startPauseClock } = await import("./agentPauseState");
   unlisteners.push(startPauseClock());
+  // The memory probe, on the same terms and for a sharper version of the
+  // same reason: the launch gate reads its sample at the moment somebody
+  // presses Run, with no panel open and possibly in a window showing a
+  // different workspace -- and a queue whose poll has stalled is work
+  // that silently never starts. Dynamically imported for the cycle
+  // reason above (memoryState reads resolvedAgentFor from this module).
+  const { startMemoryPoll } = await import("./memoryState");
+  unlisteners.push(startMemoryPoll());
+  // ...and the queue that drains behind the gate the probe feeds. After
+  // the poller, so its first drain reads a sample rather than a null,
+  // and module-level for the same reason both of those are.
+  const { startLaunchQueue } = await import("./launchQueue");
+  unlisteners.push(startLaunchQueue());
   // And the same again for the develop records: a "Develop into a plan…"
   // run that finishes while the human is on another tab still has to give
   // the card back, and this watch's first pass is also what ADOPTS a run

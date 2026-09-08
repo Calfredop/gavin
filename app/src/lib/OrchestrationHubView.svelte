@@ -25,6 +25,7 @@
   import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
   import { layoutState, daemonCompat } from "./layoutState";
   import { featureBlockedReason } from "./daemonCompat";
+  import { estimateFor, launchGateVerdict } from "./launchQueue";
   import {
     cardIndex,
     doneColumn,
@@ -225,9 +226,18 @@
   // start by the time the human reaches the button.
   let runAllPrompt = $state(false);
   const runnableRails = $derived(orch ? runnableIdleRails(orch) : []);
-  const runAllContent = $derived.by(() =>
-    runAllPrompt && orch && runnableRails.length > 0 ? runAllConfirm(orch) : null
-  );
+  // The estimate rides `$launchGateVerdict` so the projection is
+  // recomputed while the prompt is open: the machine moves under it, and
+  // a number frozen at the moment the dialog appeared is exactly the
+  // number that would still be wrong when the button is pressed.
+  const runAllContent = $derived.by(() => {
+    // Read so this derivation depends on it: the machine moves under an
+    // open prompt, and a number frozen at the moment the dialog appeared
+    // is the number that would still be wrong when the button is pressed.
+    void $launchGateVerdict;
+    if (!runAllPrompt || !orch || runnableRails.length === 0) return null;
+    return runAllConfirm(orch, estimateFor(workspaceId, runnableRails.length));
+  });
   const runAllTip = $derived(
     runnableRails.length === 0
       ? "No idle rail has anything left to run"

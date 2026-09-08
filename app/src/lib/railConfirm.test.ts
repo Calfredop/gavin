@@ -8,6 +8,7 @@ import {
 } from "./railConfirm";
 import type { CardEntry, Orchestration, Rail, Stage, Step } from "./orchestration";
 import type { PlanFileInfo } from "./gavin";
+import { launchEstimate } from "./launchEstimate";
 
 function plan(fileName: string, overrides: Partial<PlanFileInfo> = {}): PlanFileInfo {
   return {
@@ -264,6 +265,43 @@ describe("runAllConfirm", () => {
     });
     const c = runAllConfirm(o);
     expect(c.lines.some((l) => l.startsWith("1 rail paused stays paused"))).toBe(true);
+  });
+
+  // The number eleven rails would have needed. The lines above say WHO
+  // runs; this one says what it takes, and it goes last so a reader who
+  // stops early has still read the list.
+  it("carries the memory estimate as its last line", () => {
+    const o = orchOfMany([named("r1", "docs", 0), named("r2", "daemon", 1)]);
+    const c = runAllConfirm(
+      o,
+      launchEstimate({
+        count: 2,
+        profileId: "claude-code",
+        means: { "claude-code": 2 * 1024 ** 3 },
+        storedMeans: {},
+        measuredAgents: 3,
+        sample: {
+          supported: true,
+          totalBytes: 32 * 1024 ** 3,
+          freePercent: 50,
+          pressureLevel: 1,
+          swapUsedBytes: 0,
+          sampledAtMs: 0,
+        },
+        maxInFlight: 4,
+        inFlight: 0,
+      })
+    );
+    expect(c.lines[c.lines.length - 1]).toBe(
+      "2 agents ≈ 4 GB (2 GB each, from the 3 running now) on top of 16 of 32 GB."
+    );
+  });
+
+  // Optional, so a test about the rail arithmetic need not build a
+  // machine -- and so a surface with no sample yet still gets a dialog.
+  it("says nothing about memory when no estimate is passed", () => {
+    const c = runAllConfirm(orchOfMany([named("r1", "docs", 0)]));
+    expect(c.lines.some((l) => l.includes("GB"))).toBe(false);
   });
 
   it("accounts for an idle rail with nothing left to run", () => {

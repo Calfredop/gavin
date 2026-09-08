@@ -134,6 +134,12 @@ import { DEVELOPING_STALL } from "./developingCards";
 import type { OrchestrationAgentRecord } from "./workspace";
 import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "./cardRunActions";
 import { activePaused, mayStartWork, nowStore } from "./agentPauseState";
+import {
+  holdOrQueue,
+  launchHolding,
+  mayLaunch,
+  type OrchestrationIntent,
+} from "./launchQueue";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
 
@@ -1561,6 +1567,13 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
       // that runs when the pause lifts (activePaused is an input below)
       // emits it again -- which is the whole of "resume".
       if (!mayStartWork(workspaceId)) continue;
+      // ...and the launch wall, at the same seam and on the same terms.
+      // A rail step is NOT queued: the scheduler is the rail's queue,
+      // and `launchHolding` is one of this pass's inputs, so the tick
+      // that runs when a slot frees emits this action again -- which is
+      // the whole of "resume". Queueing it here as well would give one
+      // launch two owners.
+      if (!mayLaunch()) continue;
       again = (await executeLaunch(workspaceId, action.stepId)) || again;
     } else if (action.kind === "markDone") {
       const sessionId = orch.stepRuns.find((r) => r.stepId === action.stepId)?.sessionId ?? null;
@@ -1760,6 +1773,11 @@ function tickInputStores(): Readable<unknown>[] {
     layoutState,
     sessionExits,
     activePaused,
+    // The deduped flag, not `launchGateVerdict`: the verdict rides a
+    // five-second poll and would tick the scheduler twelve times a
+    // minute for the life of the app, while this emits exactly twice per
+    // hold -- once when starts stop, once when they may resume.
+    launchHolding,
     prReports,
   ];
 }
@@ -2412,7 +2430,10 @@ export function makeStageSequentialAction(workspaceId: string, stageId: string):
 async function launchOrchestrationAgent(
   workspaceId: string,
   record: Omit<OrchestrationAgentRecord, "sessionId">,
-  prompt: string
+  prompt: string,
+  /// The drain calling back in with an intent that has already cleared
+  /// the launch wall. Asking again there would re-queue it for ever.
+  queued = false
 ): Promise<string | null> {
   const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
   if (!ws) return "That workspace is gone";
@@ -2430,6 +2451,22 @@ async function launchOrchestrationAgent(
   // would rewrite somebody else's board.
   const root = ws.rootPath || null;
   if (!root) return "This workspace has no root folder — set one on the Settings tab first";
+
+  // The launch wall. Generate and Reorganize are ordinary agent runs
+  // with an ordinary process tree, so they queue like one -- checked
+  // AFTER the slot guard above, because "one of these at a time per
+  // workspace" is a different rule and refusing is the right answer to
+  // it, while a full machine is something to wait out.
+  if (!queued && holdOrQueue({
+    kind: "orchestration",
+    workspaceId,
+    label: record.label,
+    prompt,
+    agentLabel: record.label,
+    railId: record.railId ?? null,
+  })) {
+    return null;
+  }
 
   const agent = resolvedAgentFor(workspaceId);
   const command = buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
@@ -2571,4 +2608,23 @@ async function sweepOrchestrationAgents(): Promise<void> {
     sweepingAgents = false;
     sweepAgentsAgain = false;
   }
+}
+
+/// The queue's way back in: run a Generate/Reorganize intent that has
+/// already cleared the gate.
+///
+/// The PROMPT travels with the intent rather than being recomposed. It
+/// is a snapshot of the board at the moment the human asked -- which
+/// cards were unplaced, which rails conflicted -- and rebuilding it
+/// after a wait would send the agent a different request from the one it
+/// was queued for.
+export async function launchQueuedOrchestrationAgent(
+  intent: OrchestrationIntent
+): Promise<void> {
+  await launchOrchestrationAgent(
+    intent.workspaceId,
+    { label: intent.agentLabel, railId: intent.railId },
+    intent.prompt,
+    true
+  );
 }

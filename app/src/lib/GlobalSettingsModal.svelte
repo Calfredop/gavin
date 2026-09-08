@@ -33,6 +33,8 @@
   import Modal from "./Modal.svelte";
   import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, type PauseCycle, validateCycle } from "./agentPause";
   import { agentPauseStore, profilesInUse, saveAgentPause } from "./agentPauseState";
+  import { launchConfigStore, saveLaunchConfig } from "./launchQueue";
+  import type { LaunchConfig } from "./launchGate";
 
   interface Props {
     onClose: () => void;
@@ -68,6 +70,23 @@
 
   /// Writes through on every change, refusing an invalid cycle rather
   /// than storing one gavin would then have to ignore at read time.
+  /// The wall in force, never null: a config nobody has edited resolves
+  /// to the shipped default so the fields always have values.
+  const launch = $derived($launchConfigStore);
+
+  /// A blank field means NO CEILING, which is a real answer and not the
+  /// same as the shipped four. Zero is not expressible -- a ceiling of
+  /// zero holds every launch for ever -- so it reads as blank too.
+  function ceilingFrom(raw: string): number | null {
+    const value = Number(raw.trim());
+    if (!raw.trim() || !Number.isFinite(value) || value < 1) return null;
+    return Math.floor(value);
+  }
+
+  function editLaunch(patch: Partial<LaunchConfig>): void {
+    void saveLaunchConfig({ ...launch, ...patch });
+  }
+
   function edit(patch: Partial<PauseCycle>): void {
     const next = { ...cycle, ...patch };
     if (next.enabled && validateCycle(next)) {
@@ -342,6 +361,41 @@
           applies.
         </p>
       {/if}
+    </section>
+
+    <!-- The memory wall, beside the pause and deliberately after it: the
+         pause is about a subscription and this is about the machine, and
+         a human hunting for "why did nothing start" reads down. -->
+    <section>
+      <h3>Memory wall</h3>
+      <p class="hint">
+        A ceiling on how many agents may be taking a turn at once, and a hold while the
+        machine is under memory pressure. Nothing already running is ever stopped — only
+        new starts wait, and they start by themselves when a slot frees.
+      </p>
+      <div class="row">
+        <span>Agents running at once</span>
+        <input
+          class="num"
+          type="number"
+          min="1"
+          placeholder="none"
+          value={launch.maxInFlight ?? ""}
+          onchange={(e) => editLaunch({ maxInFlight: ceilingFrom(e.currentTarget.value) })}
+        />
+        <span class="unit">blank for no ceiling</span>
+      </div>
+      <div class="row">
+        <span>Under pressure</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={launch.holdOnPressure}
+            onchange={(e) => editLaunch({ holdOnPressure: e.currentTarget.checked })}
+          />
+          <span>Hold new agents when memory is under pressure</span>
+        </label>
+      </div>
     </section>
 
     <section>

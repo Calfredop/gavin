@@ -789,3 +789,71 @@ export function totalsNote(total: Totals): string {
   }
   return lines.join("\n");
 }
+
+// ---- What is holding memory OUTSIDE gavin -----------------------------------
+//
+// The panel's totals cover every session the daemon holds, which is the
+// right scope for a task manager and the wrong one for the question this
+// card came from: eleven rails put 50 GB on a 32 GB machine, and a
+// measurable share of it was a watchman server holding a root per
+// checkout -- including checkouts gavin had already deleted. Watchman
+// keeps a removed root's whole tree in memory for FIVE DAYS unless it is
+// told to drop it, so those roots are memory nothing will reclaim.
+//
+// It is one line and one action rather than a section, because it is not
+// gavin's process and gavin must not pretend to manage it: the line says
+// what it costs, and the action tells watchman to forget the roots no
+// checkout of any open workspace owns any more.
+
+export interface WatchmanTotals {
+  rssBytes: number;
+  roots: string[];
+}
+
+/// The line beside the totals row, or null when there is no watchman.
+///
+/// Null rather than "watchman 0 GB": a machine with no watchman on it is
+/// the common case, and a permanent row saying so would be a row about
+/// nothing.
+export function watchmanLine(totals: WatchmanTotals | null): string | null {
+  if (!totals) return null;
+  const roots = plural(totals.roots.length, "root");
+  return `outside gavin: watchman ${formatMemory(totals.rssBytes)}, ${roots}`;
+}
+
+/// The roots no live worktree of any open workspace owns.
+///
+/// Owned means "inside a directory gavin knows about" -- a workspace
+/// root or a rail's worktree -- and containment rather than equality,
+/// because watchman watches the repository root while gavin knows a path
+/// inside it just as often as the other way round. The conservative
+/// direction is deliberate: a root gavin cannot place is left ALONE,
+/// because dropping a watch some other tool depends on costs that tool a
+/// full re-crawl, and the point of this action is to reclaim memory
+/// nothing is using.
+export function droppableRoots(roots: string[], ownedPaths: string[]): string[] {
+  const owned = ownedPaths.filter((p) => p).map((p) => p.replace(/\/+$/, ""));
+  return roots.filter((root) => {
+    const clean = root.replace(/\/+$/, "");
+    return !owned.some((path) => path === clean || path.startsWith(`${clean}/`) || clean.startsWith(`${path}/`));
+  });
+}
+
+/// What "Drop roots" asks before it runs.
+///
+/// Names every root, not a count: this is a list a human has to be able
+/// to scan for the one they did not mean, exactly as the rail confirms
+/// do. And it says what dropping costs -- a re-crawl, not data -- because
+/// "drop" reads like a delete and is not one.
+export function dropRootsConfirm(roots: string[]): KillPrompt | null {
+  if (roots.length === 0) return null;
+  return {
+    title: `Tell watchman to forget ${plural(roots.length, "root")}?`,
+    lines: [
+      ...roots,
+      "No workspace open here has a checkout under these, so watchman is holding them for nothing — it keeps a removed root in memory for five days otherwise.",
+      "Nothing on disk changes. A tool that starts watching one of these again pays for one re-crawl.",
+    ],
+    confirmLabel: `Forget ${plural(roots.length, "root")}`,
+  };
+}

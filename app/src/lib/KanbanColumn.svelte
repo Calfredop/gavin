@@ -23,6 +23,7 @@
   import IconButton from "./ui/IconButton.svelte";
   import { X } from "@lucide/svelte";
   import { formatShortcut } from "./shortcuts";
+  import { estimateFor, launchGateVerdict } from "./launchQueue";
   import { isMacSync } from "./platform";
   import { columnDeletionPlan, executeDeletion, executeMoveCards } from "./cardDelete";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
@@ -243,11 +244,21 @@
   // prompt (a card finishes, a new one lands) re-derives fresh content
   // through `runnable`, and closes on its own once nothing is left to run.
   let runAllPrompt = $state(false);
-  const runAllContent = $derived.by(() =>
-    runAllPrompt && runAction && runnable.length > 0
-      ? columnRunAllConfirm(runAction, column.name, runnable)
-      : null
-  );
+  // The estimate rides `$launchGateVerdict` so the projection keeps up
+  // while the prompt is open: the machine moves under it, and a number
+  // frozen at the moment the dialog appeared is the number that would
+  // still be wrong when the button is pressed.
+  const runAllContent = $derived.by(() => {
+    // Read so this derivation depends on it; see OrchestrationHubView.
+    void $launchGateVerdict;
+    if (!runAllPrompt || !runAction || runnable.length === 0) return null;
+    return columnRunAllConfirm(
+      runAction,
+      column.name,
+      runnable,
+      estimateFor(workspaceId, runnable.length)
+    );
+  });
 
   async function runAll(): Promise<void> {
     const action = runAction;

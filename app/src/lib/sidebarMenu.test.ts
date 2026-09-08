@@ -24,6 +24,16 @@ vi.mock("./layoutState", () => ({
   splitPane: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("./tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
+// The launch wall's queue, stubbed. It is a live module (a poller, a
+// drain loop, localStorage) that these tests are not about, and its
+// dependency cone reaches layoutState -- which this file replaces with a
+// handful of functions. `holdOrQueue` returning null is "the gate is
+// open", which is the state every assertion here assumes.
+vi.mock("./launchQueue", () => ({
+  holdOrQueue: vi.fn(() => null),
+  mayLaunch: vi.fn(() => true),
+  launchBlockedReason: vi.fn(() => null),
+}));
 // The window registry, with the one thing the real module cannot give a
 // test: which window it is. `currentWindowLabel` reads an object Tauri
 // injects into the page, so outside the app it is always "main" -- and

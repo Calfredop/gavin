@@ -12,6 +12,7 @@
 import { slugStatus, type CardView } from "./planBoard";
 import { sessionLiveness, type WorkspacesData } from "./workspace";
 import { count } from "./railConfirm";
+import { estimateLines, type LaunchEstimate } from "./launchEstimate";
 
 /// "start" and "run" spawn the ordinary run prompt; "resume" spawns the
 /// gavin-resume one.
@@ -172,7 +173,11 @@ export interface ColumnRunPrompt {
 export function columnRunAllConfirm(
   action: ColumnRunAction,
   columnName: string,
-  targets: CardView[]
+  targets: CardView[],
+  /// What this press is projected to cost (launchEstimate.ts). Optional
+  /// so a test about the column arithmetic need not build a machine
+  /// sample; the column header always passes one.
+  estimate?: LaunchEstimate | null
 ): ColumnRunPrompt {
   const n = targets.length;
   const verb = runVerb(action.mode);
@@ -181,6 +186,8 @@ export function columnRunAllConfirm(
     lines: [
       `${columnRunTip(action, n)}.`,
       `${verb}s: ${targets.map((c) => c.title).join(", ")}.`,
+      // Last: the lines above say who runs, this one says what it takes.
+      ...(estimate ? estimateLines(estimate) : []),
     ],
     confirmLabel: `${verb} ${count(n, "card")}`,
   };

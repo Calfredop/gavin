@@ -9,6 +9,7 @@ import {
   type CardSessionState,
 } from "./columnRunAction";
 import type { CardView } from "./planBoard";
+import { launchEstimate } from "./launchEstimate";
 
 function card(id: string, kind: "note" | "task" | "plan" = "task"): CardView {
   return {
@@ -206,6 +207,40 @@ describe("columnRunAllConfirm", () => {
   it("names every card it is about to launch", () => {
     const content = columnRunAllConfirm(columnRunAction("To Do")!, "To Do", targets);
     expect(content.lines).toContain("Starts: Fix login, Add tests.");
+  });
+
+  // Last line, after the list of names: who runs, then what it takes.
+  it("carries the memory estimate as its last line", () => {
+    const content = columnRunAllConfirm(
+      columnRunAction("To Do")!,
+      "To Do",
+      targets,
+      launchEstimate({
+        count: 2,
+        profileId: "claude-code",
+        means: {},
+        storedMeans: {},
+        measuredAgents: 0,
+        sample: {
+          supported: true,
+          totalBytes: 32 * 1024 ** 3,
+          freePercent: 50,
+          pressureLevel: 1,
+          swapUsedBytes: 0,
+          sampledAtMs: 0,
+        },
+        maxInFlight: 1,
+        inFlight: 0,
+      })
+    );
+    expect(content.lines[content.lines.length - 1]).toBe(
+      "2 agents ≈ 3 GB (1.5 GB each) on top of 16 of 32 GB. 1 starts now, 1 queues."
+    );
+  });
+
+  it("says nothing about memory when no estimate is passed", () => {
+    const content = columnRunAllConfirm(columnRunAction("To Do")!, "To Do", targets);
+    expect(content.lines.some((l) => l.includes("GB"))).toBe(false);
   });
 
   it("singularizes the confirm label for one card", () => {

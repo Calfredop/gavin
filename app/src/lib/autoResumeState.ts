@@ -10,6 +10,7 @@
 
 import { get, writable } from "svelte/store";
 import { pauseFor } from "./agentPauseState";
+import { mayLaunch } from "./launchQueue";
 import {
   autoResumeDecision,
   isImmediateRefailure,
@@ -297,6 +298,20 @@ async function fire(sessionId: string, previousStatus: SessionStatus | undefined
   if (pause.paused) {
     const wait = pause.until == null ? PAUSE_RECHECK_MS : pause.until - clock.now();
     armWait(sessionId, previousStatus, Math.min(Math.max(wait, 1_000), PAUSE_RECHECK_MS), entry.key);
+    return;
+  }
+
+  // The launch wall DEFERS a resume, exactly as a pause does and for the
+  // same reason: the run is still worth resuming, this is simply not the
+  // moment, and spending the one automatic attempt on a launch the gate
+  // is going to hold would cost a real failure its recovery.
+  //
+  // Re-armed rather than queued. An auto-resume is already a timer that
+  // re-reads its own conditions, so handing it to the queue as well
+  // would give one resume two owners -- the same reason a rail step is
+  // not queued.
+  if (!mayLaunch()) {
+    armWait(sessionId, previousStatus, PAUSE_RECHECK_MS, entry.key);
     return;
   }
 

@@ -20,7 +20,14 @@
   import { resumeTrail } from "./autoResumeState";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import { tooltip } from "./tooltip";
-  import { attentionIndicator, railIndicator, railRetryIndicator } from "./ui/indicators";
+  import {
+    agentQueuedIndicator,
+    attentionIndicator,
+    queuedBadgeText,
+    railIndicator,
+    railRetryIndicator,
+  } from "./ui/indicators";
+  import { launchGateVerdict } from "./launchQueue";
   import OrchestrationStepChip from "./OrchestrationStepChip.svelte";
   import OrchestrationStepCard from "./OrchestrationStepCard.svelte";
   import type { Label } from "./kanban";
@@ -34,8 +41,9 @@
     StageMode,
     Step,
     StepAttention,
+    StepState,
   } from "./orchestration";
-  import { stepParams, attentionTip, railAttention } from "./orchestration";
+  import { stepParams, attentionTip, railAttention, runningStageId } from "./orchestration";
   import { railRetryLabel } from "./orchestrationLoop";
   import { prChips } from "./pullRequest";
   import { prPollTick, prReportFor, prReports, requestPr } from "./prState";
@@ -213,6 +221,20 @@
   }: Props = $props();
 
   const railState = $derived(railStateOf(orch, rail.id));
+
+  /// Whether this step is one the rail would have launched by now and
+  /// the launch wall is holding.
+  ///
+  /// The STAGE matters: only the beat the rail is actually on is being
+  /// held. A pending step three stages away is waiting on the rail, and
+  /// marking it "held" would blame memory for the rail's own order.
+  function heldStep(stageId: string, state: StepState): boolean {
+    return (
+      state === "pending" &&
+      !$launchGateVerdict.allowed &&
+      runningStageId(orch, rail.id) === stageId
+    );
+  }
   // The rail's most urgent step mark, so a hub full of rails says which
   // one needs you without the human reading every stage.
   const attention = $derived(railAttention(rail, attentions));
@@ -435,6 +457,17 @@
           indicator={attentionIndicator(attention)}
           text="needs you"
           tip={attentionTitle}
+        />
+      {/if}
+      <!-- The launch wall, beside the state and never instead of it: a
+           held rail is still running, it simply has no slot for its next
+           step. A rail is NOT queued -- the scheduler is its queue -- so
+           this is a readout, not a cancellable intent, and the badge
+           carries the gate's own sentence in its bubble. -->
+      {#if railState === "running" && !$launchGateVerdict.allowed}
+        <StatusBadge
+          indicator={agentQueuedIndicator($launchGateVerdict.reason ?? "ceiling", $launchGateVerdict.why)}
+          text={queuedBadgeText($launchGateVerdict.reason ?? "ceiling")}
         />
       {/if}
       <!-- Beside the state, not instead of it, for the same reason the
@@ -678,6 +711,7 @@
               tool={step.toolId ? findTool(tools, step.toolId) : undefined}
               toolParams={stepParams(step)}
               state={stepStateOf(orch, step.id)}
+              held={heldStep(stage.id, stepStateOf(orch, step.id))}
               reason={runOf(step.id)?.reason ?? null}
               resumeNote={resumeNoteOf(step)}
               attention={attentions.get(step.id) ?? null}

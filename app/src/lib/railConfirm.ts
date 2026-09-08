@@ -9,6 +9,7 @@ import {
   stepStateOf,
 } from "./orchestration";
 import type { CardEntry, Orchestration, Rail, Stage } from "./orchestration";
+import { estimateLines, type LaunchEstimate } from "./launchEstimate";
 
 /// What a destructive rail action asks before it runs: the prompt's
 /// title, its consequence lines, and the word on the button. Built here
@@ -190,7 +191,15 @@ export function clearFinishedRailsConfirm(
 /// (already running, deliberately paused, nothing left to do) are
 /// different enough that one lumped "some rails were skipped" would
 /// answer none of them.
-export function runAllConfirm(orch: Orchestration): RailConfirm {
+export function runAllConfirm(
+  orch: Orchestration,
+  /// What this press is projected to cost (launchEstimate.ts). Optional
+  /// so a test that is about the rail arithmetic need not build a
+  /// machine sample -- but the tab always passes one, because the number
+  /// eleven rails would have needed is exactly the number this dialog
+  /// used to leave out.
+  estimate?: LaunchEstimate | null
+): RailConfirm {
   const runnable = runnableIdleRails(orch);
   const idle = orch.rails.filter((r) => railStateOf(orch, r.id) === "idle");
   const running = orch.rails.filter((r) => railStateOf(orch, r.id) === "running").length;
@@ -215,6 +224,11 @@ export function runAllConfirm(orch: Orchestration): RailConfirm {
     lines.push(
       `${count(finished, "idle rail")} ${finished === 1 ? "has" : "have"} nothing left to run.`
     );
+  // Last, and last on purpose: the lines above say WHO runs, and this
+  // one says what it takes. A reader who stops at the first line has
+  // still read the list; a reader who gets to the end has the number
+  // that decides whether to press the button.
+  if (estimate) lines.push(...estimateLines(estimate));
   return {
     title: `Run ${count(runnable.length, "idle rail")}?`,
     lines,

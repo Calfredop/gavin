@@ -31,6 +31,7 @@ import {
 import { executeArchive, executeUnarchive } from "./archiveActions";
 import { bestOfNRequest, bestOfNRuns, runForCard } from "./bestOfNState";
 import { featureBlockedReason } from "./daemonCompat";
+import { cancelLaunch, launchBlockedReason, queuedForCard } from "./launchQueue";
 import { isArchivedCard, slugStatus, type CardView } from "./planBoard";
 import type { Column } from "./kanban";
 import type { ContextMenuEntry } from "./contextMenu";
@@ -78,7 +79,18 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
     // this the menu would offer to start a SECOND run over the top of the
     // first -- which the launch refuses, but only after the human has
     // been offered it.
-    if (developingRunOn(workspaceId, card.id)) {
+    // A queued launch outranks every run entry below, and for the same
+    // shape of reason a develop run does: the action the human would
+    // pick has already been asked for, and offering it again would put a
+    // second identical intent in the queue. The one useful thing to do
+    // with a queued launch is take it back.
+    const queued = queuedForCard(workspaceId, card.id);
+    if (queued) {
+      entries.push({
+        label: `Cancel queued launch — ${launchBlockedReason() ?? "waiting to start"}`,
+        onPick: () => cancelLaunch(queued.id),
+      });
+    } else if (developingRunOn(workspaceId, card.id)) {
       // Ahead of every other case, and replacing all of them: an agent is
       // rewriting this card's file right now, so the prompt behind every
       // run entry here is about to stop being true (developingCards.ts).

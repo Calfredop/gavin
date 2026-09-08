@@ -11,7 +11,7 @@
 // on screen, and a single value makes that structural instead of a rule
 // every new call site has to remember.
 
-import { writable } from "svelte/store";
+import { get, writable } from "svelte/store";
 import { hotState } from "./hotState";
 
 export type AppPanel = "sessions" | "usage";
@@ -24,8 +24,25 @@ export const openAppPanel = hotState(
   import.meta.hot?.data
 );
 
-export function showAppPanel(panel: AppPanel): void {
+/// A sort the sessions panel should open with, consumed once.
+///
+/// The pressure banner's "Open sessions" means "show me what is holding
+/// the memory", which is the panel sorted by memory descending -- and
+/// the panel's own sort is component state that no caller can reach. A
+/// one-shot request rather than a persisted preference: the human's own
+/// sort must survive the next time they open the panel themselves.
+export const requestedSessionSort = writable<"memory" | null>(null);
+
+export function showAppPanel(panel: AppPanel, sort?: "memory"): void {
+  if (sort) requestedSessionSort.set(sort);
   openAppPanel.set(panel);
+}
+
+/// Reads and clears the request, so a second mount does not re-apply it.
+export function takeSessionSortRequest(): "memory" | null {
+  const requested = get(requestedSessionSort);
+  if (requested) requestedSessionSort.set(null);
+  return requested;
 }
 
 export function closeAppPanel(): void {

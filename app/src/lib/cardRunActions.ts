@@ -36,6 +36,7 @@ import { missingAttachmentReason, resolvedAttachmentPaths } from "./attachments"
 import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "./queuedInput";
 import { queueFollowUp, queueTargetFor } from "./queuedInputActions";
 import { cardViewForPath, type CardView } from "./planBoard";
+import { holdOrQueue, type CardIntent } from "./launchQueue";
 
 /// The run gate for a card's attachments: the absolute paths to hand the
 /// agent, or the reason this launch must not happen.
@@ -182,7 +183,11 @@ export function reviewCardSession(workspaceId: string, card: CardView): Promise<
 //    is the one way this action can destroy work in flight.
 export async function developCard(
   workspaceId: string,
-  card: CardView
+  card: CardView,
+  /// `queued` is the drain calling back in with an intent that has
+  /// already cleared the gate; asking again there would re-queue it for
+  /// ever.
+  options: { queued?: boolean } = {}
 ): Promise<string | null> {
   if (card.kind === "note") return "Notes are not runnable";
 
@@ -200,6 +205,21 @@ export async function developCard(
   // here rather than trusted from the button, which cannot see a run
   // another window started.
   if (await revealDevelopingCard(workspaceId, card.id)) return null;
+
+  // The launch wall. A develop run is an agent process tree like any
+  // other -- it reads the card, interviews the human and rewrites the
+  // file -- so it counts against the ceiling and waits under pressure
+  // exactly as a run does.
+  if (!options.queued && holdOrQueue({
+    kind: "card",
+    workspaceId,
+    label: card.title,
+    cardPath: card.id,
+    mode: "develop",
+    automatic: false,
+  })) {
+    return null;
+  }
 
   // The card file is never read here: the skill's first move is to read
   // it, and inlining a task's body is what turns an interview into a
@@ -261,7 +281,7 @@ async function launchCard(
   workspaceId: string,
   card: CardView,
   mode: "run" | "resume" | "review",
-  options: { automatic?: boolean } = {}
+  options: { automatic?: boolean; queued?: boolean } = {}
 ): Promise<string | null> {
   if (card.kind === "note") return "Notes are not runnable";
 
@@ -300,6 +320,31 @@ async function launchCard(
   // predates the fields.
   const agent = agentForCard(workspaceId, card);
   if (agent.promptArgs === null) return noPromptReason(agent.label);
+
+  // The launch wall, last of the gates and the only one that does not
+  // refuse: a held launch is QUEUED and starts by itself when a slot
+  // frees or pressure clears (launchQueue.ts). Before the status write
+  // below for the same reason the other three are -- a card that moved
+  // to In Progress and then sat in a queue would be describing a run
+  // nobody started.
+  //
+  // `queued` is the drain calling back in with an intent that has
+  // already cleared the gate; asking again there would re-queue it for
+  // ever.
+  if (!options.queued) {
+    const held = holdOrQueue({
+      kind: "card",
+      workspaceId,
+      label: card.title,
+      cardPath: card.id,
+      mode,
+      automatic: options.automatic === true,
+    });
+    // Null, not the sentence: being queued is not a failure, and the
+    // board's error strip is for failures. The card's own queued badge
+    // is what says so.
+    if (held) return null;
+  }
 
   const resolved = await resolveAttachmentsForRun(workspaceId, card.attachments ?? []);
   if ("error" in resolved) return resolved.error;
@@ -599,7 +644,11 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
 
 // Re-launch from the remembered binding (same cwd/command), replacing
 // the stored session id -- the old modal's behavior, file-card edition.
-export async function relaunchCard(workspaceId: string, path: string): Promise<string | null> {
+export async function relaunchCard(
+  workspaceId: string,
+  path: string,
+  options: { queued?: boolean } = {}
+): Promise<string | null> {
   const binding = cardSessionFor(get(kanbanState)[workspaceId], path);
   if (!binding) return "No session remembered for this card";
   // Re-launch replays the ORIGINAL prompt, which for a card being
@@ -608,6 +657,22 @@ export async function relaunchCard(workspaceId: string, path: string): Promise<s
   // least.
   const developing = developingBlocker(workspaceId, path);
   if (developing) return developing;
+  // The launch wall, before anything is spawned and before the binding
+  // is replaced: a re-launch that queued after rewriting the binding
+  // would leave the card pointing at a session that never started.
+  if (!options.queued) {
+    const card = cardViewForPath(get(gavinTrees)[workspaceId], path);
+    if (holdOrQueue({
+      kind: "card",
+      workspaceId,
+      label: card?.title ?? path,
+      cardPath: path,
+      mode: "relaunch",
+      automatic: false,
+    })) {
+      return null;
+    }
+  }
   // Through the card's OWN agent, not the workspace's, because the
   // command being replayed is the one that card LAUNCHED with -- and
   // `sessionIdArgs` below has to describe that binary. Resolving the
@@ -649,4 +714,31 @@ export async function relaunchCard(workspaceId: string, path: string): Promise<s
     baseSha,
   });
   return null;
+}
+
+/// The queue's way back in: run an intent that has ALREADY cleared the
+/// gate.
+///
+/// The card is re-resolved from the tree rather than carried in the
+/// intent, because a queued launch can wait minutes: the card may have
+/// been renamed, moved to another column, archived or deleted while it
+/// waited, and the launch that eventually happens must be the one the
+/// card describes NOW. A card that is gone simply does not run -- the
+/// intent has already been taken off the queue, and re-queueing it would
+/// spin for ever on a file nobody is going to put back.
+export async function launchQueuedCard(intent: CardIntent): Promise<void> {
+  const card = cardViewForPath(get(gavinTrees)[intent.workspaceId], intent.cardPath);
+  if (intent.mode === "relaunch") {
+    await relaunchCard(intent.workspaceId, intent.cardPath, { queued: true });
+    return;
+  }
+  if (!card) return;
+  if (intent.mode === "develop") {
+    await developCard(intent.workspaceId, card, { queued: true });
+    return;
+  }
+  await launchCard(intent.workspaceId, card, intent.mode, {
+    automatic: intent.automatic,
+    queued: true,
+  });
 }

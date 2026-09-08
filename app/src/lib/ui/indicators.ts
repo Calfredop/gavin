@@ -33,6 +33,7 @@
 import type { Component } from "svelte";
 import {
   ChevronsRight,
+  Clock,
   CircleDashed,
   CircleOff,
   CirclePause,
@@ -160,7 +161,9 @@ const AGENT: Record<
   | "unknown"
   | "interrupted"
   | "idle"
-  | "exited",
+  | "exited"
+  | "queued"
+  | "held",
   Indicator
 > = {
   working: make("agent", "working", LoaderCircle, "accent", "working", true),
@@ -232,6 +235,19 @@ const AGENT: Record<
   ),
   idle: make("agent", "idle", CircleDashed, "neutral", "idle — nothing running"),
   exited: make("agent", "exited", CircleSlash2, "neutral", "session exited"),
+  // Asked for, not started: the launch wall is holding it and the queue
+  // will start it by itself (launchGate.ts). Not a daemon status -- there
+  // is no session yet, which is the whole state -- but it is the same
+  // question every other badge here answers ("what is the agent on this
+  // card doing"), and answering it in a vocabulary of its own is how the
+  // board ends up with a card that looks idle while a launch is pending.
+  //
+  // A clock, because the answer is "later"; neutral, because nothing is
+  // wrong. The pressure variant below shares the glyph and takes the
+  // warning tone, which is exactly the rule this module encodes: same
+  // shape means same question, tone carries the answer.
+  queued: make("agent", "queued", Clock, "neutral", "queued — waiting for a slot"),
+  held: make("agent", "held", Clock, "warning", "held — memory pressure"),
 };
 
 /// The badge for a live agent session. Null / undefined means the
@@ -280,12 +296,39 @@ export const AGENT_STATES = [
   "waiting_for_input",
   "failed",
   "interrupted",
+  "queued",
   "idle",
   "exited",
 ] as const;
 
 export function agentIndicatorByState(state: (typeof AGENT_STATES)[number]): Indicator {
   return AGENT[state];
+}
+
+/// The badge for a launch the wall is holding.
+///
+/// One vocabulary for both halves of the hold, so the board card, the
+/// detail modal, the rail header and the step chip cannot describe it
+/// three ways: "Queued · waiting for a slot" when a slot is what it
+/// wants, "Held · memory pressure" when the machine is.
+///
+/// `why` is the gate's own sentence and goes in the BUBBLE, not beside
+/// the glyph -- it names counts and gigabytes, and no badge has room for
+/// that. Hang it on a non-disabled element: `tooltip.ts` binds
+/// mouseenter, which a disabled control never fires.
+export function agentQueuedIndicator(
+  reason: "ceiling" | "pressure",
+  why?: string | null
+): Indicator {
+  const base = reason === "ceiling" ? AGENT.queued : AGENT.held;
+  if (!why) return base;
+  return { ...base, tip: `${AXIS_LABEL.agent} · ${why}`, label: `${AXIS_LABEL.agent} · ${why}` };
+}
+
+/// What the badge says beside the glyph. Two words at most, because it
+/// sits next to a card title.
+export function queuedBadgeText(reason: "ceiling" | "pressure"): string {
+  return reason === "ceiling" ? "Queued" : "Held";
 }
 
 // ---- priority ----------------------------------------------------------
@@ -596,6 +639,7 @@ export function allIndicators(): Indicator[] {
   return [
     ...AGENT_STATES.map(agentIndicatorByState),
     AGENT.turn_ended,
+    AGENT.held,
     AGENT.stale,
     AGENT.decoy_edit,
     AGENT.developing,

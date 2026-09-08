@@ -9,6 +9,7 @@ mod fileviewer;
 mod git;
 mod layout;
 mod mac_window;
+mod memory;
 mod pull_request;
 mod session;
 mod superpowers;
@@ -162,10 +163,15 @@ pub fn run() {
             agent_setup::agent_profiles,
             agent_models::agent_model_catalog,
             agent_usage::agent_usage,
+            memory::system_memory,
+            memory::watchman_status,
+            memory::watchman_forget,
             pull_request::pr_status,
             agent_tokens::card_run_tokens,
             session::get_agent_pause,
             session::set_agent_pause,
+            session::get_launch_config,
+            session::set_launch_config,
             session::get_agent_defaults,
             session::set_agent_defaults,
             agent_setup::mcp_formats,

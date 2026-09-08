@@ -10,6 +10,7 @@ import {
   type Workspace,
   type WorkspacesData,
 } from "./workspace";
+import type { FleetStrip } from "./memory";
 import { sessionTabsOnly } from "./layout";
 import {
   gitSummaryOf,
@@ -252,6 +253,12 @@ export interface FleetInput {
   /// Workspaces with a "Commit via agent" run in flight. A hidden
   /// session with no tab, so it cannot be counted from the layout.
   committing?: ReadonlySet<string>;
+  /// The fleet strip the sidebar footer draws (launchQueue's
+  /// `fleetStripLine`), passed in rather than recomputed: the hub and the
+  /// footer are on screen together, and two arithmetics for one number is
+  /// the shape that drifts. Absent means nothing worth a row, which is
+  /// also what a machine nothing has measured looks like.
+  memory?: FleetStrip | null;
 }
 
 /// Every card with a live agent behind it, grouped by workspace.
@@ -380,6 +387,10 @@ export interface FleetSummary {
   /// Cards with an agent behind them, fleet-wide -- the same count the
   /// column beside the strip renders.
   tasks: number;
+  /// How many agents are running against the ceiling, and how full the
+  /// machine is -- the sidebar footer's own strip, on the hub. Null when
+  /// there is nothing worth a badge.
+  memory: FleetStrip | null;
 }
 
 /// The whole fleet in one line of badges: how much of it there is, and
@@ -431,6 +442,7 @@ export function fleetSummary(input: FleetInput): FleetSummary {
     cards: mergeKanbanSummaries(boards),
     rails,
     tasks: runningTaskCount(runningTasks(input)),
+    memory: input.memory ?? null,
   };
 }
 
