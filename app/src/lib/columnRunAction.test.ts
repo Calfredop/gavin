@@ -4,6 +4,7 @@ import {
   columnRunTargets,
   columnRunTip,
   columnRunMenuLabel,
+  columnRunAllConfirm,
   cardSessionState,
   type CardSessionState,
 } from "./columnRunAction";
@@ -184,5 +185,32 @@ describe("copy", () => {
     expect(columnRunMenuLabel(columnRunAction("In Progress")!, 2)).toBe("Resume (2 stopped)");
     expect(columnRunMenuLabel(columnRunAction("To Do")!, 2)).toBe("Start all (2 unbound)");
     expect(columnRunMenuLabel(columnRunAction("Blocked")!, 2)).toBe("Run all (2 unbound)");
+  });
+});
+
+describe("columnRunAllConfirm", () => {
+  const targets = [card("Fix login"), card("Add tests")];
+
+  it("names the verb, the count, and the column in the title", () => {
+    expect(columnRunAllConfirm(columnRunAction("To Do")!, "To Do", targets).title).toBe(
+      'Start 2 cards in "To Do"?'
+    );
+    expect(columnRunAllConfirm(columnRunAction("In Progress")!, "In Progress", targets).title).toBe(
+      'Resume 2 cards in "In Progress"?'
+    );
+    expect(columnRunAllConfirm(columnRunAction("Blocked")!, "Blocked", targets).title).toBe(
+      'Run 2 cards in "Blocked"?'
+    );
+  });
+
+  it("names every card it is about to launch", () => {
+    const content = columnRunAllConfirm(columnRunAction("To Do")!, "To Do", targets);
+    expect(content.lines).toContain("Starts: Fix login, Add tests.");
+  });
+
+  it("singularizes the confirm label for one card", () => {
+    expect(columnRunAllConfirm(columnRunAction("To Do")!, "To Do", [card("Only one")]).confirmLabel).toBe(
+      "Start 1 card"
+    );
   });
 });

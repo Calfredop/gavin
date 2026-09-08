@@ -15,6 +15,7 @@
     columnRunTargets,
     columnRunTip,
     columnRunMenuLabel,
+    columnRunAllConfirm,
     cardSessionState,
     type CardSessionState,
   } from "./columnRunAction";
@@ -235,8 +236,22 @@
   );
   let runningAll = $state(false);
 
+  // Asks first: a whole column's worth of agent spawns is not something
+  // a click should fire outright. Held as a bare flag rather than a
+  // captured target list, the same reason the Orchestration tab's own
+  // Run all does (runAllPrompt) -- a column that changes under the open
+  // prompt (a card finishes, a new one lands) re-derives fresh content
+  // through `runnable`, and closes on its own once nothing is left to run.
+  let runAllPrompt = $state(false);
+  const runAllContent = $derived.by(() =>
+    runAllPrompt && runAction && runnable.length > 0
+      ? columnRunAllConfirm(runAction, column.name, runnable)
+      : null
+  );
+
   async function runAll(): Promise<void> {
     const action = runAction;
+    runAllPrompt = false;
     if (runningAll || !action) return;
     const run = action.mode === "resume" ? (onResumeCard ?? onRunCard) : onRunCard;
     if (!run) return;
@@ -305,7 +320,7 @@
         // cannot show a tooltip, so a greyed one would say nothing at
         // all, while the click reports the reason in the error strip.
         label: columnRunMenuLabel(runAction, runnable.length),
-        onPick: () => void runAll(),
+        onPick: () => (runAllPrompt = true),
       });
     }
     if (mode === "full") {
@@ -359,7 +374,7 @@
           class="run-all"
           disabled={runningAll || runBlocked !== null}
           tip={runBlocked === null ? columnRunTip(runAction, runnable.length) : null}
-          onclick={() => void runAll()}
+          onclick={() => (runAllPrompt = true)}
         >
           <span class="run-all-count">{runnable.length}</span>
         </IconButton>
@@ -428,6 +443,15 @@
     >
   {/if}
 </div>
+
+{#if runAllContent}
+  <ConfirmPrompt
+    title={runAllContent.title}
+    lines={runAllContent.lines}
+    choices={[{ label: runAllContent.confirmLabel, onPick: () => void runAll() }]}
+    onCancel={() => (runAllPrompt = false)}
+  />
+{/if}
 
 {#if columnPrompt === "clear"}
   <ConfirmPrompt

@@ -11,6 +11,7 @@
 
 import { slugStatus, type CardView } from "./planBoard";
 import { sessionLiveness, type WorkspacesData } from "./workspace";
+import { count } from "./railConfirm";
 
 /// "start" and "run" spawn the ordinary run prompt; "resume" spawns the
 /// gavin-resume one.
@@ -144,4 +145,43 @@ export function columnRunMenuLabel(action: ColumnRunAction, count: number): stri
   return action.mode === "resume"
     ? `${action.label} (${count} stopped)`
     : `${action.label} (${count} unbound)`;
+}
+
+function runVerb(mode: ColumnRunMode): string {
+  switch (mode) {
+    case "start":
+      return "Start";
+    case "resume":
+      return "Resume";
+    case "run":
+      return "Run";
+  }
+}
+
+/// What a column's "Run all" (Start all / Resume / Run all) asks before
+/// it fires. The button used to launch on the click itself -- one whole
+/// column's worth of agent spawns with no second look -- so this names
+/// exactly who is about to run, the same discipline railConfirm.ts uses
+/// for the Orchestration tab's own Run all.
+export interface ColumnRunPrompt {
+  title: string;
+  lines: string[];
+  confirmLabel: string;
+}
+
+export function columnRunAllConfirm(
+  action: ColumnRunAction,
+  columnName: string,
+  targets: CardView[]
+): ColumnRunPrompt {
+  const n = targets.length;
+  const verb = runVerb(action.mode);
+  return {
+    title: `${verb} ${count(n, "card")} in "${columnName}"?`,
+    lines: [
+      `${columnRunTip(action, n)}.`,
+      `${verb}s: ${targets.map((c) => c.title).join(", ")}.`,
+    ],
+    confirmLabel: `${verb} ${count(n, "card")}`,
+  };
 }
