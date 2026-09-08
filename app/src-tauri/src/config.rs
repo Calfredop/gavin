@@ -321,6 +321,24 @@ pub struct Workspace {
     /// THIS person has seen a question is not a fact about the project.
     #[serde(default)]
     pub git_tracking_asked: bool,
+    /// The digest of this workspace's `.gavin-root/config.toml` execution
+    /// keys -- `[agent] command`, `[agent] file`, `[worktree] setup` --
+    /// as approved by the human (the frontend's `workspaceTrust.ts` owns
+    /// the hash and the comparison). Absent means nothing approved, which
+    /// is where a freshly cloned repo starts and where a workspace naming
+    /// none of those keys stays.
+    ///
+    /// config.toml ships with the repository, and those three keys name
+    /// what gavin RUNS rather than choosing among rows gavin already
+    /// verified. Trusting them because they are on disk trusts whoever
+    /// wrote the repo; this records that a person looked at the values.
+    ///
+    /// Machine-local, like the rest here and more pointedly: a copy of
+    /// this in the repo would let the repo vouch for itself.
+    /// `skip_serializing_if` keeps the key out of config.json for the
+    /// ordinary case of a workspace with nothing to approve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_config_hash: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -741,6 +759,7 @@ mod tests {
             pinned_at: None,
             complexity_agents: HashMap::new(),
             git_tracking_asked: false,
+            trusted_config_hash: None,
         }
     }
 

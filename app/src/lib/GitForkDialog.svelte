@@ -1,6 +1,6 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
-  import * as backend from "./backend";
+  import ConfigTrustNotice from "./ConfigTrustNotice.svelte";
   import {
     gitStore,
     ensureGitView,
@@ -9,7 +9,8 @@
     switchWorktree,
     rootPathOf,
   } from "./gitState";
-  import { gavinTrees } from "./gavinState";
+  import { gavinTrees, worktreeSetups } from "./gavinState";
+  import { configTrusts } from "./layoutState";
   import { showAlert } from "./dialog";
   import { defaultWorktreePath, validateBranchName } from "./git";
   import { setupPlan, setupNotice } from "./worktreeSetup";
@@ -100,27 +101,17 @@
     void refreshGit(workspaceId);
   });
 
-  let setup = $state<string[]>([]);
-  $effect(() => {
-    const root = gavinRoot;
-    if (!root) return;
-    // A stale reply must not overwrite a newer one; the dialog is built
-    // fresh on each open, but the root can arrive after mount.
-    let live = true;
-    void backend
-      .worktreeSetup(root)
-      .then((list) => {
-        if (live) setup = list;
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  });
+  // Off the shared store rather than a read of its own: this is the copy
+  // workspace trust hashed, so the line shown here cannot differ from the
+  // one the new worktree runs.
+  const setup = $derived($worktreeSetups[workspaceId] ?? []);
+  const trust = $derived($configTrusts(workspaceId));
 
   /// What the new worktree's one session will run. Null means nothing is
   /// to be run and no session should open at all.
-  const plan = $derived(setupPlan(setup, allowSpawn && startAgent ? agentCommand : null));
+  const plan = $derived(
+    setupPlan(setup, allowSpawn && startAgent ? agentCommand : null, trust.trusted)
+  );
 
   // The folder follows the branch name until the user edits it (G11).
   const effectiveBranch = $derived(mode === "new" ? branch : existing);
@@ -265,6 +256,11 @@
         Start agent here <span class="cmd">({agentCommand})</span>
       </label>
     {/if}
+
+    <!-- Above the setup notice, because when the config is unapproved
+         that notice is ABSENT: the human would otherwise cut a worktree
+         believing the repo declared no setup. -->
+    <ConfigTrustNotice {workspaceId} />
 
     <!-- Only where setup was actually declared: a plan carrying nothing
          but the agent command would just repeat the checkbox above it. -->

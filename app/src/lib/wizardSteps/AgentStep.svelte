@@ -6,9 +6,10 @@
     agentProfilesStore,
     agentModelDefaultsStore,
     setAgentField,
+    trustedAgentConfigs,
   } from "./../layoutState";
-  import { gavinTrees } from "./../gavinState";
   import { resolveAgentConfig, agentFileFromPick } from "./../settings";
+  import ConfigTrustNotice from "./../ConfigTrustNotice.svelte";
 
   interface Props {
     workspaceId: string;
@@ -17,10 +18,9 @@
   let { workspaceId, onDone }: Props = $props();
 
   const root = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath ?? null);
-  const tree = $derived($gavinTrees[workspaceId]);
   const agentCfg = $derived(
     resolveAgentConfig(
-      tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $trustedAgentConfigs(workspaceId),
       $agentProfilesStore,
       $agentModelDefaultsStore
     )
@@ -103,6 +103,12 @@
 <p class="hint">
   gavin writes the integration files for the agent you pick, and starts it with this command.
 </p>
+
+<!-- The wizard is where a freshly cloned repo is met for the first time,
+     so this is the earliest place the human can see that config.toml
+     named a command and gavin is not running it. The Command field below
+     shows the resolved one, which is gavin's own until they approve. -->
+<ConfigTrustNotice {workspaceId} />
 
 <label class="row">
   <span>Profile</span>

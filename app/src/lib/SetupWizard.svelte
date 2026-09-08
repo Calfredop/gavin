@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { layoutState, closeWizard, agentProfilesStore, agentModelDefaultsStore} from "./layoutState";
+  import {
+    layoutState,
+    closeWizard,
+    agentProfilesStore,
+    agentModelDefaultsStore,
+    trustedAgentConfigs,
+  } from "./layoutState";
   import { gavinTrees } from "./gavinState";
   import { resolveAgentConfig, resolvePrdPath } from "./settings";
   import { setupProgress, type SetupStep } from "./setupWizard";
@@ -30,7 +36,9 @@
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
-  const agentCfg = $derived(resolveAgentConfig(rootContext?.agent ?? null, $agentProfilesStore, $agentModelDefaultsStore));
+  const agentCfg = $derived(
+    resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
+  );
   const prdPath = $derived(resolvePrdPath(rootContext));
 
   // The two file bodies the derivation needs. Re-read on demand rather
@@ -55,7 +63,7 @@
       // A detector that threw still has to settle the pending flag, or
       // the wizard never renders at all. UNKNOWN_STATUS is the honest
       // stand-in: it offers no button and completes no step.
-      backend.superpowersStatus(root).catch(() => UNKNOWN_STATUS),
+      backend.superpowersStatus(root, agentCfg.command).catch(() => UNKNOWN_STATUS),
       backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
     ]);
     agentFileBody = agentFile?.exists ? agentFile.content : null;
@@ -74,7 +82,7 @@
   const progress = $derived(
     setupProgress({
       hasRoot: Boolean(ws?.rootPath),
-      configCommand: rootContext?.agent?.command ?? null,
+      configCommand: $trustedAgentConfigs(workspaceId)?.command ?? null,
       agentFileBody,
       prdBody,
       mainSessionId: ws?.mainSessionId ?? null,

@@ -180,6 +180,16 @@ export interface Workspace {
   /// local like the rest here: whether THIS person has seen a question is
   /// not a fact about the project.
   gitTrackingAsked?: boolean;
+  /// The digest of the `.gavin-root/config.toml` execution keys this
+  /// human has approved for this workspace (`workspaceTrust.ts`). Absent
+  /// means nothing has been approved, which is the state a freshly cloned
+  /// repo starts in and the state every workspace that names none of
+  /// those keys stays in forever.
+  ///
+  /// Machine-local, and emphatically so: it is a statement by THIS person
+  /// about THIS checkout, and a copy of it in the repo would let the repo
+  /// vouch for itself.
+  trustedConfigHash?: string;
 }
 
 /// A workspace that left the app through the sidebar X, kept so its

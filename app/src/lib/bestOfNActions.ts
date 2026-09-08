@@ -31,12 +31,12 @@ import { putRun, dropRun, bestOfNRuns, runForCard } from "./bestOfNState";
 import {
   armFailureDetection,
   candidateAgentFor,
+  configTrustFor,
   conversationIdForLaunch,
   createTiledPage,
   layoutState,
   setSessionName,
   switchWorkspaceView,
-  workspaceRootPath,
 } from "./layoutState";
 import { buildRunCommand, composePlanPrompt, composeTaskPrompt, noPromptReason, provisionalSessionName, runStatusNeeded } from "./cardRun";
 import { developingBlocker } from "./developingCardsState";
@@ -44,7 +44,7 @@ import { resolveAttachmentsForRun } from "./cardRunActions";
 import { cardSessionState } from "./columnRunAction";
 import { discardWorktrees, forkWorktree } from "./gitState";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
-import { gavinTrees, patchPlanField, patchPlanPath } from "./gavinState";
+import { patchPlanField, patchPlanPath, worktreeSetups } from "./gavinState";
 import { setupPlan } from "./worktreeSetup";
 import { stripFrontmatter } from "./planChecklist";
 import { closeTabsNow } from "./tabActions";
@@ -128,8 +128,12 @@ export async function startBestOfN(
   // of its agent on one line. A fresh worktree has no node_modules and no
   // .env; an agent started in one before its setup is an agent debugging
   // the checkout instead of the card.
-  const gavinRoot = get(gavinTrees)[workspaceId]?.rootPath ?? workspaceRootPath(workspaceId) ?? "";
-  const setup = gavinRoot ? await backend.worktreeSetup(gavinRoot).catch(() => []) : [];
+  //
+  // Off the store rather than re-read from disk here: the store's copy is
+  // the one workspace trust hashed, and a fresher read could carry lines
+  // the human never approved into a launch that believes they were.
+  const trust = configTrustFor(workspaceId);
+  const setup = get(worktreeSetups)[workspaceId] ?? [];
 
   const launches = plans.map((plan, i) => {
     const agent = agents[i];
@@ -143,7 +147,7 @@ export async function startBestOfN(
     );
     // Unreachable -- the gate above returned already -- but the null is
     // the whole point of buildRunCommand's signature.
-    const line = command === null ? null : setupPlan(setup, command)?.line ?? command;
+    const line = command === null ? null : setupPlan(setup, command, trust.trusted)?.line ?? command;
     return { plan, agent, conversationId, command, line };
   });
   const nullCommand = launches.find((l) => l.line === null);

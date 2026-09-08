@@ -1186,8 +1186,21 @@ pub struct IntegrationResult {
 }
 
 #[tauri::command]
-pub fn setup_agent_integration(root_path: String) -> Result<IntegrationResult, String> {
-    run_integration(Path::new(&root_path), resolve_mcp_binary_path)
+/// `instructions_file` is the workspace's RESOLVED agent file. Passed
+/// rather than read from config.toml here for the same reason
+/// `superpowers::binary_for` takes its binary: `[agent] file` ships with
+/// the repository, and this command WRITES through it. The frontend
+/// supplies a value already gated by workspace trust
+/// (`workspaceTrust.ts`) -- the repo's only once a human approved this
+/// config, the profile's own until then -- so the file gavin writes is
+/// the file its Settings panel says it will write. `None` falls back to
+/// reading the root, which is what an older frontend does and what
+/// `validate_agent_file_path` still contains to the workspace.
+pub fn setup_agent_integration(
+    root_path: String,
+    instructions_file: Option<String>,
+) -> Result<IntegrationResult, String> {
+    run_integration(Path::new(&root_path), resolve_mcp_binary_path, instructions_file.as_deref())
 }
 
 /// The command's body, with the binary lookup injected. Injected because
@@ -1198,12 +1211,17 @@ pub fn setup_agent_integration(root_path: String) -> Result<IntegrationResult, S
 fn run_integration(
     root: &Path,
     resolve_binary: impl Fn() -> anyhow::Result<PathBuf>,
+    instructions_file: Option<&str>,
 ) -> Result<IntegrationResult, String> {
     if !root.is_dir() {
         return Err(format!("root does not exist: {}", root.display()));
     }
     let profile = profile_by_id(&read_profile_id(root));
-    let instructions_file = resolved_instructions_file(root, profile);
+    let instructions_file = instructions_file
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| resolved_instructions_file(root, profile));
     let mcp = resolved_mcp(root, profile);
     let prd = prd_relative_path(root);
     let mut written = Vec::new();
@@ -2030,7 +2048,7 @@ mod tests {
     // The surviving refusal is a root that is not there at all.
     #[test]
     fn setup_refuses_a_root_that_does_not_exist() {
-        let err = setup_agent_integration("/no/such/root".to_string()).unwrap_err();
+        let err = setup_agent_integration("/no/such/root".to_string(), None).unwrap_err();
         assert!(err.contains("root does not exist"), "got: {err}");
     }
 
@@ -2055,7 +2073,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "codex");
 
-        let result = run_integration(dir.path(), fake_binary()).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None).unwrap();
 
         // The agent file IS written, which was the whole point of W4.
         assert!(dir.path().join("AGENTS.md").is_file());
@@ -2069,6 +2087,43 @@ mod tests {
         assert!(result.skipped[0].1.contains("Codex CLI"), "the reason names the profile");
     }
 
+    /// The marker block goes into the file the CALLER named, and a repo's
+    /// own `[agent] file` is not consulted when one is given.
+    ///
+    /// That key ships with the repository, and workspace trust holds it
+    /// inert until a human approves it (`workspaceTrust.ts`) -- so the
+    /// frontend passes the file its own panels name. Reading the root
+    /// here instead would have this command writing gavin's block into a
+    /// file the Settings panel says nothing about.
+    #[test]
+    fn integration_writes_the_instructions_file_the_caller_named() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        std::fs::write(
+            dir.path().join(".gavin-root").join("config.toml"),
+            "[agent]\nprofile = \"claude-code\"\nfile = \"REPO_CHOSE_THIS.md\"\n",
+        )
+        .unwrap();
+
+        let result = run_integration(dir.path(), fake_binary(), Some("CLAUDE.md")).unwrap();
+
+        assert!(dir.path().join("CLAUDE.md").is_file());
+        assert!(!dir.path().join("REPO_CHOSE_THIS.md").exists());
+        assert!(result.written.iter().any(|w| w.ends_with("CLAUDE.md")));
+
+        // None still reads the root, which is what an older frontend
+        // does -- and what `validate_agent_file_path` still contains.
+        let other = tempfile::tempdir().unwrap();
+        rooted_with_profile(other.path(), "claude-code");
+        std::fs::write(
+            other.path().join(".gavin-root").join("config.toml"),
+            "[agent]\nprofile = \"claude-code\"\nfile = \"REPO_CHOSE_THIS.md\"\n",
+        )
+        .unwrap();
+        run_integration(other.path(), fake_binary(), None).unwrap();
+        assert!(other.path().join("REPO_CHOSE_THIS.md").is_file());
+    }
+
     /// Both omissions survive only where there is no layout at all, which
     /// after sub-project B means an unconfigured `custom` profile.
     #[test]
@@ -2080,7 +2135,7 @@ mod tests {
         let base = "[agent]\nprofile = \"custom\"\nfile = \"RULES.md\"\n";
         std::fs::write(g.join("config.toml"), base).unwrap();
 
-        let result = run_integration(dir.path(), fake_binary()).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None).unwrap();
 
         assert!(dir.path().join("RULES.md").is_file());
         let skipped: Vec<&str> = result.skipped.iter().map(|(what, _)| what.as_str()).collect();
@@ -2092,7 +2147,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "codex");
 
-        run_integration(dir.path(), fake_binary()).unwrap();
+        run_integration(dir.path(), fake_binary(), None).unwrap();
 
         let body = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
         assert!(body.contains(MARKER_START) && body.contains(MARKER_END));
@@ -2127,7 +2182,7 @@ mod tests {
                 &format!("mcp_file = \"{config_file}\"\nmcp_format = \"{format}\"\n"),
             );
 
-            let result = run_integration(dir.path(), fake_binary()).unwrap();
+            let result = run_integration(dir.path(), fake_binary(), None).unwrap();
 
             let written = dir.path().join(config_file);
             assert!(written.is_file(), "{format} did not write {config_file}");
@@ -2146,7 +2201,7 @@ mod tests {
             dir.path(),
             "mcp_file = \".myagent/config.toml\"\nmcp_format = \"toml-servers\"\n",
         );
-        run_integration(dir.path(), fake_binary()).unwrap();
+        run_integration(dir.path(), fake_binary(), None).unwrap();
         let text = std::fs::read_to_string(dir.path().join(".myagent/config.toml")).unwrap();
         let parsed = text.parse::<toml::Table>().unwrap();
         assert_eq!(parsed["mcp_servers"]["gavin"]["command"].as_str().unwrap(), "/apps/gavin-mcp");
@@ -2161,7 +2216,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             custom_rooted(dir.path(), extra);
-            run_integration(dir.path(), fake_binary()).unwrap();
+            run_integration(dir.path(), fake_binary(), None).unwrap();
             let written = std::fs::read_to_string(dir.path().join("agent.json")).unwrap();
             let v: serde_json::Value = serde_json::from_str(&written).unwrap();
             assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
@@ -2180,7 +2235,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         custom_rooted(dir.path(), "mcp_file = \"../escaped.json\"\n");
-        let result = run_integration(dir.path(), fake_binary()).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None).unwrap();
         let skipped: Vec<&str> = result.skipped.iter().map(|(w, _)| w.as_str()).collect();
         assert_eq!(skipped, ["skill file", "MCP config"]);
         assert!(!dir.path().parent().unwrap().join("escaped.json").exists());
@@ -2203,7 +2258,7 @@ mod tests {
             )
             .unwrap();
 
-            let err = run_integration(dir.path(), fake_binary()).unwrap_err();
+            let err = run_integration(dir.path(), fake_binary(), None).unwrap_err();
 
             assert!(err.contains(escape), "error should name the value {escape}: {err}");
             assert!(
@@ -2394,7 +2449,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "opencode");
 
-        let result = run_integration(dir.path(), fake_binary()).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -2430,7 +2485,7 @@ mod tests {
     fn the_opencode_agent_file_carries_the_git_only_grant() {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "opencode");
-        run_integration(dir.path(), fake_binary()).unwrap();
+        run_integration(dir.path(), fake_binary(), None).unwrap();
 
         let body =
             std::fs::read_to_string(dir.path().join(".opencode/agent/gavin-commit.md")).unwrap();

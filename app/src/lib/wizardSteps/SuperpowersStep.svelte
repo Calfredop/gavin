@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { layoutState } from "./../layoutState";
+  import { agentModelDefaultsStore, agentProfilesStore, layoutState, trustedAgentConfigs } from "./../layoutState";
+  import { resolveAgentConfig } from "./../settings";
   import * as backend from "./../backend";
   import SuperpowersControls from "./../SuperpowersControls.svelte";
   import type { SuperpowersMark, SuperpowersStatus } from "./../superpowers";
@@ -16,6 +17,10 @@
   let { workspaceId, status, mark, onChanged, onDone }: Props = $props();
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
+  const agentCommand = $derived(
+    resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
+      .command
+  );
 
   let error = $state<string | null>(null);
 
@@ -49,7 +54,7 @@
 </p>
 
 {#if status}
-  <SuperpowersControls rootPath={ws?.rootPath ?? null} {status} {mark} {onChanged} />
+  <SuperpowersControls rootPath={ws?.rootPath ?? null} {agentCommand} {status} {mark} {onChanged} />
   {#if error}
     <p class="warn">{error}</p>
   {/if}

@@ -19,6 +19,7 @@
     agentDefaultsStore,
     setWorkspaceComplexityTable,
     markGitTrackingAsked,
+    trustedAgentConfigs,
   } from "./layoutState";
   import ComplexityTable from "./ComplexityTable.svelte";
   import type { Complexity, ComplexityAgent } from "./complexity";
@@ -55,6 +56,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import * as backend from "./backend";
   import SuperpowersControls from "./SuperpowersControls.svelte";
+  import ConfigTrustNotice from "./ConfigTrustNotice.svelte";
   import WorkspaceRootControl from "./WorkspaceRootControl.svelte";
   import ColourPicker from "./ColourPicker.svelte";
   import Modal from "./Modal.svelte";
@@ -88,7 +90,7 @@
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
   const agent = $derived(
-    resolveAgentConfig(rootContext?.agent ?? null, $agentProfilesStore, $agentModelDefaultsStore, {
+    resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore, {
       command: $agentDefaultsStore.customCommand,
       modelFlag: $agentDefaultsStore.customModelFlag,
     })
@@ -117,7 +119,7 @@
     const mine = ++spToken;
     if (!root) return;
     const [status, marks] = await Promise.all([
-      backend.superpowersStatus(root).catch(() => undefined),
+      backend.superpowersStatus(root, agent.command).catch(() => undefined),
       backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
     ]);
     if (mine !== spToken) return;
@@ -857,6 +859,10 @@
 
     <section>
       <h3>Agent</h3>
+      <!-- Above the Command field it gates: the field shows the RESOLVED
+           command, so without this the panel would silently answer with
+           the profile's while config.toml said something else. -->
+      <ConfigTrustNotice {workspaceId} showApproved />
       {#if !hasRoot}
         <p class="hint">Bind a root folder to configure the agent.</p>
       {:else if configWarning}
@@ -1070,6 +1076,7 @@
           {#if superpowers}
             <SuperpowersControls
               rootPath={ws?.rootPath ?? null}
+              agentCommand={agent.command}
               status={superpowers}
               mark={superpowersMark}
               onChanged={() => void readSuperpowers()}

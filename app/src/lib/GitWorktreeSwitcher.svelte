@@ -4,10 +4,15 @@
   import IconButton from "./ui/IconButton.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import { worktreeStaleIndicator } from "./ui/indicators";
-  import { agentProfilesStore, createSessionForCard, agentModelDefaultsStore, layoutState } from "./layoutState";
+  import {
+    agentProfilesStore,
+    createSessionForCard,
+    agentModelDefaultsStore,
+    layoutState,
+    trustedAgentConfigs,
+  } from "./layoutState";
   import { allSessionIdsInWorkspace } from "./workspace";
   import { orchestrations } from "./orchestrationState";
-  import { gavinTrees } from "./gavinState";
   import { resolveAgentConfig } from "./settings";
   import { askConfirmChecked, showAlert } from "./dialog";
   import {
@@ -46,10 +51,9 @@
   // Match on git's canonical toplevel, not on the cwd string we were given.
   const current = $derived(worktrees.find((w) => w.path === view?.repo?.root) ?? worktrees.find((w) => w.path === view?.cwd) ?? null);
   const anyPrunable = $derived(worktrees.some((w) => w.prunable));
-  const tree = $derived($gavinTrees[workspaceId]);
   const agentCommand = $derived(
     resolveAgentConfig(
-      tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $trustedAgentConfigs(workspaceId),
       $agentProfilesStore,
       $agentModelDefaultsStore
     ).launchCommand

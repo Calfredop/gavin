@@ -7,8 +7,8 @@
     agentModelDefaultsStore,
     setPrdPath,
     startMainAgentWithPrompt,
+    trustedAgentConfigs,
   } from "./../layoutState";
-  import { gavinTrees } from "./../gavinState";
   import { featureBlockedReason } from "./../daemonCompat";
   import { resolveAgentConfig, prdPathFromPick } from "./../settings";
   import { applyPrdSections, agentFlowAvailable, prdHasPlaceholders } from "./../setupWizard";
@@ -32,10 +32,9 @@
   let { workspaceId, prdBody, prdPath, integrationDone, onDone }: Props = $props();
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
-  const tree = $derived($gavinTrees[workspaceId]);
   const agentCfg = $derived(
     resolveAgentConfig(
-      tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $trustedAgentConfigs(workspaceId),
       $agentProfilesStore,
       $agentModelDefaultsStore
     )
@@ -90,7 +89,7 @@
       await setPrdPath(workspaceId, result.path);
       note = `Now leading this workspace: ${result.path}.`;
       if (integrationDone) {
-        await backend.setupAgentIntegration(root);
+        await backend.setupAgentIntegration(root, agentCfg.file);
         note = `${note} The integration files were rewritten to name it.`;
       }
     } catch (e) {

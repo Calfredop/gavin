@@ -21,7 +21,7 @@ import { sessionLabel } from "./paths";
 import { buildRunCommand, mintConversationId, noPromptReason } from "./cardRun";
 import { workspaceIdForSession } from "./workspace";
 import { maybeNotifyStatusChange, parseSessionStatus, type SessionStatus } from "./notifications";
-import { initGavinListeners, watchRootedWorkspaces, gavinTrees } from "./gavinState";
+import { initGavinListeners, watchRootedWorkspaces, gavinTrees, worktreeSetups } from "./gavinState";
 import { followRenamedContext } from "./planExplorer";
 import { retargetPath } from "./fileTree";
 import {
@@ -34,7 +34,7 @@ import { mergeDiscoveredModels } from "./agentModel";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "./terminalFont";
 import { normalizeAutoCommit, resolveAutoCommit } from "./autoCommit";
 import { normalizeGitTracking } from "./gitTracking";
-import type { BoardTab, CardTab, CardTabView, GavinTree } from "./gavin";
+import type { AgentConfig, BoardTab, CardTab, CardTabView, GavinTree } from "./gavin";
 import { themeState } from "./ui/themeState.svelte";
 import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
 import type { OrphanProcess } from "./orphan";
@@ -54,6 +54,14 @@ import {
   type ComplexityTable,
 } from "./complexity";
 import { cardAgentEntry, type CardAgentFields } from "./cardAgent";
+import {
+  configTrusted,
+  executionKeys,
+  executionKeysHash,
+  hasExecutionKeys,
+  trustedAgentConfig,
+  type ExecutionKeys,
+} from "./workspaceTrust";
 import {
   activeWorkspaceForWindow,
   isInAnotherWindow,
@@ -1708,13 +1716,130 @@ function customAgentDefault(defaults: AgentDefaults) {
   return { command: defaults.customCommand, modelFlag: defaults.customModelFlag };
 }
 
+/// Where a workspace stands on the three config.toml keys that name
+/// something gavin executes -- see `workspaceTrust.ts` for what they are
+/// and why they are gated.
+export interface ConfigTrust {
+  /// The keys as they stand on disk right now.
+  keys: ExecutionKeys;
+  /// Their digest, "" when there is nothing to approve.
+  hash: string;
+  /// Whether the human has approved exactly these values. TRUE for a
+  /// config that names none of them -- there is nothing to say yes to.
+  trusted: boolean;
+  /// Whether there is a decision outstanding: keys are present and
+  /// unapproved. What the notices key off, so a workspace with nothing
+  /// to approve never shows one.
+  needsApproval: boolean;
+}
+
+/// Assembled from three sources because the keys live in two files: the
+/// `[agent]` block rides on the daemon's tree, `[worktree] setup` is read
+/// from config.toml beside it, and the marker is in config.json.
+///
+/// An absent setup entry means "not read yet", which hashes differently
+/// from the approved value and so reads as unapproved -- the right answer
+/// for the moments before the first read lands, since the alternative is
+/// a window in which a cloned repo's command launches.
+function trustFrom(
+  tree: GavinTree | undefined,
+  setup: string[] | undefined,
+  workspace: Workspace | undefined
+): ConfigTrust {
+  const keys = executionKeys(
+    tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+    setup ?? []
+  );
+  const trusted = configTrusted(keys, workspace?.trustedConfigHash);
+  return {
+    keys,
+    hash: executionKeysHash(keys),
+    trusted,
+    needsApproval: hasExecutionKeys(keys) && !trusted,
+  };
+}
+
+/// One workspace's trust state, once, for an action.
+export function configTrustFor(workspaceId: string): ConfigTrust {
+  return trustFrom(
+    get(gavinTrees)[workspaceId],
+    get(worktreeSetups)[workspaceId],
+    get(layoutState).workspaces.find((w) => w.id === workspaceId)
+  );
+}
+
+/// The same answer reactively: `$configTrusts(workspaceId)`. A component
+/// that read the one-shot helper would keep whatever was true at mount --
+/// and at mount the setup read has usually not landed, so it would sit on
+/// "not approved" for the life of the view.
+export const configTrusts = derived(
+  [gavinTrees, worktreeSetups, layoutState],
+  ([$trees, $setups, $layout]) =>
+    (workspaceId: string): ConfigTrust =>
+      trustFrom($trees[workspaceId], $setups[workspaceId], $layout.workspaces.find((w) => w.id === workspaceId))
+);
+
+/// The workspace's `[agent]` block as anything that LAUNCHES may read it:
+/// the two execution keys blanked when the config is not approved.
+///
+/// Every path to an agent goes through this rather than reading the tree
+/// directly, so a launch route added later cannot forget to ask. That is
+/// also why it is not a parameter on `resolveAgentConfig`: a defaulted
+/// one fails open, and a required one is a boolean thirteen call sites
+/// have to get right.
+export function trustedAgentConfigFor(workspaceId: string): AgentConfig | null {
+  const raw = get(gavinTrees)[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null;
+  return trustedAgentConfig(raw, configTrustFor(workspaceId).trusted);
+}
+
+/// The reactive spelling: `$trustedAgentConfigs(workspaceId)`.
+export const trustedAgentConfigs = derived(
+  [gavinTrees, configTrusts],
+  ([$trees, $trust]) =>
+    (workspaceId: string): AgentConfig | null =>
+      trustedAgentConfig(
+        $trees[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+        $trust(workspaceId).trusted
+      )
+);
+
+/// Records that the human approved exactly the values config.toml holds
+/// right now. Called from the approval sheet, which showed them.
+///
+/// Stamps the CURRENT digest rather than a remembered one: between the
+/// sheet opening and the button being pressed the file may have changed
+/// underneath, and approving a value nobody was shown is the one thing
+/// this gate exists to prevent. A config with nothing to approve stores
+/// nothing.
+export async function approveWorkspaceConfig(workspaceId: string): Promise<void> {
+  const trust = configTrustFor(workspaceId);
+  if (!hasExecutionKeys(trust.keys)) return;
+  await stampConfigTrust(workspaceId, trust.hash);
+}
+
+/// Withdraws approval, putting the keys back to inert. The undo for a
+/// human who approved and thought better of it.
+export async function revokeWorkspaceConfig(workspaceId: string): Promise<void> {
+  await stampConfigTrust(workspaceId, undefined);
+}
+
+async function stampConfigTrust(workspaceId: string, hash: string | undefined): Promise<void> {
+  const state = get(layoutState);
+  const current = state.workspaces.find((w) => w.id === workspaceId);
+  if (!current || current.trustedConfigHash === hash) return;
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, trustedConfigHash: hash } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+
 /// The workspace's resolved agent settings, from config.toml's [agent]
 /// block on the root context plus the profile table.
 export function resolvedAgentFor(workspaceId: string) {
-  const tree = get(gavinTrees)[workspaceId];
-  const rootContext = tree?.contexts.find((c) => c.kind === "root");
   return resolveAgentConfig(
-    rootContext?.agent ?? null,
+    trustedAgentConfigFor(workspaceId),
     get(agentProfilesStore),
     get(agentModelDefaultsStore),
     customAgentDefault(get(agentDefaultsStore))
@@ -1770,7 +1895,7 @@ export function agentForCard(
 /// a config would pin every inherited value as if the workspace had
 /// chosen it.
 export function workspaceAgentConfig(workspaceId: string) {
-  return get(gavinTrees)[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null;
+  return trustedAgentConfigFor(workspaceId);
 }
 
 /// One best-of-N candidate's agent: the workspace's own settings with
@@ -1805,15 +1930,10 @@ export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
 /// the workspace id is a prop the component already has and the three
 /// inputs are app-wide.
 export const resolvedAgents = derived(
-  [gavinTrees, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
-  ([$trees, $profiles, $models, $defaults]) =>
+  [trustedAgentConfigs, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
+  ([$configs, $profiles, $models, $defaults]) =>
     (workspaceId: string) =>
-      resolveAgentConfig(
-        $trees[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null,
-        $profiles,
-        $models,
-        customAgentDefault($defaults)
-      )
+      resolveAgentConfig($configs(workspaceId), $profiles, $models, customAgentDefault($defaults))
 );
 
 /// The same answer for a CARD, reactively: `$cardAgents(workspaceId,
@@ -1827,10 +1947,10 @@ export const resolvedAgents = derived(
 /// model flag for a card the human pointed at codex, and would go on
 /// showing it for the life of the modal.
 export const cardAgents = derived(
-  [gavinTrees, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
-  ([$trees, $layout, $profiles, $models, $defaults]) =>
+  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
+  ([$configs, $layout, $profiles, $models, $defaults]) =>
     (workspaceId: string, card: CardAgentFields | null | undefined) => {
-      const base = $trees[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null;
+      const base = $configs(workspaceId);
       const entry = cardAgentEntry(
         card,
         $defaults.complexity,
@@ -1948,6 +2068,26 @@ export async function setAgentField(
     await backend.setRootConfigField(ws.rootPath, key, value);
   } catch (e) {
     setError(String(e));
+    return;
+  }
+  // Two of the seven keys are the ones workspace trust gates, so writing
+  // one through gavin's own Settings panel or setup wizard would
+  // otherwise revoke the human's trust the instant they exercised it --
+  // they would type a command, save, and be asked to approve what they
+  // had just typed. The write IS the approval, so it carries the new
+  // marker.
+  //
+  // Computed from the value just written laid over the keys as they
+  // stand, not from the tree: the watcher push that carries the new value
+  // is still ~170ms away, and hashing the OLD command here would approve
+  // something nobody asked for.
+  if (key === "command" || key === "file") {
+    const trust = configTrustFor(workspaceId);
+    const keys = { ...trust.keys, [key]: value.trim() };
+    await stampConfigTrust(
+      workspaceId,
+      hasExecutionKeys(keys) ? executionKeysHash(keys) : undefined
+    );
   }
 }
 

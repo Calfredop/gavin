@@ -276,8 +276,19 @@ export function setAgentDefaults(agentDefaults: AgentDefaults): Promise<void> {
 /// and the marker lives in the app's own config.json, so none of this
 /// needs a daemon request and all of it keeps working across a version
 /// skew that has every gavin_* tool failing closed.
-export function superpowersStatus(rootPath: string): Promise<SuperpowersStatus> {
-  return invoke("superpowers_status", { rootPath });
+///
+/// `agentCommand` is the workspace's RESOLVED launch command, whose first
+/// token is the binary the detector drives. It is passed rather than read
+/// from config.toml host-side because this call fires on a TAB RENDER:
+/// a cloned repo naming `[agent] command = "./scripts/setup.sh"` would
+/// otherwise have that script executed by merely opening the workspace.
+/// Pass what `trustedAgentConfigs` resolved -- the repo's command only
+/// once the human approved this config, the profile's until then.
+export function superpowersStatus(
+  rootPath: string,
+  agentCommand: string
+): Promise<SuperpowersStatus> {
+  return invoke("superpowers_status", { rootPath, agentCommand });
 }
 
 /// Runs the install and returns the status that follows it. A failed
@@ -285,8 +296,12 @@ export function superpowersStatus(rootPath: string): Promise<SuperpowersStatus> 
 /// stdout and stderr for the drawer, and its state is what the detector
 /// says afterwards. Rejects only when no install was attempted: a profile
 /// gavin must not install into, or a binary it could not spawn.
-export function superpowersInstall(rootPath: string): Promise<SuperpowersStatus> {
-  return invoke("superpowers_install", { rootPath });
+/// `agentCommand`: as `superpowersStatus` above.
+export function superpowersInstall(
+  rootPath: string,
+  agentCommand: string
+): Promise<SuperpowersStatus> {
+  return invoke("superpowers_install", { rootPath, agentCommand });
 }
 
 /// What the human has told gavin, keyed by workspace root path.
@@ -541,8 +556,16 @@ export interface IntegrationResult {
   skipped: Array<[string, string]>;
 }
 
-export function setupAgentIntegration(rootPath: string): Promise<IntegrationResult> {
-  return invoke("setup_agent_integration", { rootPath });
+/// `instructionsFile` is the workspace's RESOLVED agent file — the one
+/// gavin's marker block is written into. Passed rather than read host-
+/// side because `[agent] file` ships with the repository: pass what
+/// `resolveAgentConfig` gave you, which workspace trust has already
+/// gated, so the file gavin writes is the file its panels name.
+export function setupAgentIntegration(
+  rootPath: string,
+  instructionsFile: string
+): Promise<IntegrationResult> {
+  return invoke("setup_agent_integration", { rootPath, instructionsFile });
 }
 
 export function createPlan(

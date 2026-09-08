@@ -20,7 +20,12 @@
   } from "./gitState";
   import { branchLabel } from "./git";
   import { gavinTrees } from "./gavinState";
-  import { agentProfilesStore, agentModelDefaultsStore, layoutState } from "./layoutState";
+  import {
+    agentProfilesStore,
+    agentModelDefaultsStore,
+    layoutState,
+    trustedAgentConfigs,
+  } from "./layoutState";
   import { resolveAgentConfig } from "./settings";
   import { reviewBlocker } from "./codeReview";
   import { requestBranchReview } from "./codeReviewActions";
@@ -50,7 +55,7 @@
   // config was when this toolbar first rendered.
   const agent = $derived(
     resolveAgentConfig(
-      $gavinTrees[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $trustedAgentConfigs(workspaceId),
       $agentProfilesStore,
       $agentModelDefaultsStore
     )

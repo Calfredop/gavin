@@ -28,6 +28,7 @@
   import {
     agentProfilesStore,
     agentModelDefaultsStore,
+    trustedAgentConfigs,
     wizardWorkspaceId,
   } from "$lib/layoutState";
   import SetupWizard from "$lib/SetupWizard.svelte";
@@ -135,7 +136,7 @@
   // the accent every tab indicator in this workspace reads.
   const activeAgent = $derived(
     resolveAgentConfig(
-      $gavinTrees[activeWorkspace?.id ?? ""]?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $trustedAgentConfigs(activeWorkspace?.id ?? ""),
       $agentProfilesStore,
       $agentModelDefaultsStore
     )

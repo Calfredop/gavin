@@ -7,6 +7,7 @@
     openWizard,
     agentModelDefaultsStore,
     setHomeAgentShare,
+    trustedAgentConfigs,
   } from "./layoutState";
   import { resolveAgentConfig, resolvePrdPath } from "./settings";
   import { setupProgress, SETUP_STEPS } from "./setupWizard";
@@ -15,6 +16,7 @@
   import { fetchBoard, kanbanState } from "./kanbanState";
   import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "./homeSummary";
   import MainAgentPanel from "./MainAgentPanel.svelte";
+  import ConfigTrustNotice from "./ConfigTrustNotice.svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import { railIndicator } from "./ui/indicators";
   import * as backend from "./backend";
@@ -50,7 +52,7 @@
   // bind:this handle below.
   const agentCfg = $derived(
     resolveAgentConfig(
-      tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $trustedAgentConfigs(workspaceId),
       $agentProfilesStore,
       $agentModelDefaultsStore
     )
@@ -82,7 +84,7 @@
   const setup = $derived(
     setupProgress({
       hasRoot: Boolean(root),
-      configCommand: tree?.contexts.find((c) => c.kind === "root")?.agent?.command ?? null,
+      configCommand: $trustedAgentConfigs(workspaceId)?.command ?? null,
       agentFileBody,
       prdBody,
       mainSessionId: ws?.mainSessionId ?? null,
@@ -188,7 +190,7 @@
         superpowersMark = recorded;
         if (recorded) return;
         return backend
-          .superpowersStatus(r)
+          .superpowersStatus(r, agentCfg.command)
           .catch(() => UNKNOWN_STATUS)
           .then((res) => {
             if (mine !== readToken) return;
@@ -322,6 +324,11 @@
         <span>{setup.done.length} of {SETUP_STEPS.length} done — continue</span>
       </button>
     {/if}
+    <!-- Home is where the workspace's own agent launches, and it is the
+         tab a freshly cloned repo opens on. If its config.toml names a
+         command gavin is refusing to run, this is the first place that
+         has to say so. -->
+    <ConfigTrustNotice {workspaceId} />
     <div class="grid" style:grid-template-columns={homeGridColumns(share)}>
       <div class="agent-cell" bind:this={agentEl}>
         <MainAgentPanel bind:this={agent} {workspaceId} />

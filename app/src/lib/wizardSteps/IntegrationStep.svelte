@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { layoutState } from "./../layoutState";
+  import {
+    agentModelDefaultsStore,
+    agentProfilesStore,
+    layoutState,
+    trustedAgentConfigs,
+  } from "./../layoutState";
+  import { resolveAgentConfig } from "./../settings";
   import * as backend from "./../backend";
 
   interface Props {
@@ -9,6 +15,13 @@
   let { workspaceId, onDone }: Props = $props();
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
+  // The file gavin's marker block goes into. Through the same resolution
+  // every other panel uses, so an unapproved `[agent] file` cannot make
+  // this step write somewhere the Settings panel does not name.
+  const agentFile = $derived(
+    resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
+      .file
+  );
 
   let result = $state<backend.IntegrationResult | null>(null);
   let error = $state<string | null>(null);
@@ -19,7 +32,7 @@
     running = true;
     error = null;
     try {
-      result = await backend.setupAgentIntegration(ws.rootPath);
+      result = await backend.setupAgentIntegration(ws.rootPath, agentFile);
     } catch (e) {
       error = String(e);
     }

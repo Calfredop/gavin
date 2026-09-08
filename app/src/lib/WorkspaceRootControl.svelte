@@ -9,7 +9,7 @@
   import { INIT_TRACKING_LABEL, resolveGitTracking } from "./gitTracking";
   import { applyInitTracking } from "./workspaceOpen";
   import { gavinTrees } from "./gavinState";
-  import { agentProfilesStore, agentModelDefaultsStore } from "./layoutState";
+  import { agentProfilesStore, agentModelDefaultsStore, trustedAgentConfigs } from "./layoutState";
   import { resolveAgentConfig } from "./settings";
   import * as backend from "./backend";
   import { UNFILED_WORKSPACE_ID, type Workspace } from "./workspace";
@@ -37,7 +37,7 @@
   const rootMissing = $derived(Boolean(workspace.rootPath && tree?.rootMissing));
   const agent = $derived(
     resolveAgentConfig(
-      tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $trustedAgentConfigs(workspace.id),
       $agentProfilesStore,
       $agentModelDefaultsStore
     )
@@ -98,7 +98,7 @@
     if (!workspace.rootPath) return;
     setupNote = null;
     try {
-      const result = await backend.setupAgentIntegration(workspace.rootPath);
+      const result = await backend.setupAgentIntegration(workspace.rootPath, agent.file);
       const wrote = result.written.map((f) => f.replace(workspace.rootPath + "/", "")).join(", ");
       const missed = result.skipped.map(([what]) => what).join(", ");
       setupNote = missed

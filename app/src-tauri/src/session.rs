@@ -622,6 +622,7 @@ mod workspaces_data_tests {
             pinned_at: None,
             complexity_agents: HashMap::new(),
             git_tracking_asked: false,
+            trusted_config_hash: None,
         };
         ws.complexity_agents.insert(
             "trivial".to_string(),
@@ -841,6 +842,7 @@ mod workspace_migration_tests {
             pinned_at: None,
             complexity_agents: HashMap::new(),
             git_tracking_asked: false,
+            trusted_config_hash: None,
         }
     }
 
@@ -2665,6 +2667,7 @@ mod resolve_workspaces_tests {
             pinned_at: None,
             complexity_agents: HashMap::new(),
             git_tracking_asked: false,
+            trusted_config_hash: None,
         }
     }
 
@@ -3267,6 +3270,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 pinned_at: None,
                 complexity_agents: HashMap::new(),
                 git_tracking_asked: false,
+                trusted_config_hash: None,
             },
         );
     }
@@ -4557,6 +4561,7 @@ mod main_session_tests {
             pinned_at: None,
             complexity_agents: HashMap::new(),
             git_tracking_asked: false,
+            trusted_config_hash: None,
         }
     }
 
@@ -5096,6 +5101,7 @@ mod attach_target_tests {
             pinned_at: None,
             complexity_agents: HashMap::new(),
             git_tracking_asked: false,
+            trusted_config_hash: None,
         }
     }
 
