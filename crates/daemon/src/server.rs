@@ -1352,6 +1352,18 @@ impl SessionManager {
         watcher.map(|w| w.snapshot())
     }
 
+    /// Every root this daemon currently has a live watcher on,
+    /// canonicalized -- what `confine_root_path` checks a root-taking
+    /// request's path against (DP-03/R4). One list shared by every
+    /// connection, same as `gavin_watchers` itself: nothing here says
+    /// which of these roots is the CALLING connection's own yet, so this
+    /// narrows "anywhere on disk" down to "somewhere this daemon already
+    /// has open", not yet "open by the caller" -- `sec-fix-client-identity.md`
+    /// is what sharpens it the rest of the way.
+    fn watched_roots(&self) -> Vec<std::path::PathBuf> {
+        self.gavin_watchers.lock().unwrap().values().map(|w| w.root_path.clone()).collect()
+    }
+
     /// The watched workspace whose root matches `root_path`. Watchers
     /// store canonicalized roots, so the incoming path is canonicalized
     /// before comparison.
@@ -3258,20 +3270,27 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 message: format!("no gavin root watched for workspace: {workspace_id}"),
             }),
         },
+        // Not confined to a watched root: see the doc comment on
+        // `gavin::init_gavin_root` for why this one request-taking-a-root
+        // stays exempt (DP-03/R4).
         Request::InitGavinRoot { root_path, workspace_name } => {
             crate::gavin::init_gavin_root(std::path::Path::new(&root_path), &workspace_name)
                 .map(|_| Response::Ok)
         }
         Request::CreateGavinContext { parent_folder } => {
-            crate::gavin::create_gavin_context(std::path::Path::new(&parent_folder))
-                .map(|_| Response::Ok)
+            crate::gavin::confine_root_path(
+                std::path::Path::new(&parent_folder),
+                &manager.watched_roots(),
+            )
+            .and_then(|confined| crate::gavin::create_gavin_context(&confined))
+            .map(|_| Response::Ok)
         }
         Request::AddExternalGavinContext { root_path, folder } => {
-            crate::gavin::add_external_context(
-                std::path::Path::new(&root_path),
-                std::path::Path::new(&folder),
-            )
-            .map(|_| Response::Ok)
+            crate::gavin::confine_root_path(std::path::Path::new(&root_path), &manager.watched_roots())
+                .and_then(|confined| {
+                    crate::gavin::add_external_context(&confined, std::path::Path::new(&folder))
+                })
+                .map(|_| Response::Ok)
         }
         Request::RemoveExternalGavinContext { root_path, folder } => {
             crate::gavin::remove_external_context(
@@ -4502,25 +4521,44 @@ mod tests {
     fn set_plan_frontmatter_field_over_socket_writes_and_rejects() {
         let (socket_path, _dir) = start_test_server();
         let ws_dir = tempfile::tempdir().unwrap();
-        let plan = ws_dir.path().join("p.md");
-        std::fs::write(&plan, "---\nstatus: To Do\n---\n# P\n").unwrap();
         let mut cmd = UnixStream::connect(&socket_path).unwrap();
+
+        // DP-03: a path outside any .gavin*/plans|docs|specs folder is
+        // refused outright now -- it used to write the field and only
+        // silently skip the move.
+        let loose = ws_dir.path().join("p.md");
+        std::fs::write(&loose, "---\nstatus: To Do\n---\n# P\n").unwrap();
+        let resp = request(
+            &mut cmd,
+            &Request::SetPlanFrontmatterField {
+                path: loose.to_string_lossy().to_string(),
+                key: "status".to_string(),
+                value: "Done".to_string(),
+            },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
+        assert_eq!(std::fs::read_to_string(&loose).unwrap(), "---\nstatus: To Do\n---\n# P\n");
+
+        crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
+        let plan = ws_dir.path().join(crate::gavin::GAVIN_ROOT_DIR).join("plans").join("p.md");
+        std::fs::write(&plan, "---\nstatus: To Do\n---\n# P\n").unwrap();
 
         let resp = request(
             &mut cmd,
             &Request::SetPlanFrontmatterField {
                 path: plan.to_string_lossy().to_string(),
-                key: "status".to_string(),
-                value: "Done".to_string(),
+                key: "priority".to_string(),
+                value: "high".to_string(),
             },
         );
-        // Loose file, outside any plans/ folder: Done archives nothing, and
-        // the reply carries the path it still has.
         match resp {
             Response::PlanFieldSet { path } => assert_eq!(path, plan.to_string_lossy()),
             other => panic!("expected PlanFieldSet, got {other:?}"),
         }
-        assert_eq!(std::fs::read_to_string(&plan).unwrap(), "---\nstatus: Done\n---\n# P\n");
+        assert_eq!(
+            std::fs::read_to_string(&plan).unwrap(),
+            "---\npriority: high\nstatus: To Do\n---\n# P\n"
+        );
 
         let resp = request(
             &mut cmd,
@@ -4547,9 +4585,22 @@ mod tests {
         assert!(matches!(resp, Response::Ok));
         let resp = request(
             &mut cmd,
-            &Request::InitGavinRoot { root_path: root, workspace_name: "WS".to_string() },
+            &Request::InitGavinRoot { root_path: root.clone(), workspace_name: "WS".to_string() },
         );
         assert!(matches!(resp, Response::Ok)); // idempotent second run
+
+        // CreateGavinContext is confined to a workspace this daemon
+        // already watches (DP-03) -- unlike InitGavinRoot just above,
+        // which exists to bootstrap a root nothing has watched yet.
+        let mut watcher = UnixStream::connect(&socket_path).unwrap();
+        write_message(
+            &mut watcher,
+            &Request::WatchGavinRoot { workspace_id: "ws-1".into(), root_path: root.clone() },
+        )
+        .unwrap();
+        let mut reader = line_reader(watcher.try_clone().unwrap());
+        let first: Option<Response> = read_message(&mut reader).unwrap();
+        assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
 
         let feature = ws_dir.path().join("auth");
         std::fs::create_dir_all(&feature).unwrap();
@@ -4565,6 +4616,74 @@ mod tests {
         let resp = request(
             &mut cmd,
             &Request::CreateGavinContext { parent_folder: "/not/a/real/dir".to_string() },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
+
+        // Unrelated to any watched root: refused even though it exists.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let resp = request(
+            &mut cmd,
+            &Request::CreateGavinContext {
+                parent_folder: elsewhere.path().to_string_lossy().to_string(),
+            },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    #[test]
+    fn add_external_gavin_context_over_socket_is_confined_to_a_watched_root() {
+        let (socket_path, _dir) = start_test_server();
+        let ws_dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
+        let root = ws_dir.path().to_string_lossy().to_string();
+        let lib = outside.path().join("shared-lib");
+        std::fs::create_dir_all(&lib).unwrap();
+
+        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+
+        // DP-03: root_path names a workspace nobody has told this daemon
+        // to watch, so the write is refused rather than landing on it
+        // unasked.
+        let resp = request(
+            &mut cmd,
+            &Request::AddExternalGavinContext { root_path: root.clone(), folder: lib.to_string_lossy().to_string() },
+        );
+        assert!(matches!(resp, Response::Error { .. }));
+        assert!(
+            !std::fs::read_to_string(ws_dir.path().join(crate::gavin::GAVIN_ROOT_DIR).join("config.toml"))
+                .unwrap()
+                .contains("shared-lib")
+        );
+
+        let mut watcher = UnixStream::connect(&socket_path).unwrap();
+        write_message(
+            &mut watcher,
+            &Request::WatchGavinRoot { workspace_id: "ws-1".into(), root_path: root.clone() },
+        )
+        .unwrap();
+        let mut reader = line_reader(watcher.try_clone().unwrap());
+        let first: Option<Response> = read_message(&mut reader).unwrap();
+        assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
+
+        let resp = request(
+            &mut cmd,
+            &Request::AddExternalGavinContext { root_path: root.clone(), folder: lib.to_string_lossy().to_string() },
+        );
+        assert!(matches!(resp, Response::Ok));
+        assert!(lib.join(".gavin").join("config.toml").is_file());
+
+        // A folder truly inside the workspace still refuses (unaffected
+        // by confining root_path first): `add_external_context`'s own
+        // `folder.starts_with(root)` check must still see them as the
+        // same tree even though root_path arrives at the confinement
+        // guard un-canonicalized and macOS's tmp dirs symlink into
+        // /private underneath it.
+        let inner = ws_dir.path().join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        let resp = request(
+            &mut cmd,
+            &Request::AddExternalGavinContext { root_path: root, folder: inner.to_string_lossy().to_string() },
         );
         assert!(matches!(resp, Response::Error { .. }));
     }
