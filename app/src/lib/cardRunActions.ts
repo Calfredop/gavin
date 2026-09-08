@@ -6,7 +6,7 @@
 
 import { get } from "svelte/store";
 import * as backend from "./backend";
-import { agentForCard, resolvedAgentFor, armFailureDetection, baseShaForLaunch, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "./layoutState";
+import { agentForCard, armFailureDetection, baseShaForLaunch, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "./layoutState";
 import { gavinTrees } from "./gavinState";
 import { findSessionLocation } from "./workspace";
 import { cardSessionState } from "./columnRunAction";
@@ -204,13 +204,22 @@ export async function developCard(
   // The card file is never read here: the skill's first move is to read
   // it, and inlining a task's body is what turns an interview into a
   // build.
-  // The WORKSPACE's agent, not the card's own, and deliberately: develop
-  // is an interview that rewrites a one-line card into work, so whatever
-  // the card names -- a level, or an `agent:`/`model:` of its own --
-  // describes the implementation nobody has written yet, not this
-  // conversation. The same reasoning covers both: the choice is about
-  // executing the card, and developing it is not executing it.
-  const agent = resolvedAgentFor(workspaceId);
+  // The CARD's agent, by the same rule every other launch follows
+  // (`agentForCard` -> `cardAgentEntry`): its own `agent:`/`model:` if
+  // it names either, else what its `complexity:` level is attributed to,
+  // else the workspace's own. Developing a card is not executing it, but
+  // it is still work ON that card, and the level is the human's only
+  // statement about what this card is worth -- the ⌘N composer files the
+  // level and starts the develop run in ONE gesture, so a card typed as
+  // intricate and developed on the spot has to reach the agent that
+  // level names. Reading it there and ignoring it here is what made the
+  // composer's promise false for one of the two actions it offers.
+  //
+  // Safe on the route whose whole point is thin cards, because "unrated"
+  // is not a level: develop overwhelmingly targets a card that names
+  // neither field, and `agentForCard` resolves that to EXACTLY
+  // `resolvedAgentFor` -- the behaviour this route had before.
+  const agent = agentForCard(workspaceId, card);
   const command = buildRunCommand(
     agent.launchCommand,
     agent.promptArgs,

@@ -103,10 +103,10 @@ describe("the card surfaces", () => {
 describe("the launch", () => {
   it("resolves every card through one path, override or not", () => {
     // `agentForCard` is called unconditionally by board Run, the rail's
-    // card step, both resumes and a re-launch. Routing it through
-    // `cardAgentEntry` is what makes the override reach all five without
-    // a second resolution path per route -- and what keeps a card with
-    // no override behaving exactly as it did before.
+    // card step, both resumes, a re-launch and a develop. Routing it
+    // through `cardAgentEntry` is what makes the override reach all six
+    // without a second resolution path per route -- and what keeps a
+    // card with no override behaving exactly as it did before.
     expect(source(LAYOUT)).toContain("cardAgentEntry(");
     expect(source(LAYOUT)).toContain("agentConfigWithAttribution(");
   });

@@ -19,6 +19,27 @@ vi.mock("./backend", () => ({
   getOrchestration: vi.fn(),
   setOrchestration: vi.fn().mockResolvedValue(undefined),
 }));
+/// Hoisted so the `vi.mock` factory below (which is hoisted above every
+/// import) can close over it, and so `resolvedAgentFor` and
+/// `agentForCard` can be the same function object.
+const agentMock = vi.hoisted(() =>
+  vi.fn(() => ({
+    profileId: "claude-code",
+    label: "Claude Code",
+    file: "CLAUDE.md",
+    command: "claude",
+    launchCommand: "claude",
+    mcpSupported: true,
+    failurePatterns: ["API Error:"],
+    failureCauses: [
+      { pattern: "/login", cause: "auth" },
+      { pattern: "Connection dropped", cause: "network" },
+    ],
+    sessionIdArgs: "--session-id",
+    resumeArgs: "--resume",
+    promptArgs: "",
+  }))
+);
 vi.mock("./layoutState", () => ({
   layoutState: writable({
     workspaces: [],
@@ -37,19 +58,14 @@ vi.mock("./layoutState", () => ({
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
   handleAgentSessionSpawned: vi.fn(),
   setSessionName: vi.fn().mockResolvedValue(undefined),
-  resolvedAgentFor: vi.fn(() => ({
-    profileId: "claude-code",
-    label: "Claude Code",
-    file: "CLAUDE.md",
-    command: "claude",
-    launchCommand: "claude",
-    mcpSupported: true,
-    failurePatterns: ["API Error:"],
-      failureCauses: [{ pattern: "/login", cause: "auth" }, { pattern: "Connection dropped", cause: "network" }],
-    sessionIdArgs: "--session-id",
-    resumeArgs: "--resume",
-    promptArgs: "",
-  })),
+  resolvedAgentFor: agentMock,
+  // The SAME function object, deliberately: no fixture in here carries a
+  // level or an `agent:`/`model:` line, so the card's own resolver lands
+  // on the workspace's agent exactly as the workspace resolver does.
+  // Owed by this file because the menu LAUNCHES -- Run and Develop both
+  // resolve through `agentForCard` -- and a missing export here is an
+  // unmocked-import throw at the click, not a wrong agent.
+  agentForCard: agentMock,
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   // null = no conversation id, which is what a daemon too old to persist
   // one gives every launch. These tests are about which menu entries

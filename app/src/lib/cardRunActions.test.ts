@@ -87,10 +87,12 @@ vi.mock("./layoutState", () => ({
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
   workspaceRootPath: vi.fn(() => "/ws"),
   resolvedAgentFor: agentMock,
-  // The SAME mock function, deliberately: no fixture here carries a
-  // complexity, so `agentForCard` really does resolve to the workspace's
-  // agent -- and a test that moves one has to move both, or half the
-  // launches in a single run would use a different agent.
+  // The SAME mock function, deliberately: almost no fixture here carries
+  // a complexity, so `agentForCard` really does resolve to the
+  // workspace's agent -- and a test that moves one has to move both, or
+  // half the launches in a single run would use a different agent. The
+  // one fixture that IS rated drives them apart on the second argument,
+  // which is the only thing that tells the two calls apart.
   agentForCard: agentMock,
 }));
 vi.mock("./workspace", () => {
@@ -113,7 +115,7 @@ vi.mock("./workspace", () => {
 });
 
 import * as backend from "./backend";
-import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, daemonCompat, workspaceRootPath, resolvedAgentFor, conversationIdForLaunch, baseShaForLaunch, armFailureDetection, setDevelopingCards } from "./layoutState";
+import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, daemonCompat, workspaceRootPath, resolvedAgentFor, agentForCard, conversationIdForLaunch, baseShaForLaunch, armFailureDetection, setDevelopingCards } from "./layoutState";
 import { findSessionLocation } from "./workspace";
 import { kanbanState } from "./kanbanState";
 import { gavinTrees } from "./gavinState";
@@ -658,6 +660,44 @@ describe("developCard", () => {
 
     vi.mocked(backend.createSession).mockRejectedValue(new Error("spawn failed"));
     expect(await developCard("ws-1", card("task", "To Do"))).toContain("spawn failed");
+  });
+
+  // A rated card is rated whether the agent is about to execute it or
+  // rewrite it. The composer files the level and starts the develop run
+  // in one gesture, so a card filed "intricate" and developed on the
+  // spot has to reach the agent that level names -- which is exactly
+  // what the composer's own comment already promises about the view it
+  // hands this action.
+  it("resolves the agent through the CARD, so its level picks who develops it", async () => {
+    const strong = { ...NO_RESUME_AGENT, launchCommand: "claude --model opus-max" };
+    vi.mocked(agentForCard).mockImplementation(((
+      _workspaceId: string,
+      c?: { complexity?: string | null }
+    ) => (c?.complexity === "intricate" ? strong : NO_RESUME_AGENT)) as never);
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+
+    const rated = { ...card("task", "To Do"), complexity: "intricate" as const };
+    expect(await developCard("ws-1", rated)).toBeNull();
+
+    const [, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).toContain("claude --model opus-max");
+    // The card, not just the workspace id: `agentForCard` cannot see a
+    // level it was never handed, and passing only the id is what made
+    // every develop run use the workspace's default.
+    expect(agentForCard).toHaveBeenCalledWith("ws-1", rated);
+  });
+
+  // The other half of the same rule, and the reason it is safe on a
+  // route whose whole point is thin cards: develop targets the card
+  // nobody has rated yet, and one that names neither a level nor an
+  // agent has to resolve to exactly what it did before.
+  it("still runs the workspace's agent for a card that rates itself nothing", async () => {
+    vi.mocked(backend.createSession).mockResolvedValue("s-9");
+
+    expect(await developCard("ws-1", card("task", "To Do"))).toBeNull();
+
+    const [, command] = vi.mocked(backend.createSession).mock.calls[0];
+    expect(command).toContain("claude --model opus");
   });
 });
 
