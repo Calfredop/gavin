@@ -146,6 +146,7 @@
     type SidebarMenuHooks,
   } from "./sidebarMenu";
   import { closeTabsNow } from "./tabActions";
+  import { windowDrag } from "./windowDrag";
   import { isInAnotherWindow } from "./appWindow";
   import { currentWindowLabel, workspaceWindows } from "./appWindowState";
   import type { CloseIdleRequest } from "./idleTabs";
@@ -1438,6 +1439,10 @@
         {/if}
       </button>
     {/each}
+    <!-- Below the last icon is empty rail, not dead space: the same
+         window-drag surface the expanded list's spacer offers, so
+         collapsing the sidebar never trades away a grab handle. -->
+    <div class="list-drag-spacer" use:windowDrag></div>
   </div>
 {/snippet}
 
@@ -1700,6 +1705,11 @@
           {/if}
         </div>
       {/each}
+      <!-- Whatever the list doesn't fill moves the window: a workspace
+           list this short still leaves the rest of the column reachable
+           as a grab handle, the same way the corner strip's own spacer
+           (windowDrag.ts) does across the header row. -->
+      <div class="list-drag-spacer" use:windowDrag></div>
     </div>
   {/if}
   <div class="sidebar-footer">
@@ -1866,6 +1876,25 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
+    /* A column, not the plain block stack it used to be: the trailing
+       .list-drag-spacer only claims leftover height (flex-grow) if its
+       siblings are flex items too, and every row here already renders
+       full-width and block-like under align-items' stretch default, so
+       nothing about their layout changes. */
+    display: flex;
+    flex-direction: column;
+  }
+  /* The rest of the column, once every row and recap has taken its own
+     height -- present even when the list is too long to leave any (it
+     just settles at zero, same as the corner strip's horizontal
+     .drag-spacer does when its row is full). Grabbing it moves the
+     window via the same native startDragging() the corner strip and
+     the tab rows use, so a snap-assist tool watching for a real window
+     drag (Magnet and macOS's own edge tiling included) sees this as
+     no different from dragging a native title bar. */
+  .list-drag-spacer {
+    flex: 1 1 auto;
+    min-height: 0;
   }
   /* Everything about the row's box is .footer-row's now; what stays here
      is the one thing the other footer rows have no use for -- the
