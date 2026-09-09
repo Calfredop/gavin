@@ -1,7 +1,7 @@
 import type { SuperpowersMark, SuperpowersStatus } from "./superpowers";
 import { superpowersDone } from "./superpowers";
 
-export type SetupStep = "agent" | "integration" | "superpowers" | "git" | "prd" | "launch";
+export type SetupStep = "agent" | "integration" | "superpowers" | "git" | "review" | "prd" | "launch";
 
 export interface SetupProgress {
   done: SetupStep[];
@@ -74,6 +74,12 @@ export interface SetupInput {
   /// the workspace record, so it costs no round trip and never joins
   /// `pending`.
   gitTrackingAsked: boolean;
+  /// Whether the human has answered the require-review question for this
+  /// workspace (`Workspace.requireReviewAsked`). Same shape as
+  /// `gitTrackingAsked` and for the same reason: both answers are
+  /// legitimate, and the gate's default (on) is indistinguishable on disk
+  /// from nobody having decided yet.
+  requireReviewAsked: boolean;
 }
 
 /// Superpowers sits third (spec S2): it is agent tooling, so it belongs
@@ -83,12 +89,16 @@ export interface SetupInput {
 ///
 /// Git sits fourth, between the tooling steps and the content ones: it
 /// asks about the files gavin has by then created, and it is settled
-/// BEFORE the PRD step writes into one of them.
+/// BEFORE the PRD step writes into one of them. Review sits fifth, right
+/// after it: the same shape of question (a machine-local preference, both
+/// answers legitimate), settled before the workspace's first real card
+/// exists to be run.
 export const SETUP_STEPS: SetupStep[] = [
   "agent",
   "integration",
   "superpowers",
   "git",
+  "review",
   "prd",
   "launch",
 ];
@@ -114,6 +124,8 @@ export function setupProgress(input: SetupInput): SetupProgress {
   // A recorded answer and nothing else -- see `gitTrackingAsked`. Both
   // answers finish the step; which one they gave lives in the repo.
   if (input.gitTrackingAsked) done.push("git");
+  // Same shape, same reason -- see `requireReviewAsked`.
+  if (input.requireReviewAsked) done.push("review");
   // At least one placeholder replaced, not all three: filling only Vision
   // is a real PRD, and requiring all three would never complete.
   const prd = input.prdBody;
@@ -132,14 +144,16 @@ export function setupProgress(input: SetupInput): SetupProgress {
   const superpowersSettled = Boolean(input.superpowersMark) || input.superpowers !== undefined;
   const pending =
     input.agentFileBody === undefined || input.prdBody === undefined || !superpowersSettled;
-  // Two steps sit outside the nag, for two different reasons. Launch's
+  // Three steps sit outside the nag, for two different reasons. Launch's
   // evidence is a live process rather than a file or a marker, so it is
   // the one step that can un-happen, and it is optional besides (W2).
-  // Git's is a question nobody has been asked yet, which is not the same
-  // as a workspace set up wrong -- see `configured`. What is left is what
-  // the Home banner is allowed to read; `complete` still means all of
-  // them, which is what the wizard opens on.
-  const configured = ORDER.every((s) => s === "launch" || s === "git" || done.includes(s));
+  // Git's and Review's are both questions nobody has been asked yet, which
+  // is not the same as a workspace set up wrong -- see `configured`. What
+  // is left is what the Home banner is allowed to read; `complete` still
+  // means all of them, which is what the wizard opens on.
+  const configured = ORDER.every(
+    (s) => s === "launch" || s === "git" || s === "review" || done.includes(s)
+  );
   return { done: ordered, next, complete: next === null, configured, pending };
 }
 

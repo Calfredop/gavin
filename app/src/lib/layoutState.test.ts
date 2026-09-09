@@ -69,7 +69,9 @@ vi.mock("./backend", () => ({
   getTerminalFontSize: vi.fn().mockResolvedValue(null),
   getAutoCommit: vi.fn().mockResolvedValue(null),
   getGitTrackingDefault: vi.fn().mockResolvedValue(null),
+  getRequireReview: vi.fn().mockResolvedValue(null),
   setAutoCommit: vi.fn().mockResolvedValue(undefined),
+  setRequireReview: vi.fn().mockResolvedValue(undefined),
   setTerminalFontSize: vi.fn().mockResolvedValue(undefined),
   mcpFormats: vi.fn().mockResolvedValue([]),
   moveAgentFile: vi.fn().mockResolvedValue(undefined),
@@ -225,6 +227,10 @@ import {
   handleQueuedInputsChanged,
   cardReviewed,
   stampCardReview,
+  setWorkspaceRequireReview,
+  setRequireReviewDefault,
+  requireReviewDefault,
+  markRequireReviewAsked,
   type LayoutState,
 } from "./layoutState";
 import { confirmDestructive } from "./confirmGate";
@@ -3587,6 +3593,72 @@ describe("workspace settings", () => {
     setState([ws("ws-1", [])], "ws-1", null);
     vi.mocked(backend.setWorkspacesState).mockClear();
     await stampCardReview("ws-2", "/ws/a.md", { title: "t", body: "b", attachments: [] });
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+  });
+
+  // The configurable half of the gate (feat-optional-review): every
+  // launch, the rail stall and the card detail banner all read `cardReviewed`,
+  // so turning the setting off here is what turns the whole gate off.
+  it("reads as reviewed unconditionally once the workspace turns the gate off", async () => {
+    requireReviewDefault.set(null);
+    setState([{ ...ws("ws-1", []), requireReview: false }], "ws-1", null);
+    const content = { title: "Fix a typo", body: "Do the thing.", attachments: [] };
+
+    // Never stamped, and still reads as reviewed.
+    expect(cardReviewed("ws-1", "/ws/a.md", content)).toBe(true);
+  });
+
+  it("falls through to the app-wide default when the workspace names no override", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    const content = { title: "Fix a typo", body: "Do the thing.", attachments: [] };
+
+    requireReviewDefault.set(false);
+    expect(cardReviewed("ws-1", "/ws/a.md", content)).toBe(true);
+
+    requireReviewDefault.set(true);
+    expect(cardReviewed("ws-1", "/ws/a.md", content)).toBe(false);
+  });
+
+  it("a workspace that explicitly turned the gate on is not overridden by an off app default", async () => {
+    requireReviewDefault.set(false);
+    setState([{ ...ws("ws-1", []), requireReview: true }], "ws-1", null);
+    const content = { title: "Fix a typo", body: "Do the thing.", attachments: [] };
+
+    expect(cardReviewed("ws-1", "/ws/a.md", content)).toBe(false);
+    await stampCardReview("ws-1", "/ws/a.md", content);
+    expect(cardReviewed("ws-1", "/ws/a.md", content)).toBe(true);
+  });
+
+  it("setWorkspaceRequireReview stores the choice, and null clears it back to inherit", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+
+    await setWorkspaceRequireReview("ws-1", false);
+    expect(get(layoutState).workspaces[0].requireReview).toBe(false);
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+
+    await setWorkspaceRequireReview("ws-1", null);
+    expect(get(layoutState).workspaces[0].requireReview).toBeUndefined();
+  });
+
+  it("setRequireReviewDefault persists to config.json and updates the store", async () => {
+    await setRequireReviewDefault(false);
+    expect(backend.setRequireReview).toHaveBeenCalledWith(false);
+    expect(get(requireReviewDefault)).toBe(false);
+
+    await setRequireReviewDefault(null);
+    expect(backend.setRequireReview).toHaveBeenCalledWith(null);
+    expect(get(requireReviewDefault)).toBeNull();
+  });
+
+  it("markRequireReviewAsked records the question was put, once", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    expect(get(layoutState).workspaces[0].requireReviewAsked).toBeUndefined();
+
+    await markRequireReviewAsked("ws-1");
+    expect(get(layoutState).workspaces[0].requireReviewAsked).toBe(true);
+
+    vi.mocked(backend.setWorkspacesState).mockClear();
+    await markRequireReviewAsked("ws-1");
     expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 

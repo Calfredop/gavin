@@ -107,6 +107,8 @@ pub fn run() {
             session::set_auto_commit,
             session::get_git_tracking_default,
             session::set_git_tracking_default,
+            session::get_require_review,
+            session::set_require_review,
             session::get_session_names,
             session::set_session_name,
             session::get_file_tabs,

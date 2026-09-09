@@ -128,6 +128,8 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   set_auto_commit: ["ordinary"],
   get_git_tracking_default: ["ordinary"],
   set_git_tracking_default: ["ordinary"],
+  get_require_review: ["ordinary"],
+  set_require_review: ["ordinary"],
   get_session_names: ["ordinary"],
   set_session_name: ["ordinary"],
   get_file_tabs: ["ordinary"],

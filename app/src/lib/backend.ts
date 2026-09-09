@@ -240,6 +240,23 @@ export function setAutoCommit(enabled: boolean | null): Promise<void> {
   return invoke("set_auto_commit", { enabled });
 }
 
+/// The app-wide default for whether a card must be reviewed before its
+/// first Run (`cardReview.ts`, AG-01). null means none was ever set -- same
+/// absence-not-the-default convention as the theme, the font size and the
+/// auto-commit block. Distinct from `false`, which is an install that
+/// chose OFF and must stay off whatever gavin's default becomes.
+///
+/// Unlike `getGitTrackingDefault`, this is live rather than an
+/// initialisation-only seed: a workspace with no override resolves against
+/// this value at the moment of every check.
+export function getRequireReview(): Promise<boolean | null> {
+  return invoke("get_require_review");
+}
+
+export function setRequireReview(enabled: boolean | null): Promise<void> {
+  return invoke("set_require_review", { enabled });
+}
+
 /// The app-wide default a NEW workspace's init starts from. Same
 /// absence-not-the-default convention as the theme, the font size and the
 /// auto-commit block: null means nobody chose, `false` means an install

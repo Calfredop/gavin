@@ -16,6 +16,8 @@
     setWorkspaceFontSize,
     autoCommitDefault,
     setWorkspaceAutoCommit,
+    requireReviewDefault,
+    setWorkspaceRequireReview,
     agentDefaultsStore,
     setWorkspaceComplexityTable,
     markGitTrackingAsked,
@@ -31,6 +33,12 @@
     autoCommitToSelect,
     resolveAutoCommit,
   } from "./autoCommit";
+  import {
+    requireReviewFromSelect,
+    requireReviewOptions,
+    requireReviewToSelect,
+    resolveRequireReview,
+  } from "./cardReview";
   import {
     canToggleTracking,
     needsUntrackConfirm,
@@ -179,7 +187,7 @@
     { id: "workspace", keywords: ["Workspace", "Name", "rename", "Colour", "Color", "accent", "Root", "folder"] },
     { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
     { id: "terminal", keywords: ["Terminal", "Font size", "font"] },
-    { id: "cards", keywords: ["Cards", "Auto commit", "commit"] },
+    { id: "cards", keywords: ["Cards", "Auto commit", "commit", "Require review", "review"] },
     { id: "git", keywords: ["Git", "Track", "tracking", "gitignore", "repository"] },
     { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
     { id: "notifications", keywords: ["Notifications", "notify", "needs my input", "session finishes"] },
@@ -229,6 +237,7 @@
   /// panel must never show a box whose selected row is secretly doing
   /// something.
   const inheritedAutoCommit = $derived(resolveAutoCommit(undefined, $autoCommitDefault));
+  const inheritedRequireReview = $derived(resolveRequireReview(undefined, $requireReviewDefault));
 
   // --- git --------------------------------------------------------------
   /// What git says about gavin's files in THIS root. Read on demand, like
@@ -818,6 +827,23 @@
       <p class="hint">
         Whether a new task or plan card in this workspace starts asking the agent to commit its work
         when it finishes. Every card can still be switched either way on the card itself.
+      </p>
+      <div class="row">
+        <span>Require review</span>
+        <select
+          value={requireReviewToSelect(ws.requireReview)}
+          onchange={(e) =>
+            void setWorkspaceRequireReview(workspaceId, requireReviewFromSelect(e.currentTarget.value))}
+        >
+          {#each requireReviewOptions(inheritedRequireReview) as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+      <p class="hint">
+        Whether gavin shows what a card's body will hand an agent and asks for a deliberate yes before
+        its first Run in this workspace. Off trusts every card the moment you press Run — the posture
+        gavin had before the first-Run review existed.
       </p>
     </section>
 

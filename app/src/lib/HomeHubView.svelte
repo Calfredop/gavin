@@ -95,6 +95,8 @@
       // trip on every visit to this tab -- and `git` is outside
       // `configured` anyway, which is what this banner reads.
       gitTrackingAsked: Boolean(ws?.gitTrackingAsked),
+      // Same shape, same reason -- see the git field above.
+      requireReviewAsked: Boolean(ws?.requireReviewAsked),
     })
   );
 

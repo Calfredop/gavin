@@ -17,6 +17,7 @@
   import PrdStep from "./wizardSteps/PrdStep.svelte";
   import SuperpowersStep from "./wizardSteps/SuperpowersStep.svelte";
   import GitStep from "./wizardSteps/GitStep.svelte";
+  import ReviewStep from "./wizardSteps/ReviewStep.svelte";
   import LaunchStep from "./wizardSteps/LaunchStep.svelte";
 
   interface Props {
@@ -29,6 +30,7 @@
     { id: "integration", label: "Integration" },
     { id: "superpowers", label: "Superpowers" },
     { id: "git", label: "Git" },
+    { id: "review", label: "Review" },
     { id: "prd", label: "PRD" },
     { id: "launch", label: "Launch" },
   ];
@@ -92,6 +94,8 @@
       // the git step's evidence is a recorded answer, and there is no
       // read in flight that could change it.
       gitTrackingAsked: Boolean(ws?.gitTrackingAsked),
+      // Same shape, same reason -- see the git field above.
+      requireReviewAsked: Boolean(ws?.requireReviewAsked),
     })
   );
 
@@ -151,6 +155,8 @@
           />
         {:else if current === "git"}
           <GitStep {workspaceId} onDone={advance} />
+        {:else if current === "review"}
+          <ReviewStep {workspaceId} onDone={advance} />
         {:else if current === "prd"}
           <!-- integrationDone comes from the same derivation the stepper
                draws, so a PRD repointed here rewrites the integration

@@ -218,6 +218,18 @@ export interface Workspace {
   /// reason one field up: a copy of this in the repository would let the
   /// repository vouch for its own cards.
   reviewedCards?: Record<string, string>;
+  /// Whether a card filed in this workspace must be reviewed before its
+  /// first Run (`cardReview.ts`, AG-01). Absent means inherit the app-wide
+  /// setting (and, failing that, gavin's default of requiring it).
+  /// Machine-local like `autoCommit`: whether THIS human wants the gate on
+  /// this machine is a habit, not a fact about the project.
+  requireReview?: boolean;
+  /// Whether the human has been ASKED whether this workspace requires the
+  /// first-Run review. Not the answer -- `requireReview` (or its absence)
+  /// is that. Same shape and reason as `gitTrackingAsked`: both answers are
+  /// legitimate, and leaving the gate on its default is indistinguishable
+  /// on disk from nobody having decided yet.
+  requireReviewAsked?: boolean;
 }
 
 /// A workspace that left the app through the sidebar X, kept so its

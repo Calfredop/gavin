@@ -46,6 +46,7 @@ const NOTHING_DONE = {
   superpowers: SP_ABSENT,
   superpowersMark: undefined,
   gitTrackingAsked: false,
+  requireReviewAsked: false,
 };
 
 const ALL_DONE = {
@@ -57,6 +58,7 @@ const ALL_DONE = {
   superpowers: SP_FOUND,
   superpowersMark: undefined,
   gitTrackingAsked: true,
+  requireReviewAsked: true,
 };
 
 // The home tab's banner lives entirely in compiled markup, which no other
@@ -149,15 +151,17 @@ describe("setupProgress", () => {
   // S2: agent tooling, so it sits beside Integration; PRD and Launch stay
   // last. Pinned because the order is what the stepper draws and what
   // `next` walks.
-  it("puts Superpowers third and Git fourth", () => {
+  it("puts Superpowers third, Git fourth and Review fifth", () => {
     // Superpowers beside Integration because it is agent tooling (S2);
     // Git after both because it asks about the files gavin has by then
-    // created, and before PRD because that step writes into one of them.
+    // created; Review right after Git, the same shape of question, before
+    // PRD because that step writes into a file the earlier ones create.
     expect(SETUP_STEPS).toEqual([
       "agent",
       "integration",
       "superpowers",
       "git",
+      "review",
       "prd",
       "launch",
     ]);
@@ -241,6 +245,29 @@ describe("setupProgress", () => {
     expect(setupProgress({ ...NOTHING_DONE, gitTrackingAsked: false }).pending).toBe(false);
   });
 
+  // Same shape as Git, one step later: both answers are legitimate, and
+  // the gate's on-by-default state is indistinguishable on disk from
+  // nobody having decided yet.
+  it("counts Review once the question has been put, whichever way it was answered", () => {
+    const p = setupProgress({ ...NOTHING_DONE, gitTrackingAsked: true, requireReviewAsked: true });
+    expect(p.done).toEqual(["git", "review"]);
+  });
+
+  it("does not count Review while nobody has been asked", () => {
+    expect(setupProgress({ ...NOTHING_DONE, requireReviewAsked: false }).done).toEqual([]);
+  });
+
+  it("leaves a workspace configured with the review question unanswered", () => {
+    const p = setupProgress({ ...ALL_DONE, requireReviewAsked: false });
+    expect(p.configured).toBe(true);
+    expect(p.complete).toBe(false);
+    expect(p.next).toBe("review");
+  });
+
+  it("never holds the derivation pending on the review answer", () => {
+    expect(setupProgress({ ...NOTHING_DONE, requireReviewAsked: false }).pending).toBe(false);
+  });
+
   it("next skips steps already done out of order", () => {
     const p = setupProgress({ ...NOTHING_DONE, mainSessionId: "agent-1" });
     expect(p.done).toEqual(["launch"]);
@@ -250,7 +277,7 @@ describe("setupProgress", () => {
   // The banner reads its total off this list rather than a literal, which
   // is how "n of 4" survived a fifth step being added anywhere else.
   it("exposes the step list every counter has to count", () => {
-    expect(SETUP_STEPS).toHaveLength(6);
+    expect(SETUP_STEPS).toHaveLength(7);
   });
 
   // The two file bodies arrive from async reads, so every consumer sees a

@@ -3,12 +3,18 @@ import { composePlanPrompt, composeTaskPrompt } from "./cardRun";
 import { AUTO_COMMIT_BLOCK } from "./autoCommit";
 import type { AttachmentStatus } from "./attachments";
 import {
+  DEFAULT_REQUIRE_REVIEW,
   UNREVIEWED_STALL,
   attachmentReviewLine,
   cardContentDigest,
   cardContentReviewed,
   formatBytes,
   isUnreviewedStall,
+  normalizeRequireReview,
+  requireReviewFromSelect,
+  requireReviewOptions,
+  requireReviewToSelect,
+  resolveRequireReview,
   reviewLines,
   reviewTitle,
   reviewedAttachments,
@@ -189,5 +195,55 @@ describe("the rail's stall", () => {
     expect(isUnreviewedStall("card file is missing")).toBe(false);
     expect(isUnreviewedStall(null)).toBe(false);
     expect(isUnreviewedStall(undefined)).toBe(false);
+  });
+});
+
+describe("normalizeRequireReview", () => {
+  it("passes real booleans through", () => {
+    expect(normalizeRequireReview(true)).toBe(true);
+    expect(normalizeRequireReview(false)).toBe(false);
+  });
+
+  it("reads anything else as nothing chosen", () => {
+    expect(normalizeRequireReview(undefined)).toBe(null);
+    expect(normalizeRequireReview(null)).toBe(null);
+    expect(normalizeRequireReview("on")).toBe(null);
+    expect(normalizeRequireReview(1)).toBe(null);
+  });
+});
+
+describe("resolveRequireReview", () => {
+  it("prefers the workspace's own choice", () => {
+    expect(resolveRequireReview(false, true)).toBe(false);
+    expect(resolveRequireReview(true, false)).toBe(true);
+  });
+
+  it("falls through to the app-wide default when the workspace has none", () => {
+    expect(resolveRequireReview(undefined, false)).toBe(false);
+    expect(resolveRequireReview(undefined, true)).toBe(true);
+  });
+
+  it("falls all the way through to requiring review when nobody has chosen", () => {
+    expect(resolveRequireReview(undefined, undefined)).toBe(DEFAULT_REQUIRE_REVIEW);
+    expect(resolveRequireReview(null, null)).toBe(DEFAULT_REQUIRE_REVIEW);
+    expect(DEFAULT_REQUIRE_REVIEW).toBe(true);
+  });
+});
+
+describe("the require-review picker's rows", () => {
+  it("labels the inherit row with what it actually inherits", () => {
+    expect(requireReviewOptions(false)[0]).toEqual({ value: "", label: "Default (off)" });
+    expect(requireReviewOptions(true)[0]).toEqual({ value: "", label: "Default (on)" });
+  });
+
+  it("round-trips every stored value through the select vocabulary", () => {
+    for (const stored of [true, false, null]) {
+      expect(requireReviewFromSelect(requireReviewToSelect(stored))).toBe(stored);
+    }
+  });
+
+  it("reads anything unrecognised as inherit", () => {
+    expect(requireReviewToSelect(undefined)).toBe("");
+    expect(requireReviewFromSelect("nonsense")).toBe(null);
   });
 });

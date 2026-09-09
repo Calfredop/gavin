@@ -372,6 +372,23 @@ pub struct Workspace {
     /// config.json until something has actually been reviewed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed_cards: Option<std::collections::HashMap<String, String>>,
+    /// Whether a card filed in this workspace must be reviewed before its
+    /// first Run (the frontend's `cardReview.ts`, AG-01). Absent means
+    /// inherit `AppConfig::require_review`, and failing that gavin's own
+    /// default (require review) -- so absence is a real state, not a
+    /// stand-in for `true`. Machine-local (D35) like `auto_commit`: whether
+    /// THIS human wants the gate on this machine is a habit, not a fact
+    /// about the project, and committing it would hand the setting to
+    /// everyone who clones the repo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_review: Option<bool>,
+    /// Whether the human has been ASKED whether this workspace requires
+    /// the first-Run review. Not the answer -- `require_review` (or its
+    /// absence) is that. Same shape and reason as `git_tracking_asked`:
+    /// both answers are legitimate, and leaving the gate on its default is
+    /// indistinguishable on disk from nobody having decided yet.
+    #[serde(default)]
+    pub require_review_asked: bool,
 }
 
 /// One recorded decision on `Workspace::mcp_foreign_servers_choice`.
@@ -695,7 +712,35 @@ pub struct AppConfig {
     /// tool reads.
     #[serde(default)]
     pub git_tracking: GitTrackingDefault,
+    /// The app-wide default for whether a card must be reviewed before its
+    /// first Run. `None` means nobody has chosen and gavin's own default
+    /// (require review) applies -- stored as absence rather than as
+    /// `true`, exactly like `auto_commit`, so a later change to that
+    /// default reaches every install that never expressed a preference.
+    /// The tenth carry-through field: like session_names/file_tabs/
+    /// board_tabs/theme/agent_models/removed_workspaces/agent_pause/
+    /// superpowers/agent_defaults/git_tracking it must be carried through
+    /// `persist_workspaces`, or it silently resets on the next save.
+    ///
+    /// Unlike `git_tracking`, this is not an initialisation-only default:
+    /// a workspace with no override of its own resolves against whatever
+    /// this holds at the moment of the check, so changing it here changes
+    /// the answer for every inheriting workspace immediately.
+    #[serde(default)]
+    pub require_review: RequireReviewDefault,
 }
+
+/// The app-wide require-review default, wrapped in a type of its own for
+/// the reason `GitTrackingDefault` gives: a bare `Option<bool>` here would
+/// sit beside `auto_commit` in `persist_workspaces`' argument list with
+/// exactly the same shape, and the two settings are unrelated.
+///
+/// `None` means nobody has chosen, and gavin's own default (require
+/// review, matching the security round's original always-on behaviour)
+/// applies.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct RequireReviewDefault(pub Option<bool>);
 
 /// The app-wide git-tracking default, wrapped in a type of its own.
 ///
@@ -808,6 +853,8 @@ mod tests {
             trusted_config_hash: None,
             mcp_foreign_servers_choice: None,
             reviewed_cards: None,
+            require_review: None,
+            require_review_asked: false,
         }
     }
 
@@ -909,6 +956,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -937,6 +985,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -979,6 +1028,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -1068,7 +1118,8 @@ mod tests {
                 "autoResumeRuns": false,
                 "gitView": null,
                 "lastActiveAt": null,
-                "gitTrackingAsked": false
+                "gitTrackingAsked": false,
+                "requireReviewAsked": false
             })
         );
     }
@@ -1097,6 +1148,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1144,6 +1196,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1177,6 +1230,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1213,6 +1267,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1263,6 +1318,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1288,6 +1344,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(&nested, &config).unwrap();
 
@@ -1321,6 +1378,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(dir.path(), &config).unwrap();
 
@@ -1465,6 +1523,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1508,6 +1567,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1546,6 +1606,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1609,6 +1670,7 @@ mod tests {
             superpowers: HashMap::new(),
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
+            require_review: RequireReviewDefault::default(),
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);

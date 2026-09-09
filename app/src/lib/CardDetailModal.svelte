@@ -23,6 +23,7 @@
     agentDefaultsStore,
     agentProfilesStore,
     attentionStatusById,
+    requireReviewDefault,
   } from "./layoutState";
   import {
     COMPLEXITY_LABELS,
@@ -66,7 +67,7 @@
   import { developingRunIn } from "./developingCards";
   import { cardSessionState } from "./columnRunAction";
   import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker } from "./cardRun";
-  import { cardContentReviewed } from "./cardReview";
+  import { cardContentReviewed, resolveRequireReview } from "./cardReview";
   import { ensureCardReviewed } from "./cardReviewActions";
   import { resumeNoteFor } from "./autoResume";
   import { runBaseline } from "./runChanges";
@@ -983,19 +984,27 @@
   // Read through the pure predicate off the store rather than through
   // layoutState's one-shot helper, so the banner clears the instant the
   // stamp lands instead of at the next remount.
-  const reviewedCards = $derived(
-    $layoutState.workspaces.find((w) => w.id === workspaceId)?.reviewedCards
+  const reviewWorkspace = $derived($layoutState.workspaces.find((w) => w.id === workspaceId));
+  const reviewedCards = $derived(reviewWorkspace?.reviewedCards);
+  // The workspace's own choice, else the app-wide one, else gavin's
+  // default -- the same resolution `cardReviewed` (layoutState.ts) applies
+  // at launch, read here too so the banner agrees with what a Run would
+  // actually do.
+  const requireReview = $derived(
+    resolveRequireReview(reviewWorkspace?.requireReview, $requireReviewDefault)
   );
   const reviewContent = $derived({
     title: card.title,
     body: stripFrontmatter(content ?? "").trim(),
     attachments: [...attachments],
   });
-  // Never for a note -- nothing executes one -- and never before the file
-  // has been read, since "not loaded yet" must not draw as "not reviewed".
+  // Never for a note -- nothing executes one -- never before the file has
+  // been read, since "not loaded yet" must not draw as "not reviewed", and
+  // never when the gate itself is off for this workspace.
   const needsReview = $derived(
     card.kind !== "note" &&
       content !== null &&
+      requireReview &&
       !cardContentReviewed(reviewContent, reviewedCards?.[card.id])
   );
   let reviewBusy = $state(false);

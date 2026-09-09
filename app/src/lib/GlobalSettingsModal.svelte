@@ -10,6 +10,8 @@
     setTerminalFontSizeDefault,
     autoCommitDefault,
     setAutoCommitDefault,
+    requireReviewDefault,
+    setRequireReviewDefault,
     gitTrackingDefault,
     setGitTrackingDefault,
   } from "./layoutState";
@@ -23,6 +25,12 @@
     autoCommitOptions,
     autoCommitToSelect,
   } from "./autoCommit";
+  import {
+    DEFAULT_REQUIRE_REVIEW,
+    requireReviewFromSelect,
+    requireReviewOptions,
+    requireReviewToSelect,
+  } from "./cardReview";
   import { resolveGitTracking } from "./gitTracking";
   import { scratchpadEnabled, setScratchpadEnabled } from "./sidebarPrefs";
   import { hiddenHubViewCount, hubTabsHiddenDefault } from "./hubTabPrefs";
@@ -158,7 +166,7 @@
     { id: "sidebar", keywords: ["Sidebar", "Scratchpad"] },
     { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
     { id: "terminal", keywords: ["Terminal", "Font size", "font"] },
-    { id: "cards", keywords: ["Cards", "Auto commit", "commit"] },
+    { id: "cards", keywords: ["Cards", "Auto commit", "commit", "Require review", "review"] },
     {
       id: "git",
       keywords: ["Git", "Track gavin's files", "tracking", "gitignore", "initialize"],
@@ -277,6 +285,23 @@
         Whether a new task or plan card starts asking the agent to commit its work when it finishes.
         Every workspace that sets nothing of its own follows this; every card can still be switched
         either way on the card itself.
+      </p>
+      <div class="row">
+        <span>Require review</span>
+        <select
+          value={requireReviewToSelect($requireReviewDefault)}
+          onchange={(e) =>
+            void setRequireReviewDefault(requireReviewFromSelect(e.currentTarget.value))}
+        >
+          {#each requireReviewOptions(DEFAULT_REQUIRE_REVIEW) as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+      <p class="hint">
+        Whether gavin shows what a card's body will hand an agent and asks for a deliberate yes before
+        its first Run. Every workspace that sets nothing of its own follows this; off trusts every
+        card the moment you press Run.
       </p>
     </section>
 

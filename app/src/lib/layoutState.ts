@@ -63,7 +63,13 @@ import {
   trustedAgentConfig,
   type ExecutionKeys,
 } from "./workspaceTrust";
-import { cardContentDigest, cardContentReviewed, type CardContent } from "./cardReview";
+import {
+  cardContentDigest,
+  cardContentReviewed,
+  normalizeRequireReview,
+  resolveRequireReview,
+  type CardContent,
+} from "./cardReview";
 import type { McpForeignChoice } from "./mcpServerTrust";
 import {
   activeWorkspaceForWindow,
@@ -1345,6 +1351,15 @@ export async function bootstrap(): Promise<void> {
     .then((enabled) => autoCommitDefault.set(normalizeAutoCommit(enabled)))
     .catch(() => {});
 
+  // Normalized on the way in for the same reason: config.json is a file a
+  // user can edit, and anything that is not a boolean has to read as "no
+  // setting" so a workspace still falls through to gavin's default
+  // (require review).
+  void backend
+    .getRequireReview()
+    .then((enabled) => requireReviewDefault.set(normalizeRequireReview(enabled)))
+    .catch(() => {});
+
   // Normalized on the way in for the same reason, and it matters more
   // here: this one decides what a fresh `.gitignore` says, and a garbled
   // value must read as "nobody chose" rather than as "do not track".
@@ -1658,6 +1673,15 @@ export const autoCommitDefault = writable<boolean | null>(null);
 /// be a copy of a file the human can edit behind the app's back.
 export const gitTrackingDefault = writable<boolean | null>(null);
 
+/// The app-wide require-review default from config.json, or null when the
+/// user has never set one -- the same three-state as `autoCommitDefault`
+/// above, and for the same reason: a workspace with no setting of its own
+/// falls all the way through to gavin's default (require it).
+///
+/// Re-fetched on every bootstrap like `autoCommitDefault`, so it is
+/// deliberately not parked across an HMR remount.
+export const requireReviewDefault = writable<boolean | null>(null);
+
 export const newCardAutoCommit = derived(
   [layoutState, autoCommitDefault],
   ([$layout, $default]) =>
@@ -1862,8 +1886,15 @@ async function stampConfigTrust(workspaceId: string, hash: string | undefined): 
 /// body or attachments have changed since, and for a workspace that does
 /// not exist — every uncertain case fails closed, because the failure is
 /// a question rather than a refusal.
+///
+/// True unconditionally when this workspace's resolved `requireReview`
+/// setting is off: the whole gate — every launch's `ensureCardReviewed`,
+/// the unattended auto-resume refusal, and the rail step's stall — reads
+/// through this one function, so turning the setting off here is what
+/// turns it off everywhere at once.
 export function cardReviewed(workspaceId: string, path: string, content: CardContent): boolean {
   const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!resolveRequireReview(workspace?.requireReview, get(requireReviewDefault))) return true;
   return cardContentReviewed(content, workspace?.reviewedCards?.[path]);
 }
 
@@ -2252,6 +2283,26 @@ export async function setAutoCommitDefault(enabled: boolean | null): Promise<voi
   }
 }
 
+/// The app-wide require-review default. Machine-local like the theme, the
+/// model defaults and the auto-commit default, so it goes straight to
+/// config.json through Tauri and never touches the daemon.
+///
+/// Live, unlike `setGitTrackingDefault` below: every workspace that
+/// inherits resolves against this value at the moment of its next check
+/// (`cardReviewed`), so flipping it changes behaviour immediately rather
+/// than seeding a one-time choice.
+///
+/// Null clears the setting rather than storing `true`, which is what puts
+/// every workspace that inherits back on gavin's own default (require it).
+export async function setRequireReviewDefault(enabled: boolean | null): Promise<void> {
+  try {
+    await backend.setRequireReview(enabled);
+    requireReviewDefault.set(enabled);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
 /// The app-wide git-tracking default. Machine-local beside the theme and
 /// the auto-commit default, so it goes straight to config.json through
 /// Tauri and never touches the daemon.
@@ -2324,6 +2375,22 @@ export async function setWorkspaceAutoCommit(
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
+/// One workspace's own require-review setting, or null to inherit the
+/// app-wide one. Rides the workspace record (config.json) like
+/// `autoCommit`, rather than config.toml: whether THIS human wants the
+/// gate on this machine is not a project fact to commit.
+export async function setWorkspaceRequireReview(
+  workspaceId: string,
+  enabled: boolean | null
+): Promise<void> {
+  const state = get(layoutState);
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, requireReview: enabled ?? undefined } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
 /// Records that this workspace's human has answered the git question --
 /// in the wizard's git step, in the init prompt, or by flipping the switch
 /// on the Settings tab. Every route through the question calls it, because
@@ -2341,6 +2408,21 @@ export async function markGitTrackingAsked(workspaceId: string): Promise<void> {
   if (state.workspaces.find((w) => w.id === workspaceId)?.gitTrackingAsked) return;
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, gitTrackingAsked: true } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// Records that this workspace's human has answered the require-review
+/// question -- in the wizard's review step, or by picking a value on the
+/// Settings tab. Same shape and reason as `markGitTrackingAsked`: both
+/// answers are legitimate, so this only records that the question was put,
+/// never which side was picked.
+export async function markRequireReviewAsked(workspaceId: string): Promise<void> {
+  const state = get(layoutState);
+  if (state.workspaces.find((w) => w.id === workspaceId)?.requireReviewAsked) return;
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, requireReviewAsked: true } : w
   );
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);

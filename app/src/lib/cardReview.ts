@@ -96,6 +96,64 @@ export function cardContentReviewed(
   return approved !== "" && approved === cardContentDigest(content);
 }
 
+/// Whether the gate above applies at all: a workspace's own choice, else
+/// the app-wide one, else gavin's default (require it) -- the security
+/// round's original always-on behaviour. Same three-level shape as
+/// `resolveAutoCommit`, and deliberately separate from
+/// `cardContentReviewed`: that predicate stays a pure "was THIS content
+/// approved" question with no shortcut, and this is the layer above it
+/// that decides whether the question is even being asked. `cardReviewed`
+/// (layoutState.ts) is the one place that combines the two, so every
+/// launch, the rail stall and the card detail banner agree.
+export const DEFAULT_REQUIRE_REVIEW = true;
+
+/// A stored setting, or null for "nothing chosen here" -- what both an
+/// absent value and an unusable one mean. Null rather than the default so
+/// a workspace with no setting of its own still falls through to the
+/// app-wide one instead of jumping straight past it.
+export function normalizeRequireReview(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+export function resolveRequireReview(workspaceValue: unknown, appValue: unknown): boolean {
+  return (
+    normalizeRequireReview(workspaceValue) ??
+    normalizeRequireReview(appValue) ??
+    DEFAULT_REQUIRE_REVIEW
+  );
+}
+
+/// The `<select>` vocabulary, matching `autoCommitOptions`'s shape: "" is
+/// the inherit row, and every writer reads it as "clear my override".
+export const REQUIRE_REVIEW_INHERIT = "";
+export const REQUIRE_REVIEW_ON = "on";
+export const REQUIRE_REVIEW_OFF = "off";
+
+export function requireReviewFromSelect(value: string): boolean | null {
+  if (value === REQUIRE_REVIEW_ON) return true;
+  if (value === REQUIRE_REVIEW_OFF) return false;
+  return null;
+}
+
+export function requireReviewToSelect(value: unknown): string {
+  const normalized = normalizeRequireReview(value);
+  if (normalized === null) return REQUIRE_REVIEW_INHERIT;
+  return normalized ? REQUIRE_REVIEW_ON : REQUIRE_REVIEW_OFF;
+}
+
+export interface RequireReviewOption {
+  value: string;
+  label: string;
+}
+
+export function requireReviewOptions(inherited: boolean): RequireReviewOption[] {
+  return [
+    { value: REQUIRE_REVIEW_INHERIT, label: `Default (${inherited ? "on" : "off"})` },
+    { value: REQUIRE_REVIEW_ON, label: "On" },
+    { value: REQUIRE_REVIEW_OFF, label: "Off" },
+  ];
+}
+
 /// One attachment as the review sheet names it. Everything here is what
 /// gavin RESOLVED, not what the card said: the card says `../../x` or
 /// `/Users/you/.ssh/id_rsa`, and the reader needs to know where that
