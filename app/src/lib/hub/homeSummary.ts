@@ -1,6 +1,6 @@
 import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/gavin";
-import type { WorktreeInfo } from "$lib/git";
+import type { WorktreeInfo } from "$lib/git/git";
 import { detectConflicts, isStepFinished, railStateOf, stepStateOf } from "$lib/orchestration";
 import type { Orchestration, RailState } from "$lib/orchestration";
 import { mergePlanCards } from "$lib/planBoard";

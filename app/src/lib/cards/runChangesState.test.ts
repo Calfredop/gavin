@@ -16,7 +16,7 @@ import {
   runChangesStore,
   selectRunFile,
 } from "$lib/cards/runChangesState";
-import type { FileDiff, RunChanges } from "$lib/git";
+import type { FileDiff, RunChanges } from "$lib/git/git";
 
 const PATH = "/ws/.gavin-root/plans/t.md";
 const BASE = "1111111111111111111111111111111111111111";

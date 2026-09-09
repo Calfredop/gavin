@@ -10,7 +10,7 @@ import {
   trackedFiles,
   untrackedPaths,
 } from "$lib/cards/runChanges";
-import { shortSha, type RunChanges } from "$lib/git";
+import { shortSha, type RunChanges } from "$lib/git/git";
 import type { CardSession } from "$lib/board/kanban";
 
 const BASE = "4a3a53b1111111111111111111111111111111ff";

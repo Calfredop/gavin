@@ -7,7 +7,7 @@
     markGitTrackingAsked,
     recordMcpForeignChoice,
   } from "$lib/layoutState";
-  import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/gitTracking";
+  import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/git/gitTracking";
   import { applyInitTracking } from "$lib/workspaceOpen";
   import { gavinTrees } from "$lib/gavinState";
   import { agentProfilesStore, agentModelDefaultsStore, trustedAgentConfigs } from "$lib/layoutState";

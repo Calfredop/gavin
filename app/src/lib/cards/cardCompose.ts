@@ -4,7 +4,7 @@
 // and forwards.
 
 import { formatAttachments } from "$lib/cards/attachments";
-import { autoCommitAppliesTo, setAutoCommitInBody } from "$lib/autoCommit";
+import { autoCommitAppliesTo, setAutoCommitInBody } from "$lib/git/autoCommit";
 import { parseComplexity } from "$lib/cards/complexity";
 import { translateDropIndex } from "$lib/board/pageBoard";
 import { slugFileName } from "$lib/files/planExplorer";

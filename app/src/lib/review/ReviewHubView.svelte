@@ -19,7 +19,7 @@
   import { gavinTrees } from "$lib/gavinState";
   import { layoutState, daemonCompat } from "$lib/layoutState";
   import { indexCardViews, mergePlanCards, type CardView } from "$lib/planBoard";
-  import GitFileRow from "$lib/GitFileRow.svelte";
+  import GitFileRow from "$lib/git/GitFileRow.svelte";
   import ReviewAgentPane from "$lib/review/ReviewAgentPane.svelte";
   import ReviewCardList from "$lib/review/ReviewCardList.svelte";
   import ReviewFilePane from "$lib/review/ReviewFilePane.svelte";

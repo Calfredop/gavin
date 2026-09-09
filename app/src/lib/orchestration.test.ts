@@ -80,8 +80,8 @@ import {
 import { unreviewedStallReason } from "$lib/cards/cardReview";
 import type { CardEntry, Conflict, StepAttention, ToolSummary, UnplacedGroup } from "$lib/orchestration";
 import { BUILTIN_TOOLS } from "$lib/orchestrationTools";
-import { prKey } from "$lib/pullRequest";
-import type { WorktreeInfo } from "$lib/git";
+import { prKey } from "$lib/git/pullRequest";
+import type { WorktreeInfo } from "$lib/git/git";
 import type { Action, Orchestration, Rail, RailState, Stage, StageMode, Step, StepState } from "$lib/orchestration";
 import type { Board } from "$lib/board/kanban";
 import type { SessionStatus } from "$lib/notifications";

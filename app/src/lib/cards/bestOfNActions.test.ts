@@ -65,7 +65,7 @@ const discardWorktrees = vi.fn(async (_ws: string, entries: { path: string }[], 
   trace.push(`discard:${entries.map((e) => e.path).join(",")}:${deleteBranches ? "branches" : "keep"}`);
   return true;
 });
-vi.mock("$lib/gitState", () => ({
+vi.mock("$lib/git/gitState", () => ({
   forkWorktree: (...a: Parameters<typeof forkWorktree>) => forkWorktree(...a),
   discardWorktrees: (...a: Parameters<typeof discardWorktrees>) => discardWorktrees(...a),
 }));

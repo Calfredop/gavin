@@ -501,7 +501,7 @@ async function execute(intent: LaunchIntent): Promise<void> {
       return;
     }
     case "commit": {
-      const m = await import("$lib/gitState");
+      const m = await import("$lib/git/gitState");
       await m.launchQueuedCommit(intent);
       return;
     }

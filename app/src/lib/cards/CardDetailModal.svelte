@@ -42,7 +42,7 @@
     withheldAttachmentPaths,
     type AttachmentStatus,
   } from "$lib/cards/attachments";
-  import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "$lib/autoCommit";
+  import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "$lib/git/autoCommit";
   import { isViewableInApp } from "$lib/files/fileTypes";
   import { ChevronDown, ChevronRight, Lock, SquareArrowOutUpRight } from "@lucide/svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";

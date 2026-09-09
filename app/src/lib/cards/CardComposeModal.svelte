@@ -50,7 +50,7 @@
     attachmentName,
     removeAttachment,
   } from "$lib/cards/attachments";
-  import { autoCommitAppliesTo } from "$lib/autoCommit";
+  import { autoCommitAppliesTo } from "$lib/git/autoCommit";
   import {
     COMPLEXITY_LABELS,
     COMPLEXITY_LEVELS,

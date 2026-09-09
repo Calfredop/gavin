@@ -12,7 +12,7 @@
   } from "$lib/layoutState";
   import { signalFrontendReady } from "$lib/backend";
   import { installKeyboardShortcuts } from "$lib/keyboard";
-  import { installLineClipboard } from "$lib/lineClipboard";
+  import { installLineClipboard } from "$lib/git/lineClipboard";
   import { installHintTracking, hintMode } from "$lib/shortcutHints";
   import { hintDigitFor } from "$lib/shortcuts";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
@@ -55,7 +55,7 @@
   import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
   import DaemonRequestErrorBanner from "$lib/DaemonRequestErrorBanner.svelte";
   import MemoryPressureBanner from "$lib/MemoryPressureBanner.svelte";
-  import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/gitState";
+  import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/git/gitState";
   import { hubViewBusy, hubViewAttention, moveHubViewId } from "$lib/hub/hubViewMeta";
   import {
     hubTabOrderByWorkspace,

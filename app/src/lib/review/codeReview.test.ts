@@ -9,7 +9,7 @@ import {
   composeReviewPrompt,
   reviewBlocker,
 } from "$lib/review/codeReview";
-import type { BranchInfo } from "$lib/git";
+import type { BranchInfo } from "$lib/git/git";
 
 function branch(name: string, over: Partial<BranchInfo> = {}): BranchInfo {
   return {

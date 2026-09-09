@@ -83,7 +83,7 @@ const launchQueuedOrchestrationAgent = vi.fn().mockResolvedValue(undefined);
 vi.mock("$lib/cards/cardRunActions", () => ({ launchQueuedCard }));
 vi.mock("$lib/workspaceToolsActions", () => ({ launchQueuedTool }));
 vi.mock("$lib/review/codeReviewActions", () => ({ launchQueuedReview }));
-vi.mock("$lib/gitState", () => ({ launchQueuedCommit }));
+vi.mock("$lib/git/gitState", () => ({ launchQueuedCommit }));
 vi.mock("$lib/orchestrationState", () => ({ launchQueuedOrchestrationAgent }));
 
 import {

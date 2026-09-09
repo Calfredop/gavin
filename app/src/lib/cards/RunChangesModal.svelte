@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import Modal from "$lib/Modal.svelte";
-  import GitFileRow from "$lib/GitFileRow.svelte";
-  import GitDiffUnified from "$lib/GitDiffUnified.svelte";
-  import { toUnifiedRows } from "$lib/diffRows";
-  import { LARGE_HUNK_LINES, shortSha } from "$lib/git";
+  import GitFileRow from "$lib/git/GitFileRow.svelte";
+  import GitDiffUnified from "$lib/git/GitDiffUnified.svelte";
+  import { toUnifiedRows } from "$lib/git/diffRows";
+  import { LARGE_HUNK_LINES, shortSha } from "$lib/git/git";
   import {
     changesProblem,
     changesSummary,

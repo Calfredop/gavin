@@ -33,8 +33,8 @@ import {
 } from "$lib/settings";
 import { mergeDiscoveredModels } from "$lib/agentModel";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
-import { normalizeAutoCommit, resolveAutoCommit } from "$lib/autoCommit";
-import { normalizeGitTracking } from "$lib/gitTracking";
+import { normalizeAutoCommit, resolveAutoCommit } from "$lib/git/autoCommit";
+import { normalizeGitTracking } from "$lib/git/gitTracking";
 import type { AgentConfig, BoardTab, CardTab, CardTabView, GavinTree } from "$lib/gavin";
 import { themeState } from "$lib/ui/themeState.svelte";
 import { featureBlockedReason, restartConfirmLines, type DaemonCompat } from "$lib/daemonCompat";

@@ -9,7 +9,7 @@
     untrackConfirm,
     type ConfirmCopy,
     type GavinTracking,
-  } from "$lib/gitTracking";
+  } from "$lib/git/gitTracking";
 
   interface Props {
     workspaceId: string;

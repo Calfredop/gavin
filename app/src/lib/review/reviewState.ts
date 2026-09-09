@@ -20,7 +20,7 @@
 
 import { get, writable } from "svelte/store";
 import * as backend from "$lib/backend";
-import type { FileDiff, RunChanges } from "$lib/git";
+import type { FileDiff, RunChanges } from "$lib/git/git";
 import { changesProblem } from "$lib/cards/runChanges";
 
 /// How many `git diff`s may be in flight at once. Four rather than one

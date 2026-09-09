@@ -18,7 +18,7 @@ import {
   composeCloseAction,
   NEW_CARD_STATUS,
 } from "$lib/cards/cardCompose";
-import { AUTO_COMMIT_BLOCK } from "$lib/autoCommit";
+import { AUTO_COMMIT_BLOCK } from "$lib/git/autoCommit";
 import { isPermanentColumn, type CardView } from "$lib/planBoard";
 import type { MergedBoard } from "$lib/board/boardSearch";
 import { source } from "$lib/sources";

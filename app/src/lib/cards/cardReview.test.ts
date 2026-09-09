@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { composePlanPrompt, composeTaskPrompt } from "$lib/cards/cardRun";
-import { AUTO_COMMIT_BLOCK } from "$lib/autoCommit";
+import { AUTO_COMMIT_BLOCK } from "$lib/git/autoCommit";
 import type { AttachmentStatus } from "$lib/cards/attachments";
 import {
   DEFAULT_REQUIRE_REVIEW,

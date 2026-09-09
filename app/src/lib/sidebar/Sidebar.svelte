@@ -39,7 +39,7 @@
   // sidebar's is "Open workspace…", which starts from a folder. The
   // prompt below is the one question that flow can ask.
   import { pendingOpen, initAndOpen, bindWithoutInit, cancelOpen } from "$lib/workspaceOpen";
-  import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/gitTracking";
+  import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/git/gitTracking";
   import { sidebarCollapsed, scratchpadEnabled, toggleSidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
   import { endSidebarPeek, peekSidebar, sidebarPeek, sidebarShowsRail } from "$lib/sidebar/sidebarPeek";
   import {
@@ -136,7 +136,7 @@
   import { tooltip } from "$lib/tooltip";
   import { availableUpdate } from "$lib/updatesState";
   import { hintMode } from "$lib/shortcutHints";
-  import { agentCommitPhase, gitStore } from "$lib/gitState";
+  import { agentCommitPhase, gitStore } from "$lib/git/gitState";
   import { hintDigitFor } from "$lib/shortcuts";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import { showAlert } from "$lib/dialog";

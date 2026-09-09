@@ -5,13 +5,13 @@
 
 import type { Board, Column } from "$lib/board/kanban";
 import type { GavinTree, PlanFileInfo } from "$lib/gavin";
-import type { WorktreeInfo } from "$lib/git";
+import type { WorktreeInfo } from "$lib/git/git";
 import type { SessionStatus } from "$lib/notifications";
 import { isArchivedCard, planKey, slugStatus } from "$lib/planBoard";
 import { isPrStep, isUntilStep, stepBefore, summaryParam, untilMax, untilVerdict } from "$lib/orchestrationLoop";
 import { isUnreviewedStall } from "$lib/cards/cardReview";
-import { prKey, prRequirement, prWaitVerdict } from "$lib/pullRequest";
-import type { PrReport } from "$lib/pullRequest";
+import { prKey, prRequirement, prWaitVerdict } from "$lib/git/pullRequest";
+import type { PrReport } from "$lib/git/pullRequest";
 
 export interface Step {
   id: string;

@@ -29,7 +29,7 @@
   import { grantForAnsweredPrompt } from "$lib/confirmGate";
   import { openContextMenuFromEvent, contextMenu, openMenuUnder } from "$lib/contextMenu";
   import { buildCardMenuEntries } from "$lib/cards/cardMenu";
-  import { gitStore, ensureGitView, refresh as refreshGit } from "$lib/gitState";
+  import { gitStore, ensureGitView, refresh as refreshGit } from "$lib/git/gitState";
   import { requestedCardDetail, takeCardDetailRequest } from "$lib/cards/cardTabLink";
   import { layoutState, daemonCompat } from "$lib/layoutState";
   import { featureBlockedReason } from "$lib/daemonCompat";

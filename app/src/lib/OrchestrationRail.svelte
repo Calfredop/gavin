@@ -52,8 +52,8 @@
     runningStageId,
   } from "$lib/orchestration";
   import { railRetryLabel } from "$lib/orchestrationLoop";
-  import { prChips } from "$lib/pullRequest";
-  import { prPollTick, prReportFor, prReports, requestPr } from "$lib/prState";
+  import { prChips } from "$lib/git/pullRequest";
+  import { prPollTick, prReportFor, prReports, requestPr } from "$lib/git/prState";
   import { findTool } from "$lib/orchestrationTools";
   import type { OrchestrationAgentAction } from "$lib/orchestrationAgent";
   import type { Tool } from "$lib/orchestrationTools";

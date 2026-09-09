@@ -30,7 +30,7 @@
 /// runs, a card body names what an AGENT runs.
 
 import { sha256Hex } from "$lib/sha256";
-import { hasAutoCommit } from "$lib/autoCommit";
+import { hasAutoCommit } from "$lib/git/autoCommit";
 import type { AttachmentStatus } from "$lib/cards/attachments";
 
 /// The repo-controlled content of one card: everything a launch takes

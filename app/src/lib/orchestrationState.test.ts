@@ -229,7 +229,7 @@ vi.mock("$lib/notifications", () => ({
   setRailNotificationVoice: vi.fn(),
   maybeNotifyReviewWait: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("$lib/gitState", () => {
+vi.mock("$lib/git/gitState", () => {
   // Settable, not a constant: executeSwitchBranch reads the REFRESHED
   // refs back out of this store to decide whether the checkout actually
   // caught up, so a test has to be able to move it.
@@ -253,14 +253,14 @@ vi.mock("$lib/gitState", () => {
 });
 
 import * as backend from "$lib/backend";
-import * as gitStateModule from "$lib/gitState";
+import * as gitStateModule from "$lib/git/gitState";
 import * as gavinState from "$lib/gavinState";
 import * as layoutStateModule from "$lib/layoutState";
 import * as kanbanStateModule from "$lib/board/kanbanState";
 import { toolRecords, __resetForTesting as toolsResetForTesting } from "$lib/toolsState";
-import { prReports, __resetForTesting as prResetForTesting } from "$lib/prState";
-import { prKey } from "$lib/pullRequest";
-import type { PrReport } from "$lib/pullRequest";
+import { prReports, __resetForTesting as prResetForTesting } from "$lib/git/prState";
+import { prKey } from "$lib/git/pullRequest";
+import type { PrReport } from "$lib/git/pullRequest";
 import { maybeNotifyReviewWait } from "$lib/notifications";
 import {
   orchestrations,

@@ -92,7 +92,7 @@
   import { gavinTrees } from "$lib/gavinState";
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";
   import { railsWantingAttention } from "$lib/orchestration";
-  import { agentCommitPhase, gitStore } from "$lib/gitState";
+  import { agentCommitPhase, gitStore } from "$lib/git/gitState";
   import { tooltip } from "$lib/tooltip";
   import { accentVar } from "$lib/settings";
   import { themeState } from "$lib/ui/themeState.svelte";

@@ -24,14 +24,14 @@
     autoCommitFromSelect,
     autoCommitOptions,
     autoCommitToSelect,
-  } from "$lib/autoCommit";
+  } from "$lib/git/autoCommit";
   import {
     DEFAULT_REQUIRE_REVIEW,
     requireReviewFromSelect,
     requireReviewOptions,
     requireReviewToSelect,
   } from "$lib/cards/cardReview";
-  import { resolveGitTracking } from "$lib/gitTracking";
+  import { resolveGitTracking } from "$lib/git/gitTracking";
   import { scratchpadEnabled, setScratchpadEnabled } from "$lib/sidebar/sidebarPrefs";
   import { hiddenHubViewCount, hubTabsHiddenDefault } from "$lib/hub/hubTabPrefs";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";

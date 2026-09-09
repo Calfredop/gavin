@@ -81,17 +81,17 @@ import {
   untilLogPath,
   withRetryPrefix,
 } from "$lib/orchestrationLoop";
-import { currentPrReports, prReportFor, prReports, requestPr, startPrPolling } from "$lib/prState";
-import { failingChecksNote, prExhaustedReason } from "$lib/pullRequest";
+import { currentPrReports, prReportFor, prReports, requestPr, startPrPolling } from "$lib/git/prState";
+import { failingChecksNote, prExhaustedReason } from "$lib/git/pullRequest";
 import { stepsFromTemplate } from "$lib/orchestrationGroups";
 import type { GroupTemplate } from "$lib/orchestrationGroups";
 import { libraryFor, toolRecords } from "$lib/toolsState";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
 import { breakOutChildren, guardCompletion } from "$lib/cards/cardCompletion";
 import { gavinTrees, patchPlanField } from "$lib/gavinState";
-import { gitStore, refresh as refreshGit } from "$lib/gitState";
-import { branchResolvable } from "$lib/git";
-import { isGavinOwnPath } from "$lib/gitTracking";
+import { gitStore, refresh as refreshGit } from "$lib/git/gitState";
+import { branchResolvable } from "$lib/git/git";
+import { isGavinOwnPath } from "$lib/git/gitTracking";
 import {
   layoutState,
   agentForCard,
@@ -108,7 +108,7 @@ import {
   setSessionName,
   workspaceRootPath,
 } from "$lib/layoutState";
-import { decoyEditedSteps } from "$lib/worktreeCards";
+import { decoyEditedSteps } from "$lib/git/worktreeCards";
 import { allSessionIds } from "$lib/panes/layout";
 import {
   composeTaskPrompt,

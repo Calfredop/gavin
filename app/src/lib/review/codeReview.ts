@@ -11,7 +11,7 @@
 // them.
 
 import { NAME_TAB_FIRST, noPromptReason } from "$lib/cards/cardRun";
-import type { BranchInfo } from "$lib/git";
+import type { BranchInfo } from "$lib/git/git";
 
 // ---- The review-rules file -------------------------------------------------
 

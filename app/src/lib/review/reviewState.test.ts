@@ -17,7 +17,7 @@ import {
   type TouchRequest,
   type TouchedRun,
 } from "$lib/review/reviewState";
-import type { FileDiff, RunChanges } from "$lib/git";
+import type { FileDiff, RunChanges } from "$lib/git/git";
 
 const WS = "ws1";
 const BASE = "1111111111111111111111111111111111111111";

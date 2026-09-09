@@ -8,13 +8,13 @@
   // is literally what startBestOfN is handed.
   import Modal from "$lib/Modal.svelte";
   import { agentProfilesStore, configTrusts, resolvedAgents } from "$lib/layoutState";
-  import { gitStore, ensureGitView, refresh as refreshGit, rootPathOf } from "$lib/gitState";
+  import { gitStore, ensureGitView, refresh as refreshGit, rootPathOf } from "$lib/git/gitState";
   import { gavinTrees, worktreeSetups } from "$lib/gavinState";
   import ConfigTrustNotice from "$lib/ConfigTrustNotice.svelte";
   import { CUSTOM_MODEL } from "$lib/agentModel";
   import { candidatesError, forkBase, planCandidates, seedCandidates, type Candidate } from "$lib/cards/bestOfN";
   import { startBestOfN } from "$lib/cards/bestOfNActions";
-  import { setupPlan, setupNotice } from "$lib/worktreeSetup";
+  import { setupPlan, setupNotice } from "$lib/git/worktreeSetup";
   import type { CardView } from "$lib/planBoard";
 
   interface Props {

@@ -94,7 +94,7 @@ vi.mock("$lib/gavinState", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async () => () => {},
 }));
-vi.mock("$lib/gitState", () => ({
+vi.mock("$lib/git/gitState", () => ({
   gitStore: writable<Record<string, unknown>>({}),
   ensureGitView: vi.fn(),
   refresh: vi.fn(),

@@ -3,7 +3,7 @@
 
 import { attachmentPromptBlock } from "$lib/cards/attachments";
 import { slugStatus } from "$lib/planBoard";
-import { cardIsOutside } from "$lib/worktreeCards";
+import { cardIsOutside } from "$lib/git/worktreeCards";
 
 // Every launched agent gets the same opening instruction, board Run and
 // orchestration alike: name the tab before doing anything else. A page

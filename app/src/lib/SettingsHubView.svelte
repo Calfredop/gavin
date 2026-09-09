@@ -32,7 +32,7 @@
     autoCommitOptions,
     autoCommitToSelect,
     resolveAutoCommit,
-  } from "$lib/autoCommit";
+  } from "$lib/git/autoCommit";
   import {
     requireReviewFromSelect,
     requireReviewOptions,
@@ -46,7 +46,7 @@
     untrackConfirm,
     type ConfirmCopy,
     type GavinTracking,
-  } from "$lib/gitTracking";
+  } from "$lib/git/gitTracking";
   import { gavinTrees } from "$lib/gavinState";
   import { featureBlockedReason, restartOutcome, restartConfirmLines } from "$lib/daemonCompat";
   import { modelOptions, CUSTOM_MODEL } from "$lib/agentModel";

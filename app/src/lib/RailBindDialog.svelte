@@ -1,7 +1,7 @@
 <script lang="ts">
   import Modal from "$lib/Modal.svelte";
-  import GitForkDialog from "$lib/GitForkDialog.svelte";
-  import { gitStore, createBranch } from "$lib/gitState";
+  import GitForkDialog from "$lib/git/GitForkDialog.svelte";
+  import { gitStore, createBranch } from "$lib/git/gitState";
   import { gavinTrees } from "$lib/gavinState";
   import { layoutState, createPage, resolvedAgentFor, daemonCompat } from "$lib/layoutState";
   import {
@@ -11,7 +11,7 @@
     setRailTriggerAction,
   } from "$lib/orchestrationState";
   import { presetSingle } from "$lib/panes/layout";
-  import { freeBranchNameFrom, validateBranchName } from "$lib/git";
+  import { freeBranchNameFrom, validateBranchName } from "$lib/git/git";
   import { featureBlockedReason } from "$lib/daemonCompat";
   import {
     RAIL_BIND_TABS,

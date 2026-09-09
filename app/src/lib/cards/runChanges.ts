@@ -10,8 +10,8 @@
 // misleading thing this feature could do.
 
 import type { CardSession } from "$lib/board/kanban";
-import type { DiscardReport, FileEntry, RunChanges } from "$lib/git";
-import { shortSha } from "$lib/git";
+import type { DiscardReport, FileEntry, RunChanges } from "$lib/git/git";
+import { shortSha } from "$lib/git/git";
 import { featureBlockedReason, type DaemonCompat } from "$lib/daemonCompat";
 
 const MAX_LISTED = 8;

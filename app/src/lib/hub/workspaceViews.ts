@@ -1,7 +1,7 @@
 import type { Component } from "svelte";
 import { LayoutDashboard, Kanban, FileText, Bot, FolderTree, Files, Settings, GitBranch, Waypoints, Wrench, ScanEye } from "@lucide/svelte";
 import HomeHubView from "$lib/hub/HomeHubView.svelte";
-import GitHubView from "$lib/GitHubView.svelte";
+import GitHubView from "$lib/git/GitHubView.svelte";
 import SettingsHubView from "$lib/SettingsHubView.svelte";
 import KanbanBoard from "$lib/board/KanbanBoard.svelte";
 import OrchestrationHubView from "$lib/OrchestrationHubView.svelte";
