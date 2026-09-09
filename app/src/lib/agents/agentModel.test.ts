@@ -4,6 +4,7 @@ import {
   composeLaunchCommand,
   mergeDiscoveredModels,
   modelOptions,
+  modelIsCustom,
   CUSTOM_MODEL,
 } from "$lib/agents/agentModel";
 
@@ -153,5 +154,34 @@ describe("modelOptions", () => {
     // The panel renders a hint instead: gavin has no verified way to put
     // a model on this command, so it must not pretend otherwise.
     expect(modelOptions(cursor, "")).toEqual([]);
+  });
+});
+
+describe("modelIsCustom", () => {
+  const presets = ["opus", "sonnet", "haiku"];
+
+  it("is false while the workspace is on a preset, or on nothing", () => {
+    expect(modelIsCustom(false, "opus", presets)).toBe(false);
+    expect(modelIsCustom(false, "", presets)).toBe(false);
+  });
+
+  it("is true once the picker's Custom… row has been chosen", () => {
+    expect(modelIsCustom(true, "opus", presets)).toBe(true);
+    expect(modelIsCustom(true, "", presets)).toBe(true);
+  });
+
+  // The clause a picker alone would lose: a model typed here earlier, or
+  // written into config.toml by hand, is not among the presets -- and
+  // without this the picker would draw a preset as selected while the
+  // workspace ran something else.
+  it("is true for a stored model the profile does not offer", () => {
+    expect(modelIsCustom(false, "sonnet[1m]", presets)).toBe(true);
+  });
+
+  // A profile with no presets at all: anything the workspace holds is
+  // custom by definition.
+  it("is true for any stored model when the profile offers none", () => {
+    expect(modelIsCustom(false, "opus", [])).toBe(true);
+    expect(modelIsCustom(false, "", [])).toBe(false);
   });
 });

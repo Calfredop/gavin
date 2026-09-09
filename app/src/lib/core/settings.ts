@@ -208,6 +208,55 @@ export function prdPathFromPick(
   return problem ? { error: problem } : relative;
 }
 
+/// What an empty box means for a settings field. Three of the panel's
+/// text fields answer this differently, and getting it wrong is silent
+/// either way -- a cleared box that writes nothing, or a cleared box that
+/// wipes a setting the human only meant to retype.
+export type EmptyMeans =
+  /// Nothing. `""` is not a value the workspace can hold (a name, a
+  /// command), so blanking the box is a slip and the field keeps what it
+  /// had until something is typed.
+  | "keep"
+  /// Clear the key and go back to inheriting -- the app-wide default, or
+  /// the profile table's. `""` is a real value on the wire here: it is
+  /// how the daemon is told to REMOVE the key rather than store a blank.
+  | "clear";
+
+export type FieldCommit =
+  /// Nothing to write. Either the draft says what the field already
+  /// says, or it is empty and empty means nothing here.
+  | { kind: "skip" }
+  | { kind: "write"; value: string };
+
+export interface FieldCommitOptions {
+  empty: EmptyMeans;
+  /// What this workspace has of its OWN, when that differs from what the
+  /// box is SHOWING. An inheriting field shows the value it fell back to
+  /// -- the app-wide model, the scaffolded PRD path -- and clearing it
+  /// must write only when there is a stored override to remove, or every
+  /// blur on an already-inheriting field is a pointless round trip.
+  /// Defaults to `current`, which is right for a field that inherits
+  /// nothing.
+  stored?: string;
+}
+
+/// Whether a blurred field has anything to write, and what.
+///
+/// Trimmed once, here, so no caller compares a raw draft against a
+/// stored value and writes a change that is only whitespace.
+export function fieldCommit(
+  draft: string,
+  current: string,
+  opts: FieldCommitOptions
+): FieldCommit {
+  const value = draft.trim();
+  if (value === "") {
+    if (opts.empty === "keep") return { kind: "skip" };
+    return (opts.stored ?? current) === "" ? { kind: "skip" } : { kind: "write", value: "" };
+  }
+  return value === current ? { kind: "skip" } : { kind: "write", value };
+}
+
 export type RenameDecision = "prompt" | "point" | "error";
 
 /// The spec's §6 table, as a function. "prompt" means ask before moving;
@@ -222,6 +271,20 @@ export function renameDecision(
   if (newName === oldName) return "point";
   if (oldExists && !targetExists) return "prompt";
   return "point";
+}
+
+/// Why "Delete workspace" is unavailable, or null when it is available.
+/// A sentence rather than a dark button: tooltip.ts binds mouseenter,
+/// which a disabled element never fires, so the reason has to be
+/// something the panel can hang on an ancestor.
+export function deleteBlockedReason(isScratchpad: boolean, hasRoot: boolean): string | null {
+  // The Scratchpad first: it is pinned whether or not it has a root, and
+  // "bind a root folder" would be advice that leads nowhere.
+  if (isScratchpad) return "The Scratchpad is always here — it can't be deleted.";
+  // The wizard scans a folder; with none bound there is nothing on disk
+  // for it to offer to remove.
+  if (!hasRoot) return "Bind a root folder first — there is nothing on disk to delete until then.";
+  return null;
 }
 
 export interface ResolvedAgent {

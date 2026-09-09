@@ -130,3 +130,20 @@ export function mergeDiscoveredModels<P extends { id: string; models: string[] }
     return merged.length === profile.models.length ? profile : { ...profile, models: merged };
   });
 }
+
+/// Whether the model row shows its free-text box rather than the picker.
+///
+/// Two ways in, and the second is the one a picker alone would lose: the
+/// human opened the box from the picker's "Custom…" row, OR the
+/// workspace already holds a model that is not among this profile's
+/// presets -- typed here earlier, or written into config.toml by hand.
+/// Without that second clause the picker would draw one of the presets
+/// as selected while the workspace ran something else.
+///
+/// `ownModel` is what the workspace holds of its OWN, never the resolved
+/// one: a model inherited from the app-wide default is not this
+/// workspace's answer, and offering to edit it here would be offering to
+/// edit somebody else's setting.
+export function modelIsCustom(boxOpen: boolean, ownModel: string, presets: readonly string[]): boolean {
+  return boxOpen || (ownModel !== "" && !presets.includes(ownModel));
+}

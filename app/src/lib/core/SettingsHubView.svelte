@@ -49,7 +49,7 @@
   } from "$lib/git/gitTracking";
   import { gavinTrees } from "$lib/core/gavinState";
   import { featureBlockedReason, restartOutcome, restartConfirmLines } from "$lib/core/daemonCompat";
-  import { modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
+  import { modelIsCustom as modelIsCustomFor, modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
   import {
     resolveAgentConfig,
     validateAgentFileName,
@@ -60,6 +60,8 @@
     prdPathFromPick,
     agentFileFromPick,
     renameDecision,
+    deleteBlockedReason as deleteBlockedReasonFor,
+    fieldCommit,
     DEFAULT_ACCENT,
   } from "$lib/core/settings";
   import { pickPath } from "$lib/workspace/picker";
@@ -329,11 +331,7 @@
   // with no root has nothing to scan, and the Scratchpad is pinned --
   // there is no such thing as removing it.
   const deleteBlockedReason = $derived(
-    workspaceId === UNFILED_WORKSPACE_ID
-      ? "The Scratchpad is always here — it can't be deleted."
-      : !hasRoot
-        ? "Bind a root folder first — there is nothing on disk to delete until then."
-        : null
+    deleteBlockedReasonFor(workspaceId === UNFILED_WORKSPACE_ID, hasRoot)
   );
 
   // --- updates ---------------------------------------------------------
@@ -554,20 +552,19 @@
     }
   }
 
+  /// The one field where shown and stored differ: the box displays the
+  /// RESOLVED path, so typing the scaffolded default back is a no-op,
+  /// while emptying it clears the key -- and only when there is a key to
+  /// clear.
   async function commitPrd(): Promise<void> {
     prdError = null;
-    const next = prdDraft.trim();
-    // Emptied deliberately: that is how a workspace goes back to the
-    // scaffolded default, and the daemon removes the key rather than
-    // blanking it.
-    if (!next) {
-      if (rootContext?.prd) await setPrdPath(workspaceId, "");
-      return;
+    const commit = fieldCommit(prdDraft, prdPath, { empty: "clear", stored: rootContext?.prd ?? "" });
+    if (commit.kind !== "write") return;
+    if (commit.value !== "") {
+      prdError = validatePrdPath(commit.value);
+      if (prdError) return;
     }
-    if (next === prdPath) return;
-    prdError = validatePrdPath(next);
-    if (prdError) return;
-    await setPrdPath(workspaceId, next);
+    await setPrdPath(workspaceId, commit.value);
   }
 
   async function pickPrd(): Promise<void> {
@@ -622,9 +619,7 @@
     if (focused !== "modelFlag") modelFlagDraft = flag;
   });
 
-  const modelIsCustom = $derived(
-    modelCustomOpen || (ownModel !== "" && !(profileInfo?.models ?? []).includes(ownModel))
-  );
+  const modelIsCustom = $derived(modelIsCustomFor(modelCustomOpen, ownModel, profileInfo?.models ?? []));
 
   function pickModel(value: string): void {
     if (value === CUSTOM_MODEL) {
@@ -636,13 +631,11 @@
     void setAgentField(workspaceId, "model", value);
   }
 
+  /// As above, one fallback further: clearing goes back to the app-wide
+  /// custom flag, or failing that to the profile table's own.
   function commitModelFlag(): void {
-    const trimmed = modelFlagDraft.trim();
-    if (trimmed === ownModelFlag) return;
-    // "" is a real value here, not a no-op: it removes the key and puts
-    // the workspace back on the app-wide custom flag, or failing that on
-    // the profile table's own.
-    void setAgentField(workspaceId, "model_flag", trimmed);
+    const commit = fieldCommit(modelFlagDraft, ownModelFlag, { empty: "clear" });
+    if (commit.kind === "write") void setAgentField(workspaceId, "model_flag", commit.value);
   }
 
   function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
@@ -652,31 +645,34 @@
     void setWorkspaceComplexityTable(workspaceId, next);
   }
 
+  /// "" is a real value here, not a no-op: it removes the key and puts
+  /// the workspace back on the app-wide default. The box shows this
+  /// workspace's OWN model, so shown and stored are the same value.
   function commitModel(): void {
-    const trimmed = modelDraft.trim();
-    if (trimmed === ownModel) return;
-    // "" is a real value here, not a no-op: it removes the key and puts
-    // the workspace back on the app-wide default.
-    void setAgentField(workspaceId, "model", trimmed);
+    const commit = fieldCommit(modelDraft, ownModel, { empty: "clear" });
+    if (commit.kind === "write") void setAgentField(workspaceId, "model", commit.value);
   }
 
   function commitMcpFile(): void {
     mcpFileError = null;
-    const trimmed = mcpFileDraft.trim();
-    if (!trimmed || trimmed === (rootContext?.agent?.mcpFile ?? "")) return;
-    mcpFileError = validateMcpConfigPath(trimmed);
+    const commit = fieldCommit(mcpFileDraft, rootContext?.agent?.mcpFile ?? "", { empty: "keep" });
+    if (commit.kind !== "write") return;
+    mcpFileError = validateMcpConfigPath(commit.value);
     if (mcpFileError) return;
-    void setAgentField(workspaceId, "mcp_file", trimmed);
+    void setAgentField(workspaceId, "mcp_file", commit.value);
   }
 
+  /// A workspace cannot be called nothing, so an emptied box is a slip:
+  /// the name stands until something is typed.
   function commitName(): void {
-    const trimmed = nameDraft.trim();
-    if (trimmed && trimmed !== ws?.name) void renameWorkspace(workspaceId, trimmed);
+    const commit = fieldCommit(nameDraft, ws?.name ?? "", { empty: "keep" });
+    if (commit.kind === "write") void renameWorkspace(workspaceId, commit.value);
   }
 
+  /// Same as the name: an agent with no command is not a thing to save.
   function commitCommand(): void {
-    const trimmed = commandDraft.trim();
-    if (trimmed && trimmed !== agent.command) void setAgentField(workspaceId, "command", trimmed);
+    const commit = fieldCommit(commandDraft, agent.command, { empty: "keep" });
+    if (commit.kind === "write") void setAgentField(workspaceId, "command", commit.value);
   }
 
   async function commitFile(): Promise<void> {

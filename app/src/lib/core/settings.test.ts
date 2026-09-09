@@ -14,6 +14,8 @@ import {
   relativeToRoot,
   prdPathFromPick,
   agentFileFromPick,
+  fieldCommit,
+  deleteBlockedReason,
   type AgentProfileInfo,
 } from "$lib/core/settings";
 
@@ -556,5 +558,74 @@ describe("accentVar light-mode legibility", () => {
       expect(accentVar(undefined, theme)).toBeUndefined();
       expect(accentVar("   ", theme)).toBeUndefined();
     }
+  });
+});
+
+describe("fieldCommit", () => {
+  it("skips a draft that says what the field already says", () => {
+    expect(fieldCommit("claude", "claude", { empty: "keep" })).toEqual({ kind: "skip" });
+    expect(fieldCommit("claude", "claude", { empty: "clear" })).toEqual({ kind: "skip" });
+  });
+
+  // Trimmed once, here, so no caller writes a change that is only
+  // whitespace.
+  it("trims before deciding and before writing", () => {
+    expect(fieldCommit("  claude  ", "claude", { empty: "keep" })).toEqual({ kind: "skip" });
+    expect(fieldCommit("  codex  ", "claude", { empty: "keep" })).toEqual({ kind: "write", value: "codex" });
+    expect(fieldCommit("   ", "claude", { empty: "keep" })).toEqual({ kind: "skip" });
+  });
+
+  // A name and a command cannot be "": blanking the box is a slip, and
+  // the field keeps what it had until something is typed.
+  it("writes nothing for an empty box where empty is not a value", () => {
+    expect(fieldCommit("", "My workspace", { empty: "keep" })).toEqual({ kind: "skip" });
+  });
+
+  // "" is a real value on the wire for an overridable key: it is how the
+  // daemon is told to REMOVE it rather than store a blank.
+  it("writes the empty string to clear an override", () => {
+    expect(fieldCommit("", "opus", { empty: "clear" })).toEqual({ kind: "write", value: "" });
+  });
+
+  it("writes nothing when there is no override left to clear", () => {
+    expect(fieldCommit("", "", { empty: "clear" })).toEqual({ kind: "skip" });
+  });
+
+  // The asymmetry `stored` exists for: an inheriting field SHOWS the
+  // value it fell back to, so clearing it must ask what is stored, not
+  // what is displayed -- otherwise every blur on an already-inheriting
+  // field is a pointless round trip.
+  it("asks the stored value, not the shown one, before clearing", () => {
+    expect(fieldCommit("", ".gavin-root/PRD.md", { empty: "clear", stored: "" })).toEqual({ kind: "skip" });
+    expect(fieldCommit("", ".gavin-root/PRD.md", { empty: "clear", stored: "docs/PRD.md" })).toEqual({
+      kind: "write",
+      value: "",
+    });
+  });
+
+  // And a non-empty draft still compares against what is SHOWN: typing
+  // the inherited value back is a no-op, not an override set to the same
+  // thing.
+  it("compares a typed value against what the box was showing", () => {
+    expect(
+      fieldCommit(".gavin-root/PRD.md", ".gavin-root/PRD.md", { empty: "clear", stored: "" })
+    ).toEqual({ kind: "skip" });
+  });
+});
+
+describe("deleteBlockedReason", () => {
+  it("is null for an ordinary workspace with a root", () => {
+    expect(deleteBlockedReason(false, true)).toBeNull();
+  });
+
+  // Pinned whether or not it has a root: "bind a root folder" would be
+  // advice that leads nowhere.
+  it("names the Scratchpad first, root or no root", () => {
+    expect(deleteBlockedReason(true, true)).toContain("Scratchpad");
+    expect(deleteBlockedReason(true, false)).toContain("Scratchpad");
+  });
+
+  it("says a rootless workspace has nothing on disk to delete", () => {
+    expect(deleteBlockedReason(false, false)).toContain("Bind a root folder");
   });
 });
