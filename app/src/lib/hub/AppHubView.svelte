@@ -34,7 +34,7 @@
   } from "$lib/layoutState";
   import { featureBlockedReason } from "$lib/daemonCompat";
   import { workspaceAgentsSummary, kanbanColumnChips, railStripStats, showGitChip } from "$lib/sidebar/sidebarSummary";
-  import type { FleetSummary, RunningTask, TaskPhase, WorkspaceRunning } from "$lib/appHub";
+  import type { FleetSummary, RunningTask, TaskPhase, WorkspaceRunning } from "$lib/hub/appHub";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import {
     agentIndicator,
@@ -58,7 +58,7 @@
     worstUsageRow,
     PHASE_LABEL,
     APP_VERSION,
-  } from "$lib/appHub";
+  } from "$lib/hub/appHub";
   import {
     sessionRows,
     formatCpu,

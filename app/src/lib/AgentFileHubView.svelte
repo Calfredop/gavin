@@ -8,7 +8,7 @@
   } from "$lib/layoutState";
   import { resolveAgentConfig, agentFileFromPick } from "$lib/settings";
   import FileEditor from "$lib/FileEditor.svelte";
-  import HubFilePicker from "$lib/HubFilePicker.svelte";
+  import HubFilePicker from "$lib/hub/HubFilePicker.svelte";
 
   interface Props {
     workspaceId: string;

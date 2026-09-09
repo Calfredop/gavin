@@ -4,7 +4,7 @@
   import { featureBlockedReason } from "$lib/daemonCompat";
   import { resolvePrdPath, prdPathFromPick } from "$lib/settings";
   import FileEditor from "$lib/FileEditor.svelte";
-  import HubFilePicker from "$lib/HubFilePicker.svelte";
+  import HubFilePicker from "$lib/hub/HubFilePicker.svelte";
 
   interface Props {
     workspaceId: string;

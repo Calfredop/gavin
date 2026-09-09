@@ -13,8 +13,8 @@
     manageableHubViewIds,
     orderHubViewIds,
     toggleHubViewHidden,
-  } from "$lib/hubViewMeta";
-  import { HUB_VIEWS } from "$lib/workspaceViews";
+  } from "$lib/hub/hubViewMeta";
+  import { HUB_VIEWS } from "$lib/hub/workspaceViews";
   import {
     hubTabOrderByWorkspace,
     hubTabsHiddenByWorkspace,
@@ -24,7 +24,7 @@
     setWorkspaceHubTabsHidden,
     workspaceHasHubTabOrder,
     workspaceOverridesHubTabs,
-  } from "$lib/hubTabPrefs";
+  } from "$lib/hub/hubTabPrefs";
   import { agentModelDefaultsStore, agentProfilesStore, trustedAgentConfigs } from "$lib/layoutState";
   import { resolveAgentConfig } from "$lib/settings";
   import { hubLabel } from "$lib/workspace";

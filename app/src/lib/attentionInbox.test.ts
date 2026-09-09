@@ -7,7 +7,7 @@ import {
   type AttentionInboxInput,
   type AttentionState,
 } from "$lib/attentionInbox";
-import { PHASE_LABEL } from "$lib/appHub";
+import { PHASE_LABEL } from "$lib/hub/appHub";
 import type { AttentionRow } from "$lib/attentionInbox";
 import type { Page, Workspace } from "$lib/workspace";
 import type { LayoutNode } from "$lib/layout";

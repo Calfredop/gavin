@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DEFAULT_AGENT_SHARE, DIVIDER_PX, homeGridColumns } from "$lib/homeSplit";
+import { DEFAULT_AGENT_SHARE, DIVIDER_PX, homeGridColumns } from "$lib/hub/homeSplit";
 import { svelteSources } from "$lib/sources";
 
 // Three facts about the home tab that live entirely in its markup and

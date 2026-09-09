@@ -46,7 +46,7 @@ import type { SessionStatus } from "$lib/notifications";
 // the very first frame, and a version is not worth an IPC failure mode.
 // Keep in step with app/src-tauri/tauri.conf.json's own `version`, which
 // is what the packaged app reports to the OS.
-import { version } from "../../package.json";
+import { version } from "../../../package.json";
 
 export const APP_VERSION: string = version;
 

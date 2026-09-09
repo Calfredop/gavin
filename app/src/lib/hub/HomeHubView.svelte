@@ -14,8 +14,8 @@
   import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/superpowers";
   import { gavinTrees, refreshGavinTree } from "$lib/gavinState";
   import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
-  import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "$lib/homeSummary";
-  import MainAgentPanel from "$lib/MainAgentPanel.svelte";
+  import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "$lib/hub/homeSummary";
+  import MainAgentPanel from "$lib/hub/MainAgentPanel.svelte";
   import ConfigTrustNotice from "$lib/ConfigTrustNotice.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { railIndicator } from "$lib/ui/indicators";
@@ -28,7 +28,7 @@
     agentShareFromWidth,
     homeGridColumns,
     resolveAgentShare,
-  } from "$lib/homeSplit";
+  } from "$lib/hub/homeSplit";
   import { tooltip } from "$lib/tooltip";
 
   interface Props {

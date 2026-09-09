@@ -13,7 +13,7 @@ import {
   saveHiddenDefault,
   workspaceHasHubTabOrder,
   workspaceOverridesHubTabs,
-} from "$lib/hubTabPrefs";
+} from "$lib/hub/hubTabPrefs";
 
 /// The same fake the sidebar's preference modules use: vitest's node
 /// environment has no localStorage at all, so every reader and writer

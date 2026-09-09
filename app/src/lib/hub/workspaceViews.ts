@@ -1,6 +1,6 @@
 import type { Component } from "svelte";
 import { LayoutDashboard, Kanban, FileText, Bot, FolderTree, Files, Settings, GitBranch, Waypoints, Wrench, ScanEye } from "@lucide/svelte";
-import HomeHubView from "$lib/HomeHubView.svelte";
+import HomeHubView from "$lib/hub/HomeHubView.svelte";
 import GitHubView from "$lib/GitHubView.svelte";
 import SettingsHubView from "$lib/SettingsHubView.svelte";
 import KanbanBoard from "$lib/board/KanbanBoard.svelte";
@@ -18,7 +18,7 @@ import {
   visibleHubViewIds,
   type HubTabPrefs,
   type HubViewMeta,
-} from "$lib/hubViewMeta";
+} from "$lib/hub/hubViewMeta";
 
 /// A hub tab: the metadata from hubViewMeta.ts plus what renders it.
 /// The id/label/visibility rules live there so modules that only need

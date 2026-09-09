@@ -20,8 +20,8 @@ import {
   sidebarPageOrder,
   sidebarWorkspaceOrder,
 } from "$lib/workspace";
-import { tabStripHubViewIds } from "$lib/hubViewMeta";
-import { currentHubTabPrefs } from "$lib/hubTabPrefs";
+import { tabStripHubViewIds } from "$lib/hub/hubViewMeta";
+import { currentHubTabPrefs } from "$lib/hub/hubTabPrefs";
 import { scratchpadEnabled } from "$lib/sidebar/sidebarPrefs";
 import { cmdHeld, isMacSync } from "$lib/platform";
 import { digitFromCode, matchesChord, resolveIndex, SHORTCUTS } from "$lib/shortcuts";

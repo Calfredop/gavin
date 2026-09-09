@@ -78,12 +78,12 @@
   import { agentPauseStore, editableCycle, nowStore, pauseFor } from "$lib/agentPauseState";
   import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "$lib/superpowers";
   import { UNFILED_WORKSPACE_ID } from "$lib/workspace";
-  import HubTabsModal from "$lib/HubTabsModal.svelte";
+  import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
   import {
     hiddenHubViewCount,
     hubTabsHiddenByWorkspace,
     hubTabsHiddenDefault,
-  } from "$lib/hubTabPrefs";
+  } from "$lib/hub/hubTabPrefs";
   import {
     availableUpdate,
     checkingForUpdate,

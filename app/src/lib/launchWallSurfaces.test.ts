@@ -30,6 +30,15 @@ const ROUTES = import.meta.glob("../routes/*.svelte", {
   eager: true,
 }) as Record<string, string>;
 
+/// One route component by file name. The glob's keys are its own pattern
+/// spelled back, so naming a key would pin where THIS file sits -- which
+/// is the coupling the source seam exists to remove.
+function route(name: string): string {
+  const found = Object.entries(ROUTES).find(([path]) => path.endsWith(`/${name}`));
+  if (!found) throw new Error(`no source for ${name}`);
+  return found[1];
+}
+
 function source(name: string): string {
   const text = name.endsWith(".svelte") ? SVELTE[name] : TS[name];
   if (!text) throw new Error(`no source for ${name}`);
@@ -182,7 +191,7 @@ describe("the fleet strip and the banner", () => {
   // Above the view boundary, like the other two: these are the app's own
   // report channel and have to survive whatever the views throw.
   it("mounts the banner beside the other two, above the view boundary", () => {
-    const page = ROUTES["../routes/+page.svelte"];
+    const page = route("+page.svelte");
     expect(page, "no source for +page.svelte").toBeTruthy();
     expect(page).toContain("<MemoryPressureBanner />");
     expect(page.indexOf("<MemoryPressureBanner />")).toBeGreaterThan(

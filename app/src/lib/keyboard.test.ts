@@ -52,7 +52,7 @@ import {
   hubTabOrderByWorkspace,
   hubTabsHiddenByWorkspace,
   hubTabsHiddenDefault,
-} from "$lib/hubTabPrefs";
+} from "$lib/hub/hubTabPrefs";
 
 const state = layoutState as unknown as Writable<Record<string, unknown>>;
 

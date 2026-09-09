@@ -12,7 +12,7 @@ import {
   moveHubViewId,
   toggleHubViewHidden,
   canHideHubView,
-} from "$lib/hubViewMeta";
+} from "$lib/hub/hubViewMeta";
 import { type Workspace } from "$lib/workspace";
 
 describe("visibleHubViewIds", () => {

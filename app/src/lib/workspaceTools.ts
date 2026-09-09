@@ -44,7 +44,7 @@
 // costs seconds. So the RULE lives here and the glyph is looked up where
 // glyphs already are.
 
-import { relativeTime } from "$lib/appHub";
+import { relativeTime } from "$lib/hub/appHub";
 import { featureBlockedReason, type DaemonCompat } from "$lib/daemonCompat";
 import { duplicateTool, resolveToolCwd, type Tool, type ToolKind } from "$lib/orchestrationTools";
 

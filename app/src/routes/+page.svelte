@@ -18,8 +18,8 @@
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import ContextMenu from "$lib/ContextMenu.svelte";
   import { openContextMenuFromEvent } from "$lib/contextMenu";
-  import HubTabsModal from "$lib/HubTabsModal.svelte";
-  import { buildHubTabMenuEntries } from "$lib/hubTabMenu";
+  import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
+  import { buildHubTabMenuEntries } from "$lib/hub/hubTabMenu";
   import AppDialog from "$lib/AppDialog.svelte";
   import ReviewDialog from "$lib/review/ReviewDialog.svelte";
   import { confirmWindowClose } from "$lib/appClose";
@@ -40,7 +40,7 @@
   import { resolveAgentConfig, accentVar } from "$lib/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
   import { sidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
-  import { tabStripHubViews, visibleHubViews } from "$lib/workspaceViews";
+  import { tabStripHubViews, visibleHubViews } from "$lib/hub/workspaceViews";
   import TerminalView from "$lib/terminal/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
   import WindowResizeEdges from "$lib/WindowResizeEdges.svelte";
@@ -50,13 +50,13 @@
   import Sidebar from "$lib/sidebar/Sidebar.svelte";
   import CornerOverhang from "$lib/CornerOverhang.svelte";
   import { isMacSync } from "$lib/platform";
-  import AppHubView from "$lib/AppHubView.svelte";
+  import AppHubView from "$lib/hub/AppHubView.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
   import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
   import DaemonRequestErrorBanner from "$lib/DaemonRequestErrorBanner.svelte";
   import MemoryPressureBanner from "$lib/MemoryPressureBanner.svelte";
   import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/gitState";
-  import { hubViewBusy, hubViewAttention, moveHubViewId } from "$lib/hubViewMeta";
+  import { hubViewBusy, hubViewAttention, moveHubViewId } from "$lib/hub/hubViewMeta";
   import {
     hubTabOrderByWorkspace,
     hubTabPrefsFor,
@@ -66,7 +66,7 @@
     setWorkspaceHubTabOrder,
     setWorkspaceHubTabsHidden,
     toggleHubTabsUnlocked,
-  } from "$lib/hubTabPrefs";
+  } from "$lib/hub/hubTabPrefs";
   import { getDragKind, getDragPayload, setDragPayload } from "$lib/dragDrop";
   import { Lock, LockOpen } from "@lucide/svelte";
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";

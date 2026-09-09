@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { HUB_VIEW_META, orderableHubViewIds, tabStripHubViewIds, visibleHubViewIds } from "$lib/hubViewMeta";
+import { HUB_VIEW_META, orderableHubViewIds, tabStripHubViewIds, visibleHubViewIds } from "$lib/hub/hubViewMeta";
 import { allSources } from "$lib/sources";
 
 // The Review tab is four pure modules and four components, and the rules

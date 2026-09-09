@@ -24,6 +24,15 @@ const ROUTES = import.meta.glob("../routes/*.svelte", {
   eager: true,
 }) as Record<string, string>;
 
+/// One route component by file name. The glob's keys are its own pattern
+/// spelled back, so naming a key would pin where THIS file sits -- which
+/// is the coupling the source seam exists to remove.
+function route(name: string): string {
+  const found = Object.entries(ROUTES).find(([path]) => path.endsWith(`/${name}`));
+  if (!found) throw new Error(`no source for ${name}`);
+  return found[1];
+}
+
 /// The variables theme.css defines for these rows. The stylesheet itself
 /// is unreadable from here -- vite hands SSR an empty string for a CSS
 /// import, `?raw` included, and @types/node is not installed for a
@@ -44,7 +53,7 @@ const METRICS = [
 ];
 
 function source(name: string): string {
-  const text = SOURCES[name] ?? ROUTES[`../routes/${name}`];
+  const text = SOURCES[name] ?? route(name);
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

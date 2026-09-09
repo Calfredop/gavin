@@ -9,7 +9,7 @@
   import Modal from "$lib/Modal.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { runIndicator } from "$lib/ui/indicators";
-  import { relativeTime } from "$lib/appHub";
+  import { relativeTime } from "$lib/hub/appHub";
   import {
     historySummary,
     runRows,

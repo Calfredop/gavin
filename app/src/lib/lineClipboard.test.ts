@@ -364,7 +364,16 @@ describe("the listener is actually installed", () => {
     eager: true,
   }) as Record<string, string>;
 
-  const source = PAGE["../routes/+page.svelte"];
+/// One route component by file name. The glob's keys are its own pattern
+/// spelled back, so naming a key would pin where THIS file sits -- which
+/// is the coupling the source seam exists to remove.
+function route(name: string): string {
+  const found = Object.entries(PAGE).find(([path]) => path.endsWith(`/${name}`));
+  if (!found) throw new Error(`no source for ${name}`);
+  return found[1];
+}
+
+  const source = route("+page.svelte");
 
   it("has a source to read", () => {
     expect(source).toBeTruthy();

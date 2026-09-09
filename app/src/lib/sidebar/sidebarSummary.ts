@@ -8,7 +8,7 @@
 // polling is introduced.
 
 import { allSessionIds, sessionTabsOnly } from "$lib/layout";
-import { boardSummary } from "$lib/homeSummary";
+import { boardSummary } from "$lib/hub/homeSummary";
 import { isStepFinished, railStateOf, stepStateOf, type Orchestration, type Rail } from "$lib/orchestration";
 import { slugStatus } from "$lib/planBoard";
 import type { Board } from "$lib/board/kanban";

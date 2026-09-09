@@ -22,7 +22,7 @@ import {
   tabStripHubViewIds,
   toggleHubViewHidden,
   visibleHubViewIds,
-} from "$lib/hubViewMeta";
+} from "$lib/hub/hubViewMeta";
 import { hubLabel } from "$lib/workspace";
 
 export interface HubTabMenuContext {

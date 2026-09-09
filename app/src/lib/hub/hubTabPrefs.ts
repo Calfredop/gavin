@@ -29,7 +29,7 @@ import {
   orderableHubViewIds,
   resolveHubView,
   type HubTabPrefs,
-} from "$lib/hubViewMeta";
+} from "$lib/hub/hubViewMeta";
 import { getActiveView, getActiveWorkspace } from "$lib/workspace";
 import { layoutState, switchWorkspaceView } from "$lib/layoutState";
 

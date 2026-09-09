@@ -33,8 +33,8 @@
   } from "$lib/cards/cardReview";
   import { resolveGitTracking } from "$lib/gitTracking";
   import { scratchpadEnabled, setScratchpadEnabled } from "$lib/sidebar/sidebarPrefs";
-  import { hiddenHubViewCount, hubTabsHiddenDefault } from "$lib/hubTabPrefs";
-  import HubTabsModal from "$lib/HubTabsModal.svelte";
+  import { hiddenHubViewCount, hubTabsHiddenDefault } from "$lib/hub/hubTabPrefs";
+  import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
   import { themeState } from "$lib/ui/themeState.svelte";
   import type { ThemePref } from "$lib/ui/theme";
   import IconButton from "$lib/ui/IconButton.svelte";

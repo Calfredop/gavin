@@ -86,8 +86,8 @@
   } from "$lib/ui/indicators";
 
   import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "$lib/paths";
-  import { resolveHubView, visibleHubViewIds } from "$lib/hubViewMeta";
-  import { currentHubTabPrefs } from "$lib/hubTabPrefs";
+  import { resolveHubView, visibleHubViewIds } from "$lib/hub/hubViewMeta";
+  import { currentHubTabPrefs } from "$lib/hub/hubTabPrefs";
   import {
     setDragPayload,
     getDragKind,

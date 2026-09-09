@@ -18,7 +18,7 @@ import {
   type FleetInput,
   type FleetState,
   type WorkspaceRunning,
-} from "$lib/appHub";
+} from "$lib/hub/appHub";
 import { totalUsage, type SessionRow } from "$lib/sessions/sessionsManager";
 import type { AgentUsageReport } from "$lib/agentUsage";
 import type { AgentProfileInfo } from "$lib/settings";
