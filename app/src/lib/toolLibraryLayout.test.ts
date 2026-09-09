@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // The tool library and its tool-creation form are two modes of ONE modal,
 // and both scrolled sideways. Modal's panel caps at 480px of content box
@@ -27,14 +28,10 @@ import { describe, it, expect } from "vitest";
 //      above (the 406 and 328 columns are the panel, shrinking past it);
 //      the chip rows are the same shape of problem one line down.
 
-const SVELTE = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SVELTE = svelteSources();
 
 function source(name: string): string {
-  const text = SVELTE[`./${name}`];
+  const text = SVELTE[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

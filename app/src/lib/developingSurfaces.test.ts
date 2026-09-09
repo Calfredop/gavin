@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { cardSessionBar } from "./cardDetail";
+import { svelteSources, tsSources } from "./sources";
 
 // One fact -- "an agent is rewriting this card" -- expressed on three
 // board surfaces that nothing links: the card face, its context menu and
@@ -15,20 +16,12 @@ import { cardSessionBar } from "./cardDetail";
 // autoCommitSurfaces.test.ts: mounting three components to assert "this
 // handler is called" tests the harness.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
-const MODULES = import.meta.glob("./*.ts", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const MODULES = tsSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`] ?? MODULES[`./${name}`];
+  const text = SOURCES[name] ?? MODULES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

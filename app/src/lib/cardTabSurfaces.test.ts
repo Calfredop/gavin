@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { allSources } from "./sources";
 
 // A card tab is a fourth kind of pane tab, and nothing type-checks the
 // rules that make it one. The compiler is happy with a chip that opens a
@@ -11,11 +12,7 @@ import { describe, it, expect } from "vitest";
 // runChangesSurfaces.test.ts: mounting a pane to assert "this handler
 // was called" tests the harness.
 
-const SOURCES = import.meta.glob("./*.{svelte,ts}", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = allSources();
 
 const RUST = import.meta.glob("../../src-tauri/src/*.rs", {
   query: "?raw",
@@ -24,7 +21,7 @@ const RUST = import.meta.glob("../../src-tauri/src/*.rs", {
 }) as Record<string, string>;
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

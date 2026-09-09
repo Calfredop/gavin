@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // "Mark as Read" is one acknowledgement expressed as a SPLIT across a
 // dozen files, and nothing links them. A surface that nags reads the
@@ -14,14 +15,10 @@ import { describe, it, expect } from "vitest";
 // autoCommitSurfaces.test.ts: mounting the sidebar, the hub and four
 // modals to assert which store a lookup came from tests the harness.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

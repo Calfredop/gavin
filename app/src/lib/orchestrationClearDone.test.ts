@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // The toolbar's "Clear" -- a dropdown over the two ways to remove every
 // rail that has finished everything on it -- lives in the hub view's
@@ -26,13 +27,9 @@ import { describe, it, expect } from "vitest";
 // Reads the component source rather than the rendered DOM, following
 // orchestrationRunAll.test.ts.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
-const HUB = SOURCES["./OrchestrationHubView.svelte"];
+const HUB = SOURCES["OrchestrationHubView.svelte"];
 
 describe("the Clear dropdown button", () => {
   it("sits in the toolbar between Run all and New rail", () => {

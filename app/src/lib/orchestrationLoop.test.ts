@@ -29,6 +29,7 @@ import { nextActions } from "./orchestration";
 import type { Orchestration, Rail, ToolSummary } from "./orchestration";
 import { BUILTIN_TOOLS, findTool } from "./orchestrationTools";
 import type { Board } from "./kanban";
+import { allSources } from "./sources";
 
 // ---- fixtures ---------------------------------------------------------------
 
@@ -610,19 +611,15 @@ describe("fail, then pass", () => {
 // Read from the sources, following orchestrationGavinTool.test.ts: these
 // are one-line decisions whose failure mode is silent.
 
-const SOURCES = import.meta.glob("./*.{svelte,ts}", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = allSources();
 
 describe("the until step's wiring", () => {
   it("ships as a built-in, so it is in the + Add step picker's Tools list", () => {
     expect(BUILTIN_TOOLS.some((t) => t.id === UNTIL_TOOL_ID)).toBe(true);
     // The picker renders the WHOLE library rather than a chosen subset,
     // which is what makes shipping the tool enough.
-    expect(SOURCES["./OrchestrationHubView.svelte"]).toContain("{#each tools as tool (tool.id)}");
-    expect(SOURCES["./OrchestrationHubView.svelte"]).toContain(
+    expect(SOURCES["OrchestrationHubView.svelte"]).toContain("{#each tools as tool (tool.id)}");
+    expect(SOURCES["OrchestrationHubView.svelte"]).toContain(
       "void addToolAsStepAction(workspaceId, railId, tool.id)"
     );
   });
@@ -635,7 +632,7 @@ describe("the until step's wiring", () => {
   // The check is a shell session in the rail's page like any other tool
   // step -- not a hidden probe.
   it("runs the check as a visible session, through the rail's page", () => {
-    const source = SOURCES["./orchestrationState.ts"];
+    const source = SOURCES["orchestrationState.ts"];
     expect(source).toContain(
       'buildToolCommand("script", buildUntilScript(body, untilLogPath(step.id)), tool.name)'
     );
@@ -646,14 +643,14 @@ describe("the until step's wiring", () => {
   // launch zeroes that field, and zeroing it here would make the budget
   // unspendable and the loop unbounded.
   it("preserves the loop budget across the check's own relaunches", () => {
-    expect(SOURCES["./orchestrationState.ts"]).toContain('tool.kind === "until" ? null : 0');
+    expect(SOURCES["orchestrationState.ts"]).toContain('tool.kind === "until" ? null : 0');
   });
 
   // ...and the two paths that mean "start over" clear it, since no
   // launch will. (The third, an exhausted stall, has a test of its own
   // in orchestrationState.test.ts, where the write is observable.)
   it("clears the budget wherever a run starts over", () => {
-    const source = SOURCES["./orchestrationState.ts"];
+    const source = SOURCES["orchestrationState.ts"];
     const body = (name: string) => {
       const at = source.indexOf(`export async function ${name}(`);
       expect(at, name).toBeGreaterThan(-1);
@@ -673,9 +670,9 @@ describe("the until step's wiring", () => {
     // The membership itself is asserted against the TYPE in
     // orchestrationTools.test.ts ("leaves no kind unauthorable"); what
     // this pins is the two halves that make the chip usable.
-    expect(SOURCES["./orchestrationTools.ts"]).toContain('"until",');
-    expect(SOURCES["./orchestrationTools.ts"]).toContain('label: "Check command"');
-    expect(SOURCES["./ToolLibraryDialog.svelte"]).toContain("toolBodyEditor(editing.kind)");
+    expect(SOURCES["orchestrationTools.ts"]).toContain('"until",');
+    expect(SOURCES["orchestrationTools.ts"]).toContain('label: "Check command"');
+    expect(SOURCES["ToolLibraryDialog.svelte"]).toContain("toolBodyEditor(editing.kind)");
   });
 
   // Its budget is an ARGUMENT rather than text pasted into the body, and
@@ -683,8 +680,8 @@ describe("the until step's wiring", () => {
   // budget typed into `retries` reads as no budget rather than as an
   // error. The form has to say the name.
   it("tells an author what its parameters are called", () => {
-    expect(SOURCES["./orchestrationTools.ts"]).toMatch(/case "until":[\s\S]{0,200}`max`/);
-    expect(SOURCES["./ToolLibraryDialog.svelte"]).toContain("toolKindParamNote(editing.kind)");
+    expect(SOURCES["orchestrationTools.ts"]).toMatch(/case "until":[\s\S]{0,200}`max`/);
+    expect(SOURCES["ToolLibraryDialog.svelte"]).toContain("toolKindParamNote(editing.kind)");
   });
 
   // The four sites that draw a tool by its kind used to carry a private
@@ -698,10 +695,10 @@ describe("the until step's wiring", () => {
   // calling the kind lookup directly would draw a terminal on the one
   // tool its author deliberately made a rocket.
   for (const path of [
-    "./OrchestrationDrawer.svelte",
-    "./ToolLibraryDialog.svelte",
-    "./OrchestrationStepChip.svelte",
-    "./WorkspaceToolsHubView.svelte",
+    "OrchestrationDrawer.svelte",
+    "ToolLibraryDialog.svelte",
+    "OrchestrationStepChip.svelte",
+    "WorkspaceToolsHubView.svelte",
   ]) {
     it(`${path} draws a tool's icon through the shared lookup`, () => {
       expect(SOURCES[path], path).toContain("toolIcon");

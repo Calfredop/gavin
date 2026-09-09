@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { source, svelteSources } from "./sources";
 
 // The app has one tooltip: the `use:tooltip` action in tooltip.ts, which
 // mounts ONE bubble on <body>, positions it `fixed`, and flips it below
@@ -24,17 +25,21 @@ import { describe, it, expect } from "vitest";
 // rule can only be seen as text -- the same tactic as
 // indicatorSurfaces.test.ts and globalStyleScope.test.ts.
 
-const SOURCES = import.meta.glob("../**/*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
-
-function source(file: string): string {
-  const key = Object.keys(SOURCES).find((k) => k.endsWith(`/${file}`));
-  expect(key, `${file} is no longer where this test looks for it`).toBeDefined();
-  return SOURCES[key as string];
+/// The route components, re-keyed by bare file name so they sit beside
+/// the seam's entries in one map. `../routes` is outside lib and the
+/// reorganization does not move it, so the glob stays here.
+function routeSources(): Record<string, string> {
+  const raw = import.meta.glob("../routes/**/*.svelte", {
+    query: "?raw",
+    import: "default",
+    eager: true,
+  }) as Record<string, string>;
+  return Object.fromEntries(
+    Object.entries(raw).map(([path, text]) => [path.slice(path.lastIndexOf("/") + 1), text]),
+  );
 }
+
+const SOURCES = { ...svelteSources(), ...routeSources() };
 
 /// Selector + declaration block pairs from a component's `<style>`.
 /// Deliberately crude: the text before each `{` is the selector list.
@@ -63,8 +68,7 @@ function localTooltipBubbles(text: string): string[] {
 
 describe("one tooltip mechanism", () => {
   it("leaves no component drawing its own hover bubble", () => {
-    for (const [path, text] of Object.entries(SOURCES)) {
-      const file = path.split("/").pop() as string;
+    for (const [file, text] of Object.entries(SOURCES)) {
       const found = localTooltipBubbles(text);
       expect(
         found,

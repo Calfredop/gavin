@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { railSelection, type RailLike } from "./railSelection.svelte";
+import { svelteSources } from "./sources";
 
 // Creating a worktree from a rail's bind dialog cut the worktree and then
 // bound nothing: the button looked dead while `git worktree add` quietly
@@ -38,14 +39,10 @@ describe("a prop read through the state that closed the dialog", () => {
   });
 });
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

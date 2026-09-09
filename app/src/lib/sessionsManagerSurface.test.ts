@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { source } from "./sources";
 
 // The task manager is one panel reached from one place, and the two
 // files that make it so are linked by nothing a type-checker can see: a
@@ -9,18 +10,6 @@ import { describe, it, expect } from "vitest";
 // autoCommitSurfaces.test.ts and hubTabBar.test.ts: mounting a modal to
 // assert "this handler was called" tests the harness, and a component
 // `<style>` is compiled away anyway.
-
-const SOURCES = import.meta.glob(["./*.svelte", "./sessionsManagerActions.ts", "./orphanActions.ts"], {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
-
-function source(name: string): string {
-  const text = SOURCES[`./${name}`];
-  if (!text) throw new Error(`no source for ${name}`);
-  return text;
-}
 
 const SIDEBAR = "Sidebar.svelte";
 const HUB = "AppHubView.svelte";

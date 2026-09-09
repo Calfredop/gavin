@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { allSources } from "./sources";
 
 // `open` LAUNCHES: on macOS it starts an `.app` bundle outright and
 // hands anything else to its registered handler. The capability used to
@@ -19,11 +20,14 @@ const CAPABILITY = import.meta.glob("../../src-tauri/capabilities/default.json",
   eager: true,
 }) as Record<string, string>;
 
-const FRONTEND = import.meta.glob(["./*.ts", "./*.svelte", "../routes/*.svelte"], {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const FRONTEND = {
+  ...allSources(),
+  ...(import.meta.glob("../routes/*.svelte", {
+    query: "?raw",
+    import: "default",
+    eager: true,
+  }) as Record<string, string>),
+};
 
 describe("the opener plugin holds no path permission", () => {
   const capability = Object.values(CAPABILITY)[0];
@@ -53,7 +57,6 @@ describe("no frontend module reaches for the plugin's path openers", () => {
   it("imports only openUrl from @tauri-apps/plugin-opener", () => {
     const offenders: string[] = [];
     for (const [file, source] of Object.entries(FRONTEND)) {
-      if (file.endsWith("openerScope.test.ts")) continue;
       for (const match of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*"@tauri-apps\/plugin-opener"/g)) {
         const named = match[1].split(",").map((n) => n.trim()).filter(Boolean);
         const forbidden = named.filter((n) => n !== "openUrl");

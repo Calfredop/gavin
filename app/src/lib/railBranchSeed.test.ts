@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { freeBranchNameFrom, validateBranchName } from "./git";
+import { svelteSources } from "./sources";
 
 // Both name fields a rail's bind dialog can open -- "New branch…" inline
 // and the "New worktree…" fork dialog's branch input -- used to start
@@ -8,14 +9,10 @@ import { freeBranchNameFrom, validateBranchName } from "./git";
 // a prop hand-off is reachable from the pure suite, so this pins the
 // wiring in the source the way orchestrationGroupLabel.test.ts does.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

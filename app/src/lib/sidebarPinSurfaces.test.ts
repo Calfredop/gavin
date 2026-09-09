@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // A pin is one rule expressed in three places that nothing links: the
 // ordering helpers (workspace.ts), the menu that sets it (sidebarMenu.ts)
@@ -9,14 +10,10 @@ import { describe, it, expect } from "vitest";
 // promise a pin makes -- so this file reads the component source, the
 // way autoCommitSurfaces.test.ts and hubTabBar.test.ts do.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 const sidebar = (): string => {
-  const text = SOURCES["./Sidebar.svelte"];
+  const text = SOURCES["Sidebar.svelte"];
   if (!text) throw new Error("no source for Sidebar.svelte");
   return text;
 };

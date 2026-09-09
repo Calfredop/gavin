@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // Both dialogs that cut git a branch or a worktree used to hand a
 // refusal to the Git tab's error banner and keep themselves open:
@@ -14,14 +15,10 @@ import { describe, it, expect } from "vitest";
 // are none of them reachable from the pure suite, so this pins the
 // wiring in the source the way railBranchSeed.test.ts does.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

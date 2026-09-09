@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { RAIL_BIND_TABS } from "./railBind";
+import { svelteSources } from "./sources";
 
 // The rail's bind dialog was three stacked sections behind one button
 // that showed a full worktree path and a page name. Nothing on the way in
@@ -12,14 +13,10 @@ import { RAIL_BIND_TABS } from "./railBind";
 // no rendering test in this repo covers, so this pins it in the source
 // the way orchestrationRailHeader.test.ts pins the header's two rows.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

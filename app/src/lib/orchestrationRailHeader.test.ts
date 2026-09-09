@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { source } from "./sources";
 
 // The rail header used to be ONE row: name, conflict badges, state word,
 // attention chip and six icon buttons. A rail is a 280px grid column as
@@ -12,19 +13,7 @@ import { describe, it, expect } from "vitest";
 // suite can see, so this pins them the way orchestrationRailScroll pins
 // the scroll rules.
 
-const SVELTE = import.meta.glob(["./*.svelte", "./ui/StatusBadge.svelte"], {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
-
 const RAIL = "OrchestrationRail.svelte";
-
-function source(name: string): string {
-  const text = SVELTE[`./${name}`];
-  if (!text) throw new Error(`no source for ${name}`);
-  return text;
-}
 
 /// The markup of one header row, by its class, up to the element that
 /// opens the next one. Comments stripped, so prose naming a component
@@ -85,7 +74,7 @@ describe("the rail header's first row", () => {
     // The state and attention labels are StatusBadges, and the badge's
     // own rule is what refuses to shrink -- one rule for every badge in
     // the app rather than a private flex: none per surface.
-    const badge = SVELTE["./ui/StatusBadge.svelte"];
+    const badge = source("StatusBadge.svelte");
     expect(badge, "no source for ui/StatusBadge.svelte").toBeTruthy();
     const at = badge.indexOf("\n  .status-badge {");
     expect(at, "no `.status-badge` rule in StatusBadge.svelte").toBeGreaterThan(-1);

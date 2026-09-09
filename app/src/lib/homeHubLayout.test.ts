@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { DEFAULT_AGENT_SHARE, DIVIDER_PX, homeGridColumns } from "./homeSplit";
+import { svelteSources } from "./sources";
 
 // Three facts about the home tab that live entirely in its markup and
 // its <style> block, and that no other suite can see: a component's CSS
@@ -12,14 +13,10 @@ import { DEFAULT_AGENT_SHARE, DIVIDER_PX, homeGridColumns } from "./homeSplit";
 // Pinning them here is what keeps a later tidy-up from quietly undoing
 // any of the three.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

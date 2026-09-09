@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // The Kanban and Orchestration tabs each open with a first row that is the
 // same thing -- a search lens over a wide scrolling surface -- and the two
@@ -14,14 +15,10 @@ import { describe, it, expect } from "vitest";
 // component `<style>` is compiled away, and vite hands SSR an empty string
 // for a CSS import, so the declarations themselves are only legible here.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources, tsSources } from "./sources";
 
 // The completion cascade only works if EVERY human gesture that can file
 // a plan goes through it. Nothing links those call sites -- three of them
@@ -11,18 +12,11 @@ import { describe, it, expect } from "vitest";
 // autoCommitSurfaces.test.ts: the failure being pinned is a MISSING call,
 // which no rendered DOM can show.
 
-const TS = import.meta.glob("./*.ts", { query: "?raw", import: "default", eager: true }) as Record<
-  string,
-  string
->;
-const SVELTE = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const TS = tsSources();
+const SVELTE = svelteSources();
 
 function source(name: string): string {
-  const text = TS[`./${name}`] ?? SVELTE[`./${name}`];
+  const text = TS[name] ?? SVELTE[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

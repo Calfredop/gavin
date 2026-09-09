@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { HUB_VIEW_META, orderableHubViewIds, tabStripHubViewIds, visibleHubViewIds } from "./hubViewMeta";
+import { allSources } from "./sources";
 
 // The Review tab is four pure modules and four components, and the rules
 // that hold them together are invisible to every other suite here. A tab
@@ -13,14 +14,10 @@ import { HUB_VIEW_META, orderableHubViewIds, tabStripHubViewIds, visibleHubViewI
 // runChangesSurfaces.test.ts: mounting the tab to assert "this handler
 // was called" tests the harness.
 
-const SOURCES = import.meta.glob("./*.{svelte,ts}", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = allSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

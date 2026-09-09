@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentConfig } from "./gavin";
 import { resolveAgentConfig, type AgentProfileInfo } from "./settings";
 import { setupPlan } from "./worktreeSetup";
+import { svelteSources, tsSources } from "./sources";
 import {
   configTrustNotice,
   configTrusted,
@@ -213,11 +214,18 @@ describe("a config gavin wrote itself", () => {
 // way worktreeSetup.test.ts pins its own — and each of these fails
 // SILENTLY, with the repo's command simply running as if nothing were
 // wrong.
-const TS_SOURCES = import.meta.glob("./**/*.ts", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
-const SVELTE_SOURCES = import.meta.glob("./**/*.svelte", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+const TS_SOURCES = tsSources();
+const SVELTE_SOURCES = svelteSources();
 const ROUTE_SOURCES = import.meta.glob("../routes/**/*.svelte", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 
 const ALL = { ...TS_SOURCES, ...SVELTE_SOURCES, ...ROUTE_SOURCES };
+
+/// The bare file name of a map key, so a lib entry (bare already) and a
+/// route entry (`../routes/+page.svelte`) can be excluded by the same
+/// comparison.
+function baseName(key: string): string {
+  return key.slice(key.lastIndexOf("/") + 1);
+}
 
 /// Every file that resolves an agent, minus the module that DEFINES the
 /// gate and the suites that exercise it.
@@ -226,8 +234,8 @@ function callers(): [string, string][] {
     ([name, text]) =>
       text.includes("resolveAgentConfig(") &&
       !name.endsWith(".test.ts") &&
-      !name.endsWith("/settings.ts") &&
-      !name.endsWith("/layoutState.ts")
+      baseName(name) !== "settings.ts" &&
+      baseName(name) !== "layoutState.ts"
   );
 }
 
@@ -255,7 +263,7 @@ describe("nothing resolves an agent around the gate", () => {
     // it ships with the repo like the rest. A one-argument call would
     // put that write back on whatever the clone chose.
     for (const [name, text] of Object.entries(ALL)) {
-      if (name.endsWith(".test.ts") || name.endsWith("/backend.ts")) continue;
+      if (name.endsWith(".test.ts") || baseName(name) === "backend.ts") continue;
       for (const call of text.match(/setupAgentIntegration\([^)]*\)/g) ?? []) {
         expect(call, `${name} calls ${call} with no instructions file`).toMatch(/,/);
       }
@@ -267,7 +275,7 @@ describe("nothing resolves an agent around the gate", () => {
     // first token of what it is given. A one-argument call would put a
     // cloned repo's binary back on that path.
     for (const [name, text] of Object.entries(ALL)) {
-      if (name.endsWith(".test.ts") || name.endsWith("/backend.ts")) continue;
+      if (name.endsWith(".test.ts") || baseName(name) === "backend.ts") continue;
       for (const call of text.match(/superpowers(?:Status|Install)\([^)]*\)/g) ?? []) {
         expect(call, `${name} calls ${call} with no command`).toMatch(/,/);
       }

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { BUILTIN_TOOLS } from "./orchestrationTools";
+import { allSources } from "./sources";
 
 // The `gavin` tool kind is the one kind with no session behind it, and
 // three facts about it are invisible when they break:
@@ -18,25 +19,19 @@ import { BUILTIN_TOOLS } from "./orchestrationTools";
 // Reads the sources rather than the rendered DOM or a live store,
 // following orchestrationRunAll.test.ts.
 
-const SOURCES = import.meta.glob("./*.{svelte,ts}", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = allSources();
 
 describe("the gavin tool kind", () => {
   // Every place that picks an icon from a kind. Each used to carry its
   // own ternary, and this asserted the `gavin` arm in three of them;
   // they share one lookup now, so what is pinned is that they still
   // reach for it. WHICH glyph each kind gets, and that no two share one,
-  // is ui/toolKindIcon.test.ts -- the glob here does not reach into
-  // ./ui, and widening it to read one line would pull the whole folder
-  // in as raw text.
+  // is ui/toolKindIcon.test.ts.
   const ICON_SITES = [
-    "./OrchestrationDrawer.svelte",
-    "./ToolLibraryDialog.svelte",
-    "./OrchestrationStepChip.svelte",
-    "./WorkspaceToolsHubView.svelte",
+    "OrchestrationDrawer.svelte",
+    "ToolLibraryDialog.svelte",
+    "OrchestrationStepChip.svelte",
+    "WorkspaceToolsHubView.svelte",
   ];
 
   for (const path of ICON_SITES) {
@@ -57,16 +52,16 @@ describe("the gavin tool kind", () => {
     // there could name nothing and would stall every step it was dropped
     // onto -- discoverable only at launch. That every kind is on the
     // list is asserted against the TYPE in orchestrationTools.test.ts.
-    expect(SOURCES["./orchestrationTools.ts"]).toContain('"gavin",');
+    expect(SOURCES["orchestrationTools.ts"]).toContain('"gavin",');
   });
 
   it("draws its body as a select over the actions, never a text box", () => {
     // This is what made the chip safe to offer: the form cannot express
     // an action gavin does not have, so `validateTool`'s refusal is left
     // guarding only a tool a NEWER gavin wrote.
-    const editor = SOURCES["./orchestrationTools.ts"];
+    const editor = SOURCES["orchestrationTools.ts"];
     expect(editor).toMatch(/case "gavin":[\s\S]{0,120}shape: "action"/);
-    const dialog = SOURCES["./ToolLibraryDialog.svelte"];
+    const dialog = SOURCES["ToolLibraryDialog.svelte"];
     expect(dialog).toContain('{:else if bodyEditor.shape === "action"}');
     expect(dialog).toMatch(/#each GAVIN_ACTIONS as action/);
   });
@@ -75,12 +70,12 @@ describe("the gavin tool kind", () => {
   // the kind and reads the body, never on which built-in id it came
   // from -- so the Built-in section offers Duplicate on all sixteen.
   it("offers Duplicate like every other built-in", () => {
-    expect(SOURCES["./ToolLibraryDialog.svelte"]).not.toContain("gavin's own");
+    expect(SOURCES["ToolLibraryDialog.svelte"]).not.toContain("gavin's own");
   });
 });
 
 describe("running a gavin action", () => {
-  const source = SOURCES["./orchestrationState.ts"];
+  const source = SOURCES["orchestrationState.ts"];
   // Bounded by the function's own closing brace, so a declaration moving
   // in after it cannot silently widen what these assertions read.
   const start = source.indexOf("async function executeGavinAction");

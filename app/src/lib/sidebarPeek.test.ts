@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { get } from "svelte/store";
+import { source } from "./sources";
 import {
   endSidebarPeek,
   peekSidebar,
@@ -8,12 +9,7 @@ import {
   sidebarShowsRail,
 } from "./sidebarPeek";
 
-const SOURCE = (
-  import.meta.glob("./sidebarPeek.ts", { query: "?raw", import: "default", eager: true }) as Record<
-    string,
-    string
-  >
-)["./sidebarPeek.ts"];
+const SOURCE = source("sidebarPeek.ts");
 
 beforeEach(() => {
   endSidebarPeek();

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // Tool editing is one editor reached from two places -- the Orchestration
 // tab's drawer and the Tools hub tab -- and nothing in the type system
@@ -12,14 +13,10 @@ import { describe, it, expect } from "vitest";
 // autoCommitSurfaces.test.ts: mounting a modal to assert "this handler is
 // called" tests the harness more than the wiring.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

@@ -7,6 +7,7 @@ vi.mock("./backend", () => ({
 }));
 
 import * as backend from "./backend";
+import { svelteSources } from "./sources";
 import {
   LEARNED_HEADING,
   adoptMemory,
@@ -211,14 +212,10 @@ describe("adoptMemory", () => {
 // The button lives in a component, which no suite mounts (see
 // autoCommitSurfaces.test.ts for why): read the source instead, so a
 // handler wired to nothing cannot pass by rendering perfectly.
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 describe("the card detail modal", () => {
-  const source = SOURCES["./CardDetailModal.svelte"] ?? "";
+  const source = SOURCES["CardDetailModal.svelte"] ?? "";
 
   it("offers the action only on a card the convention covers", () => {
     // The rule lives in memoryCard.ts; a second copy spelled out here

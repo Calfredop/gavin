@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { source } from "./sources";
 
 // A static pre-flight over the two settings panels (SettingsHubView.svelte,
 // GlobalSettingsModal.svelte): the search box works by hiding whichever
@@ -11,18 +12,6 @@ import { describe, it, expect } from "vitest";
 // suite here to catch it at runtime -- see CLAUDE.md's note that rendered
 // UI is the one thing the suites cannot cover) and checks the two lists
 // stay in lockstep.
-
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
-
-function source(file: string): string {
-  const key = Object.keys(SOURCES).find((k) => k.endsWith(`/${file}`));
-  expect(key, `${file} is no longer where this test looks for it`).toBeDefined();
-  return SOURCES[key as string];
-}
 
 interface SectionUse {
   id: string;

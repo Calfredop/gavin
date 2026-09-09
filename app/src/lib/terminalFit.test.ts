@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { fitWorthTaking } from "./terminalFit";
+import { svelteSources } from "./sources";
 
 describe("fitWorthTaking", () => {
   it("takes an ordinary pane's measurement", () => {
@@ -42,11 +43,7 @@ describe("fitWorthTaking", () => {
 // type system, and no suite renders this component, so both are pinned
 // against the source the way terminalPaneSession.test.ts pins its own
 // contract.
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 /// The source with its comments removed. Load-bearing, not tidiness: the
 /// guard is explained in a comment that names both `fitWorthTaking` and
@@ -57,7 +54,7 @@ function code(source: string): string {
 }
 
 describe("TerminalPane's refit is guarded", () => {
-  const source = code(SOURCES["./TerminalPane.svelte"] ?? "");
+  const source = code(SOURCES["TerminalPane.svelte"] ?? "");
 
   it("has a source to read", () => {
     expect(source).toBeTruthy();

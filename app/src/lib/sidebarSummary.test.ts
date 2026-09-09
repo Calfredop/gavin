@@ -18,6 +18,7 @@ import type { GitStatus, Page, Workspace } from "./workspace";
 import type { Orchestration, Rail, Stage, Step } from "./orchestration";
 import type { Board } from "./kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
+import { source } from "./sources";
 
 function leaf(tabs: string[]): LayoutNode {
   return { type: "leaf", tabs, activeTabIndex: 0 };
@@ -795,31 +796,25 @@ describe("pageTabRows", () => {
 // the sidebar. These pin the badge to the summaries above, where the
 // main session is already folded in and already tested.
 describe("Sidebar attention badge wiring", () => {
-  const source = (
-    import.meta.glob("./Sidebar.svelte", {
-      query: "?raw",
-      import: "default",
-      eager: true,
-    }) as Record<string, string>
-  )["./Sidebar.svelte"];
+  const sidebar = source("Sidebar.svelte");
 
   it("counts a workspace's waiting agents with workspaceAgentsSummary", () => {
     // Off `attentionState` -- the layout with a wait the human has marked
     // as read shown as idle (sessionRead.ts). This badge exists to make
     // somebody look; a wait they have already looked at is not one.
-    expect(source).toContain("return workspaceAgentsSummary(ws, $attentionState).waiting;");
+    expect(sidebar).toContain("return workspaceAgentsSummary(ws, $attentionState).waiting;");
   });
 
   it("draws the page badge off the recap that row already computed", () => {
-    expect(source).toContain("{#if tabs.waiting > 0}");
+    expect(sidebar).toContain("{#if tabs.waiting > 0}");
   });
 
   it("wears the shared agent badge rather than a glyph of its own", () => {
-    expect(source).toContain('indicator={agentIndicatorByState("waiting_for_input")}');
+    expect(sidebar).toContain('indicator={agentIndicatorByState("waiting_for_input")}');
   });
 
   it("keeps no second walk of the layouts for the count", () => {
-    expect(source).not.toContain('=== "waiting_for_input"');
+    expect(sidebar).not.toContain('=== "waiting_for_input"');
   });
 });
 
@@ -836,13 +831,7 @@ describe("Sidebar attention badge wiring", () => {
 // group whose badge had to carry the axis was the smallest thing in the
 // row, which is what got reported as the running rail badge looking small.
 describe("the workspace recap strip is drawn at one scale", () => {
-  const source = (
-    import.meta.glob("./Sidebar.svelte", {
-      query: "?raw",
-      import: "default",
-      eager: true,
-    }) as Record<string, string>
-  )["./Sidebar.svelte"];
+  const sidebar = source("Sidebar.svelte");
 
   /// The strip's markup only: from the guard that renders it to the page
   /// rows below, which are a tier of their own and keep their own sizes.
@@ -850,9 +839,9 @@ describe("the workspace recap strip is drawn at one scale", () => {
   /// silently widens this slice to most of the file, which is how the
   /// page loop being renamed once turned this guard into a grep over
   /// every sized glyph in the sidebar.
-  const stripStart = source.indexOf("{#if hasRecap(");
-  const stripEnd = source.indexOf("{#each orderedPages(ws)");
-  const strip = source.slice(stripStart, stripEnd);
+  const stripStart = sidebar.indexOf("{#if hasRecap(");
+  const stripEnd = sidebar.indexOf("{#each orderedPages(ws)");
+  const strip = sidebar.slice(stripStart, stripEnd);
 
   it("still knows where the strip starts and ends", () => {
     expect(stripStart, "the recap strip's opening guard has moved").toBeGreaterThan(-1);
@@ -874,7 +863,7 @@ describe("the workspace recap strip is drawn at one scale", () => {
     // other two. Descendant :global(), never a leading one -- that would
     // resize every badge in the app.
     expect(strip).toContain('class="recap-body"');
-    const css = source.slice(source.indexOf("<style>"));
+    const css = sidebar.slice(sidebar.indexOf("<style>"));
     const at = css.indexOf(".recap-body :global(.badge-text)");
     expect(at, "the recap strip no longer sizes the badge's own text").toBeGreaterThan(-1);
     expect(css.slice(at, css.indexOf("}", at))).toContain("font-size: inherit");

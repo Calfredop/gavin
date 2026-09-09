@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { source } from "./sources";
 
 // Git tracking is one question asked on five surfaces -- the sidebar's
 // "Initialize gavin here?" prompt, the Settings tab's own init modal, the
@@ -11,34 +12,12 @@ import { describe, it, expect } from "vitest";
 // Reads the component sources rather than the rendered DOM, following
 // autoCommitSurfaces.test.ts.
 
-const SOURCES = {
-  ...(import.meta.glob("./*.svelte", {
-    query: "?raw",
-    import: "default",
-    eager: true,
-  }) as Record<string, string>),
-  // The wizard's steps live one directory down, and the glob above does
-  // not descend -- without this the Git step's source is simply missing
-  // and every assertion about it would throw rather than fail.
-  ...(import.meta.glob("./wizardSteps/*.svelte", {
-    query: "?raw",
-    import: "default",
-    eager: true,
-  }) as Record<string, string>),
-};
-
-function source(name: string): string {
-  const text = SOURCES[`./${name}`];
-  if (!text) throw new Error(`no source for ${name}`);
-  return text;
-}
-
 const SIDEBAR = "Sidebar.svelte";
 const ROOT_CONTROL = "WorkspaceRootControl.svelte";
 const WORKSPACE_PANEL = "SettingsHubView.svelte";
 const APP_PANEL = "GlobalSettingsModal.svelte";
 const WIZARD = "SetupWizard.svelte";
-const WIZARD_STEP = "wizardSteps/GitStep.svelte";
+const WIZARD_STEP = "GitStep.svelte";
 
 describe("the sidebar's initialize prompt", () => {
   it("carries the tick-box, seeded from the app-wide default", () => {

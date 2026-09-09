@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // With no rails the Orchestration tab used to render ONE paragraph --
 // "No rails yet" -- in place of its whole body, and the body is what
@@ -15,18 +16,14 @@ import { describe, it, expect } from "vitest";
 // the grid next to the drawer, where the filtered "no rail matches" copy
 // already does.
 
-const SVELTE = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SVELTE = svelteSources();
 
 /// A component's source with its comments stripped -- `//` lines in the
 /// script and `<!-- -->` blocks in the template -- so an assertion about
 /// what the TEMPLATE does is not satisfied (or broken) by prose that
 /// merely names the same string.
 function codeOf(name: string): string {
-  const text = SVELTE[`./${name}`];
+  const text = SVELTE[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text
     .replace(/<!--[\s\S]*?-->/g, "")

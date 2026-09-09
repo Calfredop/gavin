@@ -8,6 +8,7 @@ import {
   SETUP_STEPS,
 } from "./setupWizard";
 import type { SuperpowersStatus } from "./superpowers";
+import { svelteSources } from "./sources";
 
 /// A settled check that found nothing: enough to keep the derivation off
 /// `pending` without completing the Superpowers step.
@@ -63,11 +64,7 @@ const ALL_DONE = {
 
 // The home tab's banner lives entirely in compiled markup, which no other
 // suite can see -- vite hands SSR nothing for a component's template.
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 describe("setupProgress", () => {
   it("reports nothing done for a freshly initialized root", () => {
@@ -140,7 +137,7 @@ describe("setupProgress", () => {
   // process in the condition, so Stop on the home agent panel -- or the
   // agent simply exiting -- re-raised a finished workspace's setup nag.
   it("keys the home tab's setup banner off `configured`, not `complete`", () => {
-    const src = SOURCES["./HomeHubView.svelte"];
+    const src = SOURCES["HomeHubView.svelte"];
     expect(src).toBeTruthy();
     const guard = /\{#if ([^{}]+)\}\s*<button[^>]*class="setup-card"/.exec(src);
     expect(guard, "no {#if} guarding .setup-card").toBeTruthy();

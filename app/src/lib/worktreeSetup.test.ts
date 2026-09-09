@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { setupPlan, setupNotice } from "./worktreeSetup";
+import { svelteSources } from "./sources";
 
 describe("what a new worktree runs", () => {
   it("is the declared commands, chained so a failure stops the rest", () => {
@@ -75,14 +76,10 @@ describe("what a new worktree runs", () => {
 // railBranchSeed.test.ts pins its own, because every one of these is a
 // silent failure: a worktree that is simply never set up looks exactly
 // like a workspace that declared no setup.
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

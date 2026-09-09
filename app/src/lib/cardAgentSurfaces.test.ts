@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources, tsSources } from "./sources";
 
 // A card's own `agent:`/`model:` is one field pair expressed on four
 // surfaces -- the shared controls, the card detail modal, the Plans tab's
@@ -13,20 +14,12 @@ import { describe, it, expect } from "vitest";
 // handler is called" tests the harness, and a component `<style>` is
 // compiled away anyway.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
-const TS_SOURCES = import.meta.glob("./*.ts", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const TS_SOURCES = tsSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`] ?? TS_SOURCES[`./${name}`];
+  const text = SOURCES[name] ?? TS_SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

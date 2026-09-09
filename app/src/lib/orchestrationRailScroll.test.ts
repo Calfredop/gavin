@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { source } from "./sources";
 
 // The orchestration tab used to have ONE vertical scroll: the grid
 // scrolled in both axes, rails were content-height (`align-items: start`)
@@ -26,24 +27,6 @@ import { describe, it, expect } from "vitest";
 // and a `100%` row), while the same strip as a flex row put the rail's
 // bottom at 443px. Flex cross-axis stretch does subtract the bar, which
 // is also how the kanban's own `.board` strip has always been laid out.
-
-const SVELTE = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
-
-const TS = import.meta.glob("./orchestrationDragGlue.ts", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
-
-function source(name: string): string {
-  const text = SVELTE[`./${name}`] ?? TS[`./${name}`];
-  if (!text) throw new Error(`no source for ${name}`);
-  return text;
-}
 
 /// A module's source with its `//` comments stripped, so an assertion
 /// about what the CODE does is not satisfied (or broken) by prose that

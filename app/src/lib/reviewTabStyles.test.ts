@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // Two CSS contracts the Review tab depends on, neither of which any
 // other suite can see: a component <style> is compiled away, vite hands
@@ -29,14 +30,10 @@ import { describe, it, expect } from "vitest";
 //    with zero pixels above it, sitting on the column's top border.
 //    28px is what that switch needs to sit in with 4px above and below.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

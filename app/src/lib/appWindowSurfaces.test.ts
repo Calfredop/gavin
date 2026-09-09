@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import { closeWindowPrompt } from "./appClose";
+import { svelteSources } from "./sources";
 
 // "A workspace is on screen in exactly one window" is a rule spread over
 // five files that nothing links: the registry (workspace_window.rs), the
@@ -15,11 +16,7 @@ import { closeWindowPrompt } from "./appClose";
 // appHeader.test.ts: mounting the whole app to assert "this handler is
 // called" tests the harness, and a component `<style>` is compiled away.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 const ROUTES = import.meta.glob("../routes/*.svelte", {
   query: "?raw",
@@ -28,7 +25,7 @@ const ROUTES = import.meta.glob("../routes/*.svelte", {
 }) as Record<string, string>;
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

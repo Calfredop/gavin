@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { hasSource, source } from "./sources";
 
 // The follow-up queue is three files joined by nothing a type-checker can
 // see: a view that renders perfectly while being mounted nowhere, the
@@ -9,27 +10,6 @@ import { describe, it, expect } from "vitest";
 // sessionsManagerSurface.test.ts and autoCommitSurfaces.test.ts: mounting
 // a view to assert "this handler was called" tests the harness, and a
 // component `<style>` is compiled away anyway.
-
-const SOURCES = import.meta.glob(
-  [
-    "./*.svelte",
-    "./cardRunActions.ts",
-    "./layoutState.ts",
-    "./queuedInputActions.ts",
-    "./paths.ts",
-  ],
-  {
-    query: "?raw",
-    import: "default",
-    eager: true,
-  }
-) as Record<string, string>;
-
-function source(name: string): string {
-  const text = SOURCES[`./${name}`];
-  if (!text) throw new Error(`no source for ${name}`);
-  return text;
-}
 
 const VIEW = "FollowUpQueueView.svelte";
 const PANE_HOST = "FollowUpQueuePane.svelte";
@@ -50,7 +30,7 @@ describe("where the queue lives", () => {
     // the pane. Nothing takes one now, so a refit keyed on it would be a
     // resize per pane per mount for a rectangle that never moved.
     expect(text).not.toContain("stripVisible");
-    expect(SOURCES["./FollowUpQueue.svelte"]).toBeUndefined();
+    expect(hasSource("FollowUpQueue.svelte")).toBe(false);
   });
 
   it("opens side by side from the tab-actions row, like the plan and the diff", () => {

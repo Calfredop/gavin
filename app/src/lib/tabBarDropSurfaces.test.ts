@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { allSources } from "./sources";
 
 // Moving a tab from one pane to another is a drop on the target pane's
 // TAB BAR. Nothing type-checks which element carries that drop, and the
@@ -11,14 +12,10 @@ import { describe, it, expect } from "vitest";
 // cardTabSurfaces.test.ts: WKWebView is where drag semantics actually
 // have to hold, and a jsdom drag proves nothing about it.
 
-const SOURCES = import.meta.glob("./*.{svelte,ts}", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = allSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

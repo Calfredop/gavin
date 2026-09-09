@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // TerminalPane binds its session ONCE, in onMount: that is where it asks
 // the registry for the session's Terminal and appends the registry's
@@ -21,11 +22,7 @@ import { describe, it, expect } from "vitest";
 // So the rule is pinned here, on the sources, the way hubTabBar.test.ts
 // and autoCommitSurfaces.test.ts pin theirs.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 /// The open block tags enclosing `index`, outermost first, as written --
 /// `each leaf.tabs as sessionId (sessionId)`, `key sessionId`, `if x`.
@@ -74,7 +71,7 @@ describe("every TerminalPane call site", () => {
 
   it("is rebuilt when the session it shows changes", () => {
     const unkeyed = callSites().filter(({ file, index }) => {
-      const blocks = enclosingBlocks(SOURCES[`./${file}`], index);
+      const blocks = enclosingBlocks(SOURCES[file], index);
       return !blocks.some(rebuildsOnSessionChange);
     });
     expect(unkeyed.map((s) => s.file)).toEqual([]);

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources, tsSources } from "./sources";
 
 // The static pre-flight for the memory wall.
 //
@@ -17,17 +18,9 @@ import { describe, it, expect } from "vitest";
 // component to assert "this store was read" tests the harness, and a
 // component `<style>` is compiled away before a test could see it.
 
-const SVELTE = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SVELTE = svelteSources();
 
-const TS = import.meta.glob("./*.ts", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const TS = tsSources();
 
 /// The route file, which is where every app-wide banner is actually
 /// mounted. Its own glob because it lives outside `src/lib`.
@@ -38,7 +31,7 @@ const ROUTES = import.meta.glob("../routes/*.svelte", {
 }) as Record<string, string>;
 
 function source(name: string): string {
-  const text = name.endsWith(".svelte") ? SVELTE[`./${name}`] : TS[`./${name}`];
+  const text = name.endsWith(".svelte") ? SVELTE[name] : TS[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

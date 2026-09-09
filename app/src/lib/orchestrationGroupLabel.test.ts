@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // A group's label is drawn twice -- by its header on the rail, and by the
 // drag ghost while it flies -- and nothing links those two files. The
@@ -11,14 +12,10 @@ import { describe, it, expect } from "vitest";
 // Reads the component sources rather than the rendered DOM, following
 // autoCommitSurfaces.test.ts.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

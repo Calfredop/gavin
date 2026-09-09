@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // A group's header was ONE row: grip, name, the sequence/parallel toggle
 // and the ⋯ menu. The toggle and menu are ~145px of fixed width, and a
@@ -13,16 +14,12 @@ import { describe, it, expect } from "vitest";
 // rendering test here can see, so this pins them the way
 // orchestrationRailHeader pins the rail header's two rows.
 
-const SVELTE = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SVELTE = svelteSources();
 
 const RAIL = "OrchestrationRail.svelte";
 
 function source(name: string): string {
-  const text = SVELTE[`./${name}`];
+  const text = SVELTE[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

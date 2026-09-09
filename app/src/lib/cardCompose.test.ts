@@ -21,6 +21,7 @@ import {
 import { AUTO_COMMIT_BLOCK } from "./autoCommit";
 import { isPermanentColumn, type CardView } from "./planBoard";
 import type { MergedBoard } from "./boardSearch";
+import { source } from "./sources";
 
 describe("COMPOSE_KINDS", () => {
   it("opens on task, so ⌘N files runnable work by default", () => {
@@ -563,26 +564,20 @@ describe("composeCloseAction", () => {
 // wiring IS the template -- there is no rendered assertion that catches an
 // `onClose` handed straight to the backdrop again.
 describe("CardComposeModal dismissal wiring", () => {
-  const source = (
-    import.meta.glob("./CardComposeModal.svelte", {
-      query: "?raw",
-      import: "default",
-      eager: true,
-    }) as Record<string, string>
-  )["./CardComposeModal.svelte"];
+  const composer = source("CardComposeModal.svelte");
 
   it("hands Modal the guard, not onClose — Modal's backdrop and Escape both land there", () => {
-    expect(source).toContain("<Modal onClose={requestClose}>");
-    expect(source).not.toContain("<Modal {onClose}>");
+    expect(composer).toContain("<Modal onClose={requestClose}>");
+    expect(composer).not.toContain("<Modal {onClose}>");
   });
 
   it("routes the Cancel button through the same guard", () => {
-    expect(source).toContain('class="cancel" onclick={requestClose}');
+    expect(composer).toContain('class="cancel" onclick={requestClose}');
   });
 
   it("offers the discard as the confirm's own choice", () => {
-    expect(source).toContain("<ConfirmPrompt");
-    expect(source).toContain('{ label: "Discard", danger: true, onPick: onClose }');
+    expect(composer).toContain("<ConfirmPrompt");
+    expect(composer).toContain('{ label: "Discard", danger: true, onPick: onClose }');
   });
 });
 
@@ -592,50 +587,44 @@ describe("CardComposeModal dismissal wiring", () => {
 // their own flag looks identical until both are ticked. Source-read
 // rather than mounted, following complexitySurfaces.test.ts.
 describe("CardComposeModal agent actions", () => {
-  const source = (
-    import.meta.glob("./CardComposeModal.svelte", {
-      query: "?raw",
-      import: "default",
-      eager: true,
-    }) as Record<string, string>
-  )["./CardComposeModal.svelte"];
+  const composer = source("CardComposeModal.svelte");
 
   it("draws the group from the shared list rather than two hand-written rows", () => {
     // Two independent `{#if}` blocks are how the pair stops being one
     // question -- and how one of them ends up with a rule the other
     // never got.
-    expect(source).toContain("<legend>Agent actions</legend>");
-    expect(source).toContain("{#each agentActions as action (action)}");
-    expect(source).toContain("AGENT_ACTION_LABELS[action].label");
+    expect(composer).toContain("<legend>Agent actions</legend>");
+    expect(composer).toContain("{#each agentActions as action (action)}");
+    expect(composer).toContain("AGENT_ACTION_LABELS[action].label");
   });
 
   it("holds ONE selection, so the boxes cannot both be on", () => {
-    expect(source).toContain("let agentAction = $state<AgentAction | null>(null)");
-    expect(source).toContain("checked={agentAction === action}");
-    expect(source).toContain("agentAction = toggleAgentAction(agentAction, action)");
+    expect(composer).toContain("let agentAction = $state<AgentAction | null>(null)");
+    expect(composer).toContain("checked={agentAction === action}");
+    expect(composer).toContain("agentAction = toggleAgentAction(agentAction, action)");
     // The old per-action flag: a second one is how mutual exclusion
     // silently stops being mutual.
-    expect(source).not.toContain("runNow");
+    expect(composer).not.toContain("runNow");
   });
 
   it("asks availableAgentActions what to draw, rather than re-deriving the rule", () => {
-    expect(source).toContain("availableAgentActions({");
-    expect(source).toContain("canRun: onRunCard !== null");
-    expect(source).toContain("canDevelop: onDevelopCard !== null");
+    expect(composer).toContain("availableAgentActions({");
+    expect(composer).toContain("canRun: onRunCard !== null");
+    expect(composer).toContain("canDevelop: onDevelopCard !== null");
     // Hidden entirely when there is nothing to offer: a heading over no
     // boxes reads as a broken control.
-    expect(source).toContain("{#if agentActions.length > 0}");
+    expect(composer).toContain("{#if agentActions.length > 0}");
   });
 
   it("re-measures the tick against what is on screen before launching anything", () => {
-    expect(source).toContain("agentActionToApply(agentAction, agentActions)");
+    expect(composer).toContain("agentActionToApply(agentAction, agentActions)");
   });
 
   it("routes each action to its own handler, off one shared card view", () => {
     // Two separately-built views is how the level or the attachments
     // reach one launch route and not the other.
-    expect(source).toContain("composedCardView(args, path, contextFolder, ctxName, attachments)");
-    expect(source).toContain('action === "run" ? onRunCard?.(view) : onDevelopCard?.(view)');
+    expect(composer).toContain("composedCardView(args, path, contextFolder, ctxName, attachments)");
+    expect(composer).toContain('action === "run" ? onRunCard?.(view) : onDevelopCard?.(view)');
   });
 
   it("clears the action after each card, and when a rail takes it over", () => {
@@ -643,7 +632,7 @@ describe("CardComposeModal agent actions", () => {
     // the card, while this starts an agent, and inheriting that onto the
     // next card typed into the same open composer is a session nobody
     // asked for.
-    expect(source).toContain("agentAction = null;");
-    expect(source).toContain("if (railId) agentAction = null;");
+    expect(composer).toContain("agentAction = null;");
+    expect(composer).toContain("if (railId) agentAction = null;");
   });
 });

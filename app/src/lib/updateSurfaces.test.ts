@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // The update channel is expressed on two surfaces that nothing links: a
 // badge on the sidebar's Settings row, and the Updates section of the
@@ -12,14 +13,10 @@ import { describe, it, expect } from "vitest";
 // autoCommitSurfaces.test.ts: mounting two panels to assert "this
 // handler was called" tests the harness.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

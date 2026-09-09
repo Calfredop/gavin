@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // Several components in this app paint themselves `position: absolute;
 // inset: 0` at their own root, because the pane they were built for
@@ -27,11 +28,7 @@ import { describe, it, expect } from "vitest";
 // of one is checked. Pinning TerminalPane alone is what let the second
 // one through.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 /// Elements that never have children, so a tag scanner must not push
 /// them. `<input>` is the one that actually appears above a terminal
@@ -257,7 +254,7 @@ const KINDS = new Map<string, "always" | "inline">(
 /// Where each listed pane's own filling rule lives -- its own file, or
 /// Modal's for the wrappers that forward to it.
 function paneStyleSource(name: string): string {
-  return SOURCES[`./${name}.svelte`] ?? "";
+  return SOURCES[`${name}.svelte`] ?? "";
 }
 
 interface CallSite {
@@ -268,8 +265,7 @@ interface CallSite {
 
 function callSites(): CallSite[] {
   const sites: CallSite[] = [];
-  for (const [path, text] of Object.entries(SOURCES)) {
-    const file = path.replace("./", "");
+  for (const [file, text] of Object.entries(SOURCES)) {
     const masked = maskMarkup(text);
     const re = new RegExp(TAG.source, "g");
     let m: RegExpExecArray | null;
@@ -293,14 +289,14 @@ const SITES = callSites();
 describe("absolutely positioned panes", () => {
   it("really do fill their host -- every listed entry checked against its stylesheet", () => {
     for (const [name, cls] of PANES) {
-      const source = name === "Modal" ? SOURCES["./Modal.svelte"] : paneStyleSource(name);
-      const where = name === "Modal" || cls === "backdrop" ? SOURCES["./Modal.svelte"] : source;
+      const source = name === "Modal" ? SOURCES["Modal.svelte"] : paneStyleSource(name);
+      const where = name === "Modal" || cls === "backdrop" ? SOURCES["Modal.svelte"] : source;
       expect(`${name}: ${fillsItsHost(where, cls)}`).toBe(`${name}: true`);
     }
     // And the half of Modal's bargain that makes `inline` the trigger:
     // without it the backdrop is fixed, which needs no host.
-    expect(SOURCES["./Modal.svelte"]).toMatch(/\.backdrop\s*\{[^}]*position:\s*fixed/);
-    expect(SOURCES["./Modal.svelte"]).toMatch(/\.backdrop\.inline\s*\{[^}]*position:\s*absolute/);
+    expect(SOURCES["Modal.svelte"]).toMatch(/\.backdrop\s*\{[^}]*position:\s*fixed/);
+    expect(SOURCES["Modal.svelte"]).toMatch(/\.backdrop\.inline\s*\{[^}]*position:\s*absolute/);
   });
 
   it("names every pane whose FIRST top-level element fills its host", () => {
@@ -313,7 +309,7 @@ describe("absolutely positioned panes", () => {
         const first = topLevelTags(maskMarkup(text))[0];
         return first ? first.classes.some((cls) => fillsItsHost(text, cls)) : false;
       })
-      .map(([path]) => componentName(path.replace("./", "")));
+      .map(([file]) => componentName(file));
     expect(derived.filter((name) => !KINDS.has(name))).toEqual([]);
   });
 
@@ -327,7 +323,7 @@ describe("absolutely positioned panes", () => {
 
   it("are each mounted into an element that establishes a containing block", () => {
     const escaping = SITES.filter(({ file, index }) => {
-      const source = SOURCES[`./${file}`];
+      const source = SOURCES[file];
       const parent = openTags(maskMarkup(source), index).at(-1);
       // No enclosing element means this call site IS one of the
       // component's own roots, so the obligation is not owed here -- it

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { allSources } from "./sources";
 
 // The per-run Changes view is one fact -- `CardSession.base_sha` -- read
 // on two surfaces and written at four launch sites, and nothing links
@@ -11,14 +12,10 @@ import { describe, it, expect } from "vitest";
 // autoCommitSurfaces.test.ts: mounting two modals to assert "this
 // handler was called" tests the harness.
 
-const SOURCES = import.meta.glob("./*.{svelte,ts}", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = allSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

@@ -1,4 +1,19 @@
 import { describe, it, expect } from "vitest";
+import { source, svelteSources } from "./sources";
+
+/// The route components, re-keyed by bare file name so they sit beside
+/// the seam's entries in one map. `../routes` is outside lib and the
+/// reorganization does not move it, so the glob stays here.
+function routeSources(): Record<string, string> {
+  const raw = import.meta.glob("../routes/**/*.svelte", {
+    query: "?raw",
+    import: "default",
+    eager: true,
+  }) as Record<string, string>;
+  return Object.fromEntries(
+    Object.entries(raw).map(([path, text]) => [path.slice(path.lastIndexOf("/") + 1), text]),
+  );
+}
 
 // A `:global(...)` at the START of a selector is not a component rule at
 // all -- it is an app-wide rule that happens to live in a component's
@@ -77,17 +92,12 @@ function leadingGlobals(source: string): string[] {
 
 describe("component styles do not leak app-wide", () => {
   it("starts no selector with :global() outside the listed resets", () => {
-    const sources = import.meta.glob("../**/*.svelte", {
-      query: "?raw",
-      import: "default",
-      eager: true,
-    }) as Record<string, string>;
+    const sources = { ...svelteSources(), ...routeSources() };
 
     expect(Object.keys(sources).length).toBeGreaterThan(20);
 
     const offenders: string[] = [];
-    for (const [path, text] of Object.entries(sources)) {
-      const name = path.split("/").pop() ?? path;
+    for (const [name, text] of Object.entries(sources)) {
       const allowed = ALLOWED[name] ?? [];
       for (const selector of leadingGlobals(text)) {
         if (allowed.includes(selector)) continue;
@@ -103,14 +113,9 @@ describe("component styles do not leak app-wide", () => {
   it("reads the selectors it is meant to be reading", () => {
     // A silent parse failure would make the check above pass for every
     // file, so pin one selector this suite must be able to see.
-    const planTree = import.meta.glob("./PlanTree.svelte", {
-      query: "?raw",
-      import: "default",
-      eager: true,
-    }) as Record<string, string>;
-    const source = Object.values(planTree)[0];
-    expect(source).toBeTruthy();
-    expect(source).toContain(".file-row :global(.split)");
-    expect(leadingGlobals(source)).toEqual([]);
+    const planTree = source("PlanTree.svelte");
+    expect(planTree).toBeTruthy();
+    expect(planTree).toContain(".file-row :global(.split)");
+    expect(leadingGlobals(planTree)).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { source } from "./sources";
 
 // The roll-call for `#[tauri::command]`.
 //
@@ -23,12 +24,6 @@ import { describe, it, expect } from "vitest";
 // exists to keep.
 
 const RUST = import.meta.glob("../../src-tauri/src/*.rs", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
-
-const GATE_TS = import.meta.glob("./confirmGate.ts", {
   query: "?raw",
   import: "default",
   eager: true,
@@ -320,8 +315,8 @@ describe("the gated set is the same set on both sides of the IPC", () => {
   });
 
   it("matches confirmGate.ts's GatedAction union", () => {
-    const source = Object.values(GATE_TS)[0];
-    const union = source.match(/export type GatedAction =([\s\S]*?);/);
+    const gate = source("confirmGate.ts");
+    const union = gate.match(/export type GatedAction =([\s\S]*?);/);
     expect(union).not.toBeNull();
     const members = [...(union as RegExpMatchArray)[1].matchAll(/"([^"]+)"/g)]
       .map((m) => m[1])

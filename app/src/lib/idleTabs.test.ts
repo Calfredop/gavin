@@ -3,6 +3,7 @@ import { closeIdlePrompt, idleTabsOnPage } from "./idleTabs";
 import { pageAgentsSummary, type PageTabState } from "./sidebarSummary";
 import type { LayoutNode } from "./layout";
 import type { Page } from "./workspace";
+import { source } from "./sources";
 
 const leaf = (tabs: string[], pinned?: string[]): LayoutNode => ({
   type: "leaf",
@@ -145,25 +146,19 @@ describe("closeIdlePrompt", () => {
 // tab state so "idle" is computed against running agents, and close
 // through closeTabsNow -- closeTabs would ask a second time.
 describe("Sidebar close-idle wiring", () => {
-  const source = (
-    import.meta.glob("./Sidebar.svelte", {
-      query: "?raw",
-      import: "default",
-      eager: true,
-    }) as Record<string, string>
-  )["./Sidebar.svelte"];
+  const sidebar = source("Sidebar.svelte");
 
   it("builds the page menu against the live tab state", () => {
-    expect(source).toContain("buildPageMenuEntries(ws, page, $layoutState.workspaces, $layoutState, menuHooks())");
+    expect(sidebar).toContain("buildPageMenuEntries(ws, page, $layoutState.workspaces, $layoutState, menuHooks())");
   });
 
   it("raises the app's own ConfirmPrompt from the hook", () => {
-    expect(source).toContain("confirmCloseIdle: (request) => (closeIdle = request)");
-    expect(source).toContain("<ConfirmPrompt");
-    expect(source).toContain("title={pending.prompt.title}");
+    expect(sidebar).toContain("confirmCloseIdle: (request) => (closeIdle = request)");
+    expect(sidebar).toContain("<ConfirmPrompt");
+    expect(sidebar).toContain("title={pending.prompt.title}");
   });
 
   it("closes the frozen list without asking again", () => {
-    expect(source).toContain("void closeTabsNow(pending.ids)");
+    expect(sidebar).toContain("void closeTabsNow(pending.ids)");
   });
 });

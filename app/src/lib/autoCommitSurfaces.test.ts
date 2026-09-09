@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // Auto commit is one setting expressed on four surfaces -- the ⌘N
 // composer, the card detail modal, the workspace settings panel and the
@@ -13,14 +14,10 @@ import { describe, it, expect } from "vitest";
 // called" tests the harness, and a component `<style>` is compiled away
 // anyway.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

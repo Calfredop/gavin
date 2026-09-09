@@ -11,6 +11,7 @@ import {
 import type { Orchestration, Rail, RailState, StepState } from "./orchestration";
 import type { Board } from "./kanban";
 import type { GavinTree, PlanFileInfo } from "./gavin";
+import { allSources } from "./sources";
 
 // A rail's own start condition. The one rule in the scheduler that starts
 // a rail nobody pressed Start on, so the tests here are mostly about what
@@ -377,14 +378,10 @@ describe("writing the condition", () => {
 // arms and is immediately idled, and a picker whose choice never reaches
 // disk.
 
-const SOURCES = import.meta.glob("./*.{ts,svelte}", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = allSources();
 
-const STATE = SOURCES["./orchestrationState.ts"];
-const DIALOG = SOURCES["./RailBindDialog.svelte"];
+const STATE = SOURCES["orchestrationState.ts"];
+const DIALOG = SOURCES["RailBindDialog.svelte"];
 
 describe("executing an arm", () => {
   it("has a branch of its own, ahead of the one that idles a rail", () => {

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { source } from "./sources";
 
 // The setup wizard's width lives entirely in two <style> blocks and one
 // prop, none of which any other suite can see. It used to force a 520px
@@ -6,18 +7,6 @@ import { describe, it, expect } from "vitest";
 // sideways on every step -- the complaint this pins closed. The rule now
 // is the other way round: the wizard states a preferred width, and the
 // panel's cap (wide, but a cap) wins on a narrow window.
-
-const SOURCES = import.meta.glob(["./*.svelte", "./wizardSteps/*.svelte"], {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
-
-function source(name: string): string {
-  const text = SOURCES[`./${name}`];
-  if (!text) throw new Error(`no source for ${name}`);
-  return text;
-}
 
 /// The declarations of one rule, by exact selector -- the same crude
 /// reader homeHubLayout.test.ts uses, for the same reason.
@@ -68,7 +57,7 @@ describe("the setup wizard's width", () => {
 
 describe("the agent step's form row", () => {
   it("gives its controls a preferred width, not a floor", () => {
-    const r = rule(source("wizardSteps/AgentStep.svelte"), ".row input, .row select");
+    const r = rule(source("AgentStep.svelte"), ".row input, .row select");
     expect(r["min-width"]).toBe("0");
     expect(r.flex).toMatch(/^0 1 \d+px$/);
   });

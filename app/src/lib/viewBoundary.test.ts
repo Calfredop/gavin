@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { tsSources } from "./sources";
 
 // A view that throws while it is being CREATED must not be silent.
 //
@@ -31,11 +32,7 @@ const ROUTES = import.meta.glob("../routes/*.svelte", {
   eager: true,
 }) as Record<string, string>;
 
-const LIB = import.meta.glob("./*.ts", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const LIB = tsSources();
 
 function source(map: Record<string, string>, name: string): string {
   const text = map[name];
@@ -119,6 +116,6 @@ describe("the view boundary", () => {
     const boundary = page.indexOf("<svelte:boundary");
     expect(connecting).toBeGreaterThan(-1);
     expect(boundary).toBeGreaterThan(connecting);
-    expect(source(LIB, "./layoutState.ts")).toMatch(/const initialState[\s\S]*?status: "connecting"/);
+    expect(source(LIB, "layoutState.ts")).toMatch(/const initialState[\s\S]*?status: "connecting"/);
   });
 });

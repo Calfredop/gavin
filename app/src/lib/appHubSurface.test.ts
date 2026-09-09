@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // The app hub's fleet strip and its running-tasks column are pure
 // arithmetic in appHub.ts (covered in appHub.test.ts) rendered by one
@@ -14,14 +15,10 @@ import { describe, it, expect } from "vitest";
 // assert "this store was read" tests the harness, and a component
 // `<style>` is compiled away before a test could see it anyway.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
 function source(name: string): string {
-  const text = SOURCES[`./${name}`];
+  const text = SOURCES[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }

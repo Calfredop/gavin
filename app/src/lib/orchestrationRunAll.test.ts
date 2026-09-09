@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // "Run all" lives entirely in the hub view's template and one async
 // function, and neither is reachable from the pure suite. Three facts
@@ -20,13 +21,9 @@ import { describe, it, expect } from "vitest";
 // Reads the component source rather than the rendered DOM, following
 // orchestrationGroupLabel.test.ts.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
-const HUB = SOURCES["./OrchestrationHubView.svelte"];
+const HUB = SOURCES["OrchestrationHubView.svelte"];
 
 describe("the Run all button", () => {
   it("sits in the toolbar before the New rail button", () => {

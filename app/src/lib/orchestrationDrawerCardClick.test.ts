@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // A press on an unplaced card row used to append that card to the FIRST
 // rail -- an arbitrary target the row never named, reached by the one
@@ -14,18 +15,14 @@ import { describe, it, expect } from "vitest";
 // A rendered tab is out of a unit test's reach, so this pins the
 // template's shape the way orchestrationDrawerNoRails.test.ts does.
 
-const SVELTE = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SVELTE = svelteSources();
 
 /// A component's source with its comments stripped -- `//` lines in the
 /// script and `<!-- -->` blocks in the template -- so an assertion about
 /// what the TEMPLATE does is not satisfied (or broken) by prose that
 /// merely names the same string.
 function codeOf(name: string): string {
-  const text = SVELTE[`./${name}`];
+  const text = SVELTE[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text
     .replace(/<!--[\s\S]*?-->/g, "")

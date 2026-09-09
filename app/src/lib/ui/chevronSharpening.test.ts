@@ -1,5 +1,20 @@
 import { describe, it, expect } from "vitest";
 import { render } from "svelte/server";
+import { allSources } from "../sources";
+
+/// The route components, re-keyed by bare file name so they sit beside
+/// the seam's entries in one map. `../routes` is outside lib and the
+/// reorganization does not move it, so the glob stays here.
+function routeSources(): Record<string, string> {
+  const raw = import.meta.glob("../../routes/**/*.svelte", {
+    query: "?raw",
+    import: "default",
+    eager: true,
+  }) as Record<string, string>;
+  return Object.fromEntries(
+    Object.entries(raw).map(([path, text]) => [path.slice(path.lastIndexOf("/") + 1), text]),
+  );
+}
 import {
   ChevronDown,
   ChevronLeft,
@@ -35,14 +50,9 @@ const SHARPENED = {
 /// Every `Chevron*` identifier the app imports from the icon package,
 /// mapped to the files that import it -- so a failure names them.
 function importedChevrons(): Map<string, string[]> {
-  const sources = import.meta.glob("../../**/*.{svelte,ts}", {
-    query: "?raw",
-    import: "default",
-    eager: true,
-  }) as Record<string, string>;
+  const sources = { ...allSources(), ...routeSources() };
   const found = new Map<string, string[]>();
   for (const [path, text] of Object.entries(sources)) {
-    if (path.endsWith(".test.ts")) continue;
     for (const block of text.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']@lucide\/svelte["']/g)) {
       for (const specifier of block[1].split(",")) {
         const id = specifier.trim().split(/\s+as\s+/)[0].trim();

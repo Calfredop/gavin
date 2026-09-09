@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // The card detail panel's LAYOUT, which no unit test can see and no
 // rendered-DOM test would catch either: what this pins is where things
@@ -17,14 +18,10 @@ import { describe, it, expect } from "vitest";
 // autoCommitSurfaces.test.ts: mounting the component to assert "this
 // block is above that one" tests the harness, not the panel.
 
-const SOURCES = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SOURCES = svelteSources();
 
-const DETAIL = SOURCES["./CardDetailModal.svelte"] ?? "";
-const MODAL = SOURCES["./Modal.svelte"] ?? "";
+const DETAIL = SOURCES["CardDetailModal.svelte"] ?? "";
+const MODAL = SOURCES["Modal.svelte"] ?? "";
 
 /// Index of a fragment, asserted present first -- `indexOf` returning -1
 /// would otherwise make every ordering assertion below pass by accident.

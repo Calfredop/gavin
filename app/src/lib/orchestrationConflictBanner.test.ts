@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 import {
   collapseStorageKey,
   loadConflictsCollapsed,
@@ -75,14 +76,10 @@ describe("orchestration conflicts banner collapse", () => {
 // reach -- but a component that reads the preference and never writes it
 // (or the reverse) is exactly the bug this card reported, so pin both ends
 // against the source.
-const SVELTE = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const SVELTE = svelteSources();
 
 function codeOf(name: string): string {
-  const text = SVELTE[`./${name}`];
+  const text = SVELTE[name];
   if (!text) throw new Error(`no source for ${name}`);
   return text
     .split("\n")

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { svelteSources } from "./sources";
 
 // The hub tab strip's arrangement is one feature spread over four
 // surfaces that nothing links: the row itself (+page.svelte), the eye
@@ -13,11 +14,7 @@ import { describe, it, expect } from "vitest";
 // assert "this handler is called" tests the harness, and a component
 // `<style>` is compiled away anyway.
 
-const LIB = import.meta.glob("./*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
+const LIB = svelteSources();
 
 const ROUTES = import.meta.glob("../routes/*.svelte", {
   query: "?raw",
@@ -26,7 +23,7 @@ const ROUTES = import.meta.glob("../routes/*.svelte", {
 }) as Record<string, string>;
 
 function source(name: string): string {
-  const text = LIB[`./${name}`] ?? ROUTES[`../routes/${name}`];
+  const text = LIB[name] ?? ROUTES[`../routes/${name}`];
   if (!text) throw new Error(`no source for ${name}`);
   return text;
 }
