@@ -12,7 +12,7 @@ vi.mock("$lib/layoutState", () => ({
   setSessionRead: vi.fn(),
 }));
 vi.mock("$lib/panes/tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
-vi.mock("$lib/confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
+vi.mock("$lib/shell/confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
 vi.mock("$lib/cards/bestOfNActions", () => ({ pickCandidate: vi.fn().mockResolvedValue(null) }));
 
 import { openPathExternally, revealPathExternally } from "$lib/backend";

@@ -77,13 +77,13 @@ import {
   isInAnotherWindow,
   nextActiveAfterHandoff,
   windowAction,
-} from "$lib/appWindow";
+} from "$lib/shell/appWindow";
 import {
   currentWindowLabel,
   currentWorkspaceWindows,
   initWorkspaceWindows,
   isMainWindow,
-} from "$lib/appWindowState";
+} from "$lib/shell/appWindowState";
 
 export type { SessionStatus };
 
@@ -1304,7 +1304,7 @@ export async function bootstrap(): Promise<void> {
   // already looking at Settings would be announcing itself to the one
   // person who did not need telling. It holds no timer -- one check per
   // bootstrap, and everything else is the button in Settings.
-  const { startUpdateWatch } = await import("$lib/updatesState");
+  const { startUpdateWatch } = await import("$lib/shell/updatesState");
   unlisteners.push(startUpdateWatch());
   unlisteners.push(
     await listen<[string, string, string, string]>("agent-session-spawned", (event) => {

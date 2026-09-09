@@ -20,7 +20,7 @@
 // dragging a tab is what the row keeps.
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { createDoubleClickTracker, createDragIntent, doubleClickAction } from "$lib/titleBarGesture";
+import { createDoubleClickTracker, createDragIntent, doubleClickAction } from "$lib/shell/titleBarGesture";
 
 /// `use:windowDrag` on any element whose empty space should move the
 /// window. data-tauri-drag-region alone is unreliable depending on the

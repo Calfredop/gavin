@@ -4,7 +4,7 @@ import { openPathExternally, revealPathExternally } from "$lib/backend";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { setTabPinned, splitPane, closeSession, setSessionRead } from "$lib/layoutState";
 import { closeTabs } from "$lib/panes/tabActions";
-import { confirmTabClose } from "$lib/confirmClose";
+import { confirmTabClose } from "$lib/shell/confirmClose";
 import { bulkCloseTargets } from "$lib/panes/layout";
 import { bestOfNRuns, runForSessionAnywhere } from "$lib/cards/bestOfNState";
 import { pickCandidate } from "$lib/cards/bestOfNActions";

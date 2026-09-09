@@ -23,7 +23,7 @@ import type { QueuedInput } from "$lib/agents/queuedInput";
 import type { ManagedSessions } from "$lib/sessions/sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspaceDelete";
 import type { AttachmentStatus } from "$lib/cards/attachments";
-import type { AvailableUpdate, UpdateSettings } from "$lib/updates";
+import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });

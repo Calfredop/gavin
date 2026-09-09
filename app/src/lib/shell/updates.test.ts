@@ -9,7 +9,7 @@ import {
   upToDateLine,
   type AvailableUpdate,
   type UpdateSettings,
-} from "$lib/updates";
+} from "$lib/shell/updates";
 import type { ManagedSession } from "$lib/sessions/sessionsManager";
 
 const ENDPOINT = "https://github.com/Calfredop/gavin/releases/latest/download/latest.json";

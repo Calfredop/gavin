@@ -15,9 +15,9 @@ import {
   setWorkspacePinned,
   setPagePinned,
 } from "$lib/layoutState";
-import { windowActionLabel } from "$lib/appWindow";
-import { currentWindowLabel, currentWorkspaceWindows } from "$lib/appWindowState";
-import { confirmWorkspaceClose, confirmPageClose } from "$lib/confirmClose";
+import { windowActionLabel } from "$lib/shell/appWindow";
+import { currentWindowLabel, currentWorkspaceWindows } from "$lib/shell/appWindowState";
+import { confirmWorkspaceClose, confirmPageClose } from "$lib/shell/confirmClose";
 import { buildTabMenuEntries, type TabMenuContext } from "$lib/panes/tabMenu";
 import { closeIdlePrompt, idleTabsOnPage, type CloseIdleRequest } from "$lib/panes/idleTabs";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";

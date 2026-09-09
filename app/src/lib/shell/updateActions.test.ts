@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { AvailableUpdate } from "$lib/updates";
+import type { AvailableUpdate } from "$lib/shell/updates";
 import type { ManagedSession } from "$lib/sessions/sessionsManager";
 
 const host = vi.hoisted(() => ({
@@ -12,7 +12,7 @@ const gate = vi.hoisted(() => ({ grantForAnsweredPrompt: vi.fn() }));
 vi.mock("$lib/backend", () => host);
 vi.mock("$lib/confirmGate", () => gate);
 
-import { installConfirmPrompt, runInstall, saveEndpoint } from "$lib/updateActions";
+import { installConfirmPrompt, runInstall, saveEndpoint } from "$lib/shell/updateActions";
 
 const UPDATE: AvailableUpdate = {
   version: "0.2.0",

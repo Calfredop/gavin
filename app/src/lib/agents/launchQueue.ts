@@ -50,7 +50,7 @@ import { fleetStrip, usedBytes as usedBytesOf, type FleetStrip } from "$lib/agen
 import { launchEstimate, type LaunchEstimate } from "$lib/agents/launchEstimate";
 import { agentSessions, fleetMemory, memoryPressure, storedMeans, systemMemory } from "$lib/agents/memoryState";
 import { layoutState, resolvedAgentFor } from "$lib/layoutState";
-import { currentWindowLabel } from "$lib/appWindowState";
+import { currentWindowLabel } from "$lib/shell/appWindowState";
 import { setGateReasonHook } from "$lib/agents/agentPauseState";
 import type { ReviewedCard } from "$lib/review/codeReview";
 

@@ -65,7 +65,7 @@ vi.mock("$lib/layoutState", () => ({
   resolvedAgentFor: () => ({ profileId: "claude-code" }),
 }));
 
-vi.mock("$lib/appWindowState", () => ({ currentWindowLabel: () => "main" }));
+vi.mock("$lib/shell/appWindowState", () => ({ currentWindowLabel: () => "main" }));
 vi.mock("$lib/agents/agentPauseState", () => ({ setGateReasonHook: vi.fn() }));
 vi.mock("$lib/backend", () => ({
   getLaunchConfig: vi.fn().mockResolvedValue(null),

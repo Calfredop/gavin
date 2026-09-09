@@ -40,7 +40,7 @@ vi.mock("$lib/agents/launchQueue", () => ({
 // "main" cannot exercise the case where a workspace's own window is
 // asked to hand it over.
 const windowState = vi.hoisted(() => ({ label: "main" }));
-vi.mock("$lib/appWindowState", async () => {
+vi.mock("$lib/shell/appWindowState", async () => {
   const { writable, get } = await import("svelte/store");
   const store = writable<Record<string, string>>({});
   return {
@@ -50,7 +50,7 @@ vi.mock("$lib/appWindowState", async () => {
     isMainWindow: () => windowState.label === "main",
   };
 });
-vi.mock("$lib/confirmClose", () => ({
+vi.mock("$lib/shell/confirmClose", () => ({
   confirmWorkspaceClose: vi.fn().mockResolvedValue(true),
   confirmPageClose: vi.fn().mockResolvedValue(true),
   confirmTabClose: vi.fn().mockResolvedValue(true),
@@ -73,9 +73,9 @@ import {
   setPagePinned,
   splitPane,
 } from "$lib/layoutState";
-import { workspaceWindows } from "$lib/appWindowState";
+import { workspaceWindows } from "$lib/shell/appWindowState";
 import { closeTabs } from "$lib/panes/tabActions";
-import { confirmPageClose } from "$lib/confirmClose";
+import { confirmPageClose } from "$lib/shell/confirmClose";
 import {
   buildWorkspaceMenuEntries,
   buildPageMenuEntries,

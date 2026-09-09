@@ -31,14 +31,14 @@
   import { linkedCardFor, linkForCardPath, type LinkedCard } from "$lib/cards/cardTabLink";
   import { chipTooltip, runBaseline } from "$lib/cards/runChanges";
   import { nearestContext } from "$lib/planBoard";
-  import { confirmTabClose, confirmPaneClose } from "$lib/confirmClose";
+  import { confirmTabClose, confirmPaneClose } from "$lib/shell/confirmClose";
   import { restoredBadge, type RestoredBadge } from "$lib/sessions/orphan";
   import { endSessionOrphan } from "$lib/sessions/orphanActions";
   import { dirtyPaths } from "$lib/files/fileEditing";
   import { showAlert } from "$lib/dialog";
   import { openContextMenuFromEvent } from "$lib/contextMenu";
   import { buildTabMenuEntries } from "$lib/panes/tabMenu";
-  import { windowDrag } from "$lib/windowDrag";
+  import { windowDrag } from "$lib/shell/windowDrag";
   import {
     X,
     Plus,
@@ -52,7 +52,7 @@
   } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import NewPageButton from "$lib/panes/NewPageButton.svelte";
-  import CornerOverhang from "$lib/CornerOverhang.svelte";
+  import CornerOverhang from "$lib/shell/CornerOverhang.svelte";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import {

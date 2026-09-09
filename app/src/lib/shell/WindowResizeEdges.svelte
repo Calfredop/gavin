@@ -5,7 +5,7 @@
   // does not.
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { isMacSync } from "$lib/platform";
-  import { needsResizeGrips, resizeZones, type ResizeDirection } from "$lib/windowResize";
+  import { needsResizeGrips, resizeZones, type ResizeDirection } from "$lib/shell/windowResize";
 
   // Synchronous, like TitleBar's own read: the grips have to be right in
   // the first frame, and plugin-os's platform() is a plain global read.

@@ -11,7 +11,7 @@ import {
   type LayoutState,
 } from "$lib/layoutState";
 import { copySelection, pasteClipboard } from "$lib/clipboard";
-import { confirmTabClose } from "$lib/confirmClose";
+import { confirmTabClose } from "$lib/shell/confirmClose";
 import { findLeafPath, getNodeAtPath, isPinned } from "$lib/panes/layout";
 import {
   getActiveTree,

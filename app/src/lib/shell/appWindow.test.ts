@@ -10,7 +10,7 @@ import {
   workspaceWindowLabel,
   workspacesInWindow,
   type WorkspaceWindowMap,
-} from "$lib/appWindow";
+} from "$lib/shell/appWindow";
 import type { Workspace } from "$lib/workspace";
 
 const ws = (id: string): Workspace => ({

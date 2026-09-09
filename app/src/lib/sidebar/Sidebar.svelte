@@ -34,7 +34,7 @@
     gitTrackingDefault,
     attentionState,
   } from "$lib/layoutState";
-  import { confirmWorkspaceClose, confirmPageClose } from "$lib/confirmClose";
+  import { confirmWorkspaceClose, confirmPageClose } from "$lib/shell/confirmClose";
   // Naming a workspace into existence is the app hub's action now; the
   // sidebar's is "Open workspace…", which starts from a folder. The
   // prompt below is the one question that flow can ask.
@@ -134,7 +134,7 @@
   import { kanbanState, fetchBoard } from "$lib/board/kanbanState";
   import { gavinTrees } from "$lib/gavinState";
   import { tooltip } from "$lib/tooltip";
-  import { availableUpdate } from "$lib/updatesState";
+  import { availableUpdate } from "$lib/shell/updatesState";
   import { hintMode } from "$lib/shortcutHints";
   import { agentCommitPhase, gitStore } from "$lib/git/gitState";
   import { hintDigitFor } from "$lib/shortcuts";
@@ -148,9 +148,9 @@
     type SidebarMenuHooks,
   } from "$lib/sidebar/sidebarMenu";
   import { closeTabsNow } from "$lib/panes/tabActions";
-  import { windowDrag } from "$lib/windowDrag";
-  import { isInAnotherWindow } from "$lib/appWindow";
-  import { currentWindowLabel, workspaceWindows } from "$lib/appWindowState";
+  import { windowDrag } from "$lib/shell/windowDrag";
+  import { isInAnotherWindow } from "$lib/shell/appWindow";
+  import { currentWindowLabel, workspaceWindows } from "$lib/shell/appWindowState";
   import type { CloseIdleRequest } from "$lib/panes/idleTabs";
   import type { TabMenuContext } from "$lib/panes/tabMenu";
   import {

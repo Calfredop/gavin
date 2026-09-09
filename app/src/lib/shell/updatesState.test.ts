@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
-import type { AvailableUpdate, UpdateSettings } from "$lib/updates";
+import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
 
 const host = vi.hoisted(() => ({
   updateSettings: vi.fn(),
@@ -18,7 +18,7 @@ import {
   runUpdateCheck,
   startUpdateWatch,
   updateChannel,
-} from "$lib/updatesState";
+} from "$lib/shell/updatesState";
 
 const ENDPOINT = "https://example.test/latest.json";
 

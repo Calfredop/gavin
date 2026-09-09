@@ -27,7 +27,7 @@ const PANEL = "SettingsHubView.svelte";
 describe("the sidebar badge", () => {
   it("reads the store the launch check writes", () => {
     const text = source(SIDEBAR);
-    expect(text).toContain('import { availableUpdate } from "$lib/updatesState";');
+    expect(text).toContain('import { availableUpdate } from "$lib/shell/updatesState";');
     expect(text).toContain("{#if $availableUpdate}");
   });
 

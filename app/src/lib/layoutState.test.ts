@@ -150,7 +150,7 @@ vi.mock("$lib/notifications", () => ({
 import * as backend from "$lib/backend";
 import * as notifications from "$lib/notifications";
 import * as terminalRegistry from "$lib/terminal/terminalRegistry";
-import { workspaceWindows } from "$lib/appWindowState";
+import { workspaceWindows } from "$lib/shell/appWindowState";
 import {
   layoutState,
   splitPane,

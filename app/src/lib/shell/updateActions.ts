@@ -8,7 +8,7 @@
 
 import * as backend from "$lib/backend";
 import { grantForAnsweredPrompt } from "$lib/confirmGate";
-import { installPrompt, liveSessions, type AvailableUpdate, type UpdatePrompt } from "$lib/updates";
+import { installPrompt, liveSessions, type AvailableUpdate, type UpdatePrompt } from "$lib/shell/updates";
 
 /// The prompt to draw before installing, with the live-session count
 /// already resolved.

@@ -22,7 +22,7 @@
   import { buildHubTabMenuEntries } from "$lib/hub/hubTabMenu";
   import AppDialog from "$lib/AppDialog.svelte";
   import ReviewDialog from "$lib/review/ReviewDialog.svelte";
-  import { confirmWindowClose } from "$lib/appClose";
+  import { confirmWindowClose } from "$lib/shell/appClose";
   import { getActiveWorkspace, getActiveView, getActiveTree, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";
   import {
@@ -42,18 +42,18 @@
   import { sidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
   import { tabStripHubViews, visibleHubViews } from "$lib/hub/workspaceViews";
   import TerminalView from "$lib/terminal/TerminalView.svelte";
-  import TitleBar from "$lib/TitleBar.svelte";
-  import WindowResizeEdges from "$lib/WindowResizeEdges.svelte";
+  import TitleBar from "$lib/shell/TitleBar.svelte";
+  import WindowResizeEdges from "$lib/shell/WindowResizeEdges.svelte";
   import NewPageButton from "$lib/panes/NewPageButton.svelte";
   import OpenInWindowButton from "$lib/panes/OpenInWindowButton.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Sidebar from "$lib/sidebar/Sidebar.svelte";
-  import CornerOverhang from "$lib/CornerOverhang.svelte";
+  import CornerOverhang from "$lib/shell/CornerOverhang.svelte";
   import { isMacSync } from "$lib/platform";
   import AppHubView from "$lib/hub/AppHubView.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
-  import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
-  import DaemonRequestErrorBanner from "$lib/DaemonRequestErrorBanner.svelte";
+  import DaemonCompatBanner from "$lib/shell/DaemonCompatBanner.svelte";
+  import DaemonRequestErrorBanner from "$lib/shell/DaemonRequestErrorBanner.svelte";
   import MemoryPressureBanner from "$lib/agents/MemoryPressureBanner.svelte";
   import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/git/gitState";
   import { hubViewBusy, hubViewAttention, moveHubViewId } from "$lib/hub/hubViewMeta";
@@ -73,8 +73,8 @@
   import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration/orchestration";
   import { tooltip } from "$lib/tooltip";
   import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
-  import { windowDrag } from "$lib/windowDrag";
-  import { isMainWindow } from "$lib/appWindowState";
+  import { windowDrag } from "$lib/shell/windowDrag";
+  import { isMainWindow } from "$lib/shell/appWindowState";
 
   let closeConfirmed = false;
   // The prompt is a DOM modal now, so the window can keep sending close

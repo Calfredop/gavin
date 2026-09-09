@@ -12,8 +12,8 @@
   import { tooltip } from "$lib/tooltip";
   import { layoutState, handOffWorkspace } from "$lib/layoutState";
   import { getActiveWorkspace } from "$lib/workspace";
-  import { windowActionLabel } from "$lib/appWindow";
-  import { currentWindowLabel, workspaceWindows } from "$lib/appWindowState";
+  import { windowActionLabel } from "$lib/shell/appWindow";
+  import { currentWindowLabel, workspaceWindows } from "$lib/shell/appWindowState";
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
   // `null` means there is nothing to offer -- this window IS that

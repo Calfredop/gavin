@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { closeWindowPrompt, sessionsToEnd, survivingSessionsAlert, endEverySession } from "$lib/appClose";
+import { closeWindowPrompt, sessionsToEnd, survivingSessionsAlert, endEverySession } from "$lib/shell/appClose";
 import type { ManagedSession, ManagedSessions } from "$lib/sessions/sessionsManager";
 import type { OrphanProcess } from "$lib/sessions/orphan";
 

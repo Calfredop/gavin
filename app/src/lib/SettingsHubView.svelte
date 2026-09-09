@@ -92,15 +92,15 @@
     refreshUpdateChannel,
     runUpdateCheck,
     updateChannel,
-  } from "$lib/updatesState";
-  import { installConfirmPrompt, runInstall, saveEndpoint } from "$lib/updateActions";
+  } from "$lib/shell/updatesState";
+  import { installConfirmPrompt, runInstall, saveEndpoint } from "$lib/shell/updateActions";
   import {
     availableLine,
     endpointToSave,
     updateBlockedReason,
     upToDateLine,
     type UpdatePrompt,
-  } from "$lib/updates";
+  } from "$lib/shell/updates";
   import { onMount } from "svelte";
 
   interface Props {

@@ -24,7 +24,7 @@ vi.mock("$lib/clipboard", () => ({
   copySelection: vi.fn().mockResolvedValue(undefined),
   pasteClipboard: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("$lib/confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
+vi.mock("$lib/shell/confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
 // Switchable per test via globalThis, which the hoisted factory can read
 // without closing over module scope (that would be uninitialized here).
 vi.mock("$lib/platform", () => {

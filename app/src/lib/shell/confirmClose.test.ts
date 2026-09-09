@@ -14,7 +14,7 @@ import {
   confirmPaneClose,
   confirmPageClose,
   confirmWorkspaceClose,
-} from "$lib/confirmClose";
+} from "$lib/shell/confirmClose";
 
 beforeEach(() => {
   vi.clearAllMocks();

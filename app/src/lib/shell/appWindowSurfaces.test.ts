@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { closeWindowPrompt } from "$lib/appClose";
+import { closeWindowPrompt } from "$lib/shell/appClose";
 import { svelteSources } from "$lib/sources";
 
 // "A workspace is on screen in exactly one window" is a rule spread over
@@ -18,7 +18,7 @@ import { svelteSources } from "$lib/sources";
 
 const SOURCES = svelteSources();
 
-const ROUTES = import.meta.glob("../routes/*.svelte", {
+const ROUTES = import.meta.glob("../../routes/*.svelte", {
   query: "?raw",
   import: "default",
   eager: true,
