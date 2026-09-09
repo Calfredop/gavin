@@ -16,7 +16,7 @@ import {
   type CardRun,
   type TokenReport,
 } from "$lib/cards/runHistory";
-import type { DaemonCompat } from "$lib/daemonCompat";
+import type { DaemonCompat } from "$lib/core/daemonCompat";
 
 const NOW = 1_757_000_000;
 

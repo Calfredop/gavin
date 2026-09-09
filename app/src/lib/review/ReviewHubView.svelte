@@ -16,9 +16,9 @@
   import { onDestroy, onMount, untrack } from "svelte";
   import { get } from "svelte/store";
   import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/board/kanbanState";
-  import { gavinTrees } from "$lib/gavinState";
-  import { layoutState, daemonCompat } from "$lib/layoutState";
-  import { indexCardViews, mergePlanCards, type CardView } from "$lib/planBoard";
+  import { gavinTrees } from "$lib/core/gavinState";
+  import { layoutState, daemonCompat } from "$lib/core/layoutState";
+  import { indexCardViews, mergePlanCards, type CardView } from "$lib/core/planBoard";
   import GitFileRow from "$lib/git/GitFileRow.svelte";
   import ReviewAgentPane from "$lib/review/ReviewAgentPane.svelte";
   import ReviewCardList from "$lib/review/ReviewCardList.svelte";

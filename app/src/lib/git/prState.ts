@@ -22,7 +22,7 @@
 // every render" into one request a minute (see MIN_INTERVAL_SECS there).
 
 import { get, writable } from "svelte/store";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import { prKey } from "$lib/git/pullRequest";
 import type { PrReport } from "$lib/git/pullRequest";
 

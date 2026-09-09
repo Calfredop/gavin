@@ -9,8 +9,8 @@
 // Custom columns keep the neutral "Run all": their name is the human's
 // vocabulary, and gavin has no idea what it means.
 
-import { slugStatus, type CardView } from "$lib/planBoard";
-import { sessionLiveness, type WorkspacesData } from "$lib/workspace";
+import { slugStatus, type CardView } from "$lib/core/planBoard";
+import { sessionLiveness, type WorkspacesData } from "$lib/core/workspace";
 import { count } from "$lib/orchestration/railConfirm";
 import { estimateLines, type LaunchEstimate } from "$lib/agents/launchEstimate";
 

@@ -201,7 +201,7 @@ describe("the dialogs it asks with", () => {
     it(`${name} asks through dialog.ts, never the OS`, () => {
       const text = source(name);
       expect(text).not.toMatch(/from "@tauri-apps\/plugin-dialog"/);
-      expect(text).toContain('from "$lib/dialog"');
+      expect(text).toContain('from "$lib/core/dialog"');
     });
   }
 });

@@ -7,8 +7,8 @@
 /// that a rail step stalled on an unreviewed card has somewhere to be
 /// answered without spawning a session first.
 
-import { askConfirm } from "$lib/dialog";
-import { cardReviewed, stampCardReview } from "$lib/layoutState";
+import { askConfirm } from "$lib/core/dialog";
+import { cardReviewed, stampCardReview } from "$lib/core/layoutState";
 import {
   REVIEW_CANCEL_LABEL,
   REVIEW_CONFIRM_LABEL,

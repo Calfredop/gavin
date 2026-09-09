@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
 
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   getBoard: vi.fn(),
   setBoard: vi.fn(),
   linkCardSession: vi.fn(),
   unlinkCardSession: vi.fn(),
 }));
 
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import {
   kanbanState,
   fetchBoard,

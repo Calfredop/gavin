@@ -2,7 +2,7 @@
   import { onDestroy } from "svelte";
   import type { LayoutNode } from "$lib/panes/layout";
   import Pane from "$lib/panes/Pane.svelte";
-  import { previewResizePane, commitLayout } from "$lib/layoutState";
+  import { previewResizePane, commitLayout } from "$lib/core/layoutState";
 
   let { node, path }: { node: LayoutNode; path: number[] } = $props();
 

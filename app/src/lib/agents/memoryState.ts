@@ -27,7 +27,7 @@
 // silently never starts.
 
 import { derived, get, writable, type Readable } from "svelte/store";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import {
   fleetMemory as computeFleetMemory,
   loadStoredMeans,
@@ -40,8 +40,8 @@ import {
   type SystemMemorySample,
   type WatchmanSample,
 } from "$lib/agents/memory";
-import { layoutState, resolvedAgentFor } from "$lib/layoutState";
-import { findSessionLocation } from "$lib/workspace";
+import { layoutState, resolvedAgentFor } from "$lib/core/layoutState";
+import { findSessionLocation } from "$lib/core/workspace";
 import type { ManagedSession } from "$lib/sessions/sessionsManager";
 
 /// The newest machine reading, or null before the first poll lands.

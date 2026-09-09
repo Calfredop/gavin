@@ -11,8 +11,8 @@
 // be mounted at once, and only one of them may answer.
 
 import { writable } from "svelte/store";
-import { getActiveView, type Workspace } from "$lib/workspace";
-import type { BoardTab } from "$lib/gavin";
+import { getActiveView, type Workspace } from "$lib/core/workspace";
+import type { BoardTab } from "$lib/core/gavin";
 
 /// Which board should answer ⌘N. The hub board is addressed by its
 /// workspace; a context BoardPane by the TAB it lives in -- two panes can

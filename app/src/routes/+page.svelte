@@ -9,35 +9,35 @@
     switchWorkspaceView,
     retryConnect,
     appHubOpen,
-  } from "$lib/layoutState";
-  import { signalFrontendReady } from "$lib/backend";
-  import { installKeyboardShortcuts } from "$lib/keyboard";
+  } from "$lib/core/layoutState";
+  import { signalFrontendReady } from "$lib/core/backend";
+  import { installKeyboardShortcuts } from "$lib/core/keyboard";
   import { installLineClipboard } from "$lib/git/lineClipboard";
-  import { installHintTracking, hintMode } from "$lib/shortcutHints";
-  import { hintDigitFor } from "$lib/shortcuts";
+  import { installHintTracking, hintMode } from "$lib/core/shortcutHints";
+  import { hintDigitFor } from "$lib/core/shortcuts";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
-  import ContextMenu from "$lib/ContextMenu.svelte";
-  import { openContextMenuFromEvent } from "$lib/contextMenu";
+  import ContextMenu from "$lib/core/ContextMenu.svelte";
+  import { openContextMenuFromEvent } from "$lib/core/contextMenu";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
   import { buildHubTabMenuEntries } from "$lib/hub/hubTabMenu";
-  import AppDialog from "$lib/AppDialog.svelte";
+  import AppDialog from "$lib/core/AppDialog.svelte";
   import ReviewDialog from "$lib/review/ReviewDialog.svelte";
   import { confirmWindowClose } from "$lib/shell/appClose";
-  import { getActiveWorkspace, getActiveView, getActiveTree, hubLabel } from "$lib/workspace";
-  import { gavinTrees } from "$lib/gavinState";
+  import { getActiveWorkspace, getActiveView, getActiveTree, hubLabel } from "$lib/core/workspace";
+  import { gavinTrees } from "$lib/core/gavinState";
   import {
     agentProfilesStore,
     agentModelDefaultsStore,
     trustedAgentConfigs,
     wizardWorkspaceId,
-  } from "$lib/layoutState";
+  } from "$lib/core/layoutState";
   import SetupWizard from "$lib/workspace/SetupWizard.svelte";
   import WorkspaceCreateModal from "$lib/workspace/WorkspaceCreateModal.svelte";
   import BestOfNDialog from "$lib/cards/BestOfNDialog.svelte";
   import { bestOfNRequest, hydrateRuns } from "$lib/cards/bestOfNState";
-  import { showAlert } from "$lib/dialog";
+  import { showAlert } from "$lib/core/dialog";
   import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspace/workspaceCreate";
-  import { resolveAgentConfig, accentVar } from "$lib/settings";
+  import { resolveAgentConfig, accentVar } from "$lib/core/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
   import { sidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
   import { tabStripHubViews, visibleHubViews } from "$lib/hub/workspaceViews";
@@ -49,7 +49,7 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import Sidebar from "$lib/sidebar/Sidebar.svelte";
   import CornerOverhang from "$lib/shell/CornerOverhang.svelte";
-  import { isMacSync } from "$lib/platform";
+  import { isMacSync } from "$lib/core/platform";
   import AppHubView from "$lib/hub/AppHubView.svelte";
   import WorkspaceRootControl from "$lib/workspace/WorkspaceRootControl.svelte";
   import DaemonCompatBanner from "$lib/shell/DaemonCompatBanner.svelte";
@@ -71,7 +71,7 @@
   import { Lock, LockOpen } from "@lucide/svelte";
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestration/orchestrationState";
   import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration/orchestration";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
   import { windowDrag } from "$lib/shell/windowDrag";
   import { isMainWindow } from "$lib/shell/appWindowState";

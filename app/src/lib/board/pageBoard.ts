@@ -29,10 +29,10 @@ import { railCardPaths } from "$lib/orchestration/orchestration";
 import { AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
 import type { Orchestration, Rail } from "$lib/orchestration/orchestration";
 import type { Board } from "$lib/board/kanban";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 import type { MergedBoard } from "$lib/board/boardSearch";
 import type { DropTarget } from "$lib/panes/pointerDrag";
-import type { Page, Workspace } from "$lib/workspace";
+import type { Page, Workspace } from "$lib/core/workspace";
 
 export interface PageScope {
   /// Card paths bound to the page, by either half.

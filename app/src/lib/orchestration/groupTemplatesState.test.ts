@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
 
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   getGroupTemplates: vi.fn(),
   saveGroupTemplate: vi.fn(),
   deleteGroupTemplate: vi.fn(),
 }));
 
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import {
   groupTemplateRecords,
   libraryFor,

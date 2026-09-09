@@ -11,7 +11,7 @@ import {
   stepStateOf,
 } from "$lib/orchestration/orchestration";
 import type { CardEntry, Orchestration, Rail, Stage } from "$lib/orchestration/orchestration";
-import { slugStatus } from "$lib/planBoard";
+import { slugStatus } from "$lib/core/planBoard";
 import { estimateLines, type LaunchEstimate } from "$lib/agents/launchEstimate";
 
 /// What a destructive rail action asks before it runs: the prompt's

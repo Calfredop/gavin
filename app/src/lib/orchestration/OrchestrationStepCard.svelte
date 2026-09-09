@@ -6,7 +6,7 @@
   import { attentionIndicator, stepIndicator } from "$lib/ui/indicators";
   import { highlightedConflict } from "$lib/orchestration/orchestrationState";
   import type { Label } from "$lib/board/kanban";
-  import type { CardView, PlacedCardView } from "$lib/planBoard";
+  import type { CardView, PlacedCardView } from "$lib/core/planBoard";
   import { attentionTip } from "$lib/orchestration/orchestration";
   import type { StepAttention, StepState } from "$lib/orchestration/orchestration";
 

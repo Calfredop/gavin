@@ -7,8 +7,8 @@
   // and hands the work to FollowUpQueueView, so the queue never has two
   // different faces depending on which host mounted it.
   import FollowUpQueueView from "$lib/agents/FollowUpQueueView.svelte";
-  import { layoutState, closeSession } from "$lib/layoutState";
-  import { sessionLabel } from "$lib/paths";
+  import { layoutState, closeSession } from "$lib/core/layoutState";
+  import { sessionLabel } from "$lib/core/paths";
 
   interface Props {
     /// The session whose queue this is -- NOT the tab it sits in. The two

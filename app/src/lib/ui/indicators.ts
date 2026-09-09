@@ -66,7 +66,7 @@ import {
   TriangleAlert,
   Unlink2,
 } from "@lucide/svelte";
-import type { SessionStatus } from "$lib/notifications";
+import type { SessionStatus } from "$lib/core/notifications";
 // The rails already own these three; re-declaring them here would be a
 // second definition free to drift from the one the scheduler runs on.
 import type { RailState, StepAttention, StepState } from "$lib/orchestration/orchestration";

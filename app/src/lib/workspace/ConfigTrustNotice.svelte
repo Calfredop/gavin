@@ -14,8 +14,8 @@
   /// the whole decision. A paraphrase would be a second description to
   /// keep in sync with the thing actually executed.
   import { Lock } from "@lucide/svelte";
-  import Modal from "$lib/Modal.svelte";
-  import { approveWorkspaceConfig, configTrusts, revokeWorkspaceConfig } from "$lib/layoutState";
+  import Modal from "$lib/core/Modal.svelte";
+  import { approveWorkspaceConfig, configTrusts, revokeWorkspaceConfig } from "$lib/core/layoutState";
   import { configTrustNotice, trustRows } from "$lib/workspace/workspaceTrust";
 
   interface Props {

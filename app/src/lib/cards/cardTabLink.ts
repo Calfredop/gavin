@@ -12,11 +12,11 @@
 
 import { writable } from "svelte/store";
 import type { Board } from "$lib/board/kanban";
-import type { GavinTree } from "$lib/gavin";
+import type { GavinTree } from "$lib/core/gavin";
 import type { Orchestration } from "$lib/orchestration/orchestration";
 import { cardIndex } from "$lib/orchestration/orchestration";
 import type { PageTabRow } from "$lib/sidebar/sidebarSummary";
-import { switchWorkspace, switchWorkspaceView } from "$lib/layoutState";
+import { switchWorkspace, switchWorkspaceView } from "$lib/core/layoutState";
 
 /// Which hub tab a card is best seen in: a card on a rail belongs to the
 /// run that owns it, everything else to the board.

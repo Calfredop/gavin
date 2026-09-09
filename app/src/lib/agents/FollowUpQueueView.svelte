@@ -16,10 +16,10 @@
   // Everything it decides comes from queuedInput.ts; the template below
   // chooses no wording of its own.
   import { ChevronDown, ChevronUp, Send, X } from "@lucide/svelte";
-  import Modal from "$lib/Modal.svelte";
+  import Modal from "$lib/core/Modal.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { tooltip } from "$lib/tooltip";
-  import { layoutState, queuedInputsById } from "$lib/layoutState";
+  import { tooltip } from "$lib/core/tooltip";
+  import { layoutState, queuedInputsById } from "$lib/core/layoutState";
   import {
     composeRefusal,
     deliveryHold,

@@ -23,8 +23,8 @@
   } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { FORMAT_GROUPS, type FormatAction, type FormatButton } from "$lib/files/markdownFormatting";
-  import { formatChord } from "$lib/shortcuts";
-  import { isMacSync } from "$lib/platform";
+  import { formatChord } from "$lib/core/shortcuts";
+  import { isMacSync } from "$lib/core/platform";
 
   interface Props {
     onFormat: (action: FormatAction) => void;

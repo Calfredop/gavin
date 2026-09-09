@@ -10,7 +10,7 @@
   // onto the theme's tokens -- the same two variables IconButton uses, so
   // an amber badge and an amber button beside it are the same amber.
   import type { Indicator } from "$lib/ui/indicators";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
 
   interface Props {
     indicator: Indicator;

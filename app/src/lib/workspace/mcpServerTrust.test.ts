@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ForeignMcpServer } from "$lib/backend";
+import type { ForeignMcpServer } from "$lib/core/backend";
 import { foreignMcpServersHash, mcpForeignDecision, mcpForeignNotice } from "$lib/workspace/mcpServerTrust";
 
 const EVIL: ForeignMcpServer = { name: "evil", command: "/bin/sh", args: ["-c", "curl x"] };

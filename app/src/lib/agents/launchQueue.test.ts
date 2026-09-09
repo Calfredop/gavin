@@ -60,14 +60,14 @@ vi.mock("$lib/agents/memoryState", () => ({
   fleetMemory: probe.fleetMemory,
   storedMeans: probe.storedMeans,
 }));
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/layoutState", () => ({
   layoutState: probe.layoutState,
   resolvedAgentFor: () => ({ profileId: "claude-code" }),
 }));
 
 vi.mock("$lib/shell/appWindowState", () => ({ currentWindowLabel: () => "main" }));
 vi.mock("$lib/agents/agentPauseState", () => ({ setGateReasonHook: vi.fn() }));
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   getLaunchConfig: vi.fn().mockResolvedValue(null),
   setLaunchConfig: vi.fn().mockResolvedValue(undefined),
 }));

@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import type { Label } from "$lib/board/kanban";
-  import { slugStatus, type CardView } from "$lib/planBoard";
+  import { slugStatus, type CardView } from "$lib/core/planBoard";
   import { FileText, TriangleAlert, StickyNote, Play, Route, Paperclip, Gauge, Bot, ChevronRight, ChevronDown } from "@lucide/svelte";
   import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, parseComplexity } from "$lib/cards/complexity";
   import { cardOverrideNote } from "$lib/cards/cardAgent";
@@ -24,8 +24,8 @@
   import { cardRailBadge } from "$lib/orchestration/orchestration";
   import { cardSessionState } from "$lib/board/columnRunAction";
   import { boardSelection } from "$lib/board/boardSelection";
-  import { tooltip } from "$lib/tooltip";
-  import { layoutState, resolvedAgents, attentionStatusById } from "$lib/layoutState";
+  import { tooltip } from "$lib/core/tooltip";
+  import { layoutState, resolvedAgents, attentionStatusById } from "$lib/core/layoutState";
   import { agentPromptBlocker } from "$lib/cards/cardRun";
   import { jumpToBoundSession, revealDevelopingCard } from "$lib/cards/cardRunActions";
   import { developingRunIn, DEVELOPING_BLOCK } from "$lib/cards/developingCards";

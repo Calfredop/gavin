@@ -29,9 +29,9 @@
 // worth paying for which rows this screen's sidebar draws.
 
 import { get, writable } from "svelte/store";
-import { layoutState, openAppHub, switchWorkspace } from "$lib/layoutState";
+import { layoutState, openAppHub, switchWorkspace } from "$lib/core/layoutState";
 import { endSidebarPeek } from "$lib/sidebar/sidebarPeek";
-import { UNFILED_WORKSPACE_ID } from "$lib/workspace";
+import { UNFILED_WORKSPACE_ID } from "$lib/core/workspace";
 
 /// Injected (defaulting to the browser's) for the same two reasons
 /// sidebarExpansion.ts injects it: vitest's node environment has no

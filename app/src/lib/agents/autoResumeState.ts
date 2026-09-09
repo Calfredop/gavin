@@ -21,22 +21,22 @@ import {
   type ResumeRecord,
 } from "$lib/agents/autoResume";
 import { claimKey, resumeClaims } from "$lib/agents/resumeClaim";
-import { featureBlockedReason } from "$lib/daemonCompat";
+import { featureBlockedReason } from "$lib/core/daemonCompat";
 import {
   daemonCompat,
   layoutState,
   resolvedAgentFor,
   setSessionFailureHook,
-} from "$lib/layoutState";
-import { sessionLabel } from "$lib/paths";
+} from "$lib/core/layoutState";
+import { sessionLabel } from "$lib/core/paths";
 import { kanbanState } from "$lib/board/kanbanState";
-import { gavinTrees } from "$lib/gavinState";
+import { gavinTrees } from "$lib/core/gavinState";
 import { orchestrations, resumeStep } from "$lib/orchestration/orchestrationState";
 import { resumeCard } from "$lib/cards/cardRunActions";
-import { cardViewForPath, slugStatus } from "$lib/planBoard";
+import { cardViewForPath, slugStatus } from "$lib/core/planBoard";
 import { cardIndex, doneColumn, effectiveStatus, planIndex, stageMode } from "$lib/orchestration/orchestration";
 import type { Rail, Step } from "$lib/orchestration/orchestration";
-import type { SessionStatus } from "$lib/notifications";
+import type { SessionStatus } from "$lib/core/notifications";
 
 /// What gavin has done about a run without being asked, by the thing it
 /// belongs to: a rail step id, or a card's file path.

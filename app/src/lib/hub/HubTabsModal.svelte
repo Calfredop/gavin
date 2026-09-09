@@ -5,9 +5,9 @@
   // are the same question asked at two levels, and two components would
   // have drifted into two different answers about what "inherit" means.
   import { Eye, EyeOff } from "@lucide/svelte";
-  import Modal from "$lib/Modal.svelte";
+  import Modal from "$lib/core/Modal.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import {
     canHideHubView,
     manageableHubViewIds,
@@ -25,9 +25,9 @@
     workspaceHasHubTabOrder,
     workspaceOverridesHubTabs,
   } from "$lib/hub/hubTabPrefs";
-  import { agentModelDefaultsStore, agentProfilesStore, trustedAgentConfigs } from "$lib/layoutState";
-  import { resolveAgentConfig } from "$lib/settings";
-  import { hubLabel } from "$lib/workspace";
+  import { agentModelDefaultsStore, agentProfilesStore, trustedAgentConfigs } from "$lib/core/layoutState";
+  import { resolveAgentConfig } from "$lib/core/settings";
+  import { hubLabel } from "$lib/core/workspace";
 
   interface Props {
     /// The workspace whose strip this edits, or null/absent for the

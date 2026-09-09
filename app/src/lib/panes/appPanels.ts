@@ -12,7 +12,7 @@
 // every new call site has to remember.
 
 import { get, writable } from "svelte/store";
-import { hotState } from "$lib/hotState";
+import { hotState } from "$lib/core/hotState";
 
 export type AppPanel = "sessions" | "usage";
 

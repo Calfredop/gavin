@@ -1,5 +1,5 @@
-import type { AgentConfig } from "$lib/gavin";
-import { sha256Hex } from "$lib/sha256";
+import type { AgentConfig } from "$lib/core/gavin";
+import { sha256Hex } from "$lib/core/sha256";
 
 /// Workspace trust for the three `.gavin-root/config.toml` keys that name
 /// something gavin EXECUTES or WRITES as the user.

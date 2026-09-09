@@ -11,7 +11,7 @@
 // card's leftover id simply stops counting.
 
 import { writable, get } from "svelte/store";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 import { count } from "$lib/orchestration/railConfirm";
 import { estimateLines, type LaunchEstimate } from "$lib/agents/launchEstimate";
 

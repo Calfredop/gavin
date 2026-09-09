@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { layoutState, setWorkspaceColor } from "$lib/layoutState";
-  import { DEFAULT_ACCENT } from "$lib/settings";
+  import { layoutState, setWorkspaceColor } from "$lib/core/layoutState";
+  import { DEFAULT_ACCENT } from "$lib/core/settings";
   import WorkspaceRootControl from "$lib/workspace/WorkspaceRootControl.svelte";
-  import ColourPicker from "$lib/ColourPicker.svelte";
-  import Modal from "$lib/Modal.svelte";
+  import ColourPicker from "$lib/core/ColourPicker.svelte";
+  import Modal from "$lib/core/Modal.svelte";
 
   interface Props {
     workspaceId: string;

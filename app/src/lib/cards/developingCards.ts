@@ -17,8 +17,8 @@
 // So the record is the indication AND the lock: one fact, read by the
 // badge that says what is happening and by every launch that must not.
 
-import type { SessionStatus } from "$lib/notifications";
-import type { DevelopingCardRecord, SessionLiveness, WorkspacesData } from "$lib/workspace";
+import type { SessionStatus } from "$lib/core/notifications";
+import type { DevelopingCardRecord, SessionLiveness, WorkspacesData } from "$lib/core/workspace";
 
 /// The run developing this card, or null. Path equality, the same key
 /// `cardSessionFor` matches on. A develop run writes no status of its

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layoutState, requireReviewDefault, setWorkspaceRequireReview, markRequireReviewAsked } from "$lib/layoutState";
+  import { layoutState, requireReviewDefault, setWorkspaceRequireReview, markRequireReviewAsked } from "$lib/core/layoutState";
   import {
     requireReviewFromSelect,
     requireReviewOptions,

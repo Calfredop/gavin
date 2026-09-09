@@ -11,7 +11,7 @@
   /// about finishing a STEP, and Settings' heading. Those genuinely
   /// differ.
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-  import * as backend from "$lib/backend";
+  import * as backend from "$lib/core/backend";
   import {
     RESTART_NOTE,
     showsAssertButton,

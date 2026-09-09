@@ -6,15 +6,15 @@
   import CardDetailModal from "$lib/cards/CardDetailModal.svelte";
   import CardComposeModal from "$lib/cards/CardComposeModal.svelte";
   import KanbanDragPreview from "$lib/board/KanbanDragPreview.svelte";
-  import { gavinTrees } from "$lib/gavinState";
-  import { mergePlanCards, type CardView } from "$lib/planBoard";
+  import { gavinTrees } from "$lib/core/gavinState";
+  import { mergePlanCards, type CardView } from "$lib/core/planBoard";
   import { planCommitFromMerged } from "$lib/files/planDrop";
   import { runCard, resumeCard, developCard, sendToMainAgent } from "$lib/cards/cardRunActions";
-  import { layoutState, daemonCompat } from "$lib/layoutState";
+  import { layoutState, daemonCompat } from "$lib/core/layoutState";
   import { columnDeletionPlan, deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cards/cardDelete";
-  import { grantForAnsweredPrompt } from "$lib/confirmGate";
-  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
-  import { openContextMenuFromEvent } from "$lib/contextMenu";
+  import { grantForAnsweredPrompt } from "$lib/core/confirmGate";
+  import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
+  import { openContextMenuFromEvent } from "$lib/core/contextMenu";
   import { buildCardMenuEntries } from "$lib/cards/cardMenu";
   import { fetchOrchestration, refreshOrchestration, orchestrations } from "$lib/orchestration/orchestrationState";
   import { cardSessionFor } from "$lib/board/kanbanState";
@@ -42,9 +42,9 @@
     type AgeBucket,
   } from "$lib/files/archiveDelete";
   import { executeUnarchive } from "$lib/files/archiveActions";
-  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
   import { filterBoard, AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
-  import { isSearching } from "$lib/search";
+  import { isSearching } from "$lib/core/search";
   import { railIndex } from "$lib/board/planFilter";
   import { dropAgainstWholeBoard } from "$lib/board/pageBoard";
   import {
@@ -57,7 +57,7 @@
   import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/board/hubFacets";
   import FacetFilters from "$lib/board/FacetFilters.svelte";
   import { flip } from "svelte/animate";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import type { DropTarget } from "$lib/panes/pointerDrag";
 
   interface Props {

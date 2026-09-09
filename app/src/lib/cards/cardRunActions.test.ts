@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable } from "svelte/store";
-import type { DaemonCompat } from "$lib/daemonCompat";
-import type { SessionStatus } from "$lib/notifications";
+import type { DaemonCompat } from "$lib/core/daemonCompat";
+import type { SessionStatus } from "$lib/core/notifications";
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   createSession: vi.fn(),
   readFileForViewer: vi.fn(),
   setPlanFrontmatterField: vi.fn(),
@@ -42,7 +42,7 @@ const agentMock = vi.hoisted(() =>
   }))
 );
 
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/layoutState", () => ({
   layoutState: writable({
     workspaces: [
       {
@@ -106,7 +106,7 @@ vi.mock("$lib/layoutState", () => ({
 vi.mock("$lib/cards/cardReviewActions", () => ({
   ensureCardReviewed: vi.fn(async () => true),
 }));
-vi.mock("$lib/workspace", () => {
+vi.mock("$lib/core/workspace", () => {
   const findSessionLocation = vi.fn();
   return {
     findSessionLocation,
@@ -125,13 +125,13 @@ vi.mock("$lib/workspace", () => {
   };
 });
 
-import * as backend from "$lib/backend";
-import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, daemonCompat, workspaceRootPath, resolvedAgentFor, agentForCard, conversationIdForLaunch, baseShaForLaunch, armFailureDetection, setDevelopingCards } from "$lib/layoutState";
-import { cardReviewed } from "$lib/layoutState";
+import * as backend from "$lib/core/backend";
+import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, daemonCompat, workspaceRootPath, resolvedAgentFor, agentForCard, conversationIdForLaunch, baseShaForLaunch, armFailureDetection, setDevelopingCards } from "$lib/core/layoutState";
+import { cardReviewed } from "$lib/core/layoutState";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
-import { findSessionLocation } from "$lib/workspace";
+import { findSessionLocation } from "$lib/core/workspace";
 import { kanbanState } from "$lib/board/kanbanState";
-import { gavinTrees } from "$lib/gavinState";
+import { gavinTrees } from "$lib/core/gavinState";
 import {
   runCard,
   resumeCard,
@@ -141,7 +141,7 @@ import {
   jumpToBoundSession,
   sendToMainAgent,
 } from "$lib/cards/cardRunActions";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 import type { Board } from "$lib/board/kanban";
 
 function card(kind: "note" | "task" | "plan", status: string | null): CardView {

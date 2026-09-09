@@ -22,9 +22,9 @@
 // stored value is never identity-equal to the one that was put in.
 
 import { get, writable } from "svelte/store";
-import * as backend from "$lib/backend";
-import { featureBlockedReason, type DaemonCompat } from "$lib/daemonCompat";
-import { daemonCompat, sessionExits } from "$lib/layoutState";
+import * as backend from "$lib/core/backend";
+import { featureBlockedReason, type DaemonCompat } from "$lib/core/daemonCompat";
+import { daemonCompat, sessionExits } from "$lib/core/layoutState";
 // TYPE-only, deliberately: this module is reached from
 // `layoutState.bootstrap`, and a value import of workspaceTools would
 // pull the whole `@lucide/svelte` barrel onto the start-up path. The

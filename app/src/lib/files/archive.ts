@@ -7,8 +7,8 @@
 // actions commit against paths, never against this projection.
 
 import { project } from "$lib/board/boardSearch";
-import { queryTokens } from "$lib/search";
-import type { CardView } from "$lib/planBoard";
+import { queryTokens } from "$lib/core/search";
+import type { CardView } from "$lib/core/planBoard";
 
 export interface ArchiveView {
   cards: CardView[];

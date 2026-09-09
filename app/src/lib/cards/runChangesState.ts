@@ -12,7 +12,7 @@
 // stored value is never identity-equal to the one that was put in.
 
 import { get, writable } from "svelte/store";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import type { FileDiff, RunChanges } from "$lib/git/git";
 import { untrackedPaths } from "$lib/cards/runChanges";
 

@@ -4,7 +4,7 @@
   // different set: same sequential spawn, same unbound-only rule, but
   // over the picked cards -- which may sit in any column, or nested
   // inside a plan.
-  import type { CardView } from "$lib/planBoard";
+  import type { CardView } from "$lib/core/planBoard";
   import { Play, X } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
@@ -15,7 +15,7 @@
     selectedCards,
     selectionRunConfirm,
   } from "$lib/board/boardSelection";
-  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import { estimateFor, launchGateVerdict } from "$lib/agents/launchQueue";
 
   interface Props {

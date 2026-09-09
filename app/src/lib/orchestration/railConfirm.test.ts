@@ -8,7 +8,7 @@ import {
   runAllConfirm,
 } from "$lib/orchestration/railConfirm";
 import type { CardEntry, Orchestration, Rail, Stage, Step } from "$lib/orchestration/orchestration";
-import type { PlanFileInfo } from "$lib/gavin";
+import type { PlanFileInfo } from "$lib/core/gavin";
 import { launchEstimate } from "$lib/agents/launchEstimate";
 
 function plan(fileName: string, overrides: Partial<PlanFileInfo> = {}): PlanFileInfo {

@@ -15,8 +15,8 @@
 // same question must not answer it two ways.
 
 import { ANY, NO_RAIL, underContext, type RailIndex } from "$lib/board/planFilter";
-import type { GavinTree } from "$lib/gavin";
-import type { CardView } from "$lib/planBoard";
+import type { GavinTree } from "$lib/core/gavin";
+import type { CardView } from "$lib/core/planBoard";
 import { AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
 import type { MergedBoard } from "$lib/board/boardSearch";
 

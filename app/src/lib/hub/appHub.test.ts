@@ -21,12 +21,12 @@ import {
 } from "$lib/hub/appHub";
 import { totalUsage, type SessionRow } from "$lib/sessions/sessionsManager";
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
-import type { AgentProfileInfo } from "$lib/settings";
+import type { AgentProfileInfo } from "$lib/core/settings";
 import type { WorkspaceAgentsSummary } from "$lib/sidebar/sidebarSummary";
-import { UNFILED_WORKSPACE_ID, type Page, type Workspace } from "$lib/workspace";
+import { UNFILED_WORKSPACE_ID, type Page, type Workspace } from "$lib/core/workspace";
 import type { LayoutNode } from "$lib/panes/layout";
 import type { Board } from "$lib/board/kanban";
-import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
+import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/core/gavin";
 import type { Orchestration } from "$lib/orchestration/orchestration";
 
 function ws(id: string, lastActiveAt?: number): Workspace {

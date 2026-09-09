@@ -18,9 +18,9 @@ import {
 } from "$lib/sessions/doneSessionReclaim";
 import { DEFAULT_LAUNCH } from "$lib/agents/launchGate";
 import type { Board } from "$lib/board/kanban";
-import type { GavinTree, PlanFileInfo } from "$lib/gavin";
+import type { GavinTree, PlanFileInfo } from "$lib/core/gavin";
 import type { Orchestration } from "$lib/orchestration/orchestration";
-import type { Workspace } from "$lib/workspace";
+import type { Workspace } from "$lib/core/workspace";
 
 const GB = 1024 ** 3;
 const NOW = 10_000_000;

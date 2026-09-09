@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { buildHubTabMenuEntries, type HubTabMenuContext } from "$lib/hub/hubTabMenu";
-import { isMenuItem, type ContextMenuEntry, type ContextMenuItem } from "$lib/contextMenu";
+import { isMenuItem, type ContextMenuEntry, type ContextMenuItem } from "$lib/core/contextMenu";
 import { manageableHubViewIds } from "$lib/hub/hubViewMeta";
 
 function ctx(over: Partial<HubTabMenuContext> = {}): HubTabMenuContext {

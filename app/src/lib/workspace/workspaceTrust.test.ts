@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { AgentConfig } from "$lib/gavin";
-import { resolveAgentConfig, type AgentProfileInfo } from "$lib/settings";
+import type { AgentConfig } from "$lib/core/gavin";
+import { resolveAgentConfig, type AgentProfileInfo } from "$lib/core/settings";
 import { setupPlan } from "$lib/git/worktreeSetup";
 import { svelteSources, tsSources } from "$lib/sources";
 import {

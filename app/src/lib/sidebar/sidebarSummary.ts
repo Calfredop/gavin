@@ -10,11 +10,11 @@
 import { allSessionIds, sessionTabsOnly } from "$lib/panes/layout";
 import { boardSummary } from "$lib/hub/homeSummary";
 import { isStepFinished, railStateOf, stepStateOf, type Orchestration, type Rail } from "$lib/orchestration/orchestration";
-import { slugStatus } from "$lib/planBoard";
+import { slugStatus } from "$lib/core/planBoard";
 import type { Board } from "$lib/board/kanban";
-import type { GavinTree } from "$lib/gavin";
-import type { GitStatus, Page, Workspace } from "$lib/workspace";
-import type { SessionStatus } from "$lib/notifications";
+import type { GavinTree } from "$lib/core/gavin";
+import type { GitStatus, Page, Workspace } from "$lib/core/workspace";
+import type { SessionStatus } from "$lib/core/notifications";
 
 export interface WorkspaceGitSummary {
   /// Distinct repositories (by repoRoot) across the workspace's sessions.

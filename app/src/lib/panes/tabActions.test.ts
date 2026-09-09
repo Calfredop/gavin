@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("$lib/shell/confirmClose", () => ({ confirmTabsClose: vi.fn() }));
-vi.mock("$lib/layoutState", () => ({ closeSession: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("$lib/core/layoutState", () => ({ closeSession: vi.fn().mockResolvedValue(undefined) }));
 
 import { confirmTabsClose } from "$lib/shell/confirmClose";
-import { closeSession } from "$lib/layoutState";
+import { closeSession } from "$lib/core/layoutState";
 import { closeTabs } from "$lib/panes/tabActions";
 
 beforeEach(() => {

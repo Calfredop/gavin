@@ -20,9 +20,9 @@
 
 import type { Column } from "$lib/board/kanban";
 import { doneColumnOf } from "$lib/orchestration/orchestration";
-import { slugStatus, type CardView, type MergedProjection } from "$lib/planBoard";
+import { slugStatus, type CardView, type MergedProjection } from "$lib/core/planBoard";
 import { cardMatches } from "$lib/board/boardSearch";
-import { queryTokens } from "$lib/search";
+import { queryTokens } from "$lib/core/search";
 import { cardPasses, type BoardFacets } from "$lib/board/boardFilters";
 import type { RailIndex } from "$lib/board/planFilter";
 

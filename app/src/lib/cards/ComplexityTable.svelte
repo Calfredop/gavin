@@ -17,7 +17,7 @@
     type ComplexityAgent,
     type ComplexityTable,
   } from "$lib/cards/complexity";
-  import type { AgentProfileInfo } from "$lib/settings";
+  import type { AgentProfileInfo } from "$lib/core/settings";
 
   interface Props {
     profiles: AgentProfileInfo[];

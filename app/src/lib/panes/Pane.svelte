@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { paneLeadsWindow, paneOwnsActions, type LayoutNode } from "$lib/panes/layout";
-  import type { CardTab } from "$lib/gavin";
+  import type { CardTab } from "$lib/core/gavin";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
   import FileViewerPane from "$lib/files/FileViewerPane.svelte";
   import BoardPane from "$lib/board/BoardPane.svelte";
@@ -24,19 +24,19 @@
     repairUnknownTabs,
     terminalFontSize,
     attentionStatusById,
-  } from "$lib/layoutState";
-  import { gavinTrees } from "$lib/gavinState";
+  } from "$lib/core/layoutState";
+  import { gavinTrees } from "$lib/core/gavinState";
   import { kanbanState, cardSessionFor, fetchBoard } from "$lib/board/kanbanState";
   import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
   import { linkedCardFor, linkForCardPath, type LinkedCard } from "$lib/cards/cardTabLink";
   import { chipTooltip, runBaseline } from "$lib/cards/runChanges";
-  import { nearestContext } from "$lib/planBoard";
+  import { nearestContext } from "$lib/core/planBoard";
   import { confirmTabClose, confirmPaneClose } from "$lib/shell/confirmClose";
   import { restoredBadge, type RestoredBadge } from "$lib/sessions/orphan";
   import { endSessionOrphan } from "$lib/sessions/orphanActions";
   import { dirtyPaths } from "$lib/files/fileEditing";
-  import { showAlert } from "$lib/dialog";
-  import { openContextMenuFromEvent } from "$lib/contextMenu";
+  import { showAlert } from "$lib/core/dialog";
+  import { openContextMenuFromEvent } from "$lib/core/contextMenu";
   import { buildTabMenuEntries } from "$lib/panes/tabMenu";
   import { windowDrag } from "$lib/shell/windowDrag";
   import {
@@ -64,11 +64,11 @@
     unsavedEditsIndicator,
     type Indicator,
   } from "$lib/ui/indicators";
-  import { hintMode } from "$lib/shortcutHints";
-  import { hintDigitFor } from "$lib/shortcuts";
-  import { tooltip } from "$lib/tooltip";
+  import { hintMode } from "$lib/core/shortcutHints";
+  import { hintDigitFor } from "$lib/core/shortcuts";
+  import { tooltip } from "$lib/core/tooltip";
   import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
-  import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "$lib/paths";
+  import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "$lib/core/paths";
   import { queueBlockedReason, queueTip } from "$lib/agents/queuedInput";
   import { queueTargetFor } from "$lib/agents/queuedInputActions";
   import {
@@ -80,8 +80,8 @@
     type DropZone,
     type ReorderPosition,
   } from "$lib/panes/dragDrop";
-  import { movePaneOrTab, reorderTabWithinPane } from "$lib/layoutState";
-  import { getActiveWorkspace, getActivePage, getActiveTree } from "$lib/workspace";
+  import { movePaneOrTab, reorderTabWithinPane } from "$lib/core/layoutState";
+  import { getActiveWorkspace, getActivePage, getActiveTree } from "$lib/core/workspace";
 
   let { leaf }: { leaf: Extract<LayoutNode, { type: "leaf" }> } = $props();
 

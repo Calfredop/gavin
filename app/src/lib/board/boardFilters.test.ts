@@ -15,8 +15,8 @@ import {
 import { AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
 import { railIndex } from "$lib/board/planFilter";
 import type { RailIndex } from "$lib/board/planFilter";
-import type { AutoColumn, CardView, DisplayColumn } from "$lib/planBoard";
-import type { GavinContext, GavinTree } from "$lib/gavin";
+import type { AutoColumn, CardView, DisplayColumn } from "$lib/core/planBoard";
+import type { GavinContext, GavinTree } from "$lib/core/gavin";
 import { emptyOrchestration } from "$lib/orchestration/orchestration";
 import type { Orchestration, Rail } from "$lib/orchestration/orchestration";
 

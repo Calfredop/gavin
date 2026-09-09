@@ -18,7 +18,7 @@
 // has to take on trust, and the badge, the tooltip and the confirmation
 // all have to be reading the same one.
 
-import type { ConfirmCheck, ConfirmOptions } from "$lib/dialog";
+import type { ConfirmCheck, ConfirmOptions } from "$lib/core/dialog";
 import { splitPath, type StatusResult, type WorktreeInfo } from "$lib/git/git";
 import { isGavinOwnPath } from "$lib/git/gitTracking";
 import { count } from "$lib/orchestration/railConfirm";

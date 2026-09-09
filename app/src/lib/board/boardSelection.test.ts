@@ -10,7 +10,7 @@ import {
   selectionRunConfirm,
 } from "$lib/board/boardSelection";
 import { launchEstimate } from "$lib/agents/launchEstimate";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 
 function card(id: string, kind: CardView["kind"] = "task", nestedChildren: CardView[] = []): CardView {
   return {

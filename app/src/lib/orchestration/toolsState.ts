@@ -8,7 +8,7 @@
 // wholesale while tools are upserted one at a time.
 
 import { writable, get } from "svelte/store";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import { toolLibrary, toRecord, isBuiltinId, BUILTIN_TOOLS } from "$lib/orchestration/orchestrationTools";
 import type { Tool, ToolRecord } from "$lib/orchestration/orchestrationTools";
 

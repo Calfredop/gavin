@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { get, writable, type Writable } from "svelte/store";
 
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   getOrchestration: vi.fn(),
   setOrchestration: vi.fn(),
   setRailRun: vi.fn(),
@@ -46,7 +46,7 @@ const agentMock = vi.hoisted(() =>
   }))
 );
 
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/layoutState", () => ({
   // A REAL store: tick() derives the set of LIVE session ids from it, so
   // a test that needs a running step's session to still exist has to be
   // able to put a page holding it in here.
@@ -110,7 +110,7 @@ const cardStatus = vi.hoisted(() => ({ a: "To Do" }));
 // Cards a single test needs and nobody else does -- a plan with a nested
 // task under it, for the completion cascade. Reset in beforeEach.
 const extraPlans = vi.hoisted(() => ({ list: [] as Record<string, unknown>[] }));
-vi.mock("$lib/gavinState", () => ({
+vi.mock("$lib/core/gavinState", () => ({
   gavinTrees: {
     subscribe: (fn: (v: unknown) => void) => (
       fn({
@@ -180,7 +180,7 @@ vi.mock("@tauri-apps/api/event", () => ({
     return () => tauriEvents.handlers.delete(name);
   },
 }));
-vi.mock("$lib/dialog", () => ({
+vi.mock("$lib/core/dialog", () => ({
   askConfirm: vi.fn(),
   askConfirmChecked: vi.fn(),
 }));
@@ -225,7 +225,7 @@ vi.mock("$lib/agents/launchQueue", () => ({
   launchHolding: gateMock.launchHolding,
 }));
 
-vi.mock("$lib/notifications", () => ({
+vi.mock("$lib/core/notifications", () => ({
   setRailNotificationVoice: vi.fn(),
   maybeNotifyReviewWait: vi.fn().mockResolvedValue(undefined),
 }));
@@ -252,16 +252,16 @@ vi.mock("$lib/git/gitState", () => {
   };
 });
 
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import * as gitStateModule from "$lib/git/gitState";
-import * as gavinState from "$lib/gavinState";
-import * as layoutStateModule from "$lib/layoutState";
+import * as gavinState from "$lib/core/gavinState";
+import * as layoutStateModule from "$lib/core/layoutState";
 import * as kanbanStateModule from "$lib/board/kanbanState";
 import { toolRecords, __resetForTesting as toolsResetForTesting } from "$lib/orchestration/toolsState";
 import { prReports, __resetForTesting as prResetForTesting } from "$lib/git/prState";
 import { prKey } from "$lib/git/pullRequest";
 import type { PrReport } from "$lib/git/pullRequest";
-import { maybeNotifyReviewWait } from "$lib/notifications";
+import { maybeNotifyReviewWait } from "$lib/core/notifications";
 import {
   orchestrations,
   fetchOrchestration,
@@ -303,7 +303,7 @@ import {
 } from "$lib/orchestration/orchestrationState";
 import { emptyOrchestration, addStep, findStage, stageMode } from "$lib/orchestration/orchestration";
 import { UNREVIEWED_STALL } from "$lib/cards/cardReview";
-import { askConfirmChecked } from "$lib/dialog";
+import { askConfirmChecked } from "$lib/core/dialog";
 import type { Orchestration, Rail, Stage } from "$lib/orchestration/orchestration";
 import type { GroupTemplate } from "$lib/orchestration/orchestrationGroups";
 

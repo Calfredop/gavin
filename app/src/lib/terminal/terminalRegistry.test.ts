@@ -36,7 +36,7 @@ vi.mock("@tauri-apps/api/event", () => ({
     resolveListen = () => resolve(() => {});
   })),
 }));
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   writeInput: vi.fn().mockResolvedValue(undefined),
   snapshotSession: vi.fn().mockResolvedValue(undefined),
   viewableExtensions: vi.fn().mockResolvedValue([]),
@@ -44,7 +44,7 @@ vi.mock("$lib/backend", () => ({
   openPathExternally: vi.fn().mockResolvedValue(undefined),
 }));
 
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import {
   getOrCreateTerminal,
   restoreScreen,

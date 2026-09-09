@@ -19,7 +19,7 @@
   } from "@lucide/svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import { everyGroupExpanded, isGroupExpanded, type ReviewGroup } from "$lib/review/reviewBoard";
   import { facetsActive, type BoardFacets, type ContextFacet } from "$lib/board/boardFilters";
   import type { RailIndex } from "$lib/board/planFilter";

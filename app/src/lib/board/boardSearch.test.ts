@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { filterBoard, cardMatches, AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
-import type { AutoColumn, CardView, DisplayColumn } from "$lib/planBoard";
+import type { AutoColumn, CardView, DisplayColumn } from "$lib/core/planBoard";
 import type { Column } from "$lib/board/kanban";
 
 function card(title: string, over: Partial<CardView> = {}): CardView {

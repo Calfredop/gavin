@@ -13,7 +13,7 @@ import {
   saveExplorerSelection,
   selectionStorageKey,
 } from "$lib/files/planExplorer";
-import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
+import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/core/gavin";
 
 function plan(fileName: string, overrides: Partial<PlanFileInfo> = {}): PlanFileInfo {
   return {

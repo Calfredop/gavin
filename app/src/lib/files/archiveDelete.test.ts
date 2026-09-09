@@ -12,9 +12,9 @@ import {
   selectRowLabel,
   undatedCards,
 } from "$lib/files/archiveDelete";
-import { isMenuItem, isSeparator, isHeading, type ContextMenuEntry } from "$lib/contextMenu";
+import { isMenuItem, isSeparator, isHeading, type ContextMenuEntry } from "$lib/core/contextMenu";
 import type { Orchestration } from "$lib/orchestration/orchestration";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 
 const NOW = Date.parse("2026-09-07T12:00:00Z");
 const DAY = 86_400;

@@ -11,7 +11,7 @@
   else in the app would ever mention it.
 -->
 <script lang="ts">
-  import Modal from "$lib/Modal.svelte";
+  import Modal from "$lib/core/Modal.svelte";
   import { REVIEW_RULES_LABEL } from "$lib/review/codeReview";
   import type { ReviewRequest } from "$lib/review/codeReviewActions";
   import {

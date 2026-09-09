@@ -24,7 +24,7 @@
 // stay in the scroller: they are things to know, not things the run is
 // waiting on.
 
-import type { SessionStatus } from "$lib/notifications";
+import type { SessionStatus } from "$lib/core/notifications";
 import type { IndicatorTone } from "$lib/ui/indicators";
 
 /// Where a card's bound session stands. `cardSessionState`

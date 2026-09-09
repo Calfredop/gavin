@@ -7,7 +7,7 @@ import { writable } from "svelte/store";
 // that finished hours ago is worse than no lock at all, and nothing else
 // in the app would notice.
 
-vi.mock("$lib/layoutState", () => {
+vi.mock("$lib/core/layoutState", () => {
   const layoutState = writable({
     workspaces: [
       { id: "ws-1", developingCards: undefined as unknown },
@@ -35,10 +35,10 @@ vi.mock("$lib/layoutState", () => {
   };
 });
 
-vi.mock("$lib/workspace", () => ({ sessionLiveness: vi.fn(() => "live") }));
+vi.mock("$lib/core/workspace", () => ({ sessionLiveness: vi.fn(() => "live") }));
 
-const { layoutState, setDevelopingCards } = await import("$lib/layoutState");
-const { sessionLiveness } = await import("$lib/workspace");
+const { layoutState, setDevelopingCards } = await import("$lib/core/layoutState");
+const { sessionLiveness } = await import("$lib/core/workspace");
 const {
   developingBlocker,
   developingCardsIn,

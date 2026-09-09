@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import Modal from "$lib/Modal.svelte";
+  import Modal from "$lib/core/Modal.svelte";
   import GitFileRow from "$lib/git/GitFileRow.svelte";
   import GitDiffUnified from "$lib/git/GitDiffUnified.svelte";
   import { toUnifiedRows } from "$lib/git/diffRows";
@@ -20,8 +20,8 @@
     runChangesStore,
     selectRunFile,
   } from "$lib/cards/runChangesState";
-  import { askConfirm } from "$lib/dialog";
-  import { tooltip } from "$lib/tooltip";
+  import { askConfirm } from "$lib/core/dialog";
+  import { tooltip } from "$lib/core/tooltip";
 
   interface Props {
     /// The card whose run this is. Also the store key: one view per card,

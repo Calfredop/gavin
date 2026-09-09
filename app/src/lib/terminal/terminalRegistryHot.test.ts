@@ -23,7 +23,7 @@ const hot = vi.hoisted(() => ({
   snapshots: [] as string[],
 }));
 
-vi.mock("$lib/hotState", () => ({
+vi.mock("$lib/core/hotState", () => ({
   hotState: (key: string, fresh: () => unknown) => {
     if (!(key in hot.bag)) hot.bag[key] = fresh();
     return hot.bag[key];
@@ -57,7 +57,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 vi.mock("$lib/ui/terminalTheme", () => ({ xtermTheme: (theme: string) => ({ theme }) }));
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   writeInput: vi.fn().mockResolvedValue(undefined),
   snapshotSession: vi.fn(async (sessionId: string) => {
     hot.snapshots.push(sessionId);

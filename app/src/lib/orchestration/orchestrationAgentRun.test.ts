@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable, type Writable } from "svelte/store";
 
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   createSession: vi.fn(),
   getOrchestration: vi.fn(),
   setOrchestration: vi.fn(),
@@ -56,7 +56,7 @@ const layoutStore = vi.hoisted(() => {
   };
   return store;
 });
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/layoutState", () => ({
   layoutState: layoutStore,
   resolvedAgentFor: vi.fn(() => ({
     command: "claude",
@@ -87,7 +87,7 @@ vi.mock("$lib/board/kanbanState", () => ({
   kanbanState: writable<Record<string, unknown>>({}),
   linkCardSessionAction: vi.fn(),
 }));
-vi.mock("$lib/gavinState", () => ({
+vi.mock("$lib/core/gavinState", () => ({
   gavinTrees: writable<Record<string, unknown>>({}),
   patchPlanField: vi.fn(),
 }));
@@ -100,8 +100,8 @@ vi.mock("$lib/git/gitState", () => ({
   refresh: vi.fn(),
 }));
 
-import * as backend from "$lib/backend";
-import * as layoutStateModule from "$lib/layoutState";
+import * as backend from "$lib/core/backend";
+import * as layoutStateModule from "$lib/core/layoutState";
 import * as cardRunActions from "$lib/cards/cardRunActions";
 import {
   orchestrations,

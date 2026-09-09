@@ -51,13 +51,13 @@
 // number of closes that clears the pressure, not the largest.
 
 import type { StatusSince } from "$lib/agents/attentionInbox";
-import type { ConfirmOptions } from "$lib/dialog";
-import type { GavinTree } from "$lib/gavin";
+import type { ConfirmOptions } from "$lib/core/dialog";
+import type { GavinTree } from "$lib/core/gavin";
 import type { Board } from "$lib/board/kanban";
 import type { LaunchConfig } from "$lib/agents/launchGate";
 import type { MemoryPressure } from "$lib/agents/memory";
 import type { Orchestration } from "$lib/orchestration/orchestration";
-import type { Workspace } from "$lib/workspace";
+import type { Workspace } from "$lib/core/workspace";
 import { countsInFlight } from "$lib/agents/launchGate";
 import { isPinned } from "$lib/panes/layout";
 import { formatGb } from "$lib/agents/memory";
@@ -69,10 +69,10 @@ import {
   runningStageId,
   stepStateOf,
 } from "$lib/orchestration/orchestration";
-import { sessionLabel } from "$lib/paths";
-import { slugStatus } from "$lib/planBoard";
+import { sessionLabel } from "$lib/core/paths";
+import { slugStatus } from "$lib/core/planBoard";
 import { count } from "$lib/orchestration/railConfirm";
-import { findSessionLocation } from "$lib/workspace";
+import { findSessionLocation } from "$lib/core/workspace";
 
 /// How long a session AND its card must have been quiet before the
 /// session may be closed by itself.

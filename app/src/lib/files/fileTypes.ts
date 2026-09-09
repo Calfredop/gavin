@@ -46,7 +46,7 @@ let viewableExtensionsCache: string[] | null = null;
 /// answered with `isViewableExtension`.
 export async function loadViewableExtensions(): Promise<string[]> {
   if (viewableExtensionsCache === null) {
-    const backend = await import("$lib/backend");
+    const backend = await import("$lib/core/backend");
     viewableExtensionsCache = await backend.viewableExtensions().catch(() => []);
   }
   return viewableExtensionsCache;

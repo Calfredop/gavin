@@ -1,8 +1,8 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, saveErrors, dismissSaveError } from "$lib/board/kanbanState";
-  import { gavinTrees } from "$lib/gavinState";
-  import { mergePlanCards, type CardView } from "$lib/planBoard";
+  import { gavinTrees } from "$lib/core/gavinState";
+  import { mergePlanCards, type CardView } from "$lib/core/planBoard";
   import KanbanColumn from "$lib/board/KanbanColumn.svelte";
   import AutoKanbanColumn from "$lib/board/AutoKanbanColumn.svelte";
   import KanbanDragPreview from "$lib/board/KanbanDragPreview.svelte";
@@ -10,11 +10,11 @@
   import CardComposeModal from "$lib/cards/CardComposeModal.svelte";
   import { planCommitFromMerged } from "$lib/files/planDrop";
   import { runCard, resumeCard, developCard, sendToMainAgent } from "$lib/cards/cardRunActions";
-  import { layoutState } from "$lib/layoutState";
+  import { layoutState } from "$lib/core/layoutState";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cards/cardDelete";
-  import { grantForAnsweredPrompt } from "$lib/confirmGate";
-  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
-  import { openContextMenuFromEvent } from "$lib/contextMenu";
+  import { grantForAnsweredPrompt } from "$lib/core/confirmGate";
+  import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
+  import { openContextMenuFromEvent } from "$lib/core/contextMenu";
   import { buildCardMenuEntries } from "$lib/cards/cardMenu";
   import { fetchOrchestration, orchestrations } from "$lib/orchestration/orchestrationState";
   import { cardSessionFor } from "$lib/board/kanbanState";
@@ -24,7 +24,7 @@
   import type { ActiveDrag } from "$lib/board/kanbanDrag";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { filterBoard, AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
-  import { isSearching } from "$lib/search";
+  import { isSearching } from "$lib/core/search";
   import type { DropTarget } from "$lib/panes/pointerDrag";
   import { requestedCompose, takeComposeRequest, type ComposeTarget } from "$lib/cards/composeRequest";
   import { defaultComposeStatus } from "$lib/cards/cardCompose";

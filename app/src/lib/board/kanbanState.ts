@@ -1,5 +1,5 @@
 import { writable, get } from "svelte/store";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import * as kanban from "$lib/board/kanban";
 import type { Board, CardSession, Column, Label } from "$lib/board/kanban";
 

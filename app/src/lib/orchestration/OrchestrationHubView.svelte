@@ -12,10 +12,10 @@
   import ToolLibraryDialog from "$lib/orchestration/ToolLibraryDialog.svelte";
   import StepParamsDialog from "$lib/orchestration/StepParamsDialog.svelte";
   import { attachOrchestrationDrag } from "$lib/orchestration/orchestrationDragGlue";
-  import Modal from "$lib/Modal.svelte";
+  import Modal from "$lib/core/Modal.svelte";
   import CardDetailModal from "$lib/cards/CardDetailModal.svelte";
-  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
-  import { gavinTrees } from "$lib/gavinState";
+  import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
+  import { gavinTrees } from "$lib/core/gavinState";
   import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/board/kanbanState";
   import {
     mergePlanCards,
@@ -23,16 +23,16 @@
     slugStatus,
     type CardView,
     type PlacedCardView,
-  } from "$lib/planBoard";
+  } from "$lib/core/planBoard";
   import { runCard, sendToMainAgent } from "$lib/cards/cardRunActions";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cards/cardDelete";
-  import { grantForAnsweredPrompt } from "$lib/confirmGate";
-  import { openContextMenuFromEvent, contextMenu, openMenuUnder } from "$lib/contextMenu";
+  import { grantForAnsweredPrompt } from "$lib/core/confirmGate";
+  import { openContextMenuFromEvent, contextMenu, openMenuUnder } from "$lib/core/contextMenu";
   import { buildCardMenuEntries } from "$lib/cards/cardMenu";
   import { gitStore, ensureGitView, refresh as refreshGit } from "$lib/git/gitState";
   import { requestedCardDetail, takeCardDetailRequest } from "$lib/cards/cardTabLink";
-  import { layoutState, daemonCompat } from "$lib/layoutState";
-  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { layoutState, daemonCompat } from "$lib/core/layoutState";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
   import { estimateFor, launchGateVerdict } from "$lib/agents/launchQueue";
   import { executeArchive, ARCHIVE_CANCELLED } from "$lib/files/archiveActions";
   import {

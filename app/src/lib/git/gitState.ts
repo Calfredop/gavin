@@ -4,7 +4,7 @@
 
 import { writable, get } from "svelte/store";
 import { listen } from "@tauri-apps/api/event";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import {
   layoutState,
   daemonCompat,
@@ -15,11 +15,11 @@ import {
   handleAgentSessionSpawned,
   switchWorkspaceView,
   switchToSessionInPage,
-} from "$lib/layoutState";
-import { findSessionLocation, hubViewIsOnScreen } from "$lib/workspace";
-import type { AgentCommitRecord, Workspace } from "$lib/workspace";
-import { folderName } from "$lib/paths";
-import { maybeNotifyAgentCommit, type AgentCommitVerdict } from "$lib/notifications";
+} from "$lib/core/layoutState";
+import { findSessionLocation, hubViewIsOnScreen } from "$lib/core/workspace";
+import type { AgentCommitRecord, Workspace } from "$lib/core/workspace";
+import { folderName } from "$lib/core/paths";
+import { maybeNotifyAgentCommit, type AgentCommitVerdict } from "$lib/core/notifications";
 import { buildHeadlessCommand, COMMIT_PROMPT } from "$lib/cards/cardRun";
 import {
   MAX_AUTO_RESUME_ATTEMPTS,
@@ -27,7 +27,7 @@ import {
   classifyFailure,
   resumeDelayMs,
 } from "$lib/agents/autoResume";
-import { featureBlockedReason } from "$lib/daemonCompat";
+import { featureBlockedReason } from "$lib/core/daemonCompat";
 import { holdOrQueue, type CommitIntent } from "$lib/agents/launchQueue";
 import type {
   ApplyMode,

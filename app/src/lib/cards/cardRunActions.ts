@@ -5,13 +5,13 @@
 // binding jumps instead of double-spawning. The app never auto-completes.
 
 import { get } from "svelte/store";
-import * as backend from "$lib/backend";
-import { agentForCard, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/layoutState";
-import { gavinTrees } from "$lib/gavinState";
-import { findSessionLocation } from "$lib/workspace";
+import * as backend from "$lib/core/backend";
+import { agentForCard, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import { gavinTrees } from "$lib/core/gavinState";
+import { findSessionLocation } from "$lib/core/workspace";
 import { cardSessionState } from "$lib/board/columnRunAction";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
-import { patchPlanField, patchPlanPath } from "$lib/gavinState";
+import { patchPlanField, patchPlanPath } from "$lib/core/gavinState";
 import {
   composeTaskPrompt,
   composePlanPrompt,
@@ -42,7 +42,7 @@ import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { UNREVIEWED_UNATTENDED } from "$lib/cards/cardReview";
 import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "$lib/agents/queuedInput";
 import { queueFollowUp, queueTargetFor } from "$lib/agents/queuedInputActions";
-import { cardViewForPath, type CardView } from "$lib/planBoard";
+import { cardViewForPath, type CardView } from "$lib/core/planBoard";
 import { holdOrQueue, type CardIntent } from "$lib/agents/launchQueue";
 
 /// The run gate for a card's attachments: the absolute paths to hand the

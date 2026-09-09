@@ -16,13 +16,13 @@
   import { untrack } from "svelte";
   import { get } from "svelte/store";
   import { pickPath } from "$lib/workspace/picker";
-  import Modal from "$lib/Modal.svelte";
-  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import Modal from "$lib/core/Modal.svelte";
+  import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import type { Column } from "$lib/board/kanban";
   import type { Rail } from "$lib/orchestration/orchestration";
-  import type { CardView } from "$lib/planBoard";
-  import type { PlanFileInfo } from "$lib/gavin";
-  import { gavinTrees, patchPlanCreated } from "$lib/gavinState";
+  import type { CardView } from "$lib/core/planBoard";
+  import type { PlanFileInfo } from "$lib/core/gavin";
+  import { gavinTrees, patchPlanCreated } from "$lib/core/gavinState";
   import { orchestrations, sendCardToRailAction } from "$lib/orchestration/orchestrationState";
   import { placeCardAtColumnEnd } from "$lib/files/planDrop";
   import type { MergedBoard } from "$lib/board/boardSearch";
@@ -57,11 +57,11 @@
     NO_COMPLEXITY,
     parseComplexity,
   } from "$lib/cards/complexity";
-  import { daemonCompat, newCardAutoCommit, stampCardReview, workspaceRootPath } from "$lib/layoutState";
-  import { featureBlockedReason } from "$lib/daemonCompat";
-  import { formatShortcut } from "$lib/shortcuts";
-  import { isMacSync } from "$lib/platform";
-  import * as backend from "$lib/backend";
+  import { daemonCompat, newCardAutoCommit, stampCardReview, workspaceRootPath } from "$lib/core/layoutState";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
+  import { formatShortcut } from "$lib/core/shortcuts";
+  import { isMacSync } from "$lib/core/platform";
+  import * as backend from "$lib/core/backend";
 
   interface Props {
     workspaceId: string;

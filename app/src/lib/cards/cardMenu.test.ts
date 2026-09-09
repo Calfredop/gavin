@@ -4,11 +4,11 @@ import { get, writable } from "svelte/store";
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
-vi.mock("$lib/dialog", () => ({
+vi.mock("$lib/core/dialog", () => ({
   askConfirm: vi.fn(),
   askConfirmChecked: vi.fn(),
 }));
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   setPlanFrontmatterField: vi.fn(),
   getBoard: vi.fn(),
   createSession: vi.fn(),
@@ -40,7 +40,7 @@ const agentMock = vi.hoisted(() =>
     promptArgs: "",
   }))
 );
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/layoutState", () => ({
   layoutState: writable({
     workspaces: [],
     sessionStatusById: {},
@@ -83,7 +83,7 @@ vi.mock("$lib/review/codeReviewActions", () => ({
 vi.mock("$lib/cards/cardReviewActions", () => ({
   ensureCardReviewed: vi.fn().mockResolvedValue(true),
 }));
-vi.mock("$lib/workspace", () => {
+vi.mock("$lib/core/workspace", () => {
   const findSessionLocation = vi.fn();
   return {
     findSessionLocation,
@@ -106,18 +106,18 @@ vi.mock("$lib/workspace", () => {
   };
 });
 
-import * as backend from "$lib/backend";
-import { askConfirmChecked } from "$lib/dialog";
-import { findSessionLocation } from "$lib/workspace";
+import * as backend from "$lib/core/backend";
+import { askConfirmChecked } from "$lib/core/dialog";
+import { findSessionLocation } from "$lib/core/workspace";
 import { requestCardReview } from "$lib/review/codeReviewActions";
-import { layoutState } from "$lib/layoutState";
+import { layoutState } from "$lib/core/layoutState";
 import { kanbanState } from "$lib/board/kanbanState";
 import { orchestrations } from "$lib/orchestration/orchestrationState";
 import { emptyOrchestration, addRail, addStage, addStep } from "$lib/orchestration/orchestration";
 import { buildCardMenuEntries, type CardMenuHooks } from "$lib/cards/cardMenu";
 import { bestOfNRequest, bestOfNRuns } from "$lib/cards/bestOfNState";
-import { isMenuItem, type ContextMenuItem } from "$lib/contextMenu";
-import type { CardView } from "$lib/planBoard";
+import { isMenuItem, type ContextMenuItem } from "$lib/core/contextMenu";
+import type { CardView } from "$lib/core/planBoard";
 import type { Board } from "$lib/board/kanban";
 
 function card(kind: "note" | "task" | "plan", status: string | null, extra: Partial<CardView> = {}): CardView {

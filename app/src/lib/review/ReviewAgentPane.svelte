@@ -25,12 +25,12 @@
   import { Play } from "@lucide/svelte";
   import CardDetailModal from "$lib/cards/CardDetailModal.svelte";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
-  import { layoutState, terminalFontSizeDefault } from "$lib/layoutState";
+  import { layoutState, terminalFontSizeDefault } from "$lib/core/layoutState";
   import { resolveTerminalFontSize } from "$lib/terminal/terminalFont";
   import { reviewCardSession } from "$lib/cards/cardRunActions";
   import { cardSessionState } from "$lib/board/columnRunAction";
   import type { CardSession, Column, Label } from "$lib/board/kanban";
-  import type { CardView } from "$lib/planBoard";
+  import type { CardView } from "$lib/core/planBoard";
   import type { ReviewPane } from "$lib/review/reviewPrefs";
 
   interface Props {

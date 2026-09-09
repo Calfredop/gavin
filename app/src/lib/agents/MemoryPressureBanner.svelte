@@ -19,8 +19,8 @@
   import { pressureBannerLine } from "$lib/agents/memory";
   import { fleetMemory, memoryPressure, systemMemory } from "$lib/agents/memoryState";
   import { showAppPanel } from "$lib/panes/appPanels";
-  import { layoutState } from "$lib/layoutState";
-  import { askConfirm } from "$lib/dialog";
+  import { layoutState } from "$lib/core/layoutState";
+  import { askConfirm } from "$lib/core/dialog";
   import { closeIdlePrompt, idleTabsOnPage } from "$lib/panes/idleTabs";
   import { closeTabsNow } from "$lib/panes/tabActions";
   import { reclaimNowLabel, reclaimedClause } from "$lib/sessions/doneSessionReclaim";

@@ -10,7 +10,7 @@
     Terminal,
     Sliders,
   } from "@lucide/svelte";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import { highlightedConflict } from "$lib/orchestration/orchestrationState";
   import IconButton from "$lib/ui/IconButton.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";

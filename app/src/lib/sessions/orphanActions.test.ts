@@ -1,21 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { writable } from "svelte/store";
 
-vi.mock("$lib/dialog", () => ({
+vi.mock("$lib/core/dialog", () => ({
   askConfirm: vi.fn().mockResolvedValue(true),
   showAlert: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   endOrphan: vi.fn(),
 }));
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/layoutState", () => ({
   layoutState: writable({ orphanBySessionId: {} }),
   handleOrphanEnded: vi.fn(),
 }));
 
-import { askConfirm, showAlert } from "$lib/dialog";
-import * as backend from "$lib/backend";
-import { layoutState, handleOrphanEnded } from "$lib/layoutState";
+import { askConfirm, showAlert } from "$lib/core/dialog";
+import * as backend from "$lib/core/backend";
+import { layoutState, handleOrphanEnded } from "$lib/core/layoutState";
 import { endSessionOrphan } from "$lib/sessions/orphanActions";
 import type { OrphanProcess } from "$lib/sessions/orphan";
 

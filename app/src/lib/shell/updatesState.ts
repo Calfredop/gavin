@@ -13,7 +13,7 @@
 // Everything else here is driven by the button in Settings.
 
 import { writable, get } from "svelte/store";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import { shouldSurfaceCheckError, updateBlockedReason, type AvailableUpdate, type UpdateSettings } from "$lib/shell/updates";
 
 /// What the build says about its own channel. Null before the first read

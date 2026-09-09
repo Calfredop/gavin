@@ -12,7 +12,7 @@
 import type { CardSession } from "$lib/board/kanban";
 import type { DiscardReport, FileEntry, RunChanges } from "$lib/git/git";
 import { shortSha } from "$lib/git/git";
-import { featureBlockedReason, type DaemonCompat } from "$lib/daemonCompat";
+import { featureBlockedReason, type DaemonCompat } from "$lib/core/daemonCompat";
 
 const MAX_LISTED = 8;
 

@@ -7,8 +7,8 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { get, writable } from "svelte/store";
-import * as backend from "$lib/backend";
-import { hotState } from "$lib/hotState";
+import * as backend from "$lib/core/backend";
+import { hotState } from "$lib/core/hotState";
 import { MAIN_WINDOW_LABEL, type WorkspaceWindowMap } from "$lib/shell/appWindow";
 
 const hotBag = import.meta.hot?.data;

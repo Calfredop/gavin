@@ -9,7 +9,7 @@ import {
   type GitStatus,
   type Workspace,
   type WorkspacesData,
-} from "$lib/workspace";
+} from "$lib/core/workspace";
 import type { FleetStrip } from "$lib/agents/memory";
 import { sessionTabsOnly } from "$lib/panes/layout";
 import {
@@ -28,7 +28,7 @@ import {
 import { cardSessionState, type CardSessionState } from "$lib/board/columnRunAction";
 import { cardIsOnARail, type LinkedCard } from "$lib/cards/cardTabLink";
 import { cardIndex, effectiveStatus, planIndex, type Orchestration } from "$lib/orchestration/orchestration";
-import { slugStatus } from "$lib/planBoard";
+import { slugStatus } from "$lib/core/planBoard";
 import { totalUsage, type SessionRow, type Totals } from "$lib/sessions/sessionsManager";
 import {
   reportSeverity,
@@ -38,10 +38,10 @@ import {
   type UsageSeverity,
   type UsageWindow,
 } from "$lib/agents/agentUsage";
-import type { AgentProfileInfo } from "$lib/settings";
+import type { AgentProfileInfo } from "$lib/core/settings";
 import type { Board } from "$lib/board/kanban";
-import type { GavinTree } from "$lib/gavin";
-import type { SessionStatus } from "$lib/notifications";
+import type { GavinTree } from "$lib/core/gavin";
+import type { SessionStatus } from "$lib/core/notifications";
 // Build-time, not a Tauri round trip: the hub's header must render on
 // the very first frame, and a version is not worth an IPC failure mode.
 // Keep in step with app/src-tauri/tauri.conf.json's own `version`, which

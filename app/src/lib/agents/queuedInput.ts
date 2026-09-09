@@ -18,7 +18,7 @@
 // only honest thing to do about the permanent case is to refuse the
 // compose box before it takes a message that can never arrive.
 
-import type { SessionStatus } from "$lib/notifications";
+import type { SessionStatus } from "$lib/core/notifications";
 
 /// One pending follow-up, exactly as `protocol::QueuedInput` crosses the
 /// wire.

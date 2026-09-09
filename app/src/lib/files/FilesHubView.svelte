@@ -7,10 +7,10 @@
     openFileInSplit,
     retargetFileTabs,
     switchWorkspaceView,
-  } from "$lib/layoutState";
-  import * as backend from "$lib/backend";
-  import { showAlert } from "$lib/dialog";
-  import { confirmDestructive } from "$lib/confirmGate";
+  } from "$lib/core/layoutState";
+  import * as backend from "$lib/core/backend";
+  import { showAlert } from "$lib/core/dialog";
+  import { confirmDestructive } from "$lib/core/confirmGate";
   import { isViewableExtension, loadViewableExtensions } from "$lib/files/fileTypes";
   import { defaultMode } from "$lib/files/fileEditing";
   import {
@@ -48,7 +48,7 @@
   import FileEditor from "$lib/files/FileEditor.svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
 
   interface Props {
     workspaceId: string;

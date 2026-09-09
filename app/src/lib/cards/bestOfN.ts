@@ -14,8 +14,8 @@
 // git. Everything it needs arrives as an argument so the naming and the
 // copy can be tested without any of them.
 
-import type { ConfirmCheck, ConfirmOptions } from "$lib/dialog";
-import type { AgentConfig } from "$lib/gavin";
+import type { ConfirmCheck, ConfirmOptions } from "$lib/core/dialog";
+import type { AgentConfig } from "$lib/core/gavin";
 import { branchNameFrom, defaultWorktreePath, freeBranchNameFrom, splitPath } from "$lib/git/git";
 import { count } from "$lib/orchestration/railConfirm";
 

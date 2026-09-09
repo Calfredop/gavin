@@ -5,15 +5,15 @@ import { writable } from "svelte/store";
 // capability-narrowed to the file picker, so a native confirm() here
 // rejects at the permission layer and the button silently does nothing
 // -- which is exactly the bug "kill all does nothing" turned out to be.
-vi.mock("$lib/dialog", () => ({
+vi.mock("$lib/core/dialog", () => ({
   askConfirm: vi.fn().mockResolvedValue(true),
   showAlert: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   endOrphan: vi.fn(),
   killSession: vi.fn(),
 }));
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/layoutState", () => ({
   layoutState: writable({ workspaces: [] }),
   handleAgentSessionSpawned: vi.fn(),
   handleOrphanEnded: vi.fn(),
@@ -23,8 +23,8 @@ vi.mock("$lib/layoutState", () => ({
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { askConfirm, showAlert } from "$lib/dialog";
-import * as backend from "$lib/backend";
+import { askConfirm, showAlert } from "$lib/core/dialog";
+import * as backend from "$lib/core/backend";
 import {
   handleAgentSessionSpawned,
   handleOrphanEnded,
@@ -33,7 +33,7 @@ import {
   restartDaemonInPlace,
   switchToSessionInPage,
   switchWorkspaceView,
-} from "$lib/layoutState";
+} from "$lib/core/layoutState";
 import {
   endAllSessions,
   endSelectedSessions,

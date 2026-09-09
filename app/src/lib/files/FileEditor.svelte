@@ -16,7 +16,7 @@
   import MarkdownToolbar from "$lib/files/MarkdownToolbar.svelte";
   import { isMarkdown } from "$lib/files/fileTypes";
   import type { FormatAction } from "$lib/files/markdownFormatting";
-  import * as backend from "$lib/backend";
+  import * as backend from "$lib/core/backend";
 
   interface Props {
     path: string;

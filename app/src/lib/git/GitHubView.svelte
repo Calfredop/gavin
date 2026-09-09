@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layoutState, setGitViewPrefs } from "$lib/layoutState";
+  import { layoutState, setGitViewPrefs } from "$lib/core/layoutState";
   import {
     gitStore,
     ensureGitView,
@@ -10,7 +10,7 @@
     abortInProgress,
     continueInProgress,
   } from "$lib/git/gitState";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import GitToolbar from "$lib/git/GitToolbar.svelte";
   import GitOpBar from "$lib/git/GitOpBar.svelte";
   import GitWorktreeSwitcher from "$lib/git/GitWorktreeSwitcher.svelte";

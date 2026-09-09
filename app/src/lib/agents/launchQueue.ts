@@ -35,7 +35,7 @@
 // problem than a shared queue no window owns.
 
 import { derived, get, readable, writable, type Readable } from "svelte/store";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import {
   DEFAULT_LAUNCH,
   DRAIN_SPACING_MS,
@@ -49,7 +49,7 @@ import {
 import { fleetStrip, usedBytes as usedBytesOf, type FleetStrip } from "$lib/agents/memory";
 import { launchEstimate, type LaunchEstimate } from "$lib/agents/launchEstimate";
 import { agentSessions, fleetMemory, memoryPressure, storedMeans, systemMemory } from "$lib/agents/memoryState";
-import { layoutState, resolvedAgentFor } from "$lib/layoutState";
+import { layoutState, resolvedAgentFor } from "$lib/core/layoutState";
 import { currentWindowLabel } from "$lib/shell/appWindowState";
 import { setGateReasonHook } from "$lib/agents/agentPauseState";
 import type { ReviewedCard } from "$lib/review/codeReview";

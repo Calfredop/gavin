@@ -4,7 +4,7 @@
   // reasons; see that file for why GTK and Windows need this and macOS
   // does not.
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { isMacSync } from "$lib/platform";
+  import { isMacSync } from "$lib/core/platform";
   import { needsResizeGrips, resizeZones, type ResizeDirection } from "$lib/shell/windowResize";
 
   // Synchronous, like TitleBar's own read: the grips have to be right in

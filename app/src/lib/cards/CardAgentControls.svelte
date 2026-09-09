@@ -15,9 +15,9 @@
   /// inherited, so the pair reads as part of a 0.8em strip and as part
   /// of a 0.85em meta row without either host restyling it.
   import { CUSTOM_MODEL, modelChoices } from "$lib/agents/agentModel";
-  import { cardAgents } from "$lib/layoutState";
+  import { cardAgents } from "$lib/core/layoutState";
   import { NO_CARD_AGENT, cardModelUnreachable, type CardAgentFields } from "$lib/cards/cardAgent";
-  import type { AgentProfileInfo } from "$lib/settings";
+  import type { AgentProfileInfo } from "$lib/core/settings";
 
   interface Props {
     workspaceId: string;

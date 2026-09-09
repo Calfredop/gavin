@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable } from "svelte/store";
 
-vi.mock("$lib/backend", () => ({ toolRuns: vi.fn().mockResolvedValue([]) }));
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/backend", () => ({ toolRuns: vi.fn().mockResolvedValue([]) }));
+vi.mock("$lib/core/layoutState", () => ({
   daemonCompat: writable({ daemonVersion: 30, appVersion: 30, degraded: false }),
   sessionExits: writable(new Map<string, number>()),
 }));
 
-import * as backend from "$lib/backend";
-import { daemonCompat, sessionExits } from "$lib/layoutState";
+import * as backend from "$lib/core/backend";
+import { daemonCompat, sessionExits } from "$lib/core/layoutState";
 import {
   noteToolRunStarted,
   refreshToolRuns,

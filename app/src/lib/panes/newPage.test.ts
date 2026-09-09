@@ -6,7 +6,7 @@ import {
   newPageEntries,
   type PagePreset,
 } from "$lib/panes/newPage";
-import { isHeading, isMenuItem, isSeparator, type ContextMenuEntry, type ContextMenuItem } from "$lib/contextMenu";
+import { isHeading, isMenuItem, isSeparator, type ContextMenuEntry, type ContextMenuItem } from "$lib/core/contextMenu";
 import { allSessionIds } from "$lib/panes/layout";
 
 /// The entries a caller can actually pick, in order.

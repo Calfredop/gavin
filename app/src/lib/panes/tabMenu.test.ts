@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   openPathExternally: vi.fn().mockResolvedValue(undefined),
   revealPathExternally: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn().mockResolvedValue(undefined) }));
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/layoutState", () => ({
   setTabPinned: vi.fn().mockResolvedValue(undefined),
   splitPane: vi.fn().mockResolvedValue(undefined),
   closeSession: vi.fn().mockResolvedValue(undefined),
@@ -15,14 +15,14 @@ vi.mock("$lib/panes/tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(u
 vi.mock("$lib/shell/confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
 vi.mock("$lib/cards/bestOfNActions", () => ({ pickCandidate: vi.fn().mockResolvedValue(null) }));
 
-import { openPathExternally, revealPathExternally } from "$lib/backend";
+import { openPathExternally, revealPathExternally } from "$lib/core/backend";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { setTabPinned, splitPane, closeSession, setSessionRead } from "$lib/layoutState";
+import { setTabPinned, splitPane, closeSession, setSessionRead } from "$lib/core/layoutState";
 import { closeTabs } from "$lib/panes/tabActions";
 import { buildTabMenuEntries, type TabMenuContext, type TabMenuHooks } from "$lib/panes/tabMenu";
 import { bestOfNRuns } from "$lib/cards/bestOfNState";
 import { pickCandidate } from "$lib/cards/bestOfNActions";
-import { isSeparator, type ContextMenuItem } from "$lib/contextMenu";
+import { isSeparator, type ContextMenuItem } from "$lib/core/contextMenu";
 
 function ctx(extra: Partial<TabMenuContext> = {}): TabMenuContext {
   return {

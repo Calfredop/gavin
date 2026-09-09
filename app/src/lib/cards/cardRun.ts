@@ -2,7 +2,7 @@
 // §3). The run flow (cardRunActions.ts) wires these to real sessions.
 
 import { attachmentPromptBlock } from "$lib/cards/attachments";
-import { slugStatus } from "$lib/planBoard";
+import { slugStatus } from "$lib/core/planBoard";
 import { cardIsOutside } from "$lib/git/worktreeCards";
 
 // Every launched agent gets the same opening instruction, board Run and

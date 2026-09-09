@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { layoutState, markGitTrackingAsked } from "$lib/layoutState";
-  import * as backend from "$lib/backend";
-  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import { layoutState, markGitTrackingAsked } from "$lib/core/layoutState";
+  import * as backend from "$lib/core/backend";
+  import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import {
     canToggleTracking,
     needsUntrackConfirm,

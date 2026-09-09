@@ -11,7 +11,7 @@ import {
 } from "$lib/sidebar/sidebarSearch";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
 import type { LayoutNode } from "$lib/panes/layout";
-import type { Page, Workspace } from "$lib/workspace";
+import type { Page, Workspace } from "$lib/core/workspace";
 
 function leaf(tabs: string[]): LayoutNode {
   return { type: "leaf", tabs, activeTabIndex: 0 };

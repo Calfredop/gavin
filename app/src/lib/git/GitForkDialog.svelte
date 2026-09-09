@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Modal from "$lib/Modal.svelte";
+  import Modal from "$lib/core/Modal.svelte";
   import ConfigTrustNotice from "$lib/workspace/ConfigTrustNotice.svelte";
   import {
     gitStore,
@@ -9,9 +9,9 @@
     switchWorktree,
     rootPathOf,
   } from "$lib/git/gitState";
-  import { gavinTrees, worktreeSetups } from "$lib/gavinState";
-  import { configTrusts } from "$lib/layoutState";
-  import { showAlert } from "$lib/dialog";
+  import { gavinTrees, worktreeSetups } from "$lib/core/gavinState";
+  import { configTrusts } from "$lib/core/layoutState";
+  import { showAlert } from "$lib/core/dialog";
   import { defaultWorktreePath, validateBranchName } from "$lib/git/git";
   import { setupPlan, setupNotice } from "$lib/git/worktreeSetup";
 

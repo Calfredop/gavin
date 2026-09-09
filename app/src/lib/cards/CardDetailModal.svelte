@@ -1,17 +1,17 @@
 <script lang="ts">
-  import Modal from "$lib/Modal.svelte";
+  import Modal from "$lib/core/Modal.svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import DOMPurify from "dompurify";
   import { renderMarkdown } from "$lib/files/markdown";
   import { pickPath } from "$lib/workspace/picker";
-  import type { CardView } from "$lib/planBoard";
+  import type { CardView } from "$lib/core/planBoard";
   import type { Column, Label, Priority } from "$lib/board/kanban";
-  import { isArchivedCard, slugStatus } from "$lib/planBoard";
+  import { isArchivedCard, slugStatus } from "$lib/core/planBoard";
   import { childCards, parentCard } from "$lib/cards/cardRelations";
   import { parseChecklist, stripFrontmatter, type ChecklistItem } from "$lib/cards/planChecklist";
   import { requestedExplorerFile, slugFileName } from "$lib/files/planExplorer";
-  import { patchPlanField, patchPlanCreated, patchPlanPath } from "$lib/gavinState";
-  import type { PlanFileInfo } from "$lib/gavin";
+  import { patchPlanField, patchPlanCreated, patchPlanPath } from "$lib/core/gavinState";
+  import type { PlanFileInfo } from "$lib/core/gavin";
   import {
     switchWorkspaceView,
     layoutState,
@@ -24,7 +24,7 @@
     agentProfilesStore,
     attentionStatusById,
     requireReviewDefault,
-  } from "$lib/layoutState";
+  } from "$lib/core/layoutState";
   import {
     COMPLEXITY_LABELS,
     COMPLEXITY_LEVELS,
@@ -86,13 +86,13 @@
     removeCardFromRailAction,
   } from "$lib/orchestration/orchestrationState";
   import { deletionPlanFor, executeDeletion } from "$lib/cards/cardDelete";
-  import { grantForAnsweredPrompt } from "$lib/confirmGate";
+  import { grantForAnsweredPrompt } from "$lib/core/confirmGate";
   import { breakOutChildren, guardCompletion, subjectFromCard } from "$lib/cards/cardCompletion";
   import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "$lib/files/archiveActions";
-  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
   import { interruptedCardNote } from "$lib/sessions/orphan";
   import { endSessionOrphan } from "$lib/sessions/orphanActions";
-  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import { waitLabel } from "$lib/agents/attentionInbox";
   import { nowStore } from "$lib/agents/agentPauseState";
   import {
@@ -106,7 +106,7 @@
     type CardSectionsOpen,
     type CardSituation,
   } from "$lib/cards/cardDetail";
-  import * as backend from "$lib/backend";
+  import * as backend from "$lib/core/backend";
 
   interface Props {
     card: CardView;

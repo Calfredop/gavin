@@ -20,7 +20,7 @@
   import { resumeNoteFor } from "$lib/agents/autoResume";
   import { resumeTrail } from "$lib/agents/autoResumeState";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import {
     agentQueuedIndicator,
     attentionIndicator,
@@ -32,7 +32,7 @@
   import OrchestrationStepChip from "$lib/orchestration/OrchestrationStepChip.svelte";
   import OrchestrationStepCard from "$lib/orchestration/OrchestrationStepCard.svelte";
   import type { Label } from "$lib/board/kanban";
-  import type { CardView, PlacedCardView } from "$lib/planBoard";
+  import type { CardView, PlacedCardView } from "$lib/core/planBoard";
   import type {
     CardEntry,
     NumberedConflict,
@@ -72,7 +72,7 @@
   } from "$lib/orchestration/orchestration";
   import { highlightedConflict } from "$lib/orchestration/orchestrationState";
   import { orchDragState } from "$lib/orchestration/orchestrationDrag";
-  import { openContextMenuFromEvent } from "$lib/contextMenu";
+  import { openContextMenuFromEvent } from "$lib/core/contextMenu";
   import { railBindChip, type RailBindChip, type RailBindTab } from "$lib/orchestration/railBind";
 
   interface Props {

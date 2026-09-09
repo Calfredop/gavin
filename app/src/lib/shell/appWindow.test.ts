@@ -11,7 +11,7 @@ import {
   workspacesInWindow,
   type WorkspaceWindowMap,
 } from "$lib/shell/appWindow";
-import type { Workspace } from "$lib/workspace";
+import type { Workspace } from "$lib/core/workspace";
 
 const ws = (id: string): Workspace => ({
   id,

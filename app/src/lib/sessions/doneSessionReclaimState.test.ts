@@ -47,9 +47,9 @@ const probe = vi.hoisted(() => {
   };
 });
 
-vi.mock("$lib/layoutState", () => ({ layoutState: probe.layoutState, closeSession: probe.closeSession }));
+vi.mock("$lib/core/layoutState", () => ({ layoutState: probe.layoutState, closeSession: probe.closeSession }));
 vi.mock("$lib/board/kanbanState", () => ({ kanbanState: probe.kanbanState }));
-vi.mock("$lib/gavinState", () => ({ gavinTrees: probe.gavinTrees }));
+vi.mock("$lib/core/gavinState", () => ({ gavinTrees: probe.gavinTrees }));
 vi.mock("$lib/agents/memoryState", () => ({
   agentSessions: probe.agentSessions,
   memoryPressure: probe.memoryPressure,
@@ -62,7 +62,7 @@ vi.mock("$lib/agents/launchQueue", () => ({
 }));
 vi.mock("$lib/orchestration/orchestrationState", () => ({ orchestrations: probe.orchestrations }));
 vi.mock("$lib/panes/tabActions", () => ({ closeTabsNow: probe.closeTabsNow }));
-vi.mock("$lib/dialog", () => ({ askConfirm: probe.askConfirm }));
+vi.mock("$lib/core/dialog", () => ({ askConfirm: probe.askConfirm }));
 vi.mock("@tauri-apps/plugin-notification", () => ({
   sendNotification: probe.sendNotification,
   isPermissionGranted: probe.isPermissionGranted,

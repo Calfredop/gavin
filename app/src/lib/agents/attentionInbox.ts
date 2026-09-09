@@ -30,13 +30,13 @@
 // and only a rail knows which checkout its agent was launched in.
 
 import { cardIndex, type Orchestration, type StepAttention } from "$lib/orchestration/orchestration";
-import { sessionLabel } from "$lib/paths";
+import { sessionLabel } from "$lib/core/paths";
 import { PHASE_LABEL } from "$lib/hub/appHub";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
 import type { LayoutNode } from "$lib/panes/layout";
-import type { Workspace, WorkspacesData } from "$lib/workspace";
+import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Board } from "$lib/board/kanban";
-import type { GavinTree } from "$lib/gavin";
+import type { GavinTree } from "$lib/core/gavin";
 
 /// Why a row is in the inbox. The rails' own answers, reused rather than
 /// re-spelled: a running step marked `asking` and a bare terminal

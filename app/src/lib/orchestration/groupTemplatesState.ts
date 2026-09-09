@@ -9,7 +9,7 @@
 // templates are upserted one at a time.
 
 import { writable, get } from "svelte/store";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import { templateLibrary, toTemplateRecord } from "$lib/orchestration/orchestrationGroups";
 import type { GroupTemplate, GroupTemplateRecord } from "$lib/orchestration/orchestrationGroups";
 

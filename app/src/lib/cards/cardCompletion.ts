@@ -17,11 +17,11 @@
 // column while KEEPING the `parent:` link. Nothing here refuses
 // anything; the default answer is what the app has always done.
 
-import * as backend from "$lib/backend";
-import { askConfirm, askConfirmChecked, type ConfirmOptions } from "$lib/dialog";
-import { patchPlanField, patchPlanPath } from "$lib/gavinState";
+import * as backend from "$lib/core/backend";
+import { askConfirm, askConfirmChecked, type ConfirmOptions } from "$lib/core/dialog";
+import { patchPlanField, patchPlanPath } from "$lib/core/gavinState";
 import { doneColumnOf, firstColumnOf } from "$lib/orchestration/orchestration";
-import { slugStatus, type CardView } from "$lib/planBoard";
+import { slugStatus, type CardView } from "$lib/core/planBoard";
 import type { Column } from "$lib/board/kanban";
 
 /// A nested child as the prompt needs it: enough to name it and to write

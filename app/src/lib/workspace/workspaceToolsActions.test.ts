@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable } from "svelte/store";
 
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   createSession: vi.fn(),
   startToolRun: vi.fn().mockResolvedValue(undefined),
   setToolRunOutcome: vi.fn().mockResolvedValue(undefined),
   toolRuns: vi.fn().mockResolvedValue([]),
   getTools: vi.fn().mockResolvedValue([]),
 }));
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/layoutState", () => ({
   layoutState: writable({ sessionStatusById: {} as Record<string, string> }),
   daemonCompat: writable({ daemonVersion: 30, appVersion: 30, degraded: false }),
   sessionExits: writable(new Map<string, number>()),
@@ -21,7 +21,7 @@ vi.mock("$lib/layoutState", () => ({
 }));
 vi.mock("$lib/cards/cardRunActions", () => ({ revealSession: vi.fn().mockResolvedValue(true) }));
 
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import {
   armFailureDetection,
   daemonCompat,
@@ -30,7 +30,7 @@ import {
   resolvedAgentFor,
   setSessionName,
   workspaceRootPath,
-} from "$lib/layoutState";
+} from "$lib/core/layoutState";
 import { revealSession } from "$lib/cards/cardRunActions";
 import { toolRecords, __resetForTesting as resetTools } from "$lib/orchestration/toolsState";
 import {

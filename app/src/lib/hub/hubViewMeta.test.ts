@@ -13,7 +13,7 @@ import {
   toggleHubViewHidden,
   canHideHubView,
 } from "$lib/hub/hubViewMeta";
-import { type Workspace } from "$lib/workspace";
+import { type Workspace } from "$lib/core/workspace";
 
 describe("visibleHubViewIds", () => {
   it("keeps the declaration order", () => {

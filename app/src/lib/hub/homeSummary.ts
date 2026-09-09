@@ -1,9 +1,9 @@
 import type { Board } from "$lib/board/kanban";
-import type { GavinTree } from "$lib/gavin";
+import type { GavinTree } from "$lib/core/gavin";
 import type { WorktreeInfo } from "$lib/git/git";
 import { detectConflicts, isStepFinished, railStateOf, stepStateOf } from "$lib/orchestration/orchestration";
 import type { Orchestration, RailState } from "$lib/orchestration/orchestration";
-import { mergePlanCards } from "$lib/planBoard";
+import { mergePlanCards } from "$lib/core/planBoard";
 
 export interface ColumnSummary {
   name: string;

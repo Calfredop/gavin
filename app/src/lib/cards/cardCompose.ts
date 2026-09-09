@@ -8,8 +8,8 @@ import { autoCommitAppliesTo, setAutoCommitInBody } from "$lib/git/autoCommit";
 import { parseComplexity } from "$lib/cards/complexity";
 import { translateDropIndex } from "$lib/board/pageBoard";
 import { slugFileName } from "$lib/files/planExplorer";
-import { slugStatus, type CardView } from "$lib/planBoard";
-import { formatChord, matchesChord, type Chord, type ChordEvent } from "$lib/shortcuts";
+import { slugStatus, type CardView } from "$lib/core/planBoard";
+import { formatChord, matchesChord, type Chord, type ChordEvent } from "$lib/core/shortcuts";
 import type { MergedBoard } from "$lib/board/boardSearch";
 import type { OrderedPlanCard } from "$lib/board/planOrder";
 

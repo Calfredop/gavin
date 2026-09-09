@@ -20,8 +20,8 @@
 // ends a day's agents on a reflexive Enter is not a default, it is a
 // trap.
 
-import * as backend from "$lib/backend";
-import { askConfirmChecked, showAlert, type AlertOptions, type ConfirmCheck, type ConfirmOptions } from "$lib/dialog";
+import * as backend from "$lib/core/backend";
+import { askConfirmChecked, showAlert, type AlertOptions, type ConfirmCheck, type ConfirmOptions } from "$lib/core/dialog";
 import type { ManagedSession, ManagedSessions } from "$lib/sessions/sessionsManager";
 
 /// The prompt, as data, so its wording is readable from a test rather

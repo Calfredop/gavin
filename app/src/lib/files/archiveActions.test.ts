@@ -4,15 +4,15 @@ import { writable } from "svelte/store";
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
-vi.mock("$lib/dialog", () => ({
+vi.mock("$lib/core/dialog", () => ({
   askConfirm: vi.fn().mockResolvedValue(true),
 }));
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   archiveCard: vi.fn(),
   unarchiveCard: vi.fn(),
   getBoard: vi.fn().mockResolvedValue({ columns: [], labels: [], cardSessions: [] }),
 }));
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/layoutState", () => ({
   layoutState: writable({
     workspaces: [
       {
@@ -36,14 +36,14 @@ vi.mock("$lib/layoutState", () => ({
 }));
 
 import { get } from "svelte/store";
-import { askConfirm } from "$lib/dialog";
-import * as backend from "$lib/backend";
-import { layoutState, closeSession } from "$lib/layoutState";
+import { askConfirm } from "$lib/core/dialog";
+import * as backend from "$lib/core/backend";
+import { layoutState, closeSession } from "$lib/core/layoutState";
 import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive, isDoneColumn } from "$lib/files/archiveActions";
 import { kanbanState } from "$lib/board/kanbanState";
-import { gavinTrees } from "$lib/gavinState";
-import type { CardView } from "$lib/planBoard";
-import type { PlanFileInfo } from "$lib/gavin";
+import { gavinTrees } from "$lib/core/gavinState";
+import type { CardView } from "$lib/core/planBoard";
+import type { PlanFileInfo } from "$lib/core/gavin";
 
 const PLANS = "/ws/.gavin-root/plans";
 

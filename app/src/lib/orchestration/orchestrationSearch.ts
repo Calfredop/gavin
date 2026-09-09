@@ -11,7 +11,7 @@
 //     and only the matching chips light up. Rails with no match at all
 //     leave the grid, so what is left is scannable.
 
-import { matchesFields, queryTokens } from "$lib/search";
+import { matchesFields, queryTokens } from "$lib/core/search";
 import { unplacedCount } from "$lib/orchestration/orchestration";
 import { toolKindLabel } from "$lib/orchestration/orchestrationTools";
 import type { CardEntry, Orchestration, Step, UnplacedGroup } from "$lib/orchestration/orchestration";

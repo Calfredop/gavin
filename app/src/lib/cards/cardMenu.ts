@@ -3,11 +3,11 @@
 // Surfaces supply the hooks (modal, delete prompt, run, error strip).
 
 import { get } from "svelte/store";
-import { openPathExternally } from "$lib/backend";
-import * as backend from "$lib/backend";
+import { openPathExternally } from "$lib/core/backend";
+import * as backend from "$lib/core/backend";
 import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
-import { layoutState, daemonCompat, switchWorkspaceView } from "$lib/layoutState";
-import { patchPlanField } from "$lib/gavinState";
+import { layoutState, daemonCompat, switchWorkspaceView } from "$lib/core/layoutState";
+import { patchPlanField } from "$lib/core/gavinState";
 import { requestedExplorerFile } from "$lib/files/planExplorer";
 import { guardCompletion, subjectFromCard } from "$lib/cards/cardCompletion";
 import {
@@ -30,11 +30,11 @@ import {
 } from "$lib/orchestration/orchestrationState";
 import { executeArchive, executeUnarchive } from "$lib/files/archiveActions";
 import { bestOfNRequest, bestOfNRuns, runForCard } from "$lib/cards/bestOfNState";
-import { featureBlockedReason } from "$lib/daemonCompat";
+import { featureBlockedReason } from "$lib/core/daemonCompat";
 import { cancelLaunch, launchBlockedReason, queuedForCard } from "$lib/agents/launchQueue";
-import { isArchivedCard, slugStatus, type CardView } from "$lib/planBoard";
+import { isArchivedCard, slugStatus, type CardView } from "$lib/core/planBoard";
 import type { Column } from "$lib/board/kanban";
-import type { ContextMenuEntry } from "$lib/contextMenu";
+import type { ContextMenuEntry } from "$lib/core/contextMenu";
 
 export interface CardMenuHooks {
   workspaceId: string;

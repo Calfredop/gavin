@@ -6,7 +6,7 @@
   import { createEditor, type EditorHandle } from "$lib/files/codeMirror";
   import { themeState } from "$lib/ui/themeState.svelte";
   import { createRegionDecorations, type Region, type RegionDecorations } from "$lib/git/mergeDecorations";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import GitConflictChooser from "$lib/git/GitConflictChooser.svelte";
   import GitDiscardDialog from "$lib/git/GitDiscardDialog.svelte";
 

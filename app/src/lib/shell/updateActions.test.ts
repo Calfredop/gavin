@@ -9,8 +9,8 @@ const host = vi.hoisted(() => ({
 }));
 const gate = vi.hoisted(() => ({ grantForAnsweredPrompt: vi.fn() }));
 
-vi.mock("$lib/backend", () => host);
-vi.mock("$lib/confirmGate", () => gate);
+vi.mock("$lib/core/backend", () => host);
+vi.mock("$lib/core/confirmGate", () => gate);
 
 import { installConfirmPrompt, runInstall, saveEndpoint } from "$lib/shell/updateActions";
 

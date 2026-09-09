@@ -38,7 +38,7 @@
   // convention.
   import WindowControls from "$lib/shell/WindowControls.svelte";
   import SidebarActions from "$lib/sidebar/SidebarActions.svelte";
-  import { isMacSync } from "$lib/platform";
+  import { isMacSync } from "$lib/core/platform";
   import { windowDrag } from "$lib/shell/windowDrag";
 
   // Synchronous: the traffic lights must be on the correct side in the

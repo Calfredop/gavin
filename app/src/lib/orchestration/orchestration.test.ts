@@ -84,8 +84,8 @@ import { prKey } from "$lib/git/pullRequest";
 import type { WorktreeInfo } from "$lib/git/git";
 import type { Action, Orchestration, Rail, RailState, Stage, StageMode, Step, StepState } from "$lib/orchestration/orchestration";
 import type { Board } from "$lib/board/kanban";
-import type { SessionStatus } from "$lib/notifications";
-import type { GavinTree, PlanFileInfo } from "$lib/gavin";
+import type { SessionStatus } from "$lib/core/notifications";
+import type { GavinTree, PlanFileInfo } from "$lib/core/gavin";
 
 function board(names: string[]): Board {
   return {

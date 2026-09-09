@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable } from "svelte/store";
-import type { DaemonCompat } from "$lib/daemonCompat";
+import type { DaemonCompat } from "$lib/core/daemonCompat";
 import type { QueuedInput } from "$lib/agents/queuedInput";
 
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   queueInput: vi.fn(),
   setQueuedInputs: vi.fn(),
   sendQueuedInput: vi.fn(),
@@ -12,7 +12,7 @@ vi.mock("$lib/backend", () => ({
 // The three things queuedInputActions reads from layoutState. The store
 // is the real writable rather than a stub so the "applied optimistically"
 // assertions below are about the map the strip actually renders from.
-vi.mock("$lib/layoutState", () => {
+vi.mock("$lib/core/layoutState", () => {
   const queuedInputsById = writable<Record<string, QueuedInput[]>>({});
   return {
     daemonCompat: writable(null as DaemonCompat | null),
@@ -29,8 +29,8 @@ vi.mock("$lib/layoutState", () => {
   };
 });
 
-import * as backend from "$lib/backend";
-import { daemonCompat, queuedInputsById } from "$lib/layoutState";
+import * as backend from "$lib/core/backend";
+import { daemonCompat, queuedInputsById } from "$lib/core/layoutState";
 import {
   cancelFollowUp,
   moveFollowUp,

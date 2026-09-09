@@ -12,7 +12,7 @@
 import { allLeaves, allSessionIds, sessionTabsOnly } from "$lib/panes/layout";
 import { count } from "$lib/orchestration/railConfirm";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
-import type { Page } from "$lib/workspace";
+import type { Page } from "$lib/core/workspace";
 
 /// A page's tabs, split by what "Close Idle Tabs" would do to each. The
 /// four buckets (`ids`, `pinned`, `busy`, `other`) partition the page:

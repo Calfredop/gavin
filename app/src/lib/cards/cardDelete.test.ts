@@ -3,16 +3,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   deleteCardFile: vi.fn(),
   setPlanFrontmatterField: vi.fn(),
   getBoard: vi.fn().mockResolvedValue({ columns: [], labels: [], cardSessions: [] }),
 }));
 
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import { deletionPlanFor, columnDeletionPlan, executeDeletion, executeMoveCards } from "$lib/cards/cardDelete";
 import { kanbanState } from "$lib/board/kanbanState";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 
 function view(path: string, kind: "note" | "task" | "plan", status: string | null, extra: Partial<CardView> = {}): CardView {
   return {

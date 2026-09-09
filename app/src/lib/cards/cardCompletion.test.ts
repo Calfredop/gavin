@@ -1,20 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("$lib/dialog", () => ({
+vi.mock("$lib/core/dialog", () => ({
   askConfirm: vi.fn(),
   askConfirmChecked: vi.fn(),
 }));
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   setPlanFrontmatterField: vi.fn(),
 }));
-vi.mock("$lib/gavinState", () => ({
+vi.mock("$lib/core/gavinState", () => ({
   patchPlanField: vi.fn(),
   patchPlanPath: vi.fn(),
 }));
 
-import { askConfirm, askConfirmChecked } from "$lib/dialog";
-import * as backend from "$lib/backend";
-import { patchPlanField, patchPlanPath } from "$lib/gavinState";
+import { askConfirm, askConfirmChecked } from "$lib/core/dialog";
+import * as backend from "$lib/core/backend";
+import { patchPlanField, patchPlanPath } from "$lib/core/gavinState";
 import {
   breakOutChildren,
   completionCascadeFor,
@@ -23,7 +23,7 @@ import {
   subjectFromCard,
   type CompletionSubject,
 } from "$lib/cards/cardCompletion";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 import type { Column } from "$lib/board/kanban";
 
 const COLUMNS: Column[] = [

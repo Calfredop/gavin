@@ -8,7 +8,7 @@ import {
   readEntryLabel,
   withSessionRead,
 } from "$lib/sessions/sessionRead";
-import type { SessionStatus } from "$lib/notifications";
+import type { SessionStatus } from "$lib/core/notifications";
 
 describe("canMarkRead", () => {
   it("is true for the one status that nags", () => {

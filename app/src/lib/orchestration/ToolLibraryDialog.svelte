@@ -13,7 +13,7 @@
   // branches below draw its three shapes.
   import { Plus, Copy, Pencil, Trash2, Group, FolderOpen } from "@lucide/svelte";
   import { pickPath as openPicker } from "$lib/workspace/picker";
-  import Modal from "$lib/Modal.svelte";
+  import Modal from "$lib/core/Modal.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import {
     GAVIN_ACTIONS,
@@ -33,9 +33,9 @@
   } from "$lib/orchestration/orchestrationTools";
   import { saveToolAction, deleteToolAction } from "$lib/orchestration/toolsState";
   import { isRunnableStandalone } from "$lib/workspace/workspaceTools";
-  import { daemonCompat, workspaceRootPath } from "$lib/layoutState";
-  import { featureBlockedReason } from "$lib/daemonCompat";
-  import { tooltip } from "$lib/tooltip";
+  import { daemonCompat, workspaceRootPath } from "$lib/core/layoutState";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
+  import { tooltip } from "$lib/core/tooltip";
   import { saveGroupTemplateAction, deleteGroupTemplateAction } from "$lib/orchestration/groupTemplatesState";
   import type { GroupTemplate, GroupTemplateScope } from "$lib/orchestration/orchestrationGroups";
   import { toolIcon } from "$lib/ui/toolKindIcon";

@@ -13,19 +13,19 @@
   // mount, so a card never has two different detail panels.
   import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/board/kanbanState";
   import { fetchOrchestration, orchestrations } from "$lib/orchestration/orchestrationState";
-  import { gavinTrees } from "$lib/gavinState";
-  import { indexCardViews, mergePlanCards, type CardView } from "$lib/planBoard";
+  import { gavinTrees } from "$lib/core/gavinState";
+  import { indexCardViews, mergePlanCards, type CardView } from "$lib/core/planBoard";
   import {
     layoutState,
     daemonCompat,
     closeSession,
     retargetCardTabs,
     setCardTabPath,
-  } from "$lib/layoutState";
+  } from "$lib/core/layoutState";
   import { cardSessionState } from "$lib/board/columnRunAction";
   import { runBaseline } from "$lib/cards/runChanges";
   import { linkForCardPath, openLinkedCard } from "$lib/cards/cardTabLink";
-  import type { CardTabView } from "$lib/gavin";
+  import type { CardTabView } from "$lib/core/gavin";
   import CardDetailModal from "$lib/cards/CardDetailModal.svelte";
   import RunChangesModal from "$lib/cards/RunChangesModal.svelte";
 

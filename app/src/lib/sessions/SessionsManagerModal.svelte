@@ -9,10 +9,10 @@
     TriangleAlert,
     X,
   } from "@lucide/svelte";
-  import * as backend from "$lib/backend";
-  import { daemonCompat, layoutState } from "$lib/layoutState";
-  import { featureBlockedReason } from "$lib/daemonCompat";
-  import { cmdHeld, isMacSync } from "$lib/platform";
+  import * as backend from "$lib/core/backend";
+  import { daemonCompat, layoutState } from "$lib/core/layoutState";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
+  import { cmdHeld, isMacSync } from "$lib/core/platform";
   import {
     DEFAULT_SORT,
     NO_SELECTION,
@@ -45,9 +45,9 @@
     jumpToSession,
     restartDaemon,
   } from "$lib/sessions/sessionsManagerActions";
-  import Modal from "$lib/Modal.svelte";
-  import { tooltip } from "$lib/tooltip";
-  import { askConfirm } from "$lib/dialog";
+  import Modal from "$lib/core/Modal.svelte";
+  import { tooltip } from "$lib/core/tooltip";
+  import { askConfirm } from "$lib/core/dialog";
   import { takeSessionSortRequest } from "$lib/panes/appPanels";
   import { watchmanRoots, watchmanStore, refreshMemory } from "$lib/agents/memoryState";
   import { orchestrations } from "$lib/orchestration/orchestrationState";

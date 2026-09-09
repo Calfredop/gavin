@@ -8,7 +8,7 @@ import {
   restoredBadge,
   type OrphanProcess,
 } from "$lib/sessions/orphan";
-import { FEATURE_MIN_VERSION, type DaemonCompat } from "$lib/daemonCompat";
+import { FEATURE_MIN_VERSION, type DaemonCompat } from "$lib/core/daemonCompat";
 
 const CURRENT: DaemonCompat = {
   daemonVersion: FEATURE_MIN_VERSION.orphanDetection,

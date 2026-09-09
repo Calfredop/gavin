@@ -15,7 +15,7 @@
 // has to put it back by hand after a run that never happened.
 
 import { get } from "svelte/store";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import {
   candidatesError,
   composeCandidatePrompt,
@@ -37,7 +37,7 @@ import {
   layoutState,
   setSessionName,
   switchWorkspaceView,
-} from "$lib/layoutState";
+} from "$lib/core/layoutState";
 import { buildRunCommand, composePlanPrompt, composeTaskPrompt, noPromptReason, provisionalSessionName, runStatusNeeded } from "$lib/cards/cardRun";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { developingBlocker } from "$lib/cards/developingCardsState";
@@ -45,12 +45,12 @@ import { resolveAttachmentsForRun } from "$lib/cards/cardRunActions";
 import { cardSessionState } from "$lib/board/columnRunAction";
 import { discardWorktrees, forkWorktree } from "$lib/git/gitState";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
-import { patchPlanField, patchPlanPath, worktreeSetups } from "$lib/gavinState";
+import { patchPlanField, patchPlanPath, worktreeSetups } from "$lib/core/gavinState";
 import { setupPlan } from "$lib/git/worktreeSetup";
 import { stripFrontmatter } from "$lib/cards/planChecklist";
 import { closeTabsNow } from "$lib/panes/tabActions";
-import { askConfirmChecked } from "$lib/dialog";
-import type { CardView } from "$lib/planBoard";
+import { askConfirmChecked } from "$lib/core/dialog";
+import type { CardView } from "$lib/core/planBoard";
 
 /// Launch a run: one worktree and one agent per candidate, all on one
 /// tiled page named for the card. Returns an error string for the

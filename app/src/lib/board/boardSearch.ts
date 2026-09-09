@@ -6,8 +6,8 @@
 // (planDrop.ts) commits order writes against the UNFILTERED projection,
 // so the two must be able to coexist.
 
-import { matchesFields, queryTokens, type Field } from "$lib/search";
-import type { AutoColumn, CardView, DisplayColumn } from "$lib/planBoard";
+import { matchesFields, queryTokens, type Field } from "$lib/core/search";
+import type { AutoColumn, CardView, DisplayColumn } from "$lib/core/planBoard";
 
 /// How an auto column is keyed for hidden-count lookups. Matches the
 /// convention planDrop.ts uses for drop targets.

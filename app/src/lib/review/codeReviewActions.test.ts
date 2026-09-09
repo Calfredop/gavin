@@ -1,20 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable } from "svelte/store";
 
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   createSession: vi.fn(),
   readFileForViewer: vi.fn(),
   writeFileForEditor: vi.fn(),
   gitRefs: vi.fn(),
 }));
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/layoutState", () => ({
   resolvedAgentFor: vi.fn(),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   handleAgentSessionSpawned: vi.fn(),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   workspaceRootPath: vi.fn(() => null as string | null),
 }));
-vi.mock("$lib/gavinState", () => ({ gavinTrees: writable({}) }));
+vi.mock("$lib/core/gavinState", () => ({ gavinTrees: writable({}) }));
 vi.mock("$lib/board/kanbanState", () => ({
   kanbanState: writable({}),
   cardSessionFor: vi.fn(() => null),
@@ -31,14 +31,14 @@ vi.mock("$lib/agents/launchQueue", () => ({
   launchBlockedReason: vi.fn(() => null),
 }));
 
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import {
   resolvedAgentFor,
   handleAgentSessionSpawned,
   setSessionName,
   workspaceRootPath,
-} from "$lib/layoutState";
-import { gavinTrees } from "$lib/gavinState";
+} from "$lib/core/layoutState";
+import { gavinTrees } from "$lib/core/gavinState";
 import { cardSessionFor } from "$lib/board/kanbanState";
 import { revealSession } from "$lib/cards/cardRunActions";
 import {
@@ -50,7 +50,7 @@ import {
   requestCardReview,
 } from "$lib/review/codeReviewActions";
 import { REVIEW_RULES_STARTER } from "$lib/review/codeReview";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 
 const AGENT = {
   profileId: "claude-code",

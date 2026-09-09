@@ -4,7 +4,7 @@
   /// Integration step and the Settings agent-integration row -- the two
   /// places `setupAgentIntegration` runs from -- so the two choices read
   /// identically wherever they appear.
-  import type { ForeignMcpServer } from "$lib/backend";
+  import type { ForeignMcpServer } from "$lib/core/backend";
   import { mcpForeignNotice } from "$lib/workspace/mcpServerTrust";
 
   interface Props {

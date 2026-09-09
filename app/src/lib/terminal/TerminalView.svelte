@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layoutState, createPage } from "$lib/layoutState";
+  import { layoutState, createPage } from "$lib/core/layoutState";
   import { presetSingle } from "$lib/panes/layout";
   import LayoutTree from "$lib/panes/LayoutTree.svelte";
 

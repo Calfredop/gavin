@@ -29,10 +29,10 @@
 //    the rule a rail's agent tool step already runs on (agentTurnEnded).
 
 import { get, writable, type Readable } from "svelte/store";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import { buildRunCommand, buildToolCommand } from "$lib/cards/cardRun";
 import { revealSession } from "$lib/cards/cardRunActions";
-import { featureBlockedReason } from "$lib/daemonCompat";
+import { featureBlockedReason } from "$lib/core/daemonCompat";
 import {
   armFailureDetection,
   conversationIdForLaunch,
@@ -42,7 +42,7 @@ import {
   resolvedAgentFor,
   setSessionName,
   workspaceRootPath,
-} from "$lib/layoutState";
+} from "$lib/core/layoutState";
 import {
   noteToolRunStarted,
   refreshToolRuns,

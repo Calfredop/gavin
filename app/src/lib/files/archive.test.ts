@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { archiveView, archivedOn, chronological } from "$lib/files/archive";
-import { isArchivedCard, type CardView } from "$lib/planBoard";
+import { isArchivedCard, type CardView } from "$lib/core/planBoard";
 
 function card(title: string, over: Partial<CardView> = {}): CardView {
   const fileName = `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.md`;

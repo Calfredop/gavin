@@ -6,7 +6,7 @@
   // works. Routing these through layoutState.status instead is what made
   // a stray resize for an already-dead session blank the entire window.
   import { TriangleAlert } from "@lucide/svelte";
-  import { daemonRequestError } from "$lib/layoutState";
+  import { daemonRequestError } from "$lib/core/layoutState";
 </script>
 
 {#if $daemonRequestError}

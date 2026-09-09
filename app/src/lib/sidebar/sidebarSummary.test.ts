@@ -14,10 +14,10 @@ import {
 } from "$lib/sidebar/sidebarSummary";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
 import type { LayoutNode } from "$lib/panes/layout";
-import type { GitStatus, Page, Workspace } from "$lib/workspace";
+import type { GitStatus, Page, Workspace } from "$lib/core/workspace";
 import type { Orchestration, Rail, Stage, Step } from "$lib/orchestration/orchestration";
 import type { Board } from "$lib/board/kanban";
-import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
+import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/core/gavin";
 import { source } from "$lib/sources";
 
 function leaf(tabs: string[]): LayoutNode {

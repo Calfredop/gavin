@@ -3,7 +3,7 @@
   import { dragState, dropHold, type ActiveDrag } from "$lib/board/kanbanDrag";
   import { activeDragRoot } from "$lib/board/kanbanDragGlue";
   import type { Board, Label } from "$lib/board/kanban";
-  import type { CardView } from "$lib/planBoard";
+  import type { CardView } from "$lib/core/planBoard";
   import BoardCard from "$lib/board/BoardCard.svelte";
 
   interface Props {

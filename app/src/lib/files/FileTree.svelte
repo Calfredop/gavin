@@ -3,7 +3,7 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import { formatSize, type FileNode, type TreeView } from "$lib/files/fileTree";
   import { isViewableExtension } from "$lib/files/fileTypes";
-  import { openContextMenuFromEvent } from "$lib/contextMenu";
+  import { openContextMenuFromEvent } from "$lib/core/contextMenu";
   import { rowMenuItems, type FileTreeMenuCallbacks } from "$lib/files/fileTreeMenu";
 
   interface Props {

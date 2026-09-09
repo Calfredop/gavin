@@ -13,8 +13,8 @@
 ///      reopened and finished, rather than removing the one handle the
 ///      user has on what is left.
 
-import * as backend from "$lib/backend";
-import { deleteWorkspaceFromApp } from "$lib/layoutState";
+import * as backend from "$lib/core/backend";
+import { deleteWorkspaceFromApp } from "$lib/core/layoutState";
 import { plannedRemovals, touchesDisk, type DeleteAnswers, type GavinFootprint } from "$lib/workspace/workspaceDelete";
 
 export interface DeleteResult {

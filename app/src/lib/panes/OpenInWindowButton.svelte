@@ -9,9 +9,9 @@
   // there, not here.
   import { AppWindow } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { tooltip } from "$lib/tooltip";
-  import { layoutState, handOffWorkspace } from "$lib/layoutState";
-  import { getActiveWorkspace } from "$lib/workspace";
+  import { tooltip } from "$lib/core/tooltip";
+  import { layoutState, handOffWorkspace } from "$lib/core/layoutState";
+  import { getActiveWorkspace } from "$lib/core/workspace";
   import { windowActionLabel } from "$lib/shell/appWindow";
   import { currentWindowLabel, workspaceWindows } from "$lib/shell/appWindowState";
 

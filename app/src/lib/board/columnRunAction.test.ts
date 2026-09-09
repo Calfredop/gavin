@@ -8,7 +8,7 @@ import {
   cardSessionState,
   type CardSessionState,
 } from "$lib/board/columnRunAction";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 import { launchEstimate } from "$lib/agents/launchEstimate";
 
 function card(id: string, kind: "note" | "task" | "plan" = "task"): CardView {

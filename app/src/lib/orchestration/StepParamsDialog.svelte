@@ -3,7 +3,7 @@
   // is only what DIFFERS from the tool's default (tools spec §5.4), so a
   // later edit to that default still reaches a step that never
   // deliberately overrode it.
-  import Modal from "$lib/Modal.svelte";
+  import Modal from "$lib/core/Modal.svelte";
   import {
     gavinActionOf,
     pruneOverrides,

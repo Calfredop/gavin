@@ -1,8 +1,8 @@
 <script lang="ts">
   import { gitStore, select, stageFiles, unstageFiles, stageAll, unstageAll, discardFiles, stashPop, stashApply, selectChanges } from "$lib/git/gitState";
-  import { layoutState, setGitViewPrefs } from "$lib/layoutState";
+  import { layoutState, setGitViewPrefs } from "$lib/core/layoutState";
   import { DEFAULT_SHARE, shareFromHeight } from "$lib/git/gitChangesSplit";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import { LIST_DISPLAY_CAP, type Area, type FileEntry } from "$lib/git/git";
   import { describeFileDiscard, type FileDiscardPrompt } from "$lib/git/discardFlow";
   import GitFileRow from "$lib/git/GitFileRow.svelte";
@@ -10,7 +10,7 @@
   import GitDiscardDialog from "$lib/git/GitDiscardDialog.svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { filterFiles } from "$lib/git/gitSearch";
-  import { isSearching } from "$lib/search";
+  import { isSearching } from "$lib/core/search";
 
   interface Props {
     workspaceId: string;

@@ -3,7 +3,7 @@
     gitStore, setCommitDraft, commit, canCommit, agentCommitPhase,
     commitButtonLabel, amendRewritesPushed, currentBranch,
   } from "$lib/git/gitState";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
 
   interface Props {
     workspaceId: string;

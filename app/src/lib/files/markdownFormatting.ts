@@ -12,7 +12,7 @@
 // block prefixes), because a caret with no selection is the common
 // case and "insert `****`" is what nobody wants.
 
-import type { Chord } from "$lib/shortcuts";
+import type { Chord } from "$lib/core/shortcuts";
 
 export type FormatAction =
   | "bold"

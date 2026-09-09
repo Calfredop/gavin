@@ -15,10 +15,10 @@ const backendMock = vi.hoisted(() => ({
     indexed: 0,
   })),
 }));
-vi.mock("$lib/backend", () => backendMock);
+vi.mock("$lib/core/backend", () => backendMock);
 
 const dialogMock = vi.hoisted(() => ({ showAlert: vi.fn(async () => {}) }));
-vi.mock("$lib/dialog", () => dialogMock);
+vi.mock("$lib/core/dialog", () => dialogMock);
 
 const layoutMock = vi.hoisted(() => ({
   createWorkspace: vi.fn(),
@@ -27,7 +27,7 @@ const layoutMock = vi.hoisted(() => ({
   markGitTrackingAsked: vi.fn(async () => {}),
 }));
 
-vi.mock("$lib/layoutState", async () => {
+vi.mock("$lib/core/layoutState", async () => {
   const { writable } = await import("svelte/store");
   const layoutState = writable({
     workspaces: [] as { id: string; name: string; rootPath?: string }[],
@@ -51,7 +51,7 @@ vi.mock("$lib/layoutState", async () => {
   };
 });
 
-import { layoutState } from "$lib/layoutState";
+import { layoutState } from "$lib/core/layoutState";
 import {
   bindWithoutInit,
   cancelOpen,

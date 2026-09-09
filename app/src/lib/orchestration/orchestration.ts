@@ -4,10 +4,10 @@
 // crates/protocol's orchestration shapes (camelCase on the wire).
 
 import type { Board, Column } from "$lib/board/kanban";
-import type { GavinTree, PlanFileInfo } from "$lib/gavin";
+import type { GavinTree, PlanFileInfo } from "$lib/core/gavin";
 import type { WorktreeInfo } from "$lib/git/git";
-import type { SessionStatus } from "$lib/notifications";
-import { isArchivedCard, planKey, slugStatus } from "$lib/planBoard";
+import type { SessionStatus } from "$lib/core/notifications";
+import { isArchivedCard, planKey, slugStatus } from "$lib/core/planBoard";
 import { isPrStep, isUntilStep, stepBefore, summaryParam, untilMax, untilVerdict } from "$lib/orchestration/orchestrationLoop";
 import { isUnreviewedStall } from "$lib/cards/cardReview";
 import { prKey, prRequirement, prWaitVerdict } from "$lib/git/pullRequest";

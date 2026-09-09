@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Trash2 } from "@lucide/svelte";
   import { splitPath, type Area, type FileEntry } from "$lib/git/git";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import IconButton from "$lib/ui/IconButton.svelte";
 
   interface Props {

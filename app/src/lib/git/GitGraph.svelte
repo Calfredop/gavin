@@ -15,7 +15,7 @@
   } from "$lib/git/gitState";
   import { matchesFilter, shortSha, type CommitInfo, type ResetMode } from "$lib/git/git";
   import { computeGraph } from "$lib/git/graphLanes";
-  import { openContextMenuFromEvent, type ContextMenuEntry } from "$lib/contextMenu";
+  import { openContextMenuFromEvent, type ContextMenuEntry } from "$lib/core/contextMenu";
   import GitGraphRow from "$lib/git/GitGraphRow.svelte";
   import GitPromptDialog from "$lib/git/GitPromptDialog.svelte";
   import GitDiscardDialog from "$lib/git/GitDiscardDialog.svelte";

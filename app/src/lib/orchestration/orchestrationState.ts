@@ -7,7 +7,7 @@
 
 import { writable, derived, get, type Readable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import {
   nextActions,
   firstUnfinishedStageId,
@@ -88,7 +88,7 @@ import type { GroupTemplate } from "$lib/orchestration/orchestrationGroups";
 import { libraryFor, toolRecords } from "$lib/orchestration/toolsState";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
 import { breakOutChildren, guardCompletion } from "$lib/cards/cardCompletion";
-import { gavinTrees, patchPlanField } from "$lib/gavinState";
+import { gavinTrees, patchPlanField } from "$lib/core/gavinState";
 import { gitStore, refresh as refreshGit } from "$lib/git/gitState";
 import { branchResolvable } from "$lib/git/git";
 import { isGavinOwnPath } from "$lib/git/gitTracking";
@@ -107,7 +107,7 @@ import {
   setOrchestrationAgent,
   setSessionName,
   workspaceRootPath,
-} from "$lib/layoutState";
+} from "$lib/core/layoutState";
 import { decoyEditedSteps } from "$lib/git/worktreeCards";
 import { allSessionIds } from "$lib/panes/layout";
 import {
@@ -121,22 +121,22 @@ import {
   runStatusNeeded,
 } from "$lib/cards/cardRun";
 import { stripFrontmatter } from "$lib/cards/planChecklist";
-import { slugStatus } from "$lib/planBoard";
+import { slugStatus } from "$lib/core/planBoard";
 import {
   maybeNotifyReviewWait,
   setRailNotificationVoice,
   type SessionStatus,
-} from "$lib/notifications";
+} from "$lib/core/notifications";
 import {
   ORGANIZE_LABEL,
   orchestrationAgentOver,
   reorganizeLabel,
 } from "$lib/orchestration/orchestrationAgent";
-import { sessionLiveness } from "$lib/workspace";
+import { sessionLiveness } from "$lib/core/workspace";
 import { developingBlocker } from "$lib/cards/developingCardsState";
 import { DEVELOPING_STALL } from "$lib/cards/developingCards";
 import { unreviewedStallReason } from "$lib/cards/cardReview";
-import type { OrchestrationAgentRecord } from "$lib/workspace";
+import type { OrchestrationAgentRecord } from "$lib/core/workspace";
 import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "$lib/cards/cardRunActions";
 import { activePaused, mayStartWork, nowStore } from "$lib/agents/agentPauseState";
 import {

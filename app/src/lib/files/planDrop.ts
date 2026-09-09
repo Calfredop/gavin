@@ -1,12 +1,12 @@
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import { composeSlot } from "$lib/cards/cardCompose";
 import { guardCompletion, subjectFromCard } from "$lib/cards/cardCompletion";
-import { patchPlanField } from "$lib/gavinState";
+import { patchPlanField } from "$lib/core/gavinState";
 import { computeOrderWrites, type OrderedPlanCard } from "$lib/board/planOrder";
 import { dropHold } from "$lib/board/kanbanDrag";
 import type { MergedBoard } from "$lib/board/boardSearch";
 import type { Column } from "$lib/board/kanban";
-import type { CardView, DisplayColumn, AutoColumn } from "$lib/planBoard";
+import type { CardView, DisplayColumn, AutoColumn } from "$lib/core/planBoard";
 import type { DropTarget } from "$lib/panes/pointerDrag";
 
 export interface PlanDropSpec {

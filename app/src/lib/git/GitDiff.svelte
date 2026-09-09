@@ -1,6 +1,6 @@
 <script lang="ts">
   import { gitStore, findEntry, applyPatch, setLineSelection } from "$lib/git/gitState";
-  import { layoutState, setGitViewPrefs } from "$lib/layoutState";
+  import { layoutState, setGitViewPrefs } from "$lib/core/layoutState";
   import { toUnifiedRows, toSplitRows } from "$lib/git/diffRows";
   import { clickLine, rangeIds, selectionHunk } from "$lib/git/diffSelection";
   import { buildPatch } from "$lib/git/patch";

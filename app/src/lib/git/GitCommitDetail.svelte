@@ -1,10 +1,10 @@
 <script lang="ts">
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { gitStore, selectDetailFile } from "$lib/git/gitState";
-  import { layoutState, setGitViewPrefs } from "$lib/layoutState";
+  import { layoutState, setGitViewPrefs } from "$lib/core/layoutState";
   import { shortSha, LARGE_HUNK_LINES, type DiffLayout } from "$lib/git/git";
   import { toUnifiedRows, toSplitRows } from "$lib/git/diffRows";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import GitFileRow from "$lib/git/GitFileRow.svelte";
   import GitDiffUnified from "$lib/git/GitDiffUnified.svelte";
   import GitDiffSplit from "$lib/git/GitDiffSplit.svelte";

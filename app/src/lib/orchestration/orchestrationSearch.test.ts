@@ -3,7 +3,7 @@ import { searchDrawer, searchOrchestration, stepMatches } from "$lib/orchestrati
 import type { Tool } from "$lib/orchestration/orchestrationTools";
 import type { GroupTemplate } from "$lib/orchestration/orchestrationGroups";
 import type { CardEntry, Orchestration, Rail, UnplacedGroup } from "$lib/orchestration/orchestration";
-import type { PlanFileInfo } from "$lib/gavin";
+import type { PlanFileInfo } from "$lib/core/gavin";
 
 function plan(fileName: string, title: string, over: Partial<PlanFileInfo> = {}): PlanFileInfo {
   return {

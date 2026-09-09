@@ -2,7 +2,7 @@
 // exist so the fields each list is searchable ON are stated once, in
 // one testable place, rather than inline in four components.
 
-import { filterList, matchesFields, queryTokens } from "$lib/search";
+import { filterList, matchesFields, queryTokens } from "$lib/core/search";
 import type { BranchInfo, FileEntry, RemoteInfo, StashInfo } from "$lib/git/git";
 
 /// Changed files. A rename matches on BOTH of its paths -- searching for

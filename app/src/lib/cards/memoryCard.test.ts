@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   readFileForViewer: vi.fn(),
   writeFileForEditor: vi.fn().mockResolvedValue(undefined),
   setPlanFrontmatterField: vi.fn(),
 }));
 
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import { svelteSources } from "$lib/sources";
 import {
   LEARNED_HEADING,

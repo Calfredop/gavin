@@ -8,11 +8,11 @@
     setPrdPath,
     startMainAgentWithPrompt,
     trustedAgentConfigs,
-  } from "$lib/layoutState";
-  import { featureBlockedReason } from "$lib/daemonCompat";
-  import { resolveAgentConfig, prdPathFromPick } from "$lib/settings";
+  } from "$lib/core/layoutState";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
+  import { resolveAgentConfig, prdPathFromPick } from "$lib/core/settings";
   import { applyPrdSections, agentFlowAvailable, prdHasPlaceholders } from "$lib/workspace/setupWizard";
-  import * as backend from "$lib/backend";
+  import * as backend from "$lib/core/backend";
 
   interface Props {
     workspaceId: string;

@@ -12,7 +12,7 @@
 /// detail modal, the ⌘N composer, both settings panels and every launch
 /// route) stays a template over this.
 
-import type { AgentConfig } from "$lib/gavin";
+import type { AgentConfig } from "$lib/core/gavin";
 
 /// The five levels, ascending. Mirrors `protocol::Complexity` -- the
 /// written names ARE the wire format and the frontmatter value, so a

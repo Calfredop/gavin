@@ -45,7 +45,7 @@
 // glyphs already are.
 
 import { relativeTime } from "$lib/hub/appHub";
-import { featureBlockedReason, type DaemonCompat } from "$lib/daemonCompat";
+import { featureBlockedReason, type DaemonCompat } from "$lib/core/daemonCompat";
 import { duplicateTool, resolveToolCwd, type Tool, type ToolKind } from "$lib/orchestration/orchestrationTools";
 
 /// One standalone run of a tool. Mirrors `ToolRun` in the protocol crate.

@@ -29,7 +29,7 @@
 /// is the same question one level down: config.toml names what gavin
 /// runs, a card body names what an AGENT runs.
 
-import { sha256Hex } from "$lib/sha256";
+import { sha256Hex } from "$lib/core/sha256";
 import { hasAutoCommit } from "$lib/git/autoCommit";
 import type { AttachmentStatus } from "$lib/cards/attachments";
 

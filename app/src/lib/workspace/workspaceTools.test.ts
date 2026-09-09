@@ -20,7 +20,7 @@ import {
 } from "$lib/workspace/workspaceTools";
 import { BUILTIN_TOOLS, type Tool, type ToolKind } from "$lib/orchestration/orchestrationTools";
 import { runIndicator } from "$lib/ui/indicators";
-import type { DaemonCompat } from "$lib/daemonCompat";
+import type { DaemonCompat } from "$lib/core/daemonCompat";
 
 function tool(over: Partial<Tool> = {}): Tool {
   return {

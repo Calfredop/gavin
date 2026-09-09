@@ -1,13 +1,13 @@
 <script lang="ts">
   import type { Column, Label } from "$lib/board/kanban";
-  import { isPermanentColumn, type CardView } from "$lib/planBoard";
+  import { isPermanentColumn, type CardView } from "$lib/core/planBoard";
   import BoardCard from "$lib/board/BoardCard.svelte";
   import { dragState, dropHold, buildDisplaySlots } from "$lib/board/kanbanDrag";
   import { flip } from "svelte/animate";
   import { renameColumnAction, deleteColumnAction } from "$lib/board/kanbanState";
   import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
-  import { tooltip } from "$lib/tooltip";
-  import { layoutState, resolvedAgents } from "$lib/layoutState";
+  import { tooltip } from "$lib/core/tooltip";
+  import { layoutState, resolvedAgents } from "$lib/core/layoutState";
   import { agentPromptBlocker } from "$lib/cards/cardRun";
   import { developingRunIn } from "$lib/cards/developingCards";
   import {
@@ -22,16 +22,16 @@
   import { Play, RotateCcw, Archive } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { X } from "@lucide/svelte";
-  import { formatShortcut } from "$lib/shortcuts";
+  import { formatShortcut } from "$lib/core/shortcuts";
   import { estimateFor, launchGateVerdict } from "$lib/agents/launchQueue";
-  import { isMacSync } from "$lib/platform";
+  import { isMacSync } from "$lib/core/platform";
   import { columnDeletionPlan, executeDeletion, executeMoveCards } from "$lib/cards/cardDelete";
-  import { grantForAnsweredPrompt } from "$lib/confirmGate";
-  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
-  import { openContextMenuFromEvent, type ContextMenuEntry } from "$lib/contextMenu";
+  import { grantForAnsweredPrompt } from "$lib/core/confirmGate";
+  import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
+  import { openContextMenuFromEvent, type ContextMenuEntry } from "$lib/core/contextMenu";
   import { executeArchive, isDoneColumn } from "$lib/files/archiveActions";
-  import { featureBlockedReason } from "$lib/daemonCompat";
-  import { daemonCompat } from "$lib/layoutState";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
+  import { daemonCompat } from "$lib/core/layoutState";
 
   interface Props {
     workspaceId: string;

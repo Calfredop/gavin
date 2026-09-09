@@ -8,7 +8,7 @@
 // resolving them to real files is the Tauri host's job
 // (`backend.attachmentStatus`), because only it can stat.
 
-import { relativeToRoot } from "$lib/settings";
+import { relativeToRoot } from "$lib/core/settings";
 
 /// Where the host resolved and canonicalized an entry to. `"root"` and
 /// `"extraContext"` are what gavin already trusts and reads exactly as

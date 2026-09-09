@@ -18,7 +18,7 @@
 // that back as a second attempt at the card would tell somebody they ran
 // it twice when they pressed Resume once.
 
-import { featureBlockedReason, type DaemonCompat } from "$lib/daemonCompat";
+import { featureBlockedReason, type DaemonCompat } from "$lib/core/daemonCompat";
 
 /// One run of a card. Mirrors `CardRun` in the protocol crate.
 export interface CardRun {

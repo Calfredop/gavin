@@ -7,9 +7,9 @@ const backendMock = vi.hoisted(() => ({
   agentUsage: vi.fn(),
 }));
 
-vi.mock("$lib/backend", () => backendMock);
+vi.mock("$lib/core/backend", () => backendMock);
 
-vi.mock("$lib/layoutState", async () => {
+vi.mock("$lib/core/layoutState", async () => {
   const { writable } = await import("svelte/store");
   return {
     layoutState: writable({
@@ -37,7 +37,7 @@ import {
   saveAgentPause,
   startBlockedReason,
 } from "$lib/agents/agentPauseState";
-import { layoutState } from "$lib/layoutState";
+import { layoutState } from "$lib/core/layoutState";
 
 const ANCHOR = 1_700_000_000_000;
 const MIN = 60_000;

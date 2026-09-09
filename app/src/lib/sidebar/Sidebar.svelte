@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { accentVar } from "$lib/settings";
-  import GlobalSettingsModal from "$lib/GlobalSettingsModal.svelte";
+  import { accentVar } from "$lib/core/settings";
+  import GlobalSettingsModal from "$lib/core/GlobalSettingsModal.svelte";
   import SessionsManagerModal from "$lib/sessions/SessionsManagerModal.svelte";
-  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import AgentUsageModal from "$lib/agents/AgentUsageModal.svelte";
   import { activePause, nowStore, worstUsageProjection } from "$lib/agents/agentPauseState";
   import { pauseLabel } from "$lib/agents/agentPause";
@@ -33,7 +33,7 @@
     agentProfilesStore,
     gitTrackingDefault,
     attentionState,
-  } from "$lib/layoutState";
+  } from "$lib/core/layoutState";
   import { confirmWorkspaceClose, confirmPageClose } from "$lib/shell/confirmClose";
   // Naming a workspace into existence is the app hub's action now; the
   // sidebar's is "Open workspace…", which starts from a folder. The
@@ -50,8 +50,8 @@
     type SidebarHit,
     type SidebarSearchResult,
   } from "$lib/sidebar/sidebarSearch";
-  import { isSearching } from "$lib/search";
-  import type { SessionStatus } from "$lib/layoutState";
+  import { isSearching } from "$lib/core/search";
+  import type { SessionStatus } from "$lib/core/layoutState";
   import { presetSingle, findLeafPath, getNodeAtPath } from "$lib/panes/layout";
   import {
     ChevronRight,
@@ -85,7 +85,7 @@
     usageProjectionIndicator,
   } from "$lib/ui/indicators";
 
-  import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "$lib/paths";
+  import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "$lib/core/paths";
   import { resolveHubView, visibleHubViewIds } from "$lib/hub/hubViewMeta";
   import { currentHubTabPrefs } from "$lib/hub/hubTabPrefs";
   import {
@@ -97,7 +97,7 @@
     type DropZone,
     type ReorderPosition,
   } from "$lib/panes/dragDrop";
-  import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "$lib/layoutState";
+  import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "$lib/core/layoutState";
   import {
     UNFILED_WORKSPACE_ID,
     getActiveView,
@@ -107,7 +107,7 @@
     type Workspace,
     type Page,
     type GitStatus,
-  } from "$lib/workspace";
+  } from "$lib/core/workspace";
   import {
     workspaceGitSummary,
     kanbanSummary,
@@ -132,15 +132,15 @@
   } from "$lib/orchestration/orchestrationState";
   import { railsWantingAttention } from "$lib/orchestration/orchestration";
   import { kanbanState, fetchBoard } from "$lib/board/kanbanState";
-  import { gavinTrees } from "$lib/gavinState";
-  import { tooltip } from "$lib/tooltip";
+  import { gavinTrees } from "$lib/core/gavinState";
+  import { tooltip } from "$lib/core/tooltip";
   import { availableUpdate } from "$lib/shell/updatesState";
-  import { hintMode } from "$lib/shortcutHints";
+  import { hintMode } from "$lib/core/shortcutHints";
   import { agentCommitPhase, gitStore } from "$lib/git/gitState";
-  import { hintDigitFor } from "$lib/shortcuts";
+  import { hintDigitFor } from "$lib/core/shortcuts";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
-  import { showAlert } from "$lib/dialog";
-  import { openContextMenuFromEvent } from "$lib/contextMenu";
+  import { showAlert } from "$lib/core/dialog";
+  import { openContextMenuFromEvent } from "$lib/core/contextMenu";
   import {
     buildWorkspaceMenuEntries,
     buildPageMenuEntries,

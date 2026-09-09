@@ -20,7 +20,7 @@
   // disappear from under the cursor.
   import { onMount } from "svelte";
   import { Copy, FolderOpen, Pencil, Play, Plus, Settings2 } from "@lucide/svelte";
-  import { daemonCompat, layoutState, workspaceRootPath } from "$lib/layoutState";
+  import { daemonCompat, layoutState, workspaceRootPath } from "$lib/core/layoutState";
   import { revealSession } from "$lib/cards/cardRunActions";
   import { toolRecords, fetchTools, renderLibraryFor } from "$lib/orchestration/toolsState";
   import {
@@ -50,7 +50,7 @@
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import ToolLibraryDialog from "$lib/orchestration/ToolLibraryDialog.svelte";
   import ToolRunDialog from "$lib/orchestration/ToolRunDialog.svelte";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import { toolIcon } from "$lib/ui/toolKindIcon";
 
   interface Props {

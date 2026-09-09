@@ -13,7 +13,7 @@
   import { Trash2, CheckCheck, X } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { boardSelection, selectedCards } from "$lib/board/boardSelection";
-  import type { CardView } from "$lib/planBoard";
+  import type { CardView } from "$lib/core/planBoard";
 
   interface Props {
     /// The archived cards the grid is showing -- what "Select all"

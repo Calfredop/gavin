@@ -15,7 +15,7 @@
 
 import { get, writable } from "svelte/store";
 import { pickPath } from "$lib/workspace/picker";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import {
   createWorkspace,
   layoutState,
@@ -23,10 +23,10 @@ import {
   setWorkspaceRoot,
   switchWorkspace,
   type LayoutState,
-} from "$lib/layoutState";
-import { folderName } from "$lib/paths";
-import { sameRoot } from "$lib/workspace";
-import { showAlert } from "$lib/dialog";
+} from "$lib/core/layoutState";
+import { folderName } from "$lib/core/paths";
+import { sameRoot } from "$lib/core/workspace";
+import { showAlert } from "$lib/core/dialog";
 
 /// A picked folder that holds no `.gavin*` yet, waiting on the three-way
 /// answer (initialize / bind as-is / cancel). Null the rest of the time.

@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { layoutState, daemonCompat, setPrdPath } from "$lib/layoutState";
-  import { gavinTrees } from "$lib/gavinState";
-  import { featureBlockedReason } from "$lib/daemonCompat";
-  import { resolvePrdPath, prdPathFromPick } from "$lib/settings";
+  import { layoutState, daemonCompat, setPrdPath } from "$lib/core/layoutState";
+  import { gavinTrees } from "$lib/core/gavinState";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
+  import { resolvePrdPath, prdPathFromPick } from "$lib/core/settings";
   import FileEditor from "$lib/files/FileEditor.svelte";
   import HubFilePicker from "$lib/hub/HubFilePicker.svelte";
 

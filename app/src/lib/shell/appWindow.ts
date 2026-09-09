@@ -9,7 +9,7 @@
 // Attach per session, output broadcast to every webview. So "where is
 // this workspace" is the only question that has to have a single answer,
 // and it is the one this module answers.
-import type { Workspace } from "$lib/workspace";
+import type { Workspace } from "$lib/core/workspace";
 
 /// Tauri's own label for the window declared in tauri.conf.json, and the
 /// owner of every workspace no other window has claimed. Mirrors

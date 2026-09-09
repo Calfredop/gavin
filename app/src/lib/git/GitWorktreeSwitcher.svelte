@@ -10,11 +10,11 @@
     agentModelDefaultsStore,
     layoutState,
     trustedAgentConfigs,
-  } from "$lib/layoutState";
-  import { allSessionIdsInWorkspace } from "$lib/workspace";
+  } from "$lib/core/layoutState";
+  import { allSessionIdsInWorkspace } from "$lib/core/workspace";
   import { orchestrations } from "$lib/orchestration/orchestrationState";
-  import { resolveAgentConfig } from "$lib/settings";
-  import { askConfirmChecked, showAlert } from "$lib/dialog";
+  import { resolveAgentConfig } from "$lib/core/settings";
+  import { askConfirmChecked, showAlert } from "$lib/core/dialog";
   import {
     gitStore,
     rootPathOf,
@@ -34,7 +34,7 @@
     type SweepVerdict,
   } from "$lib/git/worktreeSweep";
   import { splitPath, type WorktreeInfo } from "$lib/git/git";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import GitForkDialog from "$lib/git/GitForkDialog.svelte";
   import GitDiscardDialog from "$lib/git/GitDiscardDialog.svelte";
 

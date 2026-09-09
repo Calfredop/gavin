@@ -4,7 +4,7 @@
 // race. Lives outside layoutState.ts because confirmClose.ts already
 // imports layoutState -- importing it back would form an import cycle.
 import { confirmTabsClose } from "$lib/shell/confirmClose";
-import { closeSession } from "$lib/layoutState";
+import { closeSession } from "$lib/core/layoutState";
 
 export async function closeTabs(sessionIds: string[]): Promise<void> {
   if (!(await confirmTabsClose(sessionIds))) return;

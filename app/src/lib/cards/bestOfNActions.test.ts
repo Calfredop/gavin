@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable } from "svelte/store";
 import type { BestOfNRun, CandidatePlan } from "$lib/cards/bestOfN";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 
 // The order every step happens in is what this file is really testing --
 // a run creates real folders and real processes, and the order is what
@@ -10,7 +10,7 @@ const trace: string[] = [];
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   setPlanFrontmatterField: vi.fn(async (path: string) => {
     trace.push("status");
     return path;
@@ -29,7 +29,7 @@ const createTiledPage = vi.fn(async (_ws: string, _name: string, specs: { cwd: s
   return { pageId: "page-1", sessionIds: specs.map((_, i) => `s${i + 1}`) };
 });
 
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/layoutState", () => ({
   layoutState: writable({ workspaces: [], sessionStatusById: {}, interruptedSessionIds: new Set(), failureReasonById: {} }),
   createTiledPage: (...args: Parameters<typeof createTiledPage>) => createTiledPage(...args),
   candidateAgentFor: vi.fn((_ws: string, c: { profileId: string; model: string }) => ({
@@ -87,7 +87,7 @@ vi.mock("$lib/cards/cardRunActions", () => ({
 // the app's dialog and waits; this is the seam the answer is driven
 // through, and it says yes unless a test says otherwise.
 vi.mock("$lib/cards/cardReviewActions", () => ({ ensureCardReviewed: vi.fn(async () => true) }));
-vi.mock("$lib/gavinState", () => ({
+vi.mock("$lib/core/gavinState", () => ({
   gavinTrees: writable({ "ws-1": { rootPath: "/repos/gavin" } }),
   // The store, not a `worktreeSetup` call: the launch reads the same
   // copy workspace trust hashed, so a fresher read cannot slip lines
@@ -103,12 +103,12 @@ vi.mock("$lib/panes/tabActions", () => ({
 }));
 
 const askConfirmChecked = vi.fn(async () => ({ confirmed: true, checked: true }));
-vi.mock("$lib/dialog", () => ({ askConfirmChecked: (...a: unknown[]) => askConfirmChecked(...(a as [])) }));
+vi.mock("$lib/core/dialog", () => ({ askConfirmChecked: (...a: unknown[]) => askConfirmChecked(...(a as [])) }));
 
 const { startBestOfN, pickCandidate, abandonRun } = await import("$lib/cards/bestOfNActions");
 const { bestOfNRuns } = await import("$lib/cards/bestOfNState");
-const backend = await import("$lib/backend");
-const layoutState = await import("$lib/layoutState");
+const backend = await import("$lib/core/backend");
+const layoutState = await import("$lib/core/layoutState");
 const columnRunAction = await import("$lib/board/columnRunAction");
 
 const CARD: CardView = {

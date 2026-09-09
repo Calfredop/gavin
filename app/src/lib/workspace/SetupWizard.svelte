@@ -5,13 +5,13 @@
     agentProfilesStore,
     agentModelDefaultsStore,
     trustedAgentConfigs,
-  } from "$lib/layoutState";
-  import { gavinTrees } from "$lib/gavinState";
-  import { resolveAgentConfig, resolvePrdPath } from "$lib/settings";
+  } from "$lib/core/layoutState";
+  import { gavinTrees } from "$lib/core/gavinState";
+  import { resolveAgentConfig, resolvePrdPath } from "$lib/core/settings";
   import { setupProgress, type SetupStep } from "$lib/workspace/setupWizard";
   import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
-  import * as backend from "$lib/backend";
-  import Modal from "$lib/Modal.svelte";
+  import * as backend from "$lib/core/backend";
+  import Modal from "$lib/core/Modal.svelte";
   import AgentStep from "$lib/wizardSteps/AgentStep.svelte";
   import IntegrationStep from "$lib/wizardSteps/IntegrationStep.svelte";
   import PrdStep from "$lib/wizardSteps/PrdStep.svelte";

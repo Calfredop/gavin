@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Modal from "$lib/Modal.svelte";
+  import Modal from "$lib/core/Modal.svelte";
   import { shortSha, type ResetMode } from "$lib/git/git";
 
   interface Props {

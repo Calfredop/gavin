@@ -1,9 +1,9 @@
 <script lang="ts">
-  import Modal from "$lib/Modal.svelte";
+  import Modal from "$lib/core/Modal.svelte";
   import GitForkDialog from "$lib/git/GitForkDialog.svelte";
   import { gitStore, createBranch } from "$lib/git/gitState";
-  import { gavinTrees } from "$lib/gavinState";
-  import { layoutState, createPage, resolvedAgentFor, daemonCompat } from "$lib/layoutState";
+  import { gavinTrees } from "$lib/core/gavinState";
+  import { layoutState, createPage, resolvedAgentFor, daemonCompat } from "$lib/core/layoutState";
   import {
     bindRailAction,
     orchestrations,
@@ -12,7 +12,7 @@
   } from "$lib/orchestration/orchestrationState";
   import { presetSingle } from "$lib/panes/layout";
   import { freeBranchNameFrom, validateBranchName } from "$lib/git/git";
-  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
   import {
     RAIL_BIND_TABS,
     railBindChip,

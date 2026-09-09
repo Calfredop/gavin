@@ -4,12 +4,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // file has to stand in for everything that builder reaches for too.
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
-vi.mock("$lib/backend", () => ({
+vi.mock("$lib/core/backend", () => ({
   gavinRootExists: vi.fn(),
   openPathExternally: vi.fn().mockResolvedValue(undefined),
   revealPathExternally: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("$lib/layoutState", () => ({
+vi.mock("$lib/core/layoutState", () => ({
   closeWorkspace: vi.fn().mockResolvedValue(undefined),
   closePage: vi.fn().mockResolvedValue(undefined),
   movePageAction: vi.fn().mockResolvedValue(undefined),
@@ -58,7 +58,7 @@ vi.mock("$lib/shell/confirmClose", () => ({
 
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
-import { gavinRootExists, openPathExternally, revealPathExternally } from "$lib/backend";
+import { gavinRootExists, openPathExternally, revealPathExternally } from "$lib/core/backend";
 import {
   closeWorkspace,
   closePage,
@@ -72,7 +72,7 @@ import {
   setWorkspacePinned,
   setPagePinned,
   splitPane,
-} from "$lib/layoutState";
+} from "$lib/core/layoutState";
 import { workspaceWindows } from "$lib/shell/appWindowState";
 import { closeTabs } from "$lib/panes/tabActions";
 import { confirmPageClose } from "$lib/shell/confirmClose";
@@ -85,8 +85,8 @@ import {
 } from "$lib/sidebar/sidebarMenu";
 import type { TabMenuContext } from "$lib/panes/tabMenu";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
-import { isSeparator, type ContextMenuItem, type ContextMenuEntry } from "$lib/contextMenu";
-import { UNFILED_WORKSPACE_ID, type Workspace, type Page } from "$lib/workspace";
+import { isSeparator, type ContextMenuItem, type ContextMenuEntry } from "$lib/core/contextMenu";
+import { UNFILED_WORKSPACE_ID, type Workspace, type Page } from "$lib/core/workspace";
 
 const page = (id: string): Page => ({
   id,

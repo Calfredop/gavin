@@ -1,9 +1,9 @@
 // Right-click menus for the sidebar: workspace rows, page rows, and the
 // tab rows inside an expanded page. Pure builders; the Sidebar supplies
 // inline-rename / new-page / error hooks.
-import { openPathExternally } from "$lib/backend";
+import { openPathExternally } from "$lib/core/backend";
 import { pickPath } from "$lib/workspace/picker";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import {
   closeWorkspace,
   closePage,
@@ -14,15 +14,15 @@ import {
   setWorkspaceRoot,
   setWorkspacePinned,
   setPagePinned,
-} from "$lib/layoutState";
+} from "$lib/core/layoutState";
 import { windowActionLabel } from "$lib/shell/appWindow";
 import { currentWindowLabel, currentWorkspaceWindows } from "$lib/shell/appWindowState";
 import { confirmWorkspaceClose, confirmPageClose } from "$lib/shell/confirmClose";
 import { buildTabMenuEntries, type TabMenuContext } from "$lib/panes/tabMenu";
 import { closeIdlePrompt, idleTabsOnPage, type CloseIdleRequest } from "$lib/panes/idleTabs";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
-import { UNFILED_WORKSPACE_ID, isPinned, type Workspace, type Page } from "$lib/workspace";
-import type { ContextMenuEntry } from "$lib/contextMenu";
+import { UNFILED_WORKSPACE_ID, isPinned, type Workspace, type Page } from "$lib/core/workspace";
+import type { ContextMenuEntry } from "$lib/core/contextMenu";
 
 export interface SidebarMenuHooks {
   startRenameWorkspace: (workspaceId: string) => void;

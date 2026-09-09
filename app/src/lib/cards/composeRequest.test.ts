@@ -6,8 +6,8 @@ import {
   takeComposeRequest,
   type ComposeTarget,
 } from "$lib/cards/composeRequest";
-import type { Workspace } from "$lib/workspace";
-import type { BoardTab } from "$lib/gavin";
+import type { Workspace } from "$lib/core/workspace";
+import type { BoardTab } from "$lib/core/gavin";
 
 function ws(over: Partial<Workspace> = {}): Workspace {
   return { id: "ws-1", name: "ws-1", pages: [], activePageId: null, ...over };

@@ -8,19 +8,19 @@
 // rail step -- so it is patched into the tree immediately rather than
 // waited for from the watcher ~170ms later.
 
-import { askConfirm } from "$lib/dialog";
+import { askConfirm } from "$lib/core/dialog";
 import { get } from "svelte/store";
-import * as backend from "$lib/backend";
-import { patchPlanPath } from "$lib/gavinState";
+import * as backend from "$lib/core/backend";
+import { patchPlanPath } from "$lib/core/gavinState";
 import { kanbanState, refreshBoard } from "$lib/board/kanbanState";
-import { layoutState, closeSession } from "$lib/layoutState";
+import { layoutState, closeSession } from "$lib/core/layoutState";
 import {
   closablesForArchive,
   liveSessionTotal,
   archiveClosePrompt,
   type ArchiveClosables,
 } from "$lib/files/archiveClose";
-import { slugStatus, type CardView } from "$lib/planBoard";
+import { slugStatus, type CardView } from "$lib/core/planBoard";
 
 /// Archiving a plan moves its nested children on disk too, so their
 /// paths change without the app ever asking. Listing them here keeps the

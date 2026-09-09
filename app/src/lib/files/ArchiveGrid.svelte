@@ -15,9 +15,9 @@
   import { attachBoardDrag } from "$lib/board/kanbanDragGlue";
   import { boardSelection, toggleCardSelected, clearBoardSelection } from "$lib/board/boardSelection";
   import { archivedOn } from "$lib/files/archive";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import type { Label } from "$lib/board/kanban";
-  import type { CardView } from "$lib/planBoard";
+  import type { CardView } from "$lib/core/planBoard";
 
   interface Props {
     workspaceId: string;

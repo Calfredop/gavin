@@ -7,8 +7,8 @@
     agentModelDefaultsStore,
     setAgentField,
     trustedAgentConfigs,
-  } from "$lib/layoutState";
-  import { resolveAgentConfig, agentFileFromPick } from "$lib/settings";
+  } from "$lib/core/layoutState";
+  import { resolveAgentConfig, agentFileFromPick } from "$lib/core/settings";
   import ConfigTrustNotice from "$lib/workspace/ConfigTrustNotice.svelte";
 
   interface Props {

@@ -11,10 +11,10 @@
 // session dies, the row survives, and a card restored from the archive
 // still offers "Re-launch agent" with the cwd and command it ran with.
 
-import { findSessionLocation } from "$lib/workspace";
-import type { Workspace } from "$lib/workspace";
+import { findSessionLocation } from "$lib/core/workspace";
+import type { Workspace } from "$lib/core/workspace";
 import type { Board } from "$lib/board/kanban";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 
 /// The slice of LayoutState this projection reads. Structural rather
 /// than the whole type, so the module never has to import layoutState

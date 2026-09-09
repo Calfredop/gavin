@@ -1,8 +1,8 @@
 <script lang="ts">
   import { RefreshCw } from "@lucide/svelte";
-  import Modal from "$lib/Modal.svelte";
+  import Modal from "$lib/core/Modal.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { agentProfilesStore } from "$lib/layoutState";
+  import { agentProfilesStore } from "$lib/core/layoutState";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { usageProjectionIndicator } from "$lib/ui/indicators";
   import { projectWindow, projectionSentence } from "$lib/agents/usageProjection";

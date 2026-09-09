@@ -18,15 +18,15 @@
 // does exactly this.
 
 import { get, writable, type Readable } from "svelte/store";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import {
   resolvedAgentFor,
   armFailureDetection,
   handleAgentSessionSpawned,
   setSessionName,
   workspaceRootPath,
-} from "$lib/layoutState";
-import { gavinTrees } from "$lib/gavinState";
+} from "$lib/core/layoutState";
+import { gavinTrees } from "$lib/core/gavinState";
 import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
 import { revealSession } from "$lib/cards/cardRunActions";
 import { buildRunCommand, provisionalSessionName } from "$lib/cards/cardRun";
@@ -39,7 +39,7 @@ import {
   REVIEW_RULES_STARTER,
   type ReviewedCard,
 } from "$lib/review/codeReview";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 import { holdOrQueue, type ReviewIntent } from "$lib/agents/launchQueue";
 
 /// A review the human has been asked to confirm the base for. Everything

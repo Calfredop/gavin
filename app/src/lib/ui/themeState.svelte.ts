@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import * as backend from "$lib/backend";
+import * as backend from "$lib/core/backend";
 import { applyTerminalTheme } from "$lib/terminal/terminalRegistry";
 import { resolveTheme, parseThemePref, type ThemePref, type EffectiveTheme } from "$lib/ui/theme";
 

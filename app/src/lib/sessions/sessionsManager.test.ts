@@ -29,8 +29,8 @@ import {
   dropRootsConfirm,
   watchmanLine,
 } from "$lib/sessions/sessionsManager";
-import { restartOutcome, restartStopsAgentsLine } from "$lib/daemonCompat";
-import type { Workspace } from "$lib/workspace";
+import { restartOutcome, restartStopsAgentsLine } from "$lib/core/daemonCompat";
+import type { Workspace } from "$lib/core/workspace";
 
 const SECOND = 1_000_000;
 

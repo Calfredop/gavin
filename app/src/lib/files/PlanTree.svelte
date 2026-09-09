@@ -13,9 +13,9 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { priorityIndicator } from "$lib/ui/indicators";
-  import { openPathExternally } from "$lib/backend";
-  import { showAlert } from "$lib/dialog";
-  import { openContextMenuFromEvent } from "$lib/contextMenu";
+  import { openPathExternally } from "$lib/core/backend";
+  import { showAlert } from "$lib/core/dialog";
+  import { openContextMenuFromEvent } from "$lib/core/contextMenu";
   import {
     contextRowMenuItems,
     fileMenuItems,

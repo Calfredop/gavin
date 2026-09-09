@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { childCards, parentCard } from "$lib/cards/cardRelations";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 
 function view(path: string, kind: CardView["kind"], status: string | null, extra: Partial<CardView> = {}): CardView {
   return {

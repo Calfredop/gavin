@@ -3,7 +3,7 @@
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
   import FollowUpQueueView from "$lib/agents/FollowUpQueueView.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import {
     layoutState,
     queuedInputsById,
@@ -12,8 +12,8 @@
     setAgentField,
     resolvedAgentFor,
     terminalFontSizeDefault,
-  } from "$lib/layoutState";
-  import { gavinTrees } from "$lib/gavinState";
+  } from "$lib/core/layoutState";
+  import { gavinTrees } from "$lib/core/gavinState";
   import { resolveTerminalFontSize } from "$lib/terminal/terminalFont";
   import { queueBlockedReason, queueTip } from "$lib/agents/queuedInput";
   import { queueTargetFor } from "$lib/agents/queuedInputActions";

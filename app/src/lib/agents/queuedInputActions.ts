@@ -15,9 +15,9 @@
 // because the session went idle.
 
 import { get } from "svelte/store";
-import * as backend from "$lib/backend";
-import { featureBlockedReason } from "$lib/daemonCompat";
-import { daemonCompat, queuedInputsById, handleQueuedInputsChanged } from "$lib/layoutState";
+import * as backend from "$lib/core/backend";
+import { featureBlockedReason } from "$lib/core/daemonCompat";
+import { daemonCompat, queuedInputsById, handleQueuedInputsChanged } from "$lib/core/layoutState";
 import {
   composeRefusal,
   moveQueued,

@@ -21,7 +21,7 @@
   import { sidebarCollapsed, toggleSidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
   import { sidebarSearchOpen, toggleSidebarSearch } from "$lib/sidebar/sidebarSearch";
   import { openWorkspaceFolder } from "$lib/workspace/workspaceOpen";
-  import { layoutState } from "$lib/layoutState";
+  import { layoutState } from "$lib/core/layoutState";
 
   // Keyed off the preference rather than off sidebarShowsRail: a peek is
   // the collapsed column borrowing its full width for a glance, and

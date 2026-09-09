@@ -19,17 +19,17 @@
     currentBranch,
   } from "$lib/git/gitState";
   import { branchLabel } from "$lib/git/git";
-  import { gavinTrees } from "$lib/gavinState";
+  import { gavinTrees } from "$lib/core/gavinState";
   import {
     agentProfilesStore,
     agentModelDefaultsStore,
     layoutState,
     trustedAgentConfigs,
-  } from "$lib/layoutState";
-  import { resolveAgentConfig } from "$lib/settings";
+  } from "$lib/core/layoutState";
+  import { resolveAgentConfig } from "$lib/core/settings";
   import { reviewBlocker } from "$lib/review/codeReview";
   import { requestBranchReview } from "$lib/review/codeReviewActions";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
   import IconButton from "$lib/ui/IconButton.svelte";
   import GitPromptDialog from "$lib/git/GitPromptDialog.svelte";
 

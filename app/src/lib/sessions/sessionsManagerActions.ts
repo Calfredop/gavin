@@ -13,9 +13,9 @@
 // does nothing at all. "Kill all does nothing" was exactly that.
 
 import { get } from "svelte/store";
-import * as backend from "$lib/backend";
-import { restartOutcome, type DaemonCompat } from "$lib/daemonCompat";
-import { askConfirm, showAlert } from "$lib/dialog";
+import * as backend from "$lib/core/backend";
+import { restartOutcome, type DaemonCompat } from "$lib/core/daemonCompat";
+import { askConfirm, showAlert } from "$lib/core/dialog";
 import {
   handleAgentSessionSpawned,
   handleOrphanEnded,
@@ -24,9 +24,9 @@ import {
   restartDaemonInPlace,
   switchToSessionInPage,
   switchWorkspaceView,
-} from "$lib/layoutState";
-import { findSessionLocation } from "$lib/workspace";
-import { confirmDestructive, DAEMON_SUBJECT } from "$lib/confirmGate";
+} from "$lib/core/layoutState";
+import { findSessionLocation } from "$lib/core/workspace";
+import { confirmDestructive, DAEMON_SUBJECT } from "$lib/core/confirmGate";
 import {
   killBatchConfirm,
   killConfirm,

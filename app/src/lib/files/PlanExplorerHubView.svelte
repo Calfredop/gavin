@@ -1,8 +1,8 @@
 <script lang="ts">
   import { pickPath } from "$lib/workspace/picker";
-  import { daemonCompat, layoutState, openFileInSplit, switchWorkspaceView } from "$lib/layoutState";
-  import { gavinTrees, refreshGavinTree } from "$lib/gavinState";
-  import type { GavinTree } from "$lib/gavin";
+  import { daemonCompat, layoutState, openFileInSplit, switchWorkspaceView } from "$lib/core/layoutState";
+  import { gavinTrees, refreshGavinTree } from "$lib/core/gavinState";
+  import type { GavinTree } from "$lib/core/gavin";
   import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
   import {
     buildExplorerTree,
@@ -18,18 +18,18 @@
     type ExplorerSelection,
     type CreatableGroup,
   } from "$lib/files/planExplorer";
-  import { mergePlanCards, type CardView } from "$lib/planBoard";
+  import { mergePlanCards, type CardView } from "$lib/core/planBoard";
   import { NEW_CARD_STATUS } from "$lib/cards/cardCompose";
   import { placeCardAtColumnEnd } from "$lib/files/planDrop";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cards/cardDelete";
-  import { grantForAnsweredPrompt } from "$lib/confirmGate";
+  import { grantForAnsweredPrompt } from "$lib/core/confirmGate";
   import { executeUnarchive } from "$lib/files/archiveActions";
-  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
   import { defaultMode } from "$lib/files/fileEditing";
   import PlanTree from "$lib/files/PlanTree.svelte";
   import FileEditor from "$lib/files/FileEditor.svelte";
   import PlanMetadataPanel from "$lib/files/PlanMetadataPanel.svelte";
-  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import FormatHelpModal from "$lib/files/FormatHelpModal.svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
@@ -37,7 +37,7 @@
   import { contextFacets, pruneFacets } from "$lib/board/boardFilters";
   import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/board/hubFacets";
   import FacetFilters from "$lib/board/FacetFilters.svelte";
-  import * as backend from "$lib/backend";
+  import * as backend from "$lib/core/backend";
 
   interface Props {
     workspaceId: string;

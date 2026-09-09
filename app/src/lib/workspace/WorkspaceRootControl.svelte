@@ -6,16 +6,16 @@
     gitTrackingDefault,
     markGitTrackingAsked,
     recordMcpForeignChoice,
-  } from "$lib/layoutState";
+  } from "$lib/core/layoutState";
   import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/git/gitTracking";
   import { applyInitTracking } from "$lib/workspace/workspaceOpen";
-  import { gavinTrees } from "$lib/gavinState";
-  import { agentProfilesStore, agentModelDefaultsStore, trustedAgentConfigs } from "$lib/layoutState";
-  import { resolveAgentConfig } from "$lib/settings";
-  import * as backend from "$lib/backend";
+  import { gavinTrees } from "$lib/core/gavinState";
+  import { agentProfilesStore, agentModelDefaultsStore, trustedAgentConfigs } from "$lib/core/layoutState";
+  import { resolveAgentConfig } from "$lib/core/settings";
+  import * as backend from "$lib/core/backend";
   import { foreignMcpServersHash, runIntegration } from "$lib/workspace/mcpServerTrust";
-  import { UNFILED_WORKSPACE_ID, type Workspace } from "$lib/workspace";
-  import Modal from "$lib/Modal.svelte";
+  import { UNFILED_WORKSPACE_ID, type Workspace } from "$lib/core/workspace";
+  import Modal from "$lib/core/Modal.svelte";
   import McpForeignChooser from "$lib/workspace/McpForeignChooser.svelte";
 
   interface Props {

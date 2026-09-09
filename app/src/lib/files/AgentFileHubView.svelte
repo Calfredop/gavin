@@ -5,8 +5,8 @@
     agentModelDefaultsStore,
     setAgentField,
     trustedAgentConfigs,
-  } from "$lib/layoutState";
-  import { resolveAgentConfig, agentFileFromPick } from "$lib/settings";
+  } from "$lib/core/layoutState";
+  import { resolveAgentConfig, agentFileFromPick } from "$lib/core/settings";
   import FileEditor from "$lib/files/FileEditor.svelte";
   import HubFilePicker from "$lib/hub/HubFilePicker.svelte";
 

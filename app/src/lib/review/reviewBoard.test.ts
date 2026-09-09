@@ -23,7 +23,7 @@ import {
   type ReviewCandidate,
   type ReviewGroup,
 } from "$lib/review/reviewBoard";
-import type { CardView, MergedProjection } from "$lib/planBoard";
+import type { CardView, MergedProjection } from "$lib/core/planBoard";
 import type { Column } from "$lib/board/kanban";
 import { ANY, NO_FACETS, type BoardFacets } from "$lib/board/boardFilters";
 import { railIndex } from "$lib/board/planFilter";

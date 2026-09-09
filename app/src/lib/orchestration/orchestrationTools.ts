@@ -14,7 +14,7 @@
 // constants here and never reach the daemon; everything else is stored
 // per workspace or global to the machine.
 
-import { isAbsolutePath } from "$lib/paths";
+import { isAbsolutePath } from "$lib/core/paths";
 import { composeReviewPrompt, REVIEW_RULES_LABEL } from "$lib/review/codeReview";
 
 /// `gavin` is the odd one out: an action the APP performs, with no

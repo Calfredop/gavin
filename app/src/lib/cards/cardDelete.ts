@@ -6,10 +6,10 @@
 // files daemon-side; a live agent session stays visible on the Agents
 // page.
 
-import * as backend from "$lib/backend";
-import { patchPlanRemoved, patchPlanField } from "$lib/gavinState";
+import * as backend from "$lib/core/backend";
+import { patchPlanRemoved, patchPlanField } from "$lib/core/gavinState";
 import { refreshBoard } from "$lib/board/kanbanState";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 
 export interface DeletionPlan {
   // Files to delete, dragged-in order: the card itself plus, for plans,

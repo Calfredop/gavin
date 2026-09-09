@@ -21,7 +21,7 @@
     CircleDashed,
     TriangleAlert,
   } from "@lucide/svelte";
-  import * as backend from "$lib/backend";
+  import * as backend from "$lib/core/backend";
   import {
     layoutState,
     switchWorkspace,
@@ -31,8 +31,8 @@
     agentProfilesStore,
     resolvedAgents,
     attentionState,
-  } from "$lib/layoutState";
-  import { featureBlockedReason } from "$lib/daemonCompat";
+  } from "$lib/core/layoutState";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
   import { workspaceAgentsSummary, kanbanColumnChips, railStripStats, showGitChip } from "$lib/sidebar/sidebarSummary";
   import type { FleetSummary, RunningTask, TaskPhase, WorkspaceRunning } from "$lib/hub/appHub";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
@@ -89,12 +89,12 @@
   import { revealSession } from "$lib/cards/cardRunActions";
   import { kanbanState } from "$lib/board/kanbanState";
   import { fleetStripLine } from "$lib/agents/launchQueue";
-  import { gavinTrees } from "$lib/gavinState";
+  import { gavinTrees } from "$lib/core/gavinState";
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestration/orchestrationState";
   import { railsWantingAttention } from "$lib/orchestration/orchestration";
   import { agentCommitPhase, gitStore } from "$lib/git/gitState";
-  import { tooltip } from "$lib/tooltip";
-  import { accentVar } from "$lib/settings";
+  import { tooltip } from "$lib/core/tooltip";
+  import { accentVar } from "$lib/core/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
 
   /// The row's badge is the board card's badge for the same session --

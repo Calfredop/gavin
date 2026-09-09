@@ -23,7 +23,7 @@
 
 import { get, writable } from "svelte/store";
 import type { BestOfNRun, RunCandidate } from "$lib/cards/bestOfN";
-import type { CardView } from "$lib/planBoard";
+import type { CardView } from "$lib/core/planBoard";
 
 /// Storage is injected (defaulting to the browser's) so this module stays
 /// testable under vitest's node environment, where localStorage does not

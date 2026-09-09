@@ -6,18 +6,18 @@
   // of the app, so the button is where it always was -- top right --
   // without the app owing a full-width strip to keep it there.
   import { get } from "svelte/store";
-  import { layoutState, createPage, switchWorkspaceView } from "$lib/layoutState";
-  import { getActiveWorkspace } from "$lib/workspace";
+  import { layoutState, createPage, switchWorkspaceView } from "$lib/core/layoutState";
+  import { getActiveWorkspace } from "$lib/core/workspace";
   import {
     contextMenu,
     openMenuUnder,
     setContextMenuEntries,
     type ContextMenuEntry,
-  } from "$lib/contextMenu";
+  } from "$lib/core/contextMenu";
   import { newPageEntries, NEW_PAGE_TITLE, type PagePreset } from "$lib/panes/newPage";
   import { Plus, ChevronDown } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { tooltip } from "$lib/tooltip";
+  import { tooltip } from "$lib/core/tooltip";
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
 

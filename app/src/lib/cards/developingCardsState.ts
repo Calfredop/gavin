@@ -9,8 +9,8 @@
 // still has to release the card.
 
 import { get } from "svelte/store";
-import { layoutState, setDevelopingCards } from "$lib/layoutState";
-import { sessionLiveness, type DevelopingCardRecord } from "$lib/workspace";
+import { layoutState, setDevelopingCards } from "$lib/core/layoutState";
+import { sessionLiveness, type DevelopingCardRecord } from "$lib/core/workspace";
 import { developRunOver, developingRunFor, DEVELOPING_BLOCK } from "$lib/cards/developingCards";
 
 /// Every develop run this workspace is holding. Empty for a workspace

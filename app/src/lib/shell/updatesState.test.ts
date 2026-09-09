@@ -7,7 +7,7 @@ const host = vi.hoisted(() => ({
   checkForUpdate: vi.fn(),
 }));
 
-vi.mock("$lib/backend", () => host);
+vi.mock("$lib/core/backend", () => host);
 
 import {
   availableUpdate,

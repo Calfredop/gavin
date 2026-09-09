@@ -12,8 +12,8 @@
 // different: it narrows which CONTEXT NODES appear at all, docs and
 // specs included, since it answers "where" rather than "what".
 
-import { matchesFields, queryTokens } from "$lib/search";
-import { slugStatus } from "$lib/planBoard";
+import { matchesFields, queryTokens } from "$lib/core/search";
+import { slugStatus } from "$lib/core/planBoard";
 import { isCardGroup } from "$lib/files/planExplorer";
 import type { ExplorerContextNode, ExplorerFile, ExplorerGroupNode } from "$lib/files/planExplorer";
 import type { Orchestration } from "$lib/orchestration/orchestration";

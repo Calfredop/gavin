@@ -3,7 +3,7 @@
   import { activeOrchDragRoot } from "$lib/orchestration/orchestrationDragGlue";
   import BoardCard from "$lib/board/BoardCard.svelte";
   import type { Label } from "$lib/board/kanban";
-  import type { PlacedCardView } from "$lib/planBoard";
+  import type { PlacedCardView } from "$lib/core/planBoard";
   import { findStep, stageLabelById, type CardEntry, type Orchestration } from "$lib/orchestration/orchestration";
   import type { Tool } from "$lib/orchestration/orchestrationTools";
   import type { GroupTemplate } from "$lib/orchestration/orchestrationGroups";
