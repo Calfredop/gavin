@@ -1,7 +1,7 @@
 {
-  "name": "app",
+  "name": "gavin-app",
   "version": "0.1.0",
-  "description": "",
+  "description": "The Gavin desktop app: SvelteKit SPA + Tauri host.",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
