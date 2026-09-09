@@ -12,7 +12,7 @@
   // own projection and hands it to the same components the hub tabs
   // mount, so a card never has two different detail panels.
   import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/board/kanbanState";
-  import { fetchOrchestration, orchestrations } from "$lib/orchestrationState";
+  import { fetchOrchestration, orchestrations } from "$lib/orchestration/orchestrationState";
   import { gavinTrees } from "$lib/gavinState";
   import { indexCardViews, mergePlanCards, type CardView } from "$lib/planBoard";
   import {

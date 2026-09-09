@@ -19,7 +19,7 @@ import {
 import { switchWorkspace, switchWorkspaceView } from "$lib/layoutState";
 import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/gavin";
-import type { Orchestration } from "$lib/orchestration";
+import type { Orchestration } from "$lib/orchestration/orchestration";
 
 const board = (...pairs: [string, string][]): Board => ({
   columns: [],

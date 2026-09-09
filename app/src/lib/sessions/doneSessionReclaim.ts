@@ -56,7 +56,7 @@ import type { GavinTree } from "$lib/gavin";
 import type { Board } from "$lib/board/kanban";
 import type { LaunchConfig } from "$lib/launchGate";
 import type { MemoryPressure } from "$lib/memory";
-import type { Orchestration } from "$lib/orchestration";
+import type { Orchestration } from "$lib/orchestration/orchestration";
 import type { Workspace } from "$lib/workspace";
 import { countsInFlight } from "$lib/launchGate";
 import { isPinned } from "$lib/panes/layout";
@@ -68,10 +68,10 @@ import {
   planIndex,
   runningStageId,
   stepStateOf,
-} from "$lib/orchestration";
+} from "$lib/orchestration/orchestration";
 import { sessionLabel } from "$lib/paths";
 import { slugStatus } from "$lib/planBoard";
-import { count } from "$lib/railConfirm";
+import { count } from "$lib/orchestration/railConfirm";
 import { findSessionLocation } from "$lib/workspace";
 
 /// How long a session AND its card must have been quiet before the

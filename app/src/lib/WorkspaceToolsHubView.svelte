@@ -22,15 +22,15 @@
   import { Copy, FolderOpen, Pencil, Play, Plus, Settings2 } from "@lucide/svelte";
   import { daemonCompat, layoutState, workspaceRootPath } from "$lib/layoutState";
   import { revealSession } from "$lib/cards/cardRunActions";
-  import { toolRecords, fetchTools, renderLibraryFor } from "$lib/toolsState";
+  import { toolRecords, fetchTools, renderLibraryFor } from "$lib/orchestration/toolsState";
   import {
     groupTemplateRecords,
     libraryFor as templateLibraryFor,
     fetchGroupTemplates,
-  } from "$lib/groupTemplatesState";
-  import { toolRunsStore, refreshToolRuns } from "$lib/toolRunsState";
+  } from "$lib/orchestration/groupTemplatesState";
+  import { toolRunsStore, refreshToolRuns } from "$lib/orchestration/toolRunsState";
   import { requestToolRun } from "$lib/workspaceToolsActions";
-  import { emptyTool, toolKindLabel, type Tool } from "$lib/orchestrationTools";
+  import { emptyTool, toolKindLabel, type Tool } from "$lib/orchestration/orchestrationTools";
   import {
     editDraftFor,
     lastRunsFor,
@@ -48,8 +48,8 @@
   import { runIndicator } from "$lib/ui/indicators";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
-  import ToolLibraryDialog from "$lib/ToolLibraryDialog.svelte";
-  import ToolRunDialog from "$lib/ToolRunDialog.svelte";
+  import ToolLibraryDialog from "$lib/orchestration/ToolLibraryDialog.svelte";
+  import ToolRunDialog from "$lib/orchestration/ToolRunDialog.svelte";
   import { tooltip } from "$lib/tooltip";
   import { toolIcon } from "$lib/ui/toolKindIcon";
 

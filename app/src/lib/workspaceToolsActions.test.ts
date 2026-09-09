@@ -32,11 +32,11 @@ import {
   workspaceRootPath,
 } from "$lib/layoutState";
 import { revealSession } from "$lib/cards/cardRunActions";
-import { toolRecords, __resetForTesting as resetTools } from "$lib/toolsState";
+import { toolRecords, __resetForTesting as resetTools } from "$lib/orchestration/toolsState";
 import {
   toolRunsStore,
   __resetForTesting as resetRuns,
-} from "$lib/toolRunsState";
+} from "$lib/orchestration/toolRunsState";
 import {
   cancelToolRun,
   confirmToolRun,
@@ -45,7 +45,7 @@ import {
   toolRunRequest,
   __resetForTesting,
 } from "$lib/workspaceToolsActions";
-import type { Tool } from "$lib/orchestrationTools";
+import type { Tool } from "$lib/orchestration/orchestrationTools";
 
 const AGENT = {
   profileId: "claude-code",

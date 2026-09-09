@@ -48,10 +48,10 @@ import {
   refreshToolRuns,
   startToolRunWatcher,
   toolRunsStore,
-} from "$lib/toolRunsState";
-import { resolveToolBody, resolveToolCwd, type Tool } from "$lib/orchestrationTools";
+} from "$lib/orchestration/toolRunsState";
+import { resolveToolBody, resolveToolCwd, type Tool } from "$lib/orchestration/orchestrationTools";
 import { holdOrQueue, type ToolIntent } from "$lib/launchQueue";
-import { renderLibraryFor, toolRecords } from "$lib/toolsState";
+import { renderLibraryFor, toolRecords } from "$lib/orchestration/toolsState";
 import { cannotRunAloneReason, isRunnableStandalone, runBlockedReason } from "$lib/workspaceTools";
 
 /// A launch the human has been asked to fill the parameters of.

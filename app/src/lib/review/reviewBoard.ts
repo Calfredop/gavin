@@ -19,7 +19,7 @@
 // card reviewed clean had been looked at.
 
 import type { Column } from "$lib/board/kanban";
-import { doneColumnOf } from "$lib/orchestration";
+import { doneColumnOf } from "$lib/orchestration/orchestration";
 import { slugStatus, type CardView, type MergedProjection } from "$lib/planBoard";
 import { cardMatches } from "$lib/board/boardSearch";
 import { queryTokens } from "$lib/search";

@@ -60,7 +60,7 @@ vi.mock("$lib/launchQueue", () => ({
   launchGateVerdict: probe.launchGateVerdict,
   launchQueue: probe.launchQueue,
 }));
-vi.mock("$lib/orchestrationState", () => ({ orchestrations: probe.orchestrations }));
+vi.mock("$lib/orchestration/orchestrationState", () => ({ orchestrations: probe.orchestrations }));
 vi.mock("$lib/panes/tabActions", () => ({ closeTabsNow: probe.closeTabsNow }));
 vi.mock("$lib/dialog", () => ({ askConfirm: probe.askConfirm }));
 vi.mock("@tauri-apps/plugin-notification", () => ({

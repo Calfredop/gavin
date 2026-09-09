@@ -9,8 +9,8 @@ import { getActiveView } from "$lib/workspace";
 import { listen } from "@tauri-apps/api/event";
 import { askConfirm } from "$lib/dialog";
 import { kanbanState } from "$lib/board/kanbanState";
-import { orchestrations } from "$lib/orchestrationState";
-import { toolRecords } from "$lib/toolsState";
+import { orchestrations } from "$lib/orchestration/orchestrationState";
+import { toolRecords } from "$lib/orchestration/toolsState";
 
 // setWorkspaceRoot's reclaim offer is the only dialog this module opens.
 // Defaults to "Start fresh" so every test that is not about the reclaim

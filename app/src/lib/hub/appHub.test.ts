@@ -27,7 +27,7 @@ import { UNFILED_WORKSPACE_ID, type Page, type Workspace } from "$lib/workspace"
 import type { LayoutNode } from "$lib/panes/layout";
 import type { Board } from "$lib/board/kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
-import type { Orchestration } from "$lib/orchestration";
+import type { Orchestration } from "$lib/orchestration/orchestration";
 
 function ws(id: string, lastActiveAt?: number): Workspace {
   return { id, name: id.toUpperCase(), pages: [], activePageId: null, lastActiveAt };

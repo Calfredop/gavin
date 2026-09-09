@@ -22,12 +22,12 @@ import { DEVELOPING_MENU_LABEL } from "$lib/cards/developingCards";
 import { requestCardReview } from "$lib/review/codeReviewActions";
 import { developAvailable } from "$lib/cards/cardRun";
 import { cardSessionState } from "$lib/board/columnRunAction";
-import { findCardPlacement } from "$lib/orchestration";
+import { findCardPlacement } from "$lib/orchestration/orchestration";
 import {
   orchestrations,
   sendCardToRailAction,
   removeCardFromRailAction,
-} from "$lib/orchestrationState";
+} from "$lib/orchestration/orchestrationState";
 import { executeArchive, executeUnarchive } from "$lib/files/archiveActions";
 import { bestOfNRequest, bestOfNRuns, runForCard } from "$lib/cards/bestOfNState";
 import { featureBlockedReason } from "$lib/daemonCompat";

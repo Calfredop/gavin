@@ -31,11 +31,11 @@ import {
 import { sessionLabel } from "$lib/paths";
 import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/gavinState";
-import { orchestrations, resumeStep } from "$lib/orchestrationState";
+import { orchestrations, resumeStep } from "$lib/orchestration/orchestrationState";
 import { resumeCard } from "$lib/cards/cardRunActions";
 import { cardViewForPath, slugStatus } from "$lib/planBoard";
-import { cardIndex, doneColumn, effectiveStatus, planIndex, stageMode } from "$lib/orchestration";
-import type { Rail, Step } from "$lib/orchestration";
+import { cardIndex, doneColumn, effectiveStatus, planIndex, stageMode } from "$lib/orchestration/orchestration";
+import type { Rail, Step } from "$lib/orchestration/orchestration";
 import type { SessionStatus } from "$lib/notifications";
 
 /// What gavin has done about a run without being asked, by the thing it

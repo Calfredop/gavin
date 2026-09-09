@@ -78,13 +78,13 @@
   import { historyBlockedReason } from "$lib/cards/runHistory";
   import RunHistoryModal from "$lib/cards/RunHistoryModal.svelte";
   import { resumeTrail } from "$lib/autoResumeState";
-  import { doneColumnOf, firstColumnOf, findCardPlacement, stepStateOf } from "$lib/orchestration";
+  import { doneColumnOf, firstColumnOf, findCardPlacement, stepStateOf } from "$lib/orchestration/orchestration";
   import { adoptMemory, isMemoryCard } from "$lib/cards/memoryCard";
   import {
     orchestrations,
     sendCardToRailAction,
     removeCardFromRailAction,
-  } from "$lib/orchestrationState";
+  } from "$lib/orchestration/orchestrationState";
   import { deletionPlanFor, executeDeletion } from "$lib/cards/cardDelete";
   import { grantForAnsweredPrompt } from "$lib/confirmGate";
   import { breakOutChildren, guardCompletion, subjectFromCard } from "$lib/cards/cardCompletion";

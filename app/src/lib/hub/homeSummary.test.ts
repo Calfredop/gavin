@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "$lib/hub/homeSummary";
 import type { Board } from "$lib/board/kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
-import type { Orchestration, Rail, StepRun, StepState } from "$lib/orchestration";
+import type { Orchestration, Rail, StepRun, StepState } from "$lib/orchestration/orchestration";
 
 function plan(fileName: string, status: string | null): PlanFileInfo {
   return {

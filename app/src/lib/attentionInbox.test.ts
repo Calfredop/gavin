@@ -13,7 +13,7 @@ import type { Page, Workspace } from "$lib/workspace";
 import type { LayoutNode } from "$lib/panes/layout";
 import type { Board } from "$lib/board/kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
-import type { Orchestration, StepAttention } from "$lib/orchestration";
+import type { Orchestration, StepAttention } from "$lib/orchestration/orchestration";
 
 const NOW = 1_000_000_000;
 const MINUTE = 60_000;

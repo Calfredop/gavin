@@ -69,8 +69,8 @@
   } from "$lib/hub/hubTabPrefs";
   import { getDragKind, getDragPayload, setDragPayload } from "$lib/panes/dragDrop";
   import { Lock, LockOpen } from "@lucide/svelte";
-  import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";
-  import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration";
+  import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestration/orchestrationState";
+  import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration/orchestration";
   import { tooltip } from "$lib/tooltip";
   import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
   import { windowDrag } from "$lib/windowDrag";

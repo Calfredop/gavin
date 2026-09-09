@@ -20,7 +20,7 @@
 import * as backend from "$lib/backend";
 import { askConfirm, askConfirmChecked, type ConfirmOptions } from "$lib/dialog";
 import { patchPlanField, patchPlanPath } from "$lib/gavinState";
-import { doneColumnOf, firstColumnOf } from "$lib/orchestration";
+import { doneColumnOf, firstColumnOf } from "$lib/orchestration/orchestration";
 import { slugStatus, type CardView } from "$lib/planBoard";
 import type { Column } from "$lib/board/kanban";
 

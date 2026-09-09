@@ -29,7 +29,7 @@
 // its prompt, which is not the same thing as work that stopped short,
 // and only a rail knows which checkout its agent was launched in.
 
-import { cardIndex, type Orchestration, type StepAttention } from "$lib/orchestration";
+import { cardIndex, type Orchestration, type StepAttention } from "$lib/orchestration/orchestration";
 import { sessionLabel } from "$lib/paths";
 import { PHASE_LABEL } from "$lib/hub/appHub";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";

@@ -90,8 +90,8 @@
   import { kanbanState } from "$lib/board/kanbanState";
   import { fleetStripLine } from "$lib/launchQueue";
   import { gavinTrees } from "$lib/gavinState";
-  import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";
-  import { railsWantingAttention } from "$lib/orchestration";
+  import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestration/orchestrationState";
+  import { railsWantingAttention } from "$lib/orchestration/orchestration";
   import { agentCommitPhase, gitStore } from "$lib/git/gitState";
   import { tooltip } from "$lib/tooltip";
   import { accentVar } from "$lib/settings";

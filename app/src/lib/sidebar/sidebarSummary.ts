@@ -9,7 +9,7 @@
 
 import { allSessionIds, sessionTabsOnly } from "$lib/panes/layout";
 import { boardSummary } from "$lib/hub/homeSummary";
-import { isStepFinished, railStateOf, stepStateOf, type Orchestration, type Rail } from "$lib/orchestration";
+import { isStepFinished, railStateOf, stepStateOf, type Orchestration, type Rail } from "$lib/orchestration/orchestration";
 import { slugStatus } from "$lib/planBoard";
 import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/gavin";

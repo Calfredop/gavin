@@ -19,11 +19,11 @@
   import Modal from "$lib/Modal.svelte";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import type { Column } from "$lib/board/kanban";
-  import type { Rail } from "$lib/orchestration";
+  import type { Rail } from "$lib/orchestration/orchestration";
   import type { CardView } from "$lib/planBoard";
   import type { PlanFileInfo } from "$lib/gavin";
   import { gavinTrees, patchPlanCreated } from "$lib/gavinState";
-  import { orchestrations, sendCardToRailAction } from "$lib/orchestrationState";
+  import { orchestrations, sendCardToRailAction } from "$lib/orchestration/orchestrationState";
   import { placeCardAtColumnEnd } from "$lib/files/planDrop";
   import type { MergedBoard } from "$lib/board/boardSearch";
   import {

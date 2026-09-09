@@ -16,7 +16,7 @@
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "$lib/contextMenu";
   import { buildCardMenuEntries } from "$lib/cards/cardMenu";
-  import { fetchOrchestration, refreshOrchestration, orchestrations } from "$lib/orchestrationState";
+  import { fetchOrchestration, refreshOrchestration, orchestrations } from "$lib/orchestration/orchestrationState";
   import { cardSessionFor } from "$lib/board/kanbanState";
   import { requestedCardDetail, takeCardDetailRequest } from "$lib/cards/cardTabLink";
   import { requestedCompose, takeComposeRequest, type ComposeTarget } from "$lib/cards/composeRequest";

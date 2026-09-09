@@ -506,7 +506,7 @@ async function execute(intent: LaunchIntent): Promise<void> {
       return;
     }
     case "orchestration": {
-      const m = await import("$lib/orchestrationState");
+      const m = await import("$lib/orchestration/orchestrationState");
       await m.launchQueuedOrchestrationAgent(intent);
       return;
     }

@@ -17,7 +17,7 @@
 import type { ConfirmCheck, ConfirmOptions } from "$lib/dialog";
 import type { AgentConfig } from "$lib/gavin";
 import { branchNameFrom, defaultWorktreePath, freeBranchNameFrom, splitPath } from "$lib/git/git";
-import { count } from "$lib/railConfirm";
+import { count } from "$lib/orchestration/railConfirm";
 
 /// One entry in a run: the workspace's agent with a profile and/or a
 /// model of its own. Both are plain strings rather than optionals --

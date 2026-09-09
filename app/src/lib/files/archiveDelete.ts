@@ -16,7 +16,7 @@
 // its own, and a row that would delete nothing is dark.
 
 import type { ContextMenuEntry } from "$lib/contextMenu";
-import type { Orchestration } from "$lib/orchestration";
+import type { Orchestration } from "$lib/orchestration/orchestration";
 import type { CardView } from "$lib/planBoard";
 
 const HOUR = 3600;

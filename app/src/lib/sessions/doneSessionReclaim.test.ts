@@ -19,7 +19,7 @@ import {
 import { DEFAULT_LAUNCH } from "$lib/launchGate";
 import type { Board } from "$lib/board/kanban";
 import type { GavinTree, PlanFileInfo } from "$lib/gavin";
-import type { Orchestration } from "$lib/orchestration";
+import type { Orchestration } from "$lib/orchestration/orchestration";
 import type { Workspace } from "$lib/workspace";
 
 const GB = 1024 ** 3;

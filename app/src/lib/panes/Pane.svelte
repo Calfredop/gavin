@@ -27,7 +27,7 @@
   } from "$lib/layoutState";
   import { gavinTrees } from "$lib/gavinState";
   import { kanbanState, cardSessionFor, fetchBoard } from "$lib/board/kanbanState";
-  import { orchestrations, fetchOrchestration } from "$lib/orchestrationState";
+  import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
   import { linkedCardFor, linkForCardPath, type LinkedCard } from "$lib/cards/cardTabLink";
   import { chipTooltip, runBaseline } from "$lib/cards/runChanges";
   import { nearestContext } from "$lib/planBoard";

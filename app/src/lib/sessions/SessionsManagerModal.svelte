@@ -50,7 +50,7 @@
   import { askConfirm } from "$lib/dialog";
   import { takeSessionSortRequest } from "$lib/panes/appPanels";
   import { watchmanRoots, watchmanStore, refreshMemory } from "$lib/memoryState";
-  import { orchestrations } from "$lib/orchestrationState";
+  import { orchestrations } from "$lib/orchestration/orchestrationState";
 
   interface Props {
     onClose: () => void;

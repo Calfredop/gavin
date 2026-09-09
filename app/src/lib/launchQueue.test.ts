@@ -84,7 +84,7 @@ vi.mock("$lib/cards/cardRunActions", () => ({ launchQueuedCard }));
 vi.mock("$lib/workspaceToolsActions", () => ({ launchQueuedTool }));
 vi.mock("$lib/review/codeReviewActions", () => ({ launchQueuedReview }));
 vi.mock("$lib/git/gitState", () => ({ launchQueuedCommit }));
-vi.mock("$lib/orchestrationState", () => ({ launchQueuedOrchestrationAgent }));
+vi.mock("$lib/orchestration/orchestrationState", () => ({ launchQueuedOrchestrationAgent }));
 
 import {
   __resetLaunchQueueForTesting,

@@ -3,8 +3,8 @@ import { dropAgainstWholeBoard, pageHolding, pageScope, scopeBoardToPage, transl
 import { AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
 import type { CardView, DisplayColumn } from "$lib/planBoard";
 import type { Board, CardSession, Column } from "$lib/board/kanban";
-import { emptyOrchestration } from "$lib/orchestration";
-import type { Orchestration, Rail, Stage, Step } from "$lib/orchestration";
+import { emptyOrchestration } from "$lib/orchestration/orchestration";
+import type { Orchestration, Rail, Stage, Step } from "$lib/orchestration/orchestration";
 import type { Page, Workspace } from "$lib/workspace";
 import type { LayoutNode } from "$lib/panes/layout";
 

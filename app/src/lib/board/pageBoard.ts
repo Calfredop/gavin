@@ -25,9 +25,9 @@
 // expire a binding row for that to be true.
 
 import { allSessionIds } from "$lib/panes/layout";
-import { railCardPaths } from "$lib/orchestration";
+import { railCardPaths } from "$lib/orchestration/orchestration";
 import { AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
-import type { Orchestration, Rail } from "$lib/orchestration";
+import type { Orchestration, Rail } from "$lib/orchestration/orchestration";
 import type { Board } from "$lib/board/kanban";
 import type { CardView } from "$lib/planBoard";
 import type { MergedBoard } from "$lib/board/boardSearch";

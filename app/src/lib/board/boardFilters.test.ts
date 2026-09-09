@@ -17,8 +17,8 @@ import { railIndex } from "$lib/board/planFilter";
 import type { RailIndex } from "$lib/board/planFilter";
 import type { AutoColumn, CardView, DisplayColumn } from "$lib/planBoard";
 import type { GavinContext, GavinTree } from "$lib/gavin";
-import { emptyOrchestration } from "$lib/orchestration";
-import type { Orchestration, Rail } from "$lib/orchestration";
+import { emptyOrchestration } from "$lib/orchestration/orchestration";
+import type { Orchestration, Rail } from "$lib/orchestration/orchestration";
 
 function card(name: string, over: Partial<CardView> = {}): CardView {
   const fileName = `${name}.md`;

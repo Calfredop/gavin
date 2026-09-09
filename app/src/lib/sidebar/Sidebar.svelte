@@ -129,8 +129,8 @@
     orchestrations,
     fetchOrchestration,
     stepAttentionsByWorkspace,
-  } from "$lib/orchestrationState";
-  import { railsWantingAttention } from "$lib/orchestration";
+  } from "$lib/orchestration/orchestrationState";
+  import { railsWantingAttention } from "$lib/orchestration/orchestration";
   import { kanbanState, fetchBoard } from "$lib/board/kanbanState";
   import { gavinTrees } from "$lib/gavinState";
   import { tooltip } from "$lib/tooltip";

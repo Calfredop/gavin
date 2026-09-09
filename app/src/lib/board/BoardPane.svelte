@@ -16,7 +16,7 @@
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "$lib/contextMenu";
   import { buildCardMenuEntries } from "$lib/cards/cardMenu";
-  import { fetchOrchestration, orchestrations } from "$lib/orchestrationState";
+  import { fetchOrchestration, orchestrations } from "$lib/orchestration/orchestrationState";
   import { cardSessionFor } from "$lib/board/kanbanState";
   import { attachBoardDrag } from "$lib/board/kanbanDragGlue";
   import BoardSelectionBar from "$lib/board/BoardSelectionBar.svelte";

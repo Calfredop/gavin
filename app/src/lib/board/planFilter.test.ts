@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { railIndex, statusFacets, filterExplorer, underContext, NO_RAIL, ANY } from "$lib/board/planFilter";
 import type { ExplorerContextNode } from "$lib/files/planExplorer";
-import type { Orchestration, Rail } from "$lib/orchestration";
+import type { Orchestration, Rail } from "$lib/orchestration/orchestration";
 
 function file(
   path: string,

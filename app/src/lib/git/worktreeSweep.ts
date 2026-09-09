@@ -21,7 +21,7 @@
 import type { ConfirmCheck, ConfirmOptions } from "$lib/dialog";
 import { splitPath, type StatusResult, type WorktreeInfo } from "$lib/git/git";
 import { isGavinOwnPath } from "$lib/git/gitTracking";
-import { count } from "$lib/railConfirm";
+import { count } from "$lib/orchestration/railConfirm";
 
 /// Why a worktree is being KEPT. Ordered by what is at stake, and that
 /// order is the order they are tested in: the first one that holds is

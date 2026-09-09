@@ -6,7 +6,7 @@ import {
   mirrorCardPath,
   relativeTo,
 } from "$lib/git/worktreeCards";
-import type { Rail } from "$lib/orchestration";
+import type { Rail } from "$lib/orchestration/orchestration";
 
 const ROOT = "/ws";
 const WT = "/wt/rail-a";

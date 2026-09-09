@@ -45,7 +45,7 @@ import { kanbanState } from "$lib/board/kanbanState";
 import { launchConfigStore, launchGateVerdict, launchQueue } from "$lib/launchQueue";
 import { closeSession, layoutState } from "$lib/layoutState";
 import { agentSessions, memoryPressure, systemMemory } from "$lib/memoryState";
-import { orchestrations } from "$lib/orchestrationState";
+import { orchestrations } from "$lib/orchestration/orchestrationState";
 import { closeTabsNow } from "$lib/panes/tabActions";
 import { findSessionLocation } from "$lib/workspace";
 

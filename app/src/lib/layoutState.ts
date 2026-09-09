@@ -4,7 +4,7 @@ import { askConfirm, showAlert } from "$lib/dialog";
 import type { LayoutNode } from "$lib/panes/layout";
 import * as layout from "$lib/panes/layout";
 import * as backend from "$lib/backend";
-import { setTempRoot } from "$lib/orchestrationLoop";
+import { setTempRoot } from "$lib/orchestration/orchestrationLoop";
 import type { PauseCycle } from "$lib/agentPause";
 import * as terminalRegistry from "$lib/terminal/terminalRegistry";
 import { hotState } from "$lib/hotState";
@@ -1254,7 +1254,7 @@ export async function bootstrap(): Promise<void> {
   // module (for resolvedAgentFor and createSessionOnPage), so a static
   // import here would close a cycle. By the time bootstrap runs, this
   // module is fully evaluated and the load is safe.
-  const { initOrchestrationListeners } = await import("$lib/orchestrationState");
+  const { initOrchestrationListeners } = await import("$lib/orchestration/orchestrationState");
   unlisteners.push(await initOrchestrationListeners());
   // Same dynamic-import reason as above: agentPauseState reads
   // resolvedAgentFor from this module. Started here rather than from a
@@ -1572,8 +1572,8 @@ async function restoreRemovedWorkspace(
   // twice over.
   const [{ fetchBoard }, { fetchOrchestration }, { fetchTools }] = await Promise.all([
     import("$lib/board/kanbanState"),
-    import("$lib/orchestrationState"),
-    import("$lib/toolsState"),
+    import("$lib/orchestration/orchestrationState"),
+    import("$lib/orchestration/toolsState"),
   ]);
   // These are the rows the tombstone existed to reach: the board with
   // its columns and labels, the rails, and the workspace's own tools.

@@ -46,7 +46,7 @@
 
 import { relativeTime } from "$lib/hub/appHub";
 import { featureBlockedReason, type DaemonCompat } from "$lib/daemonCompat";
-import { duplicateTool, resolveToolCwd, type Tool, type ToolKind } from "$lib/orchestrationTools";
+import { duplicateTool, resolveToolCwd, type Tool, type ToolKind } from "$lib/orchestration/orchestrationTools";
 
 /// One standalone run of a tool. Mirrors `ToolRun` in the protocol crate.
 export interface ToolRun {

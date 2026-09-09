@@ -13,8 +13,8 @@
 import { writable } from "svelte/store";
 import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/gavin";
-import type { Orchestration } from "$lib/orchestration";
-import { cardIndex } from "$lib/orchestration";
+import type { Orchestration } from "$lib/orchestration/orchestration";
+import { cardIndex } from "$lib/orchestration/orchestration";
 import type { PageTabRow } from "$lib/sidebar/sidebarSummary";
 import { switchWorkspace, switchWorkspaceView } from "$lib/layoutState";
 

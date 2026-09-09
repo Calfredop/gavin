@@ -18,7 +18,7 @@ import {
   toolsEmptyMessage,
   type ToolRun,
 } from "$lib/workspaceTools";
-import { BUILTIN_TOOLS, type Tool, type ToolKind } from "$lib/orchestrationTools";
+import { BUILTIN_TOOLS, type Tool, type ToolKind } from "$lib/orchestration/orchestrationTools";
 import { runIndicator } from "$lib/ui/indicators";
 import type { DaemonCompat } from "$lib/daemonCompat";
 

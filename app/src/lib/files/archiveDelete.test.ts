@@ -13,7 +13,7 @@ import {
   undatedCards,
 } from "$lib/files/archiveDelete";
 import { isMenuItem, isSeparator, isHeading, type ContextMenuEntry } from "$lib/contextMenu";
-import type { Orchestration } from "$lib/orchestration";
+import type { Orchestration } from "$lib/orchestration/orchestration";
 import type { CardView } from "$lib/planBoard";
 
 const NOW = Date.parse("2026-09-07T12:00:00Z");

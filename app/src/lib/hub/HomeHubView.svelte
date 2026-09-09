@@ -22,7 +22,7 @@
   import * as backend from "$lib/backend";
   import { gitStore, ensureGitView, refresh as refreshGit } from "$lib/git/gitState";
   import { changedCount } from "$lib/git/git";
-  import { orchestrations, fetchOrchestration } from "$lib/orchestrationState";
+  import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
   import {
     DEFAULT_AGENT_SHARE,
     agentShareFromWidth,

@@ -15,7 +15,7 @@ import {
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
 import type { LayoutNode } from "$lib/panes/layout";
 import type { GitStatus, Page, Workspace } from "$lib/workspace";
-import type { Orchestration, Rail, Stage, Step } from "$lib/orchestration";
+import type { Orchestration, Rail, Stage, Step } from "$lib/orchestration/orchestration";
 import type { Board } from "$lib/board/kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
 import { source } from "$lib/sources";

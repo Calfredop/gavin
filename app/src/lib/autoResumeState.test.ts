@@ -45,7 +45,7 @@ vi.mock("$lib/gavinState", async () => {
   return { gavinTrees: w({} as Record<string, unknown>) };
 });
 
-vi.mock("$lib/orchestrationState", async () => {
+vi.mock("$lib/orchestration/orchestrationState", async () => {
   const { writable: w } = await import("svelte/store");
   return {
     orchestrations: w({} as Record<string, unknown>),
@@ -64,7 +64,7 @@ vi.mock("$lib/autoResumeNotify", () => ({
 import { layoutState, daemonCompat } from "$lib/layoutState";
 import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/gavinState";
-import { orchestrations, resumeStep } from "$lib/orchestrationState";
+import { orchestrations, resumeStep } from "$lib/orchestration/orchestrationState";
 import { resumeCard } from "$lib/cards/cardRunActions";
 import { sendAutoResumeNotice } from "$lib/autoResumeNotify";
 import { __resetAutoResume, __setAutoResumeClock, resumeTrail, startAutoResume } from "$lib/autoResumeState";

@@ -12,7 +12,7 @@
     trustedAgentConfigs,
   } from "$lib/layoutState";
   import { allSessionIdsInWorkspace } from "$lib/workspace";
-  import { orchestrations } from "$lib/orchestrationState";
+  import { orchestrations } from "$lib/orchestration/orchestrationState";
   import { resolveAgentConfig } from "$lib/settings";
   import { askConfirmChecked, showAlert } from "$lib/dialog";
   import {

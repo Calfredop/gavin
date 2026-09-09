@@ -69,7 +69,7 @@ import {
 import type { SessionStatus } from "$lib/notifications";
 // The rails already own these three; re-declaring them here would be a
 // second definition free to drift from the one the scheduler runs on.
-import type { RailState, StepAttention, StepState } from "$lib/orchestration";
+import type { RailState, StepAttention, StepState } from "$lib/orchestration/orchestration";
 // Same reason: usageProjection.ts owns the three bands and the rule that
 // produces them, so this file names them rather than defining a second set.
 import type { ProjectionBand } from "$lib/usageProjection";
