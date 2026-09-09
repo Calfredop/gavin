@@ -66,6 +66,7 @@ dependencies = [
  "anyhow",
  "block2",
  "getrandom 0.3.4",
+ "libc",
  "notify",
  "notify-debouncer-mini",
  "objc2",

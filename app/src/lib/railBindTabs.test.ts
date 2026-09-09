@@ -57,11 +57,12 @@ describe("the bind dialog's strip", () => {
     const s = markup(BIND);
     expect(s).toContain('id="rail-bind-tab-{chip.tab}"');
     expect(s).toContain('aria-labelledby="rail-bind-tab-{tab}"');
-    expect(s).toContain('{#if tab === "worktree"}');
+    expect(s).toContain('{#if tab === "trigger"}');
+    expect(s).toContain('{:else if tab === "worktree"}');
     expect(s).toContain('{:else if tab === "branch"}');
     // A branch of the panel per tab, and no more: an id the strip can
     // send that no branch answers renders an empty dialog.
-    expect(RAIL_BIND_TABS).toHaveLength(3);
+    expect(RAIL_BIND_TABS).toHaveLength(4);
   });
 
   it("moves with the arrow keys through the shared rule", () => {

@@ -28,6 +28,9 @@
     totalUsage,
     totalsCoverage,
     totalsNote,
+    droppableRoots,
+    dropRootsConfirm,
+    watchmanLine,
     type ManagedSessions,
     type Selection,
     type SessionRow,
@@ -44,6 +47,10 @@
   } from "./sessionsManagerActions";
   import Modal from "./Modal.svelte";
   import { tooltip } from "./tooltip";
+  import { askConfirm } from "./dialog";
+  import { takeSessionSortRequest } from "./appPanels";
+  import { watchmanRoots, watchmanStore, refreshMemory } from "./memoryState";
+  import { orchestrations } from "./orchestrationState";
 
   interface Props {
     onClose: () => void;
@@ -57,6 +64,39 @@
 
   const isMac = isMacSync();
 
+  // What is holding memory OUTSIDE gavin. Read from the app-wide poller
+  // rather than sampled here: the probe already runs for the launch
+  // wall, and a second reader would start a second watchman conversation
+  // every two seconds.
+  const watchman = $derived(
+    $watchmanStore ? { rssBytes: $watchmanStore.rssBytes, roots: $watchmanRoots } : null
+  );
+  /// Every directory an open workspace has a checkout in: its root, and
+  /// every rail's worktree. A root gavin cannot place is left ALONE --
+  /// see `droppableRoots`.
+  const ownedPaths = $derived([
+    ...$layoutState.workspaces.map((w) => w.rootPath ?? "").filter(Boolean),
+    ...Object.values($orchestrations).flatMap((orch) =>
+      (orch?.rails ?? []).map((r) => r.worktreePath ?? "").filter(Boolean)
+    ),
+  ]);
+  const droppable = $derived(watchman ? droppableRoots(watchman.roots, ownedPaths) : []);
+
+  async function dropRoots(): Promise<void> {
+    const prompt = dropRootsConfirm(droppable);
+    if (!prompt) return;
+    // Asked through dialog.ts, never a native confirm: the capability
+    // list is narrowed to `dialog:allow-open`, and this button names its
+    // own action rather than saying OK.
+    if (!(await askConfirm(prompt))) return;
+    for (const root of droppable) {
+      await backend.watchmanForget(root).catch(() => {});
+    }
+    // The strip is fed by a five-second poll; without this the row would
+    // still name the roots that have just been dropped.
+    await refreshMemory();
+  }
+
   let sample = $state<ManagedSessions | null>(null);
   let previous = $state<ManagedSessions | null>(null);
   let error = $state<string | null>(null);
@@ -64,7 +104,13 @@
   /// sessions" -- which is the one answer a task manager must never give
   /// wrongly.
   let loaded = $state(false);
-  let sort = $state<SortOrder>(DEFAULT_SORT);
+  // The pressure banner opens this panel to answer one question --
+  // "what is holding the memory" -- and that is the memory column,
+  // descending. Consumed once, so the human's own sort survives the next
+  // time they open the panel themselves.
+  let sort = $state<SortOrder>(
+    takeSessionSortRequest() === "memory" ? { key: "mem", dir: "desc" } : DEFAULT_SORT
+  );
   /// Ids, not rows: the rows are rebuilt on every poll, and what the
   /// human picked has to survive that.
   let selection = $state<Selection>(NO_SELECTION);
@@ -426,6 +472,24 @@
       </div>
     {/if}
 
+    <!-- The half of the machine gavin did not start. One line and one
+         action, not a section: watchman is not gavin's process and gavin
+         must not pretend to manage it -- the line says what it costs and
+         the button tells it to forget the roots no open workspace has a
+         checkout under any more. -->
+    {#if watchmanLine(watchman)}
+      <div class="outside">
+        <span class="outside-line">{watchmanLine(watchman)}</span>
+        {#if droppable.length > 0}
+          <button
+            type="button"
+            use:tooltip={"Watchman keeps a removed root in memory for five days. These are roots no open workspace has a checkout under."}
+            onclick={() => void dropRoots()}>Drop {droppable.length} roots</button
+          >
+        {/if}
+      </div>
+    {/if}
+
     <div class="foot">
       <div class="hints">
         <p class="hint">
@@ -668,6 +732,24 @@
   .hint {
     color: var(--text-subtle);
     margin: 0;
+  }
+  /* A quiet line above the foot: it is a fact about the machine, not a
+     row of the table, so it sits outside the grid rather than
+     pretending to be a session. */
+  .outside {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    color: var(--text-subtle);
+    font-size: 0.8em;
+  }
+  .outside-line {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .foot {
     display: flex;

@@ -217,13 +217,28 @@ pub fn worktree_add(cwd: &str, path: &str, branch: &str, from: Option<&str>, new
     ok(run_git(cwd, &args, None)?).map(|_| ())
 }
 
+/// Removes a worktree, and tells watchman to stop watching it.
+///
+/// The watchman half is not tidiness: a root it is watching keeps its
+/// whole tree in memory for five DAYS after the directory goes, and a
+/// workspace that cuts a worktree per rail leaves one behind on every
+/// merge. Eleven of those is a measurable share of the machine, held for
+/// checkouts that no longer exist.
+///
+/// After the git removal and never before it: watchman has to be told
+/// about a directory that is actually gone, and a `watch-del` for a path
+/// git then refuses to remove would have dropped a watch the human still
+/// wanted. `forget_root` is a no-op when no server is running, so the
+/// ordinary machine pays nothing for it.
 pub fn worktree_remove(cwd: &str, path: &str, force: bool) -> Result<(), String> {
     let mut args = vec!["worktree", "remove"];
     if force {
         args.push("--force");
     }
     args.push(path);
-    ok(run_git(cwd, &args, None)?).map(|_| ())
+    ok(run_git(cwd, &args, None)?)?;
+    crate::memory::forget_root(path);
+    Ok(())
 }
 
 pub fn worktree_prune(cwd: &str) -> Result<(), String> {

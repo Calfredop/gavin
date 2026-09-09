@@ -1252,6 +1252,27 @@ export async function bootstrap(): Promise<void> {
   // mounted is the bug that made rails tick only on their own tab.
   const { startPauseClock } = await import("./agentPauseState");
   unlisteners.push(startPauseClock());
+  // The memory probe, on the same terms and for a sharper version of the
+  // same reason: the launch gate reads its sample at the moment somebody
+  // presses Run, with no panel open and possibly in a window showing a
+  // different workspace -- and a queue whose poll has stalled is work
+  // that silently never starts. Dynamically imported for the cycle
+  // reason above (memoryState reads resolvedAgentFor from this module).
+  const { startMemoryPoll } = await import("./memoryState");
+  unlisteners.push(startMemoryPoll());
+  // ...and the queue that drains behind the gate the probe feeds. After
+  // the poller, so its first drain reads a sample rather than a null,
+  // and module-level for the same reason both of those are.
+  const { startLaunchQueue } = await import("./launchQueue");
+  unlisteners.push(startLaunchQueue());
+  // ...and the one thing the wall may END: an idle agent of a done card,
+  // while memory is short. After the queue, because its closes are what
+  // make room for that queue's drain, and module-level for the sharpest
+  // reason of all -- the day it matters is the day the human is on
+  // another workspace and the machine is swapping. Dynamically imported
+  // for the cycle reason above (it closes through this module).
+  const { startDoneSessionReclaim } = await import("./doneSessionReclaimState");
+  unlisteners.push(startDoneSessionReclaim());
   // And the same again for the develop records: a "Develop into a plan…"
   // run that finishes while the human is on another tab still has to give
   // the card back, and this watch's first pass is also what ADOPTS a run

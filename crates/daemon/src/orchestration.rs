@@ -1,6 +1,6 @@
 use protocol::{
     default_stage_mode, ConflictNote, GroupTemplate, GroupTemplateStep, Orchestration, Rail,
-    RailRun, Stage, Step, StepRun, ToolDef, ToolParam, ToolRun,
+    RailRun, RailTrigger, Stage, Step, StepRun, ToolDef, ToolParam, ToolRun,
 };
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
@@ -23,6 +23,8 @@ impl OrchestrationStore {
                 position INTEGER NOT NULL,
                 worktree_path TEXT,
                 branch TEXT,
+                trigger_kind TEXT,
+                trigger_rail TEXT,
                 page_id TEXT
             );
             CREATE TABLE IF NOT EXISTS orch_stages (
@@ -146,6 +148,14 @@ impl OrchestrationStore {
         // run that was never resumed has no count, which reads as zero.
         add_column_if_missing(&conn, "orch_rails", "auto_resume", "INTEGER")?;
         add_column_if_missing(&conn, "orch_step_runs", "resume_attempts", "INTEGER")?;
+        // v35: the rail's own start condition. Two columns rather than
+        // one JSON blob because a trigger is only ever a kind and at most
+        // a rail NAME, and a name in a column is greppable from the
+        // sqlite3 prompt when a human is asking why a rail armed itself.
+        // Both nullable and read together: no kind means no trigger,
+        // which is every rail written before v35.
+        add_column_if_missing(&conn, "orch_rails", "trigger_kind", "TEXT")?;
+        add_column_if_missing(&conn, "orch_rails", "trigger_rail", "TEXT")?;
         // v30: a tool's own working directory, for a standalone run from
         // the Tools tab. orch_tools is already live on disk in every
         // install, so the CREATE TABLE above keeps the old shape and
@@ -183,10 +193,17 @@ impl OrchestrationStore {
         let mut rails: Vec<Rail> = self
             .conn
             .prepare(
-                "SELECT id, name, position, worktree_path, branch, auto_resume, page_id FROM orch_rails
+                "SELECT id, name, position, worktree_path, branch, auto_resume,
+                        trigger_kind, trigger_rail, page_id FROM orch_rails
                  WHERE workspace_id = ?1 ORDER BY position",
             )?
             .query_map(params![workspace_id], |row| {
+                // The KIND is what says a trigger exists at all: a rail
+                // name with no kind is a half-written row (a hand edit,
+                // an interrupted migration) and reads as no trigger,
+                // which is the reading that starts nothing.
+                let trigger_kind: Option<String> = row.get(6)?;
+                let trigger_rail: Option<String> = row.get(7)?;
                 Ok(Rail {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -196,7 +213,8 @@ impl OrchestrationStore {
                     // SQLite has no bool: the column is INTEGER, so it
                     // comes back as one and 0/1 is the opt-in.
                     auto_resume: row.get::<_, Option<i64>>(5)?.map(|v| v != 0),
-                    page_id: row.get(6)?,
+                    trigger: trigger_kind.map(|kind| RailTrigger { kind, rail: trigger_rail }),
+                    page_id: row.get(8)?,
                     stages: Vec::new(),
                 })
             })?
@@ -433,8 +451,9 @@ impl OrchestrationStore {
 
         for rail in rails {
             tx.execute(
-                "INSERT INTO orch_rails (id, workspace_id, name, position, worktree_path, branch, auto_resume, page_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO orch_rails (id, workspace_id, name, position, worktree_path, branch,
+                                          auto_resume, trigger_kind, trigger_rail, page_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     rail.id,
                     workspace_id,
@@ -443,6 +462,8 @@ impl OrchestrationStore {
                     rail.worktree_path,
                     rail.branch,
                     rail.auto_resume.map(|v| i64::from(v)),
+                    rail.trigger.as_ref().map(|t| t.kind.clone()),
+                    rail.trigger.as_ref().and_then(|t| t.rail.clone()),
                     rail.page_id
                 ],
             )?;
@@ -1045,6 +1066,7 @@ mod tests {
             worktree_path: None,
             branch: None,
             auto_resume: None,
+            trigger: None,
             page_id: None,
             stages: vec![Stage {
                 id: format!("{id}-s1"),
@@ -1347,6 +1369,7 @@ mod tests {
             worktree_path: None,
             branch: None,
             auto_resume: None,
+            trigger: None,
             page_id: None,
             stages: vec![Stage {
                 id: "rt-s1".into(),
@@ -2019,6 +2042,69 @@ mod tests {
         let run = s.get("ws-1").unwrap().step_runs[0].clone();
         assert_eq!(run.resume_attempts, Some(1));
         assert_eq!(run.conversation_id.as_deref(), Some("conv-1"));
+    }
+
+    /// A trigger survives a plan rewrite, for the same reason the
+    /// auto-resume opt-in has to: `replace_plan` deletes every rail of
+    /// the workspace and re-inserts them, so a field the insert forgot
+    /// would be silently cleared by the next unrelated edit -- and a rail
+    /// that quietly stops waiting for the others is one that starts by
+    /// hand and never says it changed.
+    #[test]
+    fn a_rails_trigger_round_trips_with_and_without_a_named_rail() {
+        let mut s = store();
+        let mut r = rail("r1", &[("t1", "/x/a.md")]);
+        r.trigger = Some(RailTrigger { kind: "all-rails-done".into(), rail: None });
+        s.replace_plan("ws-1", &[r], &[], &none()).unwrap();
+        assert_eq!(
+            s.get("ws-1").unwrap().rails[0].trigger,
+            Some(RailTrigger { kind: "all-rails-done".into(), rail: None })
+        );
+
+        let mut named = rail("r1", &[("t1", "/x/a.md")]);
+        named.trigger =
+            Some(RailTrigger { kind: "rail-done".into(), rail: Some("backend".into()) });
+        s.replace_plan("ws-1", &[named], &[], &none()).unwrap();
+        assert_eq!(
+            s.get("ws-1").unwrap().rails[0].trigger,
+            Some(RailTrigger { kind: "rail-done".into(), rail: Some("backend".into()) })
+        );
+
+        // And clearing it stores nothing, rather than leaving the last
+        // condition behind for the scheduler to keep acting on.
+        s.replace_plan("ws-1", &[rail("r1", &[("t1", "/x/a.md")])], &[], &none()).unwrap();
+        assert_eq!(s.get("ws-1").unwrap().rails[0].trigger, None);
+    }
+
+    /// The migration for the two v35 columns, from the v34 shape. A rail
+    /// that predates triggers waits for nothing -- which is the reading
+    /// that arms nothing.
+    #[test]
+    fn opening_a_pre_v35_database_adds_the_trigger_columns() {
+        let dir = std::env::temp_dir().join(format!("gavin-orch-v35-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("orchestration.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE orch_rails (
+                    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL,
+                    position INTEGER NOT NULL, worktree_path TEXT, branch TEXT,
+                    auto_resume INTEGER, page_id TEXT);
+                 INSERT INTO orch_rails VALUES ('r1','ws-1','backend',0,'/x/wt',NULL,1,NULL);",
+            )
+            .unwrap();
+        }
+        let s = OrchestrationStore::open(&path).unwrap();
+        let back = s.get("ws-1").unwrap().rails[0].clone();
+        assert_eq!(back.trigger, None, "a v34 rail waits for nothing");
+        assert_eq!(back.auto_resume, Some(true), "and keeps what it did carry");
+
+        // Idempotent: the ALTERs run on every open.
+        drop(s);
+        assert!(OrchestrationStore::open(&path).is_ok());
+        let _ = std::fs::remove_file(&path);
     }
 
     /// The migration for the two v22 columns, from the v21 shape.

@@ -209,6 +209,23 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   set_agent_pause: ["ordinary"],
   get_agent_defaults: ["ordinary"],
   set_agent_defaults: ["ordinary"],
+  // The memory wall. A read and a preference write, the same shape as
+  // the pause above -- and ordinary for the same reason, even though
+  // `reclaim_done_sessions` is the one preference here that authorises a
+  // process to be ended later. What ends it is `kill_session`, which is
+  // on this table as destructive in its own right; calling the setting
+  // that permits it destructive too would flatten the distinction
+  // between doing a thing and consenting to it.
+  get_launch_config: ["ordinary"],
+  set_launch_config: ["ordinary"],
+  // Two reads -- a memory sample from the OS, and whether a watchman is
+  // running. `watchman_forget` is the odd one and still ordinary: it is
+  // `watch-del` on one root, and watchman re-establishes the watch the
+  // next time something asks. Nothing of the human's is lost, which is
+  // the line this table draws for `destructive`.
+  system_memory: ["ordinary"],
+  watchman_status: ["ordinary"],
+  watchman_forget: ["ordinary"],
   mcp_formats: ["ordinary"],
   move_agent_file: ["ordinary"],
   compose_agent_prompt: ["ordinary"],

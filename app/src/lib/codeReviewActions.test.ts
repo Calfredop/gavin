@@ -20,6 +20,16 @@ vi.mock("./kanbanState", () => ({
   cardSessionFor: vi.fn(() => null),
 }));
 vi.mock("./cardRunActions", () => ({ revealSession: vi.fn().mockResolvedValue(true) }));
+// The launch wall's queue, stubbed. It is a live module (a poller, a
+// drain loop, localStorage) that these tests are not about, and its
+// dependency cone reaches layoutState -- which this file replaces with a
+// handful of functions. `holdOrQueue` returning null is "the gate is
+// open", which is the state every assertion here assumes.
+vi.mock("./launchQueue", () => ({
+  holdOrQueue: vi.fn(() => null),
+  mayLaunch: vi.fn(() => true),
+  launchBlockedReason: vi.fn(() => null),
+}));
 
 import * as backend from "./backend";
 import {

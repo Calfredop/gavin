@@ -133,6 +133,13 @@ export interface Rail {
   /// has made a decision that was theirs; a per-rail opt-in dissolves it
   /// only if the human actually made it, in advance, for this rail.
   autoResume?: boolean;
+  /// What arms this rail without a human pressing Start (rail triggers).
+  /// Absent and null both mean nothing does, which is the behaviour that
+  /// predates the field and the only safe default -- a rail that starts
+  /// itself on a condition nobody wrote down has made a decision that was
+  /// the human's, the same objection `autoResume` answers with consent in
+  /// advance.
+  trigger?: RailTrigger | null;
   /// Workspace page its sessions land on. Null until the rail's FIRST
   /// LAUNCH, whichever way the rail was armed -- Start, a run row written
   /// to the daemon socket, one adopted across a restart. That launch
@@ -145,6 +152,26 @@ export interface Rail {
   /// handleAgentSessionSpawned already applies.
   pageId: string | null;
   stages: Stage[];
+}
+
+/// A rail's own start condition (see `railTriggerVerdict`).
+///
+/// `kind` is a string rather than a union on the wire for the reason
+/// `StageMode` is: the daemon only stores and returns it, so widening the
+/// vocabulary must not become a wire break. An unrecognised kind -- a
+/// hand edit, a newer peer, a workspace shared with an app one version
+/// ahead -- never fires. Never firing is the safe reading of a condition
+/// this build cannot state, and the rail's chip says so rather than
+/// pretending it has none.
+export type RailTriggerKind = "all-rails-done" | "rail-done";
+
+export interface RailTrigger {
+  kind: RailTriggerKind | (string & {});
+  /// The rail a `rail-done` trigger waits for, by NAME -- what the human
+  /// types and what `gavin_get_orchestration` shows an agent, matched the
+  /// same case- and space-insensitive way `startRailVerdict` matches
+  /// `builtin:start-rail`'s. Absent for every other kind.
+  rail?: string | null;
 }
 
 export interface ConflictNote {
@@ -451,9 +478,29 @@ export function runnableIdleRails(orch: Orchestration): Rail[] {
     );
 }
 
+/// Has this rail nothing left to do? Idle, and no unfinished stage.
+///
+/// The one question a rail TRIGGER asks about every other rail, and half
+/// of what "Clear done" asks about each of its own -- so it is stated
+/// once here rather than twice, because the two must never drift on what
+/// "finished" means for a rail that is paused (it is not: somebody
+/// stopped it) or running (nor is it, whatever its rows add up to).
+///
+/// An EMPTY rail answers true, vacuously, and that is the one reading a
+/// caller has to think about. `finishedRails` excludes it deliberately --
+/// see its comment. A trigger includes it just as deliberately: a rail
+/// with no steps has no work to wait for, and letting a stray empty
+/// column freeze a triggered rail forever would make the trigger
+/// unusable in exactly the workspace it is for.
+export function railIsFinished(orch: Orchestration, rail: Rail): boolean {
+  return railStateOf(orch, rail.id) === "idle" && firstUnfinishedStageId(rail, orch) === null;
+}
+
 /// The rails a toolbar "Clear done" sweeps away: the ones with nothing
 /// left in them to do. Three conditions, and each one excludes a rail
-/// that would otherwise read as finished by arithmetic alone.
+/// that would otherwise read as finished by arithmetic alone. Two of them
+/// are `railIsFinished`; the third -- the empty rail -- is this
+/// function's alone, and is the one place the two answers differ.
 ///
 /// A rail with NO STEPS is unstarted, not finished.
 /// `firstUnfinishedStageId` answers null for it -- correctly, since there
@@ -483,10 +530,7 @@ export function finishedRails(orch: Orchestration): Rail[] {
   return [...orch.rails]
     .sort((a, b) => a.position - b.position)
     .filter(
-      (rail) =>
-        railStateOf(orch, rail.id) === "idle" &&
-        rail.stages.some((stage) => stage.steps.length > 0) &&
-        firstUnfinishedStageId(rail, orch) === null
+      (rail) => railIsFinished(orch, rail) && rail.stages.some((stage) => stage.steps.length > 0)
     );
 }
 
@@ -554,6 +598,171 @@ export function startRailVerdict(
     : { kind: "start", railId: target.id };
 }
 
+export type StartRailTarget =
+  | { kind: "ok"; workspaceId: string }
+  | { kind: "refuse"; reason: string };
+
+/// Which workspace `builtin:start-rail`'s target rail lives in. Empty is
+/// the rail's own -- the only value every step could reach before this
+/// parameter existed, and what one left unset still means.
+///
+/// A non-empty value is a workspace ID, not a name: it comes from the
+/// step's own picker (StepParamsDialog offers a `<select>` of known
+/// workspaces, never a text box for this field), so there is no
+/// ambiguity to resolve the way `startRailVerdict` resolves a typed rail
+/// name -- only a workspace since removed, which is the one thing an ID
+/// cannot rule out on its own.
+export function startRailTargetWorkspace(
+  workspaces: { id: string }[],
+  ownWorkspaceId: string,
+  wanted: string
+): StartRailTarget {
+  const id = wanted.trim();
+  if (!id) return { kind: "ok", workspaceId: ownWorkspaceId };
+  return workspaces.some((w) => w.id === id)
+    ? { kind: "ok", workspaceId: id }
+    : { kind: "refuse", reason: "the workspace this step targets no longer exists" };
+}
+
+/// The conditions a rail can wait on, in the order the dialog offers
+/// them. One list, so the picker, the chip and the scheduler cannot
+/// disagree about what exists.
+///
+/// `needsRail` is what makes the second one a two-part question: a
+/// `rail-done` trigger is meaningless without a name, and the picker has
+/// to know to ask for one.
+export const RAIL_TRIGGER_CHOICES: {
+  kind: RailTriggerKind;
+  label: string;
+  blurb: string;
+  needsRail: boolean;
+}[] = [
+  {
+    kind: "all-rails-done",
+    label: "When every other rail has finished",
+    blurb:
+      "Gavin arms this rail the moment no other rail in this workspace has anything left to do. The fan-in a step on one rail cannot express: whichever of the others finishes last is the one that starts this.",
+    needsRail: false,
+  },
+  {
+    kind: "rail-done",
+    label: "When one named rail has finished",
+    blurb:
+      "Gavin arms this rail once that one has nothing left to do. Said HERE rather than as a Start rail step over there, so the rail that waits is the rail that says what it waits for.",
+    needsRail: true,
+  },
+];
+
+/// What a rail's trigger is set to, short enough for a chip. The value
+/// half of the header chip and of the dialog's tab strip, so it is
+/// spelled once.
+export function railTriggerLabel(trigger: RailTrigger | null | undefined): string {
+  if (!trigger) return "starts by hand";
+  if (trigger.kind === "all-rails-done") return "after all rails";
+  if (trigger.kind === "rail-done") {
+    const name = trigger.rail?.trim();
+    return name ? `after “${name}”` : "after a rail";
+  }
+  // An unrecognised kind. Named rather than hidden: the rail IS carrying
+  // a condition, this build simply cannot evaluate it, and drawing it as
+  // "starts by hand" would be a lie the human acts on.
+  return `after “${trigger.kind}”`;
+}
+
+/// Whether this rail arms itself right now, and if not, why not.
+///
+/// PURE, and separate from `nextActions` for the reason `startRailVerdict`
+/// is: the human reads this answer on the rail's own chip -- "why has this
+/// not started?" is the question a trigger creates -- and a scheduler that
+/// decided privately would leave the header guessing. The scheduler adds
+/// the two conditions this function deliberately does NOT ask about (is
+/// the rail itself idle, and has it anything to run), because those are
+/// facts about the rail rather than about its condition, and a running
+/// rail's chip must still say what it waits for.
+///
+/// `wait` and `broken` are different sentences on purpose. A wait
+/// resolves on its own -- work finishing is exactly what it is for -- and
+/// is drawn quietly. A `broken` trigger never fires as written, and the
+/// only thing that changes it is a human, so it is drawn as a warning.
+export type RailTriggerVerdict =
+  | { kind: "off" }
+  | { kind: "fire" }
+  | { kind: "wait"; reason: string }
+  | { kind: "broken"; reason: string };
+
+export function railTriggerVerdict(orch: Orchestration, rail: Rail): RailTriggerVerdict {
+  const trigger = rail.trigger ?? null;
+  if (!trigger) return { kind: "off" };
+
+  if (trigger.kind === "all-rails-done") {
+    const others = orch.rails.filter((r) => r.id !== rail.id);
+    // Vacuously true, and refused for it. "After everything else" in a
+    // workspace with no everything else means "immediately", which is
+    // not what anybody picking this meant -- and the surprise it buys is
+    // a rail arming itself the moment a card lands on it. Adding a
+    // second rail lifts this.
+    if (others.length === 0) {
+      return {
+        kind: "broken",
+        reason: "this is the only rail in the workspace — there is nothing else to wait for",
+      };
+    }
+    const unfinished = others.filter((r) => !railIsFinished(orch, r));
+    if (unfinished.length === 0) return { kind: "fire" };
+    return { kind: "wait", reason: `waiting for ${railList(unfinished)}` };
+  }
+
+  if (trigger.kind === "rail-done") {
+    // The same resolution `startRailVerdict` performs, and for the same
+    // reasons: a human typed the name, rail names are not unique, and a
+    // rail waiting on itself is a rail that never starts.
+    const wanted = (trigger.rail ?? "").trim();
+    if (!wanted) {
+      return { kind: "broken", reason: "no rail named — pick the rail this one waits for" };
+    }
+    const matches = orch.rails.filter(
+      (r) => r.name.trim().toLowerCase() === wanted.toLowerCase()
+    );
+    if (matches.length === 0) {
+      return { kind: "broken", reason: `no rail called “${wanted}” in this workspace` };
+    }
+    if (matches.length > 1) {
+      return {
+        kind: "broken",
+        reason: `“${wanted}” names ${matches.length} rails — rename one of them`,
+      };
+    }
+    const target = matches[0];
+    if (target.id === rail.id) {
+      return { kind: "broken", reason: "a rail cannot wait for itself" };
+    }
+    // A named rail with no steps has not finished -- it has not started.
+    // The opposite reading of the empty rail `railIsFinished` allows,
+    // and deliberately: naming a rail is a claim that it does something,
+    // so an empty one is a wait the human can end by filling it.
+    if (!target.stages.some((stage) => stage.steps.length > 0)) {
+      return { kind: "wait", reason: `“${target.name}” has no steps yet` };
+    }
+    if (railIsFinished(orch, target)) return { kind: "fire" };
+    return { kind: "wait", reason: `waiting for “${target.name}”` };
+  }
+
+  return {
+    kind: "broken",
+    reason: `this rail waits on “${trigger.kind}”, which this version of gavin does not know`,
+  };
+}
+
+/// The rails a wait is on, named while there are few enough to read and
+/// counted once there are not. A tooltip that lists nine rail names is
+/// one nobody finishes reading.
+function railList(rails: Rail[]): string {
+  const names = rails.map((r) => `“${r.name}”`);
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.length} rails that still have work`;
+}
+
 /// What the reactive layer must DO. nextActions decides; executing is
 /// orchestrationState.ts's job alone.
 export type Action =
@@ -562,6 +771,12 @@ export type Action =
   | { kind: "stall"; stepId: string; reason: string }
   | { kind: "advance"; railId: string; stageId: string }
   | { kind: "complete"; railId: string }
+  /// Start an idle rail whose own TRIGGER says so, at `stageId` -- the
+  /// same stage the human's Start button would have armed. Distinct from
+  /// `advance` because the rail is not running yet and there is no
+  /// previous stage this follows; distinct from doing it inline because
+  /// executing is orchestrationState's alone.
+  | { kind: "arm"; railId: string; stageId: string }
   /// Put `path` on `branch` before anything of this rail launches
   /// (spec O15). orchestrationState owns the git call and the refusal.
   | { kind: "switchBranch"; railId: string; path: string; branch: string }
@@ -1212,6 +1427,10 @@ export function nextActions(
 
   for (const rail of orch.rails) {
     if (railStateOf(orch, rail.id) !== "running") {
+      // Where the reconciling starts, so the trigger rule at the bottom
+      // of this branch can tell "this pass corrected nothing about this
+      // rail" from "this pass is repairing it".
+      const before = actions.length;
       // Reconciliation is about what the SESSIONS say, not about whether
       // the rail is advancing (spec §4.4). A step left `running` on an
       // idle or paused rail -- the app quit mid-run, or a stall paused
@@ -1299,6 +1518,37 @@ export function nextActions(
               failedReason ?? null
             )
           );
+        }
+      }
+
+      // Rule 6 -- the rail's own TRIGGER (rail triggers). The only rule
+      // that starts a rail nobody pressed Start on, so every condition
+      // it refuses on is one worth stating.
+      //
+      // IDLE, never paused: a pause is a human's decision or a stalled
+      // step's, and a condition written in advance must not overrule
+      // either -- the same exclusion `startRailVerdict` makes when one
+      // rail's step tries to start another.
+      //
+      // Nothing unfinished means nothing to arm: `startRail` refuses
+      // such a rail too, and arming it would set a rail running with no
+      // stage to point at, which `nextActions` then reads as complete.
+      //
+      // And not while this pass is repairing the rail's own run rows.
+      // Those corrections land first (a stale `running` row becomes done
+      // or stalled), and a stall would pause the very rail this rule had
+      // just armed; the tick that follows the repair decides on rows
+      // that are true.
+      //
+      // The trigger is STANDING, not spent: a rail that finishes and is
+      // then given new work arms again once its condition holds again.
+      // That is the plain reading of "start when the others are done",
+      // and it is why nothing here records that the trigger has fired --
+      // there is no such fact.
+      if (actions.length === before && railStateOf(orch, rail.id) === "idle") {
+        const stageId = firstUnfinishedStageId(rail, orch);
+        if (stageId !== null && railTriggerVerdict(orch, rail).kind === "fire") {
+          actions.push({ kind: "arm", railId: rail.id, stageId });
         }
       }
       continue;
@@ -1756,6 +2006,24 @@ export function setRailAutoResume(
   return {
     ...orch,
     rails: orch.rails.map((r) => (r.id === railId ? { ...r, autoResume } : r)),
+  };
+}
+
+/// The rail's own start condition. Null clears it back to "only a human
+/// (or another rail's Start rail step) arms this".
+///
+/// A plan mutator like `setRailAutoResume`, and part of the PLAN for the
+/// same reason: the condition is a fact about this rail, saved by the
+/// same wholesale write, visible to an agent reading the rails over MCP,
+/// and not a preference of whoever happens to be looking at the board.
+export function setRailTrigger(
+  orch: Orchestration,
+  railId: string,
+  trigger: RailTrigger | null
+): Orchestration {
+  return {
+    ...orch,
+    rails: orch.rails.map((r) => (r.id === railId ? { ...r, trigger } : r)),
   };
 }
 

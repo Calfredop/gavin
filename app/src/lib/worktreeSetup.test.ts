@@ -127,7 +127,12 @@ describe("the session a new worktree gets", () => {
   it("lands on the RAIL's page, not on whatever page the workspace is showing", () => {
     // runOnRailPage goes through createSessionOnRailPage, the seam that
     // exists so a rail's sessions stop piling onto "Page 1".
-    expect(source(BIND)).toContain('import { bindRailAction, runOnRailPage } from "./orchestrationState";');
+    // The import, not its exact spelling: this dialog reaches for more of
+    // orchestrationState over time, and a guard that pins the whole line
+    // fails on every unrelated addition while catching nothing.
+    expect(source(BIND)).toMatch(
+      /import \{[^}]*\brunOnRailPage\b[^}]*\} from "\.\/orchestrationState";/
+    );
     expect(source(BIND)).not.toContain("createSessionForCard");
   });
 

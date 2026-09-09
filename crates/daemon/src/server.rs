@@ -4150,6 +4150,7 @@ mod tests {
             worktree_path: None,
             branch: None,
             auto_resume: None,
+            trigger: None,
             page_id: None,
             stages: vec![protocol::Stage {
                 id: "s1".into(),
@@ -6172,6 +6173,7 @@ mod tests {
                     worktree_path: None,
                     branch: None,
                     auto_resume: None,
+                    trigger: None,
                     page_id: None,
                     stages: vec![protocol::Stage {
                         id: "st1".into(),

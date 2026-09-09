@@ -4,17 +4,28 @@
   // later edit to that default still reaches a step that never
   // deliberately overrode it.
   import Modal from "./Modal.svelte";
-  import { gavinActionOf, pruneOverrides, resolveToolBody, toolKindLabel } from "./orchestrationTools";
+  import {
+    gavinActionOf,
+    pruneOverrides,
+    resolveToolBody,
+    startRailWorkspaceChoices,
+    toolKindLabel,
+  } from "./orchestrationTools";
   import type { Tool } from "./orchestrationTools";
 
   interface Props {
     tool: Tool;
     /// The step's current overrides, sparse.
     params: Record<string, string>;
+    /// This step's own workspace -- excluded from the `start-rail`
+    /// workspace picker, since that field's blank default already means it.
+    workspaceId: string;
+    /// Every workspace the app knows of, for that same picker.
+    workspaces: { id: string; name: string; rootPath?: string | null }[];
     onSave: (params: Record<string, string>) => void;
     onClose: () => void;
   }
-  let { tool, params, onSave, onClose }: Props = $props();
+  let { tool, params, workspaceId, workspaces, onSave, onClose }: Props = $props();
 
   // Seeded DENSE from the defaults, so every field renders with the
   // value that will actually be used; pruneOverrides thins it back out
@@ -30,14 +41,33 @@
     draft = Object.fromEntries(shape.map((p) => [p.name, params[p.name] ?? p.default]));
   });
 
+  // The `start-rail` action's own picker: every OTHER rooted workspace,
+  // since a blank value already means this one.
+  const workspaceChoices = $derived(startRailWorkspaceChoices(workspaces, workspaceId));
+  const namedWorkspace = $derived((draft.workspace ?? "").trim());
+  // A step saved before this parameter existed, or one whose target
+  // workspace has since been removed -- either way an ID the picker
+  // cannot offer, and dropping it silently would swap in "this
+  // workspace" under the human without them touching the field.
+  const missingWorkspace = $derived(
+    namedWorkspace !== "" && !workspaceChoices.some((w) => w.id === namedWorkspace)
+  );
+
   // A `gavin` tool has no body to preview: its body NAMES the action
   // rather than being source. So it promises what it will do, which is
   // the same promise the resolved body makes for the other three kinds.
   const namedRail = $derived((draft.rail ?? "").trim());
+  const targetWorkspaceName = $derived(
+    namedWorkspace
+      ? (workspaces.find((w) => w.id === namedWorkspace)?.name ?? "a workspace that no longer exists")
+      : null
+  );
   const preview = $derived(
     gavinActionOf(tool) === "start-rail"
       ? namedRail
-        ? `Start the rail “${namedRail}”.`
+        ? targetWorkspaceName
+          ? `Start the rail “${namedRail}” in ${targetWorkspaceName}.`
+          : `Start the rail “${namedRail}”.`
         : "Nothing — with no rail named, this step stalls when the rail reaches it."
       : resolveToolBody(tool, draft)
   );
@@ -67,11 +97,23 @@
       {#each tool.params as param (param.name)}
         <label>
           <span class="label">{param.label || param.name}</span>
-          <input
-            bind:value={draft[param.name]}
-            placeholder={param.default}
-            spellcheck="false"
-          />
+          {#if gavinActionOf(tool) === "start-rail" && param.name === "workspace"}
+            <select bind:value={draft.workspace}>
+              <option value="">This workspace (default)</option>
+              {#each workspaceChoices as ws (ws.id)}
+                <option value={ws.id}>{ws.name}</option>
+              {/each}
+              {#if missingWorkspace}
+                <option value={namedWorkspace}>{targetWorkspaceName}</option>
+              {/if}
+            </select>
+          {:else}
+            <input
+              bind:value={draft[param.name]}
+              placeholder={param.default}
+              spellcheck="false"
+            />
+          {/if}
           {#if draft[param.name] !== param.default}
             <span class="default">default: {param.default || "(empty)"}</span>
           {/if}
@@ -149,7 +191,8 @@
     color: var(--text-muted);
     font-size: 11px;
   }
-  input {
+  input,
+  select {
     padding: 5px 7px;
     background: var(--surface-sunken);
     border: 1px solid var(--border);
@@ -157,7 +200,8 @@
     color: var(--text);
     font-size: 12px;
   }
-  input:focus {
+  input:focus,
+  select:focus {
     outline: none;
     border-color: var(--border-focus);
   }

@@ -92,6 +92,11 @@ fn persist_workspaces(
     // `Option<bool>` here would sit beside `auto_commit` with exactly the
     // same shape, and the two are unrelated settings.
     require_review: crate::config::RequireReviewDefault,
+    // Eleventh. `Option<LaunchConfig>` shares a shape with nothing else in
+    // this list, so a transposition is a type error rather than a
+    // silently swapped value -- the same guarantee `agent_pause` above
+    // relies on.
+    launch: Option<crate::config::LaunchConfig>,
 ) -> anyhow::Result<()> {
     crate::config::save(
         config_dir,
@@ -112,6 +117,7 @@ fn persist_workspaces(
             agent_defaults,
             git_tracking,
             require_review,
+            launch,
         },
     )
 }
@@ -167,6 +173,7 @@ pub fn set_agent_pause(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     *agent_pause_state.0.lock().unwrap() = agent_pause.clone();
     let data = state.0.lock().unwrap().clone();
@@ -180,6 +187,7 @@ pub fn set_agent_pause(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -199,9 +207,88 @@ pub fn set_agent_pause(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
     .map_err(|e| e.to_string())
 }
+/// The app-wide launch wall, `None` until somebody edits it (the shipped
+/// `LaunchConfig::default()` then applies). Tauri-managed and persisted
+/// into the same `AppConfig` as the rest -- the TENTH field a save site
+/// can silently wipe, and carried through `persist_workspaces` for
+/// exactly that reason.
+pub struct LaunchSettings(pub Mutex<Option<crate::config::LaunchConfig>>);
+
+#[tauri::command]
+pub fn get_launch_config(state: State<LaunchSettings>) -> Option<crate::config::LaunchConfig> {
+    *state.0.lock().unwrap()
+}
+
+/// Replaces the app-wide launch wall wholesale, the same shape as
+/// `set_agent_pause` and `set_agent_defaults`: the panel edits both
+/// fields and hands them back, so there is no per-key command and no way
+/// for one of them to be saved while the other is dropped.
+///
+/// `None` clears it back to the shipped default rather than to "no
+/// ceiling" -- there is no way to express "off" except by clearing the
+/// ceiling itself, which is `Some(LaunchConfig { max_in_flight: None, .. })`.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn set_launch_config(
+    launch: Option<crate::config::LaunchConfig>,
+    app_handle: AppHandle,
+    state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
+    theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
+    git_tracking_state: State<GitTrackingDefaults>,
+    require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
+) -> Result<(), String> {
+    *launch_state.0.lock().unwrap() = launch;
+    let data = state.0.lock().unwrap().clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
+    let theme = theme_state.0.lock().unwrap().clone();
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
+    let git_tracking = *git_tracking_state.0.lock().unwrap();
+    let require_review = *require_review_state.0.lock().unwrap();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let auto_commit = *auto_commit_state.0.lock().unwrap();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        card_tabs,
+        theme,
+        agent_models,
+        terminal_font_size,
+        auto_commit,
+        agent_pause,
+        superpowers,
+        agent_defaults,
+        git_tracking,
+        require_review,
+        launch,
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// The human's Superpowers word per workspace root. Same carry-through
 /// contract as `AgentModels` above; the value type differs from the
 /// String maps so a transposed argument is a compile error rather than a
@@ -262,10 +349,12 @@ pub fn set_agent_defaults(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     *agent_defaults_state.0.lock().unwrap() = agent_defaults.clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     let data = state.0.lock().unwrap().clone();
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
@@ -294,6 +383,7 @@ pub fn set_agent_defaults(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
     .map_err(|e| e.to_string())
 }
@@ -341,6 +431,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            None,
         )
         .unwrap();
         let loaded = crate::config::load(dir.path()).unwrap();
@@ -383,6 +474,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().card_tabs, card_tabs);
@@ -412,6 +504,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().terminal_font_size, Some(11));
@@ -442,6 +535,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().auto_commit, Some(true));
@@ -471,6 +565,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().auto_commit, Some(false));
@@ -509,6 +604,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().removed_workspaces, vec![tombstone]);
@@ -540,6 +636,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().superpowers, marks);
@@ -582,9 +679,98 @@ mod workspaces_data_tests {
             defaults.clone(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().agent_defaults, defaults);
+    }
+
+    /// The TENTH carry-through field, and the one whose loss is a
+    /// safety regression rather than a cosmetic one: a save site that
+    /// dropped it would put an install that deliberately set a ceiling
+    /// of 2 back on the shipped 4, silently, on the next unrelated save.
+    #[test]
+    fn persist_workspaces_carries_the_launch_wall_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        let launch = crate::config::LaunchConfig {
+            max_in_flight: Some(2),
+            hold_on_pressure: false,
+            reclaim_done_sessions: false,
+        };
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            None,
+            None,
+            None,
+            HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
+            crate::config::GitTrackingDefault::default(),
+            crate::config::RequireReviewDefault::default(),
+            Some(launch),
+        )
+        .unwrap();
+        assert_eq!(crate::config::load(dir.path()).unwrap().launch, Some(launch));
+    }
+
+    /// A blank ceiling is a real answer -- "no ceiling" -- and has to
+    /// survive the round trip as absence rather than come back as the
+    /// shipped 4. `skip_serializing_if` keeps the key out of the file
+    /// entirely, which is exactly the shape that could read back wrong.
+    #[test]
+    fn persist_workspaces_keeps_an_explicitly_blank_ceiling_blank() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        let launch = crate::config::LaunchConfig {
+            max_in_flight: None,
+            hold_on_pressure: true,
+            reclaim_done_sessions: true,
+        };
+        persist_workspaces(
+            dir.path(),
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            None,
+            None,
+            None,
+            HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
+            crate::config::GitTrackingDefault::default(),
+            crate::config::RequireReviewDefault::default(),
+            Some(launch),
+        )
+        .unwrap();
+        let loaded = crate::config::load(dir.path()).unwrap().launch.unwrap();
+        assert_eq!(loaded.max_in_flight, None);
+        assert!(loaded.hold_on_pressure);
+    }
+
+    /// A config.json written before the reclaim switch existed carries
+    /// only the ceiling and the hold. It has to parse as the shipped
+    /// answer, not as a refusal: a machine that upgraded is the machine
+    /// with six idle agents of done cards already on it.
+    #[test]
+    fn launch_config_written_before_the_reclaim_switch_reads_as_on() {
+        let launch: crate::config::LaunchConfig =
+            serde_json::from_str(r#"{"maxInFlight":4,"holdOnPressure":true}"#).unwrap();
+        assert!(launch.reclaim_done_sessions);
+        assert!(launch.hold_on_pressure);
+        assert_eq!(launch.max_in_flight, Some(4));
+        // And the wire name is the one launchGate.ts reads.
+        let json = serde_json::to_value(crate::config::LaunchConfig::default()).unwrap();
+        assert_eq!(json["reclaimDoneSessions"], serde_json::Value::Bool(true));
     }
 
     #[test]
@@ -607,6 +793,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault(Some(false)),
             crate::config::RequireReviewDefault::default(),
+            None,
         )
         .unwrap();
         // An explicit "off" survives as false, not as absence: absence is
@@ -638,6 +825,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault(Some(false)),
+            None,
         )
         .unwrap();
         // An explicit "off" survives as false, not as absence: absence is
@@ -718,6 +906,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -752,6 +941,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            None,
         )
         .unwrap();
         let raw = std::fs::read_to_string(crate::config::config_path(dir.path())).unwrap();
@@ -818,6 +1008,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().theme, Some("light".to_string()));
@@ -857,6 +1048,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            None,
         )
         .unwrap();
         assert_eq!(crate::config::load(dir.path()).unwrap().agent_pause, Some(cycle));
@@ -1012,6 +1204,7 @@ pub fn set_workspaces_state(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     let data = WorkspacesData { workspaces, active_workspace_id, removed_workspaces };
     *state.0.lock().unwrap() = data.clone();
@@ -1029,6 +1222,7 @@ pub fn set_workspaces_state(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -1045,6 +1239,7 @@ pub fn set_workspaces_state(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
     .map_err(|e| e.to_string())?;
     let _ = app_handle.emit(
@@ -1086,6 +1281,7 @@ pub fn set_agent_model_default(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     // An empty model removes the entry rather than storing "": the
     // picker's unset row must be able to UNDO a default, not just
@@ -1113,6 +1309,7 @@ pub fn set_agent_model_default(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -1130,6 +1327,7 @@ pub fn set_agent_model_default(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
     .map_err(|e| e.to_string())
 }
@@ -1168,6 +1366,7 @@ pub fn set_superpowers_mark(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     let superpowers = {
         let mut current = superpowers_state.0.lock().unwrap();
@@ -1192,6 +1391,7 @@ pub fn set_superpowers_mark(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -1211,6 +1411,7 @@ pub fn set_superpowers_mark(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
     .map_err(|e| e.to_string())
 }
@@ -1238,6 +1439,7 @@ pub fn set_theme_pref(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     // An absent or blank value clears the override back to System rather
     // than persisting an empty string -- there's no separate "clear"
@@ -1261,6 +1463,7 @@ pub fn set_theme_pref(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -1277,6 +1480,7 @@ pub fn set_theme_pref(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
         .map_err(|e| e.to_string())
 }
@@ -1312,6 +1516,7 @@ pub fn set_terminal_font_size(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     let terminal_font_size = {
         let mut current = font_size_state.0.lock().unwrap();
@@ -1334,6 +1539,7 @@ pub fn set_terminal_font_size(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -1351,6 +1557,7 @@ pub fn set_terminal_font_size(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
     .map_err(|e| e.to_string())
 }
@@ -1383,6 +1590,7 @@ pub fn set_auto_commit(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     let auto_commit = {
         let mut current = auto_commit_state.0.lock().unwrap();
@@ -1402,6 +1610,7 @@ pub fn set_auto_commit(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -1419,6 +1628,7 @@ pub fn set_auto_commit(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
     .map_err(|e| e.to_string())
 }
@@ -1451,6 +1661,7 @@ pub fn set_require_review(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     let require_review = {
         let mut current = require_review_state.0.lock().unwrap();
@@ -1470,6 +1681,7 @@ pub fn set_require_review(
     let superpowers = superpowers_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -1487,6 +1699,7 @@ pub fn set_require_review(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
     .map_err(|e| e.to_string())
 }
@@ -1523,6 +1736,7 @@ pub fn set_git_tracking_default(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     let git_tracking = {
         let mut current = git_tracking_state.0.lock().unwrap();
@@ -1542,6 +1756,7 @@ pub fn set_git_tracking_default(
     let superpowers = superpowers_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
     persist_workspaces(
         &config_dir,
@@ -1559,6 +1774,7 @@ pub fn set_git_tracking_default(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
     .map_err(|e| e.to_string())
 }
@@ -1587,6 +1803,7 @@ pub fn set_session_name(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     // An empty (or whitespace-only) name clears the override rather than
     // persisting an empty string -- there's no separate "clear" command,
@@ -1615,6 +1832,7 @@ pub fn set_session_name(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -1631,6 +1849,7 @@ pub fn set_session_name(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
         .map_err(|e| e.to_string())
 }
@@ -1663,6 +1882,7 @@ pub fn set_file_tabs(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     *file_tabs_state.0.lock().unwrap() = file_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -1679,6 +1899,7 @@ pub fn set_file_tabs(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -1695,6 +1916,7 @@ pub fn set_file_tabs(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
         .map_err(|e| e.to_string())
 }
@@ -1756,6 +1978,7 @@ pub fn set_card_tabs(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     *card_tabs_state.0.lock().unwrap() = card_tabs.clone();
     let session_names = names_state.0.lock().unwrap().clone();
@@ -1772,6 +1995,7 @@ pub fn set_card_tabs(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -1788,6 +2012,7 @@ pub fn set_card_tabs(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
     .map_err(|e| e.to_string())
 }
@@ -1818,6 +2043,7 @@ pub fn set_board_tabs(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    launch_state: State<LaunchSettings>,
 ) -> Result<(), String> {
     *board_tabs_state.0.lock().unwrap() = board_tabs.clone();
     let card_tabs = card_tabs_state.0.lock().unwrap().clone();
@@ -1834,6 +2060,7 @@ pub fn set_board_tabs(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
     persist_workspaces(
         &config_dir,
         &data,
@@ -1850,6 +2077,7 @@ pub fn set_board_tabs(
         agent_defaults,
         git_tracking,
         require_review,
+        launch,
     )
         .map_err(|e| e.to_string())
 }
@@ -3649,6 +3877,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         config.agent_defaults.clone(),
         config.git_tracking,
         config.require_review,
+        config.launch,
     )?;
 
     let session_ids = attachable_session_ids(&workspaces_data, &non_session_tab_ids);
@@ -3669,6 +3898,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(AgentDefaults(Mutex::new(config.agent_defaults)));
     app_handle.manage(GitTrackingDefaults(Mutex::new(config.git_tracking)));
     app_handle.manage(RequireReviewDefaults(Mutex::new(config.require_review)));
+    app_handle.manage(LaunchSettings(Mutex::new(config.launch)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
     attach_and_relay(&app_handle, &writer, reader_stream, session_ids, compat)?;

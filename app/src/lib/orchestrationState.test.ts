@@ -188,6 +188,43 @@ vi.mock("./dialog", () => ({
 // and the real one reaches for the OS window and the permission API.
 // Only the two functions orchestrationState imports -- every other
 // importer in this graph takes a TYPE from here, which is erased.
+/// The launch wall, with a switch a test can throw.
+///
+/// Hoisted for the reason `agentMock` above is: the `vi.mock` factory is
+/// lifted over every import. `launchHolding` is a REAL store, because
+/// the scheduler subscribes to it as one of its tick inputs -- that
+/// subscription is precisely what makes a lifted hold re-emit the launch
+/// the pass before it skipped.
+const gateMock = vi.hoisted(() => {
+  // A minimal writable, hand-rolled: `vi.hoisted` runs before every
+  // import in the file, so it cannot import svelte's own -- and the
+  // scheduler subscribes to this one for real. The store contract is
+  // three methods; these are them.
+  let holding = false;
+  const subscribers = new Set<(v: boolean) => void>();
+  return {
+    allowed: { value: true },
+    launchHolding: {
+      subscribe(run: (v: boolean) => void) {
+        subscribers.add(run);
+        run(holding);
+        return () => void subscribers.delete(run);
+      },
+      set(next: boolean) {
+        holding = next;
+        for (const run of [...subscribers]) run(holding);
+      },
+    },
+  };
+});
+
+vi.mock("./launchQueue", () => ({
+  holdOrQueue: vi.fn(() => null),
+  mayLaunch: () => gateMock.allowed.value,
+  launchBlockedReason: () => (gateMock.allowed.value ? null : "Waiting for a slot"),
+  launchHolding: gateMock.launchHolding,
+}));
+
 vi.mock("./notifications", () => ({
   setRailNotificationVoice: vi.fn(),
   maybeNotifyReviewWait: vi.fn().mockResolvedValue(undefined),
@@ -1228,6 +1265,79 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
     expect(layoutStateModule.createSessionOnNewPage).not.toHaveBeenCalled();
     expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+
+  // The step's `workspace` parameter is a workspace ID from
+  // StepParamsDialog's picker, and the rail it names lives in a
+  // DIFFERENT workspace's plan -- one this app has not fetched yet,
+  // which is the normal case for a workspace nobody has switched to.
+  it("a gavin action can arm a rail in a workspace of its own choosing", async () => {
+    vi.mocked(backend.getOrchestration).mockImplementation(async (workspaceId: string) =>
+      workspaceId === "ws-2"
+        ? {
+            ...emptyOrchestration(),
+            rails: [
+              {
+                id: "r2",
+                name: "deploy",
+                position: 0,
+                worktreePath: "/x/wt2",
+                pageId: null,
+                stages: [
+                  {
+                    id: "s2",
+                    position: 0,
+                    steps: [{ id: "u1", position: 0, cardPath: "", toolId: "builtin:push", toolParams: {} }],
+                  },
+                ],
+              },
+            ],
+          }
+        : {
+            ...toolRail(),
+            rails: toolRail().rails.map((r) => ({
+              ...r,
+              pageId: null,
+              stages: [
+                {
+                  id: "s1",
+                  position: 0,
+                  steps: [
+                    {
+                      id: "t1",
+                      position: 0,
+                      cardPath: "",
+                      toolId: "builtin:start-rail",
+                      toolParams: { rail: "deploy", workspace: "ws-2" },
+                    },
+                  ],
+                },
+              ],
+            })),
+            railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+          }
+    );
+    __resetForTesting();
+    setLayoutState({
+      workspaces: [
+        { id: "ws-1", pages: [] },
+        { id: "ws-2", pages: [], rootPath: "/ws2" },
+      ],
+    });
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [], "ws-2": [] });
+
+    // Not pre-fetched: the executor has to load ws-2's plan itself.
+    expect(get(orchestrations)["ws-2"]).toBeUndefined();
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(backend.setRailRun).toHaveBeenCalledWith("r2", "running", "s2");
+    expect(get(orchestrations)["ws-2"].railRuns).toEqual([
+      { railId: "r2", state: "running", currentStageId: "s2" },
+    ]);
+    // The calling step is done, on its OWN workspace -- arming another
+    // workspace's rail must not be mistaken for this step's own launch.
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", null, null, null, null, null);
   });
 
   it("resuming a stalled step reopens it on the rail's page too", async () => {
@@ -3238,6 +3348,43 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
     layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
     await settle();
     expect(backend.setStepRun).not.toHaveBeenCalled();
+  });
+
+  // The launch wall, at the same seam the pause uses and with the same
+  // shape of proof. A rail step is NOT queued -- the scheduler is the
+  // rail's queue -- so the whole of "resume" is that `launchHolding` is
+  // a tick input: the pass that runs when a slot frees emits the very
+  // action the held pass skipped.
+  //
+  // The bookkeeping still happens while the gate holds. Marking a
+  // finished step done is not a start, and holding it would leave the
+  // rail describing a state it is no longer in.
+  it("skips a launch the wall refuses and emits it again when a slot frees", async () => {
+    gateMock.allowed.value = false;
+    try {
+      layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
+      await vi.waitFor(() =>
+        expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null, null)
+      );
+      expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+
+      gateMock.allowed.value = true;
+      // The flip a lifted hold makes: the deduped flag goes true while
+      // starts are held and false when they may resume, and it is that
+      // second emission the scheduler ticks on.
+      gateMock.launchHolding.set(true);
+      gateMock.launchHolding.set(false);
+      await vi.waitFor(() =>
+        expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+          "ws-1",
+          "p1",
+          "/x/wt",
+          expect.stringContaining("git push -u origin HEAD")
+        )
+      );
+    } finally {
+      gateMock.allowed.value = true;
+    }
   });
 });
 

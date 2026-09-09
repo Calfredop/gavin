@@ -12,11 +12,14 @@
     agentExitedIndicator,
     agentFailedIndicator,
     agentIndicator,
+    agentQueuedIndicator,
+    queuedBadgeText,
     agentInterruptedIndicator,
     priorityIndicator,
   } from "./ui/indicators";
   import { dragState, dropHold, buildNestedSlots } from "./kanbanDrag";
   import { kanbanState, cardSessionFor } from "./kanbanState";
+  import { cancelLaunch, launchGateVerdict, launchQueue, queuedForCard } from "./launchQueue";
   import { orchestrations } from "./orchestrationState";
   import { cardRailBadge } from "./orchestration";
   import { cardSessionState } from "./columnRunAction";
@@ -131,6 +134,20 @@
   const railBadge = $derived(
     showRailBadge && workspaceId !== null ? cardRailBadge($orchestrations[workspaceId], card.id) : null
   );
+
+  // A launch the wall is holding (launchQueue.ts). Read from the store
+  // like the session dot and the rail glyph, and for the same reason: a
+  // queued intent binds nothing to the card, so the card file itself
+  // says nothing about it -- and without a mark here a card whose Run
+  // was queued is indistinguishable from one nobody pressed.
+  //
+  // `$launchQueue` is the dependency, not `queuedForCard`'s result: the
+  // helper reads the store with `get`, which no derivation can see.
+  const queued = $derived.by(() => {
+    void $launchQueue;
+    return workspaceId !== null ? queuedForCard(workspaceId, card.id) : null;
+  });
+  const queuedHold = $derived($launchGateVerdict.reason ?? "ceiling");
 
   // The card is being REWRITTEN by a develop agent (developingCards.ts).
   // Read from the store like the session dot and the rail glyph: a
@@ -326,6 +343,31 @@
           indicator={agentDevelopingIndicator()}
           size={12}
           tip="{agentDevelopingIndicator().tip} — click to open that session. Nothing else can run this card until it finishes."
+        />
+      </button>
+    {/if}
+    <!-- A queued launch, before the session badge: there is no session
+         yet, so the two can never both be about the same run, and the
+         mark has to be where the eye already looks for "what is
+         happening to this card". The bubble carries the gate's own
+         sentence and hangs on a NON-disabled button -- tooltip.ts binds
+         mouseenter, which a disabled control never fires. -->
+    {#if queued}
+      <button
+        type="button"
+        class="session-button"
+        aria-label="Cancel this queued launch"
+        onpointerdown={shield}
+        onclick={(e) => {
+          e.stopPropagation();
+          cancelLaunch(queued.id);
+        }}
+      >
+        <StatusBadge
+          indicator={agentQueuedIndicator(queuedHold, $launchGateVerdict.why)}
+          size={12}
+          text={queuedBadgeText(queuedHold)}
+          tip={`${agentQueuedIndicator(queuedHold, $launchGateVerdict.why).tip} — click to cancel`}
         />
       </button>
     {/if}

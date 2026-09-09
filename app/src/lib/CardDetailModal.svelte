@@ -51,11 +51,14 @@
     agentExitedIndicator,
     agentFailedIndicator,
     agentIndicator,
+    agentQueuedIndicator,
+    queuedBadgeText,
     agentInterruptedIndicator,
   } from "./ui/indicators";
   import { bestOfNRequest, bestOfNRuns, candidateLiveness, runForCard, runSummary } from "./bestOfNState";
   import { pickCandidate, abandonRun } from "./bestOfNActions";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
+  import { cancelLaunch, launchGateVerdict, launchQueue, queuedForCard } from "./launchQueue";
   import {
     runCard,
     resumeCard,
@@ -648,6 +651,19 @@
           : agentExitedIndicator()
   );
 
+  // A launch the wall is holding (launchQueue.ts). There is no session
+  // yet -- that is the whole state -- so nothing above can report it,
+  // and without this row the modal shows a card with a Run button and no
+  // sign that Run was already pressed.
+  //
+  // `$launchQueue` is the dependency, not `queuedForCard`'s result: the
+  // helper reads the store with `get`, which no derivation can see.
+  const queued = $derived.by(() => {
+    void $launchQueue;
+    return queuedForCard(workspaceId, card.id);
+  });
+  const queuedHold = $derived($launchGateVerdict.reason ?? "ceiling");
+
   async function handleRun(): Promise<void> {
     errorMessage = null;
     const err = await runCard(workspaceId, card);
@@ -1193,6 +1209,25 @@
       {/if}
       {#if card.parseWarning}
         <p class="warning">This card's frontmatter has issues — some fields may not be readable.</p>
+      {/if}
+      <!-- A queued launch. Above the session bar rather than in it: the
+           bar reports a SESSION, and the whole point of this state is
+           that there is not one yet. The gate's sentence is written out
+           rather than left to a tooltip -- there is room here, and this
+           is the surface somebody opens to find out why nothing has
+           started. -->
+      {#if queued}
+        <div class="queued-row">
+          <StatusBadge
+            indicator={agentQueuedIndicator(queuedHold, $launchGateVerdict.why)}
+            size={12}
+            text={queuedBadgeText(queuedHold)}
+          />
+          <span class="queued-why">{$launchGateVerdict.why ?? "waiting to start"}</span>
+          <button type="button" class="queued-cancel" onclick={() => cancelLaunch(queued.id)}>
+            Cancel
+          </button>
+        </div>
       {/if}
       <!-- The session bar. Pinned because the state it reports is the
            only thing on this panel that can be URGENT: an agent waiting
@@ -1834,6 +1869,27 @@
     color: var(--text-subtle);
     font-size: 0.8em;
     margin: 6px 0 0;
+  }
+
+  /* One quiet row, not a banner: a queued launch is the feature working,
+     not a fault. It reads as a note with an action on the end. */
+  .queued-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    font-size: 0.8em;
+    color: var(--text-muted);
+  }
+  .queued-why {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .queued-cancel {
+    flex: none;
   }
 
   /* Status, priority and the way back to the parent, on one wrapping

@@ -8,7 +8,15 @@
   import { Play, X } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { kanbanState, cardSessionFor } from "./kanbanState";
-  import { boardSelection, clearBoardSelection, runnableSelection, selectedCards } from "./boardSelection";
+  import {
+    boardSelection,
+    clearBoardSelection,
+    runnableSelection,
+    selectedCards,
+    selectionRunConfirm,
+  } from "./boardSelection";
+  import ConfirmPrompt from "./ConfirmPrompt.svelte";
+  import { estimateFor, launchGateVerdict } from "./launchQueue";
 
   interface Props {
     workspaceId: string;
@@ -27,7 +35,25 @@
 
   let running = $state(false);
 
+  // Asks first: a selection can span every column on the board, so this
+  // is the one press here with no upper bound at all -- and the number
+  // that stops eleven agents is the one the dialog carries. Held as a
+  // bare flag rather than a captured list, the same reason the column's
+  // own Run all does: a selection that changes under the open prompt
+  // re-derives through `runnable` and closes on its own once there is
+  // nothing left to run.
+  let runPrompt = $state(false);
+  // The estimate rides `$launchGateVerdict` so the projection keeps up
+  // while the prompt is open.
+  const runContent = $derived.by(() => {
+    // Read so this derivation depends on it; see OrchestrationHubView.
+    void $launchGateVerdict;
+    if (!runPrompt || runnable.length === 0) return null;
+    return selectionRunConfirm(runnable, estimateFor(workspaceId, runnable.length));
+  });
+
   async function runSelected(): Promise<void> {
+    runPrompt = false;
     if (running || runnable.length === 0) return;
     running = true;
     try {
@@ -57,6 +83,15 @@
   });
 </script>
 
+{#if runContent}
+  <ConfirmPrompt
+    title={runContent.title}
+    lines={runContent.lines}
+    choices={[{ label: runContent.confirmLabel, onPick: () => void runSelected() }]}
+    onCancel={() => (runPrompt = false)}
+  />
+{/if}
+
 {#if picked.length > 0}
   <div class="selection-bar" role="toolbar" aria-label="Selected cards">
     <span class="count">{picked.length} selected</span>
@@ -71,7 +106,7 @@
       tip={runnable.length === 0
         ? "Nothing here can run — notes aren't runnable, and the rest already have a session"
         : `Run ${runnable.length} unbound ${runnable.length === 1 ? "card" : "cards"}, one after another`}
-      onclick={() => void runSelected()}
+      onclick={() => (runPrompt = true)}
     >
       <span class="run-count">{runnable.length}</span>
     </IconButton>

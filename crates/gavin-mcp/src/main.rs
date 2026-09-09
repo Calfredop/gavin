@@ -222,7 +222,7 @@ fn tool_definitions() -> Value {
         }, "required": ["plan_path", "item"] } },
         { "name": "gavin_get_orchestration", "description": "The workspace's orchestration: rails with their worktrees, branches and uncommitted files, stages, steps with their cards or tools and live run state, the board's columns, every runnable card not yet on a rail (a plan's nested children ride with it and are not listed separately), and the tool library. Read this before writing an arrangement. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "gavin_set_orchestration", "description": "Replace the workspace's orchestration wholesale: rails of stages of steps, plus your own conflict notes. Read gavin_get_orchestration first and preserve the ids of steps you are keeping — run state follows the id — AND each stage's `mode` and `name`: omitting `mode` reverts that stage to `parallel`, which turns a sequential group into steps that all run at once in one checkout. Removing a step whose run state is 'running' is refused.", "inputSchema": { "type": "object", "properties": {
-            "rails": { "type": "array", "description": "Ordered rails. Each: { id, name, position, worktreePath, branch, pageId, stages: [{ id, position, mode, name, steps: [...] }] }. A step is EITHER a card step { id, position, cardPath } OR a tool step { id, position, toolId, toolParams: { name: value } } — never both. Stages run one after another. A stage's `mode` is \"parallel\" (its steps run at once in the rail's checkout) or \"sequence\" (one at a time, in position order); a stage of two or more steps is what the app calls a GROUP, and `name` is what it is called. `mode` defaults to \"parallel\" when omitted. `worktreePath` says WHICH CHECKOUT (null = the workspace root), `branch` says WHICH BRANCH gavin puts that checkout on before launching a step (null = whatever is checked out) — so a branch with no worktree means the root checkout on that branch, no separate folder.", "items": { "type": "object" } },
+            "rails": { "type": "array", "description": "Ordered rails. Each: { id, name, position, worktreePath, branch, trigger, pageId, stages: [{ id, position, mode, name, steps: [...] }] }. A step is EITHER a card step { id, position, cardPath } OR a tool step { id, position, toolId, toolParams: { name: value } } — never both. Stages run one after another. A stage's `mode` is \"parallel\" (its steps run at once in the rail's checkout) or \"sequence\" (one at a time, in position order); a stage of two or more steps is what the app calls a GROUP, and `name` is what it is called. `mode` defaults to \"parallel\" when omitted. `worktreePath` says WHICH CHECKOUT (null = the workspace root), `branch` says WHICH BRANCH gavin puts that checkout on before launching a step (null = whatever is checked out) — so a branch with no worktree means the root checkout on that branch, no separate folder. `trigger` is the rail's own start condition and must be carried through unchanged, exactly like a stage's `mode`: { \"kind\": \"all-rails-done\" } arms the rail once every OTHER rail has finished, { \"kind\": \"rail-done\", \"rail\": \"backend\" } once that named rail has, and null/omitted means only a human or a start-rail step arms it — dropping it silently turns a rail that runs itself into one that waits forever.", "items": { "type": "object" } },
             "conflict_notes": { "type": "array", "description": "Your judgements, shown to the human in the Conflicts box. Each: { id, stepIds: [...], note }.", "items": { "type": "object" } }
         }, "required": ["rails"] } },
         { "name": "gavin_start_rail", "description": "Arm a rail by NAME, exactly as the human's Start button does: gavin runs it from its first unfinished stage, on the rail's own page. Refuses a name no rail has, a name two rails share, and a PAUSED rail (a pause is a human's or a stalled step's, and resuming it is theirs). A rail already running is left alone — starting it would rewind it — and so is one with nothing unfinished; both answer with what they are, not an error. Never write run state to the daemon socket yourself. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {
@@ -1503,6 +1503,7 @@ mod tests {
             worktree_path: None,
             branch: None,
             auto_resume: None,
+            trigger: None,
             page_id: None,
             stages,
         }
@@ -1735,6 +1736,7 @@ mod tests {
                 worktree_path: Some("/x/wt-a".into()),
                 branch: Some("feature/api".into()),
                 auto_resume: None,
+                trigger: None,
                 page_id: None,
                 stages: vec![protocol::Stage {
                     id: "s1".into(),

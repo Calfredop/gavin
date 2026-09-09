@@ -25,6 +25,9 @@ import {
   totalsNote,
   type ManagedSession,
   type SessionRow,
+  droppableRoots,
+  dropRootsConfirm,
+  watchmanLine,
 } from "./sessionsManager";
 import { restartOutcome, restartStopsAgentsLine } from "./daemonCompat";
 import type { Workspace } from "./workspace";
@@ -838,5 +841,79 @@ describe("what a batch kill says it is freeing", () => {
       sessionNames: {},
     });
     expect(killBatchConfirm(rows, "all")!.lines.join(" ")).not.toContain("Together they are using");
+  });
+});
+
+// The half of the machine gavin did not start. Watchman keeps a removed
+// root's whole tree in memory for five days, so a workspace that cuts a
+// worktree per rail leaves one behind on every merge -- memory nothing
+// will reclaim and nothing in the panel could see.
+describe("watchmanLine", () => {
+  it("says what the server costs and how much it is holding", () => {
+    expect(watchmanLine({ rssBytes: 644245094, roots: ["/a", "/b"] })).toBe(
+      "outside gavin: watchman 614 MB, 2 roots"
+    );
+  });
+
+  it("singularizes a lone root", () => {
+    expect(watchmanLine({ rssBytes: 2 * 1024 ** 3, roots: ["/a"] })).toBe(
+      "outside gavin: watchman 2.0 GB, 1 root"
+    );
+  });
+
+  // A machine with no watchman is the common case, and a permanent
+  // "watchman 0 GB" would be a row about nothing.
+  it("says nothing when there is no server", () => {
+    expect(watchmanLine(null)).toBeNull();
+  });
+});
+
+describe("droppableRoots", () => {
+  it("offers the roots no open workspace has a checkout under", () => {
+    expect(
+      droppableRoots(["/repo", "/repo-wt-1", "/old-wt"], ["/repo", "/repo-wt-1"])
+    ).toEqual(["/old-wt"]);
+  });
+
+  // Containment both ways: watchman watches the repository root, and
+  // gavin knows a path inside it as often as the other way round.
+  it("counts a root that contains an owned path, and one contained by it", () => {
+    expect(droppableRoots(["/repo"], ["/repo/app"])).toEqual([]);
+    expect(droppableRoots(["/repo/app"], ["/repo"])).toEqual([]);
+  });
+
+  it("ignores a trailing slash on either side", () => {
+    expect(droppableRoots(["/repo/"], ["/repo"])).toEqual([]);
+    expect(droppableRoots(["/repo"], ["/repo/"])).toEqual([]);
+  });
+
+  // A path that merely SHARES A PREFIX is a different directory:
+  // "/repo-wt" is not inside "/repo".
+  it("does not treat a shared prefix as containment", () => {
+    expect(droppableRoots(["/repo-wt"], ["/repo"])).toEqual(["/repo-wt"]);
+  });
+
+  it("leaves everything alone when gavin knows no paths at all", () => {
+    expect(droppableRoots(["/a", "/b"], [])).toEqual(["/a", "/b"]);
+  });
+});
+
+describe("dropRootsConfirm", () => {
+  it("names every root, so a human can spot the one they did not mean", () => {
+    const prompt = dropRootsConfirm(["/old-wt", "/gone"]);
+    expect(prompt?.title).toBe("Tell watchman to forget 2 roots?");
+    expect(prompt?.lines).toContain("/old-wt");
+    expect(prompt?.lines).toContain("/gone");
+    expect(prompt?.confirmLabel).toBe("Forget 2 roots");
+  });
+
+  // "Drop" reads like a delete and is not one; the prompt has to say so.
+  it("says what it actually costs", () => {
+    const prompt = dropRootsConfirm(["/old-wt"]);
+    expect(prompt?.lines.some((l) => l.includes("Nothing on disk changes"))).toBe(true);
+  });
+
+  it("asks nothing when there is nothing to drop", () => {
+    expect(dropRootsConfirm([])).toBeNull();
   });
 });

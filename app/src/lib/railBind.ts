@@ -1,17 +1,26 @@
-// The three bindings a rail carries -- WHICH checkout, on WHICH branch,
-// and WHERE its sessions land -- as one vocabulary, so the dialog that
-// sets them and the surfaces that offer it agree on what they are called.
+// The four settings a rail carries -- WHICH checkout, on WHICH branch,
+// WHERE its sessions land and WHAT starts it -- as one vocabulary, so the
+// dialog that sets them and the surfaces that offer it agree on what they
+// are called.
+//
+// The first three are bindings and the fourth is a condition, which is
+// why the dialog is titled after how a rail runs rather than where. They
+// share a home because they are the same question asked four ways -- the
+// standing facts about a rail, none of which belongs on a card or a step
+// -- and because a human who opens this from one chip should find the
+// other three without being told they exist.
 //
 // It used to be three stacked sections in a dialog called "Bind", opened
-// by a button that showed two of the three values and by conflict rows
+// by a button that showed two of those three values and by conflict rows
 // that said "Bind worktree…" even when the repair was a branch. Nothing
 // on the way in said the dialog could set a page at all. The tabs are the
 // fix, and a tab is only useful if every surface can name one: the rail
 // header's chips, the conflict box's repair button and the dialog's own
 // strip all address a tab by id from here.
-import type { Conflict } from "./orchestration";
+import type { Conflict, RailTrigger } from "./orchestration";
+import { railTriggerLabel } from "./orchestration";
 
-export type RailBindTab = "worktree" | "branch" | "page";
+export type RailBindTab = "worktree" | "branch" | "page" | "trigger";
 
 export interface RailBindTabMeta {
   id: RailBindTab;
@@ -19,9 +28,11 @@ export interface RailBindTabMeta {
   label: string;
 }
 
-/// Checkout, then branch, then page: the order they take effect in when
-/// a step launches, and the order the rail header reads them in.
+/// Trigger, then checkout, then branch, then page: what starts the rail
+/// and then the order the rest take effect in once something has -- which
+/// is the order the rail header reads them in.
 export const RAIL_BIND_TABS: RailBindTabMeta[] = [
+  { id: "trigger", label: "Trigger" },
   { id: "worktree", label: "Worktree" },
   { id: "branch", label: "Branch" },
   { id: "page", label: "Page" },
@@ -43,13 +54,20 @@ export interface RailBindChip {
   label: string;
   /// What this binding is set to right now, short enough for a chip.
   value: string;
-  /// Whether the rail actually carries this binding. False is not an
-  /// error -- every one of the three has a working default -- so an
-  /// unset chip is drawn quietly rather than as a warning.
+  /// Whether the rail actually carries this setting. False is not an
+  /// error -- every one of the four has a working default, a trigger's
+  /// being "only a human starts it" -- so an unset chip is drawn quietly
+  /// rather than as a warning.
   bound: boolean;
   /// The whole truth, for a tooltip: what the binding does, or what the
   /// default does and what picking one would change.
   tip: string;
+  /// Drawn as a warning rather than quietly. Only the trigger chip sets
+  /// it, and only for a condition that can never fire as written (see
+  /// `railTriggerVerdict`): the other three degrade to a working default,
+  /// but a broken trigger means a rail that waits forever, and nothing
+  /// but a human changes that.
+  warn?: boolean;
 }
 
 /// The rail's own bindings, as little as this module needs. Taken as a
@@ -59,6 +77,7 @@ export interface RailBindings {
   worktreePath: string | null;
   branch?: string | null;
   pageId: string | null;
+  trigger?: RailTrigger | null;
 }
 
 /// One binding, said the same way everywhere it is offered.
@@ -72,6 +91,19 @@ export function railBindChip(
   rail: RailBindings,
   pageName: string | null
 ): RailBindChip {
+  if (tab === "trigger") {
+    const trigger = rail.trigger ?? null;
+    return {
+      tab,
+      label: "Trigger",
+      value: railTriggerLabel(trigger),
+      bound: trigger !== null,
+      tip:
+        trigger === null
+          ? "Only you start this rail — or a Start rail step on another one. Give it a condition to have gavin arm it for you."
+          : "Gavin arms this rail by itself when its condition holds. Its own state and its steps are unchanged: a paused rail stays paused, and a rail with nothing unfinished has nothing to start.",
+    };
+  }
   if (tab === "worktree") {
     const path = rail.worktreePath;
     return {
@@ -110,7 +142,7 @@ export function railBindChip(
   };
 }
 
-/// All three, in tab order.
+/// All four, in tab order.
 export function railBindChips(rail: RailBindings, pageName: string | null): RailBindChip[] {
   return RAIL_BIND_TABS.map((t) => railBindChip(t.id, rail, pageName));
 }

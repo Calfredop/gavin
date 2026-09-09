@@ -12,6 +12,8 @@
 
 import { writable, get } from "svelte/store";
 import type { CardView } from "./planBoard";
+import { count } from "./railConfirm";
+import { estimateLines, type LaunchEstimate } from "./launchEstimate";
 
 /// Card paths, in the order they were picked.
 export const boardSelection = writable<string[]>([]);
@@ -50,4 +52,36 @@ export function selectedCards(allCards: CardView[], selection: string[]): CardVi
 /// binding is already running (Run would only jump to it).
 export function runnableSelection(cards: CardView[], isBound: (id: string) => boolean): CardView[] {
   return cards.filter((c) => c.kind !== "note" && !isBound(c.id));
+}
+
+/// What "Run selected" asks before it fires.
+///
+/// The bar used to launch on the click itself -- a selection can span
+/// every column on the board, so it is the one press here with no upper
+/// bound at all. Same shape as `columnRunAllConfirm`, and for the same
+/// reason: the human gets the list of who runs and the number that says
+/// what it takes, before anything spawns.
+export interface SelectionRunPrompt {
+  title: string;
+  lines: string[];
+  confirmLabel: string;
+}
+
+export function selectionRunConfirm(
+  targets: CardView[],
+  /// What this press is projected to cost (launchEstimate.ts). Optional
+  /// so a test about the selection arithmetic need not build a machine
+  /// sample; the bar always passes one.
+  estimate?: LaunchEstimate | null
+): SelectionRunPrompt {
+  const n = targets.length;
+  return {
+    title: `Run ${count(n, "selected card")}?`,
+    lines: [
+      `Each one starts its own agent, one after another.`,
+      `Runs: ${targets.map((c) => c.title).join(", ")}.`,
+      ...(estimate ? estimateLines(estimate) : []),
+    ],
+    confirmLabel: `Run ${count(n, "card")}`,
+  };
 }

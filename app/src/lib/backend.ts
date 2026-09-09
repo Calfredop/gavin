@@ -1,6 +1,8 @@
 import type { AgentDefaults } from "./complexity";
 import type { PauseCycle } from "./agentPause";
 import type { AgentUsageReport } from "./agentUsage";
+import type { SystemMemorySample, WatchmanSample } from "./memory";
+import type { LaunchConfig } from "./launchGate";
 import type { PrReport } from "./pullRequest";
 import type { CardRun, TokenReport } from "./runHistory";
 import { invoke } from "@tauri-apps/api/core";
@@ -292,6 +294,30 @@ export function setGavinGitTracking(
   return invoke("set_gavin_git_tracking", { root, tracked, untrack });
 }
 
+/// One reading of the machine's memory. Straight to Tauri, like the
+/// usage probe: this is a sysctl read on the host, so it keeps working
+/// across a version skew that has every gavin_* tool failing closed --
+/// which is exactly when somebody is most likely to be running a lot of
+/// agents at once.
+export function systemMemory(): Promise<SystemMemorySample> {
+  return invoke("system_memory");
+}
+
+/// The live watchman server, or null when there is not one. Never starts
+/// one: the host establishes the pid first and only then runs the CLI,
+/// because every watchman subcommand -- `watch-list` included -- spawns a
+/// server when none is running.
+export function watchmanStatus(): Promise<WatchmanSample | null> {
+  return invoke("watchman_status");
+}
+
+/// Tells a live watchman to stop watching a root. A machine with no
+/// server resolves without doing anything: there is nothing holding the
+/// root, which is the state the caller wanted.
+export function watchmanForget(root: string): Promise<void> {
+  return invoke("watchman_forget", { root });
+}
+
 /// The app-wide agent pause cycle, machine-local beside the theme.
 /// `null` is no cycle at all, which is the shipped default.
 export function getAgentPause(): Promise<PauseCycle | null> {
@@ -304,6 +330,22 @@ export function getAgentPause(): Promise<PauseCycle | null> {
 /// cycle would never fire for anyone who kept adjusting it.
 export function setAgentPause(agentPause: PauseCycle | null): Promise<void> {
   return invoke("set_agent_pause", { agentPause });
+}
+
+/// The app-wide launch wall: how many agent turns may be in flight at
+/// once, and whether memory pressure holds new ones. `null` means nobody
+/// has expressed a preference and gavin's own default applies -- absence
+/// rather than the struct, so a later change to the shipped ceiling
+/// reaches every install that never touched it.
+export function getLaunchConfig(): Promise<LaunchConfig | null> {
+  return invoke("get_launch_config");
+}
+
+/// Replaces it wholesale, the same shape as `setAgentPause`: the panel
+/// holds both fields, so there is no per-key command and no way for one
+/// to be saved while the other is dropped.
+export function setLaunchConfig(launch: LaunchConfig | null): Promise<void> {
+  return invoke("set_launch_config", { launch });
 }
 
 /// The app-wide custom agent (command + model flag) and the complexity

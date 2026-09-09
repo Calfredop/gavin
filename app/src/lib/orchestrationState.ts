@@ -16,6 +16,7 @@ import {
   addRail,
   renameRail,
   setRailAutoResume,
+  setRailTrigger,
   bindRail,
   deleteRail,
   deleteRails,
@@ -51,6 +52,7 @@ import {
   findStep,
   insertStageWithSteps,
   startRailVerdict,
+  startRailTargetWorkspace,
   conflictCheckout,
   railRunsDiffer,
 } from "./orchestration";
@@ -60,6 +62,7 @@ import type {
   Orchestration,
   Rail,
   RailState,
+  RailTrigger,
   StageMode,
   StepAttention,
   StepState,
@@ -136,6 +139,12 @@ import { unreviewedStallReason } from "./cardReview";
 import type { OrchestrationAgentRecord } from "./workspace";
 import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "./cardRunActions";
 import { activePaused, mayStartWork, nowStore } from "./agentPauseState";
+import {
+  holdOrQueue,
+  launchHolding,
+  mayLaunch,
+  type OrchestrationIntent,
+} from "./launchQueue";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
 
@@ -957,6 +966,12 @@ async function retryNoteFor(
 /// exit or status is what ticks after every other launch, and this one
 /// starts no session. `orchestrations` is deliberately not a scheduler
 /// input, so the write below wakes nothing by itself.
+///
+/// The target rail defaults to this one's own workspace but need not be:
+/// `startRailTargetWorkspace` reads the step's `workspace` parameter, and
+/// `workspaceId` below stays the CALLING rail's -- every other write in
+/// this function (the stall, the step's own `done`) still belongs to it,
+/// only the armed rail moves to `targetWorkspaceId`.
 async function executeGavinAction(
   workspaceId: string,
   rail: Rail,
@@ -974,7 +989,24 @@ async function executeGavinAction(
     return false;
   }
 
-  const orch = get(orchestrations)[workspaceId];
+  const target = startRailTargetWorkspace(
+    get(layoutState).workspaces,
+    workspaceId,
+    resolveToolParam(tool, stepParams(step), "workspace")
+  );
+  if (target.kind === "refuse") {
+    await stall(target.reason);
+    return false;
+  }
+  const targetWorkspaceId = target.workspaceId;
+
+  // The target may be a workspace this app has never fetched -- the
+  // sidebar warms every ROOTED workspace's plan for its own recap, but a
+  // step can still race that on a cold start. Same guard
+  // sendCardToRailAction uses, for the same reason: fetch on demand
+  // rather than stalling on a plan that simply has not landed yet.
+  if (!get(orchestrations)[targetWorkspaceId]) await fetchOrchestration(targetWorkspaceId);
+  const orch = get(orchestrations)[targetWorkspaceId];
   if (!orch) return false;
   const verdict = startRailVerdict(orch, rail.id, resolveToolParam(tool, stepParams(step), "rail"));
   if (verdict.kind === "refuse") {
@@ -993,7 +1025,7 @@ async function executeGavinAction(
   // not a failure -- the same posture builtin:commit takes on a clean
   // tree. Calling startRail on either would REWIND it (see
   // startRailVerdict), which is the one outcome worse than doing nothing.
-  if (verdict.kind === "start") await startRail(workspaceId, verdict.railId);
+  if (verdict.kind === "start") await startRail(targetWorkspaceId, verdict.railId);
   return true;
 }
 
@@ -1595,12 +1627,24 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
       // that runs when the pause lifts (activePaused is an input below)
       // emits it again -- which is the whole of "resume".
       if (!mayStartWork(workspaceId)) continue;
+      // ...and the launch wall, at the same seam and on the same terms.
+      // A rail step is NOT queued: the scheduler is the rail's queue,
+      // and `launchHolding` is one of this pass's inputs, so the tick
+      // that runs when a slot frees emits this action again -- which is
+      // the whole of "resume". Queueing it here as well would give one
+      // launch two owners.
+      if (!mayLaunch()) continue;
       again = (await executeLaunch(workspaceId, action.stepId)) || again;
     } else if (action.kind === "markDone") {
       const sessionId = orch.stepRuns.find((r) => r.stepId === action.stepId)?.sessionId ?? null;
       // The session id is kept deliberately: the step is finished, but
       // its transcript stays reachable from the chip.
       await setStepRunAction(workspaceId, action.stepId, "done", sessionId, null);
+      // A step finishing on an IDLE rail -- the reconciling markDone
+      // above -- can be the last one that rail owed, and no `complete`
+      // follows it: the rail is already idle. So this is the other half
+      // of the re-tick `complete` asks for, on the same terms.
+      again = armsItself(orch) || again;
     } else if (action.kind === "stall") {
       await stallStep(workspaceId, orch, action.stepId, action.reason);
     } else if (action.kind === "loopExhausted") {
@@ -1631,11 +1675,35 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
         (await executeSwitchBranch(workspaceId, action.railId, action.path, action.branch)) || again;
     } else if (action.kind === "advance") {
       await setRailRunAction(workspaceId, action.railId, "running", action.stageId);
-    } else {
+    } else if (action.kind === "arm") {
+      // Exactly what `startRail` writes, minus the human. No page is
+      // spawned here either: the rail's page is made by its first
+      // LAUNCH, around that session (spec O16).
+      await setRailRunAction(workspaceId, action.railId, "running", action.stageId);
+      // The pass that decided this read the rail as idle and scheduled
+      // nothing else of it, so without another pass the rail would sit
+      // armed and empty until some unrelated event ticked.
+      again = true;
+    } else if (action.kind === "complete") {
       await setRailRunAction(workspaceId, action.railId, "idle", null);
+      // A rail finishing is the event a TRIGGER waits for, and
+      // `orchestrations` is deliberately not a tick input (see
+      // tickInputStores), so nothing else would say so. Only where a
+      // trigger exists to care: an extra pure pass per completion is
+      // cheap, but it is not free, and a workspace that has never used a
+      // trigger should not pay it. It terminates because the replay
+      // finds the rail idle with nothing unfinished and completes
+      // nothing.
+      again = armsItself(orch) || again;
     }
   }
   return again;
+}
+
+/// Whether any rail here starts itself, i.e. whether the pass that just
+/// finished a piece of work owes the scheduler another look.
+function armsItself(orch: Orchestration): boolean {
+  return orch.rails.some((r) => r.trigger);
 }
 
 /// The board's done column name, for the rail header's "nothing can
@@ -1794,6 +1862,11 @@ function tickInputStores(): Readable<unknown>[] {
     layoutState,
     sessionExits,
     activePaused,
+    // The deduped flag, not `launchGateVerdict`: the verdict rides a
+    // five-second poll and would tick the scheduler twelve times a
+    // minute for the life of the app, while this emits exactly twice per
+    // hold -- once when starts stop, once when they may resume.
+    launchHolding,
     prReports,
   ];
 }
@@ -2022,6 +2095,23 @@ export function setRailAutoResumeAction(
   autoResume: boolean
 ): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => setRailAutoResume(o, railId, autoResume));
+}
+
+/// Set or clear this rail's start condition, then LOOK: a trigger whose
+/// condition already holds has to arm the rail now, not at whatever
+/// unrelated event ticks next. `mutatePlan` writes the plan and
+/// `orchestrations` is not a tick input, so the tick has to be asked for
+/// here -- the same reason `startRail` and `resumeRail` end with one.
+export async function setRailTriggerAction(
+  workspaceId: string,
+  railId: string,
+  trigger: RailTrigger | null
+): Promise<string | null> {
+  const error = await mutatePlan(workspaceId, (o) => setRailTrigger(o, railId, trigger));
+  // Only when the write took. A rolled-back save leaves the store as it
+  // was, and ticking on it would be a pass over a plan nobody has.
+  if (!error) await tick(workspaceId);
+  return error;
 }
 
 export function deleteRailAction(workspaceId: string, railId: string): Promise<string | null> {
@@ -2446,7 +2536,10 @@ export function makeStageSequentialAction(workspaceId: string, stageId: string):
 async function launchOrchestrationAgent(
   workspaceId: string,
   record: Omit<OrchestrationAgentRecord, "sessionId">,
-  prompt: string
+  prompt: string,
+  /// The drain calling back in with an intent that has already cleared
+  /// the launch wall. Asking again there would re-queue it for ever.
+  queued = false
 ): Promise<string | null> {
   const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
   if (!ws) return "That workspace is gone";
@@ -2464,6 +2557,22 @@ async function launchOrchestrationAgent(
   // would rewrite somebody else's board.
   const root = ws.rootPath || null;
   if (!root) return "This workspace has no root folder — set one on the Settings tab first";
+
+  // The launch wall. Generate and Reorganize are ordinary agent runs
+  // with an ordinary process tree, so they queue like one -- checked
+  // AFTER the slot guard above, because "one of these at a time per
+  // workspace" is a different rule and refusing is the right answer to
+  // it, while a full machine is something to wait out.
+  if (!queued && holdOrQueue({
+    kind: "orchestration",
+    workspaceId,
+    label: record.label,
+    prompt,
+    agentLabel: record.label,
+    railId: record.railId ?? null,
+  })) {
+    return null;
+  }
 
   const agent = resolvedAgentFor(workspaceId);
   const command = buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
@@ -2605,4 +2714,23 @@ async function sweepOrchestrationAgents(): Promise<void> {
     sweepingAgents = false;
     sweepAgentsAgain = false;
   }
+}
+
+/// The queue's way back in: run a Generate/Reorganize intent that has
+/// already cleared the gate.
+///
+/// The PROMPT travels with the intent rather than being recomposed. It
+/// is a snapshot of the board at the moment the human asked -- which
+/// cards were unplaced, which rails conflicted -- and rebuilding it
+/// after a wait would send the agent a different request from the one it
+/// was queued for.
+export async function launchQueuedOrchestrationAgent(
+  intent: OrchestrationIntent
+): Promise<void> {
+  await launchOrchestrationAgent(
+    intent.workspaceId,
+    { label: intent.agentLabel, railId: intent.railId },
+    intent.prompt,
+    true
+  );
 }

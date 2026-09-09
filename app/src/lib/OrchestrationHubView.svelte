@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { BrushCleaning, Play, Plus } from "@lucide/svelte";
+  import { BrushCleaning, ChevronDown, Play, Plus } from "@lucide/svelte";
+  import { get } from "svelte/store";
   import OrchestrationRail from "./OrchestrationRail.svelte";
   import OrchestrationConflicts from "./OrchestrationConflicts.svelte";
   import OrchestrationDragPreview from "./OrchestrationDragPreview.svelte";
@@ -16,20 +17,29 @@
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { gavinTrees } from "./gavinState";
   import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "./kanbanState";
-  import { mergePlanCards, indexCardViews, type CardView, type PlacedCardView } from "./planBoard";
+  import {
+    mergePlanCards,
+    indexCardViews,
+    slugStatus,
+    type CardView,
+    type PlacedCardView,
+  } from "./planBoard";
   import { runCard, sendToMainAgent } from "./cardRunActions";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
   import { grantForAnsweredPrompt } from "./confirmGate";
-  import { openContextMenuFromEvent } from "./contextMenu";
+  import { openContextMenuFromEvent, contextMenu, openMenuUnder } from "./contextMenu";
   import { buildCardMenuEntries } from "./cardMenu";
   import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
   import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
   import { layoutState, daemonCompat } from "./layoutState";
   import { featureBlockedReason } from "./daemonCompat";
+  import { estimateFor, launchGateVerdict } from "./launchQueue";
+  import { executeArchive, ARCHIVE_CANCELLED } from "./archiveActions";
   import {
     cardIndex,
     doneColumn,
     firstColumnOf,
+    railCardPaths,
     railCardsToMove,
     detectConflicts,
     numberConflicts,
@@ -52,6 +62,7 @@
     railDeleteConfirm,
     railClearDoneConfirm,
     clearFinishedRailsConfirm,
+    clearAndArchiveFinishedRailsConfirm,
     groupRemoveConfirm,
     runAllConfirm,
   } from "./railConfirm";
@@ -226,9 +237,18 @@
   // start by the time the human reaches the button.
   let runAllPrompt = $state(false);
   const runnableRails = $derived(orch ? runnableIdleRails(orch) : []);
-  const runAllContent = $derived.by(() =>
-    runAllPrompt && orch && runnableRails.length > 0 ? runAllConfirm(orch) : null
-  );
+  // The estimate rides `$launchGateVerdict` so the projection is
+  // recomputed while the prompt is open: the machine moves under it, and
+  // a number frozen at the moment the dialog appeared is exactly the
+  // number that would still be wrong when the button is pressed.
+  const runAllContent = $derived.by(() => {
+    // Read so this derivation depends on it: the machine moves under an
+    // open prompt, and a number frozen at the moment the dialog appeared
+    // is the number that would still be wrong when the button is pressed.
+    void $launchGateVerdict;
+    if (!runAllPrompt || !orch || runnableRails.length === 0) return null;
+    return runAllConfirm(orch, estimateFor(workspaceId, runnableRails.length));
+  });
   const runAllTip = $derived(
     runnableRails.length === 0
       ? "No idle rail has anything left to run"
@@ -248,32 +268,69 @@
     for (const id of ids) await startRail(workspaceId, id);
   }
 
-  // "Clear done": remove every rail that has finished everything on it.
-  // The same bare-flag shape "Run all" uses, and for the same reason --
-  // the list is re-derived while the prompt stands, so a rail that
-  // finishes (or is deleted by hand, or starts running again) under the
-  // open prompt changes what it says, and the prompt closes if nothing
-  // is left to remove by the time the human reaches the button.
-  let clearFinishedPrompt = $state(false);
+  // "Clear": a dropdown over the two ways to remove every rail that has
+  // finished everything on it -- with or without archiving the cards
+  // among them the board already calls Done. The prompt itself is one
+  // bare flag (which mode, or none) rather than two, the same shape "Run
+  // all" uses and for the same reason -- the list is re-derived while a
+  // prompt stands, so a rail that finishes (or is deleted by hand, or
+  // starts running again) under it changes what it says, and the prompt
+  // closes if nothing is left to remove by the time the human reaches
+  // the button.
+  let clearFinishedPrompt = $state<"clear" | "archive" | null>(null);
   const finished = $derived(orch ? finishedRails(orch) : []);
-  const clearFinishedContent = $derived.by(() =>
-    clearFinishedPrompt && orch && finished.length > 0
-      ? clearFinishedRailsConfirm(orch, cards)
-      : null
-  );
+  const clearFinishedContent = $derived.by(() => {
+    if (!clearFinishedPrompt || !orch || finished.length === 0) return null;
+    return clearFinishedPrompt === "archive"
+      ? clearAndArchiveFinishedRailsConfirm(orch, cards, doneName)
+      : clearFinishedRailsConfirm(orch, cards);
+  });
   const clearFinishedTip = $derived(
     finished.length === 0
       ? "No rail has finished every step it holds"
       : `Remove ${finished.length} finished ${finished.length === 1 ? "rail" : "rails"}…`
   );
 
-  /// One write for all of them (deleteRailsAction), and the ids are read
-  /// BEFORE the prompt closes: `finished` is derived, so it empties the
-  /// moment the rails leave the plan.
-  function clearFinished(): void {
-    const ids = finished.map((r) => r.id);
-    clearFinishedPrompt = false;
-    void deleteRailsAction(workspaceId, ids);
+  // The dropdown's own open/close guard -- see NewPageButton's identical
+  // comment: the shared menu layer dismisses on the pointerdown that
+  // precedes this button's own click, so a naive onclick would reopen
+  // the very menu that press just closed.
+  let dismissedClearMenu = false;
+  function onClearPointerDown(): void {
+    dismissedClearMenu = get(contextMenu) !== null;
+  }
+  function openClearMenu(e: MouseEvent): void {
+    const dismissed = dismissedClearMenu;
+    dismissedClearMenu = false;
+    if (dismissed) return;
+    openMenuUnder(e.currentTarget as HTMLElement, [
+      { label: "Clear done", onPick: () => (clearFinishedPrompt = "clear") },
+      { label: "Clear and archive done", onPick: () => (clearFinishedPrompt = "archive") },
+    ]);
+  }
+
+  /// One write for the rails (deleteRailsAction) and, in archive mode, a
+  /// second for the cards among them the board calls Done -- read BEFORE
+  /// the prompt closes, same as before: `finished` is derived, so it
+  /// empties the moment the rails leave the plan.
+  async function clearFinished(): Promise<void> {
+    const archiving = clearFinishedPrompt === "archive";
+    const targets = finished;
+    const ids = targets.map((r) => r.id);
+    const cardViews = archiving
+      ? [...new Set(targets.flatMap((r) => railCardPaths(r)))]
+          .map((p) => placedCards.get(p)?.view)
+          .filter(
+            (v): v is CardView =>
+              v !== undefined && v.status !== null && doneName !== null && slugStatus(v.status) === slugStatus(doneName)
+          )
+      : [];
+    clearFinishedPrompt = null;
+    await deleteRailsAction(workspaceId, ids);
+    if (cardViews.length > 0) {
+      const err = await executeArchive(workspaceId, cardViews);
+      if (err && err !== ARCHIVE_CANCELLED) cardWriteError = err;
+    }
   }
 
   // The group whose "Save as template…" dialog is open, by stage id --
@@ -747,9 +804,11 @@
       class="add-rail"
       disabled={finished.length === 0}
       title={clearFinishedTip}
-      onclick={() => (clearFinishedPrompt = true)}
+      onpointerdown={onClearPointerDown}
+      onclick={openClearMenu}
     >
-      <BrushCleaning size={14} /> Clear done
+      <BrushCleaning size={14} /> Clear
+      <ChevronDown size={12} />
     </button>
     <button
       type="button"
@@ -972,6 +1031,8 @@
     <StepParamsDialog
       {tool}
       params={stepParams(step)}
+      {workspaceId}
+      workspaces={$layoutState.workspaces}
       onSave={(params) => void setStepParamsAction(workspaceId, step.id, params)}
       onClose={() => (editingParamsFor = null)}
     />
@@ -1036,10 +1097,10 @@
       {
         label: clearFinishedContent.confirmLabel,
         danger: true,
-        onPick: () => clearFinished(),
+        onPick: () => void clearFinished(),
       },
     ]}
-    onCancel={() => (clearFinishedPrompt = false)}
+    onCancel={() => (clearFinishedPrompt = null)}
   />
 {/if}
 

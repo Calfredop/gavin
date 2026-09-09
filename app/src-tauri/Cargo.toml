@@ -57,6 +57,11 @@ protocol = { path = "../../crates/protocol" }
 trash = { version = "5", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# The memory probe: sysctlbyname for the machine's own figures and
+# proc_pidinfo for watchman's, exactly as crates/daemon/src/proc.rs
+# reads a session's. macOS-only because both are, and because the
+# probe already answers "unsupported" everywhere else.
+libc = "0.2"
 objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSUserDefaults", "NSGeometry"] }
