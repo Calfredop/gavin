@@ -28,7 +28,7 @@ import {
   droppableRoots,
   dropRootsConfirm,
   watchmanLine,
-} from "$lib/sessionsManager";
+} from "$lib/sessions/sessionsManager";
 import { restartOutcome, restartStopsAgentsLine } from "$lib/daemonCompat";
 import type { Workspace } from "$lib/workspace";
 

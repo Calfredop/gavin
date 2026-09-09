@@ -7,7 +7,7 @@ import {
   readEntryApplies,
   readEntryLabel,
   withSessionRead,
-} from "$lib/sessionRead";
+} from "$lib/sessions/sessionRead";
 import type { SessionStatus } from "$lib/notifications";
 
 describe("canMarkRead", () => {

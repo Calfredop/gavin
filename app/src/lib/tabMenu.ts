@@ -9,7 +9,7 @@ import { bulkCloseTargets } from "$lib/layout";
 import { bestOfNRuns, runForSessionAnywhere } from "$lib/bestOfNState";
 import { pickCandidate } from "$lib/bestOfNActions";
 import { get } from "svelte/store";
-import { readEntryApplies, readEntryLabel } from "$lib/sessionRead";
+import { readEntryApplies, readEntryLabel } from "$lib/sessions/sessionRead";
 import type { SessionStatus } from "$lib/notifications";
 import type { ContextMenuEntry } from "$lib/contextMenu";
 

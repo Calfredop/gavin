@@ -15,7 +15,7 @@
 
 import type { AlertOptions, ConfirmOptions } from "$lib/dialog";
 import { restartStopsAgentsLine, type DaemonCompat } from "$lib/daemonCompat";
-import { describeOrphan, type OrphanProcess } from "$lib/orphan";
+import { describeOrphan, type OrphanProcess } from "$lib/sessions/orphan";
 
 /// dialog.ts lets a prompt omit its lines; every prompt here has some,
 /// and saying so in the type is what lets a test read them.

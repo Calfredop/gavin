@@ -23,8 +23,8 @@
   import { askConfirm } from "$lib/dialog";
   import { closeIdlePrompt, idleTabsOnPage } from "$lib/idleTabs";
   import { closeTabsNow } from "$lib/tabActions";
-  import { reclaimNowLabel, reclaimedClause } from "$lib/doneSessionReclaim";
-  import { reclaimDoneSessionsNow, reclaimLog, reclaimableNow } from "$lib/doneSessionReclaimState";
+  import { reclaimNowLabel, reclaimedClause } from "$lib/sessions/doneSessionReclaim";
+  import { reclaimDoneSessionsNow, reclaimLog, reclaimableNow } from "$lib/sessions/doneSessionReclaimState";
 
   const line = $derived(
     pressureBannerLine({

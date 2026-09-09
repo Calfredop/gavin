@@ -39,14 +39,14 @@ import type { AgentConfig, BoardTab, CardTab, CardTabView, GavinTree } from "$li
 import { themeState } from "$lib/ui/themeState.svelte";
 import { featureBlockedReason, restartConfirmLines, type DaemonCompat } from "$lib/daemonCompat";
 import { confirmDestructive, DAEMON_SUBJECT } from "$lib/confirmGate";
-import type { OrphanProcess } from "$lib/orphan";
+import type { OrphanProcess } from "$lib/sessions/orphan";
 import type { StatusSince } from "$lib/attentionInbox";
 import {
   attentionStatuses,
   clearSessionRead,
   withSessionRead,
   type ReadSessions,
-} from "$lib/sessionRead";
+} from "$lib/sessions/sessionRead";
 import { indexQueued, type QueuedInput } from "$lib/queuedInput";
 import { candidateAgentConfig, type Candidate } from "$lib/bestOfN";
 import {
@@ -1281,7 +1281,7 @@ export async function bootstrap(): Promise<void> {
   // reason of all -- the day it matters is the day the human is on
   // another workspace and the machine is swapping. Dynamically imported
   // for the cycle reason above (it closes through this module).
-  const { startDoneSessionReclaim } = await import("$lib/doneSessionReclaimState");
+  const { startDoneSessionReclaim } = await import("$lib/sessions/doneSessionReclaimState");
   unlisteners.push(startDoneSessionReclaim());
   // And the same again for the develop records: a "Develop into a plan…"
   // run that finishes while the human is on another tab still has to give

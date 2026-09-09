@@ -22,7 +22,7 @@
 
 import * as backend from "$lib/backend";
 import { askConfirmChecked, showAlert, type AlertOptions, type ConfirmCheck, type ConfirmOptions } from "$lib/dialog";
-import type { ManagedSession, ManagedSessions } from "$lib/sessionsManager";
+import type { ManagedSession, ManagedSessions } from "$lib/sessions/sessionsManager";
 
 /// The prompt, as data, so its wording is readable from a test rather
 /// than only from the running window's modal.

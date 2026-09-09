@@ -90,8 +90,8 @@
   import { breakOutChildren, guardCompletion, subjectFromCard } from "$lib/cardCompletion";
   import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "$lib/archiveActions";
   import { featureBlockedReason } from "$lib/daemonCompat";
-  import { interruptedCardNote } from "$lib/orphan";
-  import { endSessionOrphan } from "$lib/orphanActions";
+  import { interruptedCardNote } from "$lib/sessions/orphan";
+  import { endSessionOrphan } from "$lib/sessions/orphanActions";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import { waitLabel } from "$lib/attentionInbox";
   import { nowStore } from "$lib/agentPauseState";

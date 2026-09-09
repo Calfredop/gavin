@@ -16,8 +16,8 @@ vi.mock("$lib/layoutState", () => ({
 import { askConfirm, showAlert } from "$lib/dialog";
 import * as backend from "$lib/backend";
 import { layoutState, handleOrphanEnded } from "$lib/layoutState";
-import { endSessionOrphan } from "$lib/orphanActions";
-import type { OrphanProcess } from "$lib/orphan";
+import { endSessionOrphan } from "$lib/sessions/orphanActions";
+import type { OrphanProcess } from "$lib/sessions/orphan";
 
 const ORPHAN: OrphanProcess = { pid: 4172, command: "claude --model opus" };
 

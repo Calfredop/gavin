@@ -29,7 +29,7 @@ import { cardSessionState, type CardSessionState } from "$lib/columnRunAction";
 import { cardIsOnARail, type LinkedCard } from "$lib/cardTabLink";
 import { cardIndex, effectiveStatus, planIndex, type Orchestration } from "$lib/orchestration";
 import { slugStatus } from "$lib/planBoard";
-import { totalUsage, type SessionRow, type Totals } from "$lib/sessionsManager";
+import { totalUsage, type SessionRow, type Totals } from "$lib/sessions/sessionsManager";
 import {
   reportSeverity,
   unavailableReason,

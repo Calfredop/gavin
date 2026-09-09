@@ -39,7 +39,7 @@ import {
   survivorsAlert,
   type KillScope,
   type SessionRow,
-} from "$lib/sessionsManager";
+} from "$lib/sessions/sessionsManager";
 
 /// Put the human in front of a session, giving it a tab first if nothing
 /// is showing it.

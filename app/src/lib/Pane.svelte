@@ -32,8 +32,8 @@
   import { chipTooltip, runBaseline } from "$lib/runChanges";
   import { nearestContext } from "$lib/planBoard";
   import { confirmTabClose, confirmPaneClose } from "$lib/confirmClose";
-  import { restoredBadge, type RestoredBadge } from "$lib/orphan";
-  import { endSessionOrphan } from "$lib/orphanActions";
+  import { restoredBadge, type RestoredBadge } from "$lib/sessions/orphan";
+  import { endSessionOrphan } from "$lib/sessions/orphanActions";
   import { dirtyPaths } from "$lib/fileEditing";
   import { showAlert } from "$lib/dialog";
   import { openContextMenuFromEvent } from "$lib/contextMenu";

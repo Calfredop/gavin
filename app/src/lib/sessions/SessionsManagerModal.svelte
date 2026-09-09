@@ -36,7 +36,7 @@
     type SessionRow,
     type SortKey,
     type SortOrder,
-  } from "$lib/sessionsManager";
+  } from "$lib/sessions/sessionsManager";
   import {
     endAllSessions,
     endSelectedSessions,
@@ -44,7 +44,7 @@
     endStaleSessions,
     jumpToSession,
     restartDaemon,
-  } from "$lib/sessionsManagerActions";
+  } from "$lib/sessions/sessionsManagerActions";
   import Modal from "$lib/Modal.svelte";
   import { tooltip } from "$lib/tooltip";
   import { askConfirm } from "$lib/dialog";

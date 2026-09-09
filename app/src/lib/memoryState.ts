@@ -42,7 +42,7 @@ import {
 } from "$lib/memory";
 import { layoutState, resolvedAgentFor } from "$lib/layoutState";
 import { findSessionLocation } from "$lib/workspace";
-import type { ManagedSession } from "$lib/sessionsManager";
+import type { ManagedSession } from "$lib/sessions/sessionsManager";
 
 /// The newest machine reading, or null before the first poll lands.
 /// Null is "not asked yet", which every caller must read as "no reason

@@ -39,7 +39,7 @@ import {
   type ReclaimCandidate,
   type ReclaimReason,
   type ReclaimRecord,
-} from "$lib/doneSessionReclaim";
+} from "$lib/sessions/doneSessionReclaim";
 import { gavinTrees } from "$lib/gavinState";
 import { kanbanState } from "$lib/kanbanState";
 import { launchConfigStore, launchGateVerdict, launchQueue } from "$lib/launchQueue";

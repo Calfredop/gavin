@@ -67,7 +67,7 @@
     totalsNote,
     type ManagedSessions,
     type SessionRow,
-  } from "$lib/sessionsManager";
+  } from "$lib/sessions/sessionsManager";
   import { barPercent, displayPercent, formatResetsIn } from "$lib/agentUsage";
   import { agentUsageStore, nowStore, pausedWorkspaces } from "$lib/agentPauseState";
   import { openAppPanel, showAppPanel } from "$lib/appPanels";

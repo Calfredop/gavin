@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { AvailableUpdate } from "$lib/updates";
-import type { ManagedSession } from "$lib/sessionsManager";
+import type { ManagedSession } from "$lib/sessions/sessionsManager";
 
 const host = vi.hoisted(() => ({
   listManagedSessions: vi.fn(),

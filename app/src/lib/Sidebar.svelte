@@ -1,7 +1,7 @@
 <script lang="ts">
   import { accentVar } from "$lib/settings";
   import GlobalSettingsModal from "$lib/GlobalSettingsModal.svelte";
-  import SessionsManagerModal from "$lib/SessionsManagerModal.svelte";
+  import SessionsManagerModal from "$lib/sessions/SessionsManagerModal.svelte";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import AgentUsageModal from "$lib/AgentUsageModal.svelte";
   import { activePause, nowStore, worstUsageProjection } from "$lib/agentPauseState";

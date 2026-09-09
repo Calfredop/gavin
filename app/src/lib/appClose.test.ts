@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { closeWindowPrompt, sessionsToEnd, survivingSessionsAlert, endEverySession } from "$lib/appClose";
-import type { ManagedSession, ManagedSessions } from "$lib/sessionsManager";
-import type { OrphanProcess } from "$lib/orphan";
+import type { ManagedSession, ManagedSessions } from "$lib/sessions/sessionsManager";
+import type { OrphanProcess } from "$lib/sessions/orphan";
 
 vi.mock("$lib/backend", () => ({
   listManagedSessions: vi.fn(),

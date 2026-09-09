@@ -69,14 +69,14 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   requestPermission: probe.requestPermission,
 }));
 
-import { IDLE_GRACE_MS, RECLAIM_SPACING_MS } from "$lib/doneSessionReclaim";
+import { IDLE_GRACE_MS, RECLAIM_SPACING_MS } from "$lib/sessions/doneSessionReclaim";
 import {
   __resetDoneSessionReclaimForTesting,
   reclaimDoneSessionsNow,
   reclaimLog,
   reclaimableNow,
   startDoneSessionReclaim,
-} from "$lib/doneSessionReclaimState";
+} from "$lib/sessions/doneSessionReclaimState";
 
 const GB = 1024 ** 3;
 const NOW = 1_800_000_000_000;

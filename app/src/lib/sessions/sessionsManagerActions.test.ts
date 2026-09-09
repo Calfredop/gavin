@@ -41,8 +41,8 @@ import {
   endStaleSessions,
   jumpToSession,
   restartDaemon,
-} from "$lib/sessionsManagerActions";
-import type { KillAlert, KillPrompt, SessionRow } from "$lib/sessionsManager";
+} from "$lib/sessions/sessionsManagerActions";
+import type { KillAlert, KillPrompt, SessionRow } from "$lib/sessions/sessionsManager";
 
 /// The prompt the first ask carried. Throws rather than returning
 /// undefined so a test that expected a prompt fails on THAT, not on a
