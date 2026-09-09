@@ -8,7 +8,7 @@
 // as the grid's two `fr` factors, so the split the human dragged holds
 // at every pane width.
 
-import { shareFromSize } from "$lib/splitShare";
+import { shareFromSize } from "$lib/panes/splitShare";
 
 /// The 3fr : 2fr the tab shipped with, kept as where an undragged
 /// divider sits -- so turning the fixed split into a draggable one

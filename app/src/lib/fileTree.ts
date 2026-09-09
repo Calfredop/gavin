@@ -1,4 +1,4 @@
-import { shareFromSize } from "$lib/splitShare";
+import { shareFromSize } from "$lib/panes/splitShare";
 
 // The Files tab's directory tree, as data.
 //

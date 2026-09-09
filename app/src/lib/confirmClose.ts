@@ -1,8 +1,8 @@
 import { askConfirm } from "$lib/dialog";
 import { get } from "svelte/store";
 import { layoutState } from "$lib/layoutState";
-import type { LayoutNode } from "$lib/layout";
-import { findLeafPath, getNodeAtPath, isLastTabInPane, allSessionIds, sessionTabsOnly } from "$lib/layout";
+import type { LayoutNode } from "$lib/panes/layout";
+import { findLeafPath, getNodeAtPath, isLastTabInPane, allSessionIds, sessionTabsOnly } from "$lib/panes/layout";
 import type { Workspace, WorkspacesData } from "$lib/workspace";
 import { getActiveTree, allSessionIdsInWorkspace, findSessionLocation } from "$lib/workspace";
 

@@ -24,14 +24,14 @@
 // whose agent exited leaves the board with its tab. Nothing has to
 // expire a binding row for that to be true.
 
-import { allSessionIds } from "$lib/layout";
+import { allSessionIds } from "$lib/panes/layout";
 import { railCardPaths } from "$lib/orchestration";
 import { AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
 import type { Orchestration, Rail } from "$lib/orchestration";
 import type { Board } from "$lib/board/kanban";
 import type { CardView } from "$lib/planBoard";
 import type { MergedBoard } from "$lib/board/boardSearch";
-import type { DropTarget } from "$lib/pointerDrag";
+import type { DropTarget } from "$lib/panes/pointerDrag";
 import type { Page, Workspace } from "$lib/workspace";
 
 export interface PageScope {

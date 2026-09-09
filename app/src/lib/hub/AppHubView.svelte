@@ -70,7 +70,7 @@
   } from "$lib/sessions/sessionsManager";
   import { barPercent, displayPercent, formatResetsIn } from "$lib/agentUsage";
   import { agentUsageStore, nowStore, pausedWorkspaces } from "$lib/agentPauseState";
-  import { openAppPanel, showAppPanel } from "$lib/appPanels";
+  import { openAppPanel, showAppPanel } from "$lib/panes/appPanels";
   import {
     newWorkspaceFlow,
     startCreatingWorkspace,

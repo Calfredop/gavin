@@ -18,8 +18,8 @@ import {
 import { windowActionLabel } from "$lib/appWindow";
 import { currentWindowLabel, currentWorkspaceWindows } from "$lib/appWindowState";
 import { confirmWorkspaceClose, confirmPageClose } from "$lib/confirmClose";
-import { buildTabMenuEntries, type TabMenuContext } from "$lib/tabMenu";
-import { closeIdlePrompt, idleTabsOnPage, type CloseIdleRequest } from "$lib/idleTabs";
+import { buildTabMenuEntries, type TabMenuContext } from "$lib/panes/tabMenu";
+import { closeIdlePrompt, idleTabsOnPage, type CloseIdleRequest } from "$lib/panes/idleTabs";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
 import { UNFILED_WORKSPACE_ID, isPinned, type Workspace, type Page } from "$lib/workspace";
 import type { ContextMenuEntry } from "$lib/contextMenu";

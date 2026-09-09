@@ -9,7 +9,7 @@
   import Modal from "$lib/Modal.svelte";
   import { layoutState } from "$lib/layoutState";
   import { allSessionIdsInWorkspace } from "$lib/workspace";
-  import { sessionTabsOnly } from "$lib/layout";
+  import { sessionTabsOnly } from "$lib/panes/layout";
   import * as backend from "$lib/backend";
   import {
     applicableSteps,

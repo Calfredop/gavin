@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
 import type { Writable } from "svelte/store";
-import type { LayoutNode } from "$lib/layout";
+import type { LayoutNode } from "$lib/panes/layout";
 
 // The store is created INSIDE the factory: vi.mock is hoisted above the
 // imports and this factory runs while keyboard.ts is being imported, so

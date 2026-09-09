@@ -10,7 +10,7 @@
     runOnRailPage,
     setRailTriggerAction,
   } from "$lib/orchestrationState";
-  import { presetSingle } from "$lib/layout";
+  import { presetSingle } from "$lib/panes/layout";
   import { freeBranchNameFrom, validateBranchName } from "$lib/git";
   import { featureBlockedReason } from "$lib/daemonCompat";
   import {

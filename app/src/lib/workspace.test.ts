@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { LayoutNode } from "$lib/layout";
+import type { LayoutNode } from "$lib/panes/layout";
 import {
   createWorkspace,
   renameWorkspace,

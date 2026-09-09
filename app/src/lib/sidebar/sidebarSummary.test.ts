@@ -13,7 +13,7 @@ import {
   pageTabRows,
 } from "$lib/sidebar/sidebarSummary";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
-import type { LayoutNode } from "$lib/layout";
+import type { LayoutNode } from "$lib/panes/layout";
 import type { GitStatus, Page, Workspace } from "$lib/workspace";
 import type { Orchestration, Rail, Stage, Step } from "$lib/orchestration";
 import type { Board } from "$lib/board/kanban";

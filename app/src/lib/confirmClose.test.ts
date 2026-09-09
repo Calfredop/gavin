@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { LayoutNode } from "$lib/layout";
+import type { LayoutNode } from "$lib/panes/layout";
 import type { Page, Workspace } from "$lib/workspace";
 
 vi.mock("$lib/dialog", () => ({

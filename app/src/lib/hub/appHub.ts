@@ -11,7 +11,7 @@ import {
   type WorkspacesData,
 } from "$lib/workspace";
 import type { FleetStrip } from "$lib/memory";
-import { sessionTabsOnly } from "$lib/layout";
+import { sessionTabsOnly } from "$lib/panes/layout";
 import {
   gitSummaryOf,
   kanbanSummary,

@@ -7,7 +7,7 @@ import {
   computeReorderPosition,
   computeTabInsertion,
   type DragPayload,
-} from "$lib/dragDrop";
+} from "$lib/panes/dragDrop";
 
 // Minimal fake covering only the DataTransfer members this module
 // actually reads/writes -- avoids depending on a specific test

@@ -48,7 +48,7 @@ import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/k
 import { patchPlanField, patchPlanPath, worktreeSetups } from "$lib/gavinState";
 import { setupPlan } from "$lib/worktreeSetup";
 import { stripFrontmatter } from "$lib/cards/planChecklist";
-import { closeTabsNow } from "$lib/tabActions";
+import { closeTabsNow } from "$lib/panes/tabActions";
 import { askConfirmChecked } from "$lib/dialog";
 import type { CardView } from "$lib/planBoard";
 

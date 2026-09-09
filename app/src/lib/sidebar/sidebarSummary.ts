@@ -7,7 +7,7 @@
 // so a recap can never disagree with what it summarises, and no new
 // polling is introduced.
 
-import { allSessionIds, sessionTabsOnly } from "$lib/layout";
+import { allSessionIds, sessionTabsOnly } from "$lib/panes/layout";
 import { boardSummary } from "$lib/hub/homeSummary";
 import { isStepFinished, railStateOf, stepStateOf, type Orchestration, type Rail } from "$lib/orchestration";
 import { slugStatus } from "$lib/planBoard";

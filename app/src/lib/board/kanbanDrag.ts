@@ -14,7 +14,7 @@ import {
   type Measured,
   type MeasuredColumn,
   type DropTarget,
-} from "$lib/pointerDrag";
+} from "$lib/panes/pointerDrag";
 
 // "plan" is any card file drag (all cards are files, card-model spec
 // §1); "column" drags the strip.

@@ -10,7 +10,7 @@ import {
   type SidebarSearchInput,
 } from "$lib/sidebar/sidebarSearch";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
-import type { LayoutNode } from "$lib/layout";
+import type { LayoutNode } from "$lib/panes/layout";
 import type { Page, Workspace } from "$lib/workspace";
 
 function leaf(tabs: string[]): LayoutNode {

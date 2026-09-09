@@ -23,7 +23,7 @@ vi.mock("$lib/layoutState", () => ({
   setPagePinned: vi.fn().mockResolvedValue(undefined),
   splitPane: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("$lib/tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("$lib/panes/tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
 // The launch wall's queue, stubbed. It is a live module (a poller, a
 // drain loop, localStorage) that these tests are not about, and its
 // dependency cone reaches layoutState -- which this file replaces with a
@@ -74,7 +74,7 @@ import {
   splitPane,
 } from "$lib/layoutState";
 import { workspaceWindows } from "$lib/appWindowState";
-import { closeTabs } from "$lib/tabActions";
+import { closeTabs } from "$lib/panes/tabActions";
 import { confirmPageClose } from "$lib/confirmClose";
 import {
   buildWorkspaceMenuEntries,
@@ -83,7 +83,7 @@ import {
   changeWorkspaceRoot,
   type SidebarMenuHooks,
 } from "$lib/sidebar/sidebarMenu";
-import type { TabMenuContext } from "$lib/tabMenu";
+import type { TabMenuContext } from "$lib/panes/tabMenu";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
 import { isSeparator, type ContextMenuItem, type ContextMenuEntry } from "$lib/contextMenu";
 import { UNFILED_WORKSPACE_ID, type Workspace, type Page } from "$lib/workspace";

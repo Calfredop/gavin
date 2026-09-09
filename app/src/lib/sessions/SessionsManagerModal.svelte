@@ -48,7 +48,7 @@
   import Modal from "$lib/Modal.svelte";
   import { tooltip } from "$lib/tooltip";
   import { askConfirm } from "$lib/dialog";
-  import { takeSessionSortRequest } from "$lib/appPanels";
+  import { takeSessionSortRequest } from "$lib/panes/appPanels";
   import { watchmanRoots, watchmanStore, refreshMemory } from "$lib/memoryState";
   import { orchestrations } from "$lib/orchestrationState";
 

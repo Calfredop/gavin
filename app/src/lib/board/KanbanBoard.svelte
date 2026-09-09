@@ -58,7 +58,7 @@
   import FacetFilters from "$lib/board/FacetFilters.svelte";
   import { flip } from "svelte/animate";
   import { tooltip } from "$lib/tooltip";
-  import type { DropTarget } from "$lib/pointerDrag";
+  import type { DropTarget } from "$lib/panes/pointerDrag";
 
   interface Props {
     workspaceId: string;

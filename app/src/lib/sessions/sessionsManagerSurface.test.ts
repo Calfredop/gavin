@@ -40,7 +40,7 @@ describe("the sidebar footer", () => {
     // The flag left this component for appPanels.ts so the app hub's
     // recap could open the same panel. Mounting it in both places would
     // put two pollers on the daemon and two modals on the screen.
-    expect(source(SIDEBAR)).toContain('from "$lib/appPanels"');
+    expect(source(SIDEBAR)).toContain('from "$lib/panes/appPanels"');
     expect(source(HUB)).not.toContain("<SessionsManagerModal");
     expect(source(HUB)).not.toContain("<AgentUsageModal");
   });

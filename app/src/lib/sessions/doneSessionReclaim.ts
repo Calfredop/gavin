@@ -59,7 +59,7 @@ import type { MemoryPressure } from "$lib/memory";
 import type { Orchestration } from "$lib/orchestration";
 import type { Workspace } from "$lib/workspace";
 import { countsInFlight } from "$lib/launchGate";
-import { isPinned } from "$lib/layout";
+import { isPinned } from "$lib/panes/layout";
 import { formatGb } from "$lib/memory";
 import {
   cardIndex,

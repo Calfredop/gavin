@@ -14,7 +14,7 @@
     setContextMenuEntries,
     type ContextMenuEntry,
   } from "$lib/contextMenu";
-  import { newPageEntries, NEW_PAGE_TITLE, type PagePreset } from "$lib/newPage";
+  import { newPageEntries, NEW_PAGE_TITLE, type PagePreset } from "$lib/panes/newPage";
   import { Plus, ChevronDown } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tooltip } from "$lib/tooltip";

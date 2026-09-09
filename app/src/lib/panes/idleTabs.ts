@@ -9,7 +9,7 @@
 // reported a status included. The page row already shows that number, so
 // the menu has to act on that same set -- an entry that closed four tabs
 // off a row reading "3 idle" would make both numbers untrustworthy.
-import { allLeaves, allSessionIds, sessionTabsOnly } from "$lib/layout";
+import { allLeaves, allSessionIds, sessionTabsOnly } from "$lib/panes/layout";
 import { count } from "$lib/railConfirm";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
 import type { Page } from "$lib/workspace";

@@ -25,7 +25,7 @@
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { filterBoard, AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
   import { isSearching } from "$lib/search";
-  import type { DropTarget } from "$lib/pointerDrag";
+  import type { DropTarget } from "$lib/panes/pointerDrag";
   import { requestedCompose, takeComposeRequest, type ComposeTarget } from "$lib/cards/composeRequest";
   import { defaultComposeStatus } from "$lib/cards/cardCompose";
   import { dropAgainstWholeBoard, pageHolding, pageScope, scopeBoardToPage } from "$lib/board/pageBoard";

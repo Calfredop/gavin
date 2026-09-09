@@ -5,7 +5,7 @@ vi.mock("$lib/layoutState", () => ({ closeSession: vi.fn().mockResolvedValue(und
 
 import { confirmTabsClose } from "$lib/confirmClose";
 import { closeSession } from "$lib/layoutState";
-import { closeTabs } from "$lib/tabActions";
+import { closeTabs } from "$lib/panes/tabActions";
 
 beforeEach(() => {
   vi.mocked(confirmTabsClose).mockReset();

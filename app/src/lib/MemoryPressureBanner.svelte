@@ -18,11 +18,11 @@
   import { get } from "svelte/store";
   import { pressureBannerLine } from "$lib/memory";
   import { fleetMemory, memoryPressure, systemMemory } from "$lib/memoryState";
-  import { showAppPanel } from "$lib/appPanels";
+  import { showAppPanel } from "$lib/panes/appPanels";
   import { layoutState } from "$lib/layoutState";
   import { askConfirm } from "$lib/dialog";
-  import { closeIdlePrompt, idleTabsOnPage } from "$lib/idleTabs";
-  import { closeTabsNow } from "$lib/tabActions";
+  import { closeIdlePrompt, idleTabsOnPage } from "$lib/panes/idleTabs";
+  import { closeTabsNow } from "$lib/panes/tabActions";
   import { reclaimNowLabel, reclaimedClause } from "$lib/sessions/doneSessionReclaim";
   import { reclaimDoneSessionsNow, reclaimLog, reclaimableNow } from "$lib/sessions/doneSessionReclaimState";
 

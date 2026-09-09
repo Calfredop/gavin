@@ -33,7 +33,7 @@ import { cardIndex, type Orchestration, type StepAttention } from "$lib/orchestr
 import { sessionLabel } from "$lib/paths";
 import { PHASE_LABEL } from "$lib/hub/appHub";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
-import type { LayoutNode } from "$lib/layout";
+import type { LayoutNode } from "$lib/panes/layout";
 import type { Workspace, WorkspacesData } from "$lib/workspace";
 import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/gavin";

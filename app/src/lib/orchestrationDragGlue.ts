@@ -30,7 +30,7 @@ import {
   type OrchDragCallbacks,
   type OrchDropTarget,
 } from "$lib/orchestrationDrag";
-import { autoScrollVelocity, type Rect } from "$lib/pointerDrag";
+import { autoScrollVelocity, type Rect } from "$lib/panes/pointerDrag";
 
 export const activeOrchDragRoot = writable<HTMLElement | null>(null);
 

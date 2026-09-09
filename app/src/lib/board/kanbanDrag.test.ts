@@ -14,7 +14,7 @@ import {
   type DragCallbacks,
   type ActiveDrag,
 } from "$lib/board/kanbanDrag";
-import type { MeasuredColumn, Rect } from "$lib/pointerDrag";
+import type { MeasuredColumn, Rect } from "$lib/panes/pointerDrag";
 
 const r = (left: number, top: number, width: number, height: number): Rect => ({ left, top, width, height });
 

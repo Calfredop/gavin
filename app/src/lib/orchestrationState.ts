@@ -109,7 +109,7 @@ import {
   workspaceRootPath,
 } from "$lib/layoutState";
 import { decoyEditedSteps } from "$lib/worktreeCards";
-import { allSessionIds } from "$lib/layout";
+import { allSessionIds } from "$lib/panes/layout";
 import {
   composeTaskPrompt,
   composePlanPrompt,

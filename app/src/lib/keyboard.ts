@@ -12,7 +12,7 @@ import {
 } from "$lib/layoutState";
 import { copySelection, pasteClipboard } from "$lib/clipboard";
 import { confirmTabClose } from "$lib/confirmClose";
-import { findLeafPath, getNodeAtPath, isPinned } from "$lib/layout";
+import { findLeafPath, getNodeAtPath, isPinned } from "$lib/panes/layout";
 import {
   getActiveTree,
   getActiveWorkspace,

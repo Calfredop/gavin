@@ -6,7 +6,7 @@ import type { Board, CardSession, Column } from "$lib/board/kanban";
 import { emptyOrchestration } from "$lib/orchestration";
 import type { Orchestration, Rail, Stage, Step } from "$lib/orchestration";
 import type { Page, Workspace } from "$lib/workspace";
-import type { LayoutNode } from "$lib/layout";
+import type { LayoutNode } from "$lib/panes/layout";
 
 const PLANS = "/ws/.gavin-root/plans";
 

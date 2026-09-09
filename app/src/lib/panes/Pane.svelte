@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { paneLeadsWindow, paneOwnsActions, type LayoutNode } from "$lib/layout";
+  import { paneLeadsWindow, paneOwnsActions, type LayoutNode } from "$lib/panes/layout";
   import type { CardTab } from "$lib/gavin";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
   import FileViewerPane from "$lib/FileViewerPane.svelte";
@@ -37,7 +37,7 @@
   import { dirtyPaths } from "$lib/fileEditing";
   import { showAlert } from "$lib/dialog";
   import { openContextMenuFromEvent } from "$lib/contextMenu";
-  import { buildTabMenuEntries } from "$lib/tabMenu";
+  import { buildTabMenuEntries } from "$lib/panes/tabMenu";
   import { windowDrag } from "$lib/windowDrag";
   import {
     X,
@@ -51,7 +51,7 @@
     Rows2,
   } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import NewPageButton from "$lib/NewPageButton.svelte";
+  import NewPageButton from "$lib/panes/NewPageButton.svelte";
   import CornerOverhang from "$lib/CornerOverhang.svelte";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
@@ -79,7 +79,7 @@
     computeTabInsertion,
     type DropZone,
     type ReorderPosition,
-  } from "$lib/dragDrop";
+  } from "$lib/panes/dragDrop";
   import { movePaneOrTab, reorderTabWithinPane } from "$lib/layoutState";
   import { getActiveWorkspace, getActivePage, getActiveTree } from "$lib/workspace";
 

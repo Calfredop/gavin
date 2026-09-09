@@ -5,9 +5,9 @@ import {
   WITH_AGENT_LABEL,
   newPageEntries,
   type PagePreset,
-} from "$lib/newPage";
+} from "$lib/panes/newPage";
 import { isHeading, isMenuItem, isSeparator, type ContextMenuEntry, type ContextMenuItem } from "$lib/contextMenu";
-import { allSessionIds } from "$lib/layout";
+import { allSessionIds } from "$lib/panes/layout";
 
 /// The entries a caller can actually pick, in order.
 function items(entries: ContextMenuEntry[]): ContextMenuItem[] {

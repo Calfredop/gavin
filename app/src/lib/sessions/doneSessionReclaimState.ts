@@ -46,7 +46,7 @@ import { launchConfigStore, launchGateVerdict, launchQueue } from "$lib/launchQu
 import { closeSession, layoutState } from "$lib/layoutState";
 import { agentSessions, memoryPressure, systemMemory } from "$lib/memoryState";
 import { orchestrations } from "$lib/orchestrationState";
-import { closeTabsNow } from "$lib/tabActions";
+import { closeTabsNow } from "$lib/panes/tabActions";
 import { findSessionLocation } from "$lib/workspace";
 
 /// Every close the wall has made by itself this app run, oldest first.

@@ -44,8 +44,8 @@
   import TerminalView from "$lib/terminal/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
   import WindowResizeEdges from "$lib/WindowResizeEdges.svelte";
-  import NewPageButton from "$lib/NewPageButton.svelte";
-  import OpenInWindowButton from "$lib/OpenInWindowButton.svelte";
+  import NewPageButton from "$lib/panes/NewPageButton.svelte";
+  import OpenInWindowButton from "$lib/panes/OpenInWindowButton.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Sidebar from "$lib/sidebar/Sidebar.svelte";
   import CornerOverhang from "$lib/CornerOverhang.svelte";
@@ -67,7 +67,7 @@
     setWorkspaceHubTabsHidden,
     toggleHubTabsUnlocked,
   } from "$lib/hub/hubTabPrefs";
-  import { getDragKind, getDragPayload, setDragPayload } from "$lib/dragDrop";
+  import { getDragKind, getDragPayload, setDragPayload } from "$lib/panes/dragDrop";
   import { Lock, LockOpen } from "@lucide/svelte";
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";
   import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration";

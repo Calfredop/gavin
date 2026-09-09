@@ -1,7 +1,7 @@
 <script lang="ts">
   import { layoutState, createPage } from "$lib/layoutState";
-  import { presetSingle } from "$lib/layout";
-  import LayoutTree from "$lib/LayoutTree.svelte";
+  import { presetSingle } from "$lib/panes/layout";
+  import LayoutTree from "$lib/panes/LayoutTree.svelte";
 
   interface Props {
     workspaceId: string;

@@ -6,7 +6,7 @@
 // column's answer to its two questions: where the divider sits before
 // anyone drags it, and how small a list is allowed to get.
 
-import { shareFromSize } from "$lib/splitShare";
+import { shareFromSize } from "$lib/panes/splitShare";
 
 /// Both lists share the height evenly until the divider is dragged.
 export const DEFAULT_SHARE = 0.5;

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { closeIdlePrompt, idleTabsOnPage } from "$lib/idleTabs";
+import { closeIdlePrompt, idleTabsOnPage } from "$lib/panes/idleTabs";
 import { pageAgentsSummary, type PageTabState } from "$lib/sidebar/sidebarSummary";
-import type { LayoutNode } from "$lib/layout";
+import type { LayoutNode } from "$lib/panes/layout";
 import type { Page } from "$lib/workspace";
 import { source } from "$lib/sources";
 

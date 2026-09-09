@@ -10,7 +10,7 @@ import {
 import { PHASE_LABEL } from "$lib/hub/appHub";
 import type { AttentionRow } from "$lib/attentionInbox";
 import type { Page, Workspace } from "$lib/workspace";
-import type { LayoutNode } from "$lib/layout";
+import type { LayoutNode } from "$lib/panes/layout";
 import type { Board } from "$lib/board/kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
 import type { Orchestration, StepAttention } from "$lib/orchestration";

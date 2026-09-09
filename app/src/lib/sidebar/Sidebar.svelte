@@ -14,7 +14,7 @@
   // inside Sidebar.svelte. The mount stays here: the sidebar is on
   // screen for the life of the window, and one mount point is what keeps
   // two openers from putting two panels on top of each other.
-  import { closeAppPanel, openAppPanel, showAppPanel } from "$lib/appPanels";
+  import { closeAppPanel, openAppPanel, showAppPanel } from "$lib/panes/appPanels";
   import {
     layoutState,
     switchWorkspace,
@@ -52,7 +52,7 @@
   } from "$lib/sidebar/sidebarSearch";
   import { isSearching } from "$lib/search";
   import type { SessionStatus } from "$lib/layoutState";
-  import { presetSingle, findLeafPath, getNodeAtPath } from "$lib/layout";
+  import { presetSingle, findLeafPath, getNodeAtPath } from "$lib/panes/layout";
   import {
     ChevronRight,
     ChevronDown,
@@ -96,7 +96,7 @@
     computeReorderPosition,
     type DropZone,
     type ReorderPosition,
-  } from "$lib/dragDrop";
+  } from "$lib/panes/dragDrop";
   import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "$lib/layoutState";
   import {
     UNFILED_WORKSPACE_ID,
@@ -147,12 +147,12 @@
     buildSessionRowMenuEntries,
     type SidebarMenuHooks,
   } from "$lib/sidebar/sidebarMenu";
-  import { closeTabsNow } from "$lib/tabActions";
+  import { closeTabsNow } from "$lib/panes/tabActions";
   import { windowDrag } from "$lib/windowDrag";
   import { isInAnotherWindow } from "$lib/appWindow";
   import { currentWindowLabel, workspaceWindows } from "$lib/appWindowState";
-  import type { CloseIdleRequest } from "$lib/idleTabs";
-  import type { TabMenuContext } from "$lib/tabMenu";
+  import type { CloseIdleRequest } from "$lib/panes/idleTabs";
+  import type { TabMenuContext } from "$lib/panes/tabMenu";
   import {
     loadWorkspaceExpansion,
     saveWorkspaceExpansion,

@@ -32,7 +32,7 @@ import {
   type MeasuredCard,
   type MeasuredColumn,
   type DropTarget,
-} from "$lib/pointerDrag";
+} from "$lib/panes/pointerDrag";
 
 // The board root that owns the current (or most recent) drag. Both
 // surfaces can show the same workspace simultaneously; each surface's

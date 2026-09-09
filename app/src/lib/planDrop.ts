@@ -7,7 +7,7 @@ import { dropHold } from "$lib/board/kanbanDrag";
 import type { MergedBoard } from "$lib/board/boardSearch";
 import type { Column } from "$lib/board/kanban";
 import type { CardView, DisplayColumn, AutoColumn } from "$lib/planBoard";
-import type { DropTarget } from "$lib/pointerDrag";
+import type { DropTarget } from "$lib/panes/pointerDrag";
 
 export interface PlanDropSpec {
   workspaceId: string;

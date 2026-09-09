@@ -96,7 +96,7 @@ vi.mock("$lib/gavinState", () => ({
   patchPlanField: vi.fn(),
   patchPlanPath: vi.fn(),
 }));
-vi.mock("$lib/tabActions", () => ({
+vi.mock("$lib/panes/tabActions", () => ({
   closeTabsNow: vi.fn(async (ids: string[]) => {
     trace.push(`close:${ids.join(",")}`);
   }),

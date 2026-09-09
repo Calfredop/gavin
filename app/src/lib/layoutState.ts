@@ -1,8 +1,8 @@
 import { writable, derived, get, type Writable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { askConfirm, showAlert } from "$lib/dialog";
-import type { LayoutNode } from "$lib/layout";
-import * as layout from "$lib/layout";
+import type { LayoutNode } from "$lib/panes/layout";
+import * as layout from "$lib/panes/layout";
 import * as backend from "$lib/backend";
 import { setTempRoot } from "$lib/orchestrationLoop";
 import type { PauseCycle } from "$lib/agentPause";
