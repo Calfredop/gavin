@@ -4,6 +4,7 @@
 // are testable without mounting a component.
 
 import type { FileNode } from "./fileTree";
+import { ignoreMenuItems, type IgnoreKind } from "./gitIgnore";
 
 export interface FileTreeMenuItem {
   label: string;
@@ -33,18 +34,37 @@ export interface FileTreeMenuCallbacks {
   /// fileTree.ts -- so this is how a folder changed by an agent or a
   /// terminal catches up.
   onRefresh: (dir: FileNode) => void;
+  /// Appends a pattern to .gitignore or .git/info/exclude (gitIgnore.ts
+  /// computes it from the row's own path). The write, the dedup and the
+  /// refresh are the caller's.
+  onIgnore: (kind: IgnoreKind, pattern: string) => void;
 }
 
 export interface RowMenuContext {
-  /// The workspace root's own row. It has no rename and no trash: the
-  /// host refuses both, and offering an entry that can only fail is
-  /// worse than not offering it.
+  /// The workspace root's own row. It has no rename, no trash and no
+  /// ignore actions: the host refuses the first two, and ignoring the
+  /// repository root makes no sense at all.
   isRoot: boolean;
   /// Whether gavin's own viewer handles this extension
   /// (`viewable_extensions`). False sends the row to the OS's default
   /// application, which is the PRD's standing rule for binaries and
   /// media -- and means there is no in-app tab to open it in either.
   viewable: boolean;
+  /// The workspace root's absolute path. `FileNode.path` is always
+  /// absolute (fileTree.ts), but an ignore pattern is anchored relative
+  /// to the repo root's own .gitignore -- this is what turns one into
+  /// the other.
+  root: string;
+}
+
+/// `FileNode.path` with the workspace root's own prefix removed, so an
+/// ignore pattern can be built from it. A no-op on a path that is not
+/// under `root` at all -- callers only ever pass a node this tree
+/// itself produced, which is always under its own root.
+function relativeToRoot(root: string, path: string): string {
+  if (path === root) return "";
+  const base = root.endsWith("/") ? root : `${root}/`;
+  return path.startsWith(base) ? path.slice(base.length) : path;
 }
 
 /// The label for opening a file, which says where it will open. A
@@ -72,6 +92,7 @@ export function fileMenuItems(
   items.push(
     { label: "Copy path", onPick: () => cb.onCopyPath(node) },
     { label: "Reveal in Finder", onPick: () => cb.onRevealInFinder(node) },
+    ...ignoreMenuItems(relativeToRoot(ctx.root, node.path), false, (kind, pattern) => cb.onIgnore(kind, pattern)),
     { label: "Rename…", onPick: () => cb.onRename(node) },
     { label: "Move to Trash", danger: true, onPick: () => cb.onTrash(node) }
   );
@@ -92,6 +113,7 @@ export function directoryMenuItems(
   ];
   if (!ctx.isRoot) {
     items.push(
+      ...ignoreMenuItems(relativeToRoot(ctx.root, node.path), true, (kind, pattern) => cb.onIgnore(kind, pattern)),
       { label: "Rename…", onPick: () => cb.onRename(node) },
       { label: "Move to Trash", danger: true, onPick: () => cb.onTrash(node) }
     );

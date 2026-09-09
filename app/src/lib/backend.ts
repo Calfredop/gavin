@@ -10,6 +10,7 @@ import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "./w
 import type { Board, Column, Label } from "./kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "./superpowers";
 import type { GavinTracking } from "./gitTracking";
+import type { IgnoreKind } from "./gitIgnore";
 import type { BoardTab, CardTab, GavinTree } from "./gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "./git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "./orchestration";
@@ -1070,6 +1071,25 @@ export function gitWatch(cwd: string): Promise<void> {
 
 export function gitUnwatch(cwd: string): Promise<void> {
   return invoke("git_unwatch", { cwd });
+}
+
+/// The text of `.gitignore` (repo toplevel) or `.git/info/exclude`
+/// (the checkout's own, resolved through git so a linked worktree gets
+/// the COMMON git dir's copy) -- "" when the file does not exist.
+export function gitReadIgnoreFile(cwd: string, kind: IgnoreKind): Promise<string> {
+  return invoke("git_read_ignore_file", { cwd, kind });
+}
+
+/// Overwrites the file with exactly what the editor panel holds.
+export function gitWriteIgnoreFile(cwd: string, kind: IgnoreKind, content: string): Promise<void> {
+  return invoke("git_write_ignore_file", { cwd, kind, content });
+}
+
+/// Appends one pattern as its own line, unless that exact line is
+/// already there -- what the untracked-row and file-tree "Ignore"
+/// quick actions call.
+export function gitAddIgnorePattern(cwd: string, kind: IgnoreKind, pattern: string): Promise<void> {
+  return invoke("git_add_ignore_pattern", { cwd, kind, pattern });
 }
 
 // --- Git tab SP2: sync, refs, branches, remotes, stashes --------------------

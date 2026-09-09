@@ -47,6 +47,7 @@ import type {
 import { LOG_PAGE_SIZE } from "./git";
 import { isGavinOwnPath } from "./gitTracking";
 import { mayForceRemoval } from "./worktreeSweep";
+import { IGNORE_KIND_LABEL, type IgnoreKind } from "./gitIgnore";
 
 export interface Selection {
   path: string;
@@ -484,6 +485,31 @@ export async function commit(workspaceId: string): Promise<boolean> {
 
 export function initRepo(workspaceId: string): Promise<boolean> {
   return run(workspaceId, "Initialize repository", (cwd) => backend.gitInit(cwd));
+}
+
+// ---- .gitignore / .git/info/exclude ----------------------------------------
+
+/// The untracked-row and file-tree "Ignore" quick actions: append one
+/// pattern, then refresh -- an ignored file drops out of the Unstaged
+/// list the same way any other mutation here changes what status shows.
+export function addIgnorePattern(workspaceId: string, kind: IgnoreKind, pattern: string): Promise<boolean> {
+  return run(workspaceId, `Add to ${IGNORE_KIND_LABEL[kind]}`, (cwd) => backend.gitAddIgnorePattern(cwd, kind, pattern));
+}
+
+/// A read, not a mutation: the editor panel's own tab switch loads this
+/// directly rather than through `run()`, so opening it never claims the
+/// tab's busy lock or clears its error banner.
+export function loadIgnoreFile(workspaceId: string, kind: IgnoreKind): Promise<string> {
+  const s = current(workspaceId);
+  if (!s) return Promise.resolve("");
+  return backend.gitReadIgnoreFile(s.cwd, kind);
+}
+
+/// The editor panel's Save: overwrites the file with exactly what it
+/// holds, then refreshes -- editing either file can change which files
+/// are ignored, which changes the Unstaged list.
+export function saveIgnoreFile(workspaceId: string, kind: IgnoreKind, content: string): Promise<boolean> {
+  return run(workspaceId, `Save ${IGNORE_KIND_LABEL[kind]}`, (cwd) => backend.gitWriteIgnoreFile(cwd, kind, content));
 }
 
 // ---- commit via agent ------------------------------------------------------

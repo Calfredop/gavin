@@ -50,6 +50,9 @@ vi.mock("./backend", () => ({
   gitResolveDeleted: vi.fn().mockResolvedValue(undefined),
   gitRestoreConflict: vi.fn().mockResolvedValue(undefined),
   gitMergeToolName: vi.fn().mockResolvedValue(null),
+  gitReadIgnoreFile: vi.fn().mockResolvedValue(""),
+  gitWriteIgnoreFile: vi.fn().mockResolvedValue(undefined),
+  gitAddIgnorePattern: vi.fn().mockResolvedValue(undefined),
   writeFileForEditor: vi.fn().mockResolvedValue(undefined),
   createSession: vi.fn().mockResolvedValue("agent-1"),
   setSessionName: vi.fn().mockResolvedValue(undefined),
@@ -119,6 +122,7 @@ import {
   switchWorktree, mergeBack, rootPathOf, removeWorktree, sweepFacts, sweepWorktrees,
   selectCommits, loadMore, selectCommit, selectDetailFile, setGraphAll,
   markResolved, saveConflict, openMergeTool,
+  addIgnorePattern, loadIgnoreFile, saveIgnoreFile,
   commitViaAgent, revealAgentCommit, agentCommitPhase, agentCommitBlocker, AGENT_COMMIT_FLASH_MS,
   adoptAgentCommits,
 } from "./gitState";
@@ -375,6 +379,43 @@ describe("run / mutations", () => {
     ensureGitView("ws", "/other");
     expect(get(gitStore)["ws"].cwd).toBe("/other");
     expect(get(gitStore)["ws"].lineSelection.size).toBe(0);
+  });
+});
+
+describe(".gitignore / .git/info/exclude", () => {
+  it("addIgnorePattern appends through the backend and refreshes", async () => {
+    ensureGitView("ws", "/r");
+    expect(await addIgnorePattern("ws", "gitignore", "/build/")).toBe(true);
+    expect(backend.gitAddIgnorePattern).toHaveBeenCalledWith("/r", "gitignore", "/build/");
+    expect(backend.gitStatus).toHaveBeenCalled();
+  });
+
+  it("addIgnorePattern names the file it failed to write", async () => {
+    ensureGitView("ws", "/r");
+    vi.mocked(backend.gitAddIgnorePattern).mockRejectedValueOnce("fatal: not a git repository");
+    expect(await addIgnorePattern("ws", "exclude", "/x")).toBe(false);
+    expect(get(gitStore)["ws"].error).toBe("Add to .git/info/exclude failed: fatal: not a git repository");
+  });
+
+  it("loadIgnoreFile reads through the backend without touching busy or error", async () => {
+    ensureGitView("ws", "/r");
+    vi.mocked(backend.gitReadIgnoreFile).mockResolvedValueOnce("target/\n");
+    expect(await loadIgnoreFile("ws", "gitignore")).toBe("target/\n");
+    expect(backend.gitReadIgnoreFile).toHaveBeenCalledWith("/r", "gitignore");
+    expect(get(gitStore)["ws"].busy).toBeNull();
+    expect(get(gitStore)["ws"].error).toBeNull();
+  });
+
+  it("loadIgnoreFile resolves empty for a workspace with no view yet", async () => {
+    expect(await loadIgnoreFile("nowhere", "gitignore")).toBe("");
+    expect(backend.gitReadIgnoreFile).not.toHaveBeenCalled();
+  });
+
+  it("saveIgnoreFile writes through the backend and refreshes, since ignoring changes what status shows", async () => {
+    ensureGitView("ws", "/r");
+    expect(await saveIgnoreFile("ws", "exclude", "*.local\n")).toBe(true);
+    expect(backend.gitWriteIgnoreFile).toHaveBeenCalledWith("/r", "exclude", "*.local\n");
+    expect(backend.gitStatus).toHaveBeenCalled();
   });
 });
 

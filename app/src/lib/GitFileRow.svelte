@@ -14,10 +14,13 @@
     /// Present only for worktree changes (unstaged rows) — discard has no
     /// meaning for index entries.
     onDiscard?: () => void;
+    /// The row's right-click menu (ignore actions, edit .gitignore…).
+    /// Absent for the read-only stash file list.
+    onContextMenu?: (e: MouseEvent) => void;
     /// Stash contents (SP2): no hover actions at all.
     readonly?: boolean;
   }
-  let { entry, area, selected, disabled, onSelect, onToggle, onDiscard, readonly = false }: Props = $props();
+  let { entry, area, selected, disabled, onSelect, onToggle, onDiscard, onContextMenu, readonly = false }: Props = $props();
 
   const parts = $derived(splitPath(entry.path));
   const toggleLabel = $derived(entry.status === "U" ? "Mark resolved" : area === "unstaged" ? "Stage" : "Unstage");
@@ -27,7 +30,7 @@
      ↑/↓/Tab/Space move and act on the selection, per the ARIA listbox
      pattern, so the option itself needs no key handler. -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="row" class:selected role="option" aria-selected={selected} tabindex="-1" onclick={onSelect} ondblclick={onToggle}>
+<div class="row" class:selected role="option" aria-selected={selected} tabindex="-1" onclick={onSelect} ondblclick={onToggle} oncontextmenu={onContextMenu}>
   <span class="badge s-{entry.status === '?' ? 'untracked' : entry.status}">{entry.status}</span>
   <span class="path">
     {#if entry.oldPath}<span class="dir">{entry.oldPath} → </span>{/if}

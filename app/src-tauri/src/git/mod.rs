@@ -3,6 +3,7 @@
 pub mod baseline;
 pub mod commands;
 pub mod conflict;
+pub mod ignore;
 pub mod ops;
 pub mod parse;
 pub mod run;
@@ -13,6 +14,7 @@ pub mod watch;
 
 pub use commands::*;
 pub use conflict::*;
+pub use ignore::*;
 pub use ops::*;
 pub use runchanges::*;
 pub use tracking::*;

@@ -44,6 +44,7 @@
   } from "./fileTree";
   import type { FileTreeMenuCallbacks } from "./fileTreeMenu";
   import { trashPromptLines } from "./fileTreeMenu";
+  import type { IgnoreKind } from "./gitIgnore";
   import FileTree from "./FileTree.svelte";
   import FileEditor from "./FileEditor.svelte";
   import SearchInput from "./ui/SearchInput.svelte";
@@ -353,6 +354,12 @@
     });
   }
 
+  async function ignore(kind: IgnoreKind, pattern: string): Promise<void> {
+    if (!root) return;
+    error = null;
+    await backend.gitAddIgnorePattern(root, kind, pattern).catch((e) => report(e));
+  }
+
   const menu = $derived<FileTreeMenuCallbacks>({
     onOpen: (node) => void open(node),
     onOpenInTab: anchorSessionId ? (node) => void openInTab(node) : null,
@@ -372,6 +379,7 @@
     },
     onTrash: (node) => void trashEntry(node),
     onRefresh: (dir) => void refresh(dir.path),
+    onIgnore: (kind, pattern) => void ignore(kind, pattern),
   });
 
   // ---- the divider -----------------------------------------------------

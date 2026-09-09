@@ -86,7 +86,7 @@
       e,
       rowMenuItems(
         node,
-        { isRoot: node.path === rootPath, viewable: isViewableExtension(node.path, viewableExtensions) },
+        { isRoot: node.path === rootPath, viewable: isViewableExtension(node.path, viewableExtensions), root: rootPath },
         menu
       )
     );

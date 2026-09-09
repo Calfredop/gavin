@@ -280,6 +280,9 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   git_conflict: ["ordinary"],
   git_mark_resolved: ["ordinary"],
   git_merge_tool_name: ["ordinary"],
+  git_read_ignore_file: ["ordinary"],
+  git_write_ignore_file: ["ordinary"],
+  git_add_ignore_pattern: ["ordinary"],
   worktree_setup: ["ordinary"],
 };
 

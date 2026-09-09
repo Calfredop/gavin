@@ -20,11 +20,15 @@
   import GitConflictView from "./GitConflictView.svelte";
   import GitGraph from "./GitGraph.svelte";
   import GitCommitDetail from "./GitCommitDetail.svelte";
+  import GitIgnoreEditor from "./GitIgnoreEditor.svelte";
+  import type { IgnoreKind } from "./gitIgnore";
 
   interface Props {
     workspaceId: string;
   }
   let { workspaceId }: Props = $props();
+
+  let ignoreEditorKind = $state<IgnoreKind | null>(null);
 
   const NAV_DEFAULT = 160;
   const LIST_DEFAULT = 340;
@@ -118,7 +122,7 @@
   </div>
 {:else}
   <div class="git">
-    <GitToolbar {workspaceId} {repoName}>
+    <GitToolbar {workspaceId} {repoName} onOpenIgnoreEditor={(k) => (ignoreEditorKind = k)}>
       {#snippet leading()}
         <GitWorktreeSwitcher {workspaceId} />
       {/snippet}
@@ -162,7 +166,7 @@
         <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={(e) => startDrag("list", e)}></div>
         <div class="pane"><GitCommitDetail {workspaceId} /></div>
       {:else}
-        <div class="pane"><GitChanges {workspaceId} /></div>
+        <div class="pane"><GitChanges {workspaceId} onOpenIgnoreEditor={(k) => (ignoreEditorKind = k)} /></div>
         <div class="splitter" role="separator" aria-orientation="vertical" onpointerdown={(e) => startDrag("list", e)}></div>
         <div class="pane">
           {#if view.selected && view.status?.unstaged.some((e) => e.status === "U" && e.path === view.selected?.path && view.selected.area === "unstaged")}
@@ -174,6 +178,9 @@
       {/if}
     </div>
   </div>
+  {#if ignoreEditorKind}
+    <GitIgnoreEditor {workspaceId} kind={ignoreEditorKind} onClose={() => (ignoreEditorKind = null)} />
+  {/if}
 {/if}
 
 <style>

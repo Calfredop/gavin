@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { gitStore, select, stageFiles, unstageFiles, stageAll, unstageAll, discardFiles, stashPop, stashApply, selectChanges } from "./gitState";
+  import { gitStore, select, stageFiles, unstageFiles, stageAll, unstageAll, discardFiles, stashPop, stashApply, selectChanges, addIgnorePattern } from "./gitState";
   import { layoutState, setGitViewPrefs } from "./layoutState";
   import { DEFAULT_SHARE, shareFromHeight } from "./gitChangesSplit";
   import { tooltip } from "./tooltip";
   import { LIST_DISPLAY_CAP, type Area, type FileEntry } from "./git";
   import { describeFileDiscard, type FileDiscardPrompt } from "./discardFlow";
+  import { openContextMenuFromEvent, type ContextMenuEntry } from "./contextMenu";
+  import { ignoreMenuItems, type IgnoreKind } from "./gitIgnore";
   import GitFileRow from "./GitFileRow.svelte";
   import GitCommitBox from "./GitCommitBox.svelte";
   import GitDiscardDialog from "./GitDiscardDialog.svelte";
@@ -14,8 +16,9 @@
 
   interface Props {
     workspaceId: string;
+    onOpenIgnoreEditor: (kind: IgnoreKind) => void;
   }
-  let { workspaceId }: Props = $props();
+  let { workspaceId, onOpenIgnoreEditor }: Props = $props();
 
   const view = $derived($gitStore[workspaceId]);
   const allUnstaged = $derived(view?.status?.unstaged ?? []);
@@ -126,6 +129,20 @@
     const { tracked, untracked } = pending;
     pending = null;
     void discardFiles(workspaceId, tracked, untracked);
+  }
+
+  // Every row offers the two editor shortcuts; an untracked row also
+  // gets the "Ignore this file" quick actions (gitIgnore.ts) -- ignoring
+  // an already-tracked file would not stop git from showing it modified,
+  // so the pattern items are pointless noise there.
+  function openIgnoreMenu(e: MouseEvent, entry: FileEntry): void {
+    const patterns: ContextMenuEntry[] =
+      entry.status === "?" ? [...ignoreMenuItems(entry.path, false, (kind, pattern) => void addIgnorePattern(workspaceId, kind, pattern)), { separator: true }] : [];
+    openContextMenuFromEvent(e, [
+      ...patterns,
+      { label: "Edit .gitignore…", onPick: () => onOpenIgnoreEditor("gitignore") },
+      { label: "Edit .git/info/exclude…", onPick: () => onOpenIgnoreEditor("exclude") },
+    ]);
   }
 
   // ↑/↓ within a list, Tab between lists, Space stages/unstages (spec §4).
@@ -244,6 +261,7 @@
             onSelect={() => select(workspaceId, { path: entry.path, area })}
             onToggle={() => toggle(entry, area)}
             onDiscard={area === "unstaged" ? () => askDiscard(entry) : undefined}
+            onContextMenu={(e) => openIgnoreMenu(e, entry)}
           />
         {/each}
         {#if items.length > LIST_DISPLAY_CAP}

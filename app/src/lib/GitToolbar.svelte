@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { GitBranch, RefreshCw, Download, ArrowDown, ArrowUp, Archive, ArchiveRestore, Bot, Check, Eye, ScanSearch } from "@lucide/svelte";
+  import { GitBranch, RefreshCw, Download, ArrowDown, ArrowUp, Archive, ArchiveRestore, Bot, Check, Eye, ScanSearch, EyeOff } from "@lucide/svelte";
   import {
     gitStore,
     refresh,
@@ -32,14 +32,16 @@
   import { tooltip } from "./tooltip";
   import IconButton from "./ui/IconButton.svelte";
   import GitPromptDialog from "./GitPromptDialog.svelte";
+  import type { IgnoreKind } from "./gitIgnore";
 
   interface Props {
     workspaceId: string;
     /// SP3 renders the worktree switcher here; SP2 shows the repo name.
     leading?: import("svelte").Snippet;
     repoName: string;
+    onOpenIgnoreEditor: (kind: IgnoreKind) => void;
   }
-  let { workspaceId, leading, repoName }: Props = $props();
+  let { workspaceId, leading, repoName, onOpenIgnoreEditor }: Props = $props();
 
   const view = $derived($gitStore[workspaceId] ?? null);
   const locked = $derived(view == null || view.busy != null || view.op != null);
@@ -227,6 +229,14 @@
       onclick={() => void startReview()}
     />
   </span>
+  <IconButton
+    icon={EyeOff}
+    label="Ignore rules"
+    tip="View or edit .gitignore and .git/info/exclude"
+    variant="outlined"
+    size={13}
+    onclick={() => onOpenIgnoreEditor("gitignore")}
+  />
   <IconButton icon={RefreshCw} label="Refresh" variant="outlined" size={13} disabled={locked} onclick={() => refresh(workspaceId)} />
 </div>
 
