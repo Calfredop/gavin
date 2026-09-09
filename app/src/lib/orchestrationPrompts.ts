@@ -24,10 +24,14 @@ const READ_FIRST =
   "Read gavin_get_orchestration for the authoritative picture before writing anything.";
 
 // Every write replaces the WHOLE plan, so both prompts have to say the
-// same two things about the steps they are not touching.
+// same things about the steps they are not touching, and about what is
+// available to place: this workspace's own tools AND gavin's built-ins,
+// which the read payload never lists (SKILL.md §2a carries the catalog).
 const CARRY_THROUGH = [
-  "The payload also lists this workspace's TOOLS — a step can run a tool (toolId) instead of a card,",
-  "and rewriting a rail must carry every existing step's id, toolId and toolParams through.",
+  "The payload also lists this workspace's own TOOLS — a step can run a tool (toolId) instead of a",
+  "card. That list is custom tools only; gavin's built-ins (the skill names the full catalog) never",
+  "appear in it but are always available — use either kind wherever a tool step is the right fit,",
+  "and carry every existing step's id, toolId and toolParams through the rewrite.",
 ].join("\n");
 
 /// How many unplaced cards the prompt spells out before deferring to the

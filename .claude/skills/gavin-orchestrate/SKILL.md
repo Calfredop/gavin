@@ -54,6 +54,11 @@ The tab has two buttons that call you, and the request says which:
   Pressing it is also a request to **parallelize**: the human wants this
   backlog running at once, not queued. Answer it with rails, and cut the
   worktrees they need — §2's "spread it wide".
+
+  Placing is not only cards, either: add a tool step — one of this
+  workspace's own or one of gavin's built-ins (§2a) — anywhere a rail
+  needs a boundary a card cannot give it, a commit or a test run before
+  or after the cards you are placing.
 - **Reorganize with agent** (a wand in ONE rail's header) — the job is
   that rail's own arrangement: reorder its stages, split a stage whose
   steps would collide in one checkout, merge stages that are genuinely
@@ -225,16 +230,58 @@ with anything else in that rail is the same hazard.
 Tools are how a rail finishes its own work rather than leaving it for the
 human: a `Commit changes` after the cards that produced the diff, a
 `Run tests` before it, a `Push branch` or `Send a notification` at the
-end. Pick them from the `tools` list in the read payload — never invent a
-`toolId`.
+end. Two catalogs feed a tool step, and both are yours to place from —
+never invent a `toolId` outside either one:
+
+- **This workspace's own**, custom-made tools — every entry the read
+  payload's `tools` list carries, each already showing its `id`, `kind`
+  and the parameters it takes. Pick these by that `id`.
+- **Gavin's built-ins** — a fixed catalog every workspace has, whatever
+  the read payload's `tools` list says. It never appears there (that
+  list is only what a human authored), so it goes here instead:
+
+  - `builtin:commit` — commits the checkout's uncommitted work in
+    logical chunks; never pushes.
+  - `builtin:consolidate-repo` — same, for a tree several agents share:
+    commits per FEATURE, never `git add -A`.
+  - `builtin:push` — pushes the checked-out branch, setting upstream on
+    first push.
+  - `builtin:merge` — merges another branch INTO this rail's checkout.
+  - `builtin:merge-into` — lands this rail's branch on another one, run
+    from the checkout that holds it.
+  - `builtin:open-pr` — opens a pull request from the current branch
+    (needs `gh`).
+  - `builtin:run-tests` — runs the project's test command; done when it
+    exits 0.
+  - `builtin:until` — runs a check; on failure, sends the rail back to
+    redo the step before it.
+  - `builtin:await-pr` — waits on the rail's pull request (CI,
+    optionally an approval); never merges.
+  - `builtin:manual-review` — holds the rail for a human look; Skip
+    sends it on.
+  - `builtin:code-review` — reviews the branch's diff and files findings
+    as cards; changes no code.
+  - `builtin:reconcile-repo` — reports every branch and worktree against
+    a base; reads only.
+  - `builtin:notify` — a macOS notification.
+  - `builtin:send-email` — sends through macOS Mail.app.
+  - `builtin:browser-test` — drives the Claude-in-Chrome tools through a
+    checklist against a URL.
+  - `builtin:unity-tests` — runs a Unity project's tests in batch mode.
+  - `builtin:start-rail` — arms another rail by name (see "Chaining one
+    rail to the next" below).
+
+  A built-in is placed exactly like a custom tool — same `toolId` field,
+  same `toolParams` override shape, no card of its own — so treat the
+  two catalogs as one list with two sources.
 
 - Give a tool step its own stage unless you have a reason not to. Tools
   are usually the *boundary* between pieces of work, and a boundary that
   runs concurrently with the work is not a boundary.
-- Override a parameter with `toolParams: { "name": "value" }`, using the
-  parameter names the payload lists. Omit a parameter to take the tool's
-  own default — and prefer omitting, so a later edit to that default
-  reaches the step.
+- Override a parameter with `toolParams: { "name": "value" }` — the
+  parameter names the payload lists for a custom tool, or the ones named
+  above for a built-in. Omit a parameter to take the tool's own default —
+  and prefer omitting, so a later edit to that default reaches the step.
 - A tool step needs no `cardPath` at all. Sending both is refused.
 
 ### Chaining one rail to the next

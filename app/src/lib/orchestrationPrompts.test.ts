@@ -115,6 +115,15 @@ describe("composeOrganizePrompt", () => {
     expect(p).toContain("toolId and toolParams");
   });
 
+  // The payload's tools list is custom tools only; gavin's built-ins
+  // never appear in it, so both prompts have to say out loud that they
+  // are still available to place.
+  it("says both custom tools and gavin's built-ins are available to place", () => {
+    const p = composeOrganizePrompt(null, unplaced, []);
+    expect(p).toContain("custom tools only");
+    expect(p).toContain("gavin's built-ins");
+  });
+
   // Pressing Organize IS the request to parallelize, so the prompt has to
   // say it: the skill's own parallelism rule leads with "when unsure,
   // serialize", and an agent reading only that half answers with one long
@@ -196,6 +205,13 @@ describe("composeRailPrompt", () => {
     expect(composeRailPrompt(orchWith([r]), r, CARDS, TOOLS, [])).toContain(
       "Gavin currently flags no conflicts on this rail."
     );
+  });
+
+  it("says both custom tools and gavin's built-ins are available to place", () => {
+    const r = rail("r1", "backend", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
+    const p = composeRailPrompt(orchWith([r]), r, CARDS, TOOLS, []);
+    expect(p).toContain("custom tools only");
+    expect(p).toContain("gavin's built-ins");
   });
 });
 
