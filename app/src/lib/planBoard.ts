@@ -1,4 +1,4 @@
-import type { Complexity } from "$lib/complexity";
+import type { Complexity } from "$lib/cards/complexity";
 import type { Board, Column } from "$lib/board/kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
 

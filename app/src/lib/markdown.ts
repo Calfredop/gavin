@@ -6,7 +6,7 @@
 // rendering decisions in it -- be unit-tested in the node test env.
 
 import { marked } from "marked";
-import { bodyStart } from "$lib/planChecklist";
+import { bodyStart } from "$lib/cards/planChecklist";
 
 export function renderMarkdown(content: string): string {
   // `breaks: true` renders a single newline as <br>, the way GitHub

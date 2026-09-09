@@ -24,8 +24,8 @@
     trustedAgentConfigs,
   } from "$lib/layoutState";
   import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "$lib/confirmGate";
-  import ComplexityTable from "$lib/ComplexityTable.svelte";
-  import type { Complexity, ComplexityAgent } from "$lib/complexity";
+  import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
+  import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
   import { fontSizeOptions, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
   import {
     autoCommitFromSelect,
@@ -38,7 +38,7 @@
     requireReviewOptions,
     requireReviewToSelect,
     resolveRequireReview,
-  } from "$lib/cardReview";
+  } from "$lib/cards/cardReview";
   import {
     canToggleTracking,
     needsUntrackConfirm,

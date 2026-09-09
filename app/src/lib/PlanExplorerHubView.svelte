@@ -19,9 +19,9 @@
     type CreatableGroup,
   } from "$lib/planExplorer";
   import { mergePlanCards, type CardView } from "$lib/planBoard";
-  import { NEW_CARD_STATUS } from "$lib/cardCompose";
+  import { NEW_CARD_STATUS } from "$lib/cards/cardCompose";
   import { placeCardAtColumnEnd } from "$lib/planDrop";
-  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cardDelete";
+  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cards/cardDelete";
   import { grantForAnsweredPrompt } from "$lib/confirmGate";
   import { executeUnarchive } from "$lib/archiveActions";
   import { featureBlockedReason } from "$lib/daemonCompat";

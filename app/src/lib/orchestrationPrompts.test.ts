@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { composeOrganizePrompt, composeRailPrompt } from "$lib/orchestrationPrompts";
-import { NAME_TAB_FIRST } from "$lib/cardRun";
+import { NAME_TAB_FIRST } from "$lib/cards/cardRun";
 import type { CardEntry, Orchestration, Rail, ToolSummary } from "$lib/orchestration";
 import { emptyOrchestration } from "$lib/orchestration";
 

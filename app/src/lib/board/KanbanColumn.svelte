@@ -8,8 +8,8 @@
   import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
   import { tooltip } from "$lib/tooltip";
   import { layoutState, resolvedAgents } from "$lib/layoutState";
-  import { agentPromptBlocker } from "$lib/cardRun";
-  import { developingRunIn } from "$lib/developingCards";
+  import { agentPromptBlocker } from "$lib/cards/cardRun";
+  import { developingRunIn } from "$lib/cards/developingCards";
   import {
     columnRunAction,
     columnRunTargets,
@@ -25,7 +25,7 @@
   import { formatShortcut } from "$lib/shortcuts";
   import { estimateFor, launchGateVerdict } from "$lib/launchQueue";
   import { isMacSync } from "$lib/platform";
-  import { columnDeletionPlan, executeDeletion, executeMoveCards } from "$lib/cardDelete";
+  import { columnDeletionPlan, executeDeletion, executeMoveCards } from "$lib/cards/cardDelete";
   import { grantForAnsweredPrompt } from "$lib/confirmGate";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import { openContextMenuFromEvent, type ContextMenuEntry } from "$lib/contextMenu";

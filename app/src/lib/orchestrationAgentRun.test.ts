@@ -79,7 +79,7 @@ vi.mock("$lib/layoutState", () => ({
   }),
   sessionExits: { subscribe: (fn: (v: unknown) => void) => (fn(new Map()), () => {}) },
 }));
-vi.mock("$lib/cardRunActions", () => ({
+vi.mock("$lib/cards/cardRunActions", () => ({
   resolveAttachmentsForRun: vi.fn(async () => ({ paths: [] })),
   revealSession: vi.fn(async () => true),
 }));
@@ -102,7 +102,7 @@ vi.mock("$lib/gitState", () => ({
 
 import * as backend from "$lib/backend";
 import * as layoutStateModule from "$lib/layoutState";
-import * as cardRunActions from "$lib/cardRunActions";
+import * as cardRunActions from "$lib/cards/cardRunActions";
 import {
   orchestrations,
   requestOrganize,

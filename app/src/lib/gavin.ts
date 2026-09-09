@@ -1,7 +1,7 @@
 // TypeScript mirrors of crates/protocol's gavin tree shapes (camelCase on
 // the wire via serde, verified by the protocol crate's shape tests).
 
-import type { Complexity } from "$lib/complexity";
+import type { Complexity } from "$lib/cards/complexity";
 
 export interface PlanFileInfo {
   path: string;

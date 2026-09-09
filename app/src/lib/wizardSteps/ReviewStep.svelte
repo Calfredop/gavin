@@ -5,7 +5,7 @@
     requireReviewOptions,
     requireReviewToSelect,
     resolveRequireReview,
-  } from "$lib/cardReview";
+  } from "$lib/cards/cardReview";
 
   interface Props {
     workspaceId: string;

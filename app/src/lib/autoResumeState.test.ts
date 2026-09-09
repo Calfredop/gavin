@@ -53,7 +53,7 @@ vi.mock("$lib/orchestrationState", async () => {
   };
 });
 
-vi.mock("$lib/cardRunActions", () => ({
+vi.mock("$lib/cards/cardRunActions", () => ({
   resumeCard: vi.fn().mockResolvedValue(null),
 }));
 
@@ -65,7 +65,7 @@ import { layoutState, daemonCompat } from "$lib/layoutState";
 import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/gavinState";
 import { orchestrations, resumeStep } from "$lib/orchestrationState";
-import { resumeCard } from "$lib/cardRunActions";
+import { resumeCard } from "$lib/cards/cardRunActions";
 import { sendAutoResumeNotice } from "$lib/autoResumeNotify";
 import { __resetAutoResume, __setAutoResumeClock, resumeTrail, startAutoResume } from "$lib/autoResumeState";
 import { STAGGER_SPREAD_MS, WAVE_ABORT_WINDOW_MS } from "$lib/autoResume";

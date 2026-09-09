@@ -302,7 +302,7 @@ import {
   __resetForTesting,
 } from "$lib/orchestrationState";
 import { emptyOrchestration, addStep, findStage, stageMode } from "$lib/orchestration";
-import { UNREVIEWED_STALL } from "$lib/cardReview";
+import { UNREVIEWED_STALL } from "$lib/cards/cardReview";
 import { askConfirmChecked } from "$lib/dialog";
 import type { Orchestration, Rail, Stage } from "$lib/orchestration";
 import type { GroupTemplate } from "$lib/orchestrationGroups";

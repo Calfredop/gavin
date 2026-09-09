@@ -21,7 +21,7 @@
   import { onMount } from "svelte";
   import { Copy, FolderOpen, Pencil, Play, Plus, Settings2 } from "@lucide/svelte";
   import { daemonCompat, layoutState, workspaceRootPath } from "$lib/layoutState";
-  import { revealSession } from "$lib/cardRunActions";
+  import { revealSession } from "$lib/cards/cardRunActions";
   import { toolRecords, fetchTools, renderLibraryFor } from "$lib/toolsState";
   import {
     groupTemplateRecords,

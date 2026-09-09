@@ -13,15 +13,15 @@ vi.mock("$lib/layoutState", () => ({
 }));
 vi.mock("$lib/tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("$lib/confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
-vi.mock("$lib/bestOfNActions", () => ({ pickCandidate: vi.fn().mockResolvedValue(null) }));
+vi.mock("$lib/cards/bestOfNActions", () => ({ pickCandidate: vi.fn().mockResolvedValue(null) }));
 
 import { openPathExternally, revealPathExternally } from "$lib/backend";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { setTabPinned, splitPane, closeSession, setSessionRead } from "$lib/layoutState";
 import { closeTabs } from "$lib/tabActions";
 import { buildTabMenuEntries, type TabMenuContext, type TabMenuHooks } from "$lib/tabMenu";
-import { bestOfNRuns } from "$lib/bestOfNState";
-import { pickCandidate } from "$lib/bestOfNActions";
+import { bestOfNRuns } from "$lib/cards/bestOfNState";
+import { pickCandidate } from "$lib/cards/bestOfNActions";
 import { isSeparator, type ContextMenuItem } from "$lib/contextMenu";
 
 function ctx(extra: Partial<TabMenuContext> = {}): TabMenuContext {

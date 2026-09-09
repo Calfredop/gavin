@@ -486,7 +486,7 @@ function lastLaunchObserved(): boolean {
 async function execute(intent: LaunchIntent): Promise<void> {
   switch (intent.kind) {
     case "card": {
-      const m = await import("$lib/cardRunActions");
+      const m = await import("$lib/cards/cardRunActions");
       await m.launchQueuedCard(intent);
       return;
     }

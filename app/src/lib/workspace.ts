@@ -1,5 +1,5 @@
 import type { PauseCycle } from "$lib/agentPause";
-import type { ComplexityTable } from "$lib/complexity";
+import type { ComplexityTable } from "$lib/cards/complexity";
 import type { LayoutNode } from "$lib/layout";
 import { allSessionIds, findLeafPath } from "$lib/layout";
 

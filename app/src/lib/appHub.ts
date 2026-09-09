@@ -26,7 +26,7 @@ import {
   type WorkspaceGitSummary,
 } from "$lib/sidebar/sidebarSummary";
 import { cardSessionState, type CardSessionState } from "$lib/board/columnRunAction";
-import { cardIsOnARail, type LinkedCard } from "$lib/cardTabLink";
+import { cardIsOnARail, type LinkedCard } from "$lib/cards/cardTabLink";
 import { cardIndex, effectiveStatus, planIndex, type Orchestration } from "$lib/orchestration";
 import { slugStatus } from "$lib/planBoard";
 import { totalUsage, type SessionRow, type Totals } from "$lib/sessions/sessionsManager";

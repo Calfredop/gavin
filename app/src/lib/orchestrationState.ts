@@ -87,7 +87,7 @@ import { stepsFromTemplate } from "$lib/orchestrationGroups";
 import type { GroupTemplate } from "$lib/orchestrationGroups";
 import { libraryFor, toolRecords } from "$lib/toolsState";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
-import { breakOutChildren, guardCompletion } from "$lib/cardCompletion";
+import { breakOutChildren, guardCompletion } from "$lib/cards/cardCompletion";
 import { gavinTrees, patchPlanField } from "$lib/gavinState";
 import { gitStore, refresh as refreshGit } from "$lib/gitState";
 import { branchResolvable } from "$lib/git";
@@ -119,8 +119,8 @@ import {
   provisionalSessionName,
   buildToolCommand,
   runStatusNeeded,
-} from "$lib/cardRun";
-import { stripFrontmatter } from "$lib/planChecklist";
+} from "$lib/cards/cardRun";
+import { stripFrontmatter } from "$lib/cards/planChecklist";
 import { slugStatus } from "$lib/planBoard";
 import {
   maybeNotifyReviewWait,
@@ -133,11 +133,11 @@ import {
   reorganizeLabel,
 } from "$lib/orchestrationAgent";
 import { sessionLiveness } from "$lib/workspace";
-import { developingBlocker } from "$lib/developingCardsState";
-import { DEVELOPING_STALL } from "$lib/developingCards";
-import { unreviewedStallReason } from "$lib/cardReview";
+import { developingBlocker } from "$lib/cards/developingCardsState";
+import { DEVELOPING_STALL } from "$lib/cards/developingCards";
+import { unreviewedStallReason } from "$lib/cards/cardReview";
 import type { OrchestrationAgentRecord } from "$lib/workspace";
-import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "$lib/cardRunActions";
+import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "$lib/cards/cardRunActions";
 import { activePaused, mayStartWork, nowStore } from "$lib/agentPauseState";
 import {
   holdOrQueue,

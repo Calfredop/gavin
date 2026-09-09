@@ -13,7 +13,7 @@
   import StepParamsDialog from "$lib/StepParamsDialog.svelte";
   import { attachOrchestrationDrag } from "$lib/orchestrationDragGlue";
   import Modal from "$lib/Modal.svelte";
-  import CardDetailModal from "$lib/CardDetailModal.svelte";
+  import CardDetailModal from "$lib/cards/CardDetailModal.svelte";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import { gavinTrees } from "$lib/gavinState";
   import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/board/kanbanState";
@@ -24,13 +24,13 @@
     type CardView,
     type PlacedCardView,
   } from "$lib/planBoard";
-  import { runCard, sendToMainAgent } from "$lib/cardRunActions";
-  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cardDelete";
+  import { runCard, sendToMainAgent } from "$lib/cards/cardRunActions";
+  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cards/cardDelete";
   import { grantForAnsweredPrompt } from "$lib/confirmGate";
   import { openContextMenuFromEvent, contextMenu, openMenuUnder } from "$lib/contextMenu";
-  import { buildCardMenuEntries } from "$lib/cardMenu";
+  import { buildCardMenuEntries } from "$lib/cards/cardMenu";
   import { gitStore, ensureGitView, refresh as refreshGit } from "$lib/gitState";
-  import { requestedCardDetail, takeCardDetailRequest } from "$lib/cardTabLink";
+  import { requestedCardDetail, takeCardDetailRequest } from "$lib/cards/cardTabLink";
   import { layoutState, daemonCompat } from "$lib/layoutState";
   import { featureBlockedReason } from "$lib/daemonCompat";
   import { estimateFor, launchGateVerdict } from "$lib/launchQueue";

@@ -20,7 +20,7 @@ import { findSessionLocation, hubViewIsOnScreen } from "$lib/workspace";
 import type { AgentCommitRecord, Workspace } from "$lib/workspace";
 import { folderName } from "$lib/paths";
 import { maybeNotifyAgentCommit, type AgentCommitVerdict } from "$lib/notifications";
-import { buildHeadlessCommand, COMMIT_PROMPT } from "$lib/cardRun";
+import { buildHeadlessCommand, COMMIT_PROMPT } from "$lib/cards/cardRun";
 import {
   MAX_AUTO_RESUME_ATTEMPTS,
   autoResumePolicy,

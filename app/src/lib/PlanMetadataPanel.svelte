@@ -5,12 +5,12 @@
   import { gavinTrees, patchPlanField } from "$lib/gavinState";
   import { kanbanState } from "$lib/board/kanbanState";
   import { cardIndex, nestedChildrenOf } from "$lib/orchestration";
-  import { guardCompletion } from "$lib/cardCompletion";
+  import { guardCompletion } from "$lib/cards/cardCompletion";
   import * as backend from "$lib/backend";
   import { agentProfilesStore, daemonCompat } from "$lib/layoutState";
   import { featureBlockedReason } from "$lib/daemonCompat";
-  import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, NO_COMPLEXITY } from "$lib/complexity";
-  import CardAgentControls from "$lib/CardAgentControls.svelte";
+  import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, NO_COMPLEXITY } from "$lib/cards/complexity";
+  import CardAgentControls from "$lib/cards/CardAgentControls.svelte";
 
   interface Props {
     plan: PlanFileInfo;

@@ -18,7 +18,7 @@
 
 import type { CardEntry, Orchestration, Rail, Step, ToolSummary } from "$lib/orchestration";
 import { isToolStep, stepStateOf } from "$lib/orchestration";
-import { NAME_TAB_FIRST } from "$lib/cardRun";
+import { NAME_TAB_FIRST } from "$lib/cards/cardRun";
 
 const READ_FIRST =
   "Read gavin_get_orchestration for the authoritative picture before writing anything.";

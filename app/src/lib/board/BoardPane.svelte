@@ -6,16 +6,16 @@
   import KanbanColumn from "$lib/board/KanbanColumn.svelte";
   import AutoKanbanColumn from "$lib/board/AutoKanbanColumn.svelte";
   import KanbanDragPreview from "$lib/board/KanbanDragPreview.svelte";
-  import CardDetailModal from "$lib/CardDetailModal.svelte";
-  import CardComposeModal from "$lib/CardComposeModal.svelte";
+  import CardDetailModal from "$lib/cards/CardDetailModal.svelte";
+  import CardComposeModal from "$lib/cards/CardComposeModal.svelte";
   import { planCommitFromMerged } from "$lib/planDrop";
-  import { runCard, resumeCard, developCard, sendToMainAgent } from "$lib/cardRunActions";
+  import { runCard, resumeCard, developCard, sendToMainAgent } from "$lib/cards/cardRunActions";
   import { layoutState } from "$lib/layoutState";
-  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cardDelete";
+  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cards/cardDelete";
   import { grantForAnsweredPrompt } from "$lib/confirmGate";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "$lib/contextMenu";
-  import { buildCardMenuEntries } from "$lib/cardMenu";
+  import { buildCardMenuEntries } from "$lib/cards/cardMenu";
   import { fetchOrchestration, orchestrations } from "$lib/orchestrationState";
   import { cardSessionFor } from "$lib/board/kanbanState";
   import { attachBoardDrag } from "$lib/board/kanbanDragGlue";
@@ -26,8 +26,8 @@
   import { filterBoard, AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
   import { isSearching } from "$lib/search";
   import type { DropTarget } from "$lib/pointerDrag";
-  import { requestedCompose, takeComposeRequest, type ComposeTarget } from "$lib/composeRequest";
-  import { defaultComposeStatus } from "$lib/cardCompose";
+  import { requestedCompose, takeComposeRequest, type ComposeTarget } from "$lib/cards/composeRequest";
+  import { defaultComposeStatus } from "$lib/cards/cardCompose";
   import { dropAgainstWholeBoard, pageHolding, pageScope, scopeBoardToPage } from "$lib/board/pageBoard";
 
   interface Props {

@@ -9,7 +9,7 @@ import type { WorktreeInfo } from "$lib/git";
 import type { SessionStatus } from "$lib/notifications";
 import { isArchivedCard, planKey, slugStatus } from "$lib/planBoard";
 import { isPrStep, isUntilStep, stepBefore, summaryParam, untilMax, untilVerdict } from "$lib/orchestrationLoop";
-import { isUnreviewedStall } from "$lib/cardReview";
+import { isUnreviewedStall } from "$lib/cards/cardReview";
 import { prKey, prRequirement, prWaitVerdict } from "$lib/pullRequest";
 import type { PrReport } from "$lib/pullRequest";
 

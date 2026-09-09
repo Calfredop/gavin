@@ -47,7 +47,7 @@ import {
 } from "$lib/layoutState";
 import { copySelection, pasteClipboard } from "$lib/clipboard";
 import { handleShortcutKeydown, type ShortcutKeyEvent } from "$lib/keyboard";
-import { requestedCompose } from "$lib/composeRequest";
+import { requestedCompose } from "$lib/cards/composeRequest";
 import {
   hubTabOrderByWorkspace,
   hubTabsHiddenByWorkspace,

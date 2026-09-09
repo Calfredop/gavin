@@ -25,7 +25,7 @@ import { currentHubTabPrefs } from "$lib/hubTabPrefs";
 import { scratchpadEnabled } from "$lib/sidebar/sidebarPrefs";
 import { cmdHeld, isMacSync } from "$lib/platform";
 import { digitFromCode, matchesChord, resolveIndex, SHORTCUTS } from "$lib/shortcuts";
-import { requestedCompose, resolveComposeTarget } from "$lib/composeRequest";
+import { requestedCompose, resolveComposeTarget } from "$lib/cards/composeRequest";
 
 /// Just the parts of a KeyboardEvent the shortcut layer reads. A real
 /// KeyboardEvent satisfies it structurally; tests build one by hand,

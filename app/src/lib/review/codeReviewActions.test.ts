@@ -19,7 +19,7 @@ vi.mock("$lib/board/kanbanState", () => ({
   kanbanState: writable({}),
   cardSessionFor: vi.fn(() => null),
 }));
-vi.mock("$lib/cardRunActions", () => ({ revealSession: vi.fn().mockResolvedValue(true) }));
+vi.mock("$lib/cards/cardRunActions", () => ({ revealSession: vi.fn().mockResolvedValue(true) }));
 // The launch wall's queue, stubbed. It is a live module (a poller, a
 // drain loop, localStorage) that these tests are not about, and its
 // dependency cone reaches layoutState -- which this file replaces with a
@@ -40,7 +40,7 @@ import {
 } from "$lib/layoutState";
 import { gavinTrees } from "$lib/gavinState";
 import { cardSessionFor } from "$lib/board/kanbanState";
-import { revealSession } from "$lib/cardRunActions";
+import { revealSession } from "$lib/cards/cardRunActions";
 import {
   reviewRequest,
   cancelReview,

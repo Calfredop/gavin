@@ -23,11 +23,11 @@
   // that card's agent (the contract terminalPaneSession.test.ts holds
   // every call site to).
   import { Play } from "@lucide/svelte";
-  import CardDetailModal from "$lib/CardDetailModal.svelte";
+  import CardDetailModal from "$lib/cards/CardDetailModal.svelte";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
   import { layoutState, terminalFontSizeDefault } from "$lib/layoutState";
   import { resolveTerminalFontSize } from "$lib/terminal/terminalFont";
-  import { reviewCardSession } from "$lib/cardRunActions";
+  import { reviewCardSession } from "$lib/cards/cardRunActions";
   import { cardSessionState } from "$lib/board/columnRunAction";
   import type { CardSession, Column, Label } from "$lib/board/kanban";
   import type { CardView } from "$lib/planBoard";

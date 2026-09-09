@@ -10,7 +10,7 @@
 // message. Everything below is written so the agent finishes by filing
 // them.
 
-import { NAME_TAB_FIRST, noPromptReason } from "$lib/cardRun";
+import { NAME_TAB_FIRST, noPromptReason } from "$lib/cards/cardRun";
 import type { BranchInfo } from "$lib/git";
 
 // ---- The review-rules file -------------------------------------------------

@@ -28,8 +28,8 @@ import {
 } from "$lib/layoutState";
 import { gavinTrees } from "$lib/gavinState";
 import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
-import { revealSession } from "$lib/cardRunActions";
-import { buildRunCommand, provisionalSessionName } from "$lib/cardRun";
+import { revealSession } from "$lib/cards/cardRunActions";
+import { buildRunCommand, provisionalSessionName } from "$lib/cards/cardRun";
 import {
   composeReviewPrompt,
   defaultReviewBase,

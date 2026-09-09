@@ -1,6 +1,6 @@
 import * as backend from "$lib/backend";
-import { composeSlot } from "$lib/cardCompose";
-import { guardCompletion, subjectFromCard } from "$lib/cardCompletion";
+import { composeSlot } from "$lib/cards/cardCompose";
+import { guardCompletion, subjectFromCard } from "$lib/cards/cardCompletion";
 import { patchPlanField } from "$lib/gavinState";
 import { computeOrderWrites, type OrderedPlanCard } from "$lib/board/planOrder";
 import { dropHold } from "$lib/board/kanbanDrag";

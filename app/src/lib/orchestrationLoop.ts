@@ -21,7 +21,7 @@
 //    never carried in a variable, so a reload mid-loop does not silently
 //    drop it.
 
-import { shellQuote } from "$lib/cardRun";
+import { shellQuote } from "$lib/cards/cardRun";
 // Types only -- erased at compile time, so orchestration.ts is free to
 // import this module's VALUES without a runtime cycle.
 import type { Orchestration, Rail, Step } from "$lib/orchestration";

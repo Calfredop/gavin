@@ -33,8 +33,8 @@
   } from "$lib/layoutState";
   import SetupWizard from "$lib/SetupWizard.svelte";
   import WorkspaceCreateModal from "$lib/WorkspaceCreateModal.svelte";
-  import BestOfNDialog from "$lib/BestOfNDialog.svelte";
-  import { bestOfNRequest, hydrateRuns } from "$lib/bestOfNState";
+  import BestOfNDialog from "$lib/cards/BestOfNDialog.svelte";
+  import { bestOfNRequest, hydrateRuns } from "$lib/cards/bestOfNState";
   import { showAlert } from "$lib/dialog";
   import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspaceCreate";
   import { resolveAgentConfig, accentVar } from "$lib/settings";

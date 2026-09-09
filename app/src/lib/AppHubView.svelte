@@ -85,8 +85,8 @@
     REASON_LABEL,
     type AttentionRow,
   } from "$lib/attentionInbox";
-  import { openLinkedCard } from "$lib/cardTabLink";
-  import { revealSession } from "$lib/cardRunActions";
+  import { openLinkedCard } from "$lib/cards/cardTabLink";
+  import { revealSession } from "$lib/cards/cardRunActions";
   import { kanbanState } from "$lib/board/kanbanState";
   import { fleetStripLine } from "$lib/launchQueue";
   import { gavinTrees } from "$lib/gavinState";

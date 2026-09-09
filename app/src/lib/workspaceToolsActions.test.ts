@@ -19,7 +19,7 @@ vi.mock("$lib/layoutState", () => ({
   setSessionName: vi.fn().mockResolvedValue(undefined),
   workspaceRootPath: vi.fn(() => "/repo" as string | null),
 }));
-vi.mock("$lib/cardRunActions", () => ({ revealSession: vi.fn().mockResolvedValue(true) }));
+vi.mock("$lib/cards/cardRunActions", () => ({ revealSession: vi.fn().mockResolvedValue(true) }));
 
 import * as backend from "$lib/backend";
 import {
@@ -31,7 +31,7 @@ import {
   setSessionName,
   workspaceRootPath,
 } from "$lib/layoutState";
-import { revealSession } from "$lib/cardRunActions";
+import { revealSession } from "$lib/cards/cardRunActions";
 import { toolRecords, __resetForTesting as resetTools } from "$lib/toolsState";
 import {
   toolRunsStore,

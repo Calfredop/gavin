@@ -32,7 +32,7 @@ import { sessionLabel } from "$lib/paths";
 import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/gavinState";
 import { orchestrations, resumeStep } from "$lib/orchestrationState";
-import { resumeCard } from "$lib/cardRunActions";
+import { resumeCard } from "$lib/cards/cardRunActions";
 import { cardViewForPath, slugStatus } from "$lib/planBoard";
 import { cardIndex, doneColumn, effectiveStatus, planIndex, stageMode } from "$lib/orchestration";
 import type { Rail, Step } from "$lib/orchestration";

@@ -19,7 +19,7 @@ import type {
   RemovedWorkspace,
 } from "$lib/workspace";
 import { sessionLabel } from "$lib/paths";
-import { buildRunCommand, mintConversationId, noPromptReason } from "$lib/cardRun";
+import { buildRunCommand, mintConversationId, noPromptReason } from "$lib/cards/cardRun";
 import { workspaceIdForSession } from "$lib/workspace";
 import { maybeNotifyStatusChange, parseSessionStatus, type SessionStatus } from "$lib/notifications";
 import { initGavinListeners, watchRootedWorkspaces, gavinTrees, worktreeSetups } from "$lib/gavinState";
@@ -48,14 +48,14 @@ import {
   type ReadSessions,
 } from "$lib/sessions/sessionRead";
 import { indexQueued, type QueuedInput } from "$lib/queuedInput";
-import { candidateAgentConfig, type Candidate } from "$lib/bestOfN";
+import { candidateAgentConfig, type Candidate } from "$lib/cards/bestOfN";
 import {
   agentConfigWithAttribution,
   EMPTY_AGENT_DEFAULTS,
   type AgentDefaults,
   type ComplexityTable,
-} from "$lib/complexity";
-import { cardAgentEntry, type CardAgentFields } from "$lib/cardAgent";
+} from "$lib/cards/complexity";
+import { cardAgentEntry, type CardAgentFields } from "$lib/cards/cardAgent";
 import {
   configTrusted,
   executionKeys,
@@ -70,7 +70,7 @@ import {
   normalizeRequireReview,
   resolveRequireReview,
   type CardContent,
-} from "$lib/cardReview";
+} from "$lib/cards/cardReview";
 import type { McpForeignChoice } from "$lib/mcpServerTrust";
 import {
   activeWorkspaceForWindow,
@@ -1288,7 +1288,7 @@ export async function bootstrap(): Promise<void> {
   // the card back, and this watch's first pass is also what ADOPTS a run
   // that outlived the last window -- the records load with the
   // workspaces. Dynamically imported for the cycle reason above.
-  const { startDevelopingCardsWatch } = await import("$lib/developingCardsState");
+  const { startDevelopingCardsWatch } = await import("$lib/cards/developingCardsState");
   unlisteners.push(startDevelopingCardsWatch());
   // And once more for the Tools tab's two watchers. The daemon closes a
   // shell tool's run by itself and pushes nothing, and an agent tool's

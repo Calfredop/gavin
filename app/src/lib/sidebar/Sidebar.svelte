@@ -124,7 +124,7 @@
     type PageAgentsSummary,
     type PageTabRow,
   } from "$lib/sidebar/sidebarSummary";
-  import { rowLinkedCard, openLinkedCard, linkForCardPath, type LinkedCard } from "$lib/cardTabLink";
+  import { rowLinkedCard, openLinkedCard, linkForCardPath, type LinkedCard } from "$lib/cards/cardTabLink";
   import {
     orchestrations,
     fetchOrchestration,

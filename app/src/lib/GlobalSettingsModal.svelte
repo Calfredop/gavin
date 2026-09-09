@@ -15,8 +15,8 @@
     gitTrackingDefault,
     setGitTrackingDefault,
   } from "$lib/layoutState";
-  import ComplexityTable from "$lib/ComplexityTable.svelte";
-  import type { Complexity, ComplexityAgent } from "$lib/complexity";
+  import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
+  import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
   import { modelOptions, CUSTOM_MODEL } from "$lib/agentModel";
   import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "$lib/terminal/terminalFont";
   import {
@@ -30,7 +30,7 @@
     requireReviewFromSelect,
     requireReviewOptions,
     requireReviewToSelect,
-  } from "$lib/cardReview";
+  } from "$lib/cards/cardReview";
   import { resolveGitTracking } from "$lib/gitTracking";
   import { scratchpadEnabled, setScratchpadEnabled } from "$lib/sidebar/sidebarPrefs";
   import { hiddenHubViewCount, hubTabsHiddenDefault } from "$lib/hubTabPrefs";

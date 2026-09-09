@@ -6,8 +6,8 @@ import { setTabPinned, splitPane, closeSession, setSessionRead } from "$lib/layo
 import { closeTabs } from "$lib/tabActions";
 import { confirmTabClose } from "$lib/confirmClose";
 import { bulkCloseTargets } from "$lib/layout";
-import { bestOfNRuns, runForSessionAnywhere } from "$lib/bestOfNState";
-import { pickCandidate } from "$lib/bestOfNActions";
+import { bestOfNRuns, runForSessionAnywhere } from "$lib/cards/bestOfNState";
+import { pickCandidate } from "$lib/cards/bestOfNActions";
 import { get } from "svelte/store";
 import { readEntryApplies, readEntryLabel } from "$lib/sessions/sessionRead";
 import type { SessionStatus } from "$lib/notifications";

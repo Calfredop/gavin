@@ -30,8 +30,8 @@
 
 import { get, writable, type Readable } from "svelte/store";
 import * as backend from "$lib/backend";
-import { buildRunCommand, buildToolCommand } from "$lib/cardRun";
-import { revealSession } from "$lib/cardRunActions";
+import { buildRunCommand, buildToolCommand } from "$lib/cards/cardRun";
+import { revealSession } from "$lib/cards/cardRunActions";
 import { featureBlockedReason } from "$lib/daemonCompat";
 import {
   armFailureDetection,

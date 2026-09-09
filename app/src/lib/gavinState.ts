@@ -1,6 +1,6 @@
 import { writable } from "svelte/store";
-import { parseAttachments } from "$lib/attachments";
-import { parseComplexity } from "$lib/complexity";
+import { parseAttachments } from "$lib/cards/attachments";
+import { parseComplexity } from "$lib/cards/complexity";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import * as backend from "$lib/backend";
 import { refreshBoard } from "$lib/board/kanbanState";

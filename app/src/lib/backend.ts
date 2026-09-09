@@ -1,10 +1,10 @@
-import type { AgentDefaults } from "$lib/complexity";
+import type { AgentDefaults } from "$lib/cards/complexity";
 import type { PauseCycle } from "$lib/agentPause";
 import type { AgentUsageReport } from "$lib/agentUsage";
 import type { SystemMemorySample, WatchmanSample } from "$lib/memory";
 import type { LaunchConfig } from "$lib/launchGate";
 import type { PrReport } from "$lib/pullRequest";
-import type { CardRun, TokenReport } from "$lib/runHistory";
+import type { CardRun, TokenReport } from "$lib/cards/runHistory";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$lib/workspace";
 import type { Board, Column, Label } from "$lib/board/kanban";
@@ -22,7 +22,7 @@ import type { OrphanProcess } from "$lib/sessions/orphan";
 import type { QueuedInput } from "$lib/queuedInput";
 import type { ManagedSessions } from "$lib/sessions/sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspaceDelete";
-import type { AttachmentStatus } from "$lib/attachments";
+import type { AttachmentStatus } from "$lib/cards/attachments";
 import type { AvailableUpdate, UpdateSettings } from "$lib/updates";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {

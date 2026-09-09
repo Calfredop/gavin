@@ -77,7 +77,7 @@ import {
   attentionTip,
   failedStepReason,
 } from "$lib/orchestration";
-import { unreviewedStallReason } from "$lib/cardReview";
+import { unreviewedStallReason } from "$lib/cards/cardReview";
 import type { CardEntry, Conflict, StepAttention, ToolSummary, UnplacedGroup } from "$lib/orchestration";
 import { BUILTIN_TOOLS } from "$lib/orchestrationTools";
 import { prKey } from "$lib/pullRequest";
