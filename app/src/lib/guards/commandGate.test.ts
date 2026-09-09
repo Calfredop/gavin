@@ -23,7 +23,7 @@ import { source } from "$lib/sources";
 // and calling that destructive would flatten the distinction this table
 // exists to keep.
 
-const RUST = import.meta.glob("../../src-tauri/src/*.rs", {
+const RUST = import.meta.glob("../../../src-tauri/src/*.rs", {
   query: "?raw",
   import: "default",
   eager: true,

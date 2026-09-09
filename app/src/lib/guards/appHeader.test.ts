@@ -18,7 +18,7 @@ import { svelteSources } from "$lib/sources";
 
 const SOURCES = svelteSources();
 
-const ROUTES = import.meta.glob("../routes/*.svelte", {
+const ROUTES = import.meta.glob("../../routes/*.svelte", {
   query: "?raw",
   import: "default",
   eager: true,

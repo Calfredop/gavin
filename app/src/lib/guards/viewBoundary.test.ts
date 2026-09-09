@@ -26,7 +26,7 @@ import { tsSources } from "$lib/sources";
 // and appHubSurface.test.ts beside it: mounting the page needs a daemon,
 // and a boundary that is present is exactly what a source can show.
 
-const ROUTES = import.meta.glob("../routes/*.svelte", {
+const ROUTES = import.meta.glob("../../routes/*.svelte", {
   query: "?raw",
   import: "default",
   eager: true,
@@ -35,12 +35,12 @@ const ROUTES = import.meta.glob("../routes/*.svelte", {
 const LIB = tsSources();
 
 function source(map: Record<string, string>, name: string): string {
-  const text = map[name];
-  if (!text) throw new Error(`no source for ${name}`);
-  return text;
+  const found = Object.entries(map).find(([key]) => key === name || key.endsWith(`/${name}`));
+  if (!found) throw new Error(`no source for ${name}`);
+  return found[1];
 }
 
-const PAGE = () => source(ROUTES, "../routes/+page.svelte");
+const PAGE = () => source(ROUTES, "+page.svelte");
 
 /// The span between the boundary's tags, which is what "inside it" means
 /// for every assertion below. One boundary, so a plain index pair is

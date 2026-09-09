@@ -5,7 +5,7 @@ import { source, svelteSources } from "$lib/sources";
 /// the seam's entries in one map. `../routes` is outside lib and the
 /// reorganization does not move it, so the glob stays here.
 function routeSources(): Record<string, string> {
-  const raw = import.meta.glob("../routes/**/*.svelte", {
+  const raw = import.meta.glob("../../routes/**/*.svelte", {
     query: "?raw",
     import: "default",
     eager: true,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { devReportOnlyPolicy } from "../../vite-dev-csp.js";
+import { devReportOnlyPolicy } from "../../../vite-dev-csp.js";
 
 /// The mirror exists so the policy the bundle ENFORCES is the policy the
 /// dev app REPORTS. Its whole value is that the two cannot drift, so
@@ -9,7 +9,7 @@ describe("devReportOnlyPolicy", () => {
   // browser bundle, so a `node:fs` import fails `npm run check` -- the
   // same constraint the other source-reading suites work under.
   const config = Object.values(
-    import.meta.glob("../../src-tauri/tauri.conf.json", {
+    import.meta.glob("../../../src-tauri/tauri.conf.json", {
       query: "?raw",
       import: "default",
       eager: true,

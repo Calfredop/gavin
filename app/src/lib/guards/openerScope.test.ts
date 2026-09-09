@@ -14,7 +14,7 @@ import { allSources } from "$lib/sources";
 // stays green. This is the guard for that -- it reads the two sources
 // the arrangement actually rests on.
 
-const CAPABILITY = import.meta.glob("../../src-tauri/capabilities/default.json", {
+const CAPABILITY = import.meta.glob("../../../src-tauri/capabilities/default.json", {
   query: "?raw",
   import: "default",
   eager: true,
@@ -22,7 +22,7 @@ const CAPABILITY = import.meta.glob("../../src-tauri/capabilities/default.json",
 
 const FRONTEND = {
   ...allSources(),
-  ...(import.meta.glob("../routes/*.svelte", {
+  ...(import.meta.glob("../../routes/*.svelte", {
     query: "?raw",
     import: "default",
     eager: true,

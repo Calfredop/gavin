@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isSvelteStyleModule, svelteStyleCache } from "../../vite-svelte-style-cache.js";
+import { isSvelteStyleModule, svelteStyleCache } from "../../../vite-svelte-style-cache.js";
 
 // The hooks as this test drives them: vite's own Plugin["load"] is a
 // union with an object form, and calling it with a stub context through
