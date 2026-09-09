@@ -85,7 +85,17 @@
     usageProjectionIndicator,
   } from "$lib/ui/indicators";
 
-  import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "$lib/core/paths";
+  import { sessionLabel, folderName } from "$lib/core/paths";
+  import { renameable, tabLabel, type TabNaming } from "$lib/panes/tabIdentity";
+  import {
+    cardRecapTip,
+    formatAheadBehind,
+    gitRecapTip,
+    railRecapTip,
+    tabRowKindWord,
+    tabRowTip as tabRowTipFor,
+    tabsRecapTip,
+  } from "$lib/sidebar/sidebarTips";
   import { resolveHubView, visibleHubViewIds } from "$lib/hub/hubViewMeta";
   import { currentHubTabPrefs } from "$lib/hub/hubTabPrefs";
   import {
@@ -124,7 +134,7 @@
     type PageAgentsSummary,
     type PageTabRow,
   } from "$lib/sidebar/sidebarSummary";
-  import { rowLinkedCard, openLinkedCard, linkForCardPath, type LinkedCard } from "$lib/cards/cardTabLink";
+  import { rowLinkedCard, openLinkedCard, type LinkedCard } from "$lib/cards/cardTabLink";
   import {
     orchestrations,
     fetchOrchestration,
@@ -505,38 +515,23 @@
     return rowLinkedCard($kanbanState[ws.id], $orchestrations[ws.id], $gavinTrees[ws.id], row);
   }
 
-  // A tab's name in the expansion, by the same rules the tab bar itself
-  // uses: a board tab names its context, a file tab its filename, a card
-  // tab its card and view, a terminal its custom name or cwd. The exact
-  // ones share paths.ts helpers with Pane.svelte so one tab never goes by
-  // two names.
+  // Everything tabIdentity.ts needs to name a tab, gathered once.
+  const naming = $derived<TabNaming>({
+    fileTabsById: $layoutState.fileTabsById,
+    boardTabsById: $layoutState.boardTabsById,
+    cardTabsById: $layoutState.cardTabsById,
+    sessionNames: $layoutState.sessionNames,
+    cwdBySessionId: $layoutState.cwdBySessionId,
+    trees: $gavinTrees,
+    orchestrations: $orchestrations,
+  });
+
+  // A tab's name in the expansion, by the very rules the tab bar itself
+  // uses -- the same function, not the same helpers. This row and that
+  // tab are two views of one thing, so "one tab never goes by two names"
+  // is only true if there is one place the name is decided.
   function tabRowLabel(row: PageTabRow): string {
-    if (row.kind === "board") {
-      const tab = $layoutState.boardTabsById[row.id];
-      if (!tab) return row.id;
-      const name = $gavinTrees[tab.workspaceId]?.contexts.find((c) => c.folderPath === tab.contextFolder)?.name;
-      return boardTabLabel(name, tab.contextFolder);
-    }
-    if (row.kind === "file") return folderName($layoutState.fileTabsById[row.id]?.path ?? row.id);
-    if (row.kind === "card") {
-      const tab = $layoutState.cardTabsById[row.id];
-      if (!tab) return row.id;
-      // The queue tab is the one card tab with no card: its subject is a
-      // session, so it is named after that terminal by the same helper
-      // the terminal's own row uses.
-      if (tab.view === "followups") {
-        return followUpsTabLabel(
-          sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, tab.sessionId ?? row.id)
-        );
-      }
-      const title = linkForCardPath(
-        $orchestrations[tab.workspaceId],
-        $gavinTrees[tab.workspaceId],
-        tab.path
-      ).title;
-      return cardTabLabel(title, tab.view);
-    }
-    return sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, row.id);
+    return tabLabel(row.id, naming);
   }
 
   // The row's own bubble opens with the very sentence its badge would
@@ -557,93 +552,25 @@
     return folderName(status.repoRoot);
   }
 
-  // One bubble for the whole row: what it is, where it lives, and -- for
-  // a session in a repo -- the checkout in full, spelled out where the
-  // row itself can only afford glyphs. Deliberately NOT a second tooltip
-  // on the git line: mouseenter does not bubble, so a nested one would
-  // take over the row's and never hand it back.
+  // Where a row points, which is the half its label had to drop.
+  function tabRowWhere(row: PageTabRow): string {
+    if (row.kind === "board") return $layoutState.boardTabsById[row.id]?.contextFolder ?? "";
+    if (row.kind === "file") return $layoutState.fileTabsById[row.id]?.path ?? "";
+    if (row.kind === "card") return $layoutState.cardTabsById[row.id]?.path ?? "";
+    return $layoutState.cwdBySessionId[row.id] ?? "";
+  }
+
+  // One bubble for the whole row (sidebarTips.ts). A session row always
+  // carries a status, so the kind word is only ever reached by the three
+  // that no agent runs behind.
   function tabRowTip(row: PageTabRow, status: GitStatus | null): string {
-    const kindWord =
-      row.kind === "file"
-        ? "File"
-        : row.kind === "card"
-          ? // The one card row with no card: its subject is a session.
-            $layoutState.cardTabsById[row.id]?.view === "followups"
-            ? "Follow-ups"
-            : "Card"
-          : "Board";
-    const lines = [row.status ? statusWord(row.status) : kindWord];
-    const where =
-      row.kind === "board"
-        ? ($layoutState.boardTabsById[row.id]?.contextFolder ?? "")
-        : row.kind === "file"
-          ? ($layoutState.fileTabsById[row.id]?.path ?? "")
-          : row.kind === "card"
-            ? ($layoutState.cardTabsById[row.id]?.path ?? "")
-            : ($layoutState.cwdBySessionId[row.id] ?? "");
-    if (where) lines.push(where);
-    if (status) {
-      const sync = formatAheadBehind(status).replace("\u2191", "ahead ").replace("\u2193", "behind ");
-      const parts = [status.repoRoot, `on ${status.branch}`, status.dirty ? "uncommitted changes" : "clean"];
-      if (sync) parts.push(sync);
-      lines.push(parts.join(" -- "));
-    }
-    return lines.join("\n");
-  }
-
-  function plural(n: number, one: string, many: string): string {
-    return `${n} ${n === 1 ? one : many}`;
-  }
-
-  // Spelled out in the tooltip, because the row itself is deliberately
-  // just icons and numbers -- there is no room for labels at 200px.
-  function gitRecapTip(git: WorkspaceGitSummary): string {
-    // A run in flight leads: it is the only part of this chip that is
-    // happening right now rather than merely true. And the repo tally
-    // drops out entirely at zero -- a run can be the chip's whole reason
-    // for existing, and "0 repos" would be the loudest thing on it.
-    const parts: string[] = [];
-    if (git.committing) parts.push("an agent is committing");
-    if (git.repoCount > 0) parts.push(plural(git.repoCount, "repo", "repos"));
-    if (git.dirtyCount > 0) parts.push(`${git.dirtyCount} with uncommitted changes`);
-    if (git.ahead > 0) parts.push(`${git.ahead} ahead`);
-    if (git.behind > 0) parts.push(`${git.behind} behind`);
-    return `${parts.join(", ")} -- open Git`;
-  }
-
-  // Names every column, so the three-slot tally never hides which custom
-  // column a card is actually sitting in.
-  function cardRecapTip(cards: KanbanSummary): string {
-    const detail = cards.columns
-      .filter((c) => c.count > 0)
-      .map((c) => `${c.name} ${c.count}`)
-      .join(", ");
-    return `${plural(cards.total, "card", "cards")}: ${detail} -- open Kanban`;
-  }
-
-  // Names every bucket the row itself renders as bare numbers, including
-  // the two it does not: waiting agents (they are the amber badge further
-  // along the row, not part of the recap) and the file/board tabs that
-  // make up the gap between the tab count and the agent count.
-  function tabsRecapTip(tabs: PageAgentsSummary): string {
-    const buckets: string[] = [];
-    if (tabs.running > 0) buckets.push(`${tabs.running} running`);
-    if (tabs.waiting > 0) buckets.push(`${tabs.waiting} waiting for input`);
-    if (tabs.failed > 0) buckets.push(`${tabs.failed} stopped because something broke`);
-    if (tabs.idle > 0) buckets.push(`${tabs.idle} idle`);
-    const agents = tabs.agents === 0 ? "no agents" : `${plural(tabs.agents, "agent", "agents")}: ${buckets.join(", ")}`;
-    const others = tabs.tabs - tabs.agents;
-    const rest = others > 0 ? `, ${plural(others, "file or board tab", "file or board tabs")}` : "";
-    return `${plural(tabs.tabs, "tab", "tabs")} -- ${agents}${rest}`;
-  }
-
-  function railRecapTip(rails: RailsSummary): string {
-    const parts: string[] = [];
-    if (rails.running > 0) parts.push(`${rails.running} running`);
-    if (rails.attention > 0) parts.push(`${rails.attention} needing you`);
-    if (rails.done > 0) parts.push(`${rails.done} done`);
-    if (rails.idle > 0) parts.push(`${rails.idle} idle`);
-    return `${plural(rails.total, "rail", "rails")}: ${parts.join(", ")} -- open Orchestration`;
+    return tabRowTipFor({
+      lead: row.status
+        ? statusWord(row.status)
+        : tabRowKindWord(row.kind, $layoutState.cardTabsById[row.id]?.view === "followups"),
+      where: tabRowWhere(row),
+      git: status,
+    });
   }
 
   /// The workspace row's Hub button: switch to that workspace and land on
@@ -665,22 +592,6 @@
     switchWorkspace(ws.id);
     const offered = visibleHubViewIds(Boolean(ws.rootPath));
     switchWorkspaceView(ws.id, offered.includes(view) ? view : resolveHubView(ws, currentHubTabPrefs(ws.id)));
-  }
-
-  // ahead/behind are only meaningful (and only shown) when hasUpstream is
-  // true, and only the non-zero side(s) are shown -- "main" alone when
-  // fully up to date with its upstream, "main ↑2" when only ahead,
-  // "main ↑2 ↓1" when diverged. Not extracted to workspace.ts: this is
-  // presentational string formatting, not branching business logic (see
-  // this plan's Global Constraints on what needed its own pure-function
-  // test), matching this file's existing local-helper precedent
-  // (waitingForInputCount and friends are template-local too).
-  function formatAheadBehind(status: GitStatus): string {
-    if (!status.hasUpstream) return "";
-    const parts: string[] = [];
-    if (status.ahead > 0) parts.push(`↑${status.ahead}`);
-    if (status.behind > 0) parts.push(`↓${status.behind}`);
-    return parts.join(" ");
   }
 
   function isExpanded(workspaceId: string): boolean {
@@ -747,13 +658,9 @@
 
   function startEditingSession(sessionId: string): void {
     // File, board and card tabs are never renameable -- their labels are
-    // exact (the same rule the tab bar's own rename applies).
-    if (
-      $layoutState.fileTabsById[sessionId] ||
-      $layoutState.boardTabsById[sessionId] ||
-      $layoutState.cardTabsById[sessionId]
-    )
-      return;
+    // exact. Literally the tab bar's own rule (tabIdentity.ts), not a
+    // second spelling of it.
+    if (!renameable(sessionId, naming)) return;
     editingSessionId = sessionId;
     sessionEditValue = sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, sessionId);
   }
