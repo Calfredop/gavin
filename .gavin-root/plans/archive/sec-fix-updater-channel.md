@@ -1,6 +1,6 @@
 ---
 order: 7168
-status: To Do
+status: Done
 kind: task
 title: [sec] give gavin a signed update channel
 parent: sec-fix-signing-and-sidecars.md

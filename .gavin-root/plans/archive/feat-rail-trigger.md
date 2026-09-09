@@ -1,11 +1,10 @@
 ---
-order: 8192
+order: 9216
 kind: task
-title: [feat] start rail tool
-status: To Do
-complexity: simple
+title: [feat] rail trigger
+status: Done
 ---
-Add workspace pick in start rail tool (optional, defaults to rail’s current)
+eg. on all rail done
 
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.

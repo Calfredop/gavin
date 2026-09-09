@@ -2,7 +2,7 @@
 order: 5120
 kind: task
 title: [sec] Develop reads an unreviewed card body too
-status: To Do
+status: Done
 priority: medium
 complexity: simple
 ---
