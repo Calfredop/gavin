@@ -224,17 +224,42 @@ export async function developCard(
   // another window started.
   if (await revealDevelopingCard(workspaceId, card.id)) return null;
 
-  // The card file is never read here: the skill's first move is to read
-  // it, and inlining a task's body is what turns an interview into a
-  // build.
+  // `composeDevelopPrompt` carries no body, no attachments and no
+  // auto-commit block, so there was nothing composed here to SHOW -- a
+  // sheet promising "the prompt the agent receives" would have shown a
+  // prompt with none of the card in it. But the develop agent's first
+  // move is the gavin-develop skill's own step 1, "read the card", so a
+  // cloned repo's hostile body reached it unread exactly as it used to
+  // reach a Run before the first-Run review closed that gate. Filed as
+  // its own card (sec-fix-develop-run-review) rather than half-covered
+  // in the review that closed the Run side (sec-fix-first-run-review,
+  // R2/AG-01); this is that card's fix.
   //
-  // No first-Run review either, and that is a deliberate boundary rather
-  // than an oversight: `composeDevelopPrompt` carries no body, no
-  // attachments and no auto-commit block, so there is nothing to SHOW --
-  // a sheet promising "the prompt the agent receives" would show a
-  // prompt with none of the card in it. The develop agent still goes and
-  // reads the card, so a hostile body reaches it; that residue is real
-  // and is filed as its own card rather than half-covered here.
+  // The fix shows the sheet the card BODY instead of a composed prompt --
+  // read here, for the sheet only. `composeDevelopPrompt` below still
+  // gets none of it: inlining a task's body is what turns an interview
+  // into a build, and that boundary is unchanged.
+  const resolved = await resolveAttachmentsForRun(workspaceId, card.attachments ?? []);
+  if ("error" in resolved) return resolved.error;
+  const file = await backend.readFileForViewer(card.id);
+  if (!file.exists) return `Card file not found: ${card.id}`;
+  const body = stripFrontmatter(file.content).trim();
+  const content = { title: card.title, body, attachments: card.attachments ?? [] };
+  if (
+    !(await ensureCardReviewed({
+      workspaceId,
+      path: card.id,
+      content,
+      statuses: resolved.statuses,
+      prompt: body,
+      blockLabel: "The card body the agent will read:",
+    }))
+  ) {
+    // Declined, which is an answer and not a failure: nothing has been
+    // written, so there is nothing to report on the error strip.
+    return null;
+  }
+
   // The CARD's agent, by the same rule every other launch follows
   // (`agentForCard` -> `cardAgentEntry`): its own `agent:`/`model:` if
   // it names either, else what its `complexity:` level is attributed to,

@@ -30,6 +30,11 @@ export interface CardReviewRequest {
   content: CardContent;
   statuses: readonly AttachmentStatus[];
   prompt: string;
+  /// Overrides the block's label ("The prompt the agent receives:") for
+  /// a launch whose composed prompt carries none of the card — develop's
+  /// does not, so `prompt` here is the card body instead, and the label
+  /// has to say that rather than call it a prompt it isn't.
+  blockLabel?: string;
 }
 
 /// Whether this launch may go ahead: true when the human has already read
@@ -50,7 +55,7 @@ export async function ensureCardReviewed(request: CardReviewRequest): Promise<bo
   const confirmed = await askConfirm({
     title: reviewTitle(request.content.title),
     lines: reviewLines(request.content, reviewedAttachments(request.statuses)),
-    block: { label: "The prompt the agent receives:", text: request.prompt },
+    block: { label: request.blockLabel ?? "The prompt the agent receives:", text: request.prompt },
     confirmLabel: REVIEW_CONFIRM_LABEL,
     cancelLabel: REVIEW_CANCEL_LABEL,
     // `danger` for its second effect rather than its first: it keeps
