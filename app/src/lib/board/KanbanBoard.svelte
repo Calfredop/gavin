@@ -8,7 +8,7 @@
   import KanbanDragPreview from "$lib/board/KanbanDragPreview.svelte";
   import { gavinTrees } from "$lib/gavinState";
   import { mergePlanCards, type CardView } from "$lib/planBoard";
-  import { planCommitFromMerged } from "$lib/planDrop";
+  import { planCommitFromMerged } from "$lib/files/planDrop";
   import { runCard, resumeCard, developCard, sendToMainAgent } from "$lib/cards/cardRunActions";
   import { layoutState, daemonCompat } from "$lib/layoutState";
   import { columnDeletionPlan, deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cards/cardDelete";
@@ -23,15 +23,15 @@
   import { defaultComposeStatus } from "$lib/cards/cardCompose";
   import { attachBoardDrag } from "$lib/board/kanbanDragGlue";
   import BoardSelectionBar from "$lib/board/BoardSelectionBar.svelte";
-  import ArchiveSelectionBar from "$lib/ArchiveSelectionBar.svelte";
+  import ArchiveSelectionBar from "$lib/files/ArchiveSelectionBar.svelte";
   import { boardSelection, selectedCards, toggleCardSelected, clearBoardSelection } from "$lib/board/boardSelection";
   import { dragState, buildColumnSlots, type ActiveDrag } from "$lib/board/kanbanDrag";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { Archive } from "@lucide/svelte";
-  import ArchiveGrid from "$lib/ArchiveGrid.svelte";
-  import ArchiveDeleteButton from "$lib/ArchiveDeleteButton.svelte";
-  import { archiveView } from "$lib/archive";
+  import ArchiveGrid from "$lib/files/ArchiveGrid.svelte";
+  import ArchiveDeleteButton from "$lib/files/ArchiveDeleteButton.svelte";
+  import { archiveView } from "$lib/files/archive";
   import {
     archivePurgeLines,
     archivePurgeTitle,
@@ -40,8 +40,8 @@
     SELECTION_SUBJECT,
     undatedCards,
     type AgeBucket,
-  } from "$lib/archiveDelete";
-  import { executeUnarchive } from "$lib/archiveActions";
+  } from "$lib/files/archiveDelete";
+  import { executeUnarchive } from "$lib/files/archiveActions";
   import { featureBlockedReason } from "$lib/daemonCompat";
   import { filterBoard, AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
   import { isSearching } from "$lib/search";

@@ -16,7 +16,7 @@
   // is what makes that safe while the card's agent is alive in the first
   // column.
   import GitDiffUnified from "$lib/GitDiffUnified.svelte";
-  import FileEditor from "$lib/FileEditor.svelte";
+  import FileEditor from "$lib/files/FileEditor.svelte";
   import { toUnifiedRows } from "$lib/diffRows";
   import { LARGE_HUNK_LINES, splitPath } from "$lib/git";
   import type { FileDiff } from "$lib/git";

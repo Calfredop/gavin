@@ -2,14 +2,14 @@
   import Modal from "$lib/Modal.svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import DOMPurify from "dompurify";
-  import { renderMarkdown } from "$lib/markdown";
+  import { renderMarkdown } from "$lib/files/markdown";
   import { pickPath } from "$lib/picker";
   import type { CardView } from "$lib/planBoard";
   import type { Column, Label, Priority } from "$lib/board/kanban";
   import { isArchivedCard, slugStatus } from "$lib/planBoard";
   import { childCards, parentCard } from "$lib/cards/cardRelations";
   import { parseChecklist, stripFrontmatter, type ChecklistItem } from "$lib/cards/planChecklist";
-  import { requestedExplorerFile, slugFileName } from "$lib/planExplorer";
+  import { requestedExplorerFile, slugFileName } from "$lib/files/planExplorer";
   import { patchPlanField, patchPlanCreated, patchPlanPath } from "$lib/gavinState";
   import type { PlanFileInfo } from "$lib/gavin";
   import {
@@ -43,7 +43,7 @@
     type AttachmentStatus,
   } from "$lib/cards/attachments";
   import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "$lib/autoCommit";
-  import { isViewableInApp } from "$lib/fileTypes";
+  import { isViewableInApp } from "$lib/files/fileTypes";
   import { ChevronDown, ChevronRight, Lock, SquareArrowOutUpRight } from "@lucide/svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import {
@@ -88,7 +88,7 @@
   import { deletionPlanFor, executeDeletion } from "$lib/cards/cardDelete";
   import { grantForAnsweredPrompt } from "$lib/confirmGate";
   import { breakOutChildren, guardCompletion, subjectFromCard } from "$lib/cards/cardCompletion";
-  import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "$lib/archiveActions";
+  import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "$lib/files/archiveActions";
   import { featureBlockedReason } from "$lib/daemonCompat";
   import { interruptedCardNote } from "$lib/sessions/orphan";
   import { endSessionOrphan } from "$lib/sessions/orphanActions";

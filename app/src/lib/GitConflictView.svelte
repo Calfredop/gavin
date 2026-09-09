@@ -3,7 +3,7 @@
   import { ChevronUp, ChevronDown, Save, Check, Undo2, Wrench, Columns3 } from "@lucide/svelte";
   import { gitStore, saveConflict, markResolved, resolveWhole, restoreConflict, openMergeTool } from "$lib/gitState";
   import { parseConflicts, applyChoice, hasMarkers, locateRegion, splitEol, joinEol, type Choice, type ConflictBlock } from "$lib/conflictMarkers";
-  import { createEditor, type EditorHandle } from "$lib/codeMirror";
+  import { createEditor, type EditorHandle } from "$lib/files/codeMirror";
   import { themeState } from "$lib/ui/themeState.svelte";
   import { createRegionDecorations, type Region, type RegionDecorations } from "$lib/mergeDecorations";
   import { tooltip } from "$lib/tooltip";

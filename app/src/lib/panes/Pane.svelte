@@ -3,7 +3,7 @@
   import { paneLeadsWindow, paneOwnsActions, type LayoutNode } from "$lib/panes/layout";
   import type { CardTab } from "$lib/gavin";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
-  import FileViewerPane from "$lib/FileViewerPane.svelte";
+  import FileViewerPane from "$lib/files/FileViewerPane.svelte";
   import BoardPane from "$lib/board/BoardPane.svelte";
   import CardTabPane from "$lib/cards/CardTabPane.svelte";
   import FollowUpQueuePane from "$lib/FollowUpQueuePane.svelte";
@@ -34,7 +34,7 @@
   import { confirmTabClose, confirmPaneClose } from "$lib/confirmClose";
   import { restoredBadge, type RestoredBadge } from "$lib/sessions/orphan";
   import { endSessionOrphan } from "$lib/sessions/orphanActions";
-  import { dirtyPaths } from "$lib/fileEditing";
+  import { dirtyPaths } from "$lib/files/fileEditing";
   import { showAlert } from "$lib/dialog";
   import { openContextMenuFromEvent } from "$lib/contextMenu";
   import { buildTabMenuEntries } from "$lib/panes/tabMenu";

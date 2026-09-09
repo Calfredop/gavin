@@ -3,7 +3,7 @@
   import BoardCard from "$lib/board/BoardCard.svelte";
   import type { Label } from "$lib/board/kanban";
   import { dragState, dropHold, buildDisplaySlots } from "$lib/board/kanbanDrag";
-  import { AUTO_COLUMN_PREFIX } from "$lib/planDrop";
+  import { AUTO_COLUMN_PREFIX } from "$lib/files/planDrop";
   import { tooltip } from "$lib/tooltip";
   import { flip } from "svelte/animate";
 

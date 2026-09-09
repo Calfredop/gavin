@@ -34,7 +34,7 @@
   import { layoutState, daemonCompat } from "$lib/layoutState";
   import { featureBlockedReason } from "$lib/daemonCompat";
   import { estimateFor, launchGateVerdict } from "$lib/launchQueue";
-  import { executeArchive, ARCHIVE_CANCELLED } from "$lib/archiveActions";
+  import { executeArchive, ARCHIVE_CANCELLED } from "$lib/files/archiveActions";
   import {
     cardIndex,
     doneColumn,

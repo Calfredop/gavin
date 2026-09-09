@@ -14,8 +14,8 @@
 
 import { matchesFields, queryTokens } from "$lib/search";
 import { slugStatus } from "$lib/planBoard";
-import { isCardGroup } from "$lib/planExplorer";
-import type { ExplorerContextNode, ExplorerFile, ExplorerGroupNode } from "$lib/planExplorer";
+import { isCardGroup } from "$lib/files/planExplorer";
+import type { ExplorerContextNode, ExplorerFile, ExplorerGroupNode } from "$lib/files/planExplorer";
 import type { Orchestration } from "$lib/orchestration";
 
 /// The "no facet set" sentinel for both dropdowns.

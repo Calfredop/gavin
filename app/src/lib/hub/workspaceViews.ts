@@ -7,10 +7,10 @@ import KanbanBoard from "$lib/board/KanbanBoard.svelte";
 import OrchestrationHubView from "$lib/OrchestrationHubView.svelte";
 import WorkspaceToolsHubView from "$lib/WorkspaceToolsHubView.svelte";
 import ReviewHubView from "$lib/review/ReviewHubView.svelte";
-import PrdHubView from "$lib/PrdHubView.svelte";
-import AgentFileHubView from "$lib/AgentFileHubView.svelte";
-import PlanExplorerHubView from "$lib/PlanExplorerHubView.svelte";
-import FilesHubView from "$lib/FilesHubView.svelte";
+import PrdHubView from "$lib/files/PrdHubView.svelte";
+import AgentFileHubView from "$lib/files/AgentFileHubView.svelte";
+import PlanExplorerHubView from "$lib/files/PlanExplorerHubView.svelte";
+import FilesHubView from "$lib/files/FilesHubView.svelte";
 import {
   HUB_VIEW_META,
   NO_HUB_TAB_PREFS,

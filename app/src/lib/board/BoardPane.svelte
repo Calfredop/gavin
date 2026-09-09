@@ -8,7 +8,7 @@
   import KanbanDragPreview from "$lib/board/KanbanDragPreview.svelte";
   import CardDetailModal from "$lib/cards/CardDetailModal.svelte";
   import CardComposeModal from "$lib/cards/CardComposeModal.svelte";
-  import { planCommitFromMerged } from "$lib/planDrop";
+  import { planCommitFromMerged } from "$lib/files/planDrop";
   import { runCard, resumeCard, developCard, sendToMainAgent } from "$lib/cards/cardRunActions";
   import { layoutState } from "$lib/layoutState";
   import { deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cards/cardDelete";

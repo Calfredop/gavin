@@ -23,8 +23,8 @@ import { buildRunCommand, mintConversationId, noPromptReason } from "$lib/cards/
 import { workspaceIdForSession } from "$lib/workspace";
 import { maybeNotifyStatusChange, parseSessionStatus, type SessionStatus } from "$lib/notifications";
 import { initGavinListeners, watchRootedWorkspaces, gavinTrees, worktreeSetups } from "$lib/gavinState";
-import { followRenamedContext } from "$lib/planExplorer";
-import { retargetPath } from "$lib/fileTree";
+import { followRenamedContext } from "$lib/files/planExplorer";
+import { retargetPath } from "$lib/files/fileTree";
 import {
   normalizeColor,
   resolveAgentConfig,

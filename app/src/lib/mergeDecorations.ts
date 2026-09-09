@@ -3,7 +3,7 @@
 // pane — inline choice buttons. Regions are pushed through a StateEffect so
 // the same editor instance is re-decorated on every document change.
 
-import type { EditorHandle } from "$lib/codeMirror";
+import type { EditorHandle } from "$lib/files/codeMirror";
 import type { Decoration as CmDecoration } from "@codemirror/view";
 import type { Range } from "@codemirror/state";
 

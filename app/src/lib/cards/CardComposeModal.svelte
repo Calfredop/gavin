@@ -24,7 +24,7 @@
   import type { PlanFileInfo } from "$lib/gavin";
   import { gavinTrees, patchPlanCreated } from "$lib/gavinState";
   import { orchestrations, sendCardToRailAction } from "$lib/orchestrationState";
-  import { placeCardAtColumnEnd } from "$lib/planDrop";
+  import { placeCardAtColumnEnd } from "$lib/files/planDrop";
   import type { MergedBoard } from "$lib/board/boardSearch";
   import {
     agentActionToApply,

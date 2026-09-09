@@ -7,7 +7,7 @@ import { formatAttachments } from "$lib/cards/attachments";
 import { autoCommitAppliesTo, setAutoCommitInBody } from "$lib/autoCommit";
 import { parseComplexity } from "$lib/cards/complexity";
 import { translateDropIndex } from "$lib/board/pageBoard";
-import { slugFileName } from "$lib/planExplorer";
+import { slugFileName } from "$lib/files/planExplorer";
 import { slugStatus, type CardView } from "$lib/planBoard";
 import { formatChord, matchesChord, type Chord, type ChordEvent } from "$lib/shortcuts";
 import type { MergedBoard } from "$lib/board/boardSearch";

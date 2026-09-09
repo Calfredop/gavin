@@ -8,7 +8,7 @@ import * as backend from "$lib/backend";
 import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
 import { layoutState, daemonCompat, switchWorkspaceView } from "$lib/layoutState";
 import { patchPlanField } from "$lib/gavinState";
-import { requestedExplorerFile } from "$lib/planExplorer";
+import { requestedExplorerFile } from "$lib/files/planExplorer";
 import { guardCompletion, subjectFromCard } from "$lib/cards/cardCompletion";
 import {
   jumpToBoundSession,
@@ -28,7 +28,7 @@ import {
   sendCardToRailAction,
   removeCardFromRailAction,
 } from "$lib/orchestrationState";
-import { executeArchive, executeUnarchive } from "$lib/archiveActions";
+import { executeArchive, executeUnarchive } from "$lib/files/archiveActions";
 import { bestOfNRequest, bestOfNRuns, runForCard } from "$lib/cards/bestOfNState";
 import { featureBlockedReason } from "$lib/daemonCompat";
 import { cancelLaunch, launchBlockedReason, queuedForCard } from "$lib/launchQueue";

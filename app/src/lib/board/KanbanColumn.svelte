@@ -29,7 +29,7 @@
   import { grantForAnsweredPrompt } from "$lib/confirmGate";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import { openContextMenuFromEvent, type ContextMenuEntry } from "$lib/contextMenu";
-  import { executeArchive, isDoneColumn } from "$lib/archiveActions";
+  import { executeArchive, isDoneColumn } from "$lib/files/archiveActions";
   import { featureBlockedReason } from "$lib/daemonCompat";
   import { daemonCompat } from "$lib/layoutState";
 
