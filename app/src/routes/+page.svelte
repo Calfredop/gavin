@@ -56,7 +56,7 @@
   import DaemonRequestErrorBanner from "$lib/shell/DaemonRequestErrorBanner.svelte";
   import MemoryPressureBanner from "$lib/agents/MemoryPressureBanner.svelte";
   import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/git/gitState";
-  import { hubViewBusy, hubViewAttention, moveHubViewId } from "$lib/hub/hubViewMeta";
+  import { drawableHubViewId, hubViewBusy, hubViewAttention, moveHubViewId } from "$lib/hub/hubViewMeta";
   import {
     hubTabOrderByWorkspace,
     hubTabPrefsFor,
@@ -67,7 +67,7 @@
     setWorkspaceHubTabsHidden,
     toggleHubTabsUnlocked,
   } from "$lib/hub/hubTabPrefs";
-  import { getDragKind, getDragPayload, setDragPayload } from "$lib/panes/dragDrop";
+  import { computeReorderPositionX, getDragKind, getDragPayload, setDragPayload } from "$lib/panes/dragDrop";
   import { Lock, LockOpen } from "@lucide/svelte";
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestration/orchestrationState";
   import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration/orchestration";
@@ -75,6 +75,7 @@
   import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
   import { windowDrag } from "$lib/shell/windowDrag";
   import { isMainWindow } from "$lib/shell/appWindowState";
+  import { needsChromeRow as chromeRowFor } from "$lib/shell/windowChrome";
 
   let closeConfirmed = false;
   // The prompt is a DOM modal now, so the window can keep sending close
@@ -88,17 +89,17 @@
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
   const activeView = $derived(activeWorkspace ? getActiveView(activeWorkspace) : "terminal");
-  // Whether this window has to draw a header row of its own. These are
-  // the branches that have none -- the two connection states, the app
-  // hub, a window with no workspace, and a workspace whose page has no
-  // panes yet -- and a window's top edge has two jobs it cannot go
-  // without: leaving room for whatever of the window's corner overhangs
-  // a collapsed rail, and offering somewhere to grab the window.
+  // Whether this window has to draw a header row of its own
+  // (windowChrome.ts, which says which branches have none and why a
+  // window's top edge cannot go without one).
   const needsChromeRow = $derived(
-    $layoutState.status !== "ready" ||
-      $appHubOpen ||
-      !activeWorkspace ||
-      (activeView === "terminal" && getActiveTree($layoutState) === null)
+    chromeRowFor({
+      status: $layoutState.status,
+      appHubOpen: $appHubOpen,
+      hasWorkspace: activeWorkspace !== null,
+      activeView,
+      hasPageTree: getActiveTree($layoutState) !== null,
+    })
   );
   // Not HUB_VIEWS directly: a view that edits files under the bound root
   // must never appear in a workspace that has no root.
@@ -122,18 +123,15 @@
   // is what the tabs and their ⌘-digit badges are counted from.
   const tabViews = $derived(tabStripHubViews(Boolean(activeWorkspace?.rootPath), hubTabPrefs));
   const settingsView = $derived(hubViews.find((v) => v.id === "settings") ?? null);
-  // Which views this row can point AT: the tabs it draws, plus the ones
-  // reached by a button. A workspace parked on a tab that has since been
-  // hidden would otherwise keep rendering it with nothing in the row
-  // underlined -- reachable until the human clicked away, and then not
-  // at all. It falls back to the first tab instead.
-  const drawableViews = $derived(
-    new Set([...tabViews.map((v) => v.id), ...hubViews.filter((v) => v.viaAction).map((v) => v.id)])
+  // Which view this row actually renders. A workspace parked on a tab
+  // that has since been hidden falls back to the first tab the strip
+  // draws -- the same answer its Hub button lands on, from the same
+  // function (hubViewMeta's drawableHubViewId), so the two cannot point
+  // at different tabs.
+  const drawableView = $derived(
+    drawableHubViewId(activeView, Boolean(activeWorkspace?.rootPath), hubTabPrefs)
   );
-  const activeViewDef = $derived(
-    (drawableViews.has(activeView) ? hubViews.find((v) => v.id === activeView) : undefined) ??
-      tabViews[0]
-  );
+  const activeViewDef = $derived(hubViews.find((v) => v.id === drawableView) ?? tabViews[0]);
   // Resolved once: the agent-file tab's label, and (via normalizeColor)
   // the accent every tab indicator in this workspace reads.
   const activeAgent = $derived(
@@ -193,8 +191,7 @@
   }
 
   function dropSide(event: DragEvent): "before" | "after" {
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    return (event.clientX - rect.left) / rect.width < 0.5 ? "before" : "after";
+    return computeReorderPositionX((event.currentTarget as HTMLElement).getBoundingClientRect(), event.clientX);
   }
 
   function clearHubTabDrop(): void {

@@ -4,6 +4,8 @@ import {
   visibleHubViewIds,
   tabStripHubViewIds,
   resolveHubView,
+  drawableHubViewId,
+  keepableHubViewIds,
   hubViewBusy,
   hubViewAttention,
   orderableHubViewIds,
@@ -258,5 +260,56 @@ describe("hubViewAttention", () => {
     const activity = { committing: true, railsWantingAttention: false };
     expect(hubViewBusy("git", activity)).toBe(true);
     expect(hubViewAttention("git", activity)).toBe(false);
+  });
+});
+
+describe("drawableHubViewId", () => {
+  const prefs = { order: null, hidden: null };
+
+  it("keeps the view the workspace is parked on", () => {
+    expect(drawableHubViewId("kanban", true, prefs)).toBe("kanban");
+  });
+
+  // Reached by the gear rather than by a tab, and kept: hiding cannot
+  // reach a view that has no tab of its own.
+  it("keeps a view reached by a button rather than by a tab", () => {
+    expect(drawableHubViewId("settings", true, prefs)).toBe("settings");
+  });
+
+  // The fallback this exists for: leaving a hidden view rendered puts a
+  // page on screen with nothing underlined in the row above it.
+  it("falls back to the first tab when the parked view is hidden", () => {
+    const hidden = { order: null, hidden: ["kanban"] };
+    expect(drawableHubViewId("kanban", true, hidden)).toBe(tabStripHubViewIds(true, hidden)[0]);
+  });
+
+  // The same fallback by the other route: unbinding the root takes a
+  // root-only view out of the offer entirely.
+  it("falls back for a view this workspace can no longer offer", () => {
+    expect(drawableHubViewId("git", false, prefs)).toBe(tabStripHubViewIds(false, prefs)[0]);
+  });
+
+  it("falls back for an unknown id and for none at all", () => {
+    expect(drawableHubViewId("terminal", true, prefs)).toBe(tabStripHubViewIds(true, prefs)[0]);
+    expect(drawableHubViewId("", true, prefs)).toBe(tabStripHubViewIds(true, prefs)[0]);
+  });
+});
+
+describe("keepableHubViewIds", () => {
+  const prefs = { order: null, hidden: null };
+
+  it("holds every tab the strip draws", () => {
+    const keepable = keepableHubViewIds(true, prefs);
+    for (const id of tabStripHubViewIds(true, prefs)) expect(keepable.has(id)).toBe(true);
+  });
+
+  it("holds the views reached by a button too", () => {
+    expect(keepableHubViewIds(true, prefs).has("settings")).toBe(true);
+    expect(tabStripHubViewIds(true, prefs)).not.toContain("settings");
+  });
+
+  it("drops a hidden tab, and a view the workspace cannot offer", () => {
+    expect(keepableHubViewIds(true, { order: null, hidden: ["kanban"] }).has("kanban")).toBe(false);
+    expect(keepableHubViewIds(false, prefs).has("git")).toBe(false);
   });
 });

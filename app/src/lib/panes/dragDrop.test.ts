@@ -5,6 +5,7 @@ import {
   getDragPayload,
   computeDropZone,
   computeReorderPosition,
+  computeReorderPositionX,
   computeTabInsertion,
   reorderIndexWithin,
   type DragPayload,
@@ -150,5 +151,21 @@ describe("reorderIndexWithin", () => {
   it("is a no-op on either side of the tab's own place", () => {
     expect(reorderIndexWithin(1, 1)).toBe(1);
     expect(reorderIndexWithin(2, 1)).toBe(1);
+  });
+});
+
+describe("computeReorderPositionX", () => {
+  const rect = { left: 100, width: 40 } as DOMRect;
+
+  it("splits a tab down its middle", () => {
+    expect(computeReorderPositionX(rect, 105)).toBe("before");
+    expect(computeReorderPositionX(rect, 135)).toBe("after");
+  });
+
+  // Exactly on the midpoint reads as `after`, matching the vertical
+  // split -- so the two axes cannot disagree about the boundary.
+  it("puts the midpoint itself after, like the vertical split", () => {
+    expect(computeReorderPositionX(rect, 120)).toBe("after");
+    expect(computeReorderPosition({ top: 0, height: 40 } as DOMRect, 20)).toBe("after");
   });
 });

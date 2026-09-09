@@ -106,9 +106,12 @@ describe("the tab row", () => {
 
   it("marks the tab on screen rather than the one merely remembered", () => {
     // A tab hidden while the workspace was parked on it would otherwise
-    // keep rendering with nothing in the row underlined.
+    // keep rendering with nothing in the row underlined. The fallback is
+    // drawableHubViewId's, which is also where the Hub button lands --
+    // so the tab that gets marked and the tab a click arrives at cannot
+    // be two different tabs.
     expect(row).toContain("class:active={activeViewDef?.id === view.id}");
-    expect(row).toContain("drawableViews");
+    expect(row).toContain("drawableHubViewId(activeView,");
   });
 });
 

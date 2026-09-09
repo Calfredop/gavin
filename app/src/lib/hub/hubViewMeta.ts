@@ -209,11 +209,36 @@ export function hubViewAttention(viewId: string, activity: HubViewActivity): boo
 /// remembered tab is no longer offered (its root was unbound, or the
 /// human hid the tab) -- the first tab its strip does draw.
 export function resolveHubView(ws: Workspace, prefs: HubTabPrefs = NO_HUB_TAB_PREFS): string {
-  const strip = tabStripHubViewIds(Boolean(ws.rootPath), prefs);
-  // Settings is kept as remembered even though it is not in the strip:
-  // hiding cannot reach a view that has no tab, so landing back on the
-  // gear is landing back somewhere that is still there.
-  const offered = visibleHubViewIds(Boolean(ws.rootPath));
-  const keepable = new Set([...strip, ...offered.filter((id) => VIA_ACTION_IDS.has(id))]);
-  return ws.hubView && keepable.has(ws.hubView) ? ws.hubView : strip[0];
+  return drawableHubViewId(ws.hubView ?? "", Boolean(ws.rootPath), prefs);
+}
+
+/// Every view a workspace may be PARKED on: the tabs its strip draws,
+/// plus the ones reached by a button in the row's actions.
+///
+/// Settings is kept even though it is not in the strip -- hiding cannot
+/// reach a view that has no tab, so landing back on the gear is landing
+/// back somewhere that is still there.
+export function keepableHubViewIds(hasRoot: boolean, prefs: HubTabPrefs = NO_HUB_TAB_PREFS): Set<string> {
+  const strip = tabStripHubViewIds(hasRoot, prefs);
+  const offered = visibleHubViewIds(hasRoot);
+  return new Set([...strip, ...offered.filter((id) => VIA_ACTION_IDS.has(id))]);
+}
+
+/// The view to actually RENDER for a workspace parked on `viewId`,
+/// falling back to the first tab its strip draws.
+///
+/// One function for two questions that have to agree: where the Hub
+/// button lands (resolveHubView, just above) and what the strip draws
+/// once it is there. A workspace remembers the tab it was last on, and
+/// that tab can stop being drawable under it -- the root was unbound, or
+/// the human hid it. Rendering it anyway leaves a view on screen with
+/// nothing underlined in the row above it: reachable until the first
+/// click elsewhere, and unreachable after.
+export function drawableHubViewId(
+  viewId: string,
+  hasRoot: boolean,
+  prefs: HubTabPrefs = NO_HUB_TAB_PREFS
+): string {
+  if (viewId && keepableHubViewIds(hasRoot, prefs).has(viewId)) return viewId;
+  return tabStripHubViewIds(hasRoot, prefs)[0];
 }

@@ -134,3 +134,13 @@ export function computeTabInsertion(
 export function reorderIndexWithin(insertionIndex: number, fromIndex: number): number {
   return insertionIndex > fromIndex ? insertionIndex - 1 : insertionIndex;
 }
+
+/// The same before/after split across a row rather than down a list --
+/// what a hub tab strip needs, where the tabs sit side by side.
+///
+/// Its own function rather than a flag on computeReorderPosition: which
+/// axis a strip reorders along is a fact about that strip, and a boolean
+/// at every call site is a fact the reader has to decode.
+export function computeReorderPositionX(rect: DOMRect, clientX: number): ReorderPosition {
+  return (clientX - rect.left) / rect.width < 0.5 ? "before" : "after";
+}
