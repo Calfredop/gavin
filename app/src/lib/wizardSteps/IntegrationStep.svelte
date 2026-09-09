@@ -1,6 +1,15 @@
 <script lang="ts">
-  import { layoutState } from "./../layoutState";
+  import {
+    agentModelDefaultsStore,
+    agentProfilesStore,
+    layoutState,
+    recordMcpForeignChoice,
+    trustedAgentConfigs,
+  } from "./../layoutState";
+  import { resolveAgentConfig } from "./../settings";
   import * as backend from "./../backend";
+  import { foreignMcpServersHash, runIntegration } from "./../mcpServerTrust";
+  import McpForeignChooser from "./../McpForeignChooser.svelte";
 
   interface Props {
     workspaceId: string;
@@ -9,17 +18,50 @@
   let { workspaceId, onDone }: Props = $props();
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
+  // The file gavin's marker block goes into. Through the same resolution
+  // every other panel uses, so an unapproved `[agent] file` cannot make
+  // this step write somewhere the Settings panel does not name.
+  const agentFile = $derived(
+    resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
+      .file
+  );
 
   let result = $state<backend.IntegrationResult | null>(null);
   let error = $state<string | null>(null);
   let running = $state(false);
+  // Set instead of `result` when the target MCP config names servers
+  // gavin did not add and no recorded choice answers this exact set
+  // (AG-07) -- the run pauses here until the human picks.
+  let pendingForeign = $state<backend.McpForeignServers | null>(null);
 
   async function run(): Promise<void> {
     if (!ws?.rootPath) return;
     running = true;
     error = null;
+    pendingForeign = null;
     try {
-      result = await backend.setupAgentIntegration(ws.rootPath);
+      const r = await runIntegration(ws.rootPath, agentFile, ws.mcpForeignServersChoice);
+      if (r.mcpForeign) {
+        pendingForeign = r.mcpForeign;
+      } else {
+        result = r;
+      }
+    } catch (e) {
+      error = String(e);
+    }
+    running = false;
+  }
+
+  async function chooseMcp(action: "keep" | "isolate"): Promise<void> {
+    if (!pendingForeign || !ws?.rootPath) return;
+    running = true;
+    try {
+      await recordMcpForeignChoice(workspaceId, {
+        hash: foreignMcpServersHash(pendingForeign.servers),
+        action,
+      });
+      result = await backend.setupAgentIntegration(ws.rootPath, agentFile, action);
+      pendingForeign = null;
     } catch (e) {
       error = String(e);
     }
@@ -37,7 +79,15 @@
   markers is never touched.
 </p>
 
-{#if result}
+{#if pendingForeign}
+  <McpForeignChooser
+    servers={pendingForeign.servers}
+    isolateRefusal={pendingForeign.isolateRefusal}
+    busy={running}
+    onKeep={() => void chooseMcp("keep")}
+    onIsolate={() => void chooseMcp("isolate")}
+  />
+{:else if result}
   <ul class="results">
     {#each result.written as path (path)}
       <li class="ok">✓ {short(path)}</li>
@@ -53,7 +103,7 @@
 <div class="actions">
   {#if result}
     <button type="button" onclick={onDone}>Continue →</button>
-  {:else}
+  {:else if !pendingForeign}
     <button type="button" disabled={running} onclick={() => void run()}>
       {running ? "Writing…" : "Set up integration"}
     </button>

@@ -30,6 +30,12 @@
     // a second "are you sure": the title still has to describe what the
     // confirm button does with the box left alone.
     check?: { label: string; default?: boolean } | null;
+    // Text the reader has to see byte for byte, in a scrollable
+    // monospace box under the lines. For the first-Run card review,
+    // where the whole question is "is this the prompt you meant to
+    // send" -- a rendered or summarised form would defeat it, so this
+    // is plain text and stays plain text.
+    block?: { label: string; text: string } | null;
     choices: Choice[];
     // The dismissing button's word. "Cancel" reads right when the other
     // answer is the action, but some prompts have two actions and no
@@ -38,7 +44,16 @@
     cancelLabel?: string;
     onCancel: () => void;
   }
-  let { title, lines, picker = null, check = null, choices, cancelLabel = "Cancel", onCancel }: Props = $props();
+  let {
+    title,
+    lines,
+    picker = null,
+    check = null,
+    block = null,
+    choices,
+    cancelLabel = "Cancel",
+    onCancel,
+  }: Props = $props();
 
   let picked = $state<string | null>(null);
   let checked = $state(check?.default ?? false);
@@ -96,6 +111,10 @@
       </select>
     </label>
   {/if}
+  {#if block}
+    <div class="block-label">{block.label}</div>
+    <pre class="block">{block.text}</pre>
+  {/if}
   {#if check}
     <label class="check"><input type="checkbox" bind:checked /> {check.label}</label>
   {/if}
@@ -131,6 +150,30 @@
   }
   .lines li {
     margin-bottom: 4px;
+  }
+  .block-label {
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+  }
+  /* Scrolls in BOTH directions and wraps nothing: a prompt is read as
+     the agent gets it, and a soft-wrapped line hides where the real
+     newlines are. Capped so the buttons stay on screen for a long body
+     -- the panel's own 80vh cap would otherwise push them off. */
+  .block {
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--text);
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px;
+    margin: 0 0 14px;
+    max-height: 40vh;
+    overflow: auto;
+    white-space: pre;
+    tab-size: 2;
   }
   .picker {
     display: flex;

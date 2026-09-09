@@ -321,6 +321,70 @@ pub struct Workspace {
     /// THIS person has seen a question is not a fact about the project.
     #[serde(default)]
     pub git_tracking_asked: bool,
+    /// The digest of this workspace's `.gavin-root/config.toml` execution
+    /// keys -- `[agent] command`, `[agent] file`, `[worktree] setup` --
+    /// as approved by the human (the frontend's `workspaceTrust.ts` owns
+    /// the hash and the comparison). Absent means nothing approved, which
+    /// is where a freshly cloned repo starts and where a workspace naming
+    /// none of those keys stays.
+    ///
+    /// config.toml ships with the repository, and those three keys name
+    /// what gavin RUNS rather than choosing among rows gavin already
+    /// verified. Trusting them because they are on disk trusts whoever
+    /// wrote the repo; this records that a person looked at the values.
+    ///
+    /// Machine-local, like the rest here and more pointedly: a copy of
+    /// this in the repo would let the repo vouch for itself.
+    /// `skip_serializing_if` keeps the key out of config.json for the
+    /// ordinary case of a workspace with nothing to approve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_config_hash: Option<String>,
+    /// The human's recorded answer to a distinct SET of foreign MCP
+    /// servers `setup_agent_integration` found already declared in this
+    /// workspace's target MCP config file (AG-07) -- "keep" (merge
+    /// gavin's entry beside them) or "isolate" (refused today, see
+    /// `agent_setup::isolate_refusal`) -- and the digest of exactly that
+    /// set (`mcpServerTrust.ts` owns the hash and the comparison).
+    ///
+    /// Same shape and reason as `trusted_config_hash` one field up: a
+    /// changed set -- an edited `mcp_file`, a `git pull`, a colleague's
+    /// change to the target file -- changes the digest, and the question
+    /// is asked again rather than a decision nobody was shown being
+    /// replayed. Machine-local for the same reason too: a copy in the
+    /// repo would let the repo vouch for itself.
+    /// `skip_serializing_if` keeps the key out of config.json for the
+    /// ordinary case of a workspace with nothing foreign to decide on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_foreign_servers_choice: Option<McpForeignServersChoice>,
+    /// Card path -> the digest of the card CONTENT the human has read
+    /// before letting an agent have it (the frontend's `cardReview.ts`
+    /// owns the hash and the comparison; AG-01/AG-02).
+    ///
+    /// A card's body IS the prompt a launch hands an agent, and the board
+    /// shows only its title -- so `.gavin-root/plans/*.md` arriving with a
+    /// clone would otherwise reach an agent unread on the first Run. This
+    /// records that a person looked at exactly this content. A body that
+    /// changes stops matching and is asked about again.
+    ///
+    /// Machine-local, like `trusted_config_hash` above and for the same
+    /// reason: a copy of it in the repository would let the repository
+    /// vouch for its own cards. `skip_serializing_if` keeps the key out of
+    /// config.json until something has actually been reviewed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_cards: Option<std::collections::HashMap<String, String>>,
+}
+
+/// One recorded decision on `Workspace::mcp_foreign_servers_choice`.
+/// `action` is "keep" or "isolate", passed straight through to
+/// `setup_agent_integration`'s `mcp_foreign_choice` -- an unrecognised
+/// value there is treated as undecided (`McpForeignChoice::from_str`),
+/// so a value written by a newer frontend never makes an older one act
+/// on a choice it does not understand.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpForeignServersChoice {
+    pub hash: String,
+    pub action: String,
 }
 
 fn default_true() -> bool {
@@ -741,6 +805,9 @@ mod tests {
             pinned_at: None,
             complexity_agents: HashMap::new(),
             git_tracking_asked: false,
+            trusted_config_hash: None,
+            mcp_foreign_servers_choice: None,
+            reviewed_cards: None,
         }
     }
 

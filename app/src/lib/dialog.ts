@@ -40,6 +40,24 @@ export interface ConfirmAnswer {
   checked: boolean;
 }
 
+/// A block of text the prompt shows VERBATIM, in a scrollable
+/// monospace box under the consequence lines.
+///
+/// It exists for the one kind of question where a paraphrase is the
+/// whole failure: the first-Run card review (`cardReview.ts`) asks a
+/// human to agree to a prompt an agent is about to be handed, and a
+/// summary of that prompt would be a second description to keep in step
+/// with the thing actually sent. Every other prompt in the app says what
+/// will happen in `lines`, and should keep doing so -- this is not a
+/// place to put prose.
+export interface ConfirmBlock {
+  /// What the box is, above it. One short line.
+  label: string;
+  /// The text, exactly as it will be used. Never rendered as markdown
+  /// or HTML: an HTML comment in it is content the reader has to SEE.
+  text: string;
+}
+
 export interface ConfirmOptions {
   /// The question, as a question -- the modal's heading.
   title: string;
@@ -59,6 +77,8 @@ export interface ConfirmOptions {
   /// reads its value back; `askConfirm` still resolves to a plain
   /// boolean, so no existing call site has to care.
   check?: ConfirmCheck;
+  /// Text the reader must be able to see byte for byte. See ConfirmBlock.
+  block?: ConfirmBlock;
 }
 
 export interface AlertOptions {
@@ -79,6 +99,7 @@ export interface DialogRequest {
   cancelLabel: string;
   danger: boolean;
   check: ConfirmCheck | null;
+  block: ConfirmBlock | null;
 }
 
 interface Pending {
@@ -115,6 +136,7 @@ function confirmRequest(options: ConfirmOptions): DialogRequest {
     cancelLabel: options.cancelLabel ?? "Cancel",
     danger: options.danger ?? false,
     check: options.check ?? null,
+    block: options.block ?? null,
   };
 }
 
@@ -143,6 +165,7 @@ export async function showAlert(options: AlertOptions): Promise<void> {
     cancelLabel: options.dismissLabel ?? "OK",
     danger: false,
     check: null,
+    block: null,
   });
 }
 

@@ -2,6 +2,24 @@ use crate::proc::ProcessHandle;
 use protocol::QueuedInput;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::os::unix::fs::PermissionsExt;
+
+/// Tightens a database file to owner-only (0600), matching the socket
+/// beside it (`server::bind_server`) and the app-support directory around
+/// it (`main`). Same-user reading is the accepted boundary here (see
+/// `docs/security`), so this closes the one gap left: a `registry.sqlite`,
+/// `kanban.sqlite` or `orchestration.sqlite` created at the OS default
+/// (0644 under a typical umask) is readable by every other account on the
+/// machine.
+///
+/// Called on every open, not just the first that creates the file, and
+/// there is no on-disk marker for a file mode the way there is for a
+/// schema version -- so reasserting the mode unconditionally is the whole
+/// migration for a database written before this existed.
+pub fn secure_db_file(path: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
 
 /// The daemon's clock, in microseconds since the epoch.
 ///
@@ -242,6 +260,17 @@ impl Registry {
             // v21. Nullable rather than defaulted: no reason is exactly
             // what a session that has not failed has.
             "ALTER TABLE sessions ADD COLUMN failure_reason TEXT",
+            // v35: the SHA-256 hash (never the token) a session's
+            // GAVIN_SESSION_TOKEN maps to, so a `Hello` presenting that
+            // token can be resolved to this session's id and scope
+            // (`sec-fix-client-identity.md`). Nullable: every pre-v35 row,
+            // and every recovered bare shell, has no token -- and NULL is
+            // exactly "no token to match", which no lookup ever equals.
+            // Added here, NOT in the CREATE TABLE above: that no-ops
+            // against a database that already has the table, so a column
+            // only ever reaches an existing db through its own ALTER (the
+            // trap the pre_v* tests guard).
+            "ALTER TABLE sessions ADD COLUMN token_hash TEXT",
         ] {
             let _ = conn.execute(stmt, []);
         }
@@ -258,6 +287,7 @@ impl Registry {
              ON CONFLICT(key) DO UPDATE SET value = ?1",
             params![generation],
         )?;
+        secure_db_file(path)?;
         Ok(Self { conn, generation })
     }
 
@@ -291,6 +321,35 @@ impl Registry {
         Ok(())
     }
 
+    /// Records the hash of a session's token, written right after the row
+    /// is inserted (the token is minted in `create_session`). Separate
+    /// from `insert` so the secret's hash never has to travel through
+    /// `SessionRecord`, which is read back into `SessionSummary` and shown
+    /// to every client -- a token hash has no business there.
+    pub fn set_token_hash(&self, id: &str, token_hash: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET token_hash = ?1 WHERE id = ?2",
+            params![token_hash, id],
+        )?;
+        Ok(())
+    }
+
+    /// The session a token hash belongs to, or `None` if no live row
+    /// carries it. This is what turns a `Hello`'s session token into an
+    /// `agent` identity scoped to one session. A NULL `token_hash` (a
+    /// pre-v35 row, a recovered bare shell) never matches, because SQL
+    /// equality against NULL is never true.
+    pub fn session_id_for_token_hash(&self, token_hash: &str) -> anyhow::Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM sessions WHERE token_hash = ?1")?;
+        let mut rows = stmt.query_map(params![token_hash], |row| row.get::<_, String>(0))?;
+        match rows.next() {
+            Some(id) => Ok(Some(id?)),
+            None => Ok(None),
+        }
+    }
+
     /// Repoints a row at the process now sitting in its PTY.
     ///
     /// `recover` is the only caller that needs it: the row arrives
@@ -321,6 +380,25 @@ impl Registry {
             "UPDATE sessions SET orphan_pid = ?1, orphan_started_at_us = ?2 WHERE id = ?3",
             params![orphan.map(|p| p.pid as i64), orphan.map(|p| p.started_at_us), id],
         )?;
+        Ok(())
+    }
+
+    /// `end_orphan`'s write: clears the orphan record and reaps this
+    /// session's queued follow-ups together, in one transaction.
+    ///
+    /// Confirming the leftover process is gone is confirming the
+    /// conversation it belonged to is over -- a follow-up still held for
+    /// it can never be delivered into anything real, so letting it survive
+    /// this call would be the same plaintext-retention bug the orphan
+    /// clear is fixing, just one column over.
+    pub fn clear_orphan_and_reap_queue(&mut self, id: &str) -> anyhow::Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE sessions SET orphan_pid = NULL, orphan_started_at_us = NULL WHERE id = ?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM queued_inputs WHERE session_id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -688,6 +766,42 @@ mod tests {
         assert_eq!(registry.list().unwrap().len(), 0);
     }
 
+    fn mode_of(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn a_freshly_opened_database_is_owner_only() {
+        // R7: the socket beside it is 0600 (`bind_server`); the database
+        // must match rather than be readable by every other account on
+        // the machine.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+
+        Registry::open(&db_path).unwrap();
+
+        assert_eq!(mode_of(&db_path), 0o600);
+    }
+
+    #[test]
+    fn opening_a_database_already_at_0644_tightens_it_to_0600() {
+        // The upgrade path: a file this fix predates sits on disk at the
+        // OS default. There is no schema version for a file mode, so the
+        // only migration is reasserting it on every open.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY)").unwrap();
+        }
+        std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(mode_of(&db_path), 0o644, "the file must start out loose for this test to mean anything");
+
+        Registry::open(&db_path).unwrap();
+
+        assert_eq!(mode_of(&db_path), 0o600);
+    }
+
     #[test]
     fn registry_survives_reopen() {
         let dir = tempfile::tempdir().unwrap();
@@ -903,6 +1017,23 @@ mod tests {
 
         registry.set_orphan("s1", None).unwrap();
         assert_eq!(registry.get("s1").unwrap().unwrap().orphan, None);
+    }
+
+    #[test]
+    fn clear_orphan_and_reap_queue_clears_both_together() {
+        // R7: a follow-up queued for the conversation an orphan belonged
+        // to can never reach it once that orphan is confirmed gone -- the
+        // clear and the reap are one fact, not two calls that might drift.
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        registry.set_orphan("s1", Some(handle(4172, 999))).unwrap();
+        registry.queue_input("s1", "pasted while busy").unwrap();
+
+        registry.clear_orphan_and_reap_queue("s1").unwrap();
+
+        assert_eq!(registry.get("s1").unwrap().unwrap().orphan, None);
+        assert!(registry.queued_inputs_for("s1").unwrap().is_empty());
     }
 
     #[test]
@@ -1124,6 +1255,23 @@ mod tests {
     }
 
     #[test]
+    fn killing_a_session_leaves_no_queued_rows_behind() {
+        // R7: `KillSession` reaches this through `forget_session` ->
+        // `remove`, and is exactly the path a security review has to
+        // trust -- pasted text must not outlive the session it was typed
+        // for by sitting in the database under an id nothing hosts any
+        // more.
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry.insert(&test_record("s1")).unwrap();
+        registry.queue_input("s1", "pasted secret").unwrap();
+
+        registry.remove("s1").unwrap();
+
+        assert!(registry.queued_inputs().unwrap().is_empty());
+    }
+
+    #[test]
     fn a_queue_survives_the_registry_being_reopened() {
         // The whole reason the queue lives in the daemon: the human
         // queues a follow-up BECAUSE the agent will be busy a while, and
@@ -1171,6 +1319,48 @@ mod tests {
         registry.queue_input("old-1", "works on an old db").unwrap();
 
         assert_eq!(queue_texts(&registry, "old-1"), ["works on an old db"]);
+    }
+
+    #[test]
+    fn a_database_written_before_v35_gains_the_token_hash_column() {
+        // The CLAUDE.md trap: a column added only to CREATE TABLE IF NOT
+        // EXISTS never reaches an existing database, so `token_hash` has
+        // to be proved against a real pre-v35 db -- one whose sessions
+        // table predates the column -- not against the fresh tempdir the
+        // set/lookup test uses. Built with the OLD schema, then opened
+        // (which runs the ALTER), then the identity path is exercised
+        // end to end.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    workspace_path TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    command TEXT,
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    restored INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+                INSERT INTO sessions (id, workspace_path, cwd, command)
+                VALUES ('old-1', '/tmp/ws', '/tmp/ws', 'claude')",
+            )
+            .unwrap();
+        }
+
+        let registry = Registry::open(&db_path).unwrap();
+        // The pre-existing row has a NULL token_hash, so any lookup
+        // against it misses -- the absence reads as "no token", never as
+        // a match.
+        assert_eq!(registry.session_id_for_token_hash("deadbeef").unwrap(), None);
+        // And the new column is writable on the old row.
+        registry.set_token_hash("old-1", "deadbeef").unwrap();
+        assert_eq!(
+            registry.session_id_for_token_hash("deadbeef").unwrap().as_deref(),
+            Some("old-1")
+        );
     }
 
     #[test]

@@ -32,6 +32,18 @@ tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-os = "2"
 tauri-plugin-notification = "2"
+# The update channel (R6/SC-06). Registered conditionally in lib.rs --
+# its Config makes `pubkey` required, and tauri hands a missing
+# `plugins.updater` block to a plugin as JSON null, which fails to
+# deserialize and takes the whole app down at startup.
+tauri-plugin-updater = "2"
+# Already in the graph through tauri and the updater plugin; named here
+# because updater.rs parses the endpoint override with it.
+url = "2"
+# The same OS randomness tauri mints its own CSP nonces from -- used
+# for the confirmation tokens in confirm_gate.rs. Already in the graph
+# through tauri itself, so this adds an edge rather than a crate.
+getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"

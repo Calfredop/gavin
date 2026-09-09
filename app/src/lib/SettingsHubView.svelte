@@ -19,7 +19,9 @@
     agentDefaultsStore,
     setWorkspaceComplexityTable,
     markGitTrackingAsked,
+    trustedAgentConfigs,
   } from "./layoutState";
+  import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "./confirmGate";
   import ComplexityTable from "./ComplexityTable.svelte";
   import type { Complexity, ComplexityAgent } from "./complexity";
   import { fontSizeOptions, resolveTerminalFontSize } from "./terminalFont";
@@ -55,6 +57,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import * as backend from "./backend";
   import SuperpowersControls from "./SuperpowersControls.svelte";
+  import ConfigTrustNotice from "./ConfigTrustNotice.svelte";
   import WorkspaceRootControl from "./WorkspaceRootControl.svelte";
   import ColourPicker from "./ColourPicker.svelte";
   import Modal from "./Modal.svelte";
@@ -71,6 +74,24 @@
     hubTabsHiddenByWorkspace,
     hubTabsHiddenDefault,
   } from "./hubTabPrefs";
+  import {
+    availableUpdate,
+    checkingForUpdate,
+    lastCheckError,
+    lastCheckedAt,
+    refreshUpdateChannel,
+    runUpdateCheck,
+    updateChannel,
+  } from "./updatesState";
+  import { installConfirmPrompt, runInstall, saveEndpoint } from "./updateActions";
+  import {
+    availableLine,
+    endpointToSave,
+    updateBlockedReason,
+    upToDateLine,
+    type UpdatePrompt,
+  } from "./updates";
+  import { onMount } from "svelte";
 
   interface Props {
     workspaceId: string;
@@ -88,7 +109,7 @@
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
   const agent = $derived(
-    resolveAgentConfig(rootContext?.agent ?? null, $agentProfilesStore, $agentModelDefaultsStore, {
+    resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore, {
       command: $agentDefaultsStore.customCommand,
       modelFlag: $agentDefaultsStore.customModelFlag,
     })
@@ -117,7 +138,7 @@
     const mine = ++spToken;
     if (!root) return;
     const [status, marks] = await Promise.all([
-      backend.superpowersStatus(root).catch(() => undefined),
+      backend.superpowersStatus(root, agent.command).catch(() => undefined),
       backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
     ]);
     if (mine !== spToken) return;
@@ -259,6 +280,84 @@
         : null
   );
 
+  // --- updates ---------------------------------------------------------
+  //
+  // Above the daemon section because the two are one story: installing an
+  // update replaces `gavin-daemon` inside the bundle, and the daemon that
+  // is RUNNING was exec'd from the old copy, so the restart below is what
+  // finishes the update -- at the cost of every session it holds. The
+  // install prompt says so; this is where somebody acts on it.
+  let endpointDraft = $state("");
+  let endpointFocused = $state(false);
+  let endpointError = $state<string | null>(null);
+  let savingEndpoint = $state(false);
+  let installPrompt = $state<UpdatePrompt | null>(null);
+  let installing = $state(false);
+  let installError = $state<string | null>(null);
+
+  const updateBlocked = $derived($updateChannel ? updateBlockedReason($updateChannel) : null);
+
+  // Read on every visit rather than once: this view is destroyed on each
+  // tab switch, and the endpoint may have been changed from another
+  // window since. onMount rather than an $effect because a host with no
+  // such command answers null, and an effect that re-ran on that null
+  // would spin.
+  onMount(() => {
+    void refreshUpdateChannel();
+  });
+
+  // The draft follows the host's answer except while somebody is typing
+  // into it -- the same shape the workspace-name field uses.
+  $effect(() => {
+    const endpoint = $updateChannel?.endpoint ?? "";
+    if (!endpointFocused) endpointDraft = endpoint;
+  });
+
+  async function applyEndpoint(): Promise<void> {
+    const settings = $updateChannel;
+    if (!settings) return;
+    endpointError = null;
+    savingEndpoint = true;
+    try {
+      await saveEndpoint(endpointToSave(endpointDraft, settings));
+      await refreshUpdateChannel();
+      // A different manifest makes the previous answer meaningless, so
+      // it goes rather than sitting there attributed to the new URL.
+      availableUpdate.set(null);
+      lastCheckedAt.set(null);
+      lastCheckError.set(null);
+    } catch (e) {
+      endpointError = String(e instanceof Error ? e.message : e);
+    } finally {
+      savingEndpoint = false;
+    }
+  }
+
+  async function openInstallPrompt(): Promise<void> {
+    const update = $availableUpdate;
+    if (!update) return;
+    installError = null;
+    // Composed before the prompt is drawn, because the live-session count
+    // is part of what the human is agreeing to.
+    installPrompt = await installConfirmPrompt(update);
+  }
+
+  async function doInstall(): Promise<void> {
+    const update = $availableUpdate;
+    installPrompt = null;
+    if (!update) return;
+    installing = true;
+    installError = null;
+    try {
+      // Does not return when it works: the app is replaced and relaunched.
+      await runInstall(update);
+    } catch (e) {
+      installError = String(e instanceof Error ? e.message : e);
+    } finally {
+      installing = false;
+    }
+  }
+
   // --- daemon ----------------------------------------------------------
   let confirmingRestart = $state(false);
   let restarting = $state(false);
@@ -279,7 +378,11 @@
     restartNote = null;
     const before = $daemonCompat?.daemonVersion ?? null;
     try {
-      restartNote = restartOutcome(before, await restartDaemonInPlace());
+      // This panel draws its own ConfirmPrompt (a named danger choice
+      // rather than askConfirm's pair), so the grant is taken here, in
+      // the handler that choice fires.
+      const token = await grantForAnsweredPrompt("restart_daemon", [DAEMON_SUBJECT]);
+      restartNote = restartOutcome(before, await restartDaemonInPlace(token));
       restartedAt = new Date().toLocaleTimeString();
     } catch (e) {
       restartError = String(e instanceof Error ? e.message : e);
@@ -366,6 +469,34 @@
     const prd = prdPath;
     if (focused !== "prd") prdDraft = prd;
   });
+
+  // --- client identity / remote access ---------------------------------
+  /// `Request::Hello` is a new request TYPE, so an older daemon simply has
+  /// no identity to offer; the surface below reads this and greys itself
+  /// with the version it needs rather than writing a setting the daemon
+  /// would not honour.
+  const clientIdentityBlocked = $derived(featureBlockedReason($daemonCompat, "clientIdentity"));
+  /// `require_local_token` is a daemon-GLOBAL setting -- a marker file the
+  /// daemon reads per request -- not a per-workspace one, so it is read
+  /// once and written straight back, independent of `ws`.
+  let requireLocalToken = $state(false);
+  let requireLocalTokenLoaded = false;
+  $effect(() => {
+    if (requireLocalTokenLoaded) return;
+    requireLocalTokenLoaded = true;
+    void backend
+      .getRequireLocalToken()
+      .then((v) => (requireLocalToken = v))
+      .catch(() => undefined);
+  });
+  async function toggleRequireLocalToken(enabled: boolean): Promise<void> {
+    requireLocalToken = enabled; // optimistic
+    try {
+      await backend.setRequireLocalToken(enabled);
+    } catch {
+      requireLocalToken = !enabled; // roll back a failed write
+    }
+  }
 
   async function commitPrd(): Promise<void> {
     prdError = null;
@@ -857,6 +988,10 @@
 
     <section>
       <h3>Agent</h3>
+      <!-- Above the Command field it gates: the field shows the RESOLVED
+           command, so without this the panel would silently answer with
+           the profile's while config.toml said something else. -->
+      <ConfigTrustNotice {workspaceId} showApproved />
       {#if !hasRoot}
         <p class="hint">Bind a root folder to configure the agent.</p>
       {:else if configWarning}
@@ -1070,6 +1205,7 @@
           {#if superpowers}
             <SuperpowersControls
               rootPath={ws?.rootPath ?? null}
+              agentCommand={agent.command}
               status={superpowers}
               mark={superpowersMark}
               onChanged={() => void readSuperpowers()}
@@ -1084,6 +1220,108 @@
             nominal.
           </p>
         </div>
+      {/if}
+    </section>
+
+    <section>
+      <h3>Remote access</h3>
+      <p class="hint">
+        Every connection to the daemon carries an identity now: the app holds a token the daemon
+        minted, and an agent gavin launches is scoped to the workspace and card it was started
+        for. Pairing a phone to reach the daemon from away builds on this; those controls will
+        appear here.
+      </p>
+      <!-- The reason hangs on the wrapping span, not the input: a disabled
+           element fires no mouseenter, so a tooltip on it never opens. -->
+      <span use:tooltip={clientIdentityBlocked ?? ""}>
+        <label class="check">
+          <input
+            type="checkbox"
+            disabled={clientIdentityBlocked !== null}
+            checked={requireLocalToken}
+            onchange={(e) => void toggleRequireLocalToken(e.currentTarget.checked)}
+          />
+          Require a token for full local access
+        </label>
+      </span>
+      <p class="hint">
+        Off by default, so nothing changes today. On, a same-user program that connects without
+        the app's token can still read the board and your sessions, but cannot start a shell,
+        spawn an agent, stop the daemon, or rewrite the launch command. Turn it on only if you run
+        tools you do not trust as your own user.
+        {#if clientIdentityBlocked}
+          <span class="warn">{clientIdentityBlocked}</span>
+        {/if}
+      </p>
+    </section>
+
+    <section>
+      <h3>Updates</h3>
+      <p class="hint">
+        gavin checks once when it starts, and installs nothing on its own. A download is
+        verified against the key this build was signed with before any of it is installed.
+      </p>
+      {#if $availableUpdate}
+        <p class="hint">{availableLine($availableUpdate)}</p>
+        {#if $availableUpdate.notes}
+          <p class="hint detail">{$availableUpdate.notes}</p>
+        {/if}
+      {:else if $updateChannel}
+        <p class="hint">{upToDateLine($updateChannel, $lastCheckedAt)}</p>
+      {/if}
+      <div class="row">
+        <!-- The reason hangs on the wrapping span, not the button: a
+             disabled element fires no mouseenter, so a tooltip on it can
+             never open. -->
+        <span use:tooltip={updateBlocked ?? ""}>
+          <button
+            type="button"
+            disabled={$checkingForUpdate || updateBlocked !== null}
+            onclick={() => void runUpdateCheck("manual")}
+          >
+            {$checkingForUpdate ? "Checking…" : "Check for updates"}
+          </button>
+        </span>
+        {#if $availableUpdate}
+          <button type="button" disabled={installing} onclick={() => void openInstallPrompt()}>
+            {installing ? "Installing…" : `Install ${$availableUpdate.version}…`}
+          </button>
+        {/if}
+      </div>
+      {#if updateBlocked}
+        <p class="hint warn">{updateBlocked}</p>
+      {/if}
+      {#if $lastCheckError}
+        <p class="hint warn">Couldn't check for updates: {$lastCheckError}</p>
+      {/if}
+      {#if installError}
+        <p class="hint warn">Couldn't install the update: {installError}</p>
+      {/if}
+      <div class="row endpoint-row">
+        <label for="update-endpoint">Endpoint</label>
+        <input
+          id="update-endpoint"
+          type="text"
+          spellcheck="false"
+          placeholder="https://…/latest.json"
+          bind:value={endpointDraft}
+          onfocus={() => (endpointFocused = true)}
+          onblur={() => (endpointFocused = false)}
+        />
+        <button type="button" disabled={savingEndpoint} onclick={() => void applyEndpoint()}>
+          {savingEndpoint ? "Saving…" : "Save"}
+        </button>
+      </div>
+      <p class="hint">
+        The manifest this install polls. Changing it is safe: an update is only ever accepted if
+        it was signed with the key pinned in this build, so an endpoint can offer gavin anything
+        and gavin will refuse all of it. Empty means nothing is checked.
+        {#if $updateChannel?.overridden}
+          <span class="detail">Clear the field to go back to the URL this build shipped with.</span>
+        {/if}
+      </p>
+      {#if endpointError}
+        <p class="hint warn">Couldn't save the endpoint: {endpointError}</p>
       {/if}
     </section>
 
@@ -1140,6 +1378,20 @@
 
   {#if deleting}
     <WorkspaceDeleteWizard {workspaceId} onClose={() => (deleting = false)} />
+  {/if}
+
+  <!-- Drawn here rather than through askConfirm because the choice is
+       named ("Install 0.2.0") and that name is what the host binds its
+       confirmation token to -- see updateActions.runInstall. `danger`
+       keeps focus on the dismissing button, so Enter cannot install. -->
+  {#if installPrompt}
+    {@const prompt = installPrompt}
+    <ConfirmPrompt
+      title={prompt.title}
+      lines={prompt.lines}
+      choices={[{ label: prompt.confirmLabel, danger: true, onPick: () => void doInstall() }]}
+      onCancel={() => (installPrompt = null)}
+    />
   {/if}
 
   {#if confirmingRestart}
@@ -1235,6 +1487,12 @@
     min-width: 160px;
   }
   .model-row input {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  /* A URL outruns the shared 240px floor, so it takes the room the row
+     has rather than forcing the pane to scroll. */
+  .endpoint-row input {
     min-width: 0;
     flex: 1 1 auto;
   }

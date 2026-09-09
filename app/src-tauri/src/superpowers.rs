@@ -303,14 +303,28 @@ fn run(bin: &str, args: &[&str], cwd: &Path, timeout: Duration) -> Result<Run, S
     })
 }
 
-/// The binary to drive for a profile: whatever the workspace configured,
-/// else the profile's own. A workspace that points `[agent] command` at a
-/// wrapper is still running that harness, and the first token is its
-/// executable -- the rest of the line is launch flags that mean nothing
-/// to a `plugin` subcommand.
-fn binary_for(root: &Path, profile: &crate::agent_setup::AgentProfile) -> String {
-    let configured = crate::agent_setup::root_agent_key(root, "command").unwrap_or_default();
-    configured
+/// The binary to drive for a profile: the launch command the CALLER
+/// handed in, else the profile's own. A workspace that points `[agent]
+/// command` at a wrapper is still running that harness, and the first
+/// token is its executable -- the rest of the line is launch flags that
+/// mean nothing to a `plugin` subcommand.
+///
+/// The command arrives as an argument and is never read from disk here,
+/// which is the whole point of the parameter. `.gavin-root/config.toml`
+/// ships with the repository, and this function's result is handed
+/// straight to `Command::new`: reading `[agent] command` off disk meant a
+/// freshly cloned repo could name any executable and have it run the
+/// moment the workspace's Home or Settings tab rendered -- no Run click,
+/// no confirmation, because `superpowers_status` fires on render.
+///
+/// The frontend decides instead, because that is where workspace trust
+/// lives (`workspaceTrust.ts`): it passes the resolved command, which is
+/// the repo's only once a human has approved it and the profile table's
+/// verified one until then. `None` -- an older frontend, or a caller with
+/// no workspace -- falls back to the profile, which is always safe.
+fn binary_for(agent_command: Option<&str>, profile: &crate::agent_setup::AgentProfile) -> String {
+    agent_command
+        .unwrap_or_default()
         .split_whitespace()
         .next()
         .filter(|s| !s.is_empty())
@@ -326,10 +340,15 @@ struct Detected {
     output: String,
 }
 
-fn detect(root: &Path, profile_id: &str, profile: &crate::agent_setup::AgentProfile) -> Detected {
+fn detect(
+    root: &Path,
+    profile_id: &str,
+    profile: &crate::agent_setup::AgentProfile,
+    agent_command: Option<&str>,
+) -> Detected {
     match mechanism(profile_id) {
         Mechanism::ClaudeCli => {
-            let bin = binary_for(root, profile);
+            let bin = binary_for(agent_command, profile);
             // cwd is the root, not the app's: `enabled` is answered
             // relative to it, and answering it anywhere else answers a
             // different question.
@@ -449,9 +468,14 @@ pub fn resolve(
     }
 }
 
-fn status_for(root: &Path, profile_id: &str, asserted: bool) -> Status {
+fn status_for(
+    root: &Path,
+    profile_id: &str,
+    asserted: bool,
+    agent_command: Option<&str>,
+) -> Status {
     let profile = crate::agent_setup::profile_by_id(profile_id);
-    let found = detect(root, profile_id, profile);
+    let found = detect(root, profile_id, profile, agent_command);
     let (state, detail) = resolve(profile_id, found.installed, &found.blocked, asserted);
     Status {
         state: state.id().to_string(),
@@ -470,9 +494,15 @@ fn profile_id_for(root: &Path) -> String {
     crate::agent_setup::read_profile_id(root)
 }
 
+/// `agent_command` is the workspace's RESOLVED launch command -- the
+/// repo's `[agent] command` only where the human has approved this
+/// workspace's config, and the profile table's own everywhere else. It is
+/// a parameter rather than a read because this command runs on a tab
+/// render: see `binary_for`.
 #[tauri::command]
 pub fn superpowers_status(
     root_path: String,
+    agent_command: Option<String>,
     marks: tauri::State<crate::session::SuperpowersMarks>,
 ) -> Status {
     let root = PathBuf::from(&root_path);
@@ -480,7 +510,7 @@ pub fn superpowers_status(
         marks.0.lock().unwrap().get(&root_path),
         Some(crate::config::SuperpowersMark::Installed)
     );
-    status_for(&root, &profile_id_for(&root), asserted)
+    status_for(&root, &profile_id_for(&root), asserted, agent_command.as_deref())
 }
 
 /// Runs the install and reports the status that follows it. A non-zero
@@ -491,6 +521,7 @@ pub fn superpowers_status(
 #[tauri::command]
 pub fn superpowers_install(
     root_path: String,
+    agent_command: Option<String>,
     marks: tauri::State<crate::session::SuperpowersMarks>,
 ) -> Result<Status, String> {
     let root = PathBuf::from(&root_path);
@@ -499,7 +530,7 @@ pub fn superpowers_install(
         let label = crate::agent_setup::profile_by_id(&profile_id).label;
         return Err(format!("gavin cannot install Superpowers for {label}."));
     }
-    let bin = binary_for(&root, crate::agent_setup::profile_by_id(&profile_id));
+    let bin = binary_for(agent_command.as_deref(), crate::agent_setup::profile_by_id(&profile_id));
     // `-y` is not optional: the CLI's own help says the confirmation is
     // required when stdin or stdout is not a TTY, and a hidden run has
     // neither.
@@ -514,7 +545,7 @@ pub fn superpowers_install(
         marks.0.lock().unwrap().get(&root_path),
         Some(crate::config::SuperpowersMark::Installed)
     );
-    let mut status = status_for(&root, &profile_id, asserted);
+    let mut status = status_for(&root, &profile_id, asserted, agent_command.as_deref());
     if out.code != 0 && status.state != State::Verified.id() {
         status.detail = format!("Install exited with status {} — see the output.", out.code);
     }
@@ -671,6 +702,44 @@ mod tests {
         }
     }
 
+    /// The binary is whatever the CALLER named, never what a repo's
+    /// config.toml did.
+    ///
+    /// This is AS-02's fix, and the failure it prevents is silent: this
+    /// string reaches `Command::new` from `superpowers_status`, which the
+    /// Home and Settings tabs fire on RENDER. Reading `[agent] command`
+    /// off disk here meant a cloned repo naming `./scripts/setup.sh` got
+    /// it executed by merely opening the workspace -- no Run click, no
+    /// confirmation. The frontend passes a command already gated by
+    /// workspace trust; `None` falls back to the profile, which is always
+    /// gavin's own verified binary.
+    #[test]
+    fn the_probed_binary_comes_from_the_caller_and_never_from_disk() {
+        let profile = crate::agent_setup::profile_by_id("claude-code");
+        assert_eq!(binary_for(None, profile), "claude");
+        assert_eq!(binary_for(Some(""), profile), "claude");
+        assert_eq!(binary_for(Some("   "), profile), "claude");
+        // The first token, because the rest of the line is launch flags
+        // that mean nothing to a `plugin` subcommand.
+        assert_eq!(binary_for(Some("/opt/bin/claude --model opus"), profile), "/opt/bin/claude");
+
+        // And with a hostile config.toml on disk in the cwd's root: the
+        // value is not consulted, so it cannot reach Command::new.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".gavin-root")).unwrap();
+        std::fs::write(
+            dir.path().join(".gavin-root").join("config.toml"),
+            "[agent]\nprofile = \"claude-code\"\ncommand = \"./scripts/pwn.sh\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            crate::agent_setup::root_agent_key(dir.path(), "command").as_deref(),
+            Some("./scripts/pwn.sh"),
+            "the fixture has to actually carry the key it is testing the absence of"
+        );
+        assert_eq!(binary_for(None, profile), "claude");
+    }
+
     /// Every profile but `custom` has something for the human to paste.
     #[test]
     fn every_known_profile_offers_a_command() {
@@ -730,7 +799,7 @@ mod tests {
         )
         .unwrap();
         let profile = crate::agent_setup::profile_by_id("opencode");
-        let found = detect(dir.path(), "opencode", profile);
+        let found = detect(dir.path(), "opencode", profile, None);
         assert_eq!(found.installed, Some(true));
         assert!(found.output.contains("lists superpowers"), "{}", found.output);
     }
@@ -739,7 +808,7 @@ mod tests {
     fn opencode_detection_reports_what_it_looked_at_when_it_finds_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let profile = crate::agent_setup::profile_by_id("opencode");
-        let found = detect(dir.path(), "opencode", profile);
+        let found = detect(dir.path(), "opencode", profile, None);
         assert_eq!(found.installed, Some(false));
         assert!(found.output.contains("opencode.json"), "{}", found.output);
     }
@@ -772,7 +841,7 @@ mod tests {
     fn an_in_tui_profile_never_guesses() {
         let dir = tempfile::tempdir().unwrap();
         for id in ["codex", "cursor", "custom"] {
-            let found = detect(dir.path(), id, crate::agent_setup::profile_by_id(id));
+            let found = detect(dir.path(), id, crate::agent_setup::profile_by_id(id), None);
             assert_eq!(found.installed, None, "{id}");
             assert!(!found.blocked.is_empty(), "{id}");
         }

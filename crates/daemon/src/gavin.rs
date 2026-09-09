@@ -789,12 +789,16 @@ pub fn unarchive_card(path: &Path) -> anyhow::Result<PathBuf> {
 
 /// The public, validated entry point (and the future MCP tool body). The
 /// allow-list is enforced HERE, not trusted to callers -- this must never
-/// become an arbitrary-line writer.
+/// become an arbitrary-line writer. `path` is confined by
+/// `confine_card_path` before anything else runs (DP-03): the key/value
+/// allow-list guarded WHAT could be written, never WHERE.
 ///
 /// Returns the file's path AFTER the write: a status write can move the
 /// card between `plans/` and `plans/done/` (see `relocate_for_status`),
 /// and every caller that holds the path as an identity needs the new one.
 pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<PathBuf> {
+    let confined = confine_card_path(path)?;
+    let path = confined.as_path();
     // Empty value removes the line -- permitted only where the card model
     // needs it (status: nesting, parent: un-parenting, labels: clearing,
     // attachments: removing the last one, complexity: back to "nobody
@@ -920,7 +924,8 @@ fn checklist_link_target(text: &str) -> Option<&str> {
 }
 
 /// Rewrites exactly one checklist line's checkbox mark (card-model spec
-/// §3). `expected_text` must equal the line's raw remainder -- a
+/// §3). `path` is confined by `confine_card_path` first (DP-03).
+/// `expected_text` must equal the line's raw remainder -- a
 /// mismatch means the file changed under the UI (an agent edit) and the
 /// caller must re-read and retry deliberately. Every other byte is
 /// preserved.
@@ -930,6 +935,8 @@ pub fn set_checklist_item(
     expected_text: &str,
     checked: bool,
 ) -> anyhow::Result<()> {
+    let confined = confine_card_path(path)?;
+    let path = confined.as_path();
     let content = std::fs::read_to_string(path)?;
     let had_trailing_newline = content.ends_with('\n');
     let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
@@ -971,10 +978,13 @@ fn slug_title(title: &str) -> Option<String> {
 /// Promotes a plan's checklist item into a nested task card (card-model
 /// spec §3): creates `<slug>.md` (kind task, parent set, no status ->
 /// nested) in the plan's own plans/ folder, then rewrites ONLY that
-/// checklist line to `- [<mark>] [item](./<file>)`. The item must match
+/// checklist line to `- [<mark>] [item](./<file>)`. `plan_path` is
+/// confined by `confine_card_path` first (DP-03). The item must match
 /// exactly one unpromoted line; ambiguity or absence errors with no
 /// writes. Returns the created file's path.
 pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<PathBuf> {
+    let confined = confine_card_path(plan_path)?;
+    let plan_path = confined.as_path();
     let content = std::fs::read_to_string(plan_path)?;
     let had_trailing_newline = content.ends_with('\n');
     let lines: Vec<&str> = content.lines().collect();
@@ -1053,31 +1063,68 @@ pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<Pa
     Ok(created)
 }
 
-/// Deletes a context md file (card-model delete design + explorer
-/// delete). Guarded: some ancestor must be a `plans/`, `docs/` or
-/// `specs/` folder directly inside a `.gavin*` directory (docs and specs
-/// legitimately nest in subfolders, and the scanners list nested plans
-/// too) -- this must never become a general file deleter. `..` segments
-/// are rejected outright: the ancestor walk is lexical, so a `..` could
-/// dress an outside path up as a guarded one. Missing file errors (the
-/// caller should know its picture is stale).
-pub fn delete_card_file(path: &Path) -> anyhow::Result<()> {
-    if path.extension().is_none_or(|e| e != "md") {
-        anyhow::bail!("not a context md file: {}", path.display());
-    }
+/// The one gate every card-shaped write in this module passes through
+/// (DP-03): `delete_card_file`'s original guard, lifted so a request that
+/// used to skip it -- `SetPlanFrontmatterField`, `SetChecklistItem`,
+/// `PromoteChecklistItem` all took a bare path straight off the wire --
+/// cannot act on anything that doesn't look like a real card.
+///
+/// `..` is rejected lexically FIRST: `canonicalize` requires the path to
+/// exist, and a `..` segment aimed at a file that is not there yet is
+/// never innocent, so this must not depend on reaching the filesystem to
+/// catch it. The remaining shape check -- some ancestor must be a
+/// `plans/`, `docs/` or `specs/` folder directly inside a `.gavin*`
+/// directory (docs and specs legitimately nest in subfolders, and the
+/// scanners list nested plans too), and the file itself must be `.md` --
+/// then runs against the CANONICALIZED path, the same resolve-then-check
+/// order `attachment_status` uses for attachments: a lexically well-formed
+/// `.gavin-root/plans/x.md` could still resolve somewhere else entirely
+/// through a symlinked component, and the shape check has to see where it
+/// really lands, not where it merely claims to.
+///
+/// This is a SHAPE check, not a workspace check: a well-formed card path
+/// belonging to a workspace nobody on this connection has open still
+/// passes, because nothing here says which workspace is "ours" yet --
+/// that is `sec-fix-client-identity.md`'s job, and this confinement is
+/// what its per-connection scope will key on.
+///
+/// Returns `path` itself, not the canonicalized form: canonicalizing is
+/// how the check sees where a symlinked component really lands, but
+/// every caller's own logic (`governed_plans_root`, file moves, the path
+/// it hands back to the app) works off the SPELLING the request named --
+/// same as `find_watcher_by_root` resolving symlinks only to compare, not
+/// to replace what it was given. On macOS that spelling matters
+/// concretely: `/tmp` and `/var/folders` both live under `/private`, and
+/// returning the resolved form would silently rewrite every path that
+/// crosses one.
+pub fn confine_card_path(path: &Path) -> anyhow::Result<PathBuf> {
     if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         anyhow::bail!("path may not contain ..: {}", path.display());
     }
-    let guarded = path.ancestors().skip(1).any(|dir| {
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("couldn't resolve {}: {e}", path.display()))?;
+    if canonical.extension().is_none_or(|e| e != "md") {
+        anyhow::bail!("not a context md file: {}", canonical.display());
+    }
+    let guarded = canonical.ancestors().skip(1).any(|dir| {
         dir.file_name().is_some_and(|n| n == "plans" || n == "docs" || n == "specs")
             && dir.parent().is_some_and(|p| {
                 p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".gavin"))
             })
     });
     if !guarded {
-        anyhow::bail!("not inside a .gavin*/plans|docs|specs folder: {}", path.display());
+        anyhow::bail!("not inside a .gavin*/plans|docs|specs folder: {}", canonical.display());
     }
-    std::fs::remove_file(path)
+    Ok(path.to_path_buf())
+}
+
+/// Deletes a context md file (card-model delete design + explorer
+/// delete), guarded by `confine_card_path` -- this must never become a
+/// general file deleter.
+pub fn delete_card_file(path: &Path) -> anyhow::Result<()> {
+    let path = confine_card_path(path)?;
+    std::fs::remove_file(&path)
         .map_err(|e| anyhow::anyhow!("couldn't delete {}: {e}", path.display()))
 }
 
@@ -1211,6 +1258,22 @@ fn scaffold_gavin_dir(gavin_dir: &Path) -> anyhow::Result<()> {
 
 /// Never overwrites: each piece is created only if missing, so this both
 /// completes a partial skeleton and no-ops on a complete one (spec §4).
+///
+/// Deliberately NOT run through `confine_root_path`, unlike
+/// `create_gavin_context` and `add_external_context` below: this is the
+/// one root-taking request whose whole job is bootstrapping a folder
+/// nothing has watched yet. The app itself calls it before the workspace
+/// it is about to become is ever watched (`workspaceOpen.ts`'s
+/// `initAndOpen`, deliberately: the watch's first push should see the
+/// skeleton, not an empty folder), a watch install is asynchronous on its
+/// own thread besides (`WatchGavinRoot` in `server.rs`), and
+/// `gavin_init_root` over MCP exists precisely for a cwd with no
+/// `.gavin-root` above it yet. Requiring a prior watch here would refuse
+/// the one legitimate call this request exists to serve. The confinement
+/// this request still lacks is scoped to `sec-fix-client-identity.md`'s
+/// role check instead (an `agent` connection refused this request
+/// outside its own launch scope, a `local` one left alone) -- see
+/// DP-03/R4 in `docs/security/README.md`.
 pub fn init_gavin_root(root: &Path, workspace_name: &str) -> anyhow::Result<()> {
     if !root.is_dir() {
         anyhow::bail!("root does not exist or is not a directory: {}", root.display());
@@ -1235,6 +1298,46 @@ pub fn init_gavin_root(root: &Path, workspace_name: &str) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// The confinement `CreateGavinContext` and `AddExternalGavinContext`
+/// check their root/parent argument against, in `server.rs`'s request
+/// handler rather than here: `existing directory this daemon already
+/// watches, or an ancestor/descendant of one` (DP-03/R4). It is applied at
+/// the request boundary, not inside `create_gavin_context` itself, because
+/// `add_external_context` below calls that scaffolder a second time on
+/// the EXTERNAL folder -- which by definition is not watched or nested
+/// under anything -- and that internal call must stay unconfined.
+///
+/// `watched_roots` is every root this daemon currently has a live watcher
+/// on (`SessionManager::watched_roots`), not yet narrowed to the
+/// requesting connection's own: nothing on a connection says "this
+/// workspace is mine" until `sec-fix-client-identity.md` lands, so this
+/// is the confinement its per-connection scope will key on.
+///
+/// Returns `path` itself, not the canonicalized form used to check it --
+/// same reasoning as `confine_card_path`. Concretely, returning the
+/// resolved form here would break `add_external_context`'s own
+/// `folder.starts_with(root)` check: `root` would come in canonicalized
+/// while `folder` stays exactly as the caller spelled it, and on macOS
+/// (`/var`, `/tmp` both symlink into `/private`) that mismatch would let
+/// a folder truly inside the workspace read as `starts_with`-false and
+/// pass for "external".
+pub fn confine_root_path(path: &Path, watched_roots: &[PathBuf]) -> anyhow::Result<PathBuf> {
+    if !path.is_dir() {
+        anyhow::bail!("not an existing directory: {}", path.display());
+    }
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let confined =
+        watched_roots.iter().any(|root| canonical.starts_with(root) || root.starts_with(&canonical));
+    if !confined {
+        anyhow::bail!("not a workspace this daemon has open: {}", path.display());
+    }
+    Ok(path.to_path_buf())
+}
+
+/// Scaffolds `.gavin` at `parent` (card-model spec §5). Confinement to a
+/// known workspace is the request handler's job (`confine_root_path`),
+/// not this function's: `add_external_context` also calls it directly on
+/// a deliberately-external folder.
 pub fn create_gavin_context(parent: &Path) -> anyhow::Result<()> {
     if !parent.is_dir() {
         anyhow::bail!("parent does not exist or is not a directory: {}", parent.display());
@@ -1270,6 +1373,13 @@ fn parse_extra_contexts(config_path: &Path) -> Vec<String> {
 /// refused: they are scanned natively and registering them would
 /// double-list. Scaffold happens BEFORE the config write, so a failed
 /// write can't register a folder that has no skeleton.
+///
+/// `root` is confined by `confine_root_path` in the request handler
+/// before this runs (DP-03) -- it must already be a workspace this
+/// daemon watches, which is what stops an unrelated connection from
+/// registering an external context into a root it merely names.
+/// `folder` keeps only its existing "not under root" check: it is
+/// external by design, so it is never expected to be watched.
 pub fn add_external_context(root: &Path, folder: &Path) -> anyhow::Result<()> {
     if !folder.is_dir() {
         anyhow::bail!("folder does not exist or is not a directory: {}", folder.display());
@@ -1322,13 +1432,75 @@ pub fn remove_external_context(root: &Path, folder: &Path) -> anyhow::Result<()>
     Ok(())
 }
 
-fn list_md_files(dir: &Path) -> Vec<MdFileInfo> {
-    fn walk(dir: &Path, base: &Path, out: &mut Vec<MdFileInfo>) {
+/// Whether a directory entry found during a root-scoped walk is safe to
+/// descend into. A plain directory always is; a symlinked one only when
+/// its target's canonical path stays under `boundary` -- otherwise a
+/// hostile repo could point a directory anywhere inside itself (even a
+/// top-level `.gavin-root`) at `/etc`, the user's home directory, or an
+/// unrelated project, and the scan would read whatever it found there
+/// and report it as the repo's own plans/docs/specs (DP-05, read
+/// amplification within the uid). A symlinked FILE is unaffected: only
+/// directory descent is guarded.
+fn safe_to_descend(path: &Path, boundary: &Path) -> bool {
+    let is_symlink = std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    if !is_symlink {
+        return true;
+    }
+    let Ok(canonical_boundary) = boundary.canonicalize() else { return false };
+    path.canonicalize().is_ok_and(|c| c.starts_with(&canonical_boundary))
+}
+
+/// Per-file cap for a plan card read during a `.gavin*` scan, mirroring
+/// `MAX_PRD_BYTES`: a hostile repo's `plans/*.md` is re-read on every
+/// debounced rescan, so an unbounded file forces a full read into memory
+/// every time a watched directory so much as flickers (DP-05). An
+/// oversize file still appears in the tree -- as a `parse_warning`,
+/// never actually read -- rather than vanishing silently.
+const MAX_SCANNED_FILE_BYTES: u64 = 1024 * 1024;
+
+/// A `PlanFileInfo` for a card too large to read, built from its path
+/// alone. Mirrors `plan_file_info`'s defaults for everything the content
+/// would otherwise have supplied.
+fn oversize_plan_file_info(path: &Path) -> PlanFileInfo {
+    let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| file_name.clone());
+    PlanFileInfo {
+        path: path.to_string_lossy().to_string(),
+        modified_at: file_modified_at(path),
+        file_name,
+        title: stem,
+        status: None,
+        priority: None,
+        order: None,
+        kind: CardKind::Plan,
+        parent: None,
+        labels: Vec::new(),
+        checklist_done: 0,
+        checklist_total: 0,
+        parse_warning: true,
+        attachments: Vec::new(),
+        complexity: None,
+        agent: None,
+        model: None,
+    }
+}
+
+/// Lists every `.md` file under `dir`, refusing to follow a directory
+/// symlink whose canonical path leaves `boundary` (see `safe_to_descend`).
+fn list_md_files(dir: &Path, boundary: &Path) -> Vec<MdFileInfo> {
+    fn walk(dir: &Path, base: &Path, boundary: &Path, out: &mut Vec<MdFileInfo>) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                walk(&path, base, out);
+                if safe_to_descend(&path, boundary) {
+                    walk(&path, base, boundary, out);
+                }
             } else if path.extension().map(|e| e == "md").unwrap_or(false) {
                 out.push(MdFileInfo {
                     path: path.to_string_lossy().to_string(),
@@ -1341,13 +1513,21 @@ fn list_md_files(dir: &Path) -> Vec<MdFileInfo> {
             }
         }
     }
+    if !safe_to_descend(dir, boundary) {
+        return Vec::new();
+    }
     let mut out = Vec::new();
-    walk(dir, dir, &mut out);
+    walk(dir, dir, boundary, &mut out);
     out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     out
 }
 
-fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> GavinContext {
+fn build_context(
+    folder: &Path,
+    gavin_dir: &Path,
+    kind: GavinContextKind,
+    root: &Path,
+) -> GavinContext {
     let config_path = gavin_dir.join("config.toml");
     let (config_name, agent_config, config_warning) = parse_context_config(&config_path);
     // Root-only, like the agent block: a `.gavin` sub-context scopes
@@ -1359,12 +1539,17 @@ fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> Gav
     };
     let folder_name =
         folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let plans = list_md_files(&gavin_dir.join("plans"))
+    let plans = list_md_files(&gavin_dir.join("plans"), root)
         .into_iter()
         .map(|md| {
             let path = PathBuf::from(&md.path);
-            let content = std::fs::read_to_string(&path).unwrap_or_default();
-            plan_file_info(&path, &content)
+            match std::fs::metadata(&path) {
+                Ok(meta) if meta.len() > MAX_SCANNED_FILE_BYTES => oversize_plan_file_info(&path),
+                _ => {
+                    let content = std::fs::read_to_string(&path).unwrap_or_default();
+                    plan_file_info(&path, &content)
+                }
+            }
         })
         .collect();
     GavinContext {
@@ -1372,8 +1557,8 @@ fn build_context(folder: &Path, gavin_dir: &Path, kind: GavinContextKind) -> Gav
         kind: kind.clone(),
         name: config_name.unwrap_or(folder_name),
         plans,
-        docs: list_md_files(&gavin_dir.join("docs")),
-        specs: list_md_files(&gavin_dir.join("specs")),
+        docs: list_md_files(&gavin_dir.join("docs"), root),
+        specs: list_md_files(&gavin_dir.join("specs"), root),
         // Resolved, not configured: "is there a PRD" has to answer for
         // the file the workspace actually points at, or a project with
         // its own docs/PRD.md reads as having none.
@@ -1399,11 +1584,13 @@ pub fn scan_root(root: &Path) -> GavinTree {
     }
 
     let mut contexts = Vec::new();
-    // Root context: `.gavin-root` recognized ONLY directly under the root.
+    // Root context: `.gavin-root` recognized ONLY directly under the root,
+    // and only when it isn't a symlink escaping the root itself (DP-05) --
+    // a hostile repo controls its own top level too.
     let root_gavin = root.join(GAVIN_ROOT_DIR);
-    let root_has_gavin_root = root_gavin.is_dir();
+    let root_has_gavin_root = root_gavin.is_dir() && safe_to_descend(&root_gavin, root);
     if root_has_gavin_root {
-        contexts.push(build_context(root, &root_gavin, GavinContextKind::Root));
+        contexts.push(build_context(root, &root_gavin, GavinContextKind::Root, root));
     }
 
     fn walk(
@@ -1411,6 +1598,7 @@ pub fn scan_root(root: &Path) -> GavinTree {
         depth: usize,
         skip_gavin_here: bool,
         contexts: &mut Vec<GavinContext>,
+        root: &Path,
     ) {
         if depth > MAX_SCAN_DEPTH {
             return;
@@ -1418,7 +1606,11 @@ pub fn scan_root(root: &Path) -> GavinTree {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            // Refuses a directory symlink whose target leaves `root`
+            // before even asking whether it's a `.gavin*` marker -- a
+            // symlinked marker directory is exactly the shape of trap
+            // this guards (DP-05).
+            if !path.is_dir() || !safe_to_descend(&path, root) {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
@@ -1427,7 +1619,7 @@ pub fn scan_root(root: &Path) -> GavinTree {
             // descends into `.gavin*` directories themselves.
             if name == GAVIN_DIR {
                 if !skip_gavin_here {
-                    contexts.push(build_context(dir, &path, GavinContextKind::Context));
+                    contexts.push(build_context(dir, &path, GavinContextKind::Context, root));
                 }
                 continue;
             }
@@ -1437,14 +1629,14 @@ pub fn scan_root(root: &Path) -> GavinTree {
             {
                 continue;
             }
-            walk(&path, depth + 1, false, contexts);
+            walk(&path, depth + 1, false, contexts, root);
         }
     }
     // Depth 1 = the root's immediate children. skip_gavin_here applies the
     // spec §1 both-markers rule to the root level only: when `.gavin-root`
     // exists, a root-level `.gavin` is ignored rather than double-listing
     // the root folder as two contexts.
-    walk(root, 1, root_has_gavin_root, &mut contexts);
+    walk(root, 1, root_has_gavin_root, &mut contexts, root);
 
     // Root context first, then by folder path.
     contexts.sort_by(|a, b| {
@@ -1471,7 +1663,7 @@ pub fn scan_root(root: &Path) -> GavinTree {
             if !gavin_dir.is_dir() {
                 continue;
             }
-            let mut ctx = build_context(&path, &gavin_dir, GavinContextKind::Context);
+            let mut ctx = build_context(&path, &gavin_dir, GavinContextKind::Context, root);
             ctx.outside = true;
             contexts.push(ctx);
         }
@@ -1546,14 +1738,23 @@ pub fn watch_targets(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
         return targets;
     }
 
-    fn walk(dir: &Path, depth: usize, targets: &mut Vec<(PathBuf, notify::RecursiveMode)>) {
+    fn walk(
+        dir: &Path,
+        depth: usize,
+        targets: &mut Vec<(PathBuf, notify::RecursiveMode)>,
+        root: &Path,
+    ) {
         if depth > MAX_SCAN_DEPTH {
             return;
         }
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
+            // Mirrors scan_root's own symlink guard (DP-05): a watch is
+            // cheap to register but pointless -- and, on a re-scan,
+            // actively misleading -- for a directory the scanner itself
+            // will never descend into.
+            if !path.is_dir() || !safe_to_descend(&path, root) {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
@@ -1565,10 +1766,10 @@ pub fn watch_targets(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
                 continue;
             }
             targets.push((path.clone(), NonRecursive));
-            walk(&path, depth + 1, targets);
+            walk(&path, depth + 1, targets, root);
         }
     }
-    walk(root, 1, &mut targets);
+    walk(root, 1, &mut targets, root);
     targets
 }
 
@@ -1989,8 +2190,12 @@ mod tests {
     #[test]
     fn set_plan_field_writes_clears_and_rejects_attachments() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("p.md");
-        std::fs::write(&path, "---\ntitle: T\n---\nbody\n").unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = write_card(
+            &dir.path().join(GAVIN_ROOT_DIR).join("plans"),
+            "p.md",
+            "---\ntitle: T\n---\nbody\n",
+        );
 
         set_plan_field(&path, "attachments", "docs/spec.md, /Users/x/shot.png").unwrap();
         assert_eq!(
@@ -2038,8 +2243,12 @@ mod tests {
     #[test]
     fn set_plan_field_writes_clears_and_rejects_complexity() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("p.md");
-        std::fs::write(&path, "---\ntitle: T\n---\nbody\n").unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = write_card(
+            &dir.path().join(GAVIN_ROOT_DIR).join("plans"),
+            "p.md",
+            "---\ntitle: T\n---\nbody\n",
+        );
 
         // Normalised to the enum's own spelling, so a hand-typed level
         // reads back exactly like a picked one.
@@ -2093,8 +2302,12 @@ mod tests {
     #[test]
     fn set_plan_field_writes_and_clears_the_card_agent_and_model() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("p.md");
-        std::fs::write(&path, "---\ntitle: T\n---\nbody\n").unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = write_card(
+            &dir.path().join(GAVIN_ROOT_DIR).join("plans"),
+            "p.md",
+            "---\ntitle: T\n---\nbody\n",
+        );
 
         set_plan_field(&path, "agent", "codex").unwrap();
         set_plan_field(&path, "model", "gpt-5.1").unwrap();
@@ -2182,9 +2395,12 @@ mod tests {
     #[test]
     fn empty_value_removes_the_line_for_status_parent_labels() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("p.md");
-        std::fs::write(&path, "---\ntitle: T\nkind: task\nstatus: To Do\nparent: a.md\nlabels: x\n---\nbody\n")
-            .unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = write_card(
+            &dir.path().join(GAVIN_ROOT_DIR).join("plans"),
+            "p.md",
+            "---\ntitle: T\nkind: task\nstatus: To Do\nparent: a.md\nlabels: x\n---\nbody\n",
+        );
         set_plan_field(&path, "status", "").unwrap();
         set_plan_field(&path, "parent", "").unwrap();
         set_plan_field(&path, "labels", "").unwrap();
@@ -2205,8 +2421,9 @@ mod tests {
     #[test]
     fn kind_and_parent_values_are_validated() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("p.md");
-        std::fs::write(&path, "---\ntitle: T\n---\n").unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path =
+            write_card(&dir.path().join(GAVIN_ROOT_DIR).join("plans"), "p.md", "---\ntitle: T\n---\n");
         assert!(set_plan_field(&path, "kind", "epic").is_err());
         assert!(set_plan_field(&path, "parent", "../evil.md").is_err());
         assert!(set_plan_field(&path, "parent", "no-md").is_err());
@@ -2223,8 +2440,12 @@ mod tests {
     #[test]
     fn set_plan_field_accepts_integer_order_and_rejects_garbage() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("p.md");
-        std::fs::write(&path, "---\ntitle: T\nstatus: To Do\n---\nbody\n").unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = write_card(
+            &dir.path().join(GAVIN_ROOT_DIR).join("plans"),
+            "p.md",
+            "---\ntitle: T\nstatus: To Do\n---\nbody\n",
+        );
         assert!(set_plan_field(&path, "order", "1.5").is_err());
         assert!(set_plan_field(&path, "order", "soon").is_err());
         // Neither failed call may touch the file:
@@ -2287,8 +2508,12 @@ mod tests {
     #[test]
     fn write_plan_field_replaces_a_priority_line() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("p.md");
-        std::fs::write(&path, "---\nstatus: To Do\npriority: low\n---\nbody\n").unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = write_card(
+            &dir.path().join(GAVIN_ROOT_DIR).join("plans"),
+            "p.md",
+            "---\nstatus: To Do\npriority: low\n---\nbody\n",
+        );
         set_plan_field(&path, "priority", "urgent").unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -2299,8 +2524,12 @@ mod tests {
     #[test]
     fn set_plan_field_writes_title_surgically_and_rejects_empty_or_multiline() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("p.md");
-        std::fs::write(&path, "---\ntitle: Old\nstatus: To Do\n---\n# Body\n").unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = write_card(
+            &dir.path().join(GAVIN_ROOT_DIR).join("plans"),
+            "p.md",
+            "---\ntitle: Old\nstatus: To Do\n---\n# Body\n",
+        );
 
         set_plan_field(&path, "title", "New title").unwrap();
         assert_eq!(
@@ -2320,8 +2549,9 @@ mod tests {
     #[test]
     fn set_plan_field_rejects_disallowed_keys_and_invalid_priorities() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("p.md");
-        std::fs::write(&path, "---\nstatus: To Do\n---\n").unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path =
+            write_card(&dir.path().join(GAVIN_ROOT_DIR).join("plans"), "p.md", "---\nstatus: To Do\n---\n");
         // `title` used to be rejected here; it is allowed as of the plan
         // explorer's metadata panel, so this asserts the rule that
         // survives -- an arbitrary key is still refused.
@@ -2340,9 +2570,9 @@ mod tests {
     #[test]
     fn set_checklist_item_toggles_exactly_one_line() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("p.md");
+        init_gavin_root(dir.path(), "WS").unwrap();
         let original = "---\ntitle: P\n---\n# H\n- [ ] one\n  - [x] two\nrest\n";
-        std::fs::write(&path, original).unwrap();
+        let path = write_card(&dir.path().join(GAVIN_ROOT_DIR).join("plans"), "p.md", original);
         set_checklist_item(&path, 4, "one", true).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -2359,13 +2589,24 @@ mod tests {
     #[test]
     fn set_checklist_item_validates_line_and_text() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("p.md");
+        init_gavin_root(dir.path(), "WS").unwrap();
         let original = "---\ntitle: P\n---\n- [ ] one\n";
-        std::fs::write(&path, original).unwrap();
+        let path = write_card(&dir.path().join(GAVIN_ROOT_DIR).join("plans"), "p.md", original);
         assert!(set_checklist_item(&path, 99, "one", true).is_err()); // out of range
         assert!(set_checklist_item(&path, 3, "drifted", true).is_err()); // text mismatch
         assert!(set_checklist_item(&path, 1, "title: P", true).is_err()); // not a checkbox line
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original); // no writes on error
+    }
+
+    /// DP-03: this request used to act on any path the wire named. Now it
+    /// is `confine_card_path`'s job, exactly like `delete_card_file`'s own
+    /// guard tests above.
+    #[test]
+    fn set_checklist_item_refuses_a_path_outside_any_gavin_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let loose = write_card(dir.path(), "p.md", "---\ntitle: P\n---\n- [ ] one\n");
+        assert!(set_checklist_item(&loose, 3, "one", true).is_err());
+        assert_eq!(std::fs::read_to_string(&loose).unwrap(), "---\ntitle: P\n---\n- [ ] one\n");
     }
 
     #[test]
@@ -2415,6 +2656,16 @@ mod tests {
         assert_eq!(child, plans.join("task-x-2.md"));
     }
 
+    /// DP-03: `plan_path` is confined the same way `delete_card_file`'s
+    /// target already was.
+    #[test]
+    fn promote_checklist_item_refuses_a_path_outside_any_gavin_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let loose = write_card(dir.path(), "p.md", "---\ntitle: P\n---\n- [ ] one\n");
+        assert!(promote_checklist_item(&loose, "one").is_err());
+        assert_eq!(std::fs::read_to_string(&loose).unwrap(), "---\ntitle: P\n---\n- [ ] one\n");
+    }
+
     #[test]
     fn delete_card_file_removes_only_guarded_paths() {
         let dir = tempfile::tempdir().unwrap();
@@ -2461,6 +2712,24 @@ mod tests {
         assert!(victim.exists());
     }
 
+    /// The other half of `confine_card_path`'s lift: a lexically
+    /// well-formed `.gavin*/plans/x.md` that RESOLVES somewhere else
+    /// entirely through a symlinked component must be caught too, not
+    /// just a literal `..`.
+    #[test]
+    fn confine_card_path_resolves_symlinks_before_checking_the_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("victim.md");
+        std::fs::write(&victim, "x").unwrap();
+        let link = plans.join("looks-like-a-card.md");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        assert!(confine_card_path(&link).is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "x");
+    }
+
     #[test]
     fn external_contexts_register_scan_and_unregister() {
         let root = tempfile::tempdir().unwrap();
@@ -2492,6 +2761,37 @@ mod tests {
         assert!(scan_root(root.path()).contexts.iter().all(|c| !c.outside));
         // Removing an unregistered path is a no-op, not an error:
         remove_external_context(root.path(), &lib).unwrap();
+    }
+
+    /// DP-03: the confinement `CreateGavinContext` and
+    /// `AddExternalGavinContext` check their root/parent argument against
+    /// in `server.rs`, before either function above ever runs.
+    #[test]
+    fn confine_root_path_accepts_watched_roots_and_their_kin_and_refuses_the_rest() {
+        let watched = tempfile::tempdir().unwrap();
+        let watched_root = watched.path().canonicalize().unwrap();
+        let nested = watched_root.join("feature");
+        std::fs::create_dir_all(&nested).unwrap();
+        let unrelated = tempfile::tempdir().unwrap();
+
+        let roots = vec![watched_root.clone()];
+
+        // The watched root itself:
+        assert_eq!(confine_root_path(&watched_root, &roots).unwrap(), watched_root);
+        // A descendant of it (CreateGavinContext's ordinary case):
+        assert_eq!(confine_root_path(&nested, &roots).unwrap(), nested);
+        // An ancestor of it (AddExternalGavinContext's root_path could be
+        // one of several nested roots this daemon watches):
+        assert_eq!(
+            confine_root_path(watched_root.parent().unwrap(), &roots).unwrap(),
+            watched_root.parent().unwrap()
+        );
+        // Unrelated to every watched root: refused.
+        assert!(confine_root_path(unrelated.path(), &roots).is_err());
+        // Nothing watched at all: refused, not vacuously accepted.
+        assert!(confine_root_path(&watched_root, &[]).is_err());
+        // Must exist:
+        assert!(confine_root_path(&watched_root.join("nope"), &roots).is_err());
     }
 
     #[test]
@@ -2601,6 +2901,70 @@ mod tests {
 
         let tree = scan_root(dir.path());
         assert_eq!(tree.contexts.len(), 0);
+    }
+
+    /// DP-05: a hostile repo's oversize plan file must not be read into
+    /// memory on every rescan. It still appears in the tree -- never
+    /// silently dropped -- but as a warning, with none of its claimed
+    /// frontmatter believed.
+    #[test]
+    fn oversize_plan_file_is_reported_as_a_warning_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let mut body = "---\ntitle: should-not-be-read\nstatus: Done\n---\n".to_string();
+        body.push_str(&"x".repeat(MAX_SCANNED_FILE_BYTES as usize + 1));
+        write_card(&plans, "big.md", &body);
+
+        let tree = scan_root(dir.path());
+        let big = tree.contexts[0]
+            .plans
+            .iter()
+            .find(|p| p.file_name == "big.md")
+            .expect("oversize card still listed");
+        assert!(big.parse_warning);
+        assert_eq!(big.title, "big");
+        assert_eq!(big.status, None);
+        assert_eq!(big.checklist_total, 0);
+    }
+
+    /// DP-05: a directory symlink inside the repo must not let the scan
+    /// wander outside the watched root and read whatever it finds there.
+    #[test]
+    fn symlinked_directory_leaving_the_root_is_not_followed() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        // A `.gavin` context sitting entirely outside the watched root --
+        // the content a hostile repo's symlink is trying to reach.
+        write_card(&outside.path().join(GAVIN_DIR).join("plans"), "leak.md", "---\ntitle: Leak\n---\n");
+
+        let link = root.path().join("escape");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        let tree = scan_root(root.path());
+        // Only the Root context -- the symlink was never descended into,
+        // so the `.gavin` context beyond it was never found, let alone
+        // its plan read.
+        assert_eq!(tree.contexts.len(), 1);
+        assert_eq!(tree.contexts[0].kind, GavinContextKind::Root);
+        assert!(tree.contexts.iter().all(|c| c.plans.iter().all(|p| p.title != "Leak")));
+    }
+
+    /// The same guard has to apply to a symlinked FILE's plain sibling
+    /// content too -- i.e. a symlinked file itself must still be read
+    /// normally, only directory descent is restricted.
+    #[test]
+    fn symlinked_file_inside_a_context_is_still_read() {
+        let root = tempfile::tempdir().unwrap();
+        init_gavin_root(root.path(), "WS").unwrap();
+        let plans = root.path().join(GAVIN_ROOT_DIR).join("plans");
+        let real = write_card(&plans, "real.md", "---\ntitle: Real\n---\n");
+        let link = plans.join("linked.md");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let tree = scan_root(root.path());
+        assert!(tree.contexts[0].plans.iter().any(|p| p.file_name == "linked.md" && p.title == "Real"));
     }
 
     #[test]
@@ -3547,7 +3911,12 @@ mod tests {
     fn plan_files_outside_a_plans_folder_are_never_moved() {
         let dir = tempfile::tempdir().unwrap();
         let loose = write_card(dir.path(), "p.md", "---\ntitle: P\n---\n");
-        assert_eq!(set_plan_field(&loose, "status", "Done").unwrap(), loose);
+        // Before DP-03's guard this silently no-op'd the move but still
+        // wrote the field; `confine_card_path` now refuses the write
+        // outright, so the file is untouched for a stronger reason than
+        // "never moved" -- it is never acted on at all.
+        assert!(set_plan_field(&loose, "status", "Done").is_err());
+        assert_eq!(std::fs::read_to_string(&loose).unwrap(), "---\ntitle: P\n---\n");
         assert!(loose.is_file());
     }
 

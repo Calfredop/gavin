@@ -4,7 +4,6 @@ import { get, writable } from "svelte/store";
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
-vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./dialog", () => ({
   askConfirm: vi.fn(),
   askConfirmChecked: vi.fn(),
@@ -18,6 +17,7 @@ vi.mock("./backend", () => ({
   unlinkCardSession: vi.fn(),
   getOrchestration: vi.fn(),
   setOrchestration: vi.fn().mockResolvedValue(undefined),
+  openPathExternally: vi.fn().mockResolvedValue(undefined),
 }));
 /// Hoisted so the `vi.mock` factory below (which is hoisted above every
 /// import) can close over it, and so `resolvedAgentFor` and
@@ -77,6 +77,11 @@ vi.mock("./layoutState", () => ({
 // from the menu, so the request function is the seam.
 vi.mock("./codeReviewActions", () => ({
   requestCardReview: vi.fn().mockResolvedValue(null),
+}));
+// The first-Run review's interactive half owns its own suite too; Develop
+// only needs it reachable, not driven, so it is pre-approved here.
+vi.mock("./cardReviewActions", () => ({
+  ensureCardReviewed: vi.fn().mockResolvedValue(true),
 }));
 vi.mock("./workspace", () => {
   const findSessionLocation = vi.fn();
@@ -322,6 +327,14 @@ describe("buildCardMenuEntries", () => {
 
   it("picking Develop spawns the skill's agent and leaves the card's status alone", async () => {
     vi.mocked(backend.createSession).mockResolvedValue("s-9");
+    // Develop's review sheet reads the card file now (sec-fix-develop-run-
+    // review); this suite is about menu entries, not that gate, so it is
+    // handed a plain file rather than driven.
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\ntitle: T\nstatus: To Do\n---\nDevelop this.\n",
+      truncated: false,
+      exists: true,
+    });
     const entries = buildCardMenuEntries(card("task", "To Do"), hooks());
     item(entries, "Develop into a plan…")?.onPick?.();
     await vi.waitFor(() => expect(backend.createSession).toHaveBeenCalled());

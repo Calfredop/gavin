@@ -57,7 +57,7 @@
     NO_COMPLEXITY,
     parseComplexity,
   } from "./complexity";
-  import { daemonCompat, newCardAutoCommit, workspaceRootPath } from "./layoutState";
+  import { daemonCompat, newCardAutoCommit, stampCardReview, workspaceRootPath } from "./layoutState";
   import { featureBlockedReason } from "./daemonCompat";
   import { formatShortcut } from "./shortcuts";
   import { isMacSync } from "./platform";
@@ -322,6 +322,23 @@
         parseWarning: false,
       };
       patchPlanCreated(workspaceId, contextFolder, created);
+      // Pre-approved by the act of writing it (`cardReview.ts`). The
+      // first-Run review exists because a card's body is an agent's
+      // prompt and cards arrive with the repository -- but this card did
+      // not arrive with anything, it was typed here a second ago. Asking
+      // the human to review their own sentence is how a gate becomes a
+      // reflex click, and a reflex click is worth nothing on the card
+      // that DID arrive with the clone.
+      //
+      // Stamped from `args`, which is exactly what was written to disk,
+      // rather than by reading the file back: the write has already
+      // happened and a failed read here would leave the human being asked
+      // about their own card.
+      void stampCardReview(workspaceId, path, {
+        title: args.title,
+        body: args.body ?? "",
+        attachments: [...attachments],
+      });
       // A card carries no `order:`, and unordered cards sort into an
       // alphabetical tail -- so without this the card the human just
       // typed appears wherever its file name falls. Placed at the end of

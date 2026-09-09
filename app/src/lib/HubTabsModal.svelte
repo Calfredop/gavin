@@ -25,8 +25,7 @@
     workspaceHasHubTabOrder,
     workspaceOverridesHubTabs,
   } from "./hubTabPrefs";
-  import { agentModelDefaultsStore, agentProfilesStore } from "./layoutState";
-  import { gavinTrees } from "./gavinState";
+  import { agentModelDefaultsStore, agentProfilesStore, trustedAgentConfigs } from "./layoutState";
   import { resolveAgentConfig } from "./settings";
   import { hubLabel } from "./workspace";
 
@@ -68,7 +67,7 @@
     workspaceId === null
       ? "CLAUDE.md"
       : resolveAgentConfig(
-          $gavinTrees[workspaceId]?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+          $trustedAgentConfigs(workspaceId),
           $agentProfilesStore,
           $agentModelDefaultsStore
         ).file

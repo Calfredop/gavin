@@ -1,10 +1,13 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 
 /// Cap on a single protocol line, so a client that never sends a newline
-/// can't grow the daemon's read buffer unbounded.
-const MAX_LINE_BYTES: u64 = 1024 * 1024;
+/// can't grow the daemon's read buffer unbounded. `pub` so gavin-mcp's
+/// stdin reader (SC-10) can enforce the exact same cap instead of
+/// carrying its own copy of the number.
+pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 
 /// Bumped on ANY wire-breaking change. The daemon reports it via
 /// Request::GetProtocolVersion; the app (at bootstrap) and gavin-mcp (at
@@ -289,7 +292,7 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 34;
+pub const PROTOCOL_VERSION: u32 = 35;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -791,6 +794,27 @@ pub enum Request {
         session_id: String,
         name: String,
     },
+    /// The first request on a Unix-socket connection, establishing the
+    /// client's identity for the connection's whole life
+    /// (`sec-fix-client-identity.md`, remote-access design §4). Optional
+    /// and, if sent, must be first; a second `Hello` on one connection is
+    /// refused. Sending anything else first leaves the connection `local`,
+    /// which is what keeps every pre-v35 client working unchanged.
+    ///
+    /// `auth` decides the role: the daemon token yields `app`, a session
+    /// token yields `agent` scoped to that session, nothing yields
+    /// `local`. `nonce` is the client's random challenge; the daemon
+    /// answers `HelloAck.server_proof` = HMAC(daemon_token, nonce), which
+    /// lets the app tell the real daemon from a socket squatter (DP-06)
+    /// without the token ever crossing back in the clear. `client` is
+    /// advisory -- it names the binary for the Sessions manager; the role
+    /// never comes from it.
+    Hello {
+        client: String,
+        protocol_version: u32,
+        auth: HelloAuth,
+        nonce: String,
+    },
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
     /// a daemon it owns without `pkill`, which cannot distinguish this
@@ -803,6 +827,27 @@ pub enum Request {
     /// connection and every push riding on it.
     #[serde(other)]
     Unknown,
+}
+
+/// What a `Hello` presents to claim a role. Tagged by `kind` so it reads
+/// on the wire as `{"kind":"session-token","token":"…"}`, exactly the
+/// shape the remote-access design §7 sketches.
+///
+/// `None` is a first-class variant, not an absent field: a connection may
+/// legitimately introduce itself as nobody in particular (a hand-started
+/// Claude Code in a terminal) and still get the `local` role, and making
+/// that explicit keeps the daemon's `authorize` from having to treat "no
+/// auth" and "unparseable auth" alike.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum HelloAuth {
+    /// No credential; the connection becomes `local`.
+    None,
+    /// The daemon token from `daemon.token`; the connection becomes `app`.
+    DaemonToken { token: String },
+    /// A session token minted at `CreateSession`; the connection becomes
+    /// `agent`, scoped to the session the token was minted for.
+    SessionToken { token: String },
 }
 
 /// The protocol version that introduced `req`'s variant.
@@ -909,6 +954,18 @@ pub fn min_version_for(req: &Request) -> u32 {
         | Request::SaveTool { .. } => 11,
 
         Request::Shutdown => 12,
+
+        // Client identity on the local socket (phase 1 of the
+        // remote-access design). A new request TYPE, so this match is the
+        // real wire gate: a daemon older than 35 answers `Unsupported`
+        // from the `#[serde(other)]` arm and every client reads that as
+        // "this daemon has no identity yet" -- the app continues as
+        // `local`, gavin-mcp continues untokened, and nothing is silently
+        // dropped because `Hello` carries no field an older daemon would
+        // parse-and-discard. The app still mirrors it as
+        // FEATURE_MIN_VERSION.clientIdentity so the Settings surface can
+        // say WHY it is greyed, per CLAUDE.md.
+        Request::Hello { .. } => 35,
 
         // The archive (`plans/archive/`). v13 also widened PlanFileInfo
         // with `modified_at`, which the archive grid orders by -- that
@@ -1064,6 +1121,93 @@ pub fn gate_request(req: &Request, daemon_version: u32) -> Result<(), GatedReque
     Ok(())
 }
 
+/// The identity primitives phase 1 needs, kept in `protocol` because all
+/// three processes touch them: the daemon mints and checks, the app reads
+/// the token file and verifies the proof, gavin-mcp reads its session
+/// token from the environment. One home means the HMAC construction and
+/// the hashing can never drift between minting and checking.
+///
+/// A 32-byte value, hex-encoded, read from the OS CSPRNG. `/dev/urandom`
+/// rather than a crate so this stays dependency-light and identical on
+/// every platform gavin runs on; a failure to read it is fatal to the
+/// caller, because a predictable token is worse than none.
+pub fn random_hex(n_bytes: usize) -> std::io::Result<String> {
+    let mut buf = vec![0u8; n_bytes];
+    let mut f = std::fs::File::open("/dev/urandom")?;
+    f.read_exact(&mut buf)?;
+    Ok(hex_encode(&buf))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// SHA-256 of a token, hex-encoded. The registry stores this, never the
+/// session token itself, so a copy of `registry.sqlite` yields no token
+/// that could be presented in a `Hello`.
+pub fn hash_token_hex(token: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(token.as_bytes());
+    hex_encode(&h.finalize())
+}
+
+/// HMAC-SHA256(key, msg), hex-encoded. Written out by hand (the two-pass
+/// ipad/opad construction) rather than pulling the `hmac` crate: SHA-256
+/// is already here for `hash_token_hex`, and one fewer dependency on the
+/// wire-identity path is worth the six lines.
+fn hmac_sha256_hex(key: &[u8], msg: &[u8]) -> String {
+    const BLOCK: usize = 64;
+    let mut k = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        let mut h = Sha256::new();
+        h.update(key);
+        let d = h.finalize();
+        k[..d.len()].copy_from_slice(&d);
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let mut ipad = [0x36u8; BLOCK];
+    let mut opad = [0x5cu8; BLOCK];
+    for i in 0..BLOCK {
+        ipad[i] ^= k[i];
+        opad[i] ^= k[i];
+    }
+    let mut inner = Sha256::new();
+    inner.update(ipad);
+    inner.update(msg);
+    let inner = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(opad);
+    outer.update(inner);
+    hex_encode(&outer.finalize())
+}
+
+/// The daemon's answer to a `Hello` nonce: HMAC(daemon token, nonce). The
+/// app computes the same from the token file and compares, which proves
+/// the peer holds the token without the token itself crossing back (DP-06).
+pub fn server_proof(daemon_token: &str, nonce: &str) -> String {
+    hmac_sha256_hex(daemon_token.as_bytes(), nonce.as_bytes())
+}
+
+/// Where the daemon writes its per-start token, `0600`, beside the socket.
+pub fn daemon_token_path() -> PathBuf {
+    app_support_dir().join("daemon.token")
+}
+
+/// The marker the daemon reads to decide whether an untokened local
+/// connection keeps full reach. Absent (the default) means it does, so
+/// nothing breaks the day phase 1 lands; present means an untokened local
+/// connection is refused the privileged, process-starting requests
+/// (remote-access design §11 Q1). A file rather than a protocol field so
+/// the daemon can honour a live toggle with no restart and no new request.
+pub fn require_local_token_path() -> PathBuf {
+    app_support_dir().join("require_local_token")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Response {
@@ -1184,6 +1328,27 @@ pub enum Response {
     /// know which version introduced a variant it has never heard of,
     /// so it reports its own version as the ceiling it can serve.
     Unsupported { request_type: String, min_version: u32 },
+    /// The reply to a `Hello` the daemon accepted. `role` is what the
+    /// daemon decided this connection is (`app`, `local`, `agent`),
+    /// which the client cannot override. `session_id` is set for an
+    /// `agent` -- the session its token was minted for -- so gavin-mcp
+    /// can confirm the daemon bound it to the tab it is running in.
+    /// `server_proof` is HMAC(daemon_token, the client's Hello nonce),
+    /// present only when the connection proved knowledge of the daemon
+    /// token is worth checking (`app`): the app verifies it to know it
+    /// reached the real daemon rather than a squatter (DP-06).
+    HelloAck {
+        role: String,
+        daemon_version: u32,
+        session_id: Option<String>,
+        server_proof: Option<String>,
+    },
+    /// A request refused by `authorize` because the connection's role may
+    /// not make it. Only ever sent to a connection that sent a `Hello` or
+    /// completed a remote handshake -- a client that by construction knows
+    /// this variant -- so an old client never meets a `Response` shape it
+    /// cannot parse.
+    Forbidden { request_type: String, role: String },
 }
 
 /// A session's git status, deduped daemon-side by repo root (many sessions
@@ -2215,6 +2380,58 @@ mod tests {
         assert!(gate_request(&Request::Unknown, u32::MAX - 1).is_err());
     }
 
+    /// The hand-rolled HMAC has to match a real one, or `server_proof`
+    /// proves nothing. RFC 4231 test case 1: key = 0x0b × 20, data =
+    /// "Hi There".
+    #[test]
+    fn hmac_sha256_matches_the_rfc_4231_vector() {
+        let key = [0x0bu8; 20];
+        assert_eq!(
+            hmac_sha256_hex(&key, b"Hi There"),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+    }
+
+    /// A key longer than the 64-byte block is hashed first (RFC 4231
+    /// test case 6), which is the branch a 64-hex-char daemon token
+    /// actually exercises.
+    #[test]
+    fn hmac_sha256_handles_an_over_block_key() {
+        let key = [0xaau8; 131];
+        assert_eq!(
+            hmac_sha256_hex(&key, b"Test Using Larger Than Block-Size Key - Hash Key First"),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
+    }
+
+    /// The proof binds to the nonce: the same token over two nonces
+    /// gives two proofs, so a captured proof can't be replayed onto a
+    /// fresh connection.
+    #[test]
+    fn server_proof_is_deterministic_and_nonce_bound() {
+        assert_eq!(server_proof("tok", "n1"), server_proof("tok", "n1"));
+        assert_ne!(server_proof("tok", "n1"), server_proof("tok", "n2"));
+        assert_ne!(server_proof("tokA", "n1"), server_proof("tokB", "n1"));
+    }
+
+    /// A hashed token is not the token, and equal tokens hash equal.
+    #[test]
+    fn hash_token_is_stable_and_hides_the_token() {
+        let t = "s3cr3t-session-token";
+        assert_eq!(hash_token_hex(t), hash_token_hex(t));
+        assert_ne!(hash_token_hex(t), t);
+        assert_eq!(hash_token_hex(t).len(), 64);
+    }
+
+    /// The auth block reads on the wire exactly as the design sketch says.
+    #[test]
+    fn hello_auth_serializes_as_kebab_tagged() {
+        let v = serde_json::to_value(HelloAuth::SessionToken { token: "x".into() }).unwrap();
+        assert_eq!(v, serde_json::json!({"kind": "session-token", "token": "x"}));
+        let n = serde_json::to_value(HelloAuth::None).unwrap();
+        assert_eq!(n, serde_json::json!({"kind": "none"}));
+    }
+
     #[test]
     fn request_roundtrips_through_json_line() {
         let mut buf = Vec::new();
@@ -2920,7 +3137,11 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 34);
+        // v35: Request::Hello + Response::HelloAck/Forbidden -- client
+        // identity on the local socket. A new request TYPE, so a pre-v35
+        // daemon answers Unsupported and every client reads "no identity
+        // yet"; nothing is silently dropped.
+        assert_eq!(PROTOCOL_VERSION, 35);
     }
 
     #[test]
@@ -3256,6 +3477,13 @@ mod tests {
                 exit_code: None,
             },
             Request::ToolRuns { workspace_id: "w".into() },
+            // v35's client-identity handshake.
+            Request::Hello {
+                client: "test".into(),
+                protocol_version: PROTOCOL_VERSION,
+                auth: HelloAuth::None,
+                nonce: "n".into(),
+            },
             Request::Unknown,
         ]
     }
@@ -3288,7 +3516,8 @@ mod tests {
     /// templates), v18=1 (Snapshot), v21=1 (SetFailurePatterns), v23=1
     /// (ClaimCardForSession), v24=1 (EndOrphan), v25=1 (SessionProcesses),
     /// v27=1 (CardRuns), v28=1 (SetRailRunByRoot), v29=4 (the
-    /// follow-up queue), v30=3 (standalone tool runs), plus Unknown.
+    /// follow-up queue), v30=3 (standalone tool runs), v35=1 (Hello --
+    /// client identity), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -3319,6 +3548,7 @@ mod tests {
         expected.insert(28, 1);
         expected.insert(29, 4);
         expected.insert(30, 3);
+        expected.insert(35, 1); // Request::Hello -- client identity
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

@@ -24,6 +24,13 @@
 
   interface Props {
     rootPath: string | null;
+    /// The workspace's RESOLVED launch command, whose first token is the
+    /// binary the install drives. A prop rather than something the host
+    /// reads off config.toml: that file ships with the repository, and
+    /// gavin must not spawn what a clone named until a human approved it
+    /// (`workspaceTrust.ts`). Both callers pass what `resolveAgentConfig`
+    /// gave them, which is already gated.
+    agentCommand: string;
     status: SuperpowersStatus;
     mark: SuperpowersMark | undefined;
     /// Re-reads status and marker in whoever owns them. Both surfaces
@@ -35,7 +42,7 @@
     /// button would crowd a step that is meant to be answered once.
     allowClear?: boolean;
   }
-  let { rootPath, status, mark, onChanged, allowClear = false }: Props = $props();
+  let { rootPath, agentCommand, status, mark, onChanged, allowClear = false }: Props = $props();
 
   let running = $state(false);
   let error = $state<string | null>(null);
@@ -55,7 +62,7 @@
     running = true;
     error = null;
     try {
-      const next = await backend.superpowersInstall(rootPath);
+      const next = await backend.superpowersInstall(rootPath, agentCommand);
       runOutput = next.output;
       // A failed install leaves something worth reading. Open the drawer
       // rather than making them hunt for it.

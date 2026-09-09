@@ -47,8 +47,15 @@ vi.mock("./layoutState", () => ({
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
-  workspaceRootPath: vi.fn(() => "/repos/gavin"),
+  // Approved: these cases are about what a run does, not about the gate.
+  // The unapproved case is its own test below.
+  configTrustFor: vi.fn(() => configTrust),
 }));
+
+/// Flipped by the one case that cares. A best-of-N launch `&&`-chains
+/// `[worktree] setup` ahead of every candidate's agent, so an unapproved
+/// config must reach those sessions carrying nothing.
+let configTrust = { trusted: true };
 
 const forkWorktree = vi.fn(async (_ws: string, opts: { path: string; from: string | null }) => {
   trace.push(`fork:${opts.path}`);
@@ -73,9 +80,19 @@ vi.mock("./kanbanState", () => ({
 }));
 
 vi.mock("./columnRunAction", () => ({ cardSessionState: vi.fn(() => "none") }));
-vi.mock("./cardRunActions", () => ({ resolveAttachmentsForRun: vi.fn(async () => ({ paths: [] })) }));
+vi.mock("./cardRunActions", () => ({
+  resolveAttachmentsForRun: vi.fn(async () => ({ paths: [], withheld: [], statuses: [] })),
+}));
+// The first-Run review, as the launcher reaches it. A real one raises
+// the app's dialog and waits; this is the seam the answer is driven
+// through, and it says yes unless a test says otherwise.
+vi.mock("./cardReviewActions", () => ({ ensureCardReviewed: vi.fn(async () => true) }));
 vi.mock("./gavinState", () => ({
   gavinTrees: writable({ "ws-1": { rootPath: "/repos/gavin" } }),
+  // The store, not a `worktreeSetup` call: the launch reads the same
+  // copy workspace trust hashed, so a fresher read cannot slip lines
+  // past the approval.
+  worktreeSetups: writable({ "ws-1": ["npm install"] }),
   patchPlanField: vi.fn(),
   patchPlanPath: vi.fn(),
 }));
@@ -152,7 +169,7 @@ beforeEach(() => {
     return path;
   });
   vi.mocked(backend.readFileForViewer).mockResolvedValue({ exists: true, content: "---\ntitle: t\n---\nBODY" } as never);
-  vi.mocked(backend.worktreeSetup).mockResolvedValue(["npm install"]);
+  configTrust = { trusted: true };
   vi.mocked(columnRunAction.cardSessionState).mockReturnValue("none" as never);
 });
 
@@ -182,6 +199,17 @@ describe("starting a run", () => {
     // Each candidate is told which one it is, or three tabs name
     // themselves the same thing.
     expect(specs[0].command).toContain("Claude Code · opus");
+  });
+
+  it("drops the repo's setup from every candidate until the human has approved it", async () => {
+    // config.toml ships with the repo, and this line runs `&&`-ed ahead
+    // of the agent in a checkout that was cut a second earlier. The
+    // launch still happens -- it is the repo's shell that does not.
+    configTrust = { trusted: false };
+    await startBestOfN("ws-1", CARD, PLANS, "main");
+    const specs = createTiledPage.mock.calls[0][2];
+    expect(specs[0].command.startsWith("claude --model opus ")).toBe(true);
+    expect(specs.every((sp: { command: string }) => !sp.command.includes("npm install"))).toBe(true);
   });
 
   it("records the run against the card, with the branch and folder each candidate owns", async () => {

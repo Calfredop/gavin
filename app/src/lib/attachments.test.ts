@@ -9,14 +9,24 @@ import {
   parseAttachments,
   removeAttachment,
   resolvedAttachmentPaths,
+  withheldAttachmentPaths,
+  type AttachmentLocation,
   type AttachmentStatus,
 } from "./attachments";
 
 const status = (
   path: string,
   exists: boolean,
-  absolutePath: string | null = `/ws/${path}`
-): AttachmentStatus => ({ path, absolutePath, exists });
+  absolutePath: string | null = `/ws/${path}`,
+  location: AttachmentLocation = "root",
+  refusedReason: string | null = null
+): AttachmentStatus => ({ path, absolutePath, exists, location, refusedReason });
+
+const refused = (path: string, reason: string): AttachmentStatus =>
+  status(path, false, null, "refused", reason);
+
+const outside = (path: string, absolutePath: string, exists = true): AttachmentStatus =>
+  status(path, exists, absolutePath, "outside");
 
 describe("parseAttachments", () => {
   it("splits on commas and trims, exactly like the daemon's parser", () => {
@@ -94,8 +104,22 @@ describe("attachmentPromptBlock", () => {
     expect(block).toContain("- /Users/x/shot.png");
   });
 
-  it("is empty with no attachments, so composers can concatenate blindly", () => {
+  it("is empty with no attachments at all, so composers can concatenate blindly", () => {
     expect(attachmentPromptBlock([])).toBe("");
+    expect(attachmentPromptBlock([], [])).toBe("");
+  });
+
+  it("names withheld entries in a separate note, without handing over a path to read", () => {
+    const block = attachmentPromptBlock([], ["~/Desktop/shot.png"]);
+    expect(block).toContain("~/Desktop/shot.png");
+    expect(block).toContain("gavin");
+    expect(block).not.toContain("read them before you start");
+  });
+
+  it("carries both sections when some attachments are readable and some withheld", () => {
+    const block = attachmentPromptBlock(["/ws/docs/spec.md"], ["~/Desktop/shot.png"]);
+    expect(block).toContain("- /ws/docs/spec.md");
+    expect(block).toContain("~/Desktop/shot.png");
   });
 });
 
@@ -106,9 +130,39 @@ describe("resolvedAttachmentPaths", () => {
     ).toEqual(["/ws/docs/a.md", "/ws/docs/b.md"]);
   });
 
+  it("hands back an extra-context path exactly like a root one", () => {
+    expect(
+      resolvedAttachmentPaths([status("shared/x.md", true, "/ctx/shared/x.md", "extraContext")])
+    ).toEqual(["/ctx/shared/x.md"]);
+  });
+
   it("drops what did not resolve — the run gate refuses first", () => {
     expect(
-      resolvedAttachmentPaths([status("gone.md", false), status("../x.md", false, null)])
+      resolvedAttachmentPaths([status("gone.md", false), refused("../x.md", "contains a `..` component")])
+    ).toEqual([]);
+  });
+
+  it("drops an outside entry even though it resolved and exists — it is withheld, not read", () => {
+    expect(resolvedAttachmentPaths([outside("~/Desktop/shot.png", "/Users/x/Desktop/shot.png")])).toEqual(
+      []
+    );
+  });
+});
+
+describe("withheldAttachmentPaths", () => {
+  it("names an existing outside entry by its raw card text", () => {
+    expect(
+      withheldAttachmentPaths([outside("~/Desktop/shot.png", "/Users/x/Desktop/shot.png")])
+    ).toEqual(["~/Desktop/shot.png"]);
+  });
+
+  it("is empty for root/extraContext entries and for an outside entry that does not exist", () => {
+    expect(
+      withheldAttachmentPaths([
+        status("docs/a.md", true),
+        status("shared/x.md", true, "/ctx/shared/x.md", "extraContext"),
+        outside("~/gone.png", "/Users/x/gone.png", false),
+      ])
     ).toEqual([]);
   });
 });
@@ -119,6 +173,12 @@ describe("missingAttachmentReason", () => {
     expect(missingAttachmentReason([status("docs/a.md", true)])).toBeNull();
   });
 
+  it("is null for an outside entry that exists — withheld is not blocked", () => {
+    expect(
+      missingAttachmentReason([outside("~/Desktop/shot.png", "/Users/x/Desktop/shot.png")])
+    ).toBeNull();
+  });
+
   it("names the missing file rather than saying one is missing", () => {
     const reason = missingAttachmentReason([status("docs/a.md", true), status("gone.md", false)]);
     expect(reason).toContain("gone.md");
@@ -127,9 +187,27 @@ describe("missingAttachmentReason", () => {
   });
 
   it("names all of them, plural, when more than one is gone", () => {
-    const reason = missingAttachmentReason([status("a.md", false), status("../b.md", false, null)]);
+    const reason = missingAttachmentReason([status("a.md", false), status("b.md", false)]);
     expect(reason).toContain("Attachments not found");
     expect(reason).toContain("a.md");
-    expect(reason).toContain("../b.md");
+    expect(reason).toContain("b.md");
+  });
+
+  it("gives a refused entry its own message naming why, distinct from a missing one", () => {
+    const reason = missingAttachmentReason([
+      refused("~/.ssh/id_rsa", "lies inside ~/.ssh, which gavin refuses to hand an agent"),
+    ]);
+    expect(reason).toContain("Attachment refused");
+    expect(reason).toContain("~/.ssh/id_rsa");
+    expect(reason).toContain("gavin refuses to hand an agent");
+  });
+
+  it("reports a refused entry ahead of an ordinary missing one, so the loud reason wins", () => {
+    const reason = missingAttachmentReason([
+      status("gone.md", false),
+      refused("../x.md", "contains a `..` component"),
+    ]);
+    expect(reason).toContain("Attachment refused");
+    expect(reason).toContain("../x.md");
   });
 });

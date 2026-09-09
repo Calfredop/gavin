@@ -94,6 +94,14 @@ describe("featureBlockedReason", () => {
     expect(featureBlockedReason(v9, "orchestration")).toContain("v10");
   });
 
+  // Client identity: a pre-v35 daemon has no Hello to answer, so the
+  // Remote access surface greys itself with the version it needs rather
+  // than writing require_local_token to a daemon that would not read it.
+  it("blocks client identity below v35 and allows it at exactly v35", () => {
+    expect(featureBlockedReason({ daemonVersion: 34, appVersion: 35, degraded: true }, "clientIdentity")).toContain("v35");
+    expect(featureBlockedReason({ daemonVersion: 35, appVersion: 35, degraded: false }, "clientIdentity")).toBeNull();
+  });
+
   it("stops blocking orchestration at exactly v10", () => {
     const v10 = { daemonVersion: 10, appVersion: 12, degraded: true };
     expect(featureBlockedReason(v10, "orchestration")).toBeNull();

@@ -9,6 +9,7 @@ import type { WorktreeInfo } from "./git";
 import type { SessionStatus } from "./notifications";
 import { isArchivedCard, planKey, slugStatus } from "./planBoard";
 import { isPrStep, isUntilStep, stepBefore, summaryParam, untilMax, untilVerdict } from "./orchestrationLoop";
+import { isUnreviewedStall } from "./cardReview";
 import { prKey, prRequirement, prWaitVerdict } from "./pullRequest";
 import type { PrReport } from "./pullRequest";
 
@@ -850,13 +851,22 @@ function deadSessionAction(
 ///   same, because the question every one of these answers is "why is
 ///   this rail not moving", and this is the one case where the answer is
 ///   "because you asked it not to".
+/// - `unreviewed` -- the step's card has never been read by a human
+///   (`cardReview.ts`, AG-01). Cards ship with the repository and a card
+///   body IS an agent's prompt, so a rail must not hand one over on
+///   nobody's authority; the step stalls instead of launching and this
+///   says why. Like `review` it names no session -- there is no agent
+///   behind it and never was -- and unlike every other mark here it is
+///   read off a STALLED step rather than a running one, because the
+///   whole point is that it never started.
 export type StepAttention =
   | "asking"
   | "turn-ended"
   | "stale"
   | "failed"
   | "decoy-edit"
-  | "review";
+  | "review"
+  | "unreviewed";
 
 /// How long a turn has to have been over before `turn-ended` becomes
 /// `stale`.
@@ -895,11 +905,19 @@ export const STALE_AFTER_MS = 10 * 60_000;
 /// one that is not a FAULT. A rail carrying a broken step and a review
 /// gate at once wants the human sent to the break first; the gate will
 /// still be there.
+///
+/// `unreviewed` sits beside `review` and just under it, for the same
+/// reason `review` sits under the faults: it is certain -- nothing but a
+/// person ends it -- but it is not a break. Under `review` because a rail
+/// carrying both wants the human sent to the gate they asked for first;
+/// the unreviewed card will still be there, and reading it is the longer
+/// errand.
 const ATTENTION_RANK: Record<StepAttention, number> = {
-  failed: 6,
-  "decoy-edit": 5,
-  stale: 4,
-  review: 3,
+  failed: 7,
+  "decoy-edit": 6,
+  stale: 5,
+  review: 4,
+  unreviewed: 3,
   asking: 2,
   "turn-ended": 1,
 };
@@ -960,7 +978,19 @@ export function stepAttentions(
     // uneditable and undeletable.
     for (const stage of rail.stages) {
       for (const step of stage.steps) {
-        if (stepStateOf(orch, step.id) !== "running") continue;
+        const state = stepStateOf(orch, step.id);
+        // The one mark on a step that is NOT running, and the only one
+        // that could be: a card the human has never read is refused
+        // BEFORE a session exists, so there is no status to read and no
+        // agent to describe. Matched on the stall reason the scheduler
+        // wrote, through the constant both sides import -- a field on
+        // StepRun would be a protocol bump for a fact the app already
+        // knows, and the reason string is what a stalled row carries.
+        if (state === "stalled") {
+          if (isUnreviewedStall(runByStep.get(step.id)?.reason)) marks.set(step.id, "unreviewed");
+          continue;
+        }
+        if (state !== "running") continue;
         // Gathered rather than returned at the first hit, so the winner
         // is ATTENTION_RANK's decision and not the order these tests
         // happen to be written in. A step can genuinely be two of these
@@ -1045,6 +1075,14 @@ export function attentionTip(attention: StepAttention, doneName: string): string
     // reader's next move is a button rather than a diagnosis.
     case "review":
       return "this step is a manual review — look at the work, then Skip the step to send the rail on";
+    // Says where the answer is, because the rail is not the place to give
+    // it: the body has to be read on the card, and only then does Retry
+    // have anything different to do.
+    case "unreviewed":
+      return (
+        "nobody has read this card's body yet, and a card body is the agent's prompt — open the " +
+        "card, review what an agent would receive, then Retry this step"
+      );
     // No reason here, deliberately. The mark lasts one tick: rule 3d
     // stalls the step on the same pass, and the STALL carries the
     // agent's own line (failedStepReason), which is the durable place

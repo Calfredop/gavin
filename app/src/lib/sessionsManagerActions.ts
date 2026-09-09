@@ -26,6 +26,7 @@ import {
   switchWorkspaceView,
 } from "./layoutState";
 import { findSessionLocation } from "./workspace";
+import { confirmDestructive, DAEMON_SUBJECT } from "./confirmGate";
 import {
   killBatchConfirm,
   killConfirm,
@@ -143,12 +144,17 @@ export async function restartDaemon(
   compat: DaemonCompat | null,
   onConfirmed?: () => void
 ): Promise<boolean> {
-  if (!(await askConfirm(restartConfirm(rows, compat)))) return false;
+  const token = await confirmDestructive(
+    "restart_daemon",
+    [DAEMON_SUBJECT],
+    restartConfirm(rows, compat)
+  );
+  if (token === null) return false;
   onConfirmed?.();
   const before = compat?.daemonVersion ?? null;
   let note: string | null;
   try {
-    note = restartOutcome(before, await restartDaemonInPlace());
+    note = restartOutcome(before, await restartDaemonInPlace(token));
   } catch (e) {
     await showAlert(restartFailedAlert(e));
     return false;

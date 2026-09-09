@@ -5,15 +5,18 @@
     switchWorkspaceView,
     gitTrackingDefault,
     markGitTrackingAsked,
+    recordMcpForeignChoice,
   } from "./layoutState";
   import { INIT_TRACKING_LABEL, resolveGitTracking } from "./gitTracking";
   import { applyInitTracking } from "./workspaceOpen";
   import { gavinTrees } from "./gavinState";
-  import { agentProfilesStore, agentModelDefaultsStore } from "./layoutState";
+  import { agentProfilesStore, agentModelDefaultsStore, trustedAgentConfigs } from "./layoutState";
   import { resolveAgentConfig } from "./settings";
   import * as backend from "./backend";
+  import { foreignMcpServersHash, runIntegration } from "./mcpServerTrust";
   import { UNFILED_WORKSPACE_ID, type Workspace } from "./workspace";
   import Modal from "./Modal.svelte";
+  import McpForeignChooser from "./McpForeignChooser.svelte";
 
   interface Props {
     workspace: Workspace;
@@ -37,7 +40,7 @@
   const rootMissing = $derived(Boolean(workspace.rootPath && tree?.rootMissing));
   const agent = $derived(
     resolveAgentConfig(
-      tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $trustedAgentConfigs(workspace.id),
       $agentProfilesStore,
       $agentModelDefaultsStore
     )
@@ -93,20 +96,51 @@
   // per-page context. Writes are merge-aware and re-runnable (gavin-managed
   // files updated in place; everything else preserved).
   let setupNote = $state<string | null>(null);
+  // Set instead of `setupNote` when the target MCP config names servers
+  // gavin did not add and no recorded choice answers this exact set
+  // (AG-07) -- the run pauses here until the human picks.
+  let pendingForeign = $state<backend.McpForeignServers | null>(null);
+  let mcpBusy = $state(false);
+
+  function noteFrom(result: backend.IntegrationResult): string {
+    const wrote = result.written.map((f) => f.replace(workspace.rootPath + "/", "")).join(", ");
+    const missed = result.skipped.map(([what]) => what).join(", ");
+    return missed
+      ? `Wrote: ${wrote}. Skipped: ${missed} — re-run any time to update.`
+      : `Wrote: ${wrote} — re-run any time to update.`;
+  }
 
   async function setupIntegration(): Promise<void> {
     if (!workspace.rootPath) return;
     setupNote = null;
+    pendingForeign = null;
     try {
-      const result = await backend.setupAgentIntegration(workspace.rootPath);
-      const wrote = result.written.map((f) => f.replace(workspace.rootPath + "/", "")).join(", ");
-      const missed = result.skipped.map(([what]) => what).join(", ");
-      setupNote = missed
-        ? `Wrote: ${wrote}. Skipped: ${missed} — re-run any time to update.`
-        : `Wrote: ${wrote} — re-run any time to update.`;
+      const result = await runIntegration(workspace.rootPath, agent.file, workspace.mcpForeignServersChoice);
+      if (result.mcpForeign) {
+        pendingForeign = result.mcpForeign;
+      } else {
+        setupNote = noteFrom(result);
+      }
     } catch (e) {
       setupNote = `Couldn't set up: ${e}`;
     }
+  }
+
+  async function chooseMcp(action: "keep" | "isolate"): Promise<void> {
+    if (!pendingForeign || !workspace.rootPath) return;
+    mcpBusy = true;
+    try {
+      await recordMcpForeignChoice(workspace.id, {
+        hash: foreignMcpServersHash(pendingForeign.servers),
+        action,
+      });
+      const result = await backend.setupAgentIntegration(workspace.rootPath, agent.file, action);
+      setupNote = noteFrom(result);
+      pendingForeign = null;
+    } catch (e) {
+      setupNote = `Couldn't set up: ${e}`;
+    }
+    mcpBusy = false;
   }
 </script>
 
@@ -155,7 +189,15 @@
       >
       <button type="button" onclick={setupIntegration}>Set up / update</button>
     </div>
-    {#if setupNote}
+    {#if pendingForeign}
+      <McpForeignChooser
+        servers={pendingForeign.servers}
+        isolateRefusal={pendingForeign.isolateRefusal}
+        busy={mcpBusy}
+        onKeep={() => void chooseMcp("keep")}
+        onIsolate={() => void chooseMcp("isolate")}
+      />
+    {:else if setupNote}
       <div class="banner seed"><span>{setupNote}</span></div>
     {/if}
   {/if}

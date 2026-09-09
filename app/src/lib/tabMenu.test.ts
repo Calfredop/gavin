@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("@tauri-apps/plugin-opener", () => ({
-  openPath: vi.fn().mockResolvedValue(undefined),
-  revealItemInDir: vi.fn().mockResolvedValue(undefined),
+vi.mock("./backend", () => ({
+  openPathExternally: vi.fn().mockResolvedValue(undefined),
+  revealPathExternally: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./layoutState", () => ({
@@ -15,7 +15,7 @@ vi.mock("./tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined)
 vi.mock("./confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
 vi.mock("./bestOfNActions", () => ({ pickCandidate: vi.fn().mockResolvedValue(null) }));
 
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openPathExternally, revealPathExternally } from "./backend";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { setTabPinned, splitPane, closeSession, setSessionRead } from "./layoutState";
 import { closeTabs } from "./tabActions";
@@ -118,9 +118,9 @@ describe("buildTabMenuEntries", () => {
 
   it("opens folders, reveals files, copies the path", () => {
     find(buildTabMenuEntries(ctx(), hooks()), "Open Folder in Finder").onPick();
-    expect(openPath).toHaveBeenCalledWith("/repo");
+    expect(openPathExternally).toHaveBeenCalledWith("/repo");
     find(buildTabMenuEntries(ctx({ kind: "file", path: "/repo/a.md" }), hooks()), "Reveal in Finder").onPick();
-    expect(revealItemInDir).toHaveBeenCalledWith("/repo/a.md");
+    expect(revealPathExternally).toHaveBeenCalledWith("/repo/a.md");
     find(buildTabMenuEntries(ctx(), hooks()), "Copy Path").onPick();
     expect(writeText).toHaveBeenCalledWith("/repo");
   });
@@ -132,7 +132,7 @@ describe("buildTabMenuEntries", () => {
   });
 
   it("reports opener failures through the hook", async () => {
-    vi.mocked(openPath).mockRejectedValueOnce(new Error("nope"));
+    vi.mocked(openPathExternally).mockRejectedValueOnce(new Error("nope"));
     const h = hooks();
     find(buildTabMenuEntries(ctx(), h), "Open Folder in Finder").onPick();
     await flush();

@@ -1,3 +1,4 @@
+use crate::session::{WorkspacesData, WorkspacesState};
 use notify_debouncer_mini::Debouncer;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -39,6 +40,110 @@ pub struct FileContent {
     pub exists: bool,
 }
 
+// ---- containment for the five raw-path commands ----------------------
+//
+// `read_file_for_viewer`, `write_file_for_editor`, `resolve_path_under_
+// cursor`, `watch_file_for_viewer` and `unwatch_file_for_viewer` take a
+// raw absolute path with no `root` argument -- unlike the six explorer
+// commands below, which the frontend always calls with the workspace
+// root alongside the target. These five instead check the path against
+// every OPEN workspace's root (State, not an argument the caller could
+// omit or forge) plus each root's own registered `extra_contexts`. A
+// compromised page can still invoke any of the ~165 commands (AS-01/R5),
+// but it can no longer name a path gavin was never pointed at.
+//
+// Traded away deliberately, per the fix card: an attachment/PRD/agent
+// file that lives outside every open root and every registered context
+// -- a screenshot on the Desktop, a spec on a shared volume, the case
+// `attachment_status`'s own doc comment calls "the common case, not an
+// escape" -- now refuses to open in-app too, where it previously worked.
+// `extra_contexts` is the only widening lever, and it scaffolds a
+// `.gavin` into whatever it is pointed at, so it is not a drop-in fix for
+// this case -- narrowing AS-04 shut this door along with the one that
+// mattered.
+
+/// Every directory the five commands may resolve into: each open
+/// workspace's canonical root, plus that root's own `extra_contexts` --
+/// external folders a human registered from inside an already-open
+/// workspace (`add_external_gavin_context`), read straight off
+/// `config.toml` the same way the delete wizard's footprint scan does
+/// (`workspace_delete::outside_contexts`). A workspace with no root, or a
+/// root that no longer resolves, contributes nothing rather than
+/// erroring -- one stale workspace must not break file access for every
+/// other open tab.
+fn allowed_roots(workspaces: &WorkspacesData) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for workspace in &workspaces.workspaces {
+        let Some(root_path) = workspace.root_path.as_deref() else { continue };
+        let Ok(root) = std::fs::canonicalize(root_path) else { continue };
+        roots.extend(extra_context_roots(&root));
+        roots.push(root);
+    }
+    roots
+}
+
+/// The root config's `extra_contexts`: absolute folders a human
+/// registered from inside an already-trusted, already-open workspace.
+/// Trusted for the whole folder, not just its `.gavin` planning
+/// metadata -- a registered context is where the file viewer and PRD/
+/// agent pickers legitimately follow a card into.
+fn extra_context_roots(root: &Path) -> Vec<PathBuf> {
+    let config = root.join(".gavin-root").join("config.toml");
+    let Ok(content) = std::fs::read_to_string(&config) else { return Vec::new() };
+    let Ok(table) = content.parse::<toml::Table>() else { return Vec::new() };
+    let Some(entries) = table.get("extra_contexts").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|v| v.as_str())
+        .filter_map(|s| std::fs::canonicalize(s).ok())
+        .collect()
+}
+
+/// Resolves an absolute path for containment even when it (or some
+/// ancestor of it) does not exist yet -- `write_file_for_editor` creates
+/// missing parent directories on save, and a PRD/agent-file tab opens
+/// before its file does. Walks up to the nearest EXISTING ancestor,
+/// canonicalizes it (so a symlinked directory anywhere in the existing
+/// prefix is caught exactly the way `resolve_existing` catches one for
+/// the six guarded explorer commands below), then reattaches the still-
+/// missing suffix unresolved -- there is nothing on disk yet for a
+/// symlink to be.
+fn resolve_for_containment(path: &str) -> Result<PathBuf, String> {
+    let mut existing = Path::new(path);
+    if !existing.is_absolute() {
+        return Err(format!("{path} is not an absolute path"));
+    }
+    let mut suffix: Vec<&std::ffi::OsStr> = Vec::new();
+    while !existing.exists() {
+        let name = existing.file_name().ok_or_else(|| format!("{path} could not be resolved"))?;
+        suffix.push(name);
+        existing = existing.parent().ok_or_else(|| format!("{path} could not be resolved"))?;
+    }
+    let mut canonical = std::fs::canonicalize(existing)
+        .map_err(|e| format!("{path} could not be resolved: {e}"))?;
+    for name in suffix.into_iter().rev() {
+        canonical.push(name);
+    }
+    Ok(canonical)
+}
+
+/// The guard shared by all five raw-path commands: resolves `path` and
+/// refuses it unless it lies inside one of `roots`, with a named error a
+/// refusal can be told apart by wherever it surfaces -- the frontend's
+/// existing error banner for the two commands that return one to it, a
+/// quiet no-op for watch/unwatch, which already treat an unmatched path
+/// that way.
+fn ensure_within_open_workspaces(path: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
+    let resolved = resolve_for_containment(path)?;
+    if roots.iter().any(|root| inside_root(root, &resolved)) {
+        Ok(resolved)
+    } else {
+        Err(format!("{path} is outside every open workspace"))
+    }
+}
+
 #[tauri::command]
 pub fn viewable_extensions() -> Vec<String> {
     VIEWABLE_EXTENSIONS.iter().map(|e| e.to_string()).collect()
@@ -50,9 +155,20 @@ pub fn viewable_extensions() -> Vec<String> {
 /// "too large to preview in full" notice. Non-UTF8 content is an error,
 /// not lossy-decoded garbage -- the frontend treats that identically to an
 /// unsupported extension and offers to open externally instead.
+///
+/// Refuses a path outside every open workspace (AS-04) before reading.
 #[tauri::command]
-pub fn read_file_for_viewer(path: String) -> Result<FileContent, String> {
-    let bytes = match std::fs::read(&path) {
+pub fn read_file_for_viewer(
+    path: String,
+    workspaces: State<WorkspacesState>,
+) -> Result<FileContent, String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    read_file_for_viewer_impl(&path, &roots)
+}
+
+fn read_file_for_viewer_impl(path: &str, roots: &[PathBuf]) -> Result<FileContent, String> {
+    let resolved = ensure_within_open_workspaces(path, roots)?;
+    let bytes = match std::fs::read(&resolved) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(FileContent { content: String::new(), truncated: false, exists: false })
@@ -80,14 +196,26 @@ pub fn read_file_for_viewer(path: String) -> Result<FileContent, String> {
 /// an over-cap file was loaded, so writing it back would destroy the
 /// rest. `FileEditor` enforces that by refusing to offer Edit mode at all
 /// when `truncated` is true.
+///
+/// Refuses a path outside every open workspace (AS-04) before writing.
 #[tauri::command]
-pub fn write_file_for_editor(path: String, content: String) -> Result<(), String> {
-    if let Some(parent) = std::path::Path::new(&path).parent() {
+pub fn write_file_for_editor(
+    path: String,
+    content: String,
+    workspaces: State<WorkspacesState>,
+) -> Result<(), String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    write_file_for_editor_impl(&path, content, &roots)
+}
+
+fn write_file_for_editor_impl(path: &str, content: String, roots: &[PathBuf]) -> Result<(), String> {
+    let resolved = ensure_within_open_workspaces(path, roots)?;
+    if let Some(parent) = resolved.parent() {
         if !parent.as_os_str().is_empty() && !parent.is_dir() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
     }
-    std::fs::write(&path, content).map_err(|e| e.to_string())
+    std::fs::write(&resolved, content).map_err(|e| e.to_string())
 }
 
 /// Resolves a path-shaped candidate string from terminal output against
@@ -99,16 +227,39 @@ pub fn write_file_for_editor(path: String, content: String) -> Result<(), String
 /// clickable directory that did nothing on click would be exactly the
 /// dead-end this check exists to prevent.
 #[tauri::command]
-pub fn resolve_path_under_cursor(candidate: String, cwd: String) -> Option<String> {
+pub fn resolve_path_under_cursor(
+    candidate: String,
+    cwd: String,
+    workspaces: State<WorkspacesState>,
+) -> Option<String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    resolve_path_under_cursor_impl(&candidate, &cwd, &roots)
+}
+
+/// Containment refuses by returning `None`, the same as every other
+/// invalid candidate this already handles (missing, a directory, no
+/// `HOME`) -- this command has no error channel to name a refusal on,
+/// and a hover link that silently fails to underline is indistinguishable
+/// from one that never matched.
+fn resolve_path_under_cursor_impl(candidate: &str, cwd: &str, roots: &[PathBuf]) -> Option<String> {
     let expanded = if let Some(rest) = candidate.strip_prefix("~/") {
         let home = std::env::var("HOME").ok()?;
         PathBuf::from(home).join(rest)
     } else {
-        PathBuf::from(&candidate)
+        PathBuf::from(candidate)
     };
-    let absolute = if expanded.is_absolute() { expanded } else { PathBuf::from(&cwd).join(expanded) };
+    let absolute = if expanded.is_absolute() { expanded } else { PathBuf::from(cwd).join(expanded) };
     let canonical = std::fs::canonicalize(&absolute).ok()?;
     if !canonical.is_file() {
+        return None;
+    }
+    // The terminal's Cmd+click legitimately resolves paths under the
+    // session's own cwd in addition to every open workspace (and its
+    // extra contexts) -- a shell running outside any workspace root is
+    // ordinary, and cwd here is the session's own tracked cwd
+    // (`cwdForSession` in terminalRegistry.ts), not caller-chosen text.
+    let under_cwd = std::fs::canonicalize(cwd).is_ok_and(|root| inside_root(&root, &canonical));
+    if !under_cwd && !roots.iter().any(|root| inside_root(root, &canonical)) {
         return None;
     }
     Some(canonical.to_string_lossy().to_string())
@@ -174,12 +325,18 @@ where
 /// every change until the last `unwatch_file_for_viewer` for it. Watching
 /// an already-watched path takes a second reference on the one OS watch
 /// rather than starting another; every watcher receives the same event.
+///
+/// Refuses a path outside every open workspace (AS-04) before touching
+/// `FileWatchers` at all.
 #[tauri::command]
 pub fn watch_file_for_viewer(
     path: String,
     app_handle: AppHandle,
     state: State<FileWatchers>,
+    workspaces: State<WorkspacesState>,
 ) -> Result<(), String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    ensure_within_open_workspaces(&path, &roots)?;
     let mut watchers = state.0.lock().unwrap();
     if let Some(entry) = watchers.get_mut(&path) {
         entry.1 += 1;
@@ -197,9 +354,16 @@ pub fn watch_file_for_viewer(
 /// Releases one reference on a file's watch, shutting it down when the
 /// last one goes. Dropping the `Debouncer` is what stops its background
 /// thread and releases the OS-level watch. Unwatching a path that isn't
-/// watched is a no-op, not an error.
+/// watched is a no-op, not an error -- but a path outside every open
+/// workspace (AS-04) IS one, same as `watch_file_for_viewer`.
 #[tauri::command]
-pub fn unwatch_file_for_viewer(path: String, state: State<FileWatchers>) -> Result<(), String> {
+pub fn unwatch_file_for_viewer(
+    path: String,
+    state: State<FileWatchers>,
+    workspaces: State<WorkspacesState>,
+) -> Result<(), String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    ensure_within_open_workspaces(&path, &roots)?;
     let mut watchers = state.0.lock().unwrap();
     let remove = match watchers.get_mut(&path) {
         Some(entry) => {
@@ -214,32 +378,101 @@ pub fn unwatch_file_for_viewer(path: String, state: State<FileWatchers>) -> Resu
     Ok(())
 }
 
+/// Where a resolved attachment landed relative to what gavin trusts.
+/// `Root` and `ExtraContext` are read and handed to the agent exactly as
+/// before; `Outside` is not -- see `attachment_status`'s doc comment.
+/// `Refused` is neither: gavin will not resolve it at all, and no future
+/// confirmation changes that.
+#[derive(Debug, Serialize, PartialEq, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub enum AttachmentLocation {
+    Root,
+    ExtraContext,
+    Outside,
+    Refused,
+}
+
 /// One card attachment, resolved and stat'd. `path` echoes the raw
 /// frontmatter entry (the UI's identity for the chip and the string it
-/// removes); `absolute_path` is what an agent is handed and what a chip
-/// opens, and is None for an entry gavin refuses to resolve at all.
+/// removes); `absolute_path` is what a chip opens, and is None for a
+/// `Refused` entry -- gavin will not resolve it at all. `refused_reason`
+/// is the human-readable "why" for exactly those entries, and None for
+/// every other one, `Outside` included: lying outside the workspace is
+/// not by itself a refusal, only a reason to withhold the bytes (the
+/// pure `attachments.ts` module is what decides that; this command only
+/// classifies).
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentStatus {
     pub path: String,
     pub absolute_path: Option<String>,
     pub exists: bool,
+    pub location: AttachmentLocation,
+    pub refused_reason: Option<String>,
+    /// The file's size in bytes, or None when there was nothing to stat
+    /// -- a refused entry, or a path that resolves to no file. Read by
+    /// the first-Run review sheet (`cardReview.ts`), which tells a human
+    /// how much a card is about to put into an agent's context: "read
+    /// this file" means one thing for a 2 KB spec and another for a
+    /// 40 MB log.
+    pub size_bytes: Option<u64>,
+}
+
+/// Sensitive directories under the human's home folder, by name --
+/// `sensitive_home_roots` turns these into canonical paths. An
+/// attachment resolving inside any of them is refused outright,
+/// confirmation included: a card that names `~/.ssh/id_rsa` is not a
+/// screenshot on the Desktop, and no first-Run review is the right place
+/// to ask a human to bless handing an agent their private key.
+const SENSITIVE_HOME_DIRS: &[&str] = &["Library", ".ssh", ".aws", ".config"];
+
+/// `SENSITIVE_HOME_DIRS`, resolved against `$HOME` through
+/// `resolve_for_containment` -- so a directory that does not exist yet
+/// (a fresh machine has no `~/.aws` until the first `aws configure`)
+/// still refuses, and one reached through a symlinked home mount is
+/// canonicalized the same way every other containment check here is. No
+/// `$HOME` means nothing to refuse against, not a refusal of everything.
+fn sensitive_home_roots() -> Vec<(&'static str, PathBuf)> {
+    let Some(home) = std::env::var_os("HOME") else { return Vec::new() };
+    let home = PathBuf::from(home);
+    SENSITIVE_HOME_DIRS
+        .iter()
+        .filter_map(|name| resolve_for_containment(&home.join(name).to_string_lossy()).ok().map(|p| (*name, p)))
+        .collect()
 }
 
 /// Resolves a card's `attachments:` entries against the workspace root
-/// and says which ones are actually there.
+/// and classifies each one -- `Root`/`ExtraContext` inside what gavin
+/// already trusts, `Outside` a legal reference gavin will not read
+/// silently, `Refused` one it will never read at all.
 ///
 /// The root, never the session's cwd: a card bound to a rail runs in a
 /// worktree, and resolving `docs/spec.md` against wherever the agent
 /// happens to start would hand two sessions two different files (or one
 /// of them nothing at all) from the same card.
 ///
+/// EVERY resolvable candidate is canonicalized (`resolve_for_containment`,
+/// the same walk-up-and-follow-symlinks the five raw-path commands above
+/// use), not just the ones inside the root: an absolute entry outside
+/// the root used to reach the agent unresolved, which is exactly the gap
+/// this closes -- a symlink planted inside the root that points at
+/// `~/.ssh` must classify by where it actually leads, not by the root-
+/// relative name that names it.
+///
 /// A `..` entry is REFUSED rather than stat'd -- `usable_attachment_path`
-/// is the authority, shared with the daemon so both sides agree -- and
-/// comes back with no absolute path and `exists: false`. That is the
-/// same shape as a file that moved, which is what the caller wants: both
-/// are a broken chip and both block a run. Stat'ing it instead would
-/// make gavin read outside the root on behalf of a line in a card file.
+/// is the authority, shared with the daemon so both sides agree. So is
+/// one that canonicalizes into a sensitive home directory
+/// (`sensitive_home_roots`). Both come back with no absolute path,
+/// `exists: false`, and a reason naming why -- the same broken-chip shape
+/// a missing file has, so both block a run the same way, but a distinct
+/// message says this one is not a typo to go fix.
+///
+/// `Outside` is NOT stat'd into `exists: false` the way a refusal is --
+/// `attachments.ts` decides from `location` whether to read it, this
+/// command only classifies. It stays the common case it always was (a
+/// screenshot on the Desktop, a spec on a shared volume), just no longer
+/// a silent one: the pure module withholds its bytes and notes it by
+/// name in the prompt instead of handing it over unread.
 ///
 /// Called on demand -- the modal opening, the run gate just before
 /// spawning -- never on scan: the daemon does not stat attachments, so
@@ -247,23 +480,72 @@ pub struct AttachmentStatus {
 #[tauri::command]
 pub fn attachment_status(root: String, paths: Vec<String>) -> Vec<AttachmentStatus> {
     let root = PathBuf::from(root);
+    let root_canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+    let extra_roots = extra_context_roots(&root_canonical);
+    let sensitive_roots = sensitive_home_roots();
+    attachment_status_impl(&root_canonical, paths, &extra_roots, &sensitive_roots)
+}
+
+fn attachment_status_impl(
+    root: &Path,
+    paths: Vec<String>,
+    extra_roots: &[PathBuf],
+    sensitive_roots: &[(&'static str, PathBuf)],
+) -> Vec<AttachmentStatus> {
     paths
         .into_iter()
         .map(|raw| {
             let Some(usable) = protocol::usable_attachment_path(&raw) else {
-                return AttachmentStatus { path: raw, absolute_path: None, exists: false };
+                return AttachmentStatus {
+                    path: raw,
+                    absolute_path: None,
+                    exists: false,
+                    location: AttachmentLocation::Refused,
+                    refused_reason: Some("contains a `..` component".to_string()),
+                    size_bytes: None,
+                };
             };
             let candidate = PathBuf::from(&usable);
-            let absolute =
-                if candidate.is_absolute() { candidate } else { root.join(&candidate) };
-            // is_file, not exists: an attachment names a file to read.
-            // A directory that happens to sit at the path would pass
+            let absolute = if candidate.is_absolute() { candidate } else { root.join(&candidate) };
+            let resolved = resolve_for_containment(&absolute.to_string_lossy())
+                .unwrap_or_else(|_| absolute.clone());
+
+            if let Some((name, _)) = sensitive_roots.iter().find(|(_, s)| inside_root(s, &resolved)) {
+                return AttachmentStatus {
+                    path: raw,
+                    absolute_path: None,
+                    exists: false,
+                    location: AttachmentLocation::Refused,
+                    refused_reason: Some(format!(
+                        "lies inside ~/{name}, which gavin refuses to hand an agent"
+                    )),
+                    size_bytes: None,
+                };
+            }
+
+            // is_file, not exists: an attachment names a file to read. A
+            // directory that happens to sit at the path would pass
             // `exists` and then hand the agent something it cannot read.
-            let exists = absolute.is_file();
+            //
+            // One stat rather than two: the size the review sheet quotes
+            // comes from the same call that answered `exists`, so the two
+            // can never describe different files.
+            let metadata = resolved.metadata().ok().filter(|m| m.is_file());
+            let exists = metadata.is_some();
+            let location = if inside_root(root, &resolved) {
+                AttachmentLocation::Root
+            } else if extra_roots.iter().any(|r| inside_root(r, &resolved)) {
+                AttachmentLocation::ExtraContext
+            } else {
+                AttachmentLocation::Outside
+            };
             AttachmentStatus {
                 path: raw,
-                absolute_path: Some(absolute.to_string_lossy().to_string()),
+                absolute_path: Some(resolved.to_string_lossy().to_string()),
                 exists,
+                location,
+                refused_reason: None,
+                size_bytes: metadata.map(|m| m.len()),
             }
         })
         .collect()
@@ -475,11 +757,77 @@ pub fn rename_path(root: String, from: String, to: String) -> Result<(), String>
 /// canonicalizes for the containment check only, and what is handed to
 /// the trash is that canonical path -- so a link is refused when its
 /// target lies outside the root, which is the conservative direction.
+///
+/// `token` is the grant `confirm_gate` minted for THIS path when the
+/// human answered the Trash prompt, spent before anything moves: the
+/// confirmation is the product's promise here, and a direct `invoke`
+/// used to walk straight past it (AS-05/R5).
 #[tauri::command]
-pub fn trash_entry(root: String, path: String) -> Result<(), String> {
-    let root = canonical_root(&root)?;
-    let target = resolve_existing(&root, &path, false)?;
+pub fn trash_entry(
+    root: String,
+    path: String,
+    token: String,
+    gate: State<crate::confirm_gate::ConfirmGate>,
+) -> Result<(), String> {
+    crate::confirm_gate::spend(&gate, &token, "trash_entry", &path)?;
+    trash_entry_impl(&root, &path)
+}
+
+/// The containment half, without the `State` a unit test cannot build.
+fn trash_entry_impl(root: &str, path: &str) -> Result<(), String> {
+    let root = canonical_root(root)?;
+    let target = resolve_existing(&root, path, false)?;
     crate::trash::trash_path(&target.to_string_lossy())
+}
+
+// ---- handing a path to the OS ----------------------------------------
+//
+// `open` LAUNCHES things: on macOS it starts an `.app` bundle outright
+// and hands anything else to its registered handler, which is a second
+// program of the attacker's choosing. That is why the frontend no longer
+// holds `opener:allow-open-path` at all -- the capability's scope is
+// static (`tauri-plugin-opener`'s `Entry` is deserialized once from
+// capabilities/default.json and has no runtime setter), so the only way
+// to scope it to something as mutable as "the workspaces open right now"
+// is to put the check on this side of the IPC (AS-09/R5).
+//
+// Both commands answer against `allowed_roots` -- the same set the five
+// raw-path viewer commands use -- so what gavin will OPEN and what it
+// will READ agree. Before this, `resolve_path_under_cursor` would
+// underline a Cmd+clickable file under a terminal's cwd outside every
+// workspace and `read_file_for_viewer` would then refuse it; now the
+// external-open half refuses it too, which is the coherent direction:
+// the boundary is the same one, named once.
+
+/// Hands `path` to the OS's default application for it.
+///
+/// Refuses a path outside every open workspace. The error carries the
+/// path, because every call site of this shows the human a message --
+/// "Couldn't open in Finder", the editor's `openError`, the card's
+/// `errorMessage` -- and a refusal has to read as a refusal rather than
+/// as a click that did nothing.
+#[tauri::command]
+pub fn open_path_externally(path: String, workspaces: State<WorkspacesState>) -> Result<(), String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    let resolved = ensure_within_open_workspaces(&path, &roots)?;
+    tauri_plugin_opener::open_path(&resolved, None::<&str>).map_err(|e| e.to_string())
+}
+
+/// Selects `path` in the OS file manager (Finder on macOS).
+///
+/// Guarded on the same set as `open_path_externally` even though
+/// revealing is the milder of the two -- it selects an entry rather than
+/// running anything. `opener:default` grants `allow-reveal-item-in-dir`
+/// with no scope whatsoever, so leaving that permission in place would
+/// have left an unscoped raw-path opener command behind the one that was
+/// just taken away; the capability now carries `allow-open-url` and
+/// `allow-default-urls` (which is where the mailto/tel/http/https scheme
+/// scope lives) and no path permission at all.
+#[tauri::command]
+pub fn reveal_path_externally(path: String, workspaces: State<WorkspacesState>) -> Result<(), String> {
+    let roots = allowed_roots(&workspaces.0.lock().unwrap());
+    let resolved = ensure_within_open_workspaces(&path, &roots)?;
+    tauri_plugin_opener::reveal_item_in_dir(&resolved).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -487,8 +835,26 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    /// The `roots` slice `read_file_for_viewer_impl`/`write_file_for_
+    /// editor_impl`/`resolve_path_under_cursor_impl` take in place of the
+    /// `WorkspacesState` the real commands read -- one open workspace
+    /// rooted at `dir`, canonicalized the same way `allowed_roots` would.
+    fn roots_of(dir: &tempfile::TempDir) -> Vec<PathBuf> {
+        vec![std::fs::canonicalize(dir.path()).unwrap()]
+    }
+
+    /// The `sensitive_roots` slice `attachment_status_impl` takes in place
+    /// of the real `sensitive_home_roots` -- one sensitive-looking name
+    /// pointed at a tempdir subdirectory, canonicalized the same way the
+    /// real function resolves `~/.ssh` and friends.
+    fn sensitive_roots_of(dir: &tempfile::TempDir, name: &'static str) -> Vec<(&'static str, PathBuf)> {
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        vec![(name, std::fs::canonicalize(&path).unwrap())]
+    }
+
     #[test]
-    fn attachment_status_resolves_against_the_root_and_refuses_traversal() {
+    fn attachment_status_resolves_against_the_root_and_classifies_by_location() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("ws");
         std::fs::create_dir_all(root.join("docs")).unwrap();
@@ -496,41 +862,140 @@ mod tests {
         // Deliberately REAL and reachable via `..` from the root, so the
         // refusal below cannot be mistaken for "the file wasn't there".
         std::fs::write(dir.path().join("outside.md"), "secret").unwrap();
-        let outside = dir.path().join("outside.md").to_string_lossy().to_string();
+        let outside = dir.path().join("outside.md");
+        let root_canonical = std::fs::canonicalize(&root).unwrap();
 
-        let got = attachment_status(
-            root.to_string_lossy().to_string(),
+        let got = attachment_status_impl(
+            &root_canonical,
             vec![
                 "docs/spec.md".to_string(),
                 "docs/gone.md".to_string(),
-                outside.clone(),
+                outside.to_string_lossy().to_string(),
                 "../outside.md".to_string(),
                 "docs".to_string(),
             ],
+            &[],
+            &[],
         );
 
-        // Relative, present: resolved against the root.
+        // Relative, present: resolved against the root, classified Root.
         assert_eq!(got[0].path, "docs/spec.md");
-        assert_eq!(got[0].absolute_path.as_deref(), Some(root.join("docs/spec.md").to_string_lossy().as_ref()));
+        assert_eq!(
+            got[0].absolute_path.as_deref(),
+            Some(root_canonical.join("docs/spec.md").to_string_lossy().as_ref())
+        );
         assert!(got[0].exists);
+        assert_eq!(got[0].location, AttachmentLocation::Root);
+        assert_eq!(got[0].refused_reason, None);
+        // The size the first-Run review sheet quotes: taken from the same
+        // stat that answered `exists`, so the two can never disagree.
+        assert_eq!(got[0].size_bytes, Some(4));
 
-        // Relative, moved away: resolved, and honestly missing.
+        // Relative, moved away: resolved, still Root, and honestly missing.
         assert!(!got[1].exists);
         assert!(got[1].absolute_path.is_some());
+        assert_eq!(got[1].location, AttachmentLocation::Root);
+        assert_eq!(got[1].size_bytes, None);
 
         // Absolute outside the root is the COMMON case, not an escape --
-        // a screenshot on the Desktop, a spec on a shared volume.
-        assert_eq!(got[2].absolute_path.as_deref(), Some(outside.as_str()));
+        // a screenshot on the Desktop, a spec on a shared volume -- but it
+        // is now classified Outside rather than treated as freely
+        // readable. `attachments.ts` is what decides not to hand it over.
+        assert_eq!(
+            got[2].absolute_path.as_deref(),
+            Some(std::fs::canonicalize(&outside).unwrap().to_string_lossy().as_ref())
+        );
         assert!(got[2].exists);
+        assert_eq!(got[2].location, AttachmentLocation::Outside);
+        assert_eq!(got[2].refused_reason, None);
 
         // `..` is refused, not stat'd: no absolute path comes back at
-        // all, even though the file it points at exists.
+        // all, even though the file it points at exists, and the reason
+        // says why.
         assert_eq!(got[3].path, "../outside.md");
         assert_eq!(got[3].absolute_path, None);
         assert!(!got[3].exists);
+        assert_eq!(got[3].location, AttachmentLocation::Refused);
+        assert!(got[3].refused_reason.as_deref().unwrap().contains(".."));
+        // Never stat'd, so there is no size to report -- a refused entry
+        // must not leak so much as the size of what it points at.
+        assert_eq!(got[3].size_bytes, None);
 
         // A directory is not a file to read.
         assert!(!got[4].exists);
+        assert_eq!(got[4].location, AttachmentLocation::Root);
+        assert_eq!(got[4].size_bytes, None);
+    }
+
+    #[test]
+    fn attachment_status_classifies_an_extra_context_and_refuses_a_sensitive_home_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize({
+            let root = dir.path().join("ws");
+            std::fs::create_dir(&root).unwrap();
+            root
+        })
+        .unwrap();
+        let context = dir.path().join("registered-context");
+        std::fs::create_dir(&context).unwrap();
+        std::fs::write(context.join("shared.md"), "shared").unwrap();
+        let extra_root = std::fs::canonicalize(&context).unwrap();
+
+        let ssh = sensitive_roots_of(&dir, ".ssh");
+        std::fs::write(ssh[0].1.join("id_rsa"), "not-a-real-key").unwrap();
+        let key_path = ssh[0].1.join("id_rsa").to_string_lossy().to_string();
+
+        let got = attachment_status_impl(
+            &root,
+            vec![context.join("shared.md").to_string_lossy().to_string(), key_path],
+            &[extra_root],
+            &ssh,
+        );
+
+        // A registered extra context is trusted the same way the root is.
+        assert_eq!(got[0].location, AttachmentLocation::ExtraContext);
+        assert!(got[0].exists);
+        assert!(got[0].absolute_path.is_some());
+
+        // A sensitive home directory is refused outright, whatever a
+        // future confirmation might say -- no absolute path, a reason
+        // naming which directory, and blocked the same way a missing
+        // file is.
+        assert_eq!(got[1].location, AttachmentLocation::Refused);
+        assert_eq!(got[1].absolute_path, None);
+        assert!(!got[1].exists);
+        assert!(got[1].refused_reason.as_deref().unwrap().contains(".ssh"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_status_classifies_by_where_a_symlink_inside_the_root_actually_leads() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir(&root).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("secret.txt"), "s3cr3t").unwrap();
+        // A link INSIDE the root pointing OUT of it: the root-relative
+        // name says "escape/secret.txt", but where it actually leads is
+        // what has to decide the classification.
+        std::os::unix::fs::symlink(&elsewhere, root.join("escape")).unwrap();
+        let root_canonical = std::fs::canonicalize(&root).unwrap();
+        let elsewhere_canonical = std::fs::canonicalize(&elsewhere).unwrap();
+
+        let got = attachment_status_impl(
+            &root_canonical,
+            vec!["escape/secret.txt".to_string()],
+            &[],
+            &[],
+        );
+
+        assert_eq!(got[0].location, AttachmentLocation::Outside);
+        assert!(got[0].exists);
+        assert_eq!(
+            got[0].absolute_path.as_deref(),
+            Some(elsewhere_canonical.join("secret.txt").to_string_lossy().as_ref())
+        );
     }
 
     #[test]
@@ -540,13 +1005,14 @@ mod tests {
         // looks like: the tab opens empty and the first save has to make
         // the folder, not fail with ENOENT.
         let path = dir.path().join("docs").join("PRD.md");
-        write_file_for_editor(path.to_string_lossy().to_string(), "# theirs\n".to_string())
+        let roots = roots_of(&dir);
+        write_file_for_editor_impl(&path.to_string_lossy(), "# theirs\n".to_string(), &roots)
             .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# theirs\n");
 
         // An existing parent is untouched, and so is the rest of it.
         std::fs::write(dir.path().join("docs").join("other.md"), "keep").unwrap();
-        write_file_for_editor(path.to_string_lossy().to_string(), "# again\n".to_string())
+        write_file_for_editor_impl(&path.to_string_lossy(), "# again\n".to_string(), &roots)
             .unwrap();
         assert_eq!(std::fs::read_to_string(dir.path().join("docs/other.md")).unwrap(), "keep");
     }
@@ -557,7 +1023,7 @@ mod tests {
         let path = dir.path().join("hello.txt");
         std::fs::write(&path, "hello world").unwrap();
 
-        let result = read_file_for_viewer(path.to_string_lossy().to_string()).unwrap();
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir)).unwrap();
 
         assert_eq!(
             result,
@@ -570,11 +1036,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("notes.md");
         let p = path.to_string_lossy().to_string();
+        let roots = roots_of(&dir);
 
-        write_file_for_editor(p.clone(), "first".to_string()).unwrap();
+        write_file_for_editor_impl(&p, "first".to_string(), &roots).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
 
-        write_file_for_editor(p, "second".to_string()).unwrap();
+        write_file_for_editor_impl(&p, "second".to_string(), &roots).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
     }
 
@@ -583,9 +1050,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("prd.md");
         let text = "# PRD — vision\n\nemoji: 🚀 accents: éàü\n";
-        write_file_for_editor(path.to_string_lossy().to_string(), text.to_string()).unwrap();
+        let roots = roots_of(&dir);
+        write_file_for_editor_impl(&path.to_string_lossy(), text.to_string(), &roots).unwrap();
 
-        let read = read_file_for_viewer(path.to_string_lossy().to_string()).unwrap();
+        let read = read_file_for_viewer_impl(&path.to_string_lossy(), &roots).unwrap();
         assert_eq!(read.content, text);
         assert!(read.exists);
         assert!(!read.truncated);
@@ -595,8 +1063,11 @@ mod tests {
     fn write_to_an_unwritable_path_errors() {
         let dir = tempfile::tempdir().unwrap();
         // The directory itself is not a writable file target.
-        let result =
-            write_file_for_editor(dir.path().to_string_lossy().to_string(), "x".to_string());
+        let result = write_file_for_editor_impl(
+            &dir.path().to_string_lossy(),
+            "x".to_string(),
+            &roots_of(&dir),
+        );
         assert!(result.is_err());
     }
 
@@ -605,7 +1076,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("CLAUDE.md");
 
-        let result = read_file_for_viewer(missing.to_string_lossy().to_string()).unwrap();
+        let result = read_file_for_viewer_impl(&missing.to_string_lossy(), &roots_of(&dir)).unwrap();
 
         assert!(!result.exists);
         assert_eq!(result.content, "");
@@ -624,7 +1095,7 @@ mod tests {
         }
         drop(f);
 
-        let result = read_file_for_viewer(path.to_string_lossy().to_string()).unwrap();
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir)).unwrap();
 
         assert!(result.truncated);
         assert_eq!(result.content.len(), MAX_VIEWER_FILE_BYTES);
@@ -637,7 +1108,7 @@ mod tests {
         // 0xFF is never valid UTF-8.
         std::fs::write(&path, [0xFF, 0xFE, 0x00, 0x01]).unwrap();
 
-        let result = read_file_for_viewer(path.to_string_lossy().to_string());
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir));
 
         assert!(result.is_err());
     }
@@ -650,7 +1121,7 @@ mod tests {
         // other read failure still is: here, a directory.
         let dir = tempfile::tempdir().unwrap();
 
-        let result = read_file_for_viewer(dir.path().to_string_lossy().to_string());
+        let result = read_file_for_viewer_impl(&dir.path().to_string_lossy(), &roots_of(&dir));
 
         assert!(result.is_err());
     }
@@ -661,9 +1132,10 @@ mod tests {
         let path = dir.path().join("real.txt");
         std::fs::write(&path, "x").unwrap();
 
-        let resolved = resolve_path_under_cursor(
-            path.to_string_lossy().to_string(),
-            dir.path().to_string_lossy().to_string(),
+        let resolved = resolve_path_under_cursor_impl(
+            &path.to_string_lossy(),
+            &dir.path().to_string_lossy(),
+            &[],
         );
 
         assert!(resolved.is_some());
@@ -675,7 +1147,7 @@ mod tests {
         std::fs::write(dir.path().join("real.txt"), "x").unwrap();
 
         let resolved =
-            resolve_path_under_cursor("real.txt".to_string(), dir.path().to_string_lossy().to_string());
+            resolve_path_under_cursor_impl("real.txt", &dir.path().to_string_lossy(), &[]);
 
         assert!(resolved.is_some());
         assert!(resolved.unwrap().ends_with("real.txt"));
@@ -686,7 +1158,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let resolved =
-            resolve_path_under_cursor("nope.txt".to_string(), dir.path().to_string_lossy().to_string());
+            resolve_path_under_cursor_impl("nope.txt", &dir.path().to_string_lossy(), &[]);
 
         assert_eq!(resolved, None);
     }
@@ -741,9 +1213,196 @@ mod tests {
         std::fs::create_dir(&subdir).unwrap();
 
         let resolved =
-            resolve_path_under_cursor("subdir".to_string(), dir.path().to_string_lossy().to_string());
+            resolve_path_under_cursor_impl("subdir", &dir.path().to_string_lossy(), &[]);
 
         assert_eq!(resolved, None);
+    }
+
+    // ---- containment on the five raw-path commands (AS-04) ------------
+
+    #[test]
+    fn extra_context_roots_reads_registered_folders_and_skips_a_stale_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir_all(root.join(".gavin-root")).unwrap();
+        let registered = dir.path().join("registered");
+        std::fs::create_dir(&registered).unwrap();
+        let gone = dir.path().join("gone");
+        std::fs::write(
+            root.join(".gavin-root").join("config.toml"),
+            format!(
+                "name = \"ws\"\nextra_contexts = [\"{}\", \"{}\"]\n",
+                registered.display(),
+                gone.display(),
+            ),
+        )
+        .unwrap();
+
+        // A folder still on disk is included; one that moved on (`gone`
+        // was never created) is skipped rather than erroring the whole
+        // read, same as `workspace_delete::outside_contexts`'s reasoning
+        // for the same key.
+        let roots = extra_context_roots(&std::fs::canonicalize(&root).unwrap());
+        assert_eq!(roots, vec![std::fs::canonicalize(&registered).unwrap()]);
+    }
+
+    #[test]
+    fn extra_context_roots_is_empty_with_no_config_or_no_key() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(extra_context_roots(dir.path()).is_empty());
+
+        std::fs::create_dir_all(dir.path().join(".gavin-root")).unwrap();
+        std::fs::write(dir.path().join(".gavin-root").join("config.toml"), "name = \"ws\"\n")
+            .unwrap();
+        assert!(extra_context_roots(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn read_file_for_viewer_refuses_a_path_outside_every_open_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        // Deliberately REAL, so the refusal cannot be mistaken for "there
+        // was nothing there".
+        let outside = dir.path().join("secret.txt");
+        std::fs::write(&outside, "s3cr3t").unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        let err = read_file_for_viewer_impl(&outside.to_string_lossy(), &roots).unwrap_err();
+        assert!(err.contains("outside every open workspace"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_file_for_viewer_refuses_a_symlink_that_leaves_every_open_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("secret.txt"), "s3cr3t").unwrap();
+        // A link INSIDE the workspace pointing out of it -- canonicalizing
+        // the literal path (not just the workspace root) is what catches
+        // this, the same way `resolve_existing` catches it for the six
+        // guarded explorer commands.
+        std::os::unix::fs::symlink(&elsewhere, workspace.join("escape")).unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        let err = read_file_for_viewer_impl(
+            &workspace.join("escape/secret.txt").to_string_lossy(),
+            &roots,
+        )
+        .unwrap_err();
+        assert!(err.contains("outside every open workspace"), "{err}");
+    }
+
+    #[test]
+    fn write_file_for_editor_refuses_a_path_outside_every_open_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let outside = dir.path().join("leaked.txt");
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        let err =
+            write_file_for_editor_impl(&outside.to_string_lossy(), "owned".to_string(), &roots)
+                .unwrap_err();
+        assert!(err.contains("outside every open workspace"), "{err}");
+        // The refusal is the point: nothing was written outside the
+        // workspace on the way to reporting it.
+        assert!(!outside.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_file_for_editor_refuses_a_symlink_that_leaves_every_open_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, workspace.join("escape")).unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        // The target file does not exist yet -- the walk-up in
+        // `resolve_for_containment` must still catch the symlinked
+        // ancestor before anything is created through it.
+        let err = write_file_for_editor_impl(
+            &workspace.join("escape/new.md").to_string_lossy(),
+            "owned".to_string(),
+            &roots,
+        )
+        .unwrap_err();
+        assert!(err.contains("outside every open workspace"), "{err}");
+        assert!(!elsewhere.join("new.md").exists());
+    }
+
+    #[test]
+    fn resolve_path_under_cursor_refuses_a_path_outside_every_open_workspace_and_the_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let outside = dir.path().join("outside.txt");
+        std::fs::write(&outside, "secret").unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        // The session's cwd is the workspace, not the tempdir the file
+        // actually lives in: outside every open workspace AND outside the
+        // cwd carve-out, so it is refused.
+        let resolved = resolve_path_under_cursor_impl(
+            &outside.to_string_lossy(),
+            &workspace.to_string_lossy(),
+            &roots,
+        );
+        assert_eq!(resolved, None);
+
+        // The same file resolves once the terminal session's own cwd is
+        // where it lives -- Cmd+click legitimately follows a shell
+        // wherever it runs, workspace root or not.
+        let resolved = resolve_path_under_cursor_impl(
+            &outside.to_string_lossy(),
+            &dir.path().to_string_lossy(),
+            &roots,
+        );
+        assert!(resolved.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_path_under_cursor_refuses_a_symlink_that_leaves_every_open_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("secret.txt"), "s").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, workspace.join("escape")).unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        let resolved = resolve_path_under_cursor_impl(
+            &workspace.join("escape/secret.txt").to_string_lossy(),
+            &workspace.to_string_lossy(),
+            &roots,
+        );
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn watch_and_unwatch_file_for_viewer_refuse_a_path_outside_every_open_workspace() {
+        // The guard both commands run before touching `FileWatchers` --
+        // see their bodies, which call this directly. Exercised here
+        // rather than through the `#[tauri::command]` functions
+        // themselves, which need a live `AppHandle`/`State` the way every
+        // other command test in this module avoids.
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir(&workspace).unwrap();
+        let outside = dir.path().join("secret.txt");
+        std::fs::write(&outside, "s").unwrap();
+        let roots = vec![std::fs::canonicalize(&workspace).unwrap()];
+
+        let err = ensure_within_open_workspaces(&outside.to_string_lossy(), &roots).unwrap_err();
+        assert!(err.contains("outside every open workspace"), "{err}");
     }
 
     // ---- the Files tab's directory explorer ---------------------------
@@ -1002,16 +1661,16 @@ mod tests {
         std::fs::write(dir.path().join("outside.md"), "out").unwrap();
         let root_s = root.to_string_lossy().to_string();
 
-        let err = trash_entry(root_s.clone(), dir.path().join("outside.md").to_string_lossy().to_string());
+        let err = trash_entry_impl(&root_s, &dir.path().join("outside.md").to_string_lossy());
         assert!(err.unwrap_err().contains("outside the workspace root"));
         assert!(dir.path().join("outside.md").exists());
 
-        let err = trash_entry(root_s.clone(), root_s.clone());
+        let err = trash_entry_impl(&root_s, &root_s);
         assert!(err.unwrap_err().contains("workspace root itself"));
         assert!(root.is_dir());
 
         // A path that isn't there at all fails to resolve rather than
         // reporting a delete that never happened.
-        assert!(trash_entry(root_s, root.join("ghost.md").to_string_lossy().to_string()).is_err());
+        assert!(trash_entry_impl(&root_s, &root.join("ghost.md").to_string_lossy()).is_err());
     }
 }

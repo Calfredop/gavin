@@ -20,6 +20,8 @@ import type { OrphanProcess } from "./orphan";
 import type { QueuedInput } from "./queuedInput";
 import type { ManagedSessions } from "./sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "./workspaceDelete";
+import type { AttachmentStatus } from "./attachments";
+import type { AvailableUpdate, UpdateSettings } from "./updates";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -27,6 +29,20 @@ export function createSession(cwd?: string, command?: string): Promise<string> {
 
 export function killSession(sessionId: string): Promise<void> {
   return invoke("kill_session", { sessionId });
+}
+
+/// Whether the daemon narrows an untokened local connection
+/// (`require_local_token`). The daemon reads the same marker file per
+/// request, so this reflects the live state.
+export function getRequireLocalToken(): Promise<boolean> {
+  return invoke("get_require_local_token");
+}
+
+/// Turn `require_local_token` on or off. Off (the default) keeps today's
+/// full reach for untokened local connections; on refuses them the
+/// process-starting requests until they present a token.
+export function setRequireLocalToken(enabled: boolean): Promise<void> {
+  return invoke("set_require_local_token", { enabled });
 }
 
 export function getFileTabs(): Promise<Record<string, string>> {
@@ -85,22 +101,42 @@ export function renamePath(root: string, from: string, to: string): Promise<void
 /// Moves an entry to the OS Trash, through the same route the workspace
 /// delete wizard takes. Nothing gavin removes on the human's behalf is
 /// unrecoverable.
-export function trashEntry(root: string, path: string): Promise<void> {
-  return invoke("trash_entry", { root, path });
+///
+/// `token` comes from `confirmGate.ts` and names this exact path: the
+/// host refuses the call without one, so the Trash prompt is a
+/// precondition rather than a convention (AS-05/R5). Same for
+/// `deleteCardFile`, `removeGavinFootprint` and `restartDaemon` below.
+export function trashEntry(root: string, path: string, token: string): Promise<void> {
+  return invoke("trash_entry", { root, path, token });
+}
+
+/// Hands `path` to the OS's default application, and `revealPath` selects
+/// it in the file manager. Both used to be the opener plugin's own
+/// `openPath`/`revealItemInDir`, invoked straight from the page: one was
+/// scoped to `/**` and `**`, the other to nothing at all, so from a
+/// compromised page they launched any app or file on disk (AS-09/R5).
+/// The host now answers them against the open workspace roots, a scope
+/// that changes while the app runs and so cannot be a static capability.
+///
+/// A path outside every open workspace rejects with a message naming it;
+/// every call site already has somewhere to show that.
+export function openPathExternally(path: string): Promise<void> {
+  return invoke("open_path_externally", { path });
+}
+
+export function revealPathExternally(path: string): Promise<void> {
+  return invoke("reveal_path_externally", { path });
 }
 
 export function viewableExtensions(): Promise<string[]> {
   return invoke("viewable_extensions");
 }
 
-/// One entry per requested path, in the order given. `absolutePath` is
-/// null for an entry gavin refuses to resolve (a `..` traversal); every
-/// other entry carries the path an agent would be handed, resolved
-/// against the WORKSPACE ROOT rather than any session's cwd.
-export function attachmentStatus(
-  root: string,
-  paths: string[]
-): Promise<{ path: string; absolutePath: string | null; exists: boolean }[]> {
+/// One entry per requested path, in the order given, classified by
+/// `location` (`attachments.ts` owns what each value means and what to
+/// do with it). `absolutePath` is null only for a `refused` entry --
+/// resolved against the WORKSPACE ROOT rather than any session's cwd.
+export function attachmentStatus(root: string, paths: string[]): Promise<AttachmentStatus[]> {
   return invoke("attachment_status", { root, paths });
 }
 
@@ -276,8 +312,19 @@ export function setAgentDefaults(agentDefaults: AgentDefaults): Promise<void> {
 /// and the marker lives in the app's own config.json, so none of this
 /// needs a daemon request and all of it keeps working across a version
 /// skew that has every gavin_* tool failing closed.
-export function superpowersStatus(rootPath: string): Promise<SuperpowersStatus> {
-  return invoke("superpowers_status", { rootPath });
+///
+/// `agentCommand` is the workspace's RESOLVED launch command, whose first
+/// token is the binary the detector drives. It is passed rather than read
+/// from config.toml host-side because this call fires on a TAB RENDER:
+/// a cloned repo naming `[agent] command = "./scripts/setup.sh"` would
+/// otherwise have that script executed by merely opening the workspace.
+/// Pass what `trustedAgentConfigs` resolved -- the repo's command only
+/// once the human approved this config, the profile's until then.
+export function superpowersStatus(
+  rootPath: string,
+  agentCommand: string
+): Promise<SuperpowersStatus> {
+  return invoke("superpowers_status", { rootPath, agentCommand });
 }
 
 /// Runs the install and returns the status that follows it. A failed
@@ -285,8 +332,12 @@ export function superpowersStatus(rootPath: string): Promise<SuperpowersStatus> 
 /// stdout and stderr for the drawer, and its state is what the detector
 /// says afterwards. Rejects only when no install was attempted: a profile
 /// gavin must not install into, or a binary it could not spawn.
-export function superpowersInstall(rootPath: string): Promise<SuperpowersStatus> {
-  return invoke("superpowers_install", { rootPath });
+/// `agentCommand`: as `superpowersStatus` above.
+export function superpowersInstall(
+  rootPath: string,
+  agentCommand: string
+): Promise<SuperpowersStatus> {
+  return invoke("superpowers_install", { rootPath, agentCommand });
 }
 
 /// What the human has told gavin, keyed by workspace root path.
@@ -391,8 +442,36 @@ export function getBootstrapError(): Promise<string | null> {
 
 // Resolves true when the app is fully reconnected, false when the daemon
 // was restarted but this app process needs a relaunch to rewire.
-export function restartDaemon(): Promise<void> {
-  return invoke("restart_daemon");
+export function restartDaemon(token: string): Promise<void> {
+  return invoke("restart_daemon", { token });
+}
+
+/// The update channel, described without touching the network:
+/// this build's version, the endpoint it would poll, and whether it has
+/// a channel and a pinned key at all (`updater.rs`).
+export function updateSettings(): Promise<UpdateSettings> {
+  return invoke("update_settings");
+}
+
+/// Point this install at a different manifest, or clear the override
+/// with null and fall back to the one the build shipped with.
+export function setUpdateEndpoint(endpoint: string | null): Promise<void> {
+  return invoke("set_update_endpoint", { endpoint });
+}
+
+/// Ask the endpoint whether there is a newer release. Null means this
+/// install is current. A read -- nothing is downloaded here.
+export function checkForUpdate(): Promise<AvailableUpdate | null> {
+  return invoke("check_for_update");
+}
+
+/// Download, verify against the pinned key, install, and relaunch.
+/// Gated: `version` is the confirm-gate subject, so a token minted for
+/// one version cannot install another, and the host re-checks that the
+/// endpoint still offers exactly it before installing. Does not return
+/// on success -- the app is replaced.
+export function installUpdate(version: string, token: string): Promise<void> {
+  return invoke("install_update", { version, token });
 }
 
 // The compat verdict from the most recent connect/reconnect. null before
@@ -533,16 +612,55 @@ export function setCardTabs(cardTabs: Record<string, CardTab>): Promise<void> {
   return invoke("set_card_tabs", { cardTabs });
 }
 
+/// One server entry a target MCP config already named that is not
+/// gavin's own (AG-07) — command and args verbatim, the shape it would
+/// actually launch in.
+export interface ForeignMcpServer {
+  name: string;
+  command: string;
+  args: string[];
+}
+
+/// What `setupAgentIntegration` found in the target MCP config that is
+/// not gavin's, and where. Present on the result only while a decision
+/// is outstanding; see `mcpServerTrust.ts`. `isolateRefusal` is set when
+/// "isolate" is not available for this profile, so the UI can say why
+/// beside the button rather than only after a click fails; absent would
+/// mean isolate is available (not reachable for any stock profile yet).
+export interface McpForeignServers {
+  file: string;
+  servers: ForeignMcpServer[];
+  isolateRefusal?: string;
+}
+
 /// What a setup run wrote, and what it could not (spec §6). `skipped` is
 /// [what, why] pairs, rendered verbatim so an unavailable MCP config is
-/// visible rather than silent.
+/// visible rather than silent. `mcpForeign` is set instead of the MCP
+/// config being written when the target file already names servers
+/// gavin did not add and no `mcpForeignChoice` was supplied or matched.
 export interface IntegrationResult {
   written: string[];
   skipped: Array<[string, string]>;
+  mcpForeign?: McpForeignServers;
 }
 
-export function setupAgentIntegration(rootPath: string): Promise<IntegrationResult> {
-  return invoke("setup_agent_integration", { rootPath });
+/// `instructionsFile` is the workspace's RESOLVED agent file — the one
+/// gavin's marker block is written into. Passed rather than read host-
+/// side because `[agent] file` ships with the repository: pass what
+/// `resolveAgentConfig` gave you, which workspace trust has already
+/// gated, so the file gavin writes is the file its panels name.
+///
+/// `mcpForeignChoice` is "keep", "isolate", or omitted — the answer to
+/// a foreign-server disclosure a previous call's `mcpForeign` returned.
+/// Omit it (or pass a value that does not match what is on disk right
+/// now) to have the MCP write held back and `mcpForeign` reported
+/// instead, rather than assume any particular answer.
+export function setupAgentIntegration(
+  rootPath: string,
+  instructionsFile: string,
+  mcpForeignChoice?: "keep" | "isolate"
+): Promise<IntegrationResult> {
+  return invoke("setup_agent_integration", { rootPath, instructionsFile, mcpForeignChoice });
 }
 
 export function createPlan(
@@ -615,8 +733,8 @@ export function setBoard(workspaceId: string, columns: Column[], labels: Label[]
   return invoke("set_board", { workspaceId, columns, labels });
 }
 
-export function deleteCardFile(path: string): Promise<void> {
-  return invoke("delete_card_file", { path });
+export function deleteCardFile(path: string, token: string): Promise<void> {
+  return invoke("delete_card_file", { path, token });
 }
 
 /// Moves a card into its context's `plans/archive/` (children included)
@@ -713,9 +831,10 @@ export function scanGavinFootprint(rootPath: string): Promise<GavinFootprint> {
 /// names what did not land and why.
 export function removeGavinFootprint(
   rootPath: string,
-  plan: { trash: string[]; stripMcpKey: McpFootprint[]; cutBlock: string[] }
+  plan: { trash: string[]; stripMcpKey: McpFootprint[]; cutBlock: string[] },
+  token: string
 ): Promise<RemovalReport> {
-  return invoke("remove_gavin_footprint", { rootPath, plan });
+  return invoke("remove_gavin_footprint", { rootPath, plan, token });
 }
 
 export function agentProfiles(): Promise<

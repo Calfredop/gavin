@@ -61,6 +61,16 @@ that widens a request needs a `FEATURE_MIN_VERSION` entry in
 `app/src/lib/daemonCompat.ts` **and** a `featureBlockedReason` consumer on every
 UI surface that can produce the payload. The entry alone is a dead gate.
 
+**A column added only to `CREATE TABLE IF NOT EXISTS` never reaches an
+existing database.** SQLite's `CREATE TABLE IF NOT EXISTS` is a no-op against
+a file that already has the table, so a new column needs its own `ALTER
+TABLE ... ADD COLUMN` beside it — swallowed as a duplicate-column error on a
+database that already has the column, the way `registry.rs`'s `Registry::open`
+does. Every store test that only opens a fresh `tempfile::tempdir()` stays
+green through a missing migration; prove one against a database built by hand
+with the OLD schema, the way the `pre_v*` tests in `registry.rs`,
+`kanban.rs` and `orchestration.rs` do.
+
 **A nested task has no status of its own.** `kind: task` + `parent:` + no
 `status:` means its status is the parent's. Never compare `plan.status` to a
 column directly in orchestration code — go through `orchestration.effectiveStatus`.

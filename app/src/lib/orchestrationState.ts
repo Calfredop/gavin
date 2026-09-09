@@ -95,6 +95,7 @@ import {
   resolvedAgentFor,
   armFailureDetection,
   baseShaForLaunch,
+  cardReviewed,
   conversationIdForLaunch,
   createSessionOnPage,
   createSessionOnNewPage,
@@ -131,6 +132,7 @@ import {
 import { sessionLiveness } from "./workspace";
 import { developingBlocker } from "./developingCardsState";
 import { DEVELOPING_STALL } from "./developingCards";
+import { unreviewedStallReason } from "./cardReview";
 import type { OrchestrationAgentRecord } from "./workspace";
 import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "./cardRunActions";
 import { activePaused, mayStartWork, nowStore } from "./agentPauseState";
@@ -1240,22 +1242,54 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // cardHomeNote). An agent that writes the copy leaves the board where
   // it was and this step running forever.
   const cwd = rail.worktreePath ?? entry.contextFolder;
+  // The card file, for both kinds now. A plan step's prompt only names
+  // the file, but the body is still what its agent goes on to execute --
+  // and it is still what the human has to have read before a rail hands
+  // it over unattended.
+  const file = await backend.readFileForViewer(step.cardPath);
+  if (!file.exists) {
+    await setStepRunAction(workspaceId, stepId, "stalled", null, "card file is missing");
+    return false;
+  }
+  const body = stripFrontmatter(file.content).trim();
+  // The first-Run review (AG-01), as a rail can ask it: it cannot. A
+  // scheduler tick runs with nobody necessarily watching this window, and
+  // a modal raised from one would hold the rail open behind whatever is
+  // in front of it. So the step STALLS and names the card, rule 5 pauses
+  // the rail, and `stepAttentions` marks it -- the same shape the
+  // attachment gate above takes, and the same shape a `review` step takes
+  // for the same reason: the rail is waiting on a person.
+  //
+  // The human answers it on the card, where the body can actually be
+  // read; Retry then starts the step.
+  if (
+    !cardReviewed(workspaceId, step.cardPath, {
+      title: entry.plan.title,
+      body,
+      attachments: entry.plan.attachments ?? [],
+    })
+  ) {
+    await setStepRunAction(
+      workspaceId,
+      stepId,
+      "stalled",
+      null,
+      unreviewedStallReason(entry.plan.title)
+    );
+    return false;
+  }
   let prompt: string;
   if (entry.plan.kind === "task") {
-    const file = await backend.readFileForViewer(step.cardPath);
-    if (!file.exists) {
-      await setStepRunAction(workspaceId, stepId, "stalled", null, "card file is missing");
-      return false;
-    }
     prompt = composeTaskPrompt(
       step.cardPath,
       entry.plan.title,
-      stripFrontmatter(file.content).trim(),
+      body,
       resolved.paths,
-      cwd
+      cwd,
+      resolved.withheld
     );
   } else {
-    prompt = composePlanPrompt(step.cardPath, resolved.paths, cwd);
+    prompt = composePlanPrompt(step.cardPath, resolved.paths, cwd, resolved.withheld);
   }
   // A card step re-run by a loop opens with what failed. Null except on
   // a retry, and then this is the whole difference between "do the card"

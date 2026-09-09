@@ -40,8 +40,25 @@ function usable(commands: string[]): string[] {
 /// `null` means there is nothing to run at all, and no session should be
 /// opened — the ordinary case for a workspace that declares no setup and
 /// a caller that isn't starting an agent.
-export function setupPlan(setup: string[], agentCommand: string | null): SetupPlan | null {
-  const commands = usable(setup);
+///
+/// `trusted` says whether the human has approved this repo's config.toml
+/// execution keys (`workspaceTrust.ts`). Unapproved setup lines are
+/// dropped entirely rather than shown and refused: config.toml ships with
+/// the repository, so `setup` here can be a cloned repo's shell, `&&`-ed
+/// ahead of the agent at the moment a worktree is cut. A plan built from
+/// an unapproved config is exactly the plan a workspace declaring no
+/// setup would get.
+///
+/// Required rather than defaulted, so the compiler names every call site
+/// instead of letting one silently run a repo's commands. The agent
+/// command needs no such flag — it arrives already resolved through
+/// `trustedAgentConfigs`.
+export function setupPlan(
+  setup: string[],
+  agentCommand: string | null,
+  trusted: boolean
+): SetupPlan | null {
+  const commands = usable(trusted ? setup : []);
   const agent = usable(agentCommand ? [agentCommand] : []);
   const parts = [...commands, ...agent];
   if (parts.length === 0) return null;

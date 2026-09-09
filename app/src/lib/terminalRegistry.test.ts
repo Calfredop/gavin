@@ -28,7 +28,7 @@ vi.mock("@xterm/xterm", () => ({
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
-vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), openUrl: vi.fn() }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({
   // Deliberately never resolved on its own: each test decides when the
   // listener becomes live, which is the whole point.
@@ -41,6 +41,7 @@ vi.mock("./backend", () => ({
   snapshotSession: vi.fn().mockResolvedValue(undefined),
   viewableExtensions: vi.fn().mockResolvedValue([]),
   resolvePathUnderCursor: vi.fn().mockResolvedValue(null),
+  openPathExternally: vi.fn().mockResolvedValue(undefined),
 }));
 
 import * as backend from "./backend";

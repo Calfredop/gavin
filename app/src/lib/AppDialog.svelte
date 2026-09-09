@@ -21,6 +21,7 @@
     lines={req.lines}
     cancelLabel={req.cancelLabel}
     check={req.check}
+    block={req.block}
     choices={req.confirmLabel === null
       ? []
       : [

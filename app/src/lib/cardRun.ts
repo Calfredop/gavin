@@ -81,17 +81,24 @@ export function cardHomeNote(path: string, cwd: string | null = null): string {
 // `cwd` is where the run will be LAUNCHED, and defaults to null so the
 // same call sites keep compiling. It buys the decoy note above, and only
 // the launchers that run outside the card's own folder need to pass it.
+//
+// `withheld` is the raw text of every entry the card names that gavin
+// resolved outside the workspace and did not read (`attachments.ts`'s
+// `withheldAttachmentPaths`) -- appended AFTER `cwd`, not beside
+// `attachments`, so every call site written before this field existed
+// keeps its `cwd` argument meaning what it always meant.
 export function composeTaskPrompt(
   path: string,
   title: string,
   body: string,
   attachments: string[] = [],
-  cwd: string | null = null
+  cwd: string | null = null,
+  withheld: string[] = []
 ): string {
   return (
     `${NAME_TAB_FIRST}\n\n` +
     `You are executing the task card at ${path} ("${title}").` +
-    `${attachmentPromptBlock(attachments)}\n\n` +
+    `${attachmentPromptBlock(attachments, withheld)}\n\n` +
     `${body}\n\n` +
     `While you work, keep this card's status current with gavin_set_plan_field on ${path}; ` +
     `set it to the board's done column when finished.` +
@@ -102,14 +109,15 @@ export function composeTaskPrompt(
 export function composePlanPrompt(
   path: string,
   attachments: string[] = [],
-  cwd: string | null = null
+  cwd: string | null = null,
+  withheld: string[] = []
 ): string {
   return (
     `${NAME_TAB_FIRST}\n\n` +
     `Read ${path} and execute that plan. Work its checklist top to bottom: ` +
     `tick items (- [x]) as you complete them, promote items that need their own agent ` +
     `with gavin_promote_task, and keep the plan's status current with gavin_set_plan_field.` +
-    attachmentPromptBlock(attachments) +
+    attachmentPromptBlock(attachments, withheld) +
     cardHomeNote(path, cwd)
   );
 }
@@ -385,13 +393,14 @@ export function composeResumeTaskPrompt(
   path: string,
   title: string,
   body: string,
-  attachments: string[] = []
+  attachments: string[] = [],
+  withheld: string[] = []
 ): string {
   return (
     `${NAME_TAB_FIRST}\n\n` +
     `Use the gavin-resume skill to resume the task card at ${path} ("${title}"). ` +
     `Work on it already started and stopped.` +
-    `${attachmentPromptBlock(attachments)}\n\n` +
+    `${attachmentPromptBlock(attachments, withheld)}\n\n` +
     `${body}\n\n` +
     `Find what is already done before you write anything, then carry on from there. ` +
     `Keep this card's status current with gavin_set_plan_field on ${path}; ` +
@@ -399,7 +408,11 @@ export function composeResumeTaskPrompt(
   );
 }
 
-export function composeResumePlanPrompt(path: string, attachments: string[] = []): string {
+export function composeResumePlanPrompt(
+  path: string,
+  attachments: string[] = [],
+  withheld: string[] = []
+): string {
   return (
     `${NAME_TAB_FIRST}\n\n` +
     `Use the gavin-resume skill to resume the plan at ${path}. Work on it already started ` +
@@ -407,7 +420,7 @@ export function composeResumePlanPrompt(path: string, attachments: string[] = []
     `ticks are the record, but not the whole of it. Then work it top to bottom from there, ` +
     `ticking items (- [x]) as you complete them, promoting items that need their own agent ` +
     `with gavin_promote_task, and keeping the plan's status current with gavin_set_plan_field.` +
-    attachmentPromptBlock(attachments)
+    attachmentPromptBlock(attachments, withheld)
   );
 }
 
@@ -433,7 +446,8 @@ export function composeReviewLaunchPrompt(
   title: string,
   kind: "task" | "plan",
   body: string,
-  attachments: string[] = []
+  attachments: string[] = [],
+  withheld: string[] = []
 ): string {
   const subject = kind === "task" ? "task card" : "plan";
   // The body is quoted when there is one and skipped when there is not,
@@ -447,7 +461,7 @@ export function composeReviewLaunchPrompt(
     `The work for the ${subject} at ${path} ("${title}") is finished and is being reviewed. ` +
     `Read the card and find what the work actually did — the checklist, the files it ` +
     `touched, and the commits on this checkout — before you answer anything.` +
-    `${attachmentPromptBlock(attachments)}${quoted}\n\n` +
+    `${attachmentPromptBlock(attachments, withheld)}${quoted}\n\n` +
     `Change nothing until you are asked to. Do not change this card's status: it is sitting ` +
     `in the column that put it in front of a reviewer, and moving it takes it off their list. ` +
     `Wait for the reviewer's first question.`

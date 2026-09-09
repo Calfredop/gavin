@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Gavin's hardened runtime entitlements.
+
+  Every key here is FALSE on purpose. The hardened runtime already denies
+  each of these; naming them anyway is what makes a future widening a
+  reviewable diff instead of an invisible default, and it is the record of
+  the audit that produced the list. codesign embeds the file verbatim, and
+  scripts/verify-macos-bundle.sh fails a build whose signed blob contains a
+  <true/>.
+
+  No "..." (double hyphen) anywhere in this comment, ever: XML forbids it
+  inside a comment, and while `plutil -lint` happily accepts one, the
+  parser behind codesign does not. It fails the whole bundle with
+  "Failed to parse entitlements: AMFIUnserializeXML: syntax error".
+
+  What gavin actually does, and why none of it needs an exception:
+
+  * Spawns child processes: `gavin-daemon` and `gavin-mcp` beside the app
+    binary, plus `git`, `security`, `curl`, `nc`, `pkill`, `/bin/sh` and
+    whatever agent CLI a session runs. The hardened runtime does not gate
+    `exec`; each child gets its own code identity and its own rules. The
+    two sidecars ship inside the bundle and are signed with it, so they are
+    covered by the same seal rather than by an entitlement.
+
+  * Opens PTYs (`forkpty` in crates/daemon/src/pty.rs). An ordinary
+    syscall, gated by no entitlement, sandbox or otherwise.
+
+  * Reads the Claude Code OAuth token for the usage probes by shelling out
+    to `/usr/bin/security find-generic-password` (app/src-tauri/src/
+    agent_usage.rs). Keychain reads are governed by the item's ACL, not by
+    an entitlement: `com.apple.security.keychain` exists only inside the
+    App Sandbox, which gavin does not enter. The requesting binary is
+    Apple's `security`, so the first read prompts the human however gavin
+    is signed.
+
+  * Reads and writes files anywhere the human points a workspace. No
+    sandbox, so no file entitlements; the protected locations (Desktop,
+    Documents, Downloads, iCloud) are TCC prompts, and a stable Developer
+    ID identity is what makes those grants survive a rebuild.
+
+  * Renders in WKWebView. WebKit runs JavaScript out of process, in
+    Apple's own com.apple.WebKit.WebContent, which carries its own JIT
+    entitlements. Unlike a Chromium host, the Tauri app needs none.
+
+  * Talks to the network (the Anthropic usage endpoint, git remotes).
+    Outbound network needs no entitlement outside the sandbox.
+
+  * Sends notifications through tauri-plugin-notification, and moves a
+    deleted workspace to the Trash through NSFileManager. Both want a
+    signed bundle identity; neither wants an entitlement, and the
+    NSFileManager route is deliberately not the Finder/AppleScript one, so
+    there is no Apple events entitlement either.
+
+  If a future change genuinely needs one of these, flip it here in its own
+  commit and say in the message what stopped working without it.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.allow-jit</key>
+	<false/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<false/>
+	<key>com.apple.security.cs.disable-executable-page-protection</key>
+	<false/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<false/>
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
+	<false/>
+	<key>com.apple.security.cs.debugger</key>
+	<false/>
+	<key>com.apple.security.get-task-allow</key>
+	<false/>
+</dict>
+</plist>

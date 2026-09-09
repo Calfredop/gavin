@@ -23,6 +23,7 @@
     type GavinFootprint,
   } from "./workspaceDelete";
   import { executeWorkspaceDelete, type DeleteResult } from "./workspaceDeleteActions";
+  import { grantForAnsweredPrompt } from "./confirmGate";
 
   interface Props {
     workspaceId: string;
@@ -80,7 +81,10 @@
     if (!footprint || !answers) return;
     running = true;
     try {
-      result = await executeWorkspaceDelete(workspaceId, footprint, answers);
+      // The six screens and the typed name ARE this command's
+      // confirmation; the grant is what makes the host agree.
+      const token = await grantForAnsweredPrompt("remove_gavin_footprint", [footprint.root]);
+      result = await executeWorkspaceDelete(workspaceId, footprint, answers, token);
     } finally {
       running = false;
     }

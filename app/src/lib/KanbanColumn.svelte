@@ -25,6 +25,7 @@
   import { formatShortcut } from "./shortcuts";
   import { isMacSync } from "./platform";
   import { columnDeletionPlan, executeDeletion, executeMoveCards } from "./cardDelete";
+  import { grantForAnsweredPrompt } from "./confirmGate";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import { openContextMenuFromEvent, type ContextMenuEntry } from "./contextMenu";
   import { executeArchive, isDoneColumn } from "./archiveActions";
@@ -168,7 +169,8 @@
   async function deleteColumnCascade(): Promise<void> {
     columnPrompt = null;
     deleteError = null;
-    const err = await executeDeletion(workspaceId, cascade);
+    const token = await grantForAnsweredPrompt("delete_card_file", cascade.files.map((f) => f.id));
+    const err = await executeDeletion(workspaceId, cascade, token);
     if (err) {
       deleteError = err;
       return;
@@ -198,7 +200,8 @@
   async function clearColumn(): Promise<void> {
     columnPrompt = null;
     deleteError = null;
-    const err = await executeDeletion(workspaceId, cascade);
+    const token = await grantForAnsweredPrompt("delete_card_file", cascade.files.map((f) => f.id));
+    const err = await executeDeletion(workspaceId, cascade, token);
     if (err) deleteError = err;
   }
 

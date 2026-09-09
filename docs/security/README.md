@@ -196,9 +196,12 @@ both sidecars and bundles neither, so a bundle from `main` would fail at
 `Feat/multi-os-support` (SC-08). Info while nothing is distributed; Medium the day
 a build is.
 
-**Fix.** One card, gated on distribution: land the sidecar staging, then signing
-and notarization per target, then an updater with a pinned key
-(`sec-fix-signing-and-sidecars.md`).
+**Fix.** Gated on distribution: land the sidecar staging, then signing and
+notarization per target (`sec-fix-signing-and-sidecars.md`), then an updater with
+a pinned key — promoted to a card of its own, because a channel that delivers
+code to a running install is a decision and a key-custody question rather than a
+checklist item (`sec-fix-updater-channel.md`, and `docs/RELEASING.md` for what
+each one buys).
 
 ### R7 — Session state at rest
 

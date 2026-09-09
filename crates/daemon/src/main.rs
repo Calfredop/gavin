@@ -11,7 +11,7 @@ mod server;
 mod status;
 
 use kanban::KanbanStore;
-use registry::Registry;
+use registry::{secure_db_file, Registry};
 use server::SessionManager;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -34,9 +34,16 @@ fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&dir)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
 
+    // `Registry::open` secures its own file; kanban and orchestration
+    // don't carry that logic themselves, so it's asserted here instead --
+    // same 0600 as the socket beside them (`server::bind_server`), same
+    // reassert-on-every-open shape, since neither store has a schema
+    // version to hang a one-time migration off of a file mode.
     let registry = Registry::open(&db_path())?;
     let kanban = KanbanStore::open(&kanban_db_path())?;
+    secure_db_file(&kanban_db_path())?;
     let orchestration = orchestration::OrchestrationStore::open(&orchestration_db_path())?;
+    secure_db_file(&orchestration_db_path())?;
     let manager = Arc::new(SessionManager::new(registry, kanban, orchestration));
     manager.recover()?;
 

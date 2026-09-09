@@ -4,8 +4,8 @@
     agentProfilesStore,
     agentModelDefaultsStore,
     setAgentField,
+    trustedAgentConfigs,
   } from "./layoutState";
-  import { gavinTrees } from "./gavinState";
   import { resolveAgentConfig, agentFileFromPick } from "./settings";
   import FileEditor from "./FileEditor.svelte";
   import HubFilePicker from "./HubFilePicker.svelte";
@@ -19,10 +19,9 @@
   // The agent file's name is configurable per workspace (D36): it comes
   // from .gavin-root/config.toml's [agent].file, falling back to the
   // profile's default.
-  const tree = $derived($gavinTrees[workspaceId]);
   const agent = $derived(
     resolveAgentConfig(
-      tree?.contexts.find((c) => c.kind === "root")?.agent ?? null,
+      $trustedAgentConfigs(workspaceId),
       $agentProfilesStore,
       $agentModelDefaultsStore
     )

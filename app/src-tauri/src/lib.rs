@@ -3,6 +3,7 @@ mod agent_setup;
 mod agent_tokens;
 mod agent_usage;
 mod config;
+mod confirm_gate;
 mod daemon;
 mod edge_expand;
 mod fileviewer;
@@ -13,6 +14,7 @@ mod pull_request;
 mod session;
 mod superpowers;
 mod trash;
+mod updater;
 mod workspace_delete;
 mod workspace_window;
 mod worktree_setup;
@@ -33,16 +35,36 @@ fn daemon_compat(app_handle: AppHandle) -> Option<session::DaemonCompat> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // The context is built first because one registration decision reads
+    // it. `tauri_plugin_updater`'s Config makes `pubkey` REQUIRED, and
+    // tauri hands a plugin whose `plugins.<name>` block is missing a
+    // JSON `null` (`plugin.rs`'s `config.0.get(name).unwrap_or_default()`),
+    // which fails to deserialize -- so registering it unconditionally
+    // turns any build whose config lacks the block into a window that
+    // never opens. Registering it only when the block is there means a
+    // fork, or a config overlay that strips the updater, still runs; the
+    // commands in `updater.rs` answer "no update channel in this build"
+    // rather than reaching for plugin state that was never managed.
+    let context = tauri::generate_context!();
+    let updater_configured = context.config().plugins.0.contains_key("updater");
+
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_notification::init());
+    if updater_configured {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+
+    builder
+        .manage(updater::UpdaterEnabled(updater_configured))
         .manage(session::FrontendReady(std::sync::atomic::AtomicBool::new(false)))
         .manage(session::BootstrapError(std::sync::Mutex::new(None)))
         .manage(session::ConnectionEpoch(std::sync::atomic::AtomicU64::new(0)))
         .manage(session::DaemonCompatState(std::sync::Mutex::new(None)))
+        .manage(confirm_gate::ConfirmGate::default())
         .manage(fileviewer::FileWatchers::default())
         .manage(git::GitWatchers::default())
         .manage(git::GitOps::default())
@@ -101,11 +123,17 @@ pub fn run() {
             fileviewer::create_directory,
             fileviewer::rename_path,
             fileviewer::trash_entry,
+            fileviewer::open_path_externally,
+            fileviewer::reveal_path_externally,
             session::signal_frontend_ready,
             mac_window::title_bar_double_click_action,
             session::get_bootstrap_error,
             session::restart_daemon,
+            session::get_require_local_token,
+            session::set_require_local_token,
             daemon_compat,
+            confirm_gate::open_confirmation,
+            confirm_gate::answer_confirmation,
             session::get_board,
             session::card_runs,
             session::set_board,
@@ -233,8 +261,12 @@ pub fn run() {
             git::git_resolve_deleted,
             git::git_restore_conflict,
             git::git_merge_tool_name,
-            worktree_setup::worktree_setup
+            worktree_setup::worktree_setup,
+            updater::update_settings,
+            updater::set_update_endpoint,
+            updater::check_for_update,
+            updater::install_update
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }

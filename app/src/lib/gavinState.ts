@@ -13,6 +13,42 @@ import type { Workspace } from "./workspace";
 // connection.
 export const gavinTrees = writable<Record<string, GavinTree>>({});
 
+// One workspace's `[worktree] setup` lines, keyed by workspace id.
+//
+// The daemon's tree carries the `[agent]` block but not this one, so it
+// has to be read from config.toml on its own. It lives here, beside the
+// tree, because it is half of the same question: workspaceTrust hashes
+// the agent keys and the setup lines TOGETHER, so a consumer holding one
+// without the other cannot answer whether the config is approved -- and
+// an unknown half must read as "not approved yet", which is what an
+// absent entry gives it.
+//
+// Re-read on every tree push rather than watched separately: config.toml
+// lives inside the watched `.gavin-root`, so an edit to it IS a push.
+export const worktreeSetups = writable<Record<string, string[]>>({});
+
+/// Re-reads one workspace's setup lines. Best-effort and silent -- a
+/// failed read leaves the entry absent, which fails closed.
+///
+/// Writes the store only on a real change: this runs on every tree push,
+/// and an identical array would invalidate every derived agent in the app
+/// (and with it every hub label and terminal title) for nothing.
+export async function refreshWorktreeSetup(workspaceId: string, rootPath: string): Promise<void> {
+  let lines: string[];
+  try {
+    lines = await backend.worktreeSetup(rootPath);
+  } catch {
+    return;
+  }
+  worktreeSetups.update((m) => {
+    const current = m[workspaceId];
+    if (current && current.length === lines.length && current.every((l, i) => l === lines[i])) {
+      return m;
+    }
+    return { ...m, [workspaceId]: lines };
+  });
+}
+
 // Guards watchRootedWorkspaces against double-registration: bootstrap has
 // two "workspaces are ready" paths (the workspaces-ready event and
 // pollForStartupState), and whichever runs second must be a no-op.
@@ -25,6 +61,11 @@ export async function initGavinListeners(): Promise<UnlistenFn> {
   return listen<[string, GavinTree]>("gavin-tree-changed", (event) => {
     const [workspaceId, tree] = event.payload;
     gavinTrees.update((m) => ({ ...m, [workspaceId]: tree }));
+    // config.toml sits inside the watched root, so its `[worktree] setup`
+    // is re-read here rather than on a watcher of its own -- and it must
+    // be re-read on EVERY push, because a change to it is exactly what
+    // has to revoke workspace trust.
+    if (tree.rootPath) void refreshWorktreeSetup(workspaceId, tree.rootPath);
     // The board's card<->session bindings are no longer written only by
     // this app: an agent that puts a card In Progress through the gavin
     // tools claims it in the daemon (ClaimCardForSession), and nothing
@@ -44,6 +85,9 @@ export function watchRootedWorkspaces(workspaces: Workspace[]): void {
     // Best-effort: a failed watch shows as a missing tree, never blocks
     // startup.
     if (ws.rootPath) void backend.watchGavinRoot(ws.id, ws.rootPath).catch(() => {});
+    // Ahead of the first push, so a workspace whose watcher is slow to
+    // arm does not spend that window reading as unapproved.
+    if (ws.rootPath) void refreshWorktreeSetup(ws.id, ws.rootPath);
   }
 }
 
@@ -55,6 +99,7 @@ export async function refreshGavinTree(workspaceId: string): Promise<void> {
   try {
     const tree = await backend.getGavinTree(workspaceId);
     gavinTrees.update((m) => ({ ...m, [workspaceId]: tree }));
+    if (tree.rootPath) void refreshWorktreeSetup(workspaceId, tree.rootPath);
   } catch {
     // The watcher or the next mutation will catch up.
   }
@@ -173,4 +218,5 @@ export function patchPlanField(
 export function __resetForTesting(): void {
   watchedOnce = false;
   gavinTrees.set({});
+  worktreeSetups.set({});
 }

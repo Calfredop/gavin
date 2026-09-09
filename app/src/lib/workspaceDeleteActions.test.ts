@@ -78,17 +78,21 @@ const template = (id: string, workspaceId: string | null, name = id) => ({
 
 describe("executeWorkspaceDelete", () => {
   it("hands Rust exactly the plan the answers add up to", async () => {
-    await executeWorkspaceDelete("ws-1", footprint, defaultAnswers(footprint));
+    await executeWorkspaceDelete("ws-1", footprint, defaultAnswers(footprint), "grant");
 
-    expect(backend.removeGavinFootprint).toHaveBeenCalledWith("/repo", {
-      trash: ["/repo/.gavin-root", "/repo/.claude/skills/gavin"],
-      stripMcpKey: [{ path: "/repo/.mcp.json", serverKey: "gavin" }],
-      cutBlock: ["/repo/CLAUDE.md"],
-    });
+    expect(backend.removeGavinFootprint).toHaveBeenCalledWith(
+      "/repo",
+      {
+        trash: ["/repo/.gavin-root", "/repo/.claude/skills/gavin"],
+        stripMcpKey: [{ path: "/repo/.mcp.json", serverKey: "gavin" }],
+        cutBlock: ["/repo/CLAUDE.md"],
+      },
+      "grant"
+    );
   });
 
   it("does not call Rust at all when nothing on disk was chosen", async () => {
-    await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare));
+    await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare), "grant");
 
     expect(backend.removeGavinFootprint).not.toHaveBeenCalled();
   });
@@ -106,7 +110,7 @@ describe("executeWorkspaceDelete", () => {
       ],
     });
 
-    await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare));
+    await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare), "grant");
 
     expect(backend.unlinkCardSession).toHaveBeenCalledWith("ws-1", "a.md");
     expect(backend.unlinkCardSession).toHaveBeenCalledWith("ws-1", "b.md");
@@ -116,7 +120,7 @@ describe("executeWorkspaceDelete", () => {
   });
 
   it("clears the rails and the board", async () => {
-    await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare));
+    await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare), "grant");
 
     expect(backend.setOrchestration).toHaveBeenCalledWith("ws-1", [], []);
     expect(backend.deleteBoard).toHaveBeenCalledWith("ws-1");
@@ -130,7 +134,7 @@ describe("executeWorkspaceDelete", () => {
       template("g2", null),
     ]);
 
-    await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare));
+    await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare), "grant");
 
     expect(backend.deleteTool).toHaveBeenCalledWith("t1");
     expect(backend.deleteTool).not.toHaveBeenCalledWith("t2");
@@ -139,7 +143,7 @@ describe("executeWorkspaceDelete", () => {
   });
 
   it("touches no daemon row when that screen was declined", async () => {
-    await executeWorkspaceDelete("ws-1", bare, { ...defaultAnswers(bare), rows: false });
+    await executeWorkspaceDelete("ws-1", bare, { ...defaultAnswers(bare), rows: false }, "grant");
 
     expect(backend.deleteBoard).not.toHaveBeenCalled();
     expect(backend.setOrchestration).not.toHaveBeenCalled();
@@ -148,7 +152,7 @@ describe("executeWorkspaceDelete", () => {
   });
 
   it("removes the workspace from the app, without a tombstone, once everything landed", async () => {
-    const result = await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare));
+    const result = await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare), "grant");
 
     expect(deleteWorkspaceFromApp).toHaveBeenCalledWith("ws-1");
     expect(result.removed).toBe(true);
@@ -163,7 +167,7 @@ describe("executeWorkspaceDelete", () => {
       failed: [["/repo/.gavin-root", "Permission denied"]],
     });
 
-    const result = await executeWorkspaceDelete("ws-1", footprint, defaultAnswers(footprint));
+    const result = await executeWorkspaceDelete("ws-1", footprint, defaultAnswers(footprint), "grant");
 
     expect(result.removed).toBe(false);
     expect(deleteWorkspaceFromApp).not.toHaveBeenCalled();
@@ -174,7 +178,7 @@ describe("executeWorkspaceDelete", () => {
   it("keeps the workspace when a daemon row failed", async () => {
     vi.mocked(backend.deleteBoard).mockRejectedValue(new Error("daemon is away"));
 
-    const result = await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare));
+    const result = await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare), "grant");
 
     expect(result.removed).toBe(false);
     expect(result.failed).toEqual([["Cleared the board's columns and labels", "daemon is away"]]);
@@ -185,7 +189,7 @@ describe("executeWorkspaceDelete", () => {
   it("keeps going after one row fails", async () => {
     vi.mocked(backend.setOrchestration).mockRejectedValue(new Error("nope"));
 
-    const result = await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare));
+    const result = await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare), "grant");
 
     expect(backend.deleteBoard).toHaveBeenCalled();
     expect(result.done).toContain("Cleared the board's columns and labels");
@@ -195,7 +199,7 @@ describe("executeWorkspaceDelete", () => {
   it("reports the whole file half as one failure when the command itself refuses", async () => {
     vi.mocked(backend.removeGavinFootprint).mockRejectedValue(new Error("root does not exist"));
 
-    const result = await executeWorkspaceDelete("ws-1", footprint, defaultAnswers(footprint));
+    const result = await executeWorkspaceDelete("ws-1", footprint, defaultAnswers(footprint), "grant");
 
     expect(result.failed).toEqual([["/repo", "root does not exist"]]);
     expect(result.removed).toBe(false);

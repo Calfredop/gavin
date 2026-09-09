@@ -3,7 +3,6 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import DOMPurify from "dompurify";
   import { renderMarkdown } from "./markdown";
-  import { openPath } from "@tauri-apps/plugin-opener";
   import { open } from "@tauri-apps/plugin-dialog";
   import type { CardView } from "./planBoard";
   import type { Column, Label, Priority } from "./kanban";
@@ -38,11 +37,13 @@
     attachmentName,
     formatAttachments,
     removeAttachment,
+    resolvedAttachmentPaths,
+    withheldAttachmentPaths,
     type AttachmentStatus,
   } from "./attachments";
   import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "./autoCommit";
   import { isViewableInApp } from "./fileTypes";
-  import { ChevronDown, ChevronRight, SquareArrowOutUpRight } from "@lucide/svelte";
+  import { ChevronDown, ChevronRight, Lock, SquareArrowOutUpRight } from "@lucide/svelte";
   import StatusBadge from "./ui/StatusBadge.svelte";
   import {
     agentDevelopingIndicator,
@@ -64,7 +65,9 @@
   } from "./cardRunActions";
   import { developingRunIn } from "./developingCards";
   import { cardSessionState } from "./columnRunAction";
-  import { developAvailable, agentPromptBlocker } from "./cardRun";
+  import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker } from "./cardRun";
+  import { cardContentReviewed } from "./cardReview";
+  import { ensureCardReviewed } from "./cardReviewActions";
   import { resumeNoteFor } from "./autoResume";
   import { runBaseline } from "./runChanges";
   import RunChangesModal from "./RunChangesModal.svelte";
@@ -79,6 +82,7 @@
     removeCardFromRailAction,
   } from "./orchestrationState";
   import { deletionPlanFor, executeDeletion } from "./cardDelete";
+  import { grantForAnsweredPrompt } from "./confirmGate";
   import { breakOutChildren, guardCompletion, subjectFromCard } from "./cardCompletion";
   import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "./archiveActions";
   import { featureBlockedReason } from "./daemonCompat";
@@ -455,6 +459,13 @@
   let attachmentsError = $state<string | null>(null);
   let attachmentsBusy = $state(false);
 
+  // What a chip reads as before the host has stat'd it, or when it
+  // couldn't: unknown beats a confident lie, so it reads the same as a
+  // `refused` entry -- broken, with no absolute path to open.
+  function unresolvedAttachmentStatus(path: string): AttachmentStatus {
+    return { path, absolutePath: null, exists: false, location: "refused", refusedReason: null };
+  }
+
   // Stat'd HERE rather than on scan: the daemon never touches these
   // paths, so the board card face can only show a count and this modal
   // is the first place brokenness can be seen at all.
@@ -473,7 +484,7 @@
       return;
     }
     if (root === null) {
-      attachmentStatuses = paths.map((path) => ({ path, absolutePath: null, exists: false }));
+      attachmentStatuses = paths.map((path) => unresolvedAttachmentStatus(path));
       return;
     }
     void backend
@@ -485,7 +496,7 @@
         // Unknown beats a confident lie: an unresolved chip reads
         // broken, which is also what the run gate will say.
         if (mine === statToken) {
-          attachmentStatuses = paths.map((path) => ({ path, absolutePath: null, exists: false }));
+          attachmentStatuses = paths.map((path) => unresolvedAttachmentStatus(path));
         }
       });
   });
@@ -559,7 +570,7 @@
         onClose();
         return;
       }
-      await openPath(path);
+      await backend.openPathExternally(path);
     } catch (e) {
       attachmentsError = `Couldn't open ${attachmentName(path)}: ${e instanceof Error ? e.message : e}`;
     }
@@ -763,7 +774,11 @@
 
   async function confirmDelete(): Promise<void> {
     confirmingDelete = false;
-    const err = await executeDeletion(workspaceId, delPlan);
+    const token = await grantForAnsweredPrompt(
+      "delete_card_file",
+      delPlan.files.map((f) => f.id)
+    );
+    const err = await executeDeletion(workspaceId, delPlan, token);
     if (err) errorMessage = err;
     else onClose();
   }
@@ -853,7 +868,7 @@
   async function openExternally(): Promise<void> {
     errorMessage = null;
     try {
-      await openPath(card.id);
+      await backend.openPathExternally(card.id);
     } catch (e) {
       errorMessage = `Couldn't open externally: ${e}`;
     }
@@ -953,6 +968,59 @@
         return;
       case "develop-jump":
         return handleJumpToDevelop();
+    }
+  }
+
+  // --- first-Run review (cardReview.ts, AG-01) --------------------------
+  // A card's body IS an agent's prompt, and `.gavin-root/plans/*.md`
+  // ships with the repository -- so gavin will not hand a card to an
+  // agent until a human has read it. Every launch asks at the click; this
+  // is where the question can be answered WITHOUT one, which is what a
+  // rail needs: a rail step stalls on an unreviewed card rather than
+  // raising a modal into a window nobody may be watching, and the human
+  // comes here, reads the body that is already on screen, and answers.
+  //
+  // Read through the pure predicate off the store rather than through
+  // layoutState's one-shot helper, so the banner clears the instant the
+  // stamp lands instead of at the next remount.
+  const reviewedCards = $derived(
+    $layoutState.workspaces.find((w) => w.id === workspaceId)?.reviewedCards
+  );
+  const reviewContent = $derived({
+    title: card.title,
+    body: stripFrontmatter(content ?? "").trim(),
+    attachments: [...attachments],
+  });
+  // Never for a note -- nothing executes one -- and never before the file
+  // has been read, since "not loaded yet" must not draw as "not reviewed".
+  const needsReview = $derived(
+    card.kind !== "note" &&
+      content !== null &&
+      !cardContentReviewed(reviewContent, reviewedCards?.[card.id])
+  );
+  let reviewBusy = $state(false);
+
+  async function handleReview(): Promise<void> {
+    reviewBusy = true;
+    try {
+      // The same composer a launch would use, on the same resolved
+      // attachments the chips above are drawn from -- a sheet showing a
+      // different prompt from the one that will be sent is worse than no
+      // sheet at all.
+      const paths = resolvedAttachmentPaths(attachmentStatuses);
+      const withheld = withheldAttachmentPaths(attachmentStatuses);
+      await ensureCardReviewed({
+        workspaceId,
+        path: card.id,
+        content: reviewContent,
+        statuses: attachmentStatuses,
+        prompt:
+          card.kind === "task"
+            ? composeTaskPrompt(card.id, card.title, reviewContent.body, paths, null, withheld)
+            : composePlanPrompt(card.id, paths, null, withheld),
+      });
+    } finally {
+      reviewBusy = false;
     }
   }
 
@@ -1310,6 +1378,19 @@
            with a scrollbar of its own, above a session block nobody
            could reach: now the panel scrolls once and the text can be as
            long as it likes without pushing anything urgent out of view. -->
+      {#if needsReview}
+        <div class="review-banner" role="status">
+          <Lock size={14} aria-hidden="true" />
+          <span>
+            Nobody has read this card's body yet, and a card's body is what an agent is given.
+            gavin asks before the first run — and a rail holds its step until you answer.
+          </span>
+          <button type="button" disabled={reviewBusy} onclick={() => void handleReview()}>
+            Review…
+          </button>
+        </div>
+      {/if}
+
       {#if card.kind === "task" && bodyHtml !== null}
         <div class="section">
           <div class="section-title">Prompt</div>
@@ -1444,17 +1525,23 @@
                 {#each attachments as path (path)}
                   {@const status = attachmentStatuses.find((s) => s.path === path) ?? null}
                   {@const broken = status !== null && !status.exists}
-                  <span class="attachment" class:broken>
+                  {@const refused = status !== null && status.location === "refused"}
+                  {@const withheld = status !== null && !broken && status.location === "outside"}
+                  <span class="attachment" class:broken class:withheld>
                     <button
                       type="button"
                       class="attachment-open"
                       disabled={status === null || broken}
-                      title={broken
-                        ? `${path} — not found. Fix or remove it: a missing attachment blocks every run of this card.`
-                        : path}
+                      title={refused
+                        ? `${path} — refused: ${status?.refusedReason}. Remove it: gavin will never read this file.`
+                        : broken
+                          ? `${path} — not found. Fix or remove it: a missing attachment blocks every run of this card.`
+                          : withheld
+                            ? `${path} — outside the workspace. Gavin does not read this automatically; a launched agent is told the card named it, but not what it contains.`
+                            : path}
                       onclick={() => status && void openAttachment(status)}
                     >
-                      {broken ? "⚠ " : ""}{attachmentName(path)}
+                      {broken ? "⚠ " : withheld ? "↗ " : ""}{attachmentName(path)}
                     </button>
                     <button
                       type="button"
@@ -1919,6 +2006,12 @@
   .attachment.broken {
     border-color: var(--border-warning);
   }
+  .attachment.withheld {
+    border-style: dashed;
+  }
+  .attachment.withheld .attachment-open {
+    color: var(--text-subtle);
+  }
   .attachment-open,
   .attachment-remove {
     background: transparent;
@@ -2007,6 +2100,38 @@
     color: var(--text-muted);
     font-size: 0.8em;
     margin-bottom: 6px;
+  }
+  /* The same shape as ConfigTrustNotice's banner one level up: gavin is
+     holding something the repository wrote until a person looks. */
+  .review-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border-warning);
+    background: var(--surface-warning);
+    color: var(--warning-text);
+    border-radius: 6px;
+    font-size: 0.85em;
+  }
+  .review-banner span {
+    flex: 1;
+    min-width: 0;
+  }
+  .review-banner button {
+    flex: none;
+    background: var(--surface-overlay);
+    border: none;
+    color: var(--text);
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+  }
+  .review-banner button:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
   .check-item {
     display: flex;

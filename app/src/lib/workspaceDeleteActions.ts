@@ -92,10 +92,15 @@ async function clearDaemonRows(
   await attempt("Cleared the board's columns and labels", () => backend.deleteBoard(workspaceId));
 }
 
+/// `token` is the wizard's grant from `confirmGate.ts`, minted over
+/// `footprint.root` when the human typed the workspace name on the last
+/// screen. The six screens ARE the confirmation for this command, and a
+/// direct `invoke` used to skip all six (AS-05/R5).
 export async function executeWorkspaceDelete(
   workspaceId: string,
   footprint: GavinFootprint,
-  answers: DeleteAnswers
+  answers: DeleteAnswers,
+  token: string
 ): Promise<DeleteResult> {
   const plan = plannedRemovals(footprint, answers);
   const done: string[] = [];
@@ -103,11 +108,11 @@ export async function executeWorkspaceDelete(
 
   if (touchesDisk(plan)) {
     try {
-      const report = await backend.removeGavinFootprint(footprint.root, {
-        trash: plan.trash,
-        stripMcpKey: plan.stripMcpKey,
-        cutBlock: plan.cutBlock,
-      });
+      const report = await backend.removeGavinFootprint(
+        footprint.root,
+        { trash: plan.trash, stripMcpKey: plan.stripMcpKey, cutBlock: plan.cutBlock },
+        token
+      );
       done.push(...report.done);
       failed.push(...report.failed);
     } catch (e) {
