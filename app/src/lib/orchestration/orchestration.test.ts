@@ -63,6 +63,9 @@ import {
   pageToSpawnForRail,
   railCardPaths,
   railCardsToMove,
+  railMoveAllEntries,
+  finishedRailDoneCards,
+  conflictSummaryLines,
   railDoneStepIds,
   removeSteps,
   effectiveStatus,
@@ -4640,5 +4643,127 @@ describe("attentionTip", () => {
     expect(attentionTip("failed", "Done")).toBe(
       "the agent stopped because something broke, not because it finished"
     );
+  });
+});
+
+describe("railMoveAllEntries", () => {
+  const r = rail("r1", [[["t1", "/x/a.md"]], [["t2", "/x/b.md"], ["t3", "/x/c.md"]]]);
+  const cards = cardIndex(
+    tree([
+      plan("a.md", { path: "/x/a.md", status: "To Do" }),
+      plan("b.md", { path: "/x/b.md", status: "Done" }),
+      plan("c.md", { path: "/x/c.md", status: "To Do" }),
+    ])
+  );
+  const columns = [
+    { name: "Done", position: 2 },
+    { name: "To Do", position: 0 },
+    { name: "In Progress", position: 1 },
+  ];
+
+  // The menu is the board's own left-to-right order, whatever order the
+  // columns arrived in.
+  it("lists the columns by position, not by array order", () => {
+    expect(railMoveAllEntries(r, cards, columns).map((e) => e.columnName)).toEqual([
+      "To Do",
+      "In Progress",
+      "Done",
+    ]);
+  });
+
+  it("counts only the cards the pick would actually rewrite", () => {
+    const byName = new Map(railMoveAllEntries(r, cards, columns).map((e) => [e.columnName, e]));
+    expect(byName.get("Done")?.label).toBe("Move 2 cards to Done");
+    expect(byName.get("To Do")?.label).toBe("Move 1 card to To Do");
+    expect(byName.get("In Progress")?.label).toBe("Move 3 cards to In Progress");
+  });
+
+  // A column every card is already in is marked and dead, exactly as a
+  // card's own current column is in its menu.
+  it("is dead for a column every card already sits in", () => {
+    const settled = cardIndex(
+      tree([
+        plan("a.md", { path: "/x/a.md", status: "Done" }),
+        plan("b.md", { path: "/x/b.md", status: "Done" }),
+        plan("c.md", { path: "/x/c.md", status: "Done" }),
+      ])
+    );
+    const entry = railMoveAllEntries(r, settled, columns).find((e) => e.columnName === "Done");
+    expect(entry).toEqual({ columnName: "Done", count: 0, label: "All cards are in Done", dead: true });
+  });
+});
+
+describe("finishedRailDoneCards", () => {
+  const rails = [rail("r1", [[["t1", "/x/a.md"], ["t2", "/x/b.md"]]]), rail("r2", [[["t3", "/x/a.md"]]])];
+  const view = (status: string | null) => ({ status });
+  const resolve = (map: Record<string, string | null>) => (path: string) =>
+    path in map ? view(map[path]) : undefined;
+
+  it("takes the cards the board itself calls Done, deduplicated across rails", () => {
+    const got = finishedRailDoneCards(rails, resolve({ "/x/a.md": "Done", "/x/b.md": "To Do" }), "Done");
+    expect(got).toEqual([view("Done")]);
+  });
+
+  it("compares by slug, not by spelling", () => {
+    expect(finishedRailDoneCards(rails, resolve({ "/x/a.md": "done" }), "Done")).toHaveLength(1);
+  });
+
+  // The board draws a statusless card in the first column, but the file
+  // does not say so -- archiving on the strength of where it was drawn
+  // would file a card nobody finished.
+  it("never archives a card with no status", () => {
+    expect(finishedRailDoneCards(rails, resolve({ "/x/a.md": null }), "Done")).toEqual([]);
+  });
+
+  // Nothing to archive, and a missing card must not stop the rails
+  // leaving.
+  it("skips a card whose file is gone", () => {
+    expect(finishedRailDoneCards(rails, resolve({}), "Done")).toEqual([]);
+  });
+
+  // No board, or a board with no done column: archive nothing rather
+  // than everything.
+  it("archives nothing when there is no done column", () => {
+    expect(finishedRailDoneCards(rails, resolve({ "/x/a.md": "Done" }), null)).toEqual([]);
+  });
+});
+
+describe("conflictSummaryLines", () => {
+  const orch: Orchestration = orchOf([
+    {
+      ...bound("r1", "/x/wt-a", [[["t1", A]]]),
+      stages: [
+        {
+          id: "r1-s0",
+          position: 0,
+          steps: [
+            { id: "t1", position: 0, cardPath: A },
+            { id: "t2", position: 1, cardPath: "", toolId: "builtin:push", toolParams: {} },
+          ],
+        },
+      ],
+    },
+  ]);
+
+  // The numbers are the badges' numbers: the human reading "1." on a
+  // chip and the agent reading "1." in its brief are looking at one list.
+  it("numbers each line to match the badge on the rail", () => {
+    const numbered = numberConflicts(detectConflicts(orch, CARDS, WT));
+    const lines = conflictSummaryLines(numbered, cardIndex(CARDS), orch, TOOLS);
+    expect(lines).toHaveLength(numbered.length);
+    lines.forEach((line, i) => expect(line.startsWith(`${i + 1}. `)).toBe(true));
+  });
+
+  // The header's Organize hands over every conflict and a rail's
+  // Reorganize hands over conflictsForRail's subset -- one spelling, so
+  // the two briefs cannot disagree about what a conflict is called.
+  it("says the same thing describeConflict says, minus the number", () => {
+    const numbered = numberConflicts(detectConflicts(orch, CARDS, WT));
+    const line = conflictSummaryLines(numbered, cardIndex(CARDS), orch, TOOLS)[0];
+    expect(line).toBe(`1. ${describeConflict(numbered[0].conflict, cardIndex(CARDS), orch, TOOLS)}`);
+  });
+
+  it("is empty when there is nothing to report", () => {
+    expect(conflictSummaryLines([], cardIndex(CARDS), orch, TOOLS)).toEqual([]);
   });
 });

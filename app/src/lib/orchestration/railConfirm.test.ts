@@ -6,6 +6,8 @@ import {
   clearAndArchiveFinishedRailsConfirm,
   groupRemoveConfirm,
   runAllConfirm,
+  runAllTip,
+  clearFinishedTip,
 } from "$lib/orchestration/railConfirm";
 import type { CardEntry, Orchestration, Rail, Stage, Step } from "$lib/orchestration/orchestration";
 import type { PlanFileInfo } from "$lib/core/gavin";
@@ -493,5 +495,24 @@ describe("clearAndArchiveFinishedRailsConfirm", () => {
     const c = clearAndArchiveFinishedRailsConfirm(o, cards, "Done");
     expect(c.lines[0]).toBe("Removes: docs.");
     expect(c.lines).toContain("1 rail with nothing left to do is running or paused, so it stays.");
+  });
+});
+
+describe("the header tooltips", () => {
+  // Both buttons stay pressable with nothing to do: a disabled control
+  // cannot explain itself, so the empty case is a sentence rather than
+  // an absence.
+  it("say what there is to do when there is nothing", () => {
+    expect(runAllTip(0)).toBe("No idle rail has anything left to run");
+    expect(clearFinishedTip(0)).toBe("No rail has finished every step it holds");
+  });
+
+  // The ellipsis is the promise that a prompt follows -- so it is absent
+  // above, where nothing would be prompted about.
+  it("count and promise a prompt when there is", () => {
+    expect(runAllTip(1)).toBe("Start 1 idle rail…");
+    expect(runAllTip(3)).toBe("Start 3 idle rails…");
+    expect(clearFinishedTip(1)).toBe("Remove 1 finished rail…");
+    expect(clearFinishedTip(4)).toBe("Remove 4 finished rails…");
   });
 });

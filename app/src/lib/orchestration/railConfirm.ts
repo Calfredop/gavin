@@ -308,3 +308,21 @@ export function runAllConfirm(
     confirmLabel: `Start ${count(runnable.length, "rail")}`,
   };
 }
+
+/// The tooltip on the header's "Run all", and on "Clear".
+///
+/// Both buttons stay pressable with nothing to do, and both say what
+/// they would do rather than sitting dark: a disabled control cannot
+/// explain itself (tooltip.ts binds mouseenter, which a disabled element
+/// never fires), so the empty case is a SENTENCE here rather than an
+/// absence. The ellipsis is the promise that a prompt follows -- present
+/// only when there is something to prompt about.
+export function runAllTip(runnable: number): string {
+  if (runnable === 0) return "No idle rail has anything left to run";
+  return `Start ${count(runnable, "idle rail")}…`;
+}
+
+export function clearFinishedTip(finished: number): string {
+  if (finished === 0) return "No rail has finished every step it holds";
+  return `Remove ${count(finished, "finished rail")}…`;
+}

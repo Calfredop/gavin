@@ -18,14 +18,14 @@
   import { gavinTrees } from "$lib/core/gavinState";
   import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/board/kanbanState";
   import {
+    flattenCardViews,
     mergePlanCards,
     indexCardViews,
-    slugStatus,
     type CardView,
     type PlacedCardView,
   } from "$lib/core/planBoard";
   import { runCard, sendToMainAgent } from "$lib/cards/cardRunActions";
-  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cards/cardDelete";
+  import { cardDeleteLines, deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cards/cardDelete";
   import { grantForAnsweredPrompt } from "$lib/core/confirmGate";
   import { openContextMenuFromEvent, contextMenu, openMenuUnder } from "$lib/core/contextMenu";
   import { buildCardMenuEntries } from "$lib/cards/cardMenu";
@@ -39,11 +39,11 @@
     cardIndex,
     doneColumn,
     firstColumnOf,
-    railCardPaths,
-    railCardsToMove,
+    conflictSummaryLines,
+    finishedRailDoneCards,
+    railMoveAllEntries,
     detectConflicts,
     numberConflicts,
-    describeConflict,
     groupUnplacedByStatus,
     conflictsForRail,
     availableCards,
@@ -65,7 +65,10 @@
     clearAndArchiveFinishedRailsConfirm,
     groupRemoveConfirm,
     runAllConfirm,
+    runAllTip as runAllTipFor,
+    clearFinishedTip as clearFinishedTipFor,
   } from "$lib/orchestration/railConfirm";
+  import { dropIntent } from "$lib/orchestration/orchestrationDrop";
   import { findTool, toolKindLabel } from "$lib/orchestration/orchestrationTools";
   import { organizeAction, organizeButtonLabel, reorganizeAction } from "$lib/orchestration/orchestrationAgent";
   import { toolRecords, fetchTools, refreshTools, renderLibraryFor } from "$lib/orchestration/toolsState";
@@ -147,7 +150,7 @@
   const placedCards = $derived<Map<string, PlacedCardView>>(
     merged ? indexCardViews(merged) : new Map()
   );
-  const allCards = $derived<CardView[]>([...placedCards.values()].map((p) => p.view));
+  const allCards = $derived<CardView[]>(merged ? flattenCardViews(merged) : []);
   const rails = $derived([...(orch?.rails ?? [])].sort((a, b) => a.position - b.position));
   // null, not [], while the refs snapshot is still loading -- unknown
   // must not read as "every worktree is gone".
@@ -249,11 +252,7 @@
     if (!runAllPrompt || !orch || runnableRails.length === 0) return null;
     return runAllConfirm(orch, estimateFor(workspaceId, runnableRails.length));
   });
-  const runAllTip = $derived(
-    runnableRails.length === 0
-      ? "No idle rail has anything left to run"
-      : `Start ${runnableRails.length} idle ${runnableRails.length === 1 ? "rail" : "rails"}…`
-  );
+  const runAllTip = $derived(runAllTipFor(runnableRails.length));
 
   /// SEQUENTIALLY, never in parallel. Every run-state write reads the
   /// store, applies to that snapshot and writes the whole thing back
@@ -285,11 +284,7 @@
       ? clearAndArchiveFinishedRailsConfirm(orch, cards, doneName)
       : clearFinishedRailsConfirm(orch, cards);
   });
-  const clearFinishedTip = $derived(
-    finished.length === 0
-      ? "No rail has finished every step it holds"
-      : `Remove ${finished.length} finished ${finished.length === 1 ? "rail" : "rails"}…`
-  );
+  const clearFinishedTip = $derived(clearFinishedTipFor(finished.length));
 
   // The dropdown's own open/close guard -- see NewPageButton's identical
   // comment: the shared menu layer dismisses on the pointerdown that
@@ -318,12 +313,7 @@
     const targets = finished;
     const ids = targets.map((r) => r.id);
     const cardViews = archiving
-      ? [...new Set(targets.flatMap((r) => railCardPaths(r)))]
-          .map((p) => placedCards.get(p)?.view)
-          .filter(
-            (v): v is CardView =>
-              v !== undefined && v.status !== null && doneName !== null && slugStatus(v.status) === slugStatus(doneName)
-          )
+      ? finishedRailDoneCards(targets, (path) => placedCards.get(path)?.view, doneName)
       : [];
     clearFinishedPrompt = null;
     await deleteRailsAction(workspaceId, ids);
@@ -409,26 +399,18 @@
   // card's own current column is in its menu.
   function handleMoveAll(rail: Rail, e: MouseEvent): void {
     if (!board) return;
-    const columns = [...board.columns].sort((a, b) => a.position - b.position);
     openContextMenuFromEvent(
       e,
-      columns.map((col) => {
-        const paths = railCardsToMove(rail, cards, col.name);
-        const n = paths.length;
-        return {
-          label:
-            n === 0
-              ? `All cards are in ${col.name}`
-              : `Move ${n} ${n === 1 ? "card" : "cards"} to ${col.name}`,
-          active: n === 0,
-          disabled: n === 0,
-          onPick: () => {
-            void moveRailCardsAction(workspaceId, rail.id, col.name).then((err) => {
-              if (err) cardWriteError = err;
-            });
-          },
-        };
-      })
+      railMoveAllEntries(rail, cards, board.columns).map((entry) => ({
+        label: entry.label,
+        active: entry.dead,
+        disabled: entry.dead,
+        onPick: () => {
+          void moveRailCardsAction(workspaceId, rail.id, entry.columnName).then((err) => {
+            if (err) cardWriteError = err;
+          });
+        },
+      }))
     );
   }
 
@@ -439,19 +421,16 @@
   const pendingPlan = $derived<DeletionPlan | null>(
     pendingDelete ? deletionPlanFor(pendingDelete, allCards) : null
   );
-  const pendingDeleteLines = $derived.by(() => {
-    if (!pendingDelete || !pendingPlan) return [];
-    const lines = [`Deletes ${pendingDelete.fileName} permanently.`];
-    const nested = pendingPlan.files.length - 1;
-    if (nested > 0) lines.push(`Also deletes ${nested} nested ${nested === 1 ? "task" : "tasks"}.`);
-    if (pendingPlan.unparent.length > 0)
-      lines.push(
-        `${pendingPlan.unparent.length} free-standing ${pendingPlan.unparent.length === 1 ? "task keeps" : "tasks keep"} their column (un-parented).`
-      );
-    if (pendingPlan.files.some((f) => cardSessionFor(board, f.id) !== null))
-      lines.push("A bound agent session keeps running on the Agents page.");
-    return lines;
-  });
+  const pendingDeleteLines = $derived(
+    pendingDelete && pendingPlan
+      ? cardDeleteLines({
+          fileName: pendingDelete.fileName,
+          files: pendingPlan.files.length,
+          unparent: pendingPlan.unparent.length,
+          boundSession: pendingPlan.files.some((f) => cardSessionFor(board, f.id) !== null),
+        })
+      : []
+  );
 
   async function confirmDelete(): Promise<void> {
     const plan = pendingPlan;
@@ -564,87 +543,50 @@
     return attachOrchestrationDrag({
       root: bodyEl,
       scrollEl: gridEl,
+      // The routing is orchestrationDrop.ts's: which write a drop asks
+      // for is a pure question over five kinds and three targets, and
+      // the gate in front of it is the one rule there that is not a
+      // mapping. All this does is run the answer.
       commit: (drag) => {
-        // `id` is a step id for a step drag, a card path for a card
-        // drag, a tool id for a tool drag, and a STAGE id for a "stage"
-        // drag -- one more source, the same drop-target vocabulary.
-        //
-        // An "into-stage" target can turn a single-step stage into a
-        // group (or grow one further), which DOES need a daemon that can
-        // carry `mode` (FEATURE_MIN_VERSION.groups) -- a pre-v15 daemon
-        // has neither column and would silently hand the stage back
-        // parallel. "template" sits on the same footing: placing one is
-        // also how a group gets FORMED (a fresh one at "new-stage", or
-        // an existing one grown at "into-stage") and writes `mode` either
-        // way.
-        //
-        // A whole-stage drag ("stage") is gated too, but not because its
-        // own two reachable targets write `mode` -- they don't: `unplace`
-        // runs removeStage and `new-stage` runs moveStageToIndex, and a
-        // v14 daemon executes either correctly. This gesture only exists
-        // because groups exist, so it travels with the same gate as a
-        // matter of scope, not necessity -- deliberately conservative,
-        // not forced. Refusing here, before any mutator runs, keeps one
-        // message regardless of which of the three: the drawer rows, the
-        // header's own controls and a drag's drop all say the same thing.
-        const wouldGroup =
-          drag.target.kind === "into-stage" || drag.kind === "stage" || drag.kind === "template";
-        if (wouldGroup && groupsBlocked) {
-          saveErrors.update((e) => ({ ...e, [workspaceId]: groupsBlocked }));
-          return;
-        }
-        if (drag.kind === "stage") {
-          // Moving the whole group. `into-stage` never occurs for this
-          // kind -- computeOrchDropTarget skips the stage loop outright
-          // for a "stage" drag, since nested groups are out of scope --
-          // so only the remaining two targets need a branch.
-          if (drag.target.kind === "new-stage") {
-            void moveStageToIndexAction(workspaceId, drag.id, drag.target.railId, drag.target.index);
-          } else if (drag.target.kind === "unplace") {
-            // Unlike every other unplace, this one takes every step the
-            // group holds with it, so it asks first rather than running
-            // straight through, the same discipline a rail delete uses.
-            groupRemovePrompt = drag.id;
-          }
-          return;
-        }
-        if (drag.kind === "card") {
-          if (drag.target.kind === "into-stage") {
-            void addStepToStageAction(workspaceId, drag.target.stageId, drag.id, drag.target.index);
-          } else if (drag.target.kind === "new-stage") {
-            void addCardAsStageAction(workspaceId, drag.target.railId, drag.target.index, drag.id);
-          }
-          return;
-        }
-        if (drag.kind === "tool") {
-          if (drag.target.kind === "into-stage") {
-            void addToolToStageAction(workspaceId, drag.target.stageId, drag.id, drag.target.index);
-          } else if (drag.target.kind === "new-stage") {
-            void addToolAsStageAction(workspaceId, drag.target.railId, drag.target.index, drag.id);
-          }
-          return;
-        }
-        if (drag.kind === "template") {
-          // `drag.id` is the template's own id, resolved against the
-          // library that fed the drawer -- a template deleted mid-drag
-          // (another session, the manager tab) leaves nothing to place,
-          // so this quietly does nothing rather than placing a stale
-          // copy.
-          const template = templates.find((t) => t.id === drag.id);
-          if (!template) return;
-          if (drag.target.kind === "into-stage") {
-            void addTemplateToStageAction(workspaceId, drag.target.stageId, drag.target.index, template);
-          } else if (drag.target.kind === "new-stage") {
-            void addTemplateAsStageAction(workspaceId, drag.target.railId, drag.target.index, template);
-          }
-          return;
-        }
-        if (drag.target.kind === "unplace") {
-          void removeStepAction(workspaceId, drag.id);
-        } else if (drag.target.kind === "into-stage") {
-          void moveStepIntoStageAction(workspaceId, drag.id, drag.target.stageId, drag.target.index);
-        } else {
-          void moveStepToNewStageAction(workspaceId, drag.id, drag.target.railId, drag.target.index);
+        const intent = dropIntent(drag, { groupsBlocked, templates });
+        if (!intent) return;
+        switch (intent.kind) {
+          case "blocked":
+            saveErrors.update((e) => ({ ...e, [workspaceId]: intent.reason }));
+            return;
+          case "move-stage":
+            void moveStageToIndexAction(workspaceId, intent.stageId, intent.railId, intent.index);
+            return;
+          case "confirm-remove-stage":
+            groupRemovePrompt = intent.stageId;
+            return;
+          case "add-card-to-stage":
+            void addStepToStageAction(workspaceId, intent.stageId, intent.cardPath, intent.index);
+            return;
+          case "add-card-as-stage":
+            void addCardAsStageAction(workspaceId, intent.railId, intent.index, intent.cardPath);
+            return;
+          case "add-tool-to-stage":
+            void addToolToStageAction(workspaceId, intent.stageId, intent.toolId, intent.index);
+            return;
+          case "add-tool-as-stage":
+            void addToolAsStageAction(workspaceId, intent.railId, intent.index, intent.toolId);
+            return;
+          case "add-template-to-stage":
+            void addTemplateToStageAction(workspaceId, intent.stageId, intent.index, intent.template);
+            return;
+          case "add-template-as-stage":
+            void addTemplateAsStageAction(workspaceId, intent.railId, intent.index, intent.template);
+            return;
+          case "remove-step":
+            void removeStepAction(workspaceId, intent.stepId);
+            return;
+          case "move-step-into-stage":
+            void moveStepIntoStageAction(workspaceId, intent.stepId, intent.stageId, intent.index);
+            return;
+          case "move-step-to-new-stage":
+            void moveStepToNewStageAction(workspaceId, intent.stepId, intent.railId, intent.index);
+            return;
         }
       },
       // A press with no movement on a CARD step opens that card, exactly
@@ -691,11 +633,7 @@
   /// it, turning one attempt into an unbounded loop. The switch is dark
   /// rather than merely unreliable.
   const autoResumeBlocked = $derived(featureBlockedReason($daemonCompat, "autoResume"));
-  const conflictSummary = $derived(
-    orch
-      ? numbered.map(({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch, tools)}`)
-      : []
-  );
+  const conflictSummary = $derived(orch ? conflictSummaryLines(numbered, cards, orch, tools) : []);
 
   // The workspace's one orchestration agent slot (orchestrationAgent.ts).
   // Both buttons read it: a run holding it makes every one of them a jump
@@ -736,9 +674,7 @@
   async function reorganizeRail(railId: string): Promise<void> {
     const rail = rails.find((r) => r.id === railId);
     if (!orch || !rail) return;
-    const summary = conflictsForRail(numbered, rail).map(
-      ({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch, tools)}`
-    );
+    const summary = conflictSummaryLines(conflictsForRail(numbered, rail), cards, orch, tools);
     handOff(await requestRailReorganize(workspaceId, railId, cards, tools, summary));
   }
 

@@ -86,6 +86,10 @@ describe("clearing every finished rail", () => {
   it("only archives in archive mode, and only cards the board calls Done", () => {
     expect(body).toContain("const cardViews = archiving");
     expect(body).toContain("executeArchive(workspaceId, cardViews)");
-    expect(body).toContain("slugStatus(v.status) === slugStatus(doneName)");
+    // Which cards those are is finishedRailDoneCards's rule, where it is
+    // unit-tested -- statusless is never Done, a missing card archives
+    // nothing, and a null done column archives nothing rather than
+    // everything.
+    expect(body).toContain("finishedRailDoneCards(targets, (path) => placedCards.get(path)?.view, doneName)");
   });
 });

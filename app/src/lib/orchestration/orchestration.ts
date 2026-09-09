@@ -2644,6 +2644,66 @@ export function railCardsToMove(
   });
 }
 
+/// The cards an archiving "Clear finished rails" would file away: every
+/// card on the rails about to go that the board itself already calls
+/// Done.
+///
+/// Two filters, and both are load-bearing. `resolve` returns nothing for
+/// a step whose card file is gone -- there is nothing to archive, and a
+/// missing card must not stop the rails leaving. And a card with NO
+/// status is never Done: the board draws it in the first column, but the
+/// file does not say so, and archiving on the strength of where it was
+/// drawn would file a card nobody finished.
+///
+/// A null `doneName` (no board, or a board with no done column) archives
+/// nothing rather than everything.
+export function finishedRailDoneCards<V extends { status: string | null }>(
+  rails: Rail[],
+  resolve: (path: string) => V | undefined,
+  doneName: string | null
+): V[] {
+  if (doneName === null) return [];
+  const done = slugStatus(doneName);
+  return [...new Set(rails.flatMap((r) => railCardPaths(r)))]
+    .map(resolve)
+    .filter((v): v is V => v !== undefined && v.status !== null && slugStatus(v.status) === done);
+}
+
+/// One entry per board column for a rail's "move all": how many of the
+/// rail's cards that pick would actually rewrite, and whether the entry
+/// is dead because they are all there already.
+///
+/// `dead` rather than two booleans: an entry the menu marks as the
+/// current answer is also the entry it refuses to run, exactly as a
+/// card's own menu treats the column it is already in.
+export interface RailMoveAllEntry {
+  columnName: string;
+  count: number;
+  label: string;
+  dead: boolean;
+}
+
+export function railMoveAllEntries(
+  rail: Rail,
+  cards: Map<string, CardEntry>,
+  columns: { name: string; position: number }[]
+): RailMoveAllEntry[] {
+  return [...columns]
+    .sort((a, b) => a.position - b.position)
+    .map((col) => {
+      const count = railCardsToMove(rail, cards, col.name).length;
+      return {
+        columnName: col.name,
+        count,
+        label:
+          count === 0
+            ? `All cards are in ${col.name}`
+            : `Move ${count} ${count === 1 ? "card" : "cards"} to ${col.name}`,
+        dead: count === 0,
+      };
+    });
+}
+
 /// The steps a "Clear done" would take OFF the rail, in run order.
 ///
 /// Two facts make a step done, the same two rule 1 of the scheduler
@@ -3225,6 +3285,24 @@ export function numbersForRail(numbered: NumberedConflict[], railId: string): nu
 /// -- a step's badge sits on the step. This answers "what does an agent
 /// reorganizing this rail need to know", and a same-worktree pair with
 /// another rail is exactly that.
+/// The numbered conflicts as the lines an agent is handed. Numbered
+/// because the badges on the rails carry the same numbers: the human
+/// reading "3." on a chip and the agent reading "3." in its brief are
+/// looking at one list.
+///
+/// Written once rather than at each call site -- the header's Organize
+/// hands over every conflict and a rail's Reorganize hands over
+/// `conflictsForRail`'s subset, and two spellings of the same line is how
+/// the two briefs come to disagree about what a conflict is called.
+export function conflictSummaryLines(
+  numbered: NumberedConflict[],
+  cards: Map<string, CardEntry>,
+  orch: Orchestration,
+  tools: ToolSummary[] = []
+): string[] {
+  return numbered.map(({ n, conflict }) => `${n}. ${describeConflict(conflict, cards, orch, tools)}`);
+}
+
 export function conflictsForRail(numbered: NumberedConflict[], rail: Rail): NumberedConflict[] {
   const stepIds = new Set(rail.stages.flatMap((s) => s.steps.map((t) => t.id)));
   return numbered.filter(
