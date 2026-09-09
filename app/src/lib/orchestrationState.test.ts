@@ -1234,6 +1234,79 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
     expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
   });
 
+  // The step's `workspace` parameter is a workspace ID from
+  // StepParamsDialog's picker, and the rail it names lives in a
+  // DIFFERENT workspace's plan -- one this app has not fetched yet,
+  // which is the normal case for a workspace nobody has switched to.
+  it("a gavin action can arm a rail in a workspace of its own choosing", async () => {
+    vi.mocked(backend.getOrchestration).mockImplementation(async (workspaceId: string) =>
+      workspaceId === "ws-2"
+        ? {
+            ...emptyOrchestration(),
+            rails: [
+              {
+                id: "r2",
+                name: "deploy",
+                position: 0,
+                worktreePath: "/x/wt2",
+                pageId: null,
+                stages: [
+                  {
+                    id: "s2",
+                    position: 0,
+                    steps: [{ id: "u1", position: 0, cardPath: "", toolId: "builtin:push", toolParams: {} }],
+                  },
+                ],
+              },
+            ],
+          }
+        : {
+            ...toolRail(),
+            rails: toolRail().rails.map((r) => ({
+              ...r,
+              pageId: null,
+              stages: [
+                {
+                  id: "s1",
+                  position: 0,
+                  steps: [
+                    {
+                      id: "t1",
+                      position: 0,
+                      cardPath: "",
+                      toolId: "builtin:start-rail",
+                      toolParams: { rail: "deploy", workspace: "ws-2" },
+                    },
+                  ],
+                },
+              ],
+            })),
+            railRuns: [{ railId: "r1", state: "running", currentStageId: "s1" }],
+          }
+    );
+    __resetForTesting();
+    setLayoutState({
+      workspaces: [
+        { id: "ws-1", pages: [] },
+        { id: "ws-2", pages: [], rootPath: "/ws2" },
+      ],
+    });
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [], "ws-2": [] });
+
+    // Not pre-fetched: the executor has to load ws-2's plan itself.
+    expect(get(orchestrations)["ws-2"]).toBeUndefined();
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(backend.setRailRun).toHaveBeenCalledWith("r2", "running", "s2");
+    expect(get(orchestrations)["ws-2"].railRuns).toEqual([
+      { railId: "r2", state: "running", currentStageId: "s2" },
+    ]);
+    // The calling step is done, on its OWN workspace -- arming another
+    // workspace's rail must not be mistaken for this step's own launch.
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", null, null, null, null, null);
+  });
+
   it("resuming a stalled step reopens it on the rail's page too", async () => {
     vi.mocked(layoutStateModule.resolvedAgentFor).mockReturnValueOnce({
       launchCommand: "claude",

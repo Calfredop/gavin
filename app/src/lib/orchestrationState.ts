@@ -51,6 +51,7 @@ import {
   findStep,
   insertStageWithSteps,
   startRailVerdict,
+  startRailTargetWorkspace,
   conflictCheckout,
   railRunsDiffer,
 } from "./orchestration";
@@ -961,6 +962,12 @@ async function retryNoteFor(
 /// exit or status is what ticks after every other launch, and this one
 /// starts no session. `orchestrations` is deliberately not a scheduler
 /// input, so the write below wakes nothing by itself.
+///
+/// The target rail defaults to this one's own workspace but need not be:
+/// `startRailTargetWorkspace` reads the step's `workspace` parameter, and
+/// `workspaceId` below stays the CALLING rail's -- every other write in
+/// this function (the stall, the step's own `done`) still belongs to it,
+/// only the armed rail moves to `targetWorkspaceId`.
 async function executeGavinAction(
   workspaceId: string,
   rail: Rail,
@@ -978,7 +985,24 @@ async function executeGavinAction(
     return false;
   }
 
-  const orch = get(orchestrations)[workspaceId];
+  const target = startRailTargetWorkspace(
+    get(layoutState).workspaces,
+    workspaceId,
+    resolveToolParam(tool, stepParams(step), "workspace")
+  );
+  if (target.kind === "refuse") {
+    await stall(target.reason);
+    return false;
+  }
+  const targetWorkspaceId = target.workspaceId;
+
+  // The target may be a workspace this app has never fetched -- the
+  // sidebar warms every ROOTED workspace's plan for its own recap, but a
+  // step can still race that on a cold start. Same guard
+  // sendCardToRailAction uses, for the same reason: fetch on demand
+  // rather than stalling on a plan that simply has not landed yet.
+  if (!get(orchestrations)[targetWorkspaceId]) await fetchOrchestration(targetWorkspaceId);
+  const orch = get(orchestrations)[targetWorkspaceId];
   if (!orch) return false;
   const verdict = startRailVerdict(orch, rail.id, resolveToolParam(tool, stepParams(step), "rail"));
   if (verdict.kind === "refuse") {
@@ -997,7 +1021,7 @@ async function executeGavinAction(
   // not a failure -- the same posture builtin:commit takes on a clean
   // tree. Calling startRail on either would REWIND it (see
   // startRailVerdict), which is the one outcome worse than doing nothing.
-  if (verdict.kind === "start") await startRail(workspaceId, verdict.railId);
+  if (verdict.kind === "start") await startRail(targetWorkspaceId, verdict.railId);
   return true;
 }
 

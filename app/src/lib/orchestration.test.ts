@@ -12,6 +12,7 @@ import {
   runnableIdleRails,
   finishedRails,
   startRailVerdict,
+  startRailTargetWorkspace,
   railRunsDiffer,
   nextActions,
   addRail,
@@ -522,6 +523,40 @@ describe("startRailVerdict", () => {
     expect(startRailVerdict(o, "r1", "Deploy")).toMatchObject({
       kind: "refuse",
       reason: expect.stringContaining("paused"),
+    });
+  });
+});
+
+describe("startRailTargetWorkspace", () => {
+  it("is this rail's own workspace when the parameter is blank", () => {
+    expect(startRailTargetWorkspace([{ id: "ws-1" }, { id: "ws-2" }], "ws-1", "")).toEqual({
+      kind: "ok",
+      workspaceId: "ws-1",
+    });
+  });
+
+  // Surrounding whitespace from a stray edit is not a real value.
+  it("treats a whitespace-only parameter as blank too", () => {
+    expect(startRailTargetWorkspace([{ id: "ws-1" }], "ws-1", "   ")).toEqual({
+      kind: "ok",
+      workspaceId: "ws-1",
+    });
+  });
+
+  it("targets the named workspace when it still exists", () => {
+    expect(startRailTargetWorkspace([{ id: "ws-1" }, { id: "ws-2" }], "ws-1", "ws-2")).toEqual({
+      kind: "ok",
+      workspaceId: "ws-2",
+    });
+  });
+
+  // The value is an ID from the step's own picker, not typed text -- so
+  // the only way it can go bad is the workspace it named being removed
+  // since the step was configured.
+  it("refuses a workspace id that no longer exists", () => {
+    expect(startRailTargetWorkspace([{ id: "ws-1" }], "ws-1", "ws-gone")).toMatchObject({
+      kind: "refuse",
+      reason: expect.stringContaining("no longer exists"),
     });
   });
 });

@@ -21,6 +21,7 @@ import {
   gavinActionOf,
   resolveToolParam,
   resolveToolCwd,
+  startRailWorkspaceChoices,
   GAVIN_ACTIONS,
   type Tool,
   type ToolRecord,
@@ -143,8 +144,13 @@ describe("the built-in set", () => {
     const tool = builtin("builtin:start-rail");
     expect(tool.kind).toBe("gavin");
     expect(gavinActionOf(tool)).toBe("start-rail");
-    // No default: a shipped rail name would arm somebody else's rail.
-    expect(tool.params.map((p) => [p.name, p.default])).toEqual([["rail", ""]]);
+    // No default on either: a shipped rail name would arm somebody
+    // else's rail, and a shipped workspace would send it somewhere the
+    // human never chose. Blank `workspace` is this rail's own.
+    expect(tool.params.map((p) => [p.name, p.default])).toEqual([
+      ["rail", ""],
+      ["workspace", ""],
+    ]);
   });
 
   it("gives every gavin built-in a body naming a real action", () => {
@@ -595,6 +601,26 @@ describe("gavinActionOf", () => {
   // not implement. Guessing would run the wrong one.
   it("is null for an action this version does not know", () => {
     expect(gavinActionOf(tool({ kind: "gavin", body: "delete-everything" }))).toBeNull();
+  });
+});
+
+describe("startRailWorkspaceChoices", () => {
+  const ws = (id: string, rootPath: string | null = "/x") => ({ id, name: id, rootPath });
+
+  it("offers every other rooted workspace", () => {
+    const choices = startRailWorkspaceChoices([ws("ws-1"), ws("ws-2"), ws("ws-3")], "ws-1");
+    expect(choices.map((w) => w.id)).toEqual(["ws-2", "ws-3"]);
+  });
+
+  it("excludes the rail's own workspace", () => {
+    expect(startRailWorkspaceChoices([ws("ws-1")], "ws-1")).toEqual([]);
+  });
+
+  // An unrooted workspace has no `.gavin-root` and so no orchestration
+  // plan -- offering it would be a pick that always refuses.
+  it("excludes an unrooted workspace", () => {
+    const choices = startRailWorkspaceChoices([ws("ws-1"), ws("ws-2", null)], "ws-1");
+    expect(choices).toEqual([]);
   });
 });
 

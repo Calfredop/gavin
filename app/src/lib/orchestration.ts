@@ -553,6 +553,32 @@ export function startRailVerdict(
     : { kind: "start", railId: target.id };
 }
 
+export type StartRailTarget =
+  | { kind: "ok"; workspaceId: string }
+  | { kind: "refuse"; reason: string };
+
+/// Which workspace `builtin:start-rail`'s target rail lives in. Empty is
+/// the rail's own -- the only value every step could reach before this
+/// parameter existed, and what one left unset still means.
+///
+/// A non-empty value is a workspace ID, not a name: it comes from the
+/// step's own picker (StepParamsDialog offers a `<select>` of known
+/// workspaces, never a text box for this field), so there is no
+/// ambiguity to resolve the way `startRailVerdict` resolves a typed rail
+/// name -- only a workspace since removed, which is the one thing an ID
+/// cannot rule out on its own.
+export function startRailTargetWorkspace(
+  workspaces: { id: string }[],
+  ownWorkspaceId: string,
+  wanted: string
+): StartRailTarget {
+  const id = wanted.trim();
+  if (!id) return { kind: "ok", workspaceId: ownWorkspaceId };
+  return workspaces.some((w) => w.id === id)
+    ? { kind: "ok", workspaceId: id }
+    : { kind: "refuse", reason: "the workspace this step targets no longer exists" };
+}
+
 /// What the reactive layer must DO. nextActions decides; executing is
 /// orchestrationState.ts's job alone.
 export type Action =

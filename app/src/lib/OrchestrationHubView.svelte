@@ -1029,6 +1029,8 @@
     <StepParamsDialog
       {tool}
       params={stepParams(step)}
+      {workspaceId}
+      workspaces={$layoutState.workspaces}
       onSave={(params) => void setStepParamsAction(workspaceId, step.id, params)}
       onClose={() => (editingParamsFor = null)}
     />

@@ -96,7 +96,7 @@ describe("running a gavin action", () => {
 
   it("files the step done before arming the target rail", () => {
     const done = action.indexOf('setStepRunAction(workspaceId, step.id, "done", null, null)');
-    const start = action.indexOf("await startRail(workspaceId, verdict.railId)");
+    const start = action.indexOf("await startRail(targetWorkspaceId, verdict.railId)");
     expect(done).toBeGreaterThan(-1);
     expect(start).toBeGreaterThan(-1);
     expect(done).toBeLessThan(start);

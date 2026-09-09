@@ -192,6 +192,17 @@ export function gavinActionOf(tool: Pick<Tool, "kind" | "body">): GavinAction | 
   return (GAVIN_ACTIONS as readonly string[]).includes(named) ? (named as GavinAction) : null;
 }
 
+/// Workspaces `builtin:start-rail`'s picker may offer as a target: every
+/// ROOTED workspace but the rail's own. An unrooted workspace has no
+/// `.gavin-root` and so no orchestration plan a rail could run in --
+/// offering one would be a choice that always refuses.
+export function startRailWorkspaceChoices<W extends { id: string; rootPath?: string | null }>(
+  workspaces: W[],
+  ownWorkspaceId: string
+): W[] {
+  return workspaces.filter((w) => w.id !== ownWorkspaceId && w.rootPath);
+}
+
 export function isBuiltinId(id: string): boolean {
   return id.startsWith("builtin:");
 }
@@ -347,7 +358,7 @@ export function toolKindParamNote(kind: ToolKind): string | null {
     case "pr":
       return "This kind reads a `require` parameter (checks / approval) and a `max` — how many times a failing check may send the rail back.";
     case "gavin":
-      return "The parameters are the action's arguments: `start-rail` reads `rail`, the name of the rail to arm.";
+      return "The parameters are the action's arguments: `start-rail` reads `rail`, the name of the rail to arm, and an optional `workspace` -- which workspace it is in, blank for this rail's own.";
     default:
       return null;
   }
@@ -655,14 +666,21 @@ export const BUILTIN_TOOLS: Tool[] = [
     id: "builtin:start-rail",
     name: "Start rail",
     description:
-      "Arms another rail in this workspace, by name — the last step of a rail that unblocks " +
-      "the next one. Runs inside gavin: no session, no checkout.",
+      "Arms another rail by name — the last step of a rail that unblocks the next one. Its " +
+      "own workspace by default, or one you pick. Runs inside gavin: no session, no checkout.",
     kind: "gavin",
     scope: "builtin",
-    // No default. A rail name is the one parameter no shipped value can
-    // guess, and an empty one refuses at launch with a message naming
-    // the field rather than arming somebody else's rail.
-    params: [{ name: "rail", label: "Rail to start", default: "" }],
+    params: [
+      // No default. A rail name is the one parameter no shipped value can
+      // guess, and an empty one refuses at launch with a message naming
+      // the field rather than arming somebody else's rail.
+      { name: "rail", label: "Rail to start", default: "" },
+      // Empty means the rail's own workspace, which is what every step
+      // written before this parameter existed already means. A non-empty
+      // value is a workspace ID from StepParamsDialog's picker -- see
+      // startRailTargetWorkspace in orchestration.ts.
+      { name: "workspace", label: "Workspace (optional — defaults to this rail's own)", default: "" },
+    ],
     body: "start-rail",
   },
   {
