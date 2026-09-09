@@ -16,6 +16,7 @@ import {
   addRail,
   renameRail,
   setRailAutoResume,
+  setRailTrigger,
   bindRail,
   deleteRail,
   deleteRails,
@@ -61,6 +62,7 @@ import type {
   Orchestration,
   Rail,
   RailState,
+  RailTrigger,
   StageMode,
   StepAttention,
   StepState,
@@ -1604,6 +1606,11 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
       // The session id is kept deliberately: the step is finished, but
       // its transcript stays reachable from the chip.
       await setStepRunAction(workspaceId, action.stepId, "done", sessionId, null);
+      // A step finishing on an IDLE rail -- the reconciling markDone
+      // above -- can be the last one that rail owed, and no `complete`
+      // follows it: the rail is already idle. So this is the other half
+      // of the re-tick `complete` asks for, on the same terms.
+      again = armsItself(orch) || again;
     } else if (action.kind === "stall") {
       await stallStep(workspaceId, orch, action.stepId, action.reason);
     } else if (action.kind === "loopExhausted") {
@@ -1634,11 +1641,35 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
         (await executeSwitchBranch(workspaceId, action.railId, action.path, action.branch)) || again;
     } else if (action.kind === "advance") {
       await setRailRunAction(workspaceId, action.railId, "running", action.stageId);
-    } else {
+    } else if (action.kind === "arm") {
+      // Exactly what `startRail` writes, minus the human. No page is
+      // spawned here either: the rail's page is made by its first
+      // LAUNCH, around that session (spec O16).
+      await setRailRunAction(workspaceId, action.railId, "running", action.stageId);
+      // The pass that decided this read the rail as idle and scheduled
+      // nothing else of it, so without another pass the rail would sit
+      // armed and empty until some unrelated event ticked.
+      again = true;
+    } else if (action.kind === "complete") {
       await setRailRunAction(workspaceId, action.railId, "idle", null);
+      // A rail finishing is the event a TRIGGER waits for, and
+      // `orchestrations` is deliberately not a tick input (see
+      // tickInputStores), so nothing else would say so. Only where a
+      // trigger exists to care: an extra pure pass per completion is
+      // cheap, but it is not free, and a workspace that has never used a
+      // trigger should not pay it. It terminates because the replay
+      // finds the rail idle with nothing unfinished and completes
+      // nothing.
+      again = armsItself(orch) || again;
     }
   }
   return again;
+}
+
+/// Whether any rail here starts itself, i.e. whether the pass that just
+/// finished a piece of work owes the scheduler another look.
+function armsItself(orch: Orchestration): boolean {
+  return orch.rails.some((r) => r.trigger);
 }
 
 /// The board's done column name, for the rail header's "nothing can
@@ -2030,6 +2061,23 @@ export function setRailAutoResumeAction(
   autoResume: boolean
 ): Promise<string | null> {
   return mutatePlan(workspaceId, (o) => setRailAutoResume(o, railId, autoResume));
+}
+
+/// Set or clear this rail's start condition, then LOOK: a trigger whose
+/// condition already holds has to arm the rail now, not at whatever
+/// unrelated event ticks next. `mutatePlan` writes the plan and
+/// `orchestrations` is not a tick input, so the tick has to be asked for
+/// here -- the same reason `startRail` and `resumeRail` end with one.
+export async function setRailTriggerAction(
+  workspaceId: string,
+  railId: string,
+  trigger: RailTrigger | null
+): Promise<string | null> {
+  const error = await mutatePlan(workspaceId, (o) => setRailTrigger(o, railId, trigger));
+  // Only when the write took. A rolled-back save leaves the store as it
+  // was, and ticking on it would be a pass over a plan nobody has.
+  if (!error) await tick(workspaceId);
+  return error;
 }
 
 export function deleteRailAction(workspaceId: string, railId: string): Promise<string | null> {

@@ -14,6 +14,7 @@
     FolderGit2,
     GitBranch,
     PanelsTopLeft,
+    Zap,
   } from "@lucide/svelte";
   import IconButton from "./ui/IconButton.svelte";
   import { resumeNoteFor } from "./autoResume";
@@ -43,7 +44,13 @@
     StepAttention,
     StepState,
   } from "./orchestration";
-  import { stepParams, attentionTip, railAttention, runningStageId } from "./orchestration";
+  import {
+    stepParams,
+    attentionTip,
+    railAttention,
+    railTriggerVerdict,
+    runningStageId,
+  } from "./orchestration";
   import { railRetryLabel } from "./orchestrationLoop";
   import { prChips } from "./pullRequest";
   import { prPollTick, prReportFor, prReports, requestPr } from "./prState";
@@ -291,7 +298,7 @@
   );
   const railSeverity = $derived(severityForRail(numbered, rail.id));
 
-  /// The rail's three bindings, each its own chip and each its own way
+  /// The rail's four settings, each its own chip and each its own way
   /// into the dialog. One button showing a full worktree path and a page
   /// name said what two of them were and offered no way to say WHICH one
   /// you meant to change -- and never mentioned that the branch and the
@@ -299,7 +306,30 @@
   const bindWorktree = $derived(railBindChip("worktree", rail, pageName));
   const bindBranch = $derived(railBindChip("branch", rail, pageName));
   const bindPage = $derived(railBindChip("page", rail, pageName));
-  const BIND_ICONS = { worktree: FolderGit2, branch: GitBranch, page: PanelsTopLeft };
+
+  /// The trigger's chip carries a LIVE tooltip the other three do not
+  /// need: its value ("after all rails") is the same words whether the
+  /// condition is one step from firing, waiting on four rails, or naming
+  /// one that no longer exists. So the static chip supplies the value and
+  /// the verdict supplies the sentence -- and a condition that can never
+  /// fire is drawn as a warning, because only a human ever clears one.
+  const triggerVerdict = $derived(railTriggerVerdict(orch, rail));
+  const bindTrigger = $derived.by((): RailBindChip => {
+    const chip = railBindChip("trigger", rail, pageName);
+    if (triggerVerdict.kind === "broken") {
+      return { ...chip, tip: `This trigger cannot fire: ${triggerVerdict.reason}.`, warn: true };
+    }
+    if (triggerVerdict.kind === "wait") {
+      return { ...chip, tip: `${chip.tip} Right now: ${triggerVerdict.reason}.` };
+    }
+    return chip;
+  });
+  const BIND_ICONS = {
+    worktree: FolderGit2,
+    branch: GitBranch,
+    page: PanelsTopLeft,
+    trigger: Zap,
+  };
 
   let draft = $state("");
   // Seeded when edit mode OPENS, not at construction: the parent drops a
@@ -402,6 +432,7 @@
     type="button"
     class="bind-chip"
     class:unset={!chip.bound}
+    class:bind-warn={chip.warn === true}
     use:tooltip={chip.tip}
     onclick={() => onBind(chip.tab)}
   >
@@ -552,6 +583,11 @@
       </div>
       <div class="bind-line">
         {@render bindChip(bindPage)}
+        <!-- WHEN the rail starts, beside where its sessions land. Always
+             drawn, unset and all: a rail that only a human starts is the
+             normal case, and a chip that appeared only once a trigger
+             existed would be a feature nobody found. -->
+        {@render bindChip(bindTrigger)}
       </div>
     </div>
     <!-- Only when there is something to say. A branch with no pull
@@ -896,6 +932,16 @@
   .bind-chip.unset {
     background: none;
     color: var(--text-subtle);
+  }
+  /* The exception, and only the trigger chip ever sets it: a condition
+     that can never fire is not a default, it is a rail that will wait
+     forever, and nothing but a human clears one.
+     Not `.warn`: this file already has one, for the "no columns" line,
+     and it sets a font-size -- which would land on the chip through a
+     shared class name and make this one chip a pixel taller than the
+     three beside it. */
+  .bind-chip.bind-warn {
+    color: var(--warning-text);
   }
   .bind-chip span {
     overflow: hidden;

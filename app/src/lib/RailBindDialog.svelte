@@ -4,7 +4,12 @@
   import { gitStore, createBranch } from "./gitState";
   import { gavinTrees } from "./gavinState";
   import { layoutState, createPage, resolvedAgentFor, daemonCompat } from "./layoutState";
-  import { bindRailAction, runOnRailPage } from "./orchestrationState";
+  import {
+    bindRailAction,
+    orchestrations,
+    runOnRailPage,
+    setRailTriggerAction,
+  } from "./orchestrationState";
   import { presetSingle } from "./layout";
   import { freeBranchNameFrom, validateBranchName } from "./git";
   import { featureBlockedReason } from "./daemonCompat";
@@ -14,7 +19,12 @@
     railBindTabAfterKey,
     type RailBindTab,
   } from "./railBind";
-  import type { Rail } from "./orchestration";
+  import type { Rail, RailTrigger, RailTriggerKind } from "./orchestration";
+  import {
+    RAIL_TRIGGER_CHOICES,
+    emptyOrchestration,
+    railTriggerVerdict,
+  } from "./orchestration";
 
   interface Props {
     workspaceId: string;
@@ -96,6 +106,39 @@
   /// Without this the human picks a branch, sees the list snap back to
   /// "None" and is told nothing at all.
   const branchBlocked = $derived(featureBlockedReason($daemonCompat, "railBranch"));
+
+  /// `trigger` widens SetOrchestration exactly as `branch` does, and is
+  /// dropped by an older daemon exactly as silently -- so the panel is
+  /// disabled with the reason rather than taking a choice that never
+  /// reaches disk. See FEATURE_MIN_VERSION.railTrigger.
+  const triggerBlocked = $derived(featureBlockedReason($daemonCompat, "railTrigger"));
+
+  /// The plan itself, for the trigger panel alone: what a condition WOULD
+  /// do right now -- which rails it is still waiting for, whether the name
+  /// it holds resolves -- is an answer about the whole workspace, and it
+  /// changes while the dialog is open.
+  const orch = $derived($orchestrations[workspaceId] ?? emptyOrchestration());
+  const verdict = $derived(railTriggerVerdict(orch, rail));
+
+  /// Every OTHER rail, for the `rail-done` picker. Offered by NAME,
+  /// because that is what a trigger stores (see RailTrigger) -- and a
+  /// rail sharing its name with another is still offered, so the human
+  /// meets the ambiguity as the verdict's sentence rather than as a pick
+  /// that quietly does nothing.
+  const otherRails = $derived(orch.rails.filter((r) => r.id !== railId));
+
+  const triggerKind = $derived<RailTriggerKind | null>(
+    (rail.trigger?.kind as RailTriggerKind | undefined) ?? null
+  );
+
+  /// Picking the KIND writes the trigger immediately, even when it is not
+  /// yet complete: `rail-done` with no name is stored, and the verdict
+  /// says what is missing. The alternative -- holding the choice back
+  /// until a rail is named too -- makes the first click do nothing
+  /// visible, which reads as a dead control.
+  function setTrigger(next: RailTrigger | null): void {
+    void setRailTriggerAction(workspaceId, railId, next);
+  }
 
   let naming = $state(false);
   let draftBranch = $state("");
@@ -210,13 +253,17 @@
 {:else}
   <Modal {onClose}>
     <div class="bind">
-      <!-- The dialog names all three bindings before the strip does, so
+      <!-- The dialog names all four settings before the strip does, so
            a human who opened it from the worktree chip learns here that
-           the branch and the page are the same dialog away. -->
-      <h3>Where “{rail.name}” runs</h3>
-      <p class="lede">Its checkout, the branch that checkout sits on, and the page its sessions land on.</p>
+           the branch, the page and what starts the rail are the same
+           dialog away. -->
+      <h3>How “{rail.name}” runs</h3>
+      <p class="lede">
+        What starts it, its checkout, the branch that checkout sits on, and the page its sessions
+        land on.
+      </p>
 
-      <div class="tabs" role="tablist" aria-label="Rail bindings">
+      <div class="tabs" role="tablist" aria-label="Rail settings">
         {#each chips as chip (chip.tab)}
           <button
             type="button"
@@ -236,10 +283,100 @@
       </div>
 
       <!-- One panel at a time, and only the one on screen is built: the
-           three lists together were a 900px scroll in a dialog whose job
-           is one question. -->
+           lists together were a 900px scroll in a dialog whose job is one
+           question. -->
       <div class="tab-panel" id="rail-bind-panel" role="tabpanel" aria-labelledby="rail-bind-tab-{tab}">
-        {#if tab === "worktree"}
+        {#if tab === "trigger"}
+          <section title={triggerBlocked ?? undefined}>
+            <p class="note">
+              What arms this rail without you. Gavin starts it from its first unfinished stage, the
+              same as the Start button — it never resumes a paused rail, and never rewinds a running
+              one. The condition STANDS: give this rail new work and it runs itself again, so pause
+              it when you want it held.
+            </p>
+            {#if triggerBlocked}
+              <p class="err">{triggerBlocked}</p>
+            {/if}
+            <ul>
+              <li>
+                <button
+                  type="button"
+                  class:on={triggerKind === null}
+                  disabled={Boolean(triggerBlocked)}
+                  onclick={() => setTrigger(null)}
+                >
+                  <span class="path">Nothing — you start this rail</span>
+                  <span class="branch">
+                    Or a “Start rail” step on another rail does, which is unaffected by this.
+                  </span>
+                </button>
+              </li>
+              {#each RAIL_TRIGGER_CHOICES as choice (choice.kind)}
+                <li>
+                  <button
+                    type="button"
+                    class:on={triggerKind === choice.kind}
+                    disabled={Boolean(triggerBlocked)}
+                    onclick={() =>
+                      setTrigger({
+                        kind: choice.kind,
+                        // The rail a `rail-done` trigger names is picked
+                        // in the list below; keeping whatever was there
+                        // means re-picking the kind does not erase it.
+                        rail: choice.needsRail ? (rail.trigger?.rail ?? null) : null,
+                      })}
+                  >
+                    <span class="path">{choice.label}</span>
+                    <span class="branch">{choice.blurb}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+
+            <!-- The second half of the two-part question, shown only when
+                 the kind asks it. A rail list rather than a text box: the
+                 names are known, and a typo here is a rail that waits
+                 forever on something that does not exist. -->
+            {#if triggerKind === "rail-done"}
+              <p class="note">Which rail this one waits for:</p>
+              {#if otherRails.length === 0}
+                <p class="note">This workspace has no other rail to wait for.</p>
+              {:else}
+                <ul>
+                  {#each otherRails as other (other.id)}
+                    <li>
+                      <button
+                        type="button"
+                        class:on={(rail.trigger?.rail ?? "").trim().toLowerCase() ===
+                          other.name.trim().toLowerCase()}
+                        disabled={Boolean(triggerBlocked)}
+                        onclick={() => setTrigger({ kind: "rail-done", rail: other.name })}
+                      >
+                        <span class="path">{other.name}</span>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            {/if}
+
+            <!-- What the condition says RIGHT NOW. A trigger is the one
+                 setting here whose value does not tell you whether it can
+                 ever do anything: "after all rails" is the same words on
+                 a rail that fires in a minute and on the only rail in the
+                 workspace, which never will. -->
+            {#if verdict.kind === "broken"}
+              <p class="err" role="alert">This trigger cannot fire: {verdict.reason}.</p>
+            {:else if verdict.kind === "wait"}
+              <p class="note">Right now: {verdict.reason}.</p>
+            {:else if verdict.kind === "fire"}
+              <p class="note">
+                Right now: nothing is in the way — this rail starts as soon as it has an unfinished
+                stage.
+              </p>
+            {/if}
+          </section>
+        {:else if tab === "worktree"}
           <section>
             <p class="note">
               Where this rail's steps run. Re-binding affects steps started from now on.

@@ -309,6 +309,20 @@ export const FEATURE_MIN_VERSION = {
   // will not -- an archive purge is the one screen where being wrong
   // cannot be undone.
   cardPurge: 34,
+  // A rail's own `trigger` -- the condition that arms it without a human
+  // pressing Start. `Rail.branch` at v16 all over again, and the failure
+  // is the same shape: `trigger` widens SetOrchestration, a request that
+  // has existed since v10, so `min_version_for` (which gates request
+  // TYPES) is structurally blind to it. A v34 daemon takes the write,
+  // drops the field and hands the rail back with no trigger at all.
+  //
+  // Which is the worse half of it. The human picks "after every other
+  // rail", the picker snaps back to "starts by hand", and nothing on the
+  // wire says no -- so the rail they set up to run itself sits idle
+  // through the night. The bind dialog's Trigger panel is the one
+  // surface that can produce the payload, and it is disabled with this
+  // reason rather than offering a choice that goes nowhere.
+  railTrigger: 35,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

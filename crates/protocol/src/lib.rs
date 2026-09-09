@@ -289,7 +289,12 @@ const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 34;
+///
+/// v35 widened `Rail` with `trigger` (a rail's own start condition), on
+/// exactly the same terms: `serde(default)`, no Request variant changed,
+/// so `min_version_for` is blind to it and FEATURE_MIN_VERSION.railTrigger
+/// is the gate that matters.
+pub const PROTOCOL_VERSION: u32 = 35;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -1579,8 +1584,37 @@ pub struct Rail {
     /// advance, for this rail, or it is a decision gavin took for them.
     #[serde(default)]
     pub auto_resume: Option<bool>,
+    /// What arms this rail without a human pressing Start (v35). None is
+    /// "nothing does", which is the behaviour that predates the field and
+    /// the only safe default -- a rail that starts itself on a condition
+    /// nobody wrote down is a decision gavin took for the human.
+    #[serde(default)]
+    pub trigger: Option<RailTrigger>,
     pub page_id: Option<String>,
     pub stages: Vec<Stage>,
+}
+
+/// A rail's own start condition: what has to be true for gavin to arm it
+/// without being asked.
+///
+/// `kind` is a String rather than an enum for the same reason `StageMode`
+/// is: the daemon only stores and returns it, so widening the vocabulary
+/// must not become a wire break. The app decides what each kind MEANS,
+/// and refuses to fire on one it does not recognise -- never firing is
+/// the safe reading of an unknown condition, and the opposite would arm a
+/// rail on a rule nobody in this process can state.
+///
+/// `rail` is the rail a `rail-done` trigger waits for, by NAME rather
+/// than by id, because that is what the human types and what
+/// `gavin_get_orchestration` shows an agent -- the same choice
+/// `builtin:start-rail`'s `rail` parameter makes, and resolved by the
+/// same case- and space-insensitive match.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RailTrigger {
+    pub kind: String,
+    #[serde(default)]
+    pub rail: Option<String>,
 }
 
 /// How a stage's steps run: "sequence" (one at a time, in position
@@ -2806,6 +2840,14 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v35: Rail.trigger -- a rail's own start condition, so a rail can
+        // wait for the others to finish instead of being armed by a step
+        // on whichever rail happens to run last. serde(default) and no
+        // new variant, which is the v16 `Rail.branch` shape exactly: a
+        // v34 daemon takes SetOrchestration, drops the trigger and hands
+        // the rail back with none, so daemonCompat.ts's `railTrigger` is
+        // the only gate there is and the bind dialog's Trigger panel is
+        // its consumer.
         // v34: DeleteCardFile now removes the card's run history and
         // every rail step aimed at it, not just its session bindings.
         // Neither a new variant nor a widened payload -- a change to
@@ -2920,7 +2962,7 @@ mod tests {
         // own tab). A pre-v9 daemon cannot parse the request at all.
         // v8: GavinContext.outside + Add/RemoveExternalGavinContext
         // (outside-workspace contexts) + docs/specs deletion guard.
-        assert_eq!(PROTOCOL_VERSION, 34);
+        assert_eq!(PROTOCOL_VERSION, 35);
     }
 
     #[test]
@@ -3742,6 +3784,7 @@ mod tests {
             worktree_path: Some("/x/gavin-backend".into()),
             branch: Some("feature/api".into()),
             auto_resume: Some(true),
+            trigger: Some(RailTrigger { kind: "rail-done".into(), rail: Some("frontend".into()) }),
             page_id: None,
             stages: vec![Stage {
                 id: "s1".into(),
@@ -3766,6 +3809,7 @@ mod tests {
                 "worktreePath": "/x/gavin-backend",
                 "branch": "feature/api",
                 "autoResume": true,
+                "trigger": { "kind": "rail-done", "rail": "frontend" },
                 "pageId": null,
                 "stages": [{ "id": "s1", "position": 0, "mode": "parallel", "name": null,
                              "steps": [{ "id": "t1", "position": 0, "cardPath": "/x/a.md",
@@ -3803,6 +3847,27 @@ mod tests {
         // And the same rail has never opted into resuming itself, which
         // is the only safe reading of a field it does not carry.
         assert_eq!(rail.auto_resume, None);
+        // ...nor into starting itself. A rail with no trigger is one only
+        // a human (or another rail's step) arms, which is what every rail
+        // written before v35 is.
+        assert_eq!(rail.trigger, None);
+    }
+
+    /// A `rail-done` trigger names its rail; `all-rails-done` names
+    /// nothing, and the field is absent rather than null -- an agent
+    /// writing the shorter shape must round-trip.
+    #[test]
+    fn a_trigger_without_a_named_rail_parses_as_naming_none() {
+        let rail: Rail = serde_json::from_value(serde_json::json!({
+            "id": "r1", "name": "release", "position": 0,
+            "worktreePath": null, "pageId": null, "stages": [],
+            "trigger": { "kind": "all-rails-done" }
+        }))
+        .unwrap();
+        assert_eq!(
+            rail.trigger,
+            Some(RailTrigger { kind: "all-rails-done".into(), rail: None })
+        );
     }
 
     /// The old shape must still parse: an agent that has never heard of
