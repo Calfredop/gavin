@@ -9,23 +9,23 @@ import {
   switchPage,
   switchWorkspace,
   type LayoutState,
-} from "./layoutState";
-import { copySelection, pasteClipboard } from "./clipboard";
-import { confirmTabClose } from "./confirmClose";
-import { findLeafPath, getNodeAtPath, isPinned } from "./layout";
+} from "$lib/layoutState";
+import { copySelection, pasteClipboard } from "$lib/clipboard";
+import { confirmTabClose } from "$lib/confirmClose";
+import { findLeafPath, getNodeAtPath, isPinned } from "$lib/layout";
 import {
   getActiveTree,
   getActiveWorkspace,
   getActiveView,
   sidebarPageOrder,
   sidebarWorkspaceOrder,
-} from "./workspace";
-import { tabStripHubViewIds } from "./hubViewMeta";
-import { currentHubTabPrefs } from "./hubTabPrefs";
-import { scratchpadEnabled } from "./sidebarPrefs";
-import { cmdHeld, isMacSync } from "./platform";
-import { digitFromCode, matchesChord, resolveIndex, SHORTCUTS } from "./shortcuts";
-import { requestedCompose, resolveComposeTarget } from "./composeRequest";
+} from "$lib/workspace";
+import { tabStripHubViewIds } from "$lib/hubViewMeta";
+import { currentHubTabPrefs } from "$lib/hubTabPrefs";
+import { scratchpadEnabled } from "$lib/sidebarPrefs";
+import { cmdHeld, isMacSync } from "$lib/platform";
+import { digitFromCode, matchesChord, resolveIndex, SHORTCUTS } from "$lib/shortcuts";
+import { requestedCompose, resolveComposeTarget } from "$lib/composeRequest";
 
 /// Just the parts of a KeyboardEvent the shortcut layer reads. A real
 /// KeyboardEvent satisfies it structurally; tests build one by hand,

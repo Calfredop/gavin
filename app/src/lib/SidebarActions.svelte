@@ -16,12 +16,12 @@
   // initials, and the one button that must survive -- the way back out
   // -- becomes the rail's own first row instead (Sidebar.svelte's
   // .rail-chrome), where it costs exactly what a workspace row costs.
-  import IconButton from "./ui/IconButton.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import { PanelLeftClose, Search, FolderOpen } from "@lucide/svelte";
-  import { sidebarCollapsed, toggleSidebarCollapsed } from "./sidebarPrefs";
-  import { sidebarSearchOpen, toggleSidebarSearch } from "./sidebarSearch";
-  import { openWorkspaceFolder } from "./workspaceOpen";
-  import { layoutState } from "./layoutState";
+  import { sidebarCollapsed, toggleSidebarCollapsed } from "$lib/sidebarPrefs";
+  import { sidebarSearchOpen, toggleSidebarSearch } from "$lib/sidebarSearch";
+  import { openWorkspaceFolder } from "$lib/workspaceOpen";
+  import { layoutState } from "$lib/layoutState";
 
   // Keyed off the preference rather than off sidebarShowsRail: a peek is
   // the collapsed column borrowing its full width for a glance, and

@@ -7,8 +7,8 @@
 // steps and the discipline they run under. There are no built-ins --
 // every template is something the human saved off a group they built.
 
-import { stageMode, stepParams, isToolStep } from "./orchestration";
-import type { Stage, StageMode, Step } from "./orchestration";
+import { stageMode, stepParams, isToolStep } from "$lib/orchestration";
+import type { Stage, StageMode, Step } from "$lib/orchestration";
 
 /// Where a template came from. Derived from the wire's `workspaceId`,
 /// never stored: null is global, a string is that workspace's own.

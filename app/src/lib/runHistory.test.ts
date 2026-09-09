@@ -15,8 +15,8 @@ import {
   totalCost,
   type CardRun,
   type TokenReport,
-} from "./runHistory";
-import type { DaemonCompat } from "./daemonCompat";
+} from "$lib/runHistory";
+import type { DaemonCompat } from "$lib/daemonCompat";
 
 const NOW = 1_757_000_000;
 

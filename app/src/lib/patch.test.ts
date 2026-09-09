@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { buildPatch } from "./patch";
-import fixtures from "./fixtures/patch-fixtures.json";
-import type { FileDiff } from "./git";
+import { buildPatch } from "$lib/patch";
+import fixtures from "$lib/fixtures/patch-fixtures.json";
+import type { FileDiff } from "$lib/git";
 
 interface Fixture {
   name: string;

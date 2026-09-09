@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
 import type { Writable } from "svelte/store";
-import type { LayoutNode } from "./layout";
+import type { LayoutNode } from "$lib/layout";
 
 // The store is created INSIDE the factory: vi.mock is hoisted above the
 // imports and this factory runs while keyboard.ts is being imported, so
 // anything it closes over from module scope would still be uninitialized.
 // The test reads the store back from the mocked module instead.
-vi.mock("./layoutState", async () => {
+vi.mock("$lib/layoutState", async () => {
   const { writable } = await import("svelte/store");
   return {
     layoutState: writable<Record<string, unknown>>({}),
@@ -20,14 +20,14 @@ vi.mock("./layoutState", async () => {
     switchWorkspace: vi.fn().mockResolvedValue(undefined),
   };
 });
-vi.mock("./clipboard", () => ({
+vi.mock("$lib/clipboard", () => ({
   copySelection: vi.fn().mockResolvedValue(undefined),
   pasteClipboard: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("./confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
+vi.mock("$lib/confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
 // Switchable per test via globalThis, which the hoisted factory can read
 // without closing over module scope (that would be uninitialized here).
-vi.mock("./platform", () => {
+vi.mock("$lib/platform", () => {
   const mac = () => (globalThis as Record<string, unknown>).__testIsMac !== false;
   return {
     isMacSync: mac,
@@ -44,15 +44,15 @@ import {
   addTab,
   closeSession,
   splitPane,
-} from "./layoutState";
-import { copySelection, pasteClipboard } from "./clipboard";
-import { handleShortcutKeydown, type ShortcutKeyEvent } from "./keyboard";
-import { requestedCompose } from "./composeRequest";
+} from "$lib/layoutState";
+import { copySelection, pasteClipboard } from "$lib/clipboard";
+import { handleShortcutKeydown, type ShortcutKeyEvent } from "$lib/keyboard";
+import { requestedCompose } from "$lib/composeRequest";
 import {
   hubTabOrderByWorkspace,
   hubTabsHiddenByWorkspace,
   hubTabsHiddenDefault,
-} from "./hubTabPrefs";
+} from "$lib/hubTabPrefs";
 
 const state = layoutState as unknown as Writable<Record<string, unknown>>;
 

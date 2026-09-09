@@ -1,7 +1,7 @@
 <script lang="ts">
-  import type { ConflictInfo } from "./git";
-  import { resolveWhole, resolveDeleted } from "./gitState";
-  import GitDiscardDialog from "./GitDiscardDialog.svelte";
+  import type { ConflictInfo } from "$lib/git";
+  import { resolveWhole, resolveDeleted } from "$lib/gitState";
+  import GitDiscardDialog from "$lib/GitDiscardDialog.svelte";
 
   interface Props {
     workspaceId: string;

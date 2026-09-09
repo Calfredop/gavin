@@ -11,9 +11,9 @@
   // visible way back.
 
   import { Trash2, CheckCheck, X } from "@lucide/svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import { boardSelection, selectedCards } from "./boardSelection";
-  import type { CardView } from "./planBoard";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import { boardSelection, selectedCards } from "$lib/boardSelection";
+  import type { CardView } from "$lib/planBoard";
 
   interface Props {
     /// The archived cards the grid is showing -- what "Select all"

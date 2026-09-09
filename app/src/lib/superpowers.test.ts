@@ -9,7 +9,7 @@ import {
   UNKNOWN_STATUS,
   type SuperpowersStatus,
   type SuperpowersState,
-} from "./superpowers";
+} from "$lib/superpowers";
 
 function status(over: Partial<SuperpowersStatus> = {}): SuperpowersStatus {
   return {

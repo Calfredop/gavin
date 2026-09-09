@@ -6,9 +6,9 @@
 // not to refuse, but because the prompt has to say what installing
 // actually leaves behind (`updates.ts`'s `installPrompt`).
 
-import * as backend from "./backend";
-import { grantForAnsweredPrompt } from "./confirmGate";
-import { installPrompt, liveSessions, type AvailableUpdate, type UpdatePrompt } from "./updates";
+import * as backend from "$lib/backend";
+import { grantForAnsweredPrompt } from "$lib/confirmGate";
+import { installPrompt, liveSessions, type AvailableUpdate, type UpdatePrompt } from "$lib/updates";
 
 /// The prompt to draw before installing, with the live-session count
 /// already resolved.

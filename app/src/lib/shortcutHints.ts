@@ -4,7 +4,7 @@
 // `createHintTracker` says WHEN the hold has lasted long enough.
 // `installHintTracking` is then only the DOM wiring.
 import { readonly, writable, type Readable } from "svelte/store";
-import { cmdHeld } from "./platform";
+import { cmdHeld } from "$lib/platform";
 
 export type HintMode = "cmd" | "cmd-shift" | "cmd-alt";
 

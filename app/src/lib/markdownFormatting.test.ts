@@ -6,7 +6,7 @@ import {
   FORMAT_GROUPS,
   type FormatAction,
   type FormatSelection,
-} from "./markdownFormatting";
+} from "$lib/markdownFormatting";
 
 /// Runs an action and returns the text it produced plus the selection,
 /// with the selection ALSO checked against the new document: an offset

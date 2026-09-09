@@ -15,7 +15,7 @@
 // has to put it back by hand after a run that never happened.
 
 import { get } from "svelte/store";
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   candidatesError,
   composeCandidatePrompt,
@@ -26,8 +26,8 @@ import {
   type BestOfNRun,
   type CandidatePlan,
   type RunCandidate,
-} from "./bestOfN";
-import { putRun, dropRun, bestOfNRuns, runForCard } from "./bestOfNState";
+} from "$lib/bestOfN";
+import { putRun, dropRun, bestOfNRuns, runForCard } from "$lib/bestOfNState";
 import {
   armFailureDetection,
   candidateAgentFor,
@@ -37,20 +37,20 @@ import {
   layoutState,
   setSessionName,
   switchWorkspaceView,
-} from "./layoutState";
-import { buildRunCommand, composePlanPrompt, composeTaskPrompt, noPromptReason, provisionalSessionName, runStatusNeeded } from "./cardRun";
-import { ensureCardReviewed } from "./cardReviewActions";
-import { developingBlocker } from "./developingCardsState";
-import { resolveAttachmentsForRun } from "./cardRunActions";
-import { cardSessionState } from "./columnRunAction";
-import { discardWorktrees, forkWorktree } from "./gitState";
-import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
-import { patchPlanField, patchPlanPath, worktreeSetups } from "./gavinState";
-import { setupPlan } from "./worktreeSetup";
-import { stripFrontmatter } from "./planChecklist";
-import { closeTabsNow } from "./tabActions";
-import { askConfirmChecked } from "./dialog";
-import type { CardView } from "./planBoard";
+} from "$lib/layoutState";
+import { buildRunCommand, composePlanPrompt, composeTaskPrompt, noPromptReason, provisionalSessionName, runStatusNeeded } from "$lib/cardRun";
+import { ensureCardReviewed } from "$lib/cardReviewActions";
+import { developingBlocker } from "$lib/developingCardsState";
+import { resolveAttachmentsForRun } from "$lib/cardRunActions";
+import { cardSessionState } from "$lib/columnRunAction";
+import { discardWorktrees, forkWorktree } from "$lib/gitState";
+import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/kanbanState";
+import { patchPlanField, patchPlanPath, worktreeSetups } from "$lib/gavinState";
+import { setupPlan } from "$lib/worktreeSetup";
+import { stripFrontmatter } from "$lib/planChecklist";
+import { closeTabsNow } from "$lib/tabActions";
+import { askConfirmChecked } from "$lib/dialog";
+import type { CardView } from "$lib/planBoard";
 
 /// Launch a run: one worktree and one agent per candidate, all on one
 /// tiled page named for the card. Returns an error string for the

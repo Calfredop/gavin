@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // The tool library and its tool-creation form are two modes of ONE modal,
 // and both scrolled sideways. Modal's panel caps at 480px of content box

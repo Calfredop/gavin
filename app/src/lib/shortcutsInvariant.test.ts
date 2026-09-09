@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveIndex, hintDigitFor } from "./shortcuts";
+import { resolveIndex, hintDigitFor } from "$lib/shortcuts";
 
 // The spec's central promise: a badge and the shortcut it advertises can
 // never point at different items. Checked exhaustively rather than by

@@ -14,37 +14,37 @@
     setRequireReviewDefault,
     gitTrackingDefault,
     setGitTrackingDefault,
-  } from "./layoutState";
-  import ComplexityTable from "./ComplexityTable.svelte";
-  import type { Complexity, ComplexityAgent } from "./complexity";
-  import { modelOptions, CUSTOM_MODEL } from "./agentModel";
-  import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "./terminalFont";
+  } from "$lib/layoutState";
+  import ComplexityTable from "$lib/ComplexityTable.svelte";
+  import type { Complexity, ComplexityAgent } from "$lib/complexity";
+  import { modelOptions, CUSTOM_MODEL } from "$lib/agentModel";
+  import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "$lib/terminalFont";
   import {
     DEFAULT_AUTO_COMMIT,
     autoCommitFromSelect,
     autoCommitOptions,
     autoCommitToSelect,
-  } from "./autoCommit";
+  } from "$lib/autoCommit";
   import {
     DEFAULT_REQUIRE_REVIEW,
     requireReviewFromSelect,
     requireReviewOptions,
     requireReviewToSelect,
-  } from "./cardReview";
-  import { resolveGitTracking } from "./gitTracking";
-  import { scratchpadEnabled, setScratchpadEnabled } from "./sidebarPrefs";
-  import { hiddenHubViewCount, hubTabsHiddenDefault } from "./hubTabPrefs";
-  import HubTabsModal from "./HubTabsModal.svelte";
-  import { themeState } from "./ui/themeState.svelte";
-  import type { ThemePref } from "./ui/theme";
-  import IconButton from "./ui/IconButton.svelte";
-  import SearchInput from "./ui/SearchInput.svelte";
-  import { searchSettings, type SettingsSection } from "./settingsSearch";
-  import Modal from "./Modal.svelte";
-  import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, type PauseCycle, validateCycle } from "./agentPause";
-  import { agentPauseStore, profilesInUse, saveAgentPause } from "./agentPauseState";
-  import { launchConfigStore, saveLaunchConfig } from "./launchQueue";
-  import type { LaunchConfig } from "./launchGate";
+  } from "$lib/cardReview";
+  import { resolveGitTracking } from "$lib/gitTracking";
+  import { scratchpadEnabled, setScratchpadEnabled } from "$lib/sidebarPrefs";
+  import { hiddenHubViewCount, hubTabsHiddenDefault } from "$lib/hubTabPrefs";
+  import HubTabsModal from "$lib/HubTabsModal.svelte";
+  import { themeState } from "$lib/ui/themeState.svelte";
+  import type { ThemePref } from "$lib/ui/theme";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
+  import { searchSettings, type SettingsSection } from "$lib/settingsSearch";
+  import Modal from "$lib/Modal.svelte";
+  import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, type PauseCycle, validateCycle } from "$lib/agentPause";
+  import { agentPauseStore, profilesInUse, saveAgentPause } from "$lib/agentPauseState";
+  import { launchConfigStore, saveLaunchConfig } from "$lib/launchQueue";
+  import type { LaunchConfig } from "$lib/launchGate";
 
   interface Props {
     onClose: () => void;

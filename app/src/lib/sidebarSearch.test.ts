@@ -8,10 +8,10 @@ import {
   sidebarSearchQuery,
   toggleSidebarSearch,
   type SidebarSearchInput,
-} from "./sidebarSearch";
-import type { PageTabState } from "./sidebarSummary";
-import type { LayoutNode } from "./layout";
-import type { Page, Workspace } from "./workspace";
+} from "$lib/sidebarSearch";
+import type { PageTabState } from "$lib/sidebarSummary";
+import type { LayoutNode } from "$lib/layout";
+import type { Page, Workspace } from "$lib/workspace";
 
 function leaf(tabs: string[]): LayoutNode {
   return { type: "leaf", tabs, activeTabIndex: 0 };

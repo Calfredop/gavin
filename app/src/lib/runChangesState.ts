@@ -12,9 +12,9 @@
 // stored value is never identity-equal to the one that was put in.
 
 import { get, writable } from "svelte/store";
-import * as backend from "./backend";
-import type { FileDiff, RunChanges } from "./git";
-import { untrackedPaths } from "./runChanges";
+import * as backend from "$lib/backend";
+import type { FileDiff, RunChanges } from "$lib/git";
+import { untrackedPaths } from "$lib/runChanges";
 
 export interface RunChangesView {
   /// The run this view is of -- carried so a card whose binding was
@@ -128,7 +128,7 @@ export async function selectRunFile(path: string, file: string): Promise<void> {
 /// from a fresh scan: what they agreed to remove is what was on screen,
 /// and a file the agent created in between must survive to be asked
 /// about on its own.
-export async function discardRun(path: string): Promise<{ report: import("./git").DiscardReport } | { error: string }> {
+export async function discardRun(path: string): Promise<{ report: import("$lib/git").DiscardReport } | { error: string }> {
   const view = get(runChangesStore)[path];
   if (!view?.changes) return { error: "This run's changes are not loaded." };
   const untracked = untrackedPaths(view.changes);

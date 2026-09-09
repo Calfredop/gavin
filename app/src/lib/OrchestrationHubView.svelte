@@ -1,40 +1,40 @@
 <script lang="ts">
   import { BrushCleaning, ChevronDown, Play, Plus } from "@lucide/svelte";
   import { get } from "svelte/store";
-  import OrchestrationRail from "./OrchestrationRail.svelte";
-  import OrchestrationConflicts from "./OrchestrationConflicts.svelte";
-  import OrchestrationDragPreview from "./OrchestrationDragPreview.svelte";
-  import OrchestrationDrawer from "./OrchestrationDrawer.svelte";
-  import RailBindDialog from "./RailBindDialog.svelte";
-  import type { RailBindTab } from "./railBind";
-  import SearchInput from "./ui/SearchInput.svelte";
-  import { searchOrchestration } from "./orchestrationSearch";
-  import ToolLibraryDialog from "./ToolLibraryDialog.svelte";
-  import StepParamsDialog from "./StepParamsDialog.svelte";
-  import { attachOrchestrationDrag } from "./orchestrationDragGlue";
-  import Modal from "./Modal.svelte";
-  import CardDetailModal from "./CardDetailModal.svelte";
-  import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import { gavinTrees } from "./gavinState";
-  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "./kanbanState";
+  import OrchestrationRail from "$lib/OrchestrationRail.svelte";
+  import OrchestrationConflicts from "$lib/OrchestrationConflicts.svelte";
+  import OrchestrationDragPreview from "$lib/OrchestrationDragPreview.svelte";
+  import OrchestrationDrawer from "$lib/OrchestrationDrawer.svelte";
+  import RailBindDialog from "$lib/RailBindDialog.svelte";
+  import type { RailBindTab } from "$lib/railBind";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
+  import { searchOrchestration } from "$lib/orchestrationSearch";
+  import ToolLibraryDialog from "$lib/ToolLibraryDialog.svelte";
+  import StepParamsDialog from "$lib/StepParamsDialog.svelte";
+  import { attachOrchestrationDrag } from "$lib/orchestrationDragGlue";
+  import Modal from "$lib/Modal.svelte";
+  import CardDetailModal from "$lib/CardDetailModal.svelte";
+  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import { gavinTrees } from "$lib/gavinState";
+  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/kanbanState";
   import {
     mergePlanCards,
     indexCardViews,
     slugStatus,
     type CardView,
     type PlacedCardView,
-  } from "./planBoard";
-  import { runCard, sendToMainAgent } from "./cardRunActions";
-  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
-  import { grantForAnsweredPrompt } from "./confirmGate";
-  import { openContextMenuFromEvent, contextMenu, openMenuUnder } from "./contextMenu";
-  import { buildCardMenuEntries } from "./cardMenu";
-  import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
-  import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
-  import { layoutState, daemonCompat } from "./layoutState";
-  import { featureBlockedReason } from "./daemonCompat";
-  import { estimateFor, launchGateVerdict } from "./launchQueue";
-  import { executeArchive, ARCHIVE_CANCELLED } from "./archiveActions";
+  } from "$lib/planBoard";
+  import { runCard, sendToMainAgent } from "$lib/cardRunActions";
+  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cardDelete";
+  import { grantForAnsweredPrompt } from "$lib/confirmGate";
+  import { openContextMenuFromEvent, contextMenu, openMenuUnder } from "$lib/contextMenu";
+  import { buildCardMenuEntries } from "$lib/cardMenu";
+  import { gitStore, ensureGitView, refresh as refreshGit } from "$lib/gitState";
+  import { requestedCardDetail, takeCardDetailRequest } from "$lib/cardTabLink";
+  import { layoutState, daemonCompat } from "$lib/layoutState";
+  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { estimateFor, launchGateVerdict } from "$lib/launchQueue";
+  import { executeArchive, ARCHIVE_CANCELLED } from "$lib/archiveActions";
   import {
     cardIndex,
     doneColumn,
@@ -56,8 +56,8 @@
     runnableIdleRails,
     finishedRails,
     conflictCheckout,
-  } from "./orchestration";
-  import type { Rail } from "./orchestration";
+  } from "$lib/orchestration";
+  import type { Rail } from "$lib/orchestration";
   import {
     railDeleteConfirm,
     railClearDoneConfirm,
@@ -65,18 +65,18 @@
     clearAndArchiveFinishedRailsConfirm,
     groupRemoveConfirm,
     runAllConfirm,
-  } from "./railConfirm";
-  import { findTool, toolKindLabel } from "./orchestrationTools";
-  import { organizeAction, organizeButtonLabel, reorganizeAction } from "./orchestrationAgent";
-  import { toolRecords, fetchTools, refreshTools, renderLibraryFor } from "./toolsState";
+  } from "$lib/railConfirm";
+  import { findTool, toolKindLabel } from "$lib/orchestrationTools";
+  import { organizeAction, organizeButtonLabel, reorganizeAction } from "$lib/orchestrationAgent";
+  import { toolRecords, fetchTools, refreshTools, renderLibraryFor } from "$lib/toolsState";
   import {
     groupTemplateRecords,
     libraryFor as templateLibraryFor,
     fetchGroupTemplates,
     saveGroupTemplateAction,
-  } from "./groupTemplatesState";
-  import { templateFromStage } from "./orchestrationGroups";
-  import GroupTemplateSaveDialog from "./GroupTemplateSaveDialog.svelte";
+  } from "$lib/groupTemplatesState";
+  import { templateFromStage } from "$lib/orchestrationGroups";
+  import GroupTemplateSaveDialog from "$lib/GroupTemplateSaveDialog.svelte";
   import {
     orchestrations,
     fetchOrchestration,
@@ -120,7 +120,7 @@
     moveStageToIndexAction,
     removeStageAction,
     ungroupStageAction,
-  } from "./orchestrationState";
+  } from "$lib/orchestrationState";
 
   interface Props {
     workspaceId: string;

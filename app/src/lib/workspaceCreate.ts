@@ -10,7 +10,7 @@
 // not own is what happens after it.
 
 import { get, writable } from "svelte/store";
-import { createWorkspace, layoutState, openWizard } from "./layoutState";
+import { createWorkspace, layoutState, openWizard } from "$lib/layoutState";
 
 /// Which surface asked for a workspace. The sidebar's + and the app
 /// hub's "+ New workspace…" both drive this one flow, and both render a

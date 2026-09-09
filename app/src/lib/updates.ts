@@ -24,7 +24,7 @@
 // that costs them their sessions. That is worth knowing BEFORE the
 // click, not after, which is what `installPrompt` exists to say.
 
-import type { ManagedSession } from "./sessionsManager";
+import type { ManagedSession } from "$lib/sessionsManager";
 
 /// Mirrors `UpdateSettings` in `updater.rs`.
 export interface UpdateSettings {

@@ -22,23 +22,23 @@
     setWorkspaceComplexityTable,
     markGitTrackingAsked,
     trustedAgentConfigs,
-  } from "./layoutState";
-  import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "./confirmGate";
-  import ComplexityTable from "./ComplexityTable.svelte";
-  import type { Complexity, ComplexityAgent } from "./complexity";
-  import { fontSizeOptions, resolveTerminalFontSize } from "./terminalFont";
+  } from "$lib/layoutState";
+  import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "$lib/confirmGate";
+  import ComplexityTable from "$lib/ComplexityTable.svelte";
+  import type { Complexity, ComplexityAgent } from "$lib/complexity";
+  import { fontSizeOptions, resolveTerminalFontSize } from "$lib/terminalFont";
   import {
     autoCommitFromSelect,
     autoCommitOptions,
     autoCommitToSelect,
     resolveAutoCommit,
-  } from "./autoCommit";
+  } from "$lib/autoCommit";
   import {
     requireReviewFromSelect,
     requireReviewOptions,
     requireReviewToSelect,
     resolveRequireReview,
-  } from "./cardReview";
+  } from "$lib/cardReview";
   import {
     canToggleTracking,
     needsUntrackConfirm,
@@ -46,10 +46,10 @@
     untrackConfirm,
     type ConfirmCopy,
     type GavinTracking,
-  } from "./gitTracking";
-  import { gavinTrees } from "./gavinState";
-  import { featureBlockedReason, restartOutcome, restartConfirmLines } from "./daemonCompat";
-  import { modelOptions, CUSTOM_MODEL } from "./agentModel";
+  } from "$lib/gitTracking";
+  import { gavinTrees } from "$lib/gavinState";
+  import { featureBlockedReason, restartOutcome, restartConfirmLines } from "$lib/daemonCompat";
+  import { modelOptions, CUSTOM_MODEL } from "$lib/agentModel";
   import {
     resolveAgentConfig,
     validateAgentFileName,
@@ -61,29 +61,29 @@
     agentFileFromPick,
     renameDecision,
     DEFAULT_ACCENT,
-  } from "./settings";
-  import { pickPath } from "./picker";
-  import * as backend from "./backend";
-  import SuperpowersControls from "./SuperpowersControls.svelte";
-  import ConfigTrustNotice from "./ConfigTrustNotice.svelte";
-  import WorkspaceRootControl from "./WorkspaceRootControl.svelte";
-  import ColourPicker from "./ColourPicker.svelte";
-  import SearchInput from "./ui/SearchInput.svelte";
-  import { searchSettings, type SettingsSection } from "./settingsSearch";
-  import Modal from "./Modal.svelte";
-  import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import WorkspaceDeleteWizard from "./WorkspaceDeleteWizard.svelte";
-  import { tooltip } from "./tooltip";
-  import { MIN_PERIOD_MINUTES, validateCycle } from "./agentPause";
-  import { agentPauseStore, editableCycle, nowStore, pauseFor } from "./agentPauseState";
-  import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "./superpowers";
-  import { UNFILED_WORKSPACE_ID } from "./workspace";
-  import HubTabsModal from "./HubTabsModal.svelte";
+  } from "$lib/settings";
+  import { pickPath } from "$lib/picker";
+  import * as backend from "$lib/backend";
+  import SuperpowersControls from "$lib/SuperpowersControls.svelte";
+  import ConfigTrustNotice from "$lib/ConfigTrustNotice.svelte";
+  import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
+  import ColourPicker from "$lib/ColourPicker.svelte";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
+  import { searchSettings, type SettingsSection } from "$lib/settingsSearch";
+  import Modal from "$lib/Modal.svelte";
+  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import WorkspaceDeleteWizard from "$lib/WorkspaceDeleteWizard.svelte";
+  import { tooltip } from "$lib/tooltip";
+  import { MIN_PERIOD_MINUTES, validateCycle } from "$lib/agentPause";
+  import { agentPauseStore, editableCycle, nowStore, pauseFor } from "$lib/agentPauseState";
+  import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "$lib/superpowers";
+  import { UNFILED_WORKSPACE_ID } from "$lib/workspace";
+  import HubTabsModal from "$lib/HubTabsModal.svelte";
   import {
     hiddenHubViewCount,
     hubTabsHiddenByWorkspace,
     hubTabsHiddenDefault,
-  } from "./hubTabPrefs";
+  } from "$lib/hubTabPrefs";
   import {
     availableUpdate,
     checkingForUpdate,
@@ -92,15 +92,15 @@
     refreshUpdateChannel,
     runUpdateCheck,
     updateChannel,
-  } from "./updatesState";
-  import { installConfirmPrompt, runInstall, saveEndpoint } from "./updateActions";
+  } from "$lib/updatesState";
+  import { installConfirmPrompt, runInstall, saveEndpoint } from "$lib/updateActions";
   import {
     availableLine,
     endpointToSave,
     updateBlockedReason,
     upToDateLine,
     type UpdatePrompt,
-  } from "./updates";
+  } from "$lib/updates";
   import { onMount } from "svelte";
 
   interface Props {

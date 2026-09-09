@@ -18,16 +18,16 @@ import {
   type FleetInput,
   type FleetState,
   type WorkspaceRunning,
-} from "./appHub";
-import { totalUsage, type SessionRow } from "./sessionsManager";
-import type { AgentUsageReport } from "./agentUsage";
-import type { AgentProfileInfo } from "./settings";
-import type { WorkspaceAgentsSummary } from "./sidebarSummary";
-import { UNFILED_WORKSPACE_ID, type Page, type Workspace } from "./workspace";
-import type { LayoutNode } from "./layout";
-import type { Board } from "./kanban";
-import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
-import type { Orchestration } from "./orchestration";
+} from "$lib/appHub";
+import { totalUsage, type SessionRow } from "$lib/sessionsManager";
+import type { AgentUsageReport } from "$lib/agentUsage";
+import type { AgentProfileInfo } from "$lib/settings";
+import type { WorkspaceAgentsSummary } from "$lib/sidebarSummary";
+import { UNFILED_WORKSPACE_ID, type Page, type Workspace } from "$lib/workspace";
+import type { LayoutNode } from "$lib/layout";
+import type { Board } from "$lib/kanban";
+import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
+import type { Orchestration } from "$lib/orchestration";
 
 function ws(id: string, lastActiveAt?: number): Workspace {
   return { id, name: id.toUpperCase(), pages: [], activePageId: null, lastActiveAt };

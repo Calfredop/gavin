@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // A press on an unplaced card row used to append that card to the FIRST
 // rail -- an arbitrary target the row never named, reached by the one

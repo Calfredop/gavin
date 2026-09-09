@@ -8,9 +8,9 @@ import {
   selectedCards,
   runnableSelection,
   selectionRunConfirm,
-} from "./boardSelection";
-import { launchEstimate } from "./launchEstimate";
-import type { CardView } from "./planBoard";
+} from "$lib/boardSelection";
+import { launchEstimate } from "$lib/launchEstimate";
+import type { CardView } from "$lib/planBoard";
 
 function card(id: string, kind: CardView["kind"] = "task", nestedChildren: CardView[] = []): CardView {
   return {

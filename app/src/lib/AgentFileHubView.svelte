@@ -5,10 +5,10 @@
     agentModelDefaultsStore,
     setAgentField,
     trustedAgentConfigs,
-  } from "./layoutState";
-  import { resolveAgentConfig, agentFileFromPick } from "./settings";
-  import FileEditor from "./FileEditor.svelte";
-  import HubFilePicker from "./HubFilePicker.svelte";
+  } from "$lib/layoutState";
+  import { resolveAgentConfig, agentFileFromPick } from "$lib/settings";
+  import FileEditor from "$lib/FileEditor.svelte";
+  import HubFilePicker from "$lib/HubFilePicker.svelte";
 
   interface Props {
     workspaceId: string;

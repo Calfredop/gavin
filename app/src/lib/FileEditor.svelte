@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import DOMPurify from "dompurify";
-  import { renderMarkdown } from "./markdown";
+  import { renderMarkdown } from "$lib/markdown";
   import {
     canEdit,
     classifyExternalRead,
@@ -11,12 +11,12 @@
     resolveExternalChange,
     setPathDirty,
     type EditorMode,
-  } from "./fileEditing";
-  import CodeMirrorView from "./CodeMirrorView.svelte";
-  import MarkdownToolbar from "./MarkdownToolbar.svelte";
-  import { isMarkdown } from "./fileTypes";
-  import type { FormatAction } from "./markdownFormatting";
-  import * as backend from "./backend";
+  } from "$lib/fileEditing";
+  import CodeMirrorView from "$lib/CodeMirrorView.svelte";
+  import MarkdownToolbar from "$lib/MarkdownToolbar.svelte";
+  import { isMarkdown } from "$lib/fileTypes";
+  import type { FormatAction } from "$lib/markdownFormatting";
+  import * as backend from "$lib/backend";
 
   interface Props {
     path: string;

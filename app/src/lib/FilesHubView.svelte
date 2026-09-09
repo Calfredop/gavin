@@ -7,12 +7,12 @@
     openFileInSplit,
     retargetFileTabs,
     switchWorkspaceView,
-  } from "./layoutState";
-  import * as backend from "./backend";
-  import { showAlert } from "./dialog";
-  import { confirmDestructive } from "./confirmGate";
-  import { isViewableExtension, loadViewableExtensions } from "./fileTypes";
-  import { defaultMode } from "./fileEditing";
+  } from "$lib/layoutState";
+  import * as backend from "$lib/backend";
+  import { showAlert } from "$lib/dialog";
+  import { confirmDestructive } from "$lib/confirmGate";
+  import { isViewableExtension, loadViewableExtensions } from "$lib/fileTypes";
+  import { defaultMode } from "$lib/fileEditing";
   import {
     DEFAULT_TREE_SHARE,
     NO_MATCH_MESSAGE,
@@ -41,14 +41,14 @@
     withError,
     type FileNode,
     type FileTreeState,
-  } from "./fileTree";
-  import type { FileTreeMenuCallbacks } from "./fileTreeMenu";
-  import { trashPromptLines } from "./fileTreeMenu";
-  import FileTree from "./FileTree.svelte";
-  import FileEditor from "./FileEditor.svelte";
-  import SearchInput from "./ui/SearchInput.svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import { tooltip } from "./tooltip";
+  } from "$lib/fileTree";
+  import type { FileTreeMenuCallbacks } from "$lib/fileTreeMenu";
+  import { trashPromptLines } from "$lib/fileTreeMenu";
+  import FileTree from "$lib/FileTree.svelte";
+  import FileEditor from "$lib/FileEditor.svelte";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import { tooltip } from "$lib/tooltip";
 
   interface Props {
     workspaceId: string;

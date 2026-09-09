@@ -21,7 +21,7 @@
     CircleDashed,
     TriangleAlert,
   } from "@lucide/svelte";
-  import * as backend from "./backend";
+  import * as backend from "$lib/backend";
   import {
     layoutState,
     switchWorkspace,
@@ -31,11 +31,11 @@
     agentProfilesStore,
     resolvedAgents,
     attentionState,
-  } from "./layoutState";
-  import { featureBlockedReason } from "./daemonCompat";
-  import { workspaceAgentsSummary, kanbanColumnChips, railStripStats, showGitChip } from "./sidebarSummary";
-  import type { FleetSummary, RunningTask, TaskPhase, WorkspaceRunning } from "./appHub";
-  import StatusBadge from "./ui/StatusBadge.svelte";
+  } from "$lib/layoutState";
+  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { workspaceAgentsSummary, kanbanColumnChips, railStripStats, showGitChip } from "$lib/sidebarSummary";
+  import type { FleetSummary, RunningTask, TaskPhase, WorkspaceRunning } from "$lib/appHub";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import {
     agentIndicator,
     agentIndicatorByState,
@@ -43,7 +43,7 @@
     attentionIndicator,
     gitIndicator,
     type Indicator,
-  } from "./ui/indicators";
+  } from "$lib/ui/indicators";
   import {
     recentWorkspaces,
     relativeTime,
@@ -58,7 +58,7 @@
     worstUsageRow,
     PHASE_LABEL,
     APP_VERSION,
-  } from "./appHub";
+  } from "$lib/appHub";
   import {
     sessionRows,
     formatCpu,
@@ -67,35 +67,35 @@
     totalsNote,
     type ManagedSessions,
     type SessionRow,
-  } from "./sessionsManager";
-  import { barPercent, displayPercent, formatResetsIn } from "./agentUsage";
-  import { agentUsageStore, nowStore, pausedWorkspaces } from "./agentPauseState";
-  import { openAppPanel, showAppPanel } from "./appPanels";
+  } from "$lib/sessionsManager";
+  import { barPercent, displayPercent, formatResetsIn } from "$lib/agentUsage";
+  import { agentUsageStore, nowStore, pausedWorkspaces } from "$lib/agentPauseState";
+  import { openAppPanel, showAppPanel } from "$lib/appPanels";
   import {
     newWorkspaceFlow,
     startCreatingWorkspace,
     setNewWorkspaceName,
     commitNewWorkspace,
     cancelNewWorkspace,
-  } from "./workspaceCreate";
+  } from "$lib/workspaceCreate";
   import {
     attentionInbox,
     rowTip,
     waitLabel,
     REASON_LABEL,
     type AttentionRow,
-  } from "./attentionInbox";
-  import { openLinkedCard } from "./cardTabLink";
-  import { revealSession } from "./cardRunActions";
-  import { kanbanState } from "./kanbanState";
-  import { fleetStripLine } from "./launchQueue";
-  import { gavinTrees } from "./gavinState";
-  import { orchestrations, stepAttentionsByWorkspace } from "./orchestrationState";
-  import { railsWantingAttention } from "./orchestration";
-  import { agentCommitPhase, gitStore } from "./gitState";
-  import { tooltip } from "./tooltip";
-  import { accentVar } from "./settings";
-  import { themeState } from "./ui/themeState.svelte";
+  } from "$lib/attentionInbox";
+  import { openLinkedCard } from "$lib/cardTabLink";
+  import { revealSession } from "$lib/cardRunActions";
+  import { kanbanState } from "$lib/kanbanState";
+  import { fleetStripLine } from "$lib/launchQueue";
+  import { gavinTrees } from "$lib/gavinState";
+  import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";
+  import { railsWantingAttention } from "$lib/orchestration";
+  import { agentCommitPhase, gitStore } from "$lib/gitState";
+  import { tooltip } from "$lib/tooltip";
+  import { accentVar } from "$lib/settings";
+  import { themeState } from "$lib/ui/themeState.svelte";
 
   /// The row's badge is the board card's badge for the same session --
   /// one agent vocabulary (ui/indicators.ts) rather than the private dot

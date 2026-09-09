@@ -6,7 +6,7 @@
     isHeading,
     suppressesNativeMenu,
     type ContextMenuItem,
-  } from "./contextMenu";
+  } from "$lib/contextMenu";
 
   let menuEl = $state<HTMLElement | null>(null);
   let clamped = $state({ x: 0, y: 0 });

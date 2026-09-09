@@ -18,18 +18,18 @@
 // does exactly this.
 
 import { get, writable, type Readable } from "svelte/store";
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   resolvedAgentFor,
   armFailureDetection,
   handleAgentSessionSpawned,
   setSessionName,
   workspaceRootPath,
-} from "./layoutState";
-import { gavinTrees } from "./gavinState";
-import { kanbanState, cardSessionFor } from "./kanbanState";
-import { revealSession } from "./cardRunActions";
-import { buildRunCommand, provisionalSessionName } from "./cardRun";
+} from "$lib/layoutState";
+import { gavinTrees } from "$lib/gavinState";
+import { kanbanState, cardSessionFor } from "$lib/kanbanState";
+import { revealSession } from "$lib/cardRunActions";
+import { buildRunCommand, provisionalSessionName } from "$lib/cardRun";
 import {
   composeReviewPrompt,
   defaultReviewBase,
@@ -38,9 +38,9 @@ import {
   reviewRulesPath,
   REVIEW_RULES_STARTER,
   type ReviewedCard,
-} from "./codeReview";
-import type { CardView } from "./planBoard";
-import { holdOrQueue, type ReviewIntent } from "./launchQueue";
+} from "$lib/codeReview";
+import type { CardView } from "$lib/planBoard";
+import { holdOrQueue, type ReviewIntent } from "$lib/launchQueue";
 
 /// A review the human has been asked to confirm the base for. Everything
 /// the prompt needs except the base itself, resolved when the dialog

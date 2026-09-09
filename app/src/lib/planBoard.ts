@@ -1,6 +1,6 @@
-import type { Complexity } from "./complexity";
-import type { Board, Column } from "./kanban";
-import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
+import type { Complexity } from "$lib/complexity";
+import type { Board, Column } from "$lib/kanban";
+import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
 
 export interface CardView {
   id: string; // the card file's absolute path — stable identity

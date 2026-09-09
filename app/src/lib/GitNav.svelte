@@ -1,8 +1,8 @@
 <script lang="ts">
   import { get } from "svelte/store";
   import { ChevronDown, ChevronRight, Plus, FileDiff, GitBranch, Cloud, Archive, Trash2, GitMerge, LogIn, History } from "@lucide/svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import { layoutState, setGitViewPrefs } from "./layoutState";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import { layoutState, setGitViewPrefs } from "$lib/layoutState";
   import {
     gitStore,
     selectChanges,
@@ -18,14 +18,14 @@
     stashApply,
     stashDrop,
     dismissError,
-  } from "./gitState";
-  import { changedCount } from "./git";
-  import { tooltip } from "./tooltip";
-  import GitPromptDialog from "./GitPromptDialog.svelte";
-  import GitDiscardDialog from "./GitDiscardDialog.svelte";
-  import SearchInput from "./ui/SearchInput.svelte";
-  import { filterBranches, filterRemotes, filterStashes } from "./gitSearch";
-  import { isSearching } from "./search";
+  } from "$lib/gitState";
+  import { changedCount } from "$lib/git";
+  import { tooltip } from "$lib/tooltip";
+  import GitPromptDialog from "$lib/GitPromptDialog.svelte";
+  import GitDiscardDialog from "$lib/GitDiscardDialog.svelte";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
+  import { filterBranches, filterRemotes, filterStashes } from "$lib/gitSearch";
+  import { isSearching } from "$lib/search";
 
   interface Props {
     workspaceId: string;

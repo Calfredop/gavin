@@ -6,14 +6,14 @@ import {
   REASON_LABEL,
   type AttentionInboxInput,
   type AttentionState,
-} from "./attentionInbox";
-import { PHASE_LABEL } from "./appHub";
-import type { AttentionRow } from "./attentionInbox";
-import type { Page, Workspace } from "./workspace";
-import type { LayoutNode } from "./layout";
-import type { Board } from "./kanban";
-import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
-import type { Orchestration, StepAttention } from "./orchestration";
+} from "$lib/attentionInbox";
+import { PHASE_LABEL } from "$lib/appHub";
+import type { AttentionRow } from "$lib/attentionInbox";
+import type { Page, Workspace } from "$lib/workspace";
+import type { LayoutNode } from "$lib/layout";
+import type { Board } from "$lib/kanban";
+import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
+import type { Orchestration, StepAttention } from "$lib/orchestration";
 
 const NOW = 1_000_000_000;
 const MINUTE = 60_000;

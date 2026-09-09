@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { pushModal, popModal, isTopModal } from "./modalStack";
-  import { windowDragOrClick } from "./windowDrag";
+  import { pushModal, popModal, isTopModal } from "$lib/modalStack";
+  import { windowDragOrClick } from "$lib/windowDrag";
 
   interface Props {
     onClose: () => void;

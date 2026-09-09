@@ -4,7 +4,7 @@
 
 import { writable, get } from "svelte/store";
 import { listen } from "@tauri-apps/api/event";
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   layoutState,
   daemonCompat,
@@ -15,20 +15,20 @@ import {
   handleAgentSessionSpawned,
   switchWorkspaceView,
   switchToSessionInPage,
-} from "./layoutState";
-import { findSessionLocation, hubViewIsOnScreen } from "./workspace";
-import type { AgentCommitRecord, Workspace } from "./workspace";
-import { folderName } from "./paths";
-import { maybeNotifyAgentCommit, type AgentCommitVerdict } from "./notifications";
-import { buildHeadlessCommand, COMMIT_PROMPT } from "./cardRun";
+} from "$lib/layoutState";
+import { findSessionLocation, hubViewIsOnScreen } from "$lib/workspace";
+import type { AgentCommitRecord, Workspace } from "$lib/workspace";
+import { folderName } from "$lib/paths";
+import { maybeNotifyAgentCommit, type AgentCommitVerdict } from "$lib/notifications";
+import { buildHeadlessCommand, COMMIT_PROMPT } from "$lib/cardRun";
 import {
   MAX_AUTO_RESUME_ATTEMPTS,
   autoResumePolicy,
   classifyFailure,
   resumeDelayMs,
-} from "./autoResume";
-import { featureBlockedReason } from "./daemonCompat";
-import { holdOrQueue, type CommitIntent } from "./launchQueue";
+} from "$lib/autoResume";
+import { featureBlockedReason } from "$lib/daemonCompat";
+import { holdOrQueue, type CommitIntent } from "$lib/launchQueue";
 import type {
   ApplyMode,
   Area,
@@ -43,10 +43,10 @@ import type {
   RepoInfo,
   ResetMode,
   StatusResult,
-} from "./git";
-import { LOG_PAGE_SIZE } from "./git";
-import { isGavinOwnPath } from "./gitTracking";
-import { mayForceRemoval } from "./worktreeSweep";
+} from "$lib/git";
+import { LOG_PAGE_SIZE } from "$lib/git";
+import { isGavinOwnPath } from "$lib/gitTracking";
+import { mayForceRemoval } from "$lib/worktreeSweep";
 
 export interface Selection {
   path: string;
@@ -714,7 +714,7 @@ async function maybeRetryCommitRun(
     if (current(workspaceId)?.agentCommit) return;
     void commitViaAgent(workspaceId, spent + 1).then((ok) => {
       if (!ok) return;
-      void import("./autoResumeNotify").then(({ sendAutoResumeNotice }) =>
+      void import("$lib/autoResumeNotify").then(({ sendAutoResumeNotice }) =>
         sendAutoResumeNotice(`Commit via agent broke and was retried automatically — ${said}`)
       );
     });

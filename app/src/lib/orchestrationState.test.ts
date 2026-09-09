@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { get, writable, type Writable } from "svelte/store";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   getOrchestration: vi.fn(),
   setOrchestration: vi.fn(),
   setRailRun: vi.fn(),
@@ -46,7 +46,7 @@ const agentMock = vi.hoisted(() =>
   }))
 );
 
-vi.mock("./layoutState", () => ({
+vi.mock("$lib/layoutState", () => ({
   // A REAL store: tick() derives the set of LIVE session ids from it, so
   // a test that needs a running step's session to still exist has to be
   // able to put a page holding it in here.
@@ -90,7 +90,7 @@ vi.mock("./layoutState", () => ({
 // board, so the rail-control tests exercise arming without also running
 // the scheduler. The drop-onto-a-running-stage tests set a board into it
 // precisely because they need the scheduler to run.
-vi.mock("./kanbanState", () => ({
+vi.mock("$lib/kanbanState", () => ({
   kanbanState: writable<Record<string, unknown>>({}),
   linkCardSessionAction: vi.fn(),
   // The real lookup rather than a stub: a resume READS the binding it is
@@ -110,7 +110,7 @@ const cardStatus = vi.hoisted(() => ({ a: "To Do" }));
 // Cards a single test needs and nobody else does -- a plan with a nested
 // task under it, for the completion cascade. Reset in beforeEach.
 const extraPlans = vi.hoisted(() => ({ list: [] as Record<string, unknown>[] }));
-vi.mock("./gavinState", () => ({
+vi.mock("$lib/gavinState", () => ({
   gavinTrees: {
     subscribe: (fn: (v: unknown) => void) => (
       fn({
@@ -180,7 +180,7 @@ vi.mock("@tauri-apps/api/event", () => ({
     return () => tauriEvents.handlers.delete(name);
   },
 }));
-vi.mock("./dialog", () => ({
+vi.mock("$lib/dialog", () => ({
   askConfirm: vi.fn(),
   askConfirmChecked: vi.fn(),
 }));
@@ -218,18 +218,18 @@ const gateMock = vi.hoisted(() => {
   };
 });
 
-vi.mock("./launchQueue", () => ({
+vi.mock("$lib/launchQueue", () => ({
   holdOrQueue: vi.fn(() => null),
   mayLaunch: () => gateMock.allowed.value,
   launchBlockedReason: () => (gateMock.allowed.value ? null : "Waiting for a slot"),
   launchHolding: gateMock.launchHolding,
 }));
 
-vi.mock("./notifications", () => ({
+vi.mock("$lib/notifications", () => ({
   setRailNotificationVoice: vi.fn(),
   maybeNotifyReviewWait: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("./gitState", () => {
+vi.mock("$lib/gitState", () => {
   // Settable, not a constant: executeSwitchBranch reads the REFRESHED
   // refs back out of this store to decide whether the checkout actually
   // caught up, so a test has to be able to move it.
@@ -252,16 +252,16 @@ vi.mock("./gitState", () => {
   };
 });
 
-import * as backend from "./backend";
-import * as gitStateModule from "./gitState";
-import * as gavinState from "./gavinState";
-import * as layoutStateModule from "./layoutState";
-import * as kanbanStateModule from "./kanbanState";
-import { toolRecords, __resetForTesting as toolsResetForTesting } from "./toolsState";
-import { prReports, __resetForTesting as prResetForTesting } from "./prState";
-import { prKey } from "./pullRequest";
-import type { PrReport } from "./pullRequest";
-import { maybeNotifyReviewWait } from "./notifications";
+import * as backend from "$lib/backend";
+import * as gitStateModule from "$lib/gitState";
+import * as gavinState from "$lib/gavinState";
+import * as layoutStateModule from "$lib/layoutState";
+import * as kanbanStateModule from "$lib/kanbanState";
+import { toolRecords, __resetForTesting as toolsResetForTesting } from "$lib/toolsState";
+import { prReports, __resetForTesting as prResetForTesting } from "$lib/prState";
+import { prKey } from "$lib/pullRequest";
+import type { PrReport } from "$lib/pullRequest";
+import { maybeNotifyReviewWait } from "$lib/notifications";
 import {
   orchestrations,
   fetchOrchestration,
@@ -300,12 +300,12 @@ import {
   addTemplateAsStageAction,
   addTemplateToStageAction,
   __resetForTesting,
-} from "./orchestrationState";
-import { emptyOrchestration, addStep, findStage, stageMode } from "./orchestration";
-import { UNREVIEWED_STALL } from "./cardReview";
-import { askConfirmChecked } from "./dialog";
-import type { Orchestration, Rail, Stage } from "./orchestration";
-import type { GroupTemplate } from "./orchestrationGroups";
+} from "$lib/orchestrationState";
+import { emptyOrchestration, addStep, findStage, stageMode } from "$lib/orchestration";
+import { UNREVIEWED_STALL } from "$lib/cardReview";
+import { askConfirmChecked } from "$lib/dialog";
+import type { Orchestration, Rail, Stage } from "$lib/orchestration";
+import type { GroupTemplate } from "$lib/orchestrationGroups";
 
 function rail(id: string): Rail {
   return { id, name: id, position: 0, worktreePath: null, pageId: null, stages: [] };

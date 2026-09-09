@@ -12,15 +12,15 @@
 
   import { get } from "svelte/store";
   import { Trash2, ChevronDown } from "@lucide/svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import { contextMenu, openMenuUnder, type ContextMenuEntry } from "./contextMenu";
-  import { tooltip } from "./tooltip";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import { contextMenu, openMenuUnder, type ContextMenuEntry } from "$lib/contextMenu";
+  import { tooltip } from "$lib/tooltip";
   import {
     ARCHIVE_DELETE_TITLE,
     archiveDeleteEntries,
     type AgeBucket,
-  } from "./archiveDelete";
-  import type { CardView } from "./planBoard";
+  } from "$lib/archiveDelete";
+  import type { CardView } from "$lib/planBoard";
 
   interface Props {
     /// The archived cards the grid is showing. What the age rows measure

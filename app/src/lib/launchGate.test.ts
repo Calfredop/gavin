@@ -10,7 +10,7 @@ import {
   launchVerdict,
   mayDrain,
   type GateInput,
-} from "./launchGate";
+} from "$lib/launchGate";
 
 const GB = 1024 ** 3;
 const NOW = 1_700_000_000_000;

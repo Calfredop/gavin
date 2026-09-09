@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable } from "svelte/store";
-import type { BestOfNRun, CandidatePlan } from "./bestOfN";
-import type { CardView } from "./planBoard";
+import type { BestOfNRun, CandidatePlan } from "$lib/bestOfN";
+import type { CardView } from "$lib/planBoard";
 
 // The order every step happens in is what this file is really testing --
 // a run creates real folders and real processes, and the order is what
@@ -10,7 +10,7 @@ const trace: string[] = [];
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   setPlanFrontmatterField: vi.fn(async (path: string) => {
     trace.push("status");
     return path;
@@ -29,7 +29,7 @@ const createTiledPage = vi.fn(async (_ws: string, _name: string, specs: { cwd: s
   return { pageId: "page-1", sessionIds: specs.map((_, i) => `s${i + 1}`) };
 });
 
-vi.mock("./layoutState", () => ({
+vi.mock("$lib/layoutState", () => ({
   layoutState: writable({ workspaces: [], sessionStatusById: {}, interruptedSessionIds: new Set(), failureReasonById: {} }),
   createTiledPage: (...args: Parameters<typeof createTiledPage>) => createTiledPage(...args),
   candidateAgentFor: vi.fn((_ws: string, c: { profileId: string; model: string }) => ({
@@ -65,7 +65,7 @@ const discardWorktrees = vi.fn(async (_ws: string, entries: { path: string }[], 
   trace.push(`discard:${entries.map((e) => e.path).join(",")}:${deleteBranches ? "branches" : "keep"}`);
   return true;
 });
-vi.mock("./gitState", () => ({
+vi.mock("$lib/gitState", () => ({
   forkWorktree: (...a: Parameters<typeof forkWorktree>) => forkWorktree(...a),
   discardWorktrees: (...a: Parameters<typeof discardWorktrees>) => discardWorktrees(...a),
 }));
@@ -73,21 +73,21 @@ vi.mock("./gitState", () => ({
 const linkCardSessionAction = vi.fn(async () => {
   trace.push("bind");
 });
-vi.mock("./kanbanState", () => ({
+vi.mock("$lib/kanbanState", () => ({
   kanbanState: writable({ "ws-1": {} }),
   cardSessionFor: vi.fn(() => null),
   linkCardSessionAction: (...a: unknown[]) => linkCardSessionAction(...(a as [])),
 }));
 
-vi.mock("./columnRunAction", () => ({ cardSessionState: vi.fn(() => "none") }));
-vi.mock("./cardRunActions", () => ({
+vi.mock("$lib/columnRunAction", () => ({ cardSessionState: vi.fn(() => "none") }));
+vi.mock("$lib/cardRunActions", () => ({
   resolveAttachmentsForRun: vi.fn(async () => ({ paths: [], withheld: [], statuses: [] })),
 }));
 // The first-Run review, as the launcher reaches it. A real one raises
 // the app's dialog and waits; this is the seam the answer is driven
 // through, and it says yes unless a test says otherwise.
-vi.mock("./cardReviewActions", () => ({ ensureCardReviewed: vi.fn(async () => true) }));
-vi.mock("./gavinState", () => ({
+vi.mock("$lib/cardReviewActions", () => ({ ensureCardReviewed: vi.fn(async () => true) }));
+vi.mock("$lib/gavinState", () => ({
   gavinTrees: writable({ "ws-1": { rootPath: "/repos/gavin" } }),
   // The store, not a `worktreeSetup` call: the launch reads the same
   // copy workspace trust hashed, so a fresher read cannot slip lines
@@ -96,20 +96,20 @@ vi.mock("./gavinState", () => ({
   patchPlanField: vi.fn(),
   patchPlanPath: vi.fn(),
 }));
-vi.mock("./tabActions", () => ({
+vi.mock("$lib/tabActions", () => ({
   closeTabsNow: vi.fn(async (ids: string[]) => {
     trace.push(`close:${ids.join(",")}`);
   }),
 }));
 
 const askConfirmChecked = vi.fn(async () => ({ confirmed: true, checked: true }));
-vi.mock("./dialog", () => ({ askConfirmChecked: (...a: unknown[]) => askConfirmChecked(...(a as [])) }));
+vi.mock("$lib/dialog", () => ({ askConfirmChecked: (...a: unknown[]) => askConfirmChecked(...(a as [])) }));
 
-const { startBestOfN, pickCandidate, abandonRun } = await import("./bestOfNActions");
-const { bestOfNRuns } = await import("./bestOfNState");
-const backend = await import("./backend");
-const layoutState = await import("./layoutState");
-const columnRunAction = await import("./columnRunAction");
+const { startBestOfN, pickCandidate, abandonRun } = await import("$lib/bestOfNActions");
+const { bestOfNRuns } = await import("$lib/bestOfNState");
+const backend = await import("$lib/backend");
+const layoutState = await import("$lib/layoutState");
+const columnRunAction = await import("$lib/columnRunAction");
 
 const CARD: CardView = {
   id: "/repos/gavin/.gavin-root/plans/auth.md",

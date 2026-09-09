@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // Two CSS contracts the Review tab depends on, neither of which any
 // other suite can see: a component <style> is compiled away, vite hands

@@ -11,12 +11,12 @@
 // up on mount (or on the spot, if it is already showing) and clears it.
 
 import { writable } from "svelte/store";
-import type { Board } from "./kanban";
-import type { GavinTree } from "./gavin";
-import type { Orchestration } from "./orchestration";
-import { cardIndex } from "./orchestration";
-import type { PageTabRow } from "./sidebarSummary";
-import { switchWorkspace, switchWorkspaceView } from "./layoutState";
+import type { Board } from "$lib/kanban";
+import type { GavinTree } from "$lib/gavin";
+import type { Orchestration } from "$lib/orchestration";
+import { cardIndex } from "$lib/orchestration";
+import type { PageTabRow } from "$lib/sidebarSummary";
+import { switchWorkspace, switchWorkspaceView } from "$lib/layoutState";
 
 /// Which hub tab a card is best seen in: a card on a rail belongs to the
 /// run that owns it, everything else to the board.

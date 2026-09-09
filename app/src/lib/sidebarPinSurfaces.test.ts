@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // A pin is one rule expressed in three places that nothing links: the
 // ordering helpers (workspace.ts), the menu that sets it (sidebarMenu.ts)

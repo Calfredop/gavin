@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { filterBoard, cardMatches, AUTO_KEY_PREFIX } from "./boardSearch";
-import type { AutoColumn, CardView, DisplayColumn } from "./planBoard";
-import type { Column } from "./kanban";
+import { filterBoard, cardMatches, AUTO_KEY_PREFIX } from "$lib/boardSearch";
+import type { AutoColumn, CardView, DisplayColumn } from "$lib/planBoard";
+import type { Column } from "$lib/kanban";
 
 function card(title: string, over: Partial<CardView> = {}): CardView {
   const fileName = `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.md`;

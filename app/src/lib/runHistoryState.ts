@@ -17,8 +17,8 @@
 // stored value is never identity-equal to the one that was put in.
 
 import { get, writable } from "svelte/store";
-import * as backend from "./backend";
-import type { CardRun, TokenReport } from "./runHistory";
+import * as backend from "$lib/backend";
+import type { CardRun, TokenReport } from "$lib/runHistory";
 
 export interface RunHistoryView {
   runs: CardRun[];

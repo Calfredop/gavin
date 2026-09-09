@@ -1,28 +1,28 @@
 <script lang="ts">
-  import { CREATABLE_GROUPS } from "./planExplorer";
+  import { CREATABLE_GROUPS } from "$lib/planExplorer";
   import type {
     CreatableGroup,
     ExplorerContextNode,
     ExplorerFile,
     ExplorerGroupNode,
-  } from "./planExplorer";
+  } from "$lib/planExplorer";
   // Icon names are a COMPILE error when wrong (verified against the
   // installed @lucide/svelte): Columns2 is the current name for the old
   // SplitSquareHorizontal.
   import { FileText, TriangleAlert, ChevronRight, ChevronDown, Plus, Columns2, X, Archive } from "@lucide/svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import StatusBadge from "./ui/StatusBadge.svelte";
-  import { priorityIndicator } from "./ui/indicators";
-  import { openPathExternally } from "./backend";
-  import { showAlert } from "./dialog";
-  import { openContextMenuFromEvent } from "./contextMenu";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import { priorityIndicator } from "$lib/ui/indicators";
+  import { openPathExternally } from "$lib/backend";
+  import { showAlert } from "$lib/dialog";
+  import { openContextMenuFromEvent } from "$lib/contextMenu";
   import {
     contextRowMenuItems,
     fileMenuItems,
     groupRowMenuItems,
     type TreeMenuCallbacks,
     type TreeMenuItem,
-  } from "./planTreeMenu";
+  } from "$lib/planTreeMenu";
 
   interface Props {
     contexts: ExplorerContextNode[];

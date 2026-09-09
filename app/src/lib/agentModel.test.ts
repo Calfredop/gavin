@@ -5,7 +5,7 @@ import {
   mergeDiscoveredModels,
   modelOptions,
   CUSTOM_MODEL,
-} from "./agentModel";
+} from "$lib/agentModel";
 
 describe("commandSpecifiesModel", () => {
   it("finds the flag as a whole token, in every spelling", () => {

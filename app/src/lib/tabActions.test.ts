@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("./confirmClose", () => ({ confirmTabsClose: vi.fn() }));
-vi.mock("./layoutState", () => ({ closeSession: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("$lib/confirmClose", () => ({ confirmTabsClose: vi.fn() }));
+vi.mock("$lib/layoutState", () => ({ closeSession: vi.fn().mockResolvedValue(undefined) }));
 
-import { confirmTabsClose } from "./confirmClose";
-import { closeSession } from "./layoutState";
-import { closeTabs } from "./tabActions";
+import { confirmTabsClose } from "$lib/confirmClose";
+import { closeSession } from "$lib/layoutState";
+import { closeTabs } from "$lib/tabActions";
 
 beforeEach(() => {
   vi.mocked(confirmTabsClose).mockReset();

@@ -6,7 +6,7 @@ import {
   cardTabLabel,
   isAbsolutePath,
   toPosixPath,
-} from "./paths";
+} from "$lib/paths";
 
 describe("folderName", () => {
   it("returns the last path segment", () => {

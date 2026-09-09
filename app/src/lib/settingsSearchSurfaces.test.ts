@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { source } from "./sources";
+import { source } from "$lib/sources";
 
 // A static pre-flight over the two settings panels (SettingsHubView.svelte,
 // GlobalSettingsModal.svelte): the search box works by hiding whichever
@@ -53,7 +53,7 @@ function declaredSections(text: string): { id: string; block: string }[] {
 function checkFile(file: string): void {
   const text = source(file);
   expect(text, `${file} must drive its search box from settingsSearch.ts`).toMatch(
-    /import \{ searchSettings, type SettingsSection \} from "\.\/settingsSearch"/
+    /import \{ searchSettings, type SettingsSection \} from "\$lib\/(?:[\w.-]+\/)*settingsSearch"/
   );
   expect(text, `${file} must offer the shared search box`).toMatch(/<SearchInput[\s\S]{0,200}class="settings-search"/);
 

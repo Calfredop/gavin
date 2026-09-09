@@ -23,8 +23,8 @@
 // (a card menu, a rail's scheduler, a confirm dialog, the settings
 // panel) asks it the same way and gets the same sentence back.
 
-import type { MemoryPressure } from "./memory";
-import { formatGbPair } from "./memory";
+import type { MemoryPressure } from "$lib/memory";
+import { formatGbPair } from "$lib/memory";
 
 /// The app-wide launch wall, as `config.json` stores it.
 ///

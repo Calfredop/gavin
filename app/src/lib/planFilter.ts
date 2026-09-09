@@ -12,11 +12,11 @@
 // different: it narrows which CONTEXT NODES appear at all, docs and
 // specs included, since it answers "where" rather than "what".
 
-import { matchesFields, queryTokens } from "./search";
-import { slugStatus } from "./planBoard";
-import { isCardGroup } from "./planExplorer";
-import type { ExplorerContextNode, ExplorerFile, ExplorerGroupNode } from "./planExplorer";
-import type { Orchestration } from "./orchestration";
+import { matchesFields, queryTokens } from "$lib/search";
+import { slugStatus } from "$lib/planBoard";
+import { isCardGroup } from "$lib/planExplorer";
+import type { ExplorerContextNode, ExplorerFile, ExplorerGroupNode } from "$lib/planExplorer";
+import type { Orchestration } from "$lib/orchestration";
 
 /// The "no facet set" sentinel for both dropdowns.
 export const ANY = "";

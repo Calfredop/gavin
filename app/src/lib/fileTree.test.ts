@@ -32,7 +32,7 @@ import {
   withError,
   type DirEntry,
   type FileTreeState,
-} from "./fileTree";
+} from "$lib/fileTree";
 
 const ROOT = "/repo";
 

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import Modal from "./Modal.svelte";
-  import ConfigTrustNotice from "./ConfigTrustNotice.svelte";
+  import Modal from "$lib/Modal.svelte";
+  import ConfigTrustNotice from "$lib/ConfigTrustNotice.svelte";
   import {
     gitStore,
     ensureGitView,
@@ -8,12 +8,12 @@
     refresh as refreshGit,
     switchWorktree,
     rootPathOf,
-  } from "./gitState";
-  import { gavinTrees, worktreeSetups } from "./gavinState";
-  import { configTrusts } from "./layoutState";
-  import { showAlert } from "./dialog";
-  import { defaultWorktreePath, validateBranchName } from "./git";
-  import { setupPlan, setupNotice } from "./worktreeSetup";
+  } from "$lib/gitState";
+  import { gavinTrees, worktreeSetups } from "$lib/gavinState";
+  import { configTrusts } from "$lib/layoutState";
+  import { showAlert } from "$lib/dialog";
+  import { defaultWorktreePath, validateBranchName } from "$lib/git";
+  import { setupPlan, setupNotice } from "$lib/worktreeSetup";
 
   interface Props {
     workspaceId: string;

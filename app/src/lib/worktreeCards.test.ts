@@ -5,8 +5,8 @@ import {
   decoyEditedSteps,
   mirrorCardPath,
   relativeTo,
-} from "./worktreeCards";
-import type { Rail } from "./orchestration";
+} from "$lib/worktreeCards";
+import type { Rail } from "$lib/orchestration";
 
 const ROOT = "/ws";
 const WT = "/wt/rail-a";

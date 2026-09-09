@@ -1,17 +1,17 @@
 // Builds a pane tab's right-click menu. Pure: state in, entries out;
 // side effects go through store actions (mockable) or the hooks.
-import { openPathExternally, revealPathExternally } from "./backend";
+import { openPathExternally, revealPathExternally } from "$lib/backend";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { setTabPinned, splitPane, closeSession, setSessionRead } from "./layoutState";
-import { closeTabs } from "./tabActions";
-import { confirmTabClose } from "./confirmClose";
-import { bulkCloseTargets } from "./layout";
-import { bestOfNRuns, runForSessionAnywhere } from "./bestOfNState";
-import { pickCandidate } from "./bestOfNActions";
+import { setTabPinned, splitPane, closeSession, setSessionRead } from "$lib/layoutState";
+import { closeTabs } from "$lib/tabActions";
+import { confirmTabClose } from "$lib/confirmClose";
+import { bulkCloseTargets } from "$lib/layout";
+import { bestOfNRuns, runForSessionAnywhere } from "$lib/bestOfNState";
+import { pickCandidate } from "$lib/bestOfNActions";
 import { get } from "svelte/store";
-import { readEntryApplies, readEntryLabel } from "./sessionRead";
-import type { SessionStatus } from "./notifications";
-import type { ContextMenuEntry } from "./contextMenu";
+import { readEntryApplies, readEntryLabel } from "$lib/sessionRead";
+import type { SessionStatus } from "$lib/notifications";
+import type { ContextMenuEntry } from "$lib/contextMenu";
 
 export interface TabMenuContext {
   tabId: string;

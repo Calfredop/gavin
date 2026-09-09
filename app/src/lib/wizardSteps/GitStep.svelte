@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { layoutState, markGitTrackingAsked } from "./../layoutState";
-  import * as backend from "./../backend";
-  import ConfirmPrompt from "./../ConfirmPrompt.svelte";
+  import { layoutState, markGitTrackingAsked } from "$lib/layoutState";
+  import * as backend from "$lib/backend";
+  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import {
     canToggleTracking,
     needsUntrackConfirm,
@@ -9,7 +9,7 @@
     untrackConfirm,
     type ConfirmCopy,
     type GavinTracking,
-  } from "./../gitTracking";
+  } from "$lib/gitTracking";
 
   interface Props {
     workspaceId: string;

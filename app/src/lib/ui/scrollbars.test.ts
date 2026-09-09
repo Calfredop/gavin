@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
-import { xtermTheme } from "./terminalTheme";
-import { svelteSources } from "../sources";
+import { xtermTheme } from "$lib/ui/terminalTheme";
+import { svelteSources } from "$lib/sources";
 
 // theme.css gives every scroller the app's own grey handle with the two
 // STANDARD properties, `scrollbar-color` and `scrollbar-width`, and the

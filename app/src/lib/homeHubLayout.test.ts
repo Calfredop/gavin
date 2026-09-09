@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { DEFAULT_AGENT_SHARE, DIVIDER_PX, homeGridColumns } from "./homeSplit";
-import { svelteSources } from "./sources";
+import { DEFAULT_AGENT_SHARE, DIVIDER_PX, homeGridColumns } from "$lib/homeSplit";
+import { svelteSources } from "$lib/sources";
 
 // Three facts about the home tab that live entirely in its markup and
 // its <style> block, and that no other suite can see: a component's CSS

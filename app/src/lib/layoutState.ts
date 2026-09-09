@@ -1,14 +1,14 @@
 import { writable, derived, get, type Writable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { askConfirm, showAlert } from "./dialog";
-import type { LayoutNode } from "./layout";
-import * as layout from "./layout";
-import * as backend from "./backend";
-import { setTempRoot } from "./orchestrationLoop";
-import type { PauseCycle } from "./agentPause";
-import * as terminalRegistry from "./terminalRegistry";
-import { hotState } from "./hotState";
-import * as workspace from "./workspace";
+import { askConfirm, showAlert } from "$lib/dialog";
+import type { LayoutNode } from "$lib/layout";
+import * as layout from "$lib/layout";
+import * as backend from "$lib/backend";
+import { setTempRoot } from "$lib/orchestrationLoop";
+import type { PauseCycle } from "$lib/agentPause";
+import * as terminalRegistry from "$lib/terminalRegistry";
+import { hotState } from "$lib/hotState";
+import * as workspace from "$lib/workspace";
 import type {
   Workspace,
   WorkspacesData,
@@ -17,45 +17,45 @@ import type {
   DevelopingCardRecord,
   OrchestrationAgentRecord,
   RemovedWorkspace,
-} from "./workspace";
-import { sessionLabel } from "./paths";
-import { buildRunCommand, mintConversationId, noPromptReason } from "./cardRun";
-import { workspaceIdForSession } from "./workspace";
-import { maybeNotifyStatusChange, parseSessionStatus, type SessionStatus } from "./notifications";
-import { initGavinListeners, watchRootedWorkspaces, gavinTrees, worktreeSetups } from "./gavinState";
-import { followRenamedContext } from "./planExplorer";
-import { retargetPath } from "./fileTree";
+} from "$lib/workspace";
+import { sessionLabel } from "$lib/paths";
+import { buildRunCommand, mintConversationId, noPromptReason } from "$lib/cardRun";
+import { workspaceIdForSession } from "$lib/workspace";
+import { maybeNotifyStatusChange, parseSessionStatus, type SessionStatus } from "$lib/notifications";
+import { initGavinListeners, watchRootedWorkspaces, gavinTrees, worktreeSetups } from "$lib/gavinState";
+import { followRenamedContext } from "$lib/planExplorer";
+import { retargetPath } from "$lib/fileTree";
 import {
   normalizeColor,
   resolveAgentConfig,
   type AgentProfileInfo,
   type McpFormatInfo,
-} from "./settings";
-import { mergeDiscoveredModels } from "./agentModel";
-import { normalizeTerminalFontSize, resolveTerminalFontSize } from "./terminalFont";
-import { normalizeAutoCommit, resolveAutoCommit } from "./autoCommit";
-import { normalizeGitTracking } from "./gitTracking";
-import type { AgentConfig, BoardTab, CardTab, CardTabView, GavinTree } from "./gavin";
-import { themeState } from "./ui/themeState.svelte";
-import { featureBlockedReason, restartConfirmLines, type DaemonCompat } from "./daemonCompat";
-import { confirmDestructive, DAEMON_SUBJECT } from "./confirmGate";
-import type { OrphanProcess } from "./orphan";
-import type { StatusSince } from "./attentionInbox";
+} from "$lib/settings";
+import { mergeDiscoveredModels } from "$lib/agentModel";
+import { normalizeTerminalFontSize, resolveTerminalFontSize } from "$lib/terminalFont";
+import { normalizeAutoCommit, resolveAutoCommit } from "$lib/autoCommit";
+import { normalizeGitTracking } from "$lib/gitTracking";
+import type { AgentConfig, BoardTab, CardTab, CardTabView, GavinTree } from "$lib/gavin";
+import { themeState } from "$lib/ui/themeState.svelte";
+import { featureBlockedReason, restartConfirmLines, type DaemonCompat } from "$lib/daemonCompat";
+import { confirmDestructive, DAEMON_SUBJECT } from "$lib/confirmGate";
+import type { OrphanProcess } from "$lib/orphan";
+import type { StatusSince } from "$lib/attentionInbox";
 import {
   attentionStatuses,
   clearSessionRead,
   withSessionRead,
   type ReadSessions,
-} from "./sessionRead";
-import { indexQueued, type QueuedInput } from "./queuedInput";
-import { candidateAgentConfig, type Candidate } from "./bestOfN";
+} from "$lib/sessionRead";
+import { indexQueued, type QueuedInput } from "$lib/queuedInput";
+import { candidateAgentConfig, type Candidate } from "$lib/bestOfN";
 import {
   agentConfigWithAttribution,
   EMPTY_AGENT_DEFAULTS,
   type AgentDefaults,
   type ComplexityTable,
-} from "./complexity";
-import { cardAgentEntry, type CardAgentFields } from "./cardAgent";
+} from "$lib/complexity";
+import { cardAgentEntry, type CardAgentFields } from "$lib/cardAgent";
 import {
   configTrusted,
   executionKeys,
@@ -63,27 +63,27 @@ import {
   hasExecutionKeys,
   trustedAgentConfig,
   type ExecutionKeys,
-} from "./workspaceTrust";
+} from "$lib/workspaceTrust";
 import {
   cardContentDigest,
   cardContentReviewed,
   normalizeRequireReview,
   resolveRequireReview,
   type CardContent,
-} from "./cardReview";
-import type { McpForeignChoice } from "./mcpServerTrust";
+} from "$lib/cardReview";
+import type { McpForeignChoice } from "$lib/mcpServerTrust";
 import {
   activeWorkspaceForWindow,
   isInAnotherWindow,
   nextActiveAfterHandoff,
   windowAction,
-} from "./appWindow";
+} from "$lib/appWindow";
 import {
   currentWindowLabel,
   currentWorkspaceWindows,
   initWorkspaceWindows,
   isMainWindow,
-} from "./appWindowState";
+} from "$lib/appWindowState";
 
 export type { SessionStatus };
 
@@ -1254,13 +1254,13 @@ export async function bootstrap(): Promise<void> {
   // module (for resolvedAgentFor and createSessionOnPage), so a static
   // import here would close a cycle. By the time bootstrap runs, this
   // module is fully evaluated and the load is safe.
-  const { initOrchestrationListeners } = await import("./orchestrationState");
+  const { initOrchestrationListeners } = await import("$lib/orchestrationState");
   unlisteners.push(await initOrchestrationListeners());
   // Same dynamic-import reason as above: agentPauseState reads
   // resolvedAgentFor from this module. Started here rather than from a
   // component, because a pause whose clock only advances while one tab is
   // mounted is the bug that made rails tick only on their own tab.
-  const { startPauseClock } = await import("./agentPauseState");
+  const { startPauseClock } = await import("$lib/agentPauseState");
   unlisteners.push(startPauseClock());
   // The memory probe, on the same terms and for a sharper version of the
   // same reason: the launch gate reads its sample at the moment somebody
@@ -1268,12 +1268,12 @@ export async function bootstrap(): Promise<void> {
   // different workspace -- and a queue whose poll has stalled is work
   // that silently never starts. Dynamically imported for the cycle
   // reason above (memoryState reads resolvedAgentFor from this module).
-  const { startMemoryPoll } = await import("./memoryState");
+  const { startMemoryPoll } = await import("$lib/memoryState");
   unlisteners.push(startMemoryPoll());
   // ...and the queue that drains behind the gate the probe feeds. After
   // the poller, so its first drain reads a sample rather than a null,
   // and module-level for the same reason both of those are.
-  const { startLaunchQueue } = await import("./launchQueue");
+  const { startLaunchQueue } = await import("$lib/launchQueue");
   unlisteners.push(startLaunchQueue());
   // ...and the one thing the wall may END: an idle agent of a done card,
   // while memory is short. After the queue, because its closes are what
@@ -1281,14 +1281,14 @@ export async function bootstrap(): Promise<void> {
   // reason of all -- the day it matters is the day the human is on
   // another workspace and the machine is swapping. Dynamically imported
   // for the cycle reason above (it closes through this module).
-  const { startDoneSessionReclaim } = await import("./doneSessionReclaimState");
+  const { startDoneSessionReclaim } = await import("$lib/doneSessionReclaimState");
   unlisteners.push(startDoneSessionReclaim());
   // And the same again for the develop records: a "Develop into a plan…"
   // run that finishes while the human is on another tab still has to give
   // the card back, and this watch's first pass is also what ADOPTS a run
   // that outlived the last window -- the records load with the
   // workspaces. Dynamically imported for the cycle reason above.
-  const { startDevelopingCardsWatch } = await import("./developingCardsState");
+  const { startDevelopingCardsWatch } = await import("$lib/developingCardsState");
   unlisteners.push(startDevelopingCardsWatch());
   // And once more for the Tools tab's two watchers. The daemon closes a
   // shell tool's run by itself and pushes nothing, and an agent tool's
@@ -1296,7 +1296,7 @@ export async function bootstrap(): Promise<void> {
   // owned by the tab, because a tool finishing while the human is
   // looking at its terminal is the ordinary case, not the exception.
   // Dynamically imported for the cycle reason above.
-  const { initWorkspaceToolListeners } = await import("./workspaceToolsActions");
+  const { initWorkspaceToolListeners } = await import("$lib/workspaceToolsActions");
   unlisteners.push(initWorkspaceToolListeners());
   // The single quiet update check, started here for the same reason as
   // the others: it belongs to the app rather than to whichever tab is
@@ -1304,7 +1304,7 @@ export async function bootstrap(): Promise<void> {
   // already looking at Settings would be announcing itself to the one
   // person who did not need telling. It holds no timer -- one check per
   // bootstrap, and everything else is the button in Settings.
-  const { startUpdateWatch } = await import("./updatesState");
+  const { startUpdateWatch } = await import("$lib/updatesState");
   unlisteners.push(startUpdateWatch());
   unlisteners.push(
     await listen<[string, string, string, string]>("agent-session-spawned", (event) => {
@@ -1571,9 +1571,9 @@ async function restoreRemovedWorkspace(
   // close a cycle. The other two ride along rather than being imported
   // twice over.
   const [{ fetchBoard }, { fetchOrchestration }, { fetchTools }] = await Promise.all([
-    import("./kanbanState"),
-    import("./orchestrationState"),
-    import("./toolsState"),
+    import("$lib/kanbanState"),
+    import("$lib/orchestrationState"),
+    import("$lib/toolsState"),
   ]);
   // These are the rows the tombstone existed to reach: the board with
   // its columns and labels, the rails, and the workspace's own tools.

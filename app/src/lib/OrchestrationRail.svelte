@@ -16,23 +16,23 @@
     PanelsTopLeft,
     Zap,
   } from "@lucide/svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import { resumeNoteFor } from "./autoResume";
-  import { resumeTrail } from "./autoResumeState";
-  import StatusBadge from "./ui/StatusBadge.svelte";
-  import { tooltip } from "./tooltip";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import { resumeNoteFor } from "$lib/autoResume";
+  import { resumeTrail } from "$lib/autoResumeState";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import { tooltip } from "$lib/tooltip";
   import {
     agentQueuedIndicator,
     attentionIndicator,
     queuedBadgeText,
     railIndicator,
     railRetryIndicator,
-  } from "./ui/indicators";
-  import { launchGateVerdict } from "./launchQueue";
-  import OrchestrationStepChip from "./OrchestrationStepChip.svelte";
-  import OrchestrationStepCard from "./OrchestrationStepCard.svelte";
-  import type { Label } from "./kanban";
-  import type { CardView, PlacedCardView } from "./planBoard";
+  } from "$lib/ui/indicators";
+  import { launchGateVerdict } from "$lib/launchQueue";
+  import OrchestrationStepChip from "$lib/OrchestrationStepChip.svelte";
+  import OrchestrationStepCard from "$lib/OrchestrationStepCard.svelte";
+  import type { Label } from "$lib/kanban";
+  import type { CardView, PlacedCardView } from "$lib/planBoard";
   import type {
     CardEntry,
     NumberedConflict,
@@ -43,20 +43,20 @@
     Step,
     StepAttention,
     StepState,
-  } from "./orchestration";
+  } from "$lib/orchestration";
   import {
     stepParams,
     attentionTip,
     railAttention,
     railTriggerVerdict,
     runningStageId,
-  } from "./orchestration";
-  import { railRetryLabel } from "./orchestrationLoop";
-  import { prChips } from "./pullRequest";
-  import { prPollTick, prReportFor, prReports, requestPr } from "./prState";
-  import { findTool } from "./orchestrationTools";
-  import type { OrchestrationAgentAction } from "./orchestrationAgent";
-  import type { Tool } from "./orchestrationTools";
+  } from "$lib/orchestration";
+  import { railRetryLabel } from "$lib/orchestrationLoop";
+  import { prChips } from "$lib/pullRequest";
+  import { prPollTick, prReportFor, prReports, requestPr } from "$lib/prState";
+  import { findTool } from "$lib/orchestrationTools";
+  import type { OrchestrationAgentAction } from "$lib/orchestrationAgent";
+  import type { Tool } from "$lib/orchestrationTools";
   import {
     railStateOf,
     stepStateOf,
@@ -69,11 +69,11 @@
     stageMode,
     isGroup,
     stageLabel,
-  } from "./orchestration";
-  import { highlightedConflict } from "./orchestrationState";
-  import { orchDragState } from "./orchestrationDrag";
-  import { openContextMenuFromEvent } from "./contextMenu";
-  import { railBindChip, type RailBindChip, type RailBindTab } from "./railBind";
+  } from "$lib/orchestration";
+  import { highlightedConflict } from "$lib/orchestrationState";
+  import { orchDragState } from "$lib/orchestrationDrag";
+  import { openContextMenuFromEvent } from "$lib/contextMenu";
+  import { railBindChip, type RailBindChip, type RailBindTab } from "$lib/railBind";
 
   interface Props {
     rail: Rail;

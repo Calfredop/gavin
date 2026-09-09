@@ -1,7 +1,7 @@
-import type { PauseCycle } from "./agentPause";
-import type { ComplexityTable } from "./complexity";
-import type { LayoutNode } from "./layout";
-import { allSessionIds, findLeafPath } from "./layout";
+import type { PauseCycle } from "$lib/agentPause";
+import type { ComplexityTable } from "$lib/complexity";
+import type { LayoutNode } from "$lib/layout";
+import { allSessionIds, findLeafPath } from "$lib/layout";
 
 export interface Page {
   id: string;

@@ -7,8 +7,8 @@
 /// that a rail step stalled on an unreviewed card has somewhere to be
 /// answered without spawning a session first.
 
-import { askConfirm } from "./dialog";
-import { cardReviewed, stampCardReview } from "./layoutState";
+import { askConfirm } from "$lib/dialog";
+import { cardReviewed, stampCardReview } from "$lib/layoutState";
 import {
   REVIEW_CANCEL_LABEL,
   REVIEW_CONFIRM_LABEL,
@@ -16,8 +16,8 @@ import {
   reviewTitle,
   reviewedAttachments,
   type CardContent,
-} from "./cardReview";
-import type { AttachmentStatus } from "./attachments";
+} from "$lib/cardReview";
+import type { AttachmentStatus } from "$lib/attachments";
 
 /// Everything the sheet shows, gathered by the caller before anything is
 /// created. `prompt` is the composed prompt itself — the exact bytes the

@@ -17,8 +17,8 @@
 // fix, and a tab is only useful if every surface can name one: the rail
 // header's chips, the conflict box's repair button and the dialog's own
 // strip all address a tab by id from here.
-import type { Conflict, RailTrigger } from "./orchestration";
-import { railTriggerLabel } from "./orchestration";
+import type { Conflict, RailTrigger } from "$lib/orchestration";
+import { railTriggerLabel } from "$lib/orchestration";
 
 export type RailBindTab = "worktree" | "branch" | "page" | "trigger";
 

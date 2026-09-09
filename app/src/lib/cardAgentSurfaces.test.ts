@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources, tsSources } from "./sources";
+import { svelteSources, tsSources } from "$lib/sources";
 
 // A card's own `agent:`/`model:` is one field pair expressed on four
 // surfaces -- the shared controls, the card detail modal, the Plans tab's
@@ -39,7 +39,7 @@ describe("the card surfaces", () => {
     // surfaces start describing different things -- the same reason
     // ComplexityTable.svelte serves both settings panels.
     expect(source(file)).toContain("<CardAgentControls");
-    expect(source(file)).toContain('import CardAgentControls from "./CardAgentControls.svelte"');
+    expect(source(file)).toContain('import CardAgentControls from "$lib/CardAgentControls.svelte"');
   });
 
   it.each([

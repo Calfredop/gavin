@@ -1,14 +1,14 @@
 <script lang="ts">
-  import { gitStore, findEntry, applyPatch, setLineSelection } from "./gitState";
-  import { layoutState, setGitViewPrefs } from "./layoutState";
-  import { toUnifiedRows, toSplitRows } from "./diffRows";
-  import { clickLine, rangeIds, selectionHunk } from "./diffSelection";
-  import { buildPatch } from "./patch";
-  import { describeHunkDiscard } from "./discardFlow";
-  import { LARGE_HUNK_LINES, type DiffLayout } from "./git";
-  import GitDiffUnified from "./GitDiffUnified.svelte";
-  import GitDiffSplit from "./GitDiffSplit.svelte";
-  import GitDiscardDialog from "./GitDiscardDialog.svelte";
+  import { gitStore, findEntry, applyPatch, setLineSelection } from "$lib/gitState";
+  import { layoutState, setGitViewPrefs } from "$lib/layoutState";
+  import { toUnifiedRows, toSplitRows } from "$lib/diffRows";
+  import { clickLine, rangeIds, selectionHunk } from "$lib/diffSelection";
+  import { buildPatch } from "$lib/patch";
+  import { describeHunkDiscard } from "$lib/discardFlow";
+  import { LARGE_HUNK_LINES, type DiffLayout } from "$lib/git";
+  import GitDiffUnified from "$lib/GitDiffUnified.svelte";
+  import GitDiffSplit from "$lib/GitDiffSplit.svelte";
+  import GitDiscardDialog from "$lib/GitDiscardDialog.svelte";
 
   interface Props {
     workspaceId: string;

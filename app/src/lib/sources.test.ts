@@ -8,7 +8,7 @@ import {
   sourcesMatching,
   svelteSources,
   tsSources,
-} from "./sources";
+} from "$lib/sources";
 
 // The seam every source-reading guard in this tree now goes through, so
 // this file is the tripwire under all of them.

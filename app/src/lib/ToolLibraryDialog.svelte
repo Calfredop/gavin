@@ -12,9 +12,9 @@
   // type at all. `toolBodyEditor` answers that per kind, and the three
   // branches below draw its three shapes.
   import { Plus, Copy, Pencil, Trash2, Group, FolderOpen } from "@lucide/svelte";
-  import { pickPath as openPicker } from "./picker";
-  import Modal from "./Modal.svelte";
-  import IconButton from "./ui/IconButton.svelte";
+  import { pickPath as openPicker } from "$lib/picker";
+  import Modal from "$lib/Modal.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import {
     GAVIN_ACTIONS,
     TOOL_KINDS,
@@ -30,16 +30,16 @@
     type Tool,
     type ToolKind,
     type ToolScope,
-  } from "./orchestrationTools";
-  import { saveToolAction, deleteToolAction } from "./toolsState";
-  import { isRunnableStandalone } from "./workspaceTools";
-  import { daemonCompat, workspaceRootPath } from "./layoutState";
-  import { featureBlockedReason } from "./daemonCompat";
-  import { tooltip } from "./tooltip";
-  import { saveGroupTemplateAction, deleteGroupTemplateAction } from "./groupTemplatesState";
-  import type { GroupTemplate, GroupTemplateScope } from "./orchestrationGroups";
-  import { toolIcon } from "./ui/toolKindIcon";
-  import { iconLabel, searchIcons } from "./ui/iconLibrary";
+  } from "$lib/orchestrationTools";
+  import { saveToolAction, deleteToolAction } from "$lib/toolsState";
+  import { isRunnableStandalone } from "$lib/workspaceTools";
+  import { daemonCompat, workspaceRootPath } from "$lib/layoutState";
+  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { tooltip } from "$lib/tooltip";
+  import { saveGroupTemplateAction, deleteGroupTemplateAction } from "$lib/groupTemplatesState";
+  import type { GroupTemplate, GroupTemplateScope } from "$lib/orchestrationGroups";
+  import { toolIcon } from "$lib/ui/toolKindIcon";
+  import { iconLabel, searchIcons } from "$lib/ui/iconLibrary";
 
   interface Props {
     workspaceId: string;

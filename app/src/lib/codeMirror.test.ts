@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { languageIdForPath } from "./codeMirror";
+import { languageIdForPath } from "$lib/codeMirror";
 
 describe("languageIdForPath", () => {
   it("maps known extensions to a language id", () => {

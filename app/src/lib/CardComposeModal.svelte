@@ -15,17 +15,17 @@
   // drops the body entirely.
   import { untrack } from "svelte";
   import { get } from "svelte/store";
-  import { pickPath } from "./picker";
-  import Modal from "./Modal.svelte";
-  import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import type { Column } from "./kanban";
-  import type { Rail } from "./orchestration";
-  import type { CardView } from "./planBoard";
-  import type { PlanFileInfo } from "./gavin";
-  import { gavinTrees, patchPlanCreated } from "./gavinState";
-  import { orchestrations, sendCardToRailAction } from "./orchestrationState";
-  import { placeCardAtColumnEnd } from "./planDrop";
-  import type { MergedBoard } from "./boardSearch";
+  import { pickPath } from "$lib/picker";
+  import Modal from "$lib/Modal.svelte";
+  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import type { Column } from "$lib/kanban";
+  import type { Rail } from "$lib/orchestration";
+  import type { CardView } from "$lib/planBoard";
+  import type { PlanFileInfo } from "$lib/gavin";
+  import { gavinTrees, patchPlanCreated } from "$lib/gavinState";
+  import { orchestrations, sendCardToRailAction } from "$lib/orchestrationState";
+  import { placeCardAtColumnEnd } from "$lib/planDrop";
+  import type { MergedBoard } from "$lib/boardSearch";
   import {
     agentActionToApply,
     availableAgentActions,
@@ -43,25 +43,25 @@
     type AgentAction,
     type ComposeField,
     type ComposeKind,
-  } from "./cardCompose";
+  } from "$lib/cardCompose";
   import {
     addAttachment,
     attachmentFromPick,
     attachmentName,
     removeAttachment,
-  } from "./attachments";
-  import { autoCommitAppliesTo } from "./autoCommit";
+  } from "$lib/attachments";
+  import { autoCommitAppliesTo } from "$lib/autoCommit";
   import {
     COMPLEXITY_LABELS,
     COMPLEXITY_LEVELS,
     NO_COMPLEXITY,
     parseComplexity,
-  } from "./complexity";
-  import { daemonCompat, newCardAutoCommit, stampCardReview, workspaceRootPath } from "./layoutState";
-  import { featureBlockedReason } from "./daemonCompat";
-  import { formatShortcut } from "./shortcuts";
-  import { isMacSync } from "./platform";
-  import * as backend from "./backend";
+  } from "$lib/complexity";
+  import { daemonCompat, newCardAutoCommit, stampCardReview, workspaceRootPath } from "$lib/layoutState";
+  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { formatShortcut } from "$lib/shortcuts";
+  import { isMacSync } from "$lib/platform";
+  import * as backend from "$lib/backend";
 
   interface Props {
     workspaceId: string;

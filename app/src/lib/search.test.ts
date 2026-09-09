@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { queryTokens, matchesFields, matchesQuery, filterList, isSearching } from "./search";
+import { queryTokens, matchesFields, matchesQuery, filterList, isSearching } from "$lib/search";
 
 describe("queryTokens", () => {
   it("splits on whitespace and lower-cases", () => {

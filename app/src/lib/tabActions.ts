@@ -3,8 +3,8 @@
 // closeSession mutates the shared layout tree, so overlapping them would
 // race. Lives outside layoutState.ts because confirmClose.ts already
 // imports layoutState -- importing it back would form an import cycle.
-import { confirmTabsClose } from "./confirmClose";
-import { closeSession } from "./layoutState";
+import { confirmTabsClose } from "$lib/confirmClose";
+import { closeSession } from "$lib/layoutState";
 
 export async function closeTabs(sessionIds: string[]): Promise<void> {
   if (!(await confirmTabsClose(sessionIds))) return;

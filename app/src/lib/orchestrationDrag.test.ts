@@ -9,8 +9,8 @@ import {
   cancelDrag,
   isPlacementDrag,
   __resetForTesting,
-} from "./orchestrationDrag";
-import type { MeasuredRail, OrchDragCallbacks } from "./orchestrationDrag";
+} from "$lib/orchestrationDrag";
+import type { MeasuredRail, OrchDragCallbacks } from "$lib/orchestrationDrag";
 
 // Two rails side by side, each 200 wide. r1 has two stages of height
 // 100 at y=0 and y=120; r2 has one stage at y=0.

@@ -24,8 +24,8 @@
 // stay in the scroller: they are things to know, not things the run is
 // waiting on.
 
-import type { SessionStatus } from "./notifications";
-import type { IndicatorTone } from "./ui/indicators";
+import type { SessionStatus } from "$lib/notifications";
+import type { IndicatorTone } from "$lib/ui/indicators";
 
 /// Where a card's bound session stands. `cardSessionState`
 /// (columnRunAction.ts) is the one place that vocabulary is derived; the

@@ -5,7 +5,7 @@ import { get, writable } from "svelte/store";
 // back which one became active, and open the wizard on it. Mocked so the
 // handoff itself stays testable without the store graph behind
 // layoutState.
-vi.mock("./layoutState", () => ({
+vi.mock("$lib/layoutState", () => ({
   createWorkspace: vi.fn().mockResolvedValue(undefined),
   openWizard: vi.fn(),
   // Built inside the factory: vi.mock is hoisted above every top-level
@@ -22,8 +22,8 @@ import {
   commitNewWorkspace,
   skipSetup,
   finishSetup,
-} from "./workspaceCreate";
-import { createWorkspace, openWizard, layoutState } from "./layoutState";
+} from "$lib/workspaceCreate";
+import { createWorkspace, openWizard, layoutState } from "$lib/layoutState";
 
 const layoutStateMock = layoutState as ReturnType<typeof writable<{ activeWorkspaceId: string | null }>>;
 

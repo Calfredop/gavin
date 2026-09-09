@@ -5,8 +5,8 @@ import {
   cardAgentSummary,
   cardModelUnreachable,
   cardOverrideNote,
-} from "./cardAgent";
-import type { ComplexityTable } from "./complexity";
+} from "$lib/cardAgent";
+import type { ComplexityTable } from "$lib/complexity";
 
 const app: ComplexityTable = {
   trivial: { profile: "", model: "haiku" },

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { composePlanPrompt, composeTaskPrompt } from "./cardRun";
-import { AUTO_COMMIT_BLOCK } from "./autoCommit";
-import type { AttachmentStatus } from "./attachments";
+import { composePlanPrompt, composeTaskPrompt } from "$lib/cardRun";
+import { AUTO_COMMIT_BLOCK } from "$lib/autoCommit";
+import type { AttachmentStatus } from "$lib/attachments";
 import {
   DEFAULT_REQUIRE_REVIEW,
   UNREVIEWED_STALL,
@@ -20,7 +20,7 @@ import {
   reviewedAttachments,
   unreviewedStallReason,
   type CardContent,
-} from "./cardReview";
+} from "$lib/cardReview";
 
 /// The card AG-01 was reproduced with: an innocuous title, a body that
 /// gives the agent a different instruction, an attachment outside the

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseChecklist, stripFrontmatter } from "./planChecklist";
+import { parseChecklist, stripFrontmatter } from "$lib/planChecklist";
 
 const FILE = `---
 title: P

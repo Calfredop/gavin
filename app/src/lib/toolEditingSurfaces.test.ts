@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // Tool editing is one editor reached from two places -- the Orchestration
 // tab's drawer and the Tools hub tab -- and nothing in the type system
@@ -97,7 +97,7 @@ describe("switching a tool's kind", () => {
 describe("picking a tool's icon", () => {
   it("offers the app's icon library rather than a list of its own", () => {
     const dialog = source(DIALOG);
-    expect(dialog).toContain('from "./ui/iconLibrary"');
+    expect(dialog).toContain('from "$lib/ui/iconLibrary"');
     // Grid cells come from the library's own groups. A hand-written list
     // here would be a second vocabulary, drifting from the one
     // `iconByName` resolves a STORED name against — and a name that

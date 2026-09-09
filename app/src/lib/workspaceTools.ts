@@ -44,9 +44,9 @@
 // costs seconds. So the RULE lives here and the glyph is looked up where
 // glyphs already are.
 
-import { relativeTime } from "./appHub";
-import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
-import { duplicateTool, resolveToolCwd, type Tool, type ToolKind } from "./orchestrationTools";
+import { relativeTime } from "$lib/appHub";
+import { featureBlockedReason, type DaemonCompat } from "$lib/daemonCompat";
+import { duplicateTool, resolveToolCwd, type Tool, type ToolKind } from "$lib/orchestrationTools";
 
 /// One standalone run of a tool. Mirrors `ToolRun` in the protocol crate.
 export interface ToolRun {

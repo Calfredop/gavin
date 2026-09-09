@@ -16,9 +16,9 @@
 // `### Learned` must stay identical, or the next setup run drops
 // everything ever adopted.
 
-import * as backend from "./backend";
-import { slugStatus, type CardView } from "./planBoard";
-import { stripFrontmatter } from "./planChecklist";
+import * as backend from "$lib/backend";
+import { slugStatus, type CardView } from "$lib/planBoard";
+import { stripFrontmatter } from "$lib/planChecklist";
 
 /// The label that turns a note into a proposed memory. Slug-matched, the
 /// same way a card's status meets a column name, so "Memory" counts.

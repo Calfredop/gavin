@@ -4,12 +4,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // file has to stand in for everything that builder reaches for too.
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   gavinRootExists: vi.fn(),
   openPathExternally: vi.fn().mockResolvedValue(undefined),
   revealPathExternally: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("./layoutState", () => ({
+vi.mock("$lib/layoutState", () => ({
   closeWorkspace: vi.fn().mockResolvedValue(undefined),
   closePage: vi.fn().mockResolvedValue(undefined),
   movePageAction: vi.fn().mockResolvedValue(undefined),
@@ -23,13 +23,13 @@ vi.mock("./layoutState", () => ({
   setPagePinned: vi.fn().mockResolvedValue(undefined),
   splitPane: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("./tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("$lib/tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
 // The launch wall's queue, stubbed. It is a live module (a poller, a
 // drain loop, localStorage) that these tests are not about, and its
 // dependency cone reaches layoutState -- which this file replaces with a
 // handful of functions. `holdOrQueue` returning null is "the gate is
 // open", which is the state every assertion here assumes.
-vi.mock("./launchQueue", () => ({
+vi.mock("$lib/launchQueue", () => ({
   holdOrQueue: vi.fn(() => null),
   mayLaunch: vi.fn(() => true),
   launchBlockedReason: vi.fn(() => null),
@@ -40,7 +40,7 @@ vi.mock("./launchQueue", () => ({
 // "main" cannot exercise the case where a workspace's own window is
 // asked to hand it over.
 const windowState = vi.hoisted(() => ({ label: "main" }));
-vi.mock("./appWindowState", async () => {
+vi.mock("$lib/appWindowState", async () => {
   const { writable, get } = await import("svelte/store");
   const store = writable<Record<string, string>>({});
   return {
@@ -50,7 +50,7 @@ vi.mock("./appWindowState", async () => {
     isMainWindow: () => windowState.label === "main",
   };
 });
-vi.mock("./confirmClose", () => ({
+vi.mock("$lib/confirmClose", () => ({
   confirmWorkspaceClose: vi.fn().mockResolvedValue(true),
   confirmPageClose: vi.fn().mockResolvedValue(true),
   confirmTabClose: vi.fn().mockResolvedValue(true),
@@ -58,7 +58,7 @@ vi.mock("./confirmClose", () => ({
 
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
-import { gavinRootExists, openPathExternally, revealPathExternally } from "./backend";
+import { gavinRootExists, openPathExternally, revealPathExternally } from "$lib/backend";
 import {
   closeWorkspace,
   closePage,
@@ -72,21 +72,21 @@ import {
   setWorkspacePinned,
   setPagePinned,
   splitPane,
-} from "./layoutState";
-import { workspaceWindows } from "./appWindowState";
-import { closeTabs } from "./tabActions";
-import { confirmPageClose } from "./confirmClose";
+} from "$lib/layoutState";
+import { workspaceWindows } from "$lib/appWindowState";
+import { closeTabs } from "$lib/tabActions";
+import { confirmPageClose } from "$lib/confirmClose";
 import {
   buildWorkspaceMenuEntries,
   buildPageMenuEntries,
   buildSessionRowMenuEntries,
   changeWorkspaceRoot,
   type SidebarMenuHooks,
-} from "./sidebarMenu";
-import type { TabMenuContext } from "./tabMenu";
-import type { PageTabState } from "./sidebarSummary";
-import { isSeparator, type ContextMenuItem, type ContextMenuEntry } from "./contextMenu";
-import { UNFILED_WORKSPACE_ID, type Workspace, type Page } from "./workspace";
+} from "$lib/sidebarMenu";
+import type { TabMenuContext } from "$lib/tabMenu";
+import type { PageTabState } from "$lib/sidebarSummary";
+import { isSeparator, type ContextMenuItem, type ContextMenuEntry } from "$lib/contextMenu";
+import { UNFILED_WORKSPACE_ID, type Workspace, type Page } from "$lib/workspace";
 
 const page = (id: string): Page => ({
   id,

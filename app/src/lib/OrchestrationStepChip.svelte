@@ -10,17 +10,17 @@
     Terminal,
     Sliders,
   } from "@lucide/svelte";
-  import { tooltip } from "./tooltip";
-  import { highlightedConflict } from "./orchestrationState";
-  import IconButton from "./ui/IconButton.svelte";
-  import StatusBadge from "./ui/StatusBadge.svelte";
-  import { agentQueuedIndicator, attentionIndicator, stepIndicator } from "./ui/indicators";
-  import { launchGateVerdict } from "./launchQueue";
-  import { describeOverrides, toolKindLabel } from "./orchestrationTools";
-  import type { Tool } from "./orchestrationTools";
-  import { attentionTip } from "./orchestration";
-  import type { CardEntry, StepAttention, StepState } from "./orchestration";
-  import { toolIcon } from "./ui/toolKindIcon";
+  import { tooltip } from "$lib/tooltip";
+  import { highlightedConflict } from "$lib/orchestrationState";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import { agentQueuedIndicator, attentionIndicator, stepIndicator } from "$lib/ui/indicators";
+  import { launchGateVerdict } from "$lib/launchQueue";
+  import { describeOverrides, toolKindLabel } from "$lib/orchestrationTools";
+  import type { Tool } from "$lib/orchestrationTools";
+  import { attentionTip } from "$lib/orchestration";
+  import type { CardEntry, StepAttention, StepState } from "$lib/orchestration";
+  import { toolIcon } from "$lib/ui/toolKindIcon";
 
   interface Props {
     /// Drives the drag engine's [data-orch-step] hook. On the chip's own

@@ -20,8 +20,8 @@
 // "11 agents ≈ 17 GB on top of 0 GB in use, 0 GB total" is a lie with
 // arithmetic in it.
 
-import { formatGb, formatGbPair, perAgentEstimate, type SystemMemorySample } from "./memory";
-import { usedBytes as usedBytesOf } from "./memory";
+import { formatGb, formatGbPair, perAgentEstimate, type SystemMemorySample } from "$lib/memory";
+import { usedBytes as usedBytesOf } from "$lib/memory";
 
 export interface EstimateInput {
   /// How many agents this press would start.

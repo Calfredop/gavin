@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { composeOrganizePrompt, composeRailPrompt } from "./orchestrationPrompts";
-import { NAME_TAB_FIRST } from "./cardRun";
-import type { CardEntry, Orchestration, Rail, ToolSummary } from "./orchestration";
-import { emptyOrchestration } from "./orchestration";
+import { composeOrganizePrompt, composeRailPrompt } from "$lib/orchestrationPrompts";
+import { NAME_TAB_FIRST } from "$lib/cardRun";
+import type { CardEntry, Orchestration, Rail, ToolSummary } from "$lib/orchestration";
+import { emptyOrchestration } from "$lib/orchestration";
 
 function card(fileName: string, title: string, status: string | null = null): CardEntry {
   return {

@@ -8,7 +8,7 @@ import {
   type Scroller,
   type LeadStrip,
   type LeadTab,
-} from "./wheelScroll";
+} from "$lib/wheelScroll";
 
 /// A strip standing in for the DOM node: enough surface for the action,
 /// and a handle on the listener it registered so a test can fire one.

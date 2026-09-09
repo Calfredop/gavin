@@ -15,7 +15,7 @@ import {
   prdPathFromPick,
   agentFileFromPick,
   type AgentProfileInfo,
-} from "./settings";
+} from "$lib/settings";
 
 const PROFILES: AgentProfileInfo[] = [
   { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArgs: "", headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", resumeArgs: "--resume", usageProbe: "anthropic-oauth" },

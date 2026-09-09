@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { freeBranchNameFrom, validateBranchName } from "./git";
-import { svelteSources } from "./sources";
+import { freeBranchNameFrom, validateBranchName } from "$lib/git";
+import { svelteSources } from "$lib/sources";
 
 // Both name fields a rail's bind dialog can open -- "New branch…" inline
 // and the "New worktree…" fork dialog's branch input -- used to start

@@ -14,11 +14,11 @@
 // every other search box in the app runs on.
 
 import { get, writable } from "svelte/store";
-import { matchesFields, queryTokens } from "./search";
-import { sessionLabel } from "./paths";
-import { pageTabRows, type PageTabState } from "./sidebarSummary";
-import type { SessionStatus } from "./layoutState";
-import type { Workspace } from "./workspace";
+import { matchesFields, queryTokens } from "$lib/search";
+import { sessionLabel } from "$lib/paths";
+import { pageTabRows, type PageTabState } from "$lib/sidebarSummary";
+import type { SessionStatus } from "$lib/layoutState";
+import type { Workspace } from "$lib/workspace";
 
 /// Whether the search row is open under the title strip. A store rather
 /// than component state because the button that opens it lives in

@@ -1,9 +1,9 @@
 // Right-click menus for the sidebar: workspace rows, page rows, and the
 // tab rows inside an expanded page. Pure builders; the Sidebar supplies
 // inline-rename / new-page / error hooks.
-import { openPathExternally } from "./backend";
-import { pickPath } from "./picker";
-import * as backend from "./backend";
+import { openPathExternally } from "$lib/backend";
+import { pickPath } from "$lib/picker";
+import * as backend from "$lib/backend";
 import {
   closeWorkspace,
   closePage,
@@ -14,15 +14,15 @@ import {
   setWorkspaceRoot,
   setWorkspacePinned,
   setPagePinned,
-} from "./layoutState";
-import { windowActionLabel } from "./appWindow";
-import { currentWindowLabel, currentWorkspaceWindows } from "./appWindowState";
-import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
-import { buildTabMenuEntries, type TabMenuContext } from "./tabMenu";
-import { closeIdlePrompt, idleTabsOnPage, type CloseIdleRequest } from "./idleTabs";
-import type { PageTabState } from "./sidebarSummary";
-import { UNFILED_WORKSPACE_ID, isPinned, type Workspace, type Page } from "./workspace";
-import type { ContextMenuEntry } from "./contextMenu";
+} from "$lib/layoutState";
+import { windowActionLabel } from "$lib/appWindow";
+import { currentWindowLabel, currentWorkspaceWindows } from "$lib/appWindowState";
+import { confirmWorkspaceClose, confirmPageClose } from "$lib/confirmClose";
+import { buildTabMenuEntries, type TabMenuContext } from "$lib/tabMenu";
+import { closeIdlePrompt, idleTabsOnPage, type CloseIdleRequest } from "$lib/idleTabs";
+import type { PageTabState } from "$lib/sidebarSummary";
+import { UNFILED_WORKSPACE_ID, isPinned, type Workspace, type Page } from "$lib/workspace";
+import type { ContextMenuEntry } from "$lib/contextMenu";
 
 export interface SidebarMenuHooks {
   startRenameWorkspace: (workspaceId: string) => void;

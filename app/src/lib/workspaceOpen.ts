@@ -14,8 +14,8 @@
 // reason it is gone.
 
 import { get, writable } from "svelte/store";
-import { pickPath } from "./picker";
-import * as backend from "./backend";
+import { pickPath } from "$lib/picker";
+import * as backend from "$lib/backend";
 import {
   createWorkspace,
   layoutState,
@@ -23,10 +23,10 @@ import {
   setWorkspaceRoot,
   switchWorkspace,
   type LayoutState,
-} from "./layoutState";
-import { folderName } from "./paths";
-import { sameRoot } from "./workspace";
-import { showAlert } from "./dialog";
+} from "$lib/layoutState";
+import { folderName } from "$lib/paths";
+import { sameRoot } from "$lib/workspace";
+import { showAlert } from "$lib/dialog";
 
 /// A picked folder that holds no `.gavin*` yet, waiting on the three-way
 /// answer (initialize / bind as-is / cancel). Null the rest of the time.

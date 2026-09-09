@@ -7,7 +7,7 @@ import {
   digitFromCode,
   resolveIndex,
   hintDigitFor,
-} from "./shortcuts";
+} from "$lib/shortcuts";
 
 function ev(over: Partial<KeyboardEvent>): KeyboardEvent {
   return {

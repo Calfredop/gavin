@@ -1,6 +1,6 @@
 <script lang="ts">
-  import FileEditor from "./FileEditor.svelte";
-  import { defaultMode } from "./fileEditing";
+  import FileEditor from "$lib/FileEditor.svelte";
+  import { defaultMode } from "$lib/fileEditing";
 
   let { path, visible }: { path: string; visible: boolean } = $props();
 

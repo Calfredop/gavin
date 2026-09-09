@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   getGroupTemplates: vi.fn(),
   saveGroupTemplate: vi.fn(),
   deleteGroupTemplate: vi.fn(),
 }));
 
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   groupTemplateRecords,
   libraryFor,
@@ -16,8 +16,8 @@ import {
   saveGroupTemplateAction,
   deleteGroupTemplateAction,
   __resetForTesting,
-} from "./groupTemplatesState";
-import type { GroupTemplate, GroupTemplateRecord } from "./orchestrationGroups";
+} from "$lib/groupTemplatesState";
+import type { GroupTemplate, GroupTemplateRecord } from "$lib/orchestrationGroups";
 
 function record(over: Partial<GroupTemplateRecord> = {}): GroupTemplateRecord {
   return {

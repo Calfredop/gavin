@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { get } from "svelte/store";
-import { askConfirm, askConfirmChecked, showAlert, answerDialog, dialogRequest, resetDialogs } from "./dialog";
+import { askConfirm, askConfirmChecked, showAlert, answerDialog, dialogRequest, resetDialogs } from "$lib/dialog";
 
 beforeEach(() => {
   resetDialogs();

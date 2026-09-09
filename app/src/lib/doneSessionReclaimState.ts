@@ -28,7 +28,7 @@
 
 import { derived, get, writable, type Readable } from "svelte/store";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { askConfirm } from "./dialog";
+import { askConfirm } from "$lib/dialog";
 import {
   heldRailCount,
   mayReclaim,
@@ -39,15 +39,15 @@ import {
   type ReclaimCandidate,
   type ReclaimReason,
   type ReclaimRecord,
-} from "./doneSessionReclaim";
-import { gavinTrees } from "./gavinState";
-import { kanbanState } from "./kanbanState";
-import { launchConfigStore, launchGateVerdict, launchQueue } from "./launchQueue";
-import { closeSession, layoutState } from "./layoutState";
-import { agentSessions, memoryPressure, systemMemory } from "./memoryState";
-import { orchestrations } from "./orchestrationState";
-import { closeTabsNow } from "./tabActions";
-import { findSessionLocation } from "./workspace";
+} from "$lib/doneSessionReclaim";
+import { gavinTrees } from "$lib/gavinState";
+import { kanbanState } from "$lib/kanbanState";
+import { launchConfigStore, launchGateVerdict, launchQueue } from "$lib/launchQueue";
+import { closeSession, layoutState } from "$lib/layoutState";
+import { agentSessions, memoryPressure, systemMemory } from "$lib/memoryState";
+import { orchestrations } from "$lib/orchestrationState";
+import { closeTabsNow } from "$lib/tabActions";
+import { findSessionLocation } from "$lib/workspace";
 
 /// Every close the wall has made by itself this app run, oldest first.
 ///

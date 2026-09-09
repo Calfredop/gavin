@@ -1,16 +1,16 @@
 <script lang="ts">
   import { get } from "svelte/store";
-  import type { PlanFileInfo } from "./gavin";
-  import { statusOptions } from "./planExplorer";
-  import { gavinTrees, patchPlanField } from "./gavinState";
-  import { kanbanState } from "./kanbanState";
-  import { cardIndex, nestedChildrenOf } from "./orchestration";
-  import { guardCompletion } from "./cardCompletion";
-  import * as backend from "./backend";
-  import { agentProfilesStore, daemonCompat } from "./layoutState";
-  import { featureBlockedReason } from "./daemonCompat";
-  import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, NO_COMPLEXITY } from "./complexity";
-  import CardAgentControls from "./CardAgentControls.svelte";
+  import type { PlanFileInfo } from "$lib/gavin";
+  import { statusOptions } from "$lib/planExplorer";
+  import { gavinTrees, patchPlanField } from "$lib/gavinState";
+  import { kanbanState } from "$lib/kanbanState";
+  import { cardIndex, nestedChildrenOf } from "$lib/orchestration";
+  import { guardCompletion } from "$lib/cardCompletion";
+  import * as backend from "$lib/backend";
+  import { agentProfilesStore, daemonCompat } from "$lib/layoutState";
+  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, NO_COMPLEXITY } from "$lib/complexity";
+  import CardAgentControls from "$lib/CardAgentControls.svelte";
 
   interface Props {
     plan: PlanFileInfo;

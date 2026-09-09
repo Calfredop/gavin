@@ -10,7 +10,7 @@
 // stage (--cached), unstage (--cached -R) and discard (-R) because it is
 // always expressed against the diff's own base.
 
-import { lineId, type FileDiff } from "./git";
+import { lineId, type FileDiff } from "$lib/git";
 
 export function buildPatch(diff: FileDiff, hunkIndex: number, selected: ReadonlySet<string> | null): string | null {
   const hunk = diff.hunks[hunkIndex];

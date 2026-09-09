@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   getTools: vi.fn(),
   saveTool: vi.fn(),
   deleteTool: vi.fn(),
 }));
 
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   toolRecords,
   libraryFor,
@@ -17,8 +17,8 @@ import {
   saveToolAction,
   deleteToolAction,
   __resetForTesting,
-} from "./toolsState";
-import { BUILTIN_TOOLS, emptyTool, type Tool, type ToolRecord } from "./orchestrationTools";
+} from "$lib/toolsState";
+import { BUILTIN_TOOLS, emptyTool, type Tool, type ToolRecord } from "$lib/orchestrationTools";
 
 function record(over: Partial<ToolRecord> = {}): ToolRecord {
   return {

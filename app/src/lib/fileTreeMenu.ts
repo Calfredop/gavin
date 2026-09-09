@@ -3,7 +3,7 @@
 // the choices -- what appears, in what order, and what is refused --
 // are testable without mounting a component.
 
-import type { FileNode } from "./fileTree";
+import type { FileNode } from "$lib/fileTree";
 
 export interface FileTreeMenuItem {
   label: string;

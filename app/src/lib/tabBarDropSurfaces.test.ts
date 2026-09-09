@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { allSources } from "./sources";
+import { allSources } from "$lib/sources";
 
 // Moving a tab from one pane to another is a drop on the target pane's
 // TAB BAR. Nothing type-checks which element carries that drop, and the

@@ -1,17 +1,17 @@
 <script lang="ts">
-  import Modal from "./Modal.svelte";
+  import Modal from "$lib/Modal.svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import DOMPurify from "dompurify";
-  import { renderMarkdown } from "./markdown";
-  import { pickPath } from "./picker";
-  import type { CardView } from "./planBoard";
-  import type { Column, Label, Priority } from "./kanban";
-  import { isArchivedCard, slugStatus } from "./planBoard";
-  import { childCards, parentCard } from "./cardRelations";
-  import { parseChecklist, stripFrontmatter, type ChecklistItem } from "./planChecklist";
-  import { requestedExplorerFile, slugFileName } from "./planExplorer";
-  import { patchPlanField, patchPlanCreated, patchPlanPath } from "./gavinState";
-  import type { PlanFileInfo } from "./gavin";
+  import { renderMarkdown } from "$lib/markdown";
+  import { pickPath } from "$lib/picker";
+  import type { CardView } from "$lib/planBoard";
+  import type { Column, Label, Priority } from "$lib/kanban";
+  import { isArchivedCard, slugStatus } from "$lib/planBoard";
+  import { childCards, parentCard } from "$lib/cardRelations";
+  import { parseChecklist, stripFrontmatter, type ChecklistItem } from "$lib/planChecklist";
+  import { requestedExplorerFile, slugFileName } from "$lib/planExplorer";
+  import { patchPlanField, patchPlanCreated, patchPlanPath } from "$lib/gavinState";
+  import type { PlanFileInfo } from "$lib/gavin";
   import {
     switchWorkspaceView,
     layoutState,
@@ -24,14 +24,14 @@
     agentProfilesStore,
     attentionStatusById,
     requireReviewDefault,
-  } from "./layoutState";
+  } from "$lib/layoutState";
   import {
     COMPLEXITY_LABELS,
     COMPLEXITY_LEVELS,
     NO_COMPLEXITY,
-  } from "./complexity";
-  import CardAgentControls from "./CardAgentControls.svelte";
-  import { cardAgentSummary } from "./cardAgent";
+  } from "$lib/complexity";
+  import CardAgentControls from "$lib/CardAgentControls.svelte";
+  import { cardAgentSummary } from "$lib/cardAgent";
   import {
     addAttachment,
     attachmentFromPick,
@@ -41,11 +41,11 @@
     resolvedAttachmentPaths,
     withheldAttachmentPaths,
     type AttachmentStatus,
-  } from "./attachments";
-  import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "./autoCommit";
-  import { isViewableInApp } from "./fileTypes";
+  } from "$lib/attachments";
+  import { autoCommitAppliesTo, hasAutoCommit, setAutoCommitInFile } from "$lib/autoCommit";
+  import { isViewableInApp } from "$lib/fileTypes";
   import { ChevronDown, ChevronRight, Lock, SquareArrowOutUpRight } from "@lucide/svelte";
-  import StatusBadge from "./ui/StatusBadge.svelte";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import {
     agentDevelopingIndicator,
     agentExitedIndicator,
@@ -54,11 +54,11 @@
     agentQueuedIndicator,
     queuedBadgeText,
     agentInterruptedIndicator,
-  } from "./ui/indicators";
-  import { bestOfNRequest, bestOfNRuns, candidateLiveness, runForCard, runSummary } from "./bestOfNState";
-  import { pickCandidate, abandonRun } from "./bestOfNActions";
-  import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "./kanbanState";
-  import { cancelLaunch, launchGateVerdict, launchQueue, queuedForCard } from "./launchQueue";
+  } from "$lib/ui/indicators";
+  import { bestOfNRequest, bestOfNRuns, candidateLiveness, runForCard, runSummary } from "$lib/bestOfNState";
+  import { pickCandidate, abandonRun } from "$lib/bestOfNActions";
+  import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "$lib/kanbanState";
+  import { cancelLaunch, launchGateVerdict, launchQueue, queuedForCard } from "$lib/launchQueue";
   import {
     runCard,
     resumeCard,
@@ -66,35 +66,35 @@
     developCard,
     revealSession,
     revealDevelopingCard,
-  } from "./cardRunActions";
-  import { developingRunIn } from "./developingCards";
-  import { cardSessionState } from "./columnRunAction";
-  import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker } from "./cardRun";
-  import { cardContentReviewed, resolveRequireReview } from "./cardReview";
-  import { ensureCardReviewed } from "./cardReviewActions";
-  import { resumeNoteFor } from "./autoResume";
-  import { runBaseline } from "./runChanges";
-  import RunChangesModal from "./RunChangesModal.svelte";
-  import { historyBlockedReason } from "./runHistory";
-  import RunHistoryModal from "./RunHistoryModal.svelte";
-  import { resumeTrail } from "./autoResumeState";
-  import { doneColumnOf, firstColumnOf, findCardPlacement, stepStateOf } from "./orchestration";
-  import { adoptMemory, isMemoryCard } from "./memoryCard";
+  } from "$lib/cardRunActions";
+  import { developingRunIn } from "$lib/developingCards";
+  import { cardSessionState } from "$lib/columnRunAction";
+  import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker } from "$lib/cardRun";
+  import { cardContentReviewed, resolveRequireReview } from "$lib/cardReview";
+  import { ensureCardReviewed } from "$lib/cardReviewActions";
+  import { resumeNoteFor } from "$lib/autoResume";
+  import { runBaseline } from "$lib/runChanges";
+  import RunChangesModal from "$lib/RunChangesModal.svelte";
+  import { historyBlockedReason } from "$lib/runHistory";
+  import RunHistoryModal from "$lib/RunHistoryModal.svelte";
+  import { resumeTrail } from "$lib/autoResumeState";
+  import { doneColumnOf, firstColumnOf, findCardPlacement, stepStateOf } from "$lib/orchestration";
+  import { adoptMemory, isMemoryCard } from "$lib/memoryCard";
   import {
     orchestrations,
     sendCardToRailAction,
     removeCardFromRailAction,
-  } from "./orchestrationState";
-  import { deletionPlanFor, executeDeletion } from "./cardDelete";
-  import { grantForAnsweredPrompt } from "./confirmGate";
-  import { breakOutChildren, guardCompletion, subjectFromCard } from "./cardCompletion";
-  import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "./archiveActions";
-  import { featureBlockedReason } from "./daemonCompat";
-  import { interruptedCardNote } from "./orphan";
-  import { endSessionOrphan } from "./orphanActions";
-  import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import { waitLabel } from "./attentionInbox";
-  import { nowStore } from "./agentPauseState";
+  } from "$lib/orchestrationState";
+  import { deletionPlanFor, executeDeletion } from "$lib/cardDelete";
+  import { grantForAnsweredPrompt } from "$lib/confirmGate";
+  import { breakOutChildren, guardCompletion, subjectFromCard } from "$lib/cardCompletion";
+  import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive } from "$lib/archiveActions";
+  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { interruptedCardNote } from "$lib/orphan";
+  import { endSessionOrphan } from "$lib/orphanActions";
+  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import { waitLabel } from "$lib/attentionInbox";
+  import { nowStore } from "$lib/agentPauseState";
   import {
     cardSessionBar,
     loadSectionsOpen,
@@ -105,8 +105,8 @@
     type CardSectionId,
     type CardSectionsOpen,
     type CardSituation,
-  } from "./cardDetail";
-  import * as backend from "./backend";
+  } from "$lib/cardDetail";
+  import * as backend from "$lib/backend";
 
   interface Props {
     card: CardView;

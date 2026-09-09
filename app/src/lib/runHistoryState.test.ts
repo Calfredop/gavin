@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   cardRuns: vi.fn(),
   cardRunTokens: vi.fn(),
 }));
 
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   closeRunHistory,
   historyFor,
@@ -14,8 +14,8 @@ import {
   refreshRunHistory,
   runHistoryStore,
   tokensForRun,
-} from "./runHistoryState";
-import type { CardRun, TokenReport } from "./runHistory";
+} from "$lib/runHistoryState";
+import type { CardRun, TokenReport } from "$lib/runHistory";
 
 const PATH = "/ws/.gavin-root/plans/t.md";
 const WS = "ws-1";

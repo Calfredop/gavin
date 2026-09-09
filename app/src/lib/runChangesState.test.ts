@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   gitRunChanges: vi.fn(),
   gitDiffSince: vi.fn(),
   gitDiscardRun: vi.fn(),
 }));
 
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   closeRunChanges,
   discardRun,
@@ -15,8 +15,8 @@ import {
   refreshRunChanges,
   runChangesStore,
   selectRunFile,
-} from "./runChangesState";
-import type { FileDiff, RunChanges } from "./git";
+} from "$lib/runChangesState";
+import type { FileDiff, RunChanges } from "$lib/git";
 
 const PATH = "/ws/.gavin-root/plans/t.md";
 const BASE = "1111111111111111111111111111111111111111";

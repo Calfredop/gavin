@@ -15,7 +15,7 @@ import {
   seedCandidates,
   type BestOfNRun,
   type RunCandidate,
-} from "./bestOfN";
+} from "$lib/bestOfN";
 
 const LABELS = new Map([
   ["claude-code", "Claude Code"],

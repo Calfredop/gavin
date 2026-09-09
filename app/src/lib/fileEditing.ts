@@ -1,5 +1,5 @@
 import { writable } from "svelte/store";
-import { isMarkdown } from "./fileTypes";
+import { isMarkdown } from "$lib/fileTypes";
 
 export type EditorMode = "formatted" | "plain" | "edit";
 

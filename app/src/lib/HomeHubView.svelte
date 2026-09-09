@@ -8,28 +8,28 @@
     agentModelDefaultsStore,
     setHomeAgentShare,
     trustedAgentConfigs,
-  } from "./layoutState";
-  import { resolveAgentConfig, resolvePrdPath } from "./settings";
-  import { setupProgress, SETUP_STEPS } from "./setupWizard";
-  import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "./superpowers";
-  import { gavinTrees, refreshGavinTree } from "./gavinState";
-  import { fetchBoard, kanbanState } from "./kanbanState";
-  import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "./homeSummary";
-  import MainAgentPanel from "./MainAgentPanel.svelte";
-  import ConfigTrustNotice from "./ConfigTrustNotice.svelte";
-  import StatusBadge from "./ui/StatusBadge.svelte";
-  import { railIndicator } from "./ui/indicators";
-  import * as backend from "./backend";
-  import { gitStore, ensureGitView, refresh as refreshGit } from "./gitState";
-  import { changedCount } from "./git";
-  import { orchestrations, fetchOrchestration } from "./orchestrationState";
+  } from "$lib/layoutState";
+  import { resolveAgentConfig, resolvePrdPath } from "$lib/settings";
+  import { setupProgress, SETUP_STEPS } from "$lib/setupWizard";
+  import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/superpowers";
+  import { gavinTrees, refreshGavinTree } from "$lib/gavinState";
+  import { fetchBoard, kanbanState } from "$lib/kanbanState";
+  import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "$lib/homeSummary";
+  import MainAgentPanel from "$lib/MainAgentPanel.svelte";
+  import ConfigTrustNotice from "$lib/ConfigTrustNotice.svelte";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import { railIndicator } from "$lib/ui/indicators";
+  import * as backend from "$lib/backend";
+  import { gitStore, ensureGitView, refresh as refreshGit } from "$lib/gitState";
+  import { changedCount } from "$lib/git";
+  import { orchestrations, fetchOrchestration } from "$lib/orchestrationState";
   import {
     DEFAULT_AGENT_SHARE,
     agentShareFromWidth,
     homeGridColumns,
     resolveAgentShare,
-  } from "./homeSplit";
-  import { tooltip } from "./tooltip";
+  } from "$lib/homeSplit";
+  import { tooltip } from "$lib/tooltip";
 
   interface Props {
     workspaceId: string;

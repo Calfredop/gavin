@@ -13,8 +13,8 @@ import {
   __resetForTesting,
   type DragCallbacks,
   type ActiveDrag,
-} from "./kanbanDrag";
-import type { MeasuredColumn, Rect } from "./pointerDrag";
+} from "$lib/kanbanDrag";
+import type { MeasuredColumn, Rect } from "$lib/pointerDrag";
 
 const r = (left: number, top: number, width: number, height: number): Rect => ({ left, top, width, height });
 

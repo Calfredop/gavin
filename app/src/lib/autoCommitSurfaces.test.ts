@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // Auto commit is one setting expressed on four surfaces -- the ⌘N
 // composer, the card detail modal, the workspace settings panel and the

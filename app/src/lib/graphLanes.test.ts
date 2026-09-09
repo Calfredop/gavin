@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { computeGraph, LANE_COLORS } from "./graphLanes";
-import type { CommitInfo } from "./git";
+import { computeGraph, LANE_COLORS } from "$lib/graphLanes";
+import type { CommitInfo } from "$lib/git";
 
 function c(sha: string, parents: string[]): CommitInfo {
   return { sha, parents, author: "a", email: "a@x", date: "2026-08-21T00:00:00Z", subject: sha, refs: [], isHead: false };

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { tsSources } from "./sources";
+import { tsSources } from "$lib/sources";
 
 // A view that throws while it is being CREATED must not be silent.
 //

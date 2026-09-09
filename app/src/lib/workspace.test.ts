@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { LayoutNode } from "./layout";
+import type { LayoutNode } from "$lib/layout";
 import {
   createWorkspace,
   renameWorkspace,
@@ -43,7 +43,7 @@ import {
   reclaimable,
   restoreWorkspaceId,
   REMOVED_WORKSPACES_LIMIT,
-} from "./workspace";
+} from "$lib/workspace";
 
 function leaf(tabs: string[]): LayoutNode {
   return { type: "leaf", tabs, activeTabIndex: 0 };

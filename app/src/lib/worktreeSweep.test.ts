@@ -7,8 +7,8 @@ import {
   staleWorktrees,
   sweepConfirm,
   type SweepFacts,
-} from "./worktreeSweep";
-import type { FileEntry, WorktreeInfo } from "./git";
+} from "$lib/worktreeSweep";
+import type { FileEntry, WorktreeInfo } from "$lib/git";
 
 function wt(path: string, branch: string | null, extra: Partial<WorktreeInfo> = {}): WorktreeInfo {
   return { path, head: "abc1234", branch, isMain: false, locked: false, prunable: false, ...extra };

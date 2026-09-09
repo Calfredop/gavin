@@ -6,8 +6,8 @@ import {
   orchestrationAgentOver,
   reorganizeAction,
   reorganizeLabel,
-} from "./orchestrationAgent";
-import type { OrchestrationAgentRecord } from "./workspace";
+} from "$lib/orchestrationAgent";
+import type { OrchestrationAgentRecord } from "$lib/workspace";
 
 function run(over: Partial<OrchestrationAgentRecord> = {}): OrchestrationAgentRecord {
   return { sessionId: "s-1", railId: null, label: ORGANIZE_LABEL, ...over };

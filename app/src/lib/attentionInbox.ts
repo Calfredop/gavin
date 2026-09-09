@@ -29,14 +29,14 @@
 // its prompt, which is not the same thing as work that stopped short,
 // and only a rail knows which checkout its agent was launched in.
 
-import { cardIndex, type Orchestration, type StepAttention } from "./orchestration";
-import { sessionLabel } from "./paths";
-import { PHASE_LABEL } from "./appHub";
-import type { PageTabState } from "./sidebarSummary";
-import type { LayoutNode } from "./layout";
-import type { Workspace, WorkspacesData } from "./workspace";
-import type { Board } from "./kanban";
-import type { GavinTree } from "./gavin";
+import { cardIndex, type Orchestration, type StepAttention } from "$lib/orchestration";
+import { sessionLabel } from "$lib/paths";
+import { PHASE_LABEL } from "$lib/appHub";
+import type { PageTabState } from "$lib/sidebarSummary";
+import type { LayoutNode } from "$lib/layout";
+import type { Workspace, WorkspacesData } from "$lib/workspace";
+import type { Board } from "$lib/kanban";
+import type { GavinTree } from "$lib/gavin";
 
 /// Why a row is in the inbox. The rails' own answers, reused rather than
 /// re-spelled: a running step marked `asking` and a bare terminal

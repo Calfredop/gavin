@@ -9,7 +9,7 @@ import {
   setContextMenuEntries,
   suppressesNativeMenu,
   type NativeMenuEvent,
-} from "./contextMenu";
+} from "$lib/contextMenu";
 
 beforeEach(() => closeContextMenu());
 

@@ -9,9 +9,9 @@ import {
   runBaseline,
   trackedFiles,
   untrackedPaths,
-} from "./runChanges";
-import { shortSha, type RunChanges } from "./git";
-import type { CardSession } from "./kanban";
+} from "$lib/runChanges";
+import { shortSha, type RunChanges } from "$lib/git";
+import type { CardSession } from "$lib/kanban";
 
 const BASE = "4a3a53b1111111111111111111111111111111ff";
 

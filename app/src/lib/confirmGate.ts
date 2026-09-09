@@ -25,7 +25,7 @@
 // that a host-drawn dialog would be needed to close.
 
 import { invoke } from "@tauri-apps/api/core";
-import { askConfirm, type ConfirmOptions } from "./dialog";
+import { askConfirm, type ConfirmOptions } from "$lib/dialog";
 
 /// Exactly `confirm_gate.rs`'s `GATED_ACTIONS`, and spelled with each
 /// command's own registered name -- the host compares the two strings.

@@ -11,7 +11,7 @@
 </script>
 
 <script lang="ts">
-  import Modal from "./Modal.svelte";
+  import Modal from "$lib/Modal.svelte";
 
   interface Props {
     title: string;

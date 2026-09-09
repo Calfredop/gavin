@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { SplitRow } from "./diffRows";
+  import type { SplitRow } from "$lib/diffRows";
 
   interface Props {
     rows: SplitRow[];

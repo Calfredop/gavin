@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { allSources } from "./sources";
+import { allSources } from "$lib/sources";
 
 // A card tab is a fourth kind of pane tab, and nothing type-checks the
 // rules that make it one. The compiler is happy with a chip that opens a

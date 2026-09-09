@@ -17,11 +17,11 @@ import {
   composeSlot,
   composeCloseAction,
   NEW_CARD_STATUS,
-} from "./cardCompose";
-import { AUTO_COMMIT_BLOCK } from "./autoCommit";
-import { isPermanentColumn, type CardView } from "./planBoard";
-import type { MergedBoard } from "./boardSearch";
-import { source } from "./sources";
+} from "$lib/cardCompose";
+import { AUTO_COMMIT_BLOCK } from "$lib/autoCommit";
+import { isPermanentColumn, type CardView } from "$lib/planBoard";
+import type { MergedBoard } from "$lib/boardSearch";
+import { source } from "$lib/sources";
 
 describe("COMPOSE_KINDS", () => {
   it("opens on task, so ⌘N files runnable work by default", () => {

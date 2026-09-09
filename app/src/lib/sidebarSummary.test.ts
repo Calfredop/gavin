@@ -11,14 +11,14 @@ import {
   pageAgentsSummary,
   workspaceAgentsSummary,
   pageTabRows,
-} from "./sidebarSummary";
-import type { PageTabState } from "./sidebarSummary";
-import type { LayoutNode } from "./layout";
-import type { GitStatus, Page, Workspace } from "./workspace";
-import type { Orchestration, Rail, Stage, Step } from "./orchestration";
-import type { Board } from "./kanban";
-import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
-import { source } from "./sources";
+} from "$lib/sidebarSummary";
+import type { PageTabState } from "$lib/sidebarSummary";
+import type { LayoutNode } from "$lib/layout";
+import type { GitStatus, Page, Workspace } from "$lib/workspace";
+import type { Orchestration, Rail, Stage, Step } from "$lib/orchestration";
+import type { Board } from "$lib/kanban";
+import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
+import { source } from "$lib/sources";
 
 function leaf(tabs: string[]): LayoutNode {
   return { type: "leaf", tabs, activeTabIndex: 0 };

@@ -5,9 +5,9 @@ import {
   templateFromStage,
   droppedCardCount,
   stepsFromTemplate,
-} from "./orchestrationGroups";
-import type { GroupTemplate, GroupTemplateRecord } from "./orchestrationGroups";
-import type { Stage } from "./orchestration";
+} from "$lib/orchestrationGroups";
+import type { GroupTemplate, GroupTemplateRecord } from "$lib/orchestrationGroups";
+import type { Stage } from "$lib/orchestration";
 
 function record(over: Partial<GroupTemplateRecord> = {}): GroupTemplateRecord {
   return {

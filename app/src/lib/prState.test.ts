@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { get } from "svelte/store";
 
-vi.mock("./backend", () => ({ prStatus: vi.fn() }));
+vi.mock("$lib/backend", () => ({ prStatus: vi.fn() }));
 
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   __interestKeys,
   __resetForTesting,
@@ -13,9 +13,9 @@ import {
   refreshPr,
   requestPr,
   startPrPolling,
-} from "./prState";
-import { prKey } from "./pullRequest";
-import type { PrReport } from "./pullRequest";
+} from "$lib/prState";
+import { prKey } from "$lib/pullRequest";
+import type { PrReport } from "$lib/pullRequest";
 
 const NONE: PrReport = { state: "none" };
 

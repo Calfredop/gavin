@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { CommitInfo } from "./git";
-  import { MAX_DRAWN_LANE, type GraphRow } from "./graphLanes";
+  import type { CommitInfo } from "$lib/git";
+  import { MAX_DRAWN_LANE, type GraphRow } from "$lib/graphLanes";
 
   interface Props {
     commit: CommitInfo;

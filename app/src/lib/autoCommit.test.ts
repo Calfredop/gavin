@@ -14,7 +14,7 @@ import {
   resolveAutoCommit,
   setAutoCommitInBody,
   setAutoCommitInFile,
-} from "./autoCommit";
+} from "$lib/autoCommit";
 
 const card = (body: string) => `---\nkind: task\ntitle: A\nstatus: To Do\n---\n${body}`;
 

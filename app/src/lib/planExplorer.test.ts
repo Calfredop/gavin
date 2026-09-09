@@ -12,8 +12,8 @@ import {
   loadExplorerSelection,
   saveExplorerSelection,
   selectionStorageKey,
-} from "./planExplorer";
-import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
+} from "$lib/planExplorer";
+import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
 
 function plan(fileName: string, overrides: Partial<PlanFileInfo> = {}): PlanFileInfo {
   return {

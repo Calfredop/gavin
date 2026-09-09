@@ -14,10 +14,10 @@
 // git. Everything it needs arrives as an argument so the naming and the
 // copy can be tested without any of them.
 
-import type { ConfirmCheck, ConfirmOptions } from "./dialog";
-import type { AgentConfig } from "./gavin";
-import { branchNameFrom, defaultWorktreePath, freeBranchNameFrom, splitPath } from "./git";
-import { count } from "./railConfirm";
+import type { ConfirmCheck, ConfirmOptions } from "$lib/dialog";
+import type { AgentConfig } from "$lib/gavin";
+import { branchNameFrom, defaultWorktreePath, freeBranchNameFrom, splitPath } from "$lib/git";
+import { count } from "$lib/railConfirm";
 
 /// One entry in a run: the workspace's agent with a profile and/or a
 /// model of its own. Both are plain strings rather than optionals --

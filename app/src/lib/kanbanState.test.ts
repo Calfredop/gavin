@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   getBoard: vi.fn(),
   setBoard: vi.fn(),
   linkCardSession: vi.fn(),
   unlinkCardSession: vi.fn(),
 }));
 
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   kanbanState,
   fetchBoard,
@@ -23,8 +23,8 @@ import {
   cardSessionFor,
   saveErrors,
   dismissSaveError,
-} from "./kanbanState";
-import type { Board } from "./kanban";
+} from "$lib/kanbanState";
+import type { Board } from "$lib/kanban";
 
 function emptyBoard(): Board {
   return { columns: [{ id: "c1", name: "To Do", position: 0 }], labels: [], cardSessions: [] };

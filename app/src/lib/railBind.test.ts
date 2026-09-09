@@ -7,7 +7,7 @@ import {
   railBindFix,
   railBindTabAfterKey,
   type RailBindings,
-} from "./railBind";
+} from "$lib/railBind";
 
 const UNBOUND: RailBindings = { worktreePath: null, branch: null, pageId: null };
 

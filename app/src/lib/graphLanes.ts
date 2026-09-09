@@ -4,7 +4,7 @@
 // pass straight through, lines coming in from lanes that were waiting for
 // this commit, and lines going out to the lanes of extra parents.
 
-import type { CommitInfo } from "./git";
+import type { CommitInfo } from "$lib/git";
 
 export const LANE_COLORS = 8;
 export const MAX_DRAWN_LANE = 12;

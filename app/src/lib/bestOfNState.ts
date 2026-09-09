@@ -22,8 +22,8 @@
 // record keeps it until the run is picked or discarded.
 
 import { get, writable } from "svelte/store";
-import type { BestOfNRun, RunCandidate } from "./bestOfN";
-import type { CardView } from "./planBoard";
+import type { BestOfNRun, RunCandidate } from "$lib/bestOfN";
+import type { CardView } from "$lib/planBoard";
 
 /// Storage is injected (defaulting to the browser's) so this module stays
 /// testable under vitest's node environment, where localStorage does not

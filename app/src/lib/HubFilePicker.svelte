@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { pickPath } from "./picker";
+  import { pickPath } from "$lib/picker";
 
   interface Props {
     /// The path this tab is editing, relative to the workspace root.

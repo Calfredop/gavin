@@ -11,23 +11,23 @@
   // Deliberately thin, like BoardPane: it locates the card in the board's
   // own projection and hands it to the same components the hub tabs
   // mount, so a card never has two different detail panels.
-  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "./kanbanState";
-  import { fetchOrchestration, orchestrations } from "./orchestrationState";
-  import { gavinTrees } from "./gavinState";
-  import { indexCardViews, mergePlanCards, type CardView } from "./planBoard";
+  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/kanbanState";
+  import { fetchOrchestration, orchestrations } from "$lib/orchestrationState";
+  import { gavinTrees } from "$lib/gavinState";
+  import { indexCardViews, mergePlanCards, type CardView } from "$lib/planBoard";
   import {
     layoutState,
     daemonCompat,
     closeSession,
     retargetCardTabs,
     setCardTabPath,
-  } from "./layoutState";
-  import { cardSessionState } from "./columnRunAction";
-  import { runBaseline } from "./runChanges";
-  import { linkForCardPath, openLinkedCard } from "./cardTabLink";
-  import type { CardTabView } from "./gavin";
-  import CardDetailModal from "./CardDetailModal.svelte";
-  import RunChangesModal from "./RunChangesModal.svelte";
+  } from "$lib/layoutState";
+  import { cardSessionState } from "$lib/columnRunAction";
+  import { runBaseline } from "$lib/runChanges";
+  import { linkForCardPath, openLinkedCard } from "$lib/cardTabLink";
+  import type { CardTabView } from "$lib/gavin";
+  import CardDetailModal from "$lib/CardDetailModal.svelte";
+  import RunChangesModal from "$lib/RunChangesModal.svelte";
 
   interface Props {
     workspaceId: string;

@@ -16,15 +16,15 @@
   // says so when it has.
   import { MemoryStick } from "@lucide/svelte";
   import { get } from "svelte/store";
-  import { pressureBannerLine } from "./memory";
-  import { fleetMemory, memoryPressure, systemMemory } from "./memoryState";
-  import { showAppPanel } from "./appPanels";
-  import { layoutState } from "./layoutState";
-  import { askConfirm } from "./dialog";
-  import { closeIdlePrompt, idleTabsOnPage } from "./idleTabs";
-  import { closeTabsNow } from "./tabActions";
-  import { reclaimNowLabel, reclaimedClause } from "./doneSessionReclaim";
-  import { reclaimDoneSessionsNow, reclaimLog, reclaimableNow } from "./doneSessionReclaimState";
+  import { pressureBannerLine } from "$lib/memory";
+  import { fleetMemory, memoryPressure, systemMemory } from "$lib/memoryState";
+  import { showAppPanel } from "$lib/appPanels";
+  import { layoutState } from "$lib/layoutState";
+  import { askConfirm } from "$lib/dialog";
+  import { closeIdlePrompt, idleTabsOnPage } from "$lib/idleTabs";
+  import { closeTabsNow } from "$lib/tabActions";
+  import { reclaimNowLabel, reclaimedClause } from "$lib/doneSessionReclaim";
+  import { reclaimDoneSessionsNow, reclaimLog, reclaimableNow } from "$lib/doneSessionReclaimState";
 
   const line = $derived(
     pressureBannerLine({

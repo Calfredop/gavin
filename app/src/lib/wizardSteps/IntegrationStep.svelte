@@ -5,11 +5,11 @@
     layoutState,
     recordMcpForeignChoice,
     trustedAgentConfigs,
-  } from "./../layoutState";
-  import { resolveAgentConfig } from "./../settings";
-  import * as backend from "./../backend";
-  import { foreignMcpServersHash, runIntegration } from "./../mcpServerTrust";
-  import McpForeignChooser from "./../McpForeignChooser.svelte";
+  } from "$lib/layoutState";
+  import { resolveAgentConfig } from "$lib/settings";
+  import * as backend from "$lib/backend";
+  import { foreignMcpServersHash, runIntegration } from "$lib/mcpServerTrust";
+  import McpForeignChooser from "$lib/McpForeignChooser.svelte";
 
   interface Props {
     workspaceId: string;

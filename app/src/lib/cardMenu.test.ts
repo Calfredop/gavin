@@ -4,11 +4,11 @@ import { get, writable } from "svelte/store";
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
-vi.mock("./dialog", () => ({
+vi.mock("$lib/dialog", () => ({
   askConfirm: vi.fn(),
   askConfirmChecked: vi.fn(),
 }));
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   setPlanFrontmatterField: vi.fn(),
   getBoard: vi.fn(),
   createSession: vi.fn(),
@@ -40,7 +40,7 @@ const agentMock = vi.hoisted(() =>
     promptArgs: "",
   }))
 );
-vi.mock("./layoutState", () => ({
+vi.mock("$lib/layoutState", () => ({
   layoutState: writable({
     workspaces: [],
     sessionStatusById: {},
@@ -75,15 +75,15 @@ vi.mock("./layoutState", () => ({
 }));
 // The review flow owns its own suite; here it only has to be reachable
 // from the menu, so the request function is the seam.
-vi.mock("./codeReviewActions", () => ({
+vi.mock("$lib/codeReviewActions", () => ({
   requestCardReview: vi.fn().mockResolvedValue(null),
 }));
 // The first-Run review's interactive half owns its own suite too; Develop
 // only needs it reachable, not driven, so it is pre-approved here.
-vi.mock("./cardReviewActions", () => ({
+vi.mock("$lib/cardReviewActions", () => ({
   ensureCardReviewed: vi.fn().mockResolvedValue(true),
 }));
-vi.mock("./workspace", () => {
+vi.mock("$lib/workspace", () => {
   const findSessionLocation = vi.fn();
   return {
     findSessionLocation,
@@ -106,19 +106,19 @@ vi.mock("./workspace", () => {
   };
 });
 
-import * as backend from "./backend";
-import { askConfirmChecked } from "./dialog";
-import { findSessionLocation } from "./workspace";
-import { requestCardReview } from "./codeReviewActions";
-import { layoutState } from "./layoutState";
-import { kanbanState } from "./kanbanState";
-import { orchestrations } from "./orchestrationState";
-import { emptyOrchestration, addRail, addStage, addStep } from "./orchestration";
-import { buildCardMenuEntries, type CardMenuHooks } from "./cardMenu";
-import { bestOfNRequest, bestOfNRuns } from "./bestOfNState";
-import { isMenuItem, type ContextMenuItem } from "./contextMenu";
-import type { CardView } from "./planBoard";
-import type { Board } from "./kanban";
+import * as backend from "$lib/backend";
+import { askConfirmChecked } from "$lib/dialog";
+import { findSessionLocation } from "$lib/workspace";
+import { requestCardReview } from "$lib/codeReviewActions";
+import { layoutState } from "$lib/layoutState";
+import { kanbanState } from "$lib/kanbanState";
+import { orchestrations } from "$lib/orchestrationState";
+import { emptyOrchestration, addRail, addStage, addStep } from "$lib/orchestration";
+import { buildCardMenuEntries, type CardMenuHooks } from "$lib/cardMenu";
+import { bestOfNRequest, bestOfNRuns } from "$lib/bestOfNState";
+import { isMenuItem, type ContextMenuItem } from "$lib/contextMenu";
+import type { CardView } from "$lib/planBoard";
+import type { Board } from "$lib/kanban";
 
 function card(kind: "note" | "task" | "plan", status: string | null, extra: Partial<CardView> = {}): CardView {
   return {

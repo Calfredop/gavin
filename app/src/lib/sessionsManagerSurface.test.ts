@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { source } from "./sources";
+import { source } from "$lib/sources";
 
 // The task manager is one panel reached from one place, and the two
 // files that make it so are linked by nothing a type-checker can see: a
@@ -40,7 +40,7 @@ describe("the sidebar footer", () => {
     // The flag left this component for appPanels.ts so the app hub's
     // recap could open the same panel. Mounting it in both places would
     // put two pollers on the daemon and two modals on the screen.
-    expect(source(SIDEBAR)).toContain('from "./appPanels"');
+    expect(source(SIDEBAR)).toContain('from "$lib/appPanels"');
     expect(source(HUB)).not.toContain("<SessionsManagerModal");
     expect(source(HUB)).not.toContain("<AgentUsageModal");
   });
@@ -201,7 +201,7 @@ describe("the dialogs it asks with", () => {
     it(`${name} asks through dialog.ts, never the OS`, () => {
       const text = source(name);
       expect(text).not.toMatch(/from "@tauri-apps\/plugin-dialog"/);
-      expect(text).toContain('from "./dialog"');
+      expect(text).toContain('from "$lib/dialog"');
     });
   }
 });

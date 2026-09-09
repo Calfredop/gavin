@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layoutState, setGitViewPrefs } from "./layoutState";
+  import { layoutState, setGitViewPrefs } from "$lib/layoutState";
   import {
     gitStore,
     ensureGitView,
@@ -9,17 +9,17 @@
     initRepo,
     abortInProgress,
     continueInProgress,
-  } from "./gitState";
-  import { tooltip } from "./tooltip";
-  import GitToolbar from "./GitToolbar.svelte";
-  import GitOpBar from "./GitOpBar.svelte";
-  import GitWorktreeSwitcher from "./GitWorktreeSwitcher.svelte";
-  import GitNav from "./GitNav.svelte";
-  import GitChanges from "./GitChanges.svelte";
-  import GitDiff from "./GitDiff.svelte";
-  import GitConflictView from "./GitConflictView.svelte";
-  import GitGraph from "./GitGraph.svelte";
-  import GitCommitDetail from "./GitCommitDetail.svelte";
+  } from "$lib/gitState";
+  import { tooltip } from "$lib/tooltip";
+  import GitToolbar from "$lib/GitToolbar.svelte";
+  import GitOpBar from "$lib/GitOpBar.svelte";
+  import GitWorktreeSwitcher from "$lib/GitWorktreeSwitcher.svelte";
+  import GitNav from "$lib/GitNav.svelte";
+  import GitChanges from "$lib/GitChanges.svelte";
+  import GitDiff from "$lib/GitDiff.svelte";
+  import GitConflictView from "$lib/GitConflictView.svelte";
+  import GitGraph from "$lib/GitGraph.svelte";
+  import GitCommitDetail from "$lib/GitCommitDetail.svelte";
 
   interface Props {
     workspaceId: string;

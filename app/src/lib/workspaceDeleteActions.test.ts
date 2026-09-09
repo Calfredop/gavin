@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import * as backend from "./backend";
-import { deleteWorkspaceFromApp } from "./layoutState";
-import { executeWorkspaceDelete } from "./workspaceDeleteActions";
-import { defaultAnswers, type GavinFootprint } from "./workspaceDelete";
+import * as backend from "$lib/backend";
+import { deleteWorkspaceFromApp } from "$lib/layoutState";
+import { executeWorkspaceDelete } from "$lib/workspaceDeleteActions";
+import { defaultAnswers, type GavinFootprint } from "$lib/workspaceDelete";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   removeGavinFootprint: vi.fn().mockResolvedValue({ done: [], failed: [] }),
   getBoard: vi.fn().mockResolvedValue({ columns: [], labels: [], cardSessions: [] }),
   unlinkCardSession: vi.fn().mockResolvedValue(undefined),
@@ -16,7 +16,7 @@ vi.mock("./backend", () => ({
   deleteBoard: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("./layoutState", () => ({ deleteWorkspaceFromApp: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("$lib/layoutState", () => ({ deleteWorkspaceFromApp: vi.fn().mockResolvedValue(undefined) }));
 
 const footprint: GavinFootprint = {
   root: "/repo",

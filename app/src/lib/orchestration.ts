@@ -3,15 +3,15 @@
 // orchestrationState.ts owns every side effect. TS mirrors of
 // crates/protocol's orchestration shapes (camelCase on the wire).
 
-import type { Board, Column } from "./kanban";
-import type { GavinTree, PlanFileInfo } from "./gavin";
-import type { WorktreeInfo } from "./git";
-import type { SessionStatus } from "./notifications";
-import { isArchivedCard, planKey, slugStatus } from "./planBoard";
-import { isPrStep, isUntilStep, stepBefore, summaryParam, untilMax, untilVerdict } from "./orchestrationLoop";
-import { isUnreviewedStall } from "./cardReview";
-import { prKey, prRequirement, prWaitVerdict } from "./pullRequest";
-import type { PrReport } from "./pullRequest";
+import type { Board, Column } from "$lib/kanban";
+import type { GavinTree, PlanFileInfo } from "$lib/gavin";
+import type { WorktreeInfo } from "$lib/git";
+import type { SessionStatus } from "$lib/notifications";
+import { isArchivedCard, planKey, slugStatus } from "$lib/planBoard";
+import { isPrStep, isUntilStep, stepBefore, summaryParam, untilMax, untilVerdict } from "$lib/orchestrationLoop";
+import { isUnreviewedStall } from "$lib/cardReview";
+import { prKey, prRequirement, prWaitVerdict } from "$lib/pullRequest";
+import type { PrReport } from "$lib/pullRequest";
 
 export interface Step {
   id: string;

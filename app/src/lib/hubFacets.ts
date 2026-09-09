@@ -14,7 +14,7 @@
 // unmounted tabs simply read the current store when they are next shown.
 
 import { writable } from "svelte/store";
-import { NO_FACETS, type BoardFacets } from "./boardFilters";
+import { NO_FACETS, type BoardFacets } from "$lib/boardFilters";
 
 /// The three tabs that answer context/kind/rail the same way.
 export const HUB_FACET_TABS = ["kanban", "review", "plans"] as const;

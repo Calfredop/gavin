@@ -1,15 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { closeWindowPrompt, sessionsToEnd, survivingSessionsAlert, endEverySession } from "./appClose";
-import type { ManagedSession, ManagedSessions } from "./sessionsManager";
-import type { OrphanProcess } from "./orphan";
+import { closeWindowPrompt, sessionsToEnd, survivingSessionsAlert, endEverySession } from "$lib/appClose";
+import type { ManagedSession, ManagedSessions } from "$lib/sessionsManager";
+import type { OrphanProcess } from "$lib/orphan";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   listManagedSessions: vi.fn(),
   killSession: vi.fn(),
   endOrphan: vi.fn(),
 }));
 
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 
 function session(fields: Partial<ManagedSession>): ManagedSession {
   return {

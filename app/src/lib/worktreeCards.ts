@@ -31,7 +31,7 @@
 // Pure and path-only. The git call and the store live in
 // orchestrationState.ts; everything that decides anything is here.
 
-import { isToolStep, type Rail, type Step } from "./orchestration";
+import { isToolStep, type Rail, type Step } from "$lib/orchestration";
 
 /// `path` expressed relative to `dir`, or null when it is not inside it.
 ///

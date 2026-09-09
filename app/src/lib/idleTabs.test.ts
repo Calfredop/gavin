@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { closeIdlePrompt, idleTabsOnPage } from "./idleTabs";
-import { pageAgentsSummary, type PageTabState } from "./sidebarSummary";
-import type { LayoutNode } from "./layout";
-import type { Page } from "./workspace";
-import { source } from "./sources";
+import { closeIdlePrompt, idleTabsOnPage } from "$lib/idleTabs";
+import { pageAgentsSummary, type PageTabState } from "$lib/sidebarSummary";
+import type { LayoutNode } from "$lib/layout";
+import type { Page } from "$lib/workspace";
+import { source } from "$lib/sources";
 
 const leaf = (tabs: string[], pinned?: string[]): LayoutNode => ({
   type: "leaf",

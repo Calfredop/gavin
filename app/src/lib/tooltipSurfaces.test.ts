@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { source, svelteSources } from "./sources";
+import { source, svelteSources } from "$lib/sources";
 
 // The app has one tooltip: the `use:tooltip` action in tooltip.ts, which
 // mounts ONE bubble on <body>, positions it `fixed`, and flips it below
@@ -79,7 +79,7 @@ describe("one tooltip mechanism", () => {
 
   it("gives the tab bar's hover text the shared action", () => {
     const pane = source("Pane.svelte");
-    expect(pane).toMatch(/import \{ tooltip \} from "\.\/tooltip"/);
+    expect(pane).toMatch(/import \{ tooltip \} from "\$lib\/(?:[\w.-]+\/)*tooltip"/);
     expect(pane, "the tab label's hover text must go through use:tooltip").toMatch(
       /class="tab-label"[\s\S]{0,200}use:tooltip|use:tooltip[\s\S]{0,200}class="tab-label"/
     );

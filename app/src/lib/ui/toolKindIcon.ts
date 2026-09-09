@@ -23,8 +23,8 @@ import {
   Terminal,
   Zap,
 } from "@lucide/svelte";
-import type { Tool, ToolKind } from "../orchestrationTools";
-import { iconByName } from "./iconLibrary";
+import type { Tool, ToolKind } from "$lib/orchestrationTools";
+import { iconByName } from "$lib/ui/iconLibrary";
 
 /// The icon a tool of this kind draws, everywhere a tool is listed.
 ///

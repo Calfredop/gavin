@@ -1,22 +1,22 @@
 <script lang="ts">
-  import { pickPath } from "./picker";
+  import { pickPath } from "$lib/picker";
   import {
     setWorkspaceRoot,
     switchWorkspaceView,
     gitTrackingDefault,
     markGitTrackingAsked,
     recordMcpForeignChoice,
-  } from "./layoutState";
-  import { INIT_TRACKING_LABEL, resolveGitTracking } from "./gitTracking";
-  import { applyInitTracking } from "./workspaceOpen";
-  import { gavinTrees } from "./gavinState";
-  import { agentProfilesStore, agentModelDefaultsStore, trustedAgentConfigs } from "./layoutState";
-  import { resolveAgentConfig } from "./settings";
-  import * as backend from "./backend";
-  import { foreignMcpServersHash, runIntegration } from "./mcpServerTrust";
-  import { UNFILED_WORKSPACE_ID, type Workspace } from "./workspace";
-  import Modal from "./Modal.svelte";
-  import McpForeignChooser from "./McpForeignChooser.svelte";
+  } from "$lib/layoutState";
+  import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/gitTracking";
+  import { applyInitTracking } from "$lib/workspaceOpen";
+  import { gavinTrees } from "$lib/gavinState";
+  import { agentProfilesStore, agentModelDefaultsStore, trustedAgentConfigs } from "$lib/layoutState";
+  import { resolveAgentConfig } from "$lib/settings";
+  import * as backend from "$lib/backend";
+  import { foreignMcpServersHash, runIntegration } from "$lib/mcpServerTrust";
+  import { UNFILED_WORKSPACE_ID, type Workspace } from "$lib/workspace";
+  import Modal from "$lib/Modal.svelte";
+  import McpForeignChooser from "$lib/McpForeignChooser.svelte";
 
   interface Props {
     workspace: Workspace;

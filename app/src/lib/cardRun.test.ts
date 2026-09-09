@@ -20,7 +20,7 @@ import {
   developAvailable,
   provisionalSessionName,
   cardHomeNote,
-} from "./cardRun";
+} from "$lib/cardRun";
 
 describe("composeTaskPrompt", () => {
   it("wraps the body with the card pointer and the status contract", () => {

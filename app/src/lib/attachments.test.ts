@@ -12,7 +12,7 @@ import {
   withheldAttachmentPaths,
   type AttachmentLocation,
   type AttachmentStatus,
-} from "./attachments";
+} from "$lib/attachments";
 
 const status = (
   path: string,

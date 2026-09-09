@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { AgentConfig } from "./gavin";
-import { resolveAgentConfig, type AgentProfileInfo } from "./settings";
-import { setupPlan } from "./worktreeSetup";
-import { svelteSources, tsSources } from "./sources";
+import type { AgentConfig } from "$lib/gavin";
+import { resolveAgentConfig, type AgentProfileInfo } from "$lib/settings";
+import { setupPlan } from "$lib/worktreeSetup";
+import { svelteSources, tsSources } from "$lib/sources";
 import {
   configTrustNotice,
   configTrusted,
@@ -12,7 +12,7 @@ import {
   trustRows,
   trustedAgentConfig,
   trustedSetup,
-} from "./workspaceTrust";
+} from "$lib/workspaceTrust";
 
 const PROFILES: AgentProfileInfo[] = [
   {

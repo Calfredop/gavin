@@ -16,9 +16,9 @@
 // terminal to launch (spec O10's habit: the load-bearing part is a pure
 // function).
 
-import type { CardEntry, Orchestration, Rail, Step, ToolSummary } from "./orchestration";
-import { isToolStep, stepStateOf } from "./orchestration";
-import { NAME_TAB_FIRST } from "./cardRun";
+import type { CardEntry, Orchestration, Rail, Step, ToolSummary } from "$lib/orchestration";
+import { isToolStep, stepStateOf } from "$lib/orchestration";
+import { NAME_TAB_FIRST } from "$lib/cardRun";
 
 const READ_FIRST =
   "Read gavin_get_orchestration for the authoritative picture before writing anything.";

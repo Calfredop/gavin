@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   gitRunChanges: vi.fn(),
   gitDiffSince: vi.fn(),
 }));
 
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   FETCH_CONCURRENCY,
   clearReviewFile,
@@ -16,8 +16,8 @@ import {
   viewFor,
   type TouchRequest,
   type TouchedRun,
-} from "./reviewState";
-import type { FileDiff, RunChanges } from "./git";
+} from "$lib/reviewState";
+import type { FileDiff, RunChanges } from "$lib/git";
 
 const WS = "ws1";
 const BASE = "1111111111111111111111111111111111111111";

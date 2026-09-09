@@ -1,6 +1,6 @@
 <script lang="ts">
-  import Modal from "./Modal.svelte";
-  import { shortSha, type ResetMode } from "./git";
+  import Modal from "$lib/Modal.svelte";
+  import { shortSha, type ResetMode } from "$lib/git";
 
   interface Props {
     sha: string;

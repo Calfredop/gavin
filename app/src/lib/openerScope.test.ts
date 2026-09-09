@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { allSources } from "./sources";
+import { allSources } from "$lib/sources";
 
 // `open` LAUNCHES: on macOS it starts an `.app` bundle outright and
 // hands anything else to its registered handler. The capability used to

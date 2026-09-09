@@ -14,7 +14,7 @@
 // (HubTabsModal). This menu is the shortcut, not a second source of
 // truth: both write through setWorkspaceHubTabsHidden, and the last
 // entry opens that panel, so the gesture always has somewhere to lead.
-import type { ContextMenuEntry } from "./contextMenu";
+import type { ContextMenuEntry } from "$lib/contextMenu";
 import {
   HUB_VIEW_META,
   canHideHubView,
@@ -22,8 +22,8 @@ import {
   tabStripHubViewIds,
   toggleHubViewHidden,
   visibleHubViewIds,
-} from "./hubViewMeta";
-import { hubLabel } from "./workspace";
+} from "$lib/hubViewMeta";
+import { hubLabel } from "$lib/workspace";
 
 export interface HubTabMenuContext {
   /// The tab the menu was opened on. Always one the strip is drawing,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // The hub tab strip's arrangement is one feature spread over four
 // surfaces that nothing links: the row itself (+page.svelte), the eye

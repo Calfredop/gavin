@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // "Mark as Read" is one acknowledgement expressed as a SPLIT across a
 // dozen files, and nothing links them. A surface that nags reads the

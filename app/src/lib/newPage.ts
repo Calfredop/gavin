@@ -8,8 +8,8 @@
 // button rides on both of those rows instead, and the pane controls went
 // with the pane they act on (Pane.svelte). What is left here is the part
 // neither of those two hosts should own twice.
-import { presetGrid2x2, presetSideBySide, presetSingle, type LayoutNode } from "./layout";
-import type { ContextMenuEntry } from "./contextMenu";
+import { presetGrid2x2, presetSideBySide, presetSingle, type LayoutNode } from "$lib/layout";
+import type { ContextMenuEntry } from "$lib/contextMenu";
 
 /// One entry of the "New page" dropdown: how many sessions the page
 /// starts with, and the tree those sessions are arranged into. `build`

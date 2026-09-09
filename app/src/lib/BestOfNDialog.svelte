@@ -6,16 +6,16 @@
   // surface here: the branch names, the folders, the seeded pair and the
   // refusal all come from the pure module, so what this dialog previews
   // is literally what startBestOfN is handed.
-  import Modal from "./Modal.svelte";
-  import { agentProfilesStore, configTrusts, resolvedAgents } from "./layoutState";
-  import { gitStore, ensureGitView, refresh as refreshGit, rootPathOf } from "./gitState";
-  import { gavinTrees, worktreeSetups } from "./gavinState";
-  import ConfigTrustNotice from "./ConfigTrustNotice.svelte";
-  import { CUSTOM_MODEL } from "./agentModel";
-  import { candidatesError, forkBase, planCandidates, seedCandidates, type Candidate } from "./bestOfN";
-  import { startBestOfN } from "./bestOfNActions";
-  import { setupPlan, setupNotice } from "./worktreeSetup";
-  import type { CardView } from "./planBoard";
+  import Modal from "$lib/Modal.svelte";
+  import { agentProfilesStore, configTrusts, resolvedAgents } from "$lib/layoutState";
+  import { gitStore, ensureGitView, refresh as refreshGit, rootPathOf } from "$lib/gitState";
+  import { gavinTrees, worktreeSetups } from "$lib/gavinState";
+  import ConfigTrustNotice from "$lib/ConfigTrustNotice.svelte";
+  import { CUSTOM_MODEL } from "$lib/agentModel";
+  import { candidatesError, forkBase, planCandidates, seedCandidates, type Candidate } from "$lib/bestOfN";
+  import { startBestOfN } from "$lib/bestOfNActions";
+  import { setupPlan, setupNotice } from "$lib/worktreeSetup";
+  import type { CardView } from "$lib/planBoard";
 
   interface Props {
     workspaceId: string;

@@ -2,7 +2,7 @@
 // workspaceViews.ts binds these ids to Svelte components, so anything
 // that only needs the POLICY (the keyboard router, its tests) can import
 // this without pulling in the whole component graph.
-import { hubViewIsVisible, type Workspace } from "./workspace";
+import { hubViewIsVisible, type Workspace } from "$lib/workspace";
 
 export interface HubViewMeta {
   id: string;

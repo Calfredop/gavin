@@ -24,7 +24,7 @@ import {
   usageProjectionIndicator,
   worktreeStaleIndicator,
   type Indicator,
-} from "./indicators";
+} from "$lib/ui/indicators";
 
 /// The rendered lucide class of an indicator's glyph -- the only stable
 /// identity an icon component has from the outside. Two indicators that

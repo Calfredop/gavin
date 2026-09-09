@@ -1,7 +1,7 @@
 import { writable } from "svelte/store";
-import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
-import { defaultMode, modesFor, type EditorMode } from "./fileEditing";
-import { isArchivedCard, slugStatus } from "./planBoard";
+import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
+import { defaultMode, modesFor, type EditorMode } from "$lib/fileEditing";
+import { isArchivedCard, slugStatus } from "$lib/planBoard";
 
 /// What the Plans tab has on its right-hand side: a file, and the mode
 /// its editor holds it in. One object wherever it travels, never two

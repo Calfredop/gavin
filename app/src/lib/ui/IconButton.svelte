@@ -1,10 +1,10 @@
 <script lang="ts">
   import type { Component, Snippet } from "svelte";
-  import { tooltip as tooltipAction } from "../tooltip";
-  import { formatShortcut, type ShortcutId } from "../shortcuts";
-  import { isMacSync } from "../platform";
-  import { hintMode } from "../shortcutHints";
-  import ShortcutHint from "./ShortcutHint.svelte";
+  import { tooltip as tooltipAction } from "$lib/tooltip";
+  import { formatShortcut, type ShortcutId } from "$lib/shortcuts";
+  import { isMacSync } from "$lib/platform";
+  import { hintMode } from "$lib/shortcutHints";
+  import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
 
   type Variant = "bare" | "outlined" | "filled" | "segmented";
   type Tone = "default" | "accent" | "danger" | "success" | "warning";

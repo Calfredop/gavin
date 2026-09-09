@@ -1,11 +1,11 @@
 import { writable } from "svelte/store";
-import { parseAttachments } from "./attachments";
-import { parseComplexity } from "./complexity";
+import { parseAttachments } from "$lib/attachments";
+import { parseComplexity } from "$lib/complexity";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import * as backend from "./backend";
-import { refreshBoard } from "./kanbanState";
-import type { GavinTree, PlanFileInfo } from "./gavin";
-import type { Workspace } from "./workspace";
+import * as backend from "$lib/backend";
+import { refreshBoard } from "$lib/kanbanState";
+import type { GavinTree, PlanFileInfo } from "$lib/gavin";
+import type { Workspace } from "$lib/workspace";
 
 // One live tree per workspace with a watched root. Fed exclusively by
 // gavin-tree-changed pushes -- the initial WatchGavinRoot scan arrives as

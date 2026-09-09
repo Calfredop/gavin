@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // "Run all" lives entirely in the hub view's template and one async
 // function, and neither is reachable from the pure suite. Three facts

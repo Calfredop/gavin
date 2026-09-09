@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources, tsSources } from "./sources";
+import { svelteSources, tsSources } from "$lib/sources";
 
 // The completion cascade only works if EVERY human gesture that can file
 // a plan goes through it. Nothing links those call sites -- three of them

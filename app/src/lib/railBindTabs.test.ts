@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { RAIL_BIND_TABS } from "./railBind";
-import { svelteSources } from "./sources";
+import { RAIL_BIND_TABS } from "$lib/railBind";
+import { svelteSources } from "$lib/sources";
 
 // The rail's bind dialog was three stacked sections behind one button
 // that showed a full worktree path and a page name. Nothing on the way in

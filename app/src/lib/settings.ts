@@ -1,8 +1,8 @@
-import { composeLaunchCommand } from "./agentModel";
-import type { FailureCausePattern } from "./autoResume";
-import type { AgentConfig } from "./gavin";
-import { isAbsolutePath } from "./paths";
-import type { EffectiveTheme } from "./ui/theme";
+import { composeLaunchCommand } from "$lib/agentModel";
+import type { FailureCausePattern } from "$lib/autoResume";
+import type { AgentConfig } from "$lib/gavin";
+import { isAbsolutePath } from "$lib/paths";
+import type { EffectiveTheme } from "$lib/ui/theme";
 
 /// Mirrors AgentProfileDto from agent_setup.rs, fetched via
 /// backend.agentProfiles(). Never duplicated as a literal table here --

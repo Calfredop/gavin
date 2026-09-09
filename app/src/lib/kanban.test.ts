@@ -9,7 +9,7 @@ import {
   deleteLabel,
   type Board,
   type Label,
-} from "./kanban";
+} from "$lib/kanban";
 
 function label(id: string, name: string): Label {
   return { id, name, color: "#ff0000" };

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { source, svelteSources } from "../sources";
+import { source, svelteSources } from "$lib/sources";
 
 // indicators.ts can only promise that the vocabulary is coherent. What it
 // cannot see is a surface quietly hand-rolling a badge again -- and that
@@ -91,7 +91,7 @@ describe("no surface hand-rolls an indicator", () => {
     ["OrchestrationRail.svelte", "the rail's own state"],
     ["HomeHubView.svelte", "each rail's state in the hub's list"],
   ])("%s draws %s through StatusBadge", (file) => {
-    expect(source(file)).toMatch(/import StatusBadge from "\.{1,2}\/(ui\/)?StatusBadge\.svelte"/);
+    expect(source(file)).toMatch(/import StatusBadge from "\$lib\/(?:[\w.-]+\/)*StatusBadge\.svelte"/);
   });
 
   // The specific collision the card opened with: on the board the amber

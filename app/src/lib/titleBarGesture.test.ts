@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { doubleClickAction, createDoubleClickTracker, createDragIntent } from "./titleBarGesture";
+import { doubleClickAction, createDoubleClickTracker, createDragIntent } from "$lib/titleBarGesture";
 
 describe("doubleClickAction", () => {
   // Values of the macOS global default `AppleActionOnDoubleClick`

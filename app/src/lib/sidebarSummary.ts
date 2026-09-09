@@ -7,14 +7,14 @@
 // so a recap can never disagree with what it summarises, and no new
 // polling is introduced.
 
-import { allSessionIds, sessionTabsOnly } from "./layout";
-import { boardSummary } from "./homeSummary";
-import { isStepFinished, railStateOf, stepStateOf, type Orchestration, type Rail } from "./orchestration";
-import { slugStatus } from "./planBoard";
-import type { Board } from "./kanban";
-import type { GavinTree } from "./gavin";
-import type { GitStatus, Page, Workspace } from "./workspace";
-import type { SessionStatus } from "./notifications";
+import { allSessionIds, sessionTabsOnly } from "$lib/layout";
+import { boardSummary } from "$lib/homeSummary";
+import { isStepFinished, railStateOf, stepStateOf, type Orchestration, type Rail } from "$lib/orchestration";
+import { slugStatus } from "$lib/planBoard";
+import type { Board } from "$lib/kanban";
+import type { GavinTree } from "$lib/gavin";
+import type { GitStatus, Page, Workspace } from "$lib/workspace";
+import type { SessionStatus } from "$lib/notifications";
 
 export interface WorkspaceGitSummary {
   /// Distinct repositories (by repoRoot) across the workspace's sessions.

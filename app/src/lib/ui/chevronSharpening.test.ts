@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render } from "svelte/server";
-import { allSources } from "../sources";
+import { allSources } from "$lib/sources";
 
 /// The route components, re-keyed by bare file name so they sit beside
 /// the seam's entries in one map. `../routes` is outside lib and the

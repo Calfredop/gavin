@@ -36,10 +36,10 @@
   // 200px strip over the sidebar, which is the middle of the window --
   // so this is one geometry instead of two rather than a change of
   // convention.
-  import WindowControls from "./WindowControls.svelte";
-  import SidebarActions from "./SidebarActions.svelte";
-  import { isMacSync } from "./platform";
-  import { windowDrag } from "./windowDrag";
+  import WindowControls from "$lib/WindowControls.svelte";
+  import SidebarActions from "$lib/SidebarActions.svelte";
+  import { isMacSync } from "$lib/platform";
+  import { windowDrag } from "$lib/windowDrag";
 
   // Synchronous: the traffic lights must be on the correct side in the
   // first frame, and plugin-os's platform() is a plain global read.

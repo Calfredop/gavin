@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { railSelection, type RailLike } from "./railSelection.svelte";
-import { svelteSources } from "./sources";
+import { railSelection, type RailLike } from "$lib/railSelection.svelte";
+import { svelteSources } from "$lib/sources";
 
 // Creating a worktree from a rail's bind dialog cut the worktree and then
 // bound nothing: the button looked dead while `git worktree add` quietly

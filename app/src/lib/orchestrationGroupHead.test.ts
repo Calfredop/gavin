@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // A group's header was ONE row: grip, name, the sequence/parallel toggle
 // and the ⋯ menu. The toggle and menu are ~145px of fixed width, and a

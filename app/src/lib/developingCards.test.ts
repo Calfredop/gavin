@@ -5,8 +5,8 @@ import {
   developRunOver,
   developingRunFor,
   developingRunIn,
-} from "./developingCards";
-import type { DevelopingCardRecord, SessionLiveness } from "./workspace";
+} from "$lib/developingCards";
+import type { DevelopingCardRecord, SessionLiveness } from "$lib/workspace";
 
 const RUN: DevelopingCardRecord = { path: "/ws/.gavin-root/plans/thin.md", sessionId: "s-dev" };
 

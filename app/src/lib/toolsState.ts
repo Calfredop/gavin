@@ -8,9 +8,9 @@
 // wholesale while tools are upserted one at a time.
 
 import { writable, get } from "svelte/store";
-import * as backend from "./backend";
-import { toolLibrary, toRecord, isBuiltinId, BUILTIN_TOOLS } from "./orchestrationTools";
-import type { Tool, ToolRecord } from "./orchestrationTools";
+import * as backend from "$lib/backend";
+import { toolLibrary, toRecord, isBuiltinId, BUILTIN_TOOLS } from "$lib/orchestrationTools";
+import type { Tool, ToolRecord } from "$lib/orchestrationTools";
 
 /// The daemon's rows, by workspace. Null means "not fetched yet", which
 /// the scheduler must distinguish from "no tools" -- an unloaded library

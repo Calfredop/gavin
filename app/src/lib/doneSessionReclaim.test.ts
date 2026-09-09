@@ -15,12 +15,12 @@ import {
   type ReclaimInput,
   type ReclaimRecord,
   type ReclaimState,
-} from "./doneSessionReclaim";
-import { DEFAULT_LAUNCH } from "./launchGate";
-import type { Board } from "./kanban";
-import type { GavinTree, PlanFileInfo } from "./gavin";
-import type { Orchestration } from "./orchestration";
-import type { Workspace } from "./workspace";
+} from "$lib/doneSessionReclaim";
+import { DEFAULT_LAUNCH } from "$lib/launchGate";
+import type { Board } from "$lib/kanban";
+import type { GavinTree, PlanFileInfo } from "$lib/gavin";
+import type { Orchestration } from "$lib/orchestration";
+import type { Workspace } from "$lib/workspace";
 
 const GB = 1024 ** 3;
 const NOW = 10_000_000;

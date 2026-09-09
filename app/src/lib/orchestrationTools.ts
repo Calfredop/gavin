@@ -14,8 +14,8 @@
 // constants here and never reach the daemon; everything else is stored
 // per workspace or global to the machine.
 
-import { isAbsolutePath } from "./paths";
-import { composeReviewPrompt, REVIEW_RULES_LABEL } from "./codeReview";
+import { isAbsolutePath } from "$lib/paths";
+import { composeReviewPrompt, REVIEW_RULES_LABEL } from "$lib/codeReview";
 
 /// `gavin` is the odd one out: an action the APP performs, with no
 /// session and no checkout (tools spec T9). It is built-in-only -- the

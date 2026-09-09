@@ -11,12 +11,12 @@
 //     and only the matching chips light up. Rails with no match at all
 //     leave the grid, so what is left is scannable.
 
-import { matchesFields, queryTokens } from "./search";
-import { unplacedCount } from "./orchestration";
-import { toolKindLabel } from "./orchestrationTools";
-import type { CardEntry, Orchestration, Step, UnplacedGroup } from "./orchestration";
-import type { Tool } from "./orchestrationTools";
-import type { GroupTemplate } from "./orchestrationGroups";
+import { matchesFields, queryTokens } from "$lib/search";
+import { unplacedCount } from "$lib/orchestration";
+import { toolKindLabel } from "$lib/orchestrationTools";
+import type { CardEntry, Orchestration, Step, UnplacedGroup } from "$lib/orchestration";
+import type { Tool } from "$lib/orchestrationTools";
+import type { GroupTemplate } from "$lib/orchestrationGroups";
 
 function cardFields(entry: CardEntry | undefined): string[] {
   if (!entry) return [];

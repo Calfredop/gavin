@@ -1,46 +1,46 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable } from "svelte/store";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   createSession: vi.fn(),
   readFileForViewer: vi.fn(),
   writeFileForEditor: vi.fn(),
   gitRefs: vi.fn(),
 }));
-vi.mock("./layoutState", () => ({
+vi.mock("$lib/layoutState", () => ({
   resolvedAgentFor: vi.fn(),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   handleAgentSessionSpawned: vi.fn(),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   workspaceRootPath: vi.fn(() => null as string | null),
 }));
-vi.mock("./gavinState", () => ({ gavinTrees: writable({}) }));
-vi.mock("./kanbanState", () => ({
+vi.mock("$lib/gavinState", () => ({ gavinTrees: writable({}) }));
+vi.mock("$lib/kanbanState", () => ({
   kanbanState: writable({}),
   cardSessionFor: vi.fn(() => null),
 }));
-vi.mock("./cardRunActions", () => ({ revealSession: vi.fn().mockResolvedValue(true) }));
+vi.mock("$lib/cardRunActions", () => ({ revealSession: vi.fn().mockResolvedValue(true) }));
 // The launch wall's queue, stubbed. It is a live module (a poller, a
 // drain loop, localStorage) that these tests are not about, and its
 // dependency cone reaches layoutState -- which this file replaces with a
 // handful of functions. `holdOrQueue` returning null is "the gate is
 // open", which is the state every assertion here assumes.
-vi.mock("./launchQueue", () => ({
+vi.mock("$lib/launchQueue", () => ({
   holdOrQueue: vi.fn(() => null),
   mayLaunch: vi.fn(() => true),
   launchBlockedReason: vi.fn(() => null),
 }));
 
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   resolvedAgentFor,
   handleAgentSessionSpawned,
   setSessionName,
   workspaceRootPath,
-} from "./layoutState";
-import { gavinTrees } from "./gavinState";
-import { cardSessionFor } from "./kanbanState";
-import { revealSession } from "./cardRunActions";
+} from "$lib/layoutState";
+import { gavinTrees } from "$lib/gavinState";
+import { cardSessionFor } from "$lib/kanbanState";
+import { revealSession } from "$lib/cardRunActions";
 import {
   reviewRequest,
   cancelReview,
@@ -48,9 +48,9 @@ import {
   createReviewRules,
   requestBranchReview,
   requestCardReview,
-} from "./codeReviewActions";
-import { REVIEW_RULES_STARTER } from "./codeReview";
-import type { CardView } from "./planBoard";
+} from "$lib/codeReviewActions";
+import { REVIEW_RULES_STARTER } from "$lib/codeReview";
+import type { CardView } from "$lib/planBoard";
 
 const AGENT = {
   profileId: "claude-code",

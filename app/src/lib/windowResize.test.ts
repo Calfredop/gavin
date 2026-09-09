@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resizeZones, needsResizeGrips, GRIP, CORNER } from "./windowResize";
+import { resizeZones, needsResizeGrips, GRIP, CORNER } from "$lib/windowResize";
 
 describe("resizeZones", () => {
   it("covers all eight directions exactly once", () => {

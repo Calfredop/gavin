@@ -17,15 +17,15 @@
 // `setInterval` is N wakeups a minute and N different ideas of the time.
 
 import { derived, get, readable, writable, type Readable } from "svelte/store";
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   DEFAULT_CYCLE,
   type PauseCycle,
   type PauseVerdict,
   pauseBlockedReason,
   pauseVerdict,
-} from "./agentPause";
-import type { AgentUsageReport } from "./agentUsage";
+} from "$lib/agentPause";
+import type { AgentUsageReport } from "$lib/agentUsage";
 import {
   loadUsageHistory,
   projectUsage,
@@ -34,8 +34,8 @@ import {
   worstProjection,
   type UsageHistory,
   type UsageProjection,
-} from "./usageProjection";
-import { layoutState, resolvedAgentFor } from "./layoutState";
+} from "$lib/usageProjection";
+import { layoutState, resolvedAgentFor } from "$lib/layoutState";
 
 /// The app-wide cycle, or null for no cycle at all -- the shipped
 /// default, so nothing pauses until somebody turns it on.

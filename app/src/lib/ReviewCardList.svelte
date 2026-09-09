@@ -17,14 +17,14 @@
     RefreshCw,
     Archive,
   } from "@lucide/svelte";
-  import SearchInput from "./ui/SearchInput.svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import { tooltip } from "./tooltip";
-  import { everyGroupExpanded, isGroupExpanded, type ReviewGroup } from "./reviewBoard";
-  import { facetsActive, type BoardFacets, type ContextFacet } from "./boardFilters";
-  import type { RailIndex } from "./planFilter";
-  import FacetFilters from "./FacetFilters.svelte";
-  import type { Column } from "./kanban";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import { tooltip } from "$lib/tooltip";
+  import { everyGroupExpanded, isGroupExpanded, type ReviewGroup } from "$lib/reviewBoard";
+  import { facetsActive, type BoardFacets, type ContextFacet } from "$lib/boardFilters";
+  import type { RailIndex } from "$lib/planFilter";
+  import FacetFilters from "$lib/FacetFilters.svelte";
+  import type { Column } from "$lib/kanban";
 
   interface Props {
     groups: ReviewGroup[];

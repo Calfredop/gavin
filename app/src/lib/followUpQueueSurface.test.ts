@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hasSource, source } from "./sources";
+import { hasSource, source } from "$lib/sources";
 
 // The follow-up queue is three files joined by nothing a type-checker can
 // see: a view that renders perfectly while being mounted nowhere, the

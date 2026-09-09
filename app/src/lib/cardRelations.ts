@@ -7,7 +7,7 @@
 // with cards drawn from `allCards` rather than with a raw frontmatter
 // link.
 
-import type { CardView } from "./planBoard";
+import type { CardView } from "$lib/planBoard";
 
 /// Every card hanging off this plan, in the order the detail modal lists
 /// them: the nested children first (they exist nowhere else on the

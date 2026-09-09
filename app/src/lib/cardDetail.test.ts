@@ -10,7 +10,7 @@ import {
   settingsSummary,
   type CardSectionsOpen,
   type CardSituation,
-} from "./cardDetail";
+} from "$lib/cardDetail";
 
 const ids = (situation: CardSituation): string[] =>
   (cardSessionBar(situation)?.actions ?? []).map((a) => a.id);

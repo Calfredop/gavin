@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "./homeSummary";
-import type { Board } from "./kanban";
-import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
-import type { Orchestration, Rail, StepRun, StepState } from "./orchestration";
+import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "$lib/homeSummary";
+import type { Board } from "$lib/kanban";
+import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
+import type { Orchestration, Rail, StepRun, StepState } from "$lib/orchestration";
 
 function plan(fileName: string, status: string | null): PlanFileInfo {
   return {

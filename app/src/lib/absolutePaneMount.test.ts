@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // Several components in this app paint themselves `position: absolute;
 // inset: 0` at their own root, because the pane they were built for

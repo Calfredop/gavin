@@ -16,24 +16,24 @@
   // Everything it decides comes from queuedInput.ts; the template below
   // chooses no wording of its own.
   import { ChevronDown, ChevronUp, Send, X } from "@lucide/svelte";
-  import Modal from "./Modal.svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import { tooltip } from "./tooltip";
-  import { layoutState, queuedInputsById } from "./layoutState";
+  import Modal from "$lib/Modal.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import { tooltip } from "$lib/tooltip";
+  import { layoutState, queuedInputsById } from "$lib/layoutState";
   import {
     composeRefusal,
     deliveryHold,
     queueBlockedReason,
     queueCountLabel,
     queuedAgeLabel,
-  } from "./queuedInput";
+  } from "$lib/queuedInput";
   import {
     cancelFollowUp,
     moveFollowUp,
     queueFollowUp,
     queueTargetFor,
     sendFollowUpNow,
-  } from "./queuedInputActions";
+  } from "$lib/queuedInputActions";
 
   interface Props {
     sessionId: string;

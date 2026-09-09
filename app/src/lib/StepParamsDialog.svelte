@@ -3,15 +3,15 @@
   // is only what DIFFERS from the tool's default (tools spec §5.4), so a
   // later edit to that default still reaches a step that never
   // deliberately overrode it.
-  import Modal from "./Modal.svelte";
+  import Modal from "$lib/Modal.svelte";
   import {
     gavinActionOf,
     pruneOverrides,
     resolveToolBody,
     startRailWorkspaceChoices,
     toolKindLabel,
-  } from "./orchestrationTools";
-  import type { Tool } from "./orchestrationTools";
+  } from "$lib/orchestrationTools";
+  import type { Tool } from "$lib/orchestrationTools";
 
   interface Props {
     tool: Tool;

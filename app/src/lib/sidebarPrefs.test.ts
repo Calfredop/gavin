@@ -6,7 +6,7 @@ const layoutMock = vi.hoisted(() => ({
   openAppHub: vi.fn(),
 }));
 
-vi.mock("./layoutState", async () => {
+vi.mock("$lib/layoutState", async () => {
   const { writable } = await import("svelte/store");
   return {
     layoutState: writable({
@@ -30,9 +30,9 @@ import {
   saveScratchpadEnabled,
   scratchpadEnabled,
   setScratchpadEnabled,
-} from "./sidebarPrefs";
-import { layoutState } from "./layoutState";
-import { UNFILED_WORKSPACE_ID } from "./workspace";
+} from "$lib/sidebarPrefs";
+import { layoutState } from "$lib/layoutState";
+import { UNFILED_WORKSPACE_ID } from "$lib/workspace";
 
 /// The two fields this module reads, cast in: LayoutState has sixteen
 /// more, and spelling them out would make the fixture about the store

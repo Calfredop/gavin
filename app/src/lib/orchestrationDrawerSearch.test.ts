@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // The Orchestration drawer carries a quick filter of its own, over the
 // three lists it holds: saved groups, tools, and the unplaced cards.
@@ -46,12 +46,12 @@ describe("the drawer's own quick filter", () => {
   const template = drawer.slice(templateAt);
 
   it("runs on the shared matcher rather than a hand-rolled one", () => {
-    expect(drawer).toContain('import { searchDrawer } from "./orchestrationSearch"');
+    expect(drawer).toContain('import { searchDrawer } from "$lib/orchestrationSearch"');
     expect(drawer).toMatch(/searchDrawer\(query, \{[^}]*templates[^}]*tools[^}]*groups[^}]*\}\)/s);
   });
 
   it("uses the app's one search box, not a bare input", () => {
-    expect(drawer).toContain('import SearchInput from "./ui/SearchInput.svelte"');
+    expect(drawer).toContain('import SearchInput from "$lib/ui/SearchInput.svelte"');
     expect(template).toMatch(/<SearchInput\b/);
     expect(template).not.toMatch(/<input\b/);
   });

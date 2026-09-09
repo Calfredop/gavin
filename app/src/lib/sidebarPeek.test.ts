@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { get } from "svelte/store";
-import { source } from "./sources";
+import { source } from "$lib/sources";
 import {
   endSidebarPeek,
   peekSidebar,
   sidebarPeek,
   sidebarShowsFull,
   sidebarShowsRail,
-} from "./sidebarPeek";
+} from "$lib/sidebarPeek";
 
 const SOURCE = source("sidebarPeek.ts");
 

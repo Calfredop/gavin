@@ -1,20 +1,20 @@
 <script lang="ts">
   import { get } from "svelte/store";
   import { BrushCleaning, ChevronDown, FolderGit2, Play, GitMerge, Trash2, Plus, Eraser } from "@lucide/svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import StatusBadge from "./ui/StatusBadge.svelte";
-  import { worktreeStaleIndicator } from "./ui/indicators";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import { worktreeStaleIndicator } from "$lib/ui/indicators";
   import {
     agentProfilesStore,
     createSessionForCard,
     agentModelDefaultsStore,
     layoutState,
     trustedAgentConfigs,
-  } from "./layoutState";
-  import { allSessionIdsInWorkspace } from "./workspace";
-  import { orchestrations } from "./orchestrationState";
-  import { resolveAgentConfig } from "./settings";
-  import { askConfirmChecked, showAlert } from "./dialog";
+  } from "$lib/layoutState";
+  import { allSessionIdsInWorkspace } from "$lib/workspace";
+  import { orchestrations } from "$lib/orchestrationState";
+  import { resolveAgentConfig } from "$lib/settings";
+  import { askConfirmChecked, showAlert } from "$lib/dialog";
   import {
     gitStore,
     rootPathOf,
@@ -26,17 +26,17 @@
     sweepWorktrees,
     dismissError,
     noteError,
-  } from "./gitState";
+  } from "$lib/gitState";
   import {
     classifyWorktrees,
     nothingToSweepLines,
     sweepConfirm,
     type SweepVerdict,
-  } from "./worktreeSweep";
-  import { splitPath, type WorktreeInfo } from "./git";
-  import { tooltip } from "./tooltip";
-  import GitForkDialog from "./GitForkDialog.svelte";
-  import GitDiscardDialog from "./GitDiscardDialog.svelte";
+  } from "$lib/worktreeSweep";
+  import { splitPath, type WorktreeInfo } from "$lib/git";
+  import { tooltip } from "$lib/tooltip";
+  import GitForkDialog from "$lib/GitForkDialog.svelte";
+  import GitDiscardDialog from "$lib/GitDiscardDialog.svelte";
 
   interface Props {
     workspaceId: string;

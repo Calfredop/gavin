@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // The Kanban and Orchestration tabs each open with a first row that is the
 // same thing -- a search lens over a wide scrolling surface -- and the two

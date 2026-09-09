@@ -10,7 +10,7 @@
 // title, its row labels, a few of its own nouns -- not the connecting
 // prose around them.
 
-import { matchesFields, queryTokens } from "./search";
+import { matchesFields, queryTokens } from "$lib/search";
 
 export interface SettingsSection {
   id: string;

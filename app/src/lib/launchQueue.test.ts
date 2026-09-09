@@ -53,21 +53,21 @@ const probe = vi.hoisted(() => {
   };
 });
 const { agentSessions, memoryPressure, systemMemory, layoutState } = probe;
-vi.mock("./memoryState", () => ({
+vi.mock("$lib/memoryState", () => ({
   agentSessions: probe.agentSessions,
   memoryPressure: probe.memoryPressure,
   systemMemory: probe.systemMemory,
   fleetMemory: probe.fleetMemory,
   storedMeans: probe.storedMeans,
 }));
-vi.mock("./layoutState", () => ({
+vi.mock("$lib/layoutState", () => ({
   layoutState: probe.layoutState,
   resolvedAgentFor: () => ({ profileId: "claude-code" }),
 }));
 
-vi.mock("./appWindowState", () => ({ currentWindowLabel: () => "main" }));
-vi.mock("./agentPauseState", () => ({ setGateReasonHook: vi.fn() }));
-vi.mock("./backend", () => ({
+vi.mock("$lib/appWindowState", () => ({ currentWindowLabel: () => "main" }));
+vi.mock("$lib/agentPauseState", () => ({ setGateReasonHook: vi.fn() }));
+vi.mock("$lib/backend", () => ({
   getLaunchConfig: vi.fn().mockResolvedValue(null),
   setLaunchConfig: vi.fn().mockResolvedValue(undefined),
 }));
@@ -80,11 +80,11 @@ const launchQueuedTool = vi.fn().mockResolvedValue(undefined);
 const launchQueuedReview = vi.fn().mockResolvedValue(undefined);
 const launchQueuedCommit = vi.fn().mockResolvedValue(undefined);
 const launchQueuedOrchestrationAgent = vi.fn().mockResolvedValue(undefined);
-vi.mock("./cardRunActions", () => ({ launchQueuedCard }));
-vi.mock("./workspaceToolsActions", () => ({ launchQueuedTool }));
-vi.mock("./codeReviewActions", () => ({ launchQueuedReview }));
-vi.mock("./gitState", () => ({ launchQueuedCommit }));
-vi.mock("./orchestrationState", () => ({ launchQueuedOrchestrationAgent }));
+vi.mock("$lib/cardRunActions", () => ({ launchQueuedCard }));
+vi.mock("$lib/workspaceToolsActions", () => ({ launchQueuedTool }));
+vi.mock("$lib/codeReviewActions", () => ({ launchQueuedReview }));
+vi.mock("$lib/gitState", () => ({ launchQueuedCommit }));
+vi.mock("$lib/orchestrationState", () => ({ launchQueuedOrchestrationAgent }));
 
 import {
   __resetLaunchQueueForTesting,
@@ -107,7 +107,7 @@ import {
   startLaunchQueue,
   stopLaunchQueue,
   type LaunchIntent,
-} from "./launchQueue";
+} from "$lib/launchQueue";
 
 /// A localStorage stand-in: vitest's node environment has none, which is
 /// exactly why every persistence function here takes one.

@@ -3,11 +3,11 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import * as backend from "./backend";
-import { isViewableInApp } from "./fileTypes";
-import { hotState } from "./hotState";
-import { xtermTheme } from "./ui/terminalTheme";
-import type { EffectiveTheme } from "./ui/theme";
+import * as backend from "$lib/backend";
+import { isViewableInApp } from "$lib/fileTypes";
+import { hotState } from "$lib/hotState";
+import { xtermTheme } from "$lib/ui/terminalTheme";
+import type { EffectiveTheme } from "$lib/ui/theme";
 
 interface RegistryEntry {
   term: Terminal;
@@ -94,7 +94,7 @@ const PATH_CANDIDATE = /(~\/|\.{0,2}\/)[^\s'"()[\]{}:,]+/g;
 
 async function activatePath(resolvedPath: string, sessionId: string): Promise<void> {
   if (await isViewableInApp(resolvedPath)) {
-    const { openFileInSplit } = await import("./layoutState");
+    const { openFileInSplit } = await import("$lib/layoutState");
     await openFileInSplit(sessionId, resolvedPath);
     return;
   }

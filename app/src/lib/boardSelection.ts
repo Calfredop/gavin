@@ -11,9 +11,9 @@
 // card's leftover id simply stops counting.
 
 import { writable, get } from "svelte/store";
-import type { CardView } from "./planBoard";
-import { count } from "./railConfirm";
-import { estimateLines, type LaunchEstimate } from "./launchEstimate";
+import type { CardView } from "$lib/planBoard";
+import { count } from "$lib/railConfirm";
+import { estimateLines, type LaunchEstimate } from "$lib/launchEstimate";
 
 /// Card paths, in the order they were picked.
 export const boardSelection = writable<string[]>([]);

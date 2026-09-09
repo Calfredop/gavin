@@ -7,7 +7,7 @@ import { writable } from "svelte/store";
 // that finished hours ago is worse than no lock at all, and nothing else
 // in the app would notice.
 
-vi.mock("./layoutState", () => {
+vi.mock("$lib/layoutState", () => {
   const layoutState = writable({
     workspaces: [
       { id: "ws-1", developingCards: undefined as unknown },
@@ -35,10 +35,10 @@ vi.mock("./layoutState", () => {
   };
 });
 
-vi.mock("./workspace", () => ({ sessionLiveness: vi.fn(() => "live") }));
+vi.mock("$lib/workspace", () => ({ sessionLiveness: vi.fn(() => "live") }));
 
-const { layoutState, setDevelopingCards } = await import("./layoutState");
-const { sessionLiveness } = await import("./workspace");
+const { layoutState, setDevelopingCards } = await import("$lib/layoutState");
+const { sessionLiveness } = await import("$lib/workspace");
 const {
   developingBlocker,
   developingCardsIn,
@@ -46,7 +46,7 @@ const {
   recordDevelopingCard,
   startDevelopingCardsWatch,
   __resetForTesting,
-} = await import("./developingCardsState");
+} = await import("$lib/developingCardsState");
 
 const PATH = "/ws/.gavin-root/plans/thin.md";
 

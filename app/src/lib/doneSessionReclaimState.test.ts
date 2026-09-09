@@ -47,36 +47,36 @@ const probe = vi.hoisted(() => {
   };
 });
 
-vi.mock("./layoutState", () => ({ layoutState: probe.layoutState, closeSession: probe.closeSession }));
-vi.mock("./kanbanState", () => ({ kanbanState: probe.kanbanState }));
-vi.mock("./gavinState", () => ({ gavinTrees: probe.gavinTrees }));
-vi.mock("./memoryState", () => ({
+vi.mock("$lib/layoutState", () => ({ layoutState: probe.layoutState, closeSession: probe.closeSession }));
+vi.mock("$lib/kanbanState", () => ({ kanbanState: probe.kanbanState }));
+vi.mock("$lib/gavinState", () => ({ gavinTrees: probe.gavinTrees }));
+vi.mock("$lib/memoryState", () => ({
   agentSessions: probe.agentSessions,
   memoryPressure: probe.memoryPressure,
   systemMemory: probe.systemMemory,
 }));
-vi.mock("./launchQueue", () => ({
+vi.mock("$lib/launchQueue", () => ({
   launchConfigStore: probe.launchConfigStore,
   launchGateVerdict: probe.launchGateVerdict,
   launchQueue: probe.launchQueue,
 }));
-vi.mock("./orchestrationState", () => ({ orchestrations: probe.orchestrations }));
-vi.mock("./tabActions", () => ({ closeTabsNow: probe.closeTabsNow }));
-vi.mock("./dialog", () => ({ askConfirm: probe.askConfirm }));
+vi.mock("$lib/orchestrationState", () => ({ orchestrations: probe.orchestrations }));
+vi.mock("$lib/tabActions", () => ({ closeTabsNow: probe.closeTabsNow }));
+vi.mock("$lib/dialog", () => ({ askConfirm: probe.askConfirm }));
 vi.mock("@tauri-apps/plugin-notification", () => ({
   sendNotification: probe.sendNotification,
   isPermissionGranted: probe.isPermissionGranted,
   requestPermission: probe.requestPermission,
 }));
 
-import { IDLE_GRACE_MS, RECLAIM_SPACING_MS } from "./doneSessionReclaim";
+import { IDLE_GRACE_MS, RECLAIM_SPACING_MS } from "$lib/doneSessionReclaim";
 import {
   __resetDoneSessionReclaimForTesting,
   reclaimDoneSessionsNow,
   reclaimLog,
   reclaimableNow,
   startDoneSessionReclaim,
-} from "./doneSessionReclaimState";
+} from "$lib/doneSessionReclaimState";
 
 const GB = 1024 ** 3;
 const NOW = 1_800_000_000_000;

@@ -9,9 +9,9 @@ import {
   type GitStatus,
   type Workspace,
   type WorkspacesData,
-} from "./workspace";
-import type { FleetStrip } from "./memory";
-import { sessionTabsOnly } from "./layout";
+} from "$lib/workspace";
+import type { FleetStrip } from "$lib/memory";
+import { sessionTabsOnly } from "$lib/layout";
 import {
   gitSummaryOf,
   kanbanSummary,
@@ -24,12 +24,12 @@ import {
   type RailsSummary,
   type WorkspaceAgentsSummary,
   type WorkspaceGitSummary,
-} from "./sidebarSummary";
-import { cardSessionState, type CardSessionState } from "./columnRunAction";
-import { cardIsOnARail, type LinkedCard } from "./cardTabLink";
-import { cardIndex, effectiveStatus, planIndex, type Orchestration } from "./orchestration";
-import { slugStatus } from "./planBoard";
-import { totalUsage, type SessionRow, type Totals } from "./sessionsManager";
+} from "$lib/sidebarSummary";
+import { cardSessionState, type CardSessionState } from "$lib/columnRunAction";
+import { cardIsOnARail, type LinkedCard } from "$lib/cardTabLink";
+import { cardIndex, effectiveStatus, planIndex, type Orchestration } from "$lib/orchestration";
+import { slugStatus } from "$lib/planBoard";
+import { totalUsage, type SessionRow, type Totals } from "$lib/sessionsManager";
 import {
   reportSeverity,
   unavailableReason,
@@ -37,11 +37,11 @@ import {
   type AgentUsageReport,
   type UsageSeverity,
   type UsageWindow,
-} from "./agentUsage";
-import type { AgentProfileInfo } from "./settings";
-import type { Board } from "./kanban";
-import type { GavinTree } from "./gavin";
-import type { SessionStatus } from "./notifications";
+} from "$lib/agentUsage";
+import type { AgentProfileInfo } from "$lib/settings";
+import type { Board } from "$lib/kanban";
+import type { GavinTree } from "$lib/gavin";
+import type { SessionStatus } from "$lib/notifications";
 // Build-time, not a Tauri round trip: the hub's header must render on
 // the very first frame, and a version is not worth an IPC failure mode.
 // Keep in step with app/src-tauri/tauri.conf.json's own `version`, which

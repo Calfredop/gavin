@@ -1,10 +1,10 @@
-import { askConfirm } from "./dialog";
+import { askConfirm } from "$lib/dialog";
 import { get } from "svelte/store";
-import { layoutState } from "./layoutState";
-import type { LayoutNode } from "./layout";
-import { findLeafPath, getNodeAtPath, isLastTabInPane, allSessionIds, sessionTabsOnly } from "./layout";
-import type { Workspace, WorkspacesData } from "./workspace";
-import { getActiveTree, allSessionIdsInWorkspace, findSessionLocation } from "./workspace";
+import { layoutState } from "$lib/layoutState";
+import type { LayoutNode } from "$lib/layout";
+import { findLeafPath, getNodeAtPath, isLastTabInPane, allSessionIds, sessionTabsOnly } from "$lib/layout";
+import type { Workspace, WorkspacesData } from "$lib/workspace";
+import { getActiveTree, allSessionIdsInWorkspace, findSessionLocation } from "$lib/workspace";
 
 // The workspace that owns a tab, falling back to the active one when the
 // tab is nowhere in a page tree (a main-agent session, or an id already

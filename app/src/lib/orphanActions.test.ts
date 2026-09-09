@@ -1,23 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { writable } from "svelte/store";
 
-vi.mock("./dialog", () => ({
+vi.mock("$lib/dialog", () => ({
   askConfirm: vi.fn().mockResolvedValue(true),
   showAlert: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   endOrphan: vi.fn(),
 }));
-vi.mock("./layoutState", () => ({
+vi.mock("$lib/layoutState", () => ({
   layoutState: writable({ orphanBySessionId: {} }),
   handleOrphanEnded: vi.fn(),
 }));
 
-import { askConfirm, showAlert } from "./dialog";
-import * as backend from "./backend";
-import { layoutState, handleOrphanEnded } from "./layoutState";
-import { endSessionOrphan } from "./orphanActions";
-import type { OrphanProcess } from "./orphan";
+import { askConfirm, showAlert } from "$lib/dialog";
+import * as backend from "$lib/backend";
+import { layoutState, handleOrphanEnded } from "$lib/layoutState";
+import { endSessionOrphan } from "$lib/orphanActions";
+import type { OrphanProcess } from "$lib/orphan";
 
 const ORPHAN: OrphanProcess = { pid: 4172, command: "claude --model opus" };
 

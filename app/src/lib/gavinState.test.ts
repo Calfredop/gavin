@@ -4,7 +4,7 @@ import { get } from "svelte/store";
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   // Resolved by default: watchRootedWorkspaces calls .catch() on this, so
   // a bare vi.fn() returning undefined would throw instead of exercising
   // the real best-effort path.
@@ -14,7 +14,7 @@ vi.mock("./backend", () => ({
 }));
 
 import { listen } from "@tauri-apps/api/event";
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   gavinTrees,
   initGavinListeners,
@@ -22,9 +22,9 @@ import {
   patchPlanField,
   patchPlanPath,
   __resetForTesting,
-} from "./gavinState";
-import type { GavinTree } from "./gavin";
-import type { Workspace } from "./workspace";
+} from "$lib/gavinState";
+import type { GavinTree } from "$lib/gavin";
+import type { Workspace } from "$lib/workspace";
 
 function ws(id: string, rootPath?: string): Workspace {
   return { id, name: id, pages: [], activePageId: null, rootPath };

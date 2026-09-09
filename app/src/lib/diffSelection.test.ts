@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { selectionHunk, rangeIds, clickLine } from "./diffSelection";
-import type { Hunk } from "./git";
+import { selectionHunk, rangeIds, clickLine } from "$lib/diffSelection";
+import type { Hunk } from "$lib/git";
 
 const hunks: Hunk[] = [
   {

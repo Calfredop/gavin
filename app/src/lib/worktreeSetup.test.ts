@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { setupPlan, setupNotice } from "./worktreeSetup";
-import { svelteSources } from "./sources";
+import { setupPlan, setupNotice } from "$lib/worktreeSetup";
+import { svelteSources } from "$lib/sources";
 
 describe("what a new worktree runs", () => {
   it("is the declared commands, chained so a failure stops the rest", () => {
@@ -128,7 +128,7 @@ describe("the session a new worktree gets", () => {
     // orchestrationState over time, and a guard that pins the whole line
     // fails on every unrelated addition while catching nothing.
     expect(source(BIND)).toMatch(
-      /import \{[^}]*\brunOnRailPage\b[^}]*\} from "\.\/orchestrationState";/
+      /import \{[^}]*\brunOnRailPage\b[^}]*\} from "\$lib\/(?:[\w.-]+\/)*orchestrationState";/
     );
     expect(source(BIND)).not.toContain("createSessionForCard");
   });

@@ -1,16 +1,16 @@
 import type { Component } from "svelte";
 import { LayoutDashboard, Kanban, FileText, Bot, FolderTree, Files, Settings, GitBranch, Waypoints, Wrench, ScanEye } from "@lucide/svelte";
-import HomeHubView from "./HomeHubView.svelte";
-import GitHubView from "./GitHubView.svelte";
-import SettingsHubView from "./SettingsHubView.svelte";
-import KanbanBoard from "./KanbanBoard.svelte";
-import OrchestrationHubView from "./OrchestrationHubView.svelte";
-import WorkspaceToolsHubView from "./WorkspaceToolsHubView.svelte";
-import ReviewHubView from "./ReviewHubView.svelte";
-import PrdHubView from "./PrdHubView.svelte";
-import AgentFileHubView from "./AgentFileHubView.svelte";
-import PlanExplorerHubView from "./PlanExplorerHubView.svelte";
-import FilesHubView from "./FilesHubView.svelte";
+import HomeHubView from "$lib/HomeHubView.svelte";
+import GitHubView from "$lib/GitHubView.svelte";
+import SettingsHubView from "$lib/SettingsHubView.svelte";
+import KanbanBoard from "$lib/KanbanBoard.svelte";
+import OrchestrationHubView from "$lib/OrchestrationHubView.svelte";
+import WorkspaceToolsHubView from "$lib/WorkspaceToolsHubView.svelte";
+import ReviewHubView from "$lib/ReviewHubView.svelte";
+import PrdHubView from "$lib/PrdHubView.svelte";
+import AgentFileHubView from "$lib/AgentFileHubView.svelte";
+import PlanExplorerHubView from "$lib/PlanExplorerHubView.svelte";
+import FilesHubView from "$lib/FilesHubView.svelte";
 import {
   HUB_VIEW_META,
   NO_HUB_TAB_PREFS,
@@ -18,7 +18,7 @@ import {
   visibleHubViewIds,
   type HubTabPrefs,
   type HubViewMeta,
-} from "./hubViewMeta";
+} from "$lib/hubViewMeta";
 
 /// A hub tab: the metadata from hubViewMeta.ts plus what renders it.
 /// The id/label/visibility rules live there so modules that only need

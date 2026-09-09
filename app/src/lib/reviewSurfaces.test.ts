@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { HUB_VIEW_META, orderableHubViewIds, tabStripHubViewIds, visibleHubViewIds } from "./hubViewMeta";
-import { allSources } from "./sources";
+import { HUB_VIEW_META, orderableHubViewIds, tabStripHubViewIds, visibleHubViewIds } from "$lib/hubViewMeta";
+import { allSources } from "$lib/sources";
 
 // The Review tab is four pure modules and four components, and the rules
 // that hold them together are invisible to every other suite here. A tab
@@ -44,7 +44,7 @@ describe("the tab's registration", () => {
     // missing entry is an undefined spread that crashes at render rather
     // than a compile error the id union would catch.
     const text = source("workspaceViews.ts");
-    expect(text).toContain("import ReviewHubView from \"./ReviewHubView.svelte\"");
+    expect(text).toMatch(/import ReviewHubView from "\$lib\/(?:[\w.-]+\/)*ReviewHubView\.svelte"/);
     expect(text).toContain("review: { icon: ScanEye, component: ReviewHubView }");
   });
 });

@@ -15,10 +15,10 @@ const backendMock = vi.hoisted(() => ({
     indexed: 0,
   })),
 }));
-vi.mock("./backend", () => backendMock);
+vi.mock("$lib/backend", () => backendMock);
 
 const dialogMock = vi.hoisted(() => ({ showAlert: vi.fn(async () => {}) }));
-vi.mock("./dialog", () => dialogMock);
+vi.mock("$lib/dialog", () => dialogMock);
 
 const layoutMock = vi.hoisted(() => ({
   createWorkspace: vi.fn(),
@@ -27,7 +27,7 @@ const layoutMock = vi.hoisted(() => ({
   markGitTrackingAsked: vi.fn(async () => {}),
 }));
 
-vi.mock("./layoutState", async () => {
+vi.mock("$lib/layoutState", async () => {
   const { writable } = await import("svelte/store");
   const layoutState = writable({
     workspaces: [] as { id: string; name: string; rootPath?: string }[],
@@ -51,7 +51,7 @@ vi.mock("./layoutState", async () => {
   };
 });
 
-import { layoutState } from "./layoutState";
+import { layoutState } from "$lib/layoutState";
 import {
   bindWithoutInit,
   cancelOpen,
@@ -60,7 +60,7 @@ import {
   openWorkspaceFolder,
   pendingOpen,
   workspaceForRoot,
-} from "./workspaceOpen";
+} from "$lib/workspaceOpen";
 
 /// Only the two fields this module reads. LayoutState has sixteen more,
 /// and listing them would make every fixture here about the store rather

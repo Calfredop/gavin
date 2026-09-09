@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { render } from "svelte/server";
 import type { Component } from "svelte";
-import { toolIcon, toolKindIcon } from "./toolKindIcon";
-import { TOOL_KINDS, type ToolKind } from "../orchestrationTools";
+import { toolIcon, toolKindIcon } from "$lib/ui/toolKindIcon";
+import { TOOL_KINDS, type ToolKind } from "$lib/orchestrationTools";
 
 /// The rendered lucide class of any glyph. The kind-keyed helper below
 /// is the one the original cases use; this is the same question asked of

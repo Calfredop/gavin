@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
-import type { AvailableUpdate, UpdateSettings } from "./updates";
+import type { AvailableUpdate, UpdateSettings } from "$lib/updates";
 
 const host = vi.hoisted(() => ({
   updateSettings: vi.fn(),
   checkForUpdate: vi.fn(),
 }));
 
-vi.mock("./backend", () => host);
+vi.mock("$lib/backend", () => host);
 
 import {
   availableUpdate,
@@ -18,7 +18,7 @@ import {
   runUpdateCheck,
   startUpdateWatch,
   updateChannel,
-} from "./updatesState";
+} from "$lib/updatesState";
 
 const ENDPOINT = "https://example.test/latest.json";
 

@@ -6,9 +6,9 @@ import {
   prdHasPlaceholders,
   PRD_PLACEHOLDERS,
   SETUP_STEPS,
-} from "./setupWizard";
-import type { SuperpowersStatus } from "./superpowers";
-import { svelteSources } from "./sources";
+} from "$lib/setupWizard";
+import type { SuperpowersStatus } from "$lib/superpowers";
+import { svelteSources } from "$lib/sources";
 
 /// A settled check that found nothing: enough to keep the derivation off
 /// `pending` without completing the Superpowers step.

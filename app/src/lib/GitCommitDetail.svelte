@@ -1,13 +1,13 @@
 <script lang="ts">
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-  import { gitStore, selectDetailFile } from "./gitState";
-  import { layoutState, setGitViewPrefs } from "./layoutState";
-  import { shortSha, LARGE_HUNK_LINES, type DiffLayout } from "./git";
-  import { toUnifiedRows, toSplitRows } from "./diffRows";
-  import { tooltip } from "./tooltip";
-  import GitFileRow from "./GitFileRow.svelte";
-  import GitDiffUnified from "./GitDiffUnified.svelte";
-  import GitDiffSplit from "./GitDiffSplit.svelte";
+  import { gitStore, selectDetailFile } from "$lib/gitState";
+  import { layoutState, setGitViewPrefs } from "$lib/layoutState";
+  import { shortSha, LARGE_HUNK_LINES, type DiffLayout } from "$lib/git";
+  import { toUnifiedRows, toSplitRows } from "$lib/diffRows";
+  import { tooltip } from "$lib/tooltip";
+  import GitFileRow from "$lib/GitFileRow.svelte";
+  import GitDiffUnified from "$lib/GitDiffUnified.svelte";
+  import GitDiffSplit from "$lib/GitDiffSplit.svelte";
 
   interface Props {
     workspaceId: string;

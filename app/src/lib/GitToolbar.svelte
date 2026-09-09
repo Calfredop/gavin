@@ -17,21 +17,21 @@
     pushLabel,
     canSync,
     currentBranch,
-  } from "./gitState";
-  import { branchLabel } from "./git";
-  import { gavinTrees } from "./gavinState";
+  } from "$lib/gitState";
+  import { branchLabel } from "$lib/git";
+  import { gavinTrees } from "$lib/gavinState";
   import {
     agentProfilesStore,
     agentModelDefaultsStore,
     layoutState,
     trustedAgentConfigs,
-  } from "./layoutState";
-  import { resolveAgentConfig } from "./settings";
-  import { reviewBlocker } from "./codeReview";
-  import { requestBranchReview } from "./codeReviewActions";
-  import { tooltip } from "./tooltip";
-  import IconButton from "./ui/IconButton.svelte";
-  import GitPromptDialog from "./GitPromptDialog.svelte";
+  } from "$lib/layoutState";
+  import { resolveAgentConfig } from "$lib/settings";
+  import { reviewBlocker } from "$lib/codeReview";
+  import { requestBranchReview } from "$lib/codeReviewActions";
+  import { tooltip } from "$lib/tooltip";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import GitPromptDialog from "$lib/GitPromptDialog.svelte";
 
   interface Props {
     workspaceId: string;

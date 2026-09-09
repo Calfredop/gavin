@@ -23,7 +23,7 @@ const hot = vi.hoisted(() => ({
   snapshots: [] as string[],
 }));
 
-vi.mock("./hotState", () => ({
+vi.mock("$lib/hotState", () => ({
   hotState: (key: string, fresh: () => unknown) => {
     if (!(key in hot.bag)) hot.bag[key] = fresh();
     return hot.bag[key];
@@ -56,8 +56,8 @@ vi.mock("@tauri-apps/api/event", () => ({
     return () => {};
   }),
 }));
-vi.mock("./ui/terminalTheme", () => ({ xtermTheme: (theme: string) => ({ theme }) }));
-vi.mock("./backend", () => ({
+vi.mock("$lib/ui/terminalTheme", () => ({ xtermTheme: (theme: string) => ({ theme }) }));
+vi.mock("$lib/backend", () => ({
   writeInput: vi.fn().mockResolvedValue(undefined),
   snapshotSession: vi.fn(async (sessionId: string) => {
     hot.snapshots.push(sessionId);
@@ -67,13 +67,13 @@ vi.mock("./backend", () => ({
   openPathExternally: vi.fn().mockResolvedValue(undefined),
 }));
 
-type Registry = typeof import("./terminalRegistry");
+type Registry = typeof import("$lib/terminalRegistry");
 
 /// One execution of terminalRegistry.ts, as Vite produces when an edit
 /// anywhere in its dependency cone invalidates it.
 async function execute(): Promise<Registry> {
   vi.resetModules();
-  return import("./terminalRegistry");
+  return import("$lib/terminalRegistry");
 }
 
 describe("terminalRegistry across a hot reload", () => {

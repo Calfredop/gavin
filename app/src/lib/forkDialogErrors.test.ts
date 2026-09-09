@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // Both dialogs that cut git a branch or a worktree used to hand a
 // refusal to the Git tab's error banner and keep themselves open:

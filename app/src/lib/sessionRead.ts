@@ -39,7 +39,7 @@
 // the human already looked at, and showing every one of them is the
 // honest answer to that.
 
-import type { SessionStatus } from "./notifications";
+import type { SessionStatus } from "$lib/notifications";
 
 /// The sessions whose current wait the human has acknowledged.
 export type ReadSessions = ReadonlySet<string>;

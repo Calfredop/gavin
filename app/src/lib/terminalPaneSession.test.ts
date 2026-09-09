@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // TerminalPane binds its session ONCE, in onMount: that is where it asks
 // the registry for the session's Terminal and appends the registry's
@@ -52,12 +52,12 @@ function rebuildsOnSessionChange(block: string): boolean {
 function callSites(): { file: string; index: number }[] {
   const sites: { file: string; index: number }[] = [];
   for (const [path, text] of Object.entries(SOURCES)) {
-    if (path.endsWith("/TerminalPane.svelte")) continue;
+    if (path === "TerminalPane.svelte") continue;
     let from = 0;
     for (;;) {
       const at = text.indexOf("<TerminalPane", from);
       if (at === -1) break;
-      sites.push({ file: path.replace("./", ""), index: at });
+      sites.push({ file: path, index: at });
       from = at + 1;
     }
   }

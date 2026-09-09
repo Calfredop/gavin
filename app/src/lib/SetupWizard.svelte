@@ -5,20 +5,20 @@
     agentProfilesStore,
     agentModelDefaultsStore,
     trustedAgentConfigs,
-  } from "./layoutState";
-  import { gavinTrees } from "./gavinState";
-  import { resolveAgentConfig, resolvePrdPath } from "./settings";
-  import { setupProgress, type SetupStep } from "./setupWizard";
-  import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "./superpowers";
-  import * as backend from "./backend";
-  import Modal from "./Modal.svelte";
-  import AgentStep from "./wizardSteps/AgentStep.svelte";
-  import IntegrationStep from "./wizardSteps/IntegrationStep.svelte";
-  import PrdStep from "./wizardSteps/PrdStep.svelte";
-  import SuperpowersStep from "./wizardSteps/SuperpowersStep.svelte";
-  import GitStep from "./wizardSteps/GitStep.svelte";
-  import ReviewStep from "./wizardSteps/ReviewStep.svelte";
-  import LaunchStep from "./wizardSteps/LaunchStep.svelte";
+  } from "$lib/layoutState";
+  import { gavinTrees } from "$lib/gavinState";
+  import { resolveAgentConfig, resolvePrdPath } from "$lib/settings";
+  import { setupProgress, type SetupStep } from "$lib/setupWizard";
+  import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/superpowers";
+  import * as backend from "$lib/backend";
+  import Modal from "$lib/Modal.svelte";
+  import AgentStep from "$lib/wizardSteps/AgentStep.svelte";
+  import IntegrationStep from "$lib/wizardSteps/IntegrationStep.svelte";
+  import PrdStep from "$lib/wizardSteps/PrdStep.svelte";
+  import SuperpowersStep from "$lib/wizardSteps/SuperpowersStep.svelte";
+  import GitStep from "$lib/wizardSteps/GitStep.svelte";
+  import ReviewStep from "$lib/wizardSteps/ReviewStep.svelte";
+  import LaunchStep from "$lib/wizardSteps/LaunchStep.svelte";
 
   interface Props {
     workspaceId: string;

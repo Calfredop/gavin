@@ -1,16 +1,16 @@
 <script lang="ts">
-  import { gitStore, select, stageFiles, unstageFiles, stageAll, unstageAll, discardFiles, stashPop, stashApply, selectChanges } from "./gitState";
-  import { layoutState, setGitViewPrefs } from "./layoutState";
-  import { DEFAULT_SHARE, shareFromHeight } from "./gitChangesSplit";
-  import { tooltip } from "./tooltip";
-  import { LIST_DISPLAY_CAP, type Area, type FileEntry } from "./git";
-  import { describeFileDiscard, type FileDiscardPrompt } from "./discardFlow";
-  import GitFileRow from "./GitFileRow.svelte";
-  import GitCommitBox from "./GitCommitBox.svelte";
-  import GitDiscardDialog from "./GitDiscardDialog.svelte";
-  import SearchInput from "./ui/SearchInput.svelte";
-  import { filterFiles } from "./gitSearch";
-  import { isSearching } from "./search";
+  import { gitStore, select, stageFiles, unstageFiles, stageAll, unstageAll, discardFiles, stashPop, stashApply, selectChanges } from "$lib/gitState";
+  import { layoutState, setGitViewPrefs } from "$lib/layoutState";
+  import { DEFAULT_SHARE, shareFromHeight } from "$lib/gitChangesSplit";
+  import { tooltip } from "$lib/tooltip";
+  import { LIST_DISPLAY_CAP, type Area, type FileEntry } from "$lib/git";
+  import { describeFileDiscard, type FileDiscardPrompt } from "$lib/discardFlow";
+  import GitFileRow from "$lib/GitFileRow.svelte";
+  import GitCommitBox from "$lib/GitCommitBox.svelte";
+  import GitDiscardDialog from "$lib/GitDiscardDialog.svelte";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
+  import { filterFiles } from "$lib/gitSearch";
+  import { isSearching } from "$lib/search";
 
   interface Props {
     workspaceId: string;

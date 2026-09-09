@@ -22,14 +22,14 @@
 // stored value is never identity-equal to the one that was put in.
 
 import { get, writable } from "svelte/store";
-import * as backend from "./backend";
-import { featureBlockedReason, type DaemonCompat } from "./daemonCompat";
-import { daemonCompat, sessionExits } from "./layoutState";
+import * as backend from "$lib/backend";
+import { featureBlockedReason, type DaemonCompat } from "$lib/daemonCompat";
+import { daemonCompat, sessionExits } from "$lib/layoutState";
 // TYPE-only, deliberately: this module is reached from
 // `layoutState.bootstrap`, and a value import of workspaceTools would
 // pull the whole `@lucide/svelte` barrel onto the start-up path. The
 // derivation the tab wants (`lastRunsFor`) lives there instead.
-import type { ToolRun } from "./workspaceTools";
+import type { ToolRun } from "$lib/workspaceTools";
 
 export interface ToolRunsView {
   runs: ToolRun[];

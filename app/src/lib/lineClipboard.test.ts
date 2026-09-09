@@ -5,7 +5,7 @@ import {
   lineFieldFor,
   planLineClipboard,
   type LineClipboardEvent,
-} from "./lineClipboard";
+} from "$lib/lineClipboard";
 
 const TEXTAREA = { multiline: true, editable: true };
 const INPUT = { multiline: false, editable: true };

@@ -9,10 +9,10 @@ import {
   runnableIdleRails,
   firstUnfinishedStageId,
   stepStateOf,
-} from "./orchestration";
-import type { CardEntry, Orchestration, Rail, Stage } from "./orchestration";
-import { slugStatus } from "./planBoard";
-import { estimateLines, type LaunchEstimate } from "./launchEstimate";
+} from "$lib/orchestration";
+import type { CardEntry, Orchestration, Rail, Stage } from "$lib/orchestration";
+import { slugStatus } from "$lib/planBoard";
+import { estimateLines, type LaunchEstimate } from "$lib/launchEstimate";
 
 /// What a destructive rail action asks before it runs: the prompt's
 /// title, its consequence lines, and the word on the button. Built here

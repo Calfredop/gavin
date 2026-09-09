@@ -11,14 +11,14 @@ import {
   pruneFacets,
   underContext,
   type BoardFacets,
-} from "./boardFilters";
-import { AUTO_KEY_PREFIX } from "./boardSearch";
-import { railIndex } from "./planFilter";
-import type { RailIndex } from "./planFilter";
-import type { AutoColumn, CardView, DisplayColumn } from "./planBoard";
-import type { GavinContext, GavinTree } from "./gavin";
-import { emptyOrchestration } from "./orchestration";
-import type { Orchestration, Rail } from "./orchestration";
+} from "$lib/boardFilters";
+import { AUTO_KEY_PREFIX } from "$lib/boardSearch";
+import { railIndex } from "$lib/planFilter";
+import type { RailIndex } from "$lib/planFilter";
+import type { AutoColumn, CardView, DisplayColumn } from "$lib/planBoard";
+import type { GavinContext, GavinTree } from "$lib/gavin";
+import { emptyOrchestration } from "$lib/orchestration";
+import type { Orchestration, Rail } from "$lib/orchestration";
 
 function card(name: string, over: Partial<CardView> = {}): CardView {
   const fileName = `${name}.md`;

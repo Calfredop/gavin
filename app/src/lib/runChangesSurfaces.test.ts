@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { allSources } from "./sources";
+import { allSources } from "$lib/sources";
 
 // The per-run Changes view is one fact -- `CardSession.base_sha` -- read
 // on two surfaces and written at four launch sites, and nothing links

@@ -5,9 +5,9 @@ import {
   nearestContext,
   isPermanentColumn,
   indexCardViews,
-} from "./planBoard";
-import type { Board, Column } from "./kanban";
-import type { GavinContext, GavinTree, PlanFileInfo } from "./gavin";
+} from "$lib/planBoard";
+import type { Board, Column } from "$lib/kanban";
+import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
 
 function col(id: string, name: string): Column {
   return { id, name, position: 0 };

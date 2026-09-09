@@ -22,7 +22,7 @@ import {
   maybeNotifyReviewWait,
   reviewWaitBody,
   __resetForTesting,
-} from "./notifications";
+} from "$lib/notifications";
 
 /// Today's behaviour: both events enabled. The per-workspace toggles
 /// (D38) get their own test below; every pre-existing case asserts the

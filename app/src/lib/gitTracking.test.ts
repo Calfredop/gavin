@@ -9,7 +9,7 @@ import {
   trackingSummary,
   untrackConfirm,
   type GavinTracking,
-} from "./gitTracking";
+} from "$lib/gitTracking";
 
 const status = (over: Partial<GavinTracking> = {}): GavinTracking => ({
   isRepo: true,

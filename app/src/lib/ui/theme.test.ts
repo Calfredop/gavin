@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveTheme, parseThemePref, type ThemePref } from "./theme";
+import { resolveTheme, parseThemePref, type ThemePref } from "$lib/ui/theme";
 
 describe("resolveTheme", () => {
   it("returns an explicit preference regardless of the system appearance", () => {

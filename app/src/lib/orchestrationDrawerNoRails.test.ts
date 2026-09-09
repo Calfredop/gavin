@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // With no rails the Orchestration tab used to render ONE paragraph --
 // "No rails yet" -- in place of its whole body, and the body is what

@@ -3,38 +3,38 @@
 // Surfaces supply the hooks (modal, delete prompt, run, error strip).
 
 import { get } from "svelte/store";
-import { openPathExternally } from "./backend";
-import * as backend from "./backend";
-import { kanbanState, cardSessionFor } from "./kanbanState";
-import { layoutState, daemonCompat, switchWorkspaceView } from "./layoutState";
-import { patchPlanField } from "./gavinState";
-import { requestedExplorerFile } from "./planExplorer";
-import { guardCompletion, subjectFromCard } from "./cardCompletion";
+import { openPathExternally } from "$lib/backend";
+import * as backend from "$lib/backend";
+import { kanbanState, cardSessionFor } from "$lib/kanbanState";
+import { layoutState, daemonCompat, switchWorkspaceView } from "$lib/layoutState";
+import { patchPlanField } from "$lib/gavinState";
+import { requestedExplorerFile } from "$lib/planExplorer";
+import { guardCompletion, subjectFromCard } from "$lib/cardCompletion";
 import {
   jumpToBoundSession,
   relaunchCard,
   developCard,
   resumeCard,
   revealDevelopingCard,
-} from "./cardRunActions";
-import { developingRunOn } from "./developingCardsState";
-import { DEVELOPING_MENU_LABEL } from "./developingCards";
-import { requestCardReview } from "./codeReviewActions";
-import { developAvailable } from "./cardRun";
-import { cardSessionState } from "./columnRunAction";
-import { findCardPlacement } from "./orchestration";
+} from "$lib/cardRunActions";
+import { developingRunOn } from "$lib/developingCardsState";
+import { DEVELOPING_MENU_LABEL } from "$lib/developingCards";
+import { requestCardReview } from "$lib/codeReviewActions";
+import { developAvailable } from "$lib/cardRun";
+import { cardSessionState } from "$lib/columnRunAction";
+import { findCardPlacement } from "$lib/orchestration";
 import {
   orchestrations,
   sendCardToRailAction,
   removeCardFromRailAction,
-} from "./orchestrationState";
-import { executeArchive, executeUnarchive } from "./archiveActions";
-import { bestOfNRequest, bestOfNRuns, runForCard } from "./bestOfNState";
-import { featureBlockedReason } from "./daemonCompat";
-import { cancelLaunch, launchBlockedReason, queuedForCard } from "./launchQueue";
-import { isArchivedCard, slugStatus, type CardView } from "./planBoard";
-import type { Column } from "./kanban";
-import type { ContextMenuEntry } from "./contextMenu";
+} from "$lib/orchestrationState";
+import { executeArchive, executeUnarchive } from "$lib/archiveActions";
+import { bestOfNRequest, bestOfNRuns, runForCard } from "$lib/bestOfNState";
+import { featureBlockedReason } from "$lib/daemonCompat";
+import { cancelLaunch, launchBlockedReason, queuedForCard } from "$lib/launchQueue";
+import { isArchivedCard, slugStatus, type CardView } from "$lib/planBoard";
+import type { Column } from "$lib/kanban";
+import type { ContextMenuEntry } from "$lib/contextMenu";
 
 export interface CardMenuHooks {
   workspaceId: string;

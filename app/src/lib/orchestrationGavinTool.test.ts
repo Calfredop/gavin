@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { BUILTIN_TOOLS } from "./orchestrationTools";
-import { allSources } from "./sources";
+import { BUILTIN_TOOLS } from "$lib/orchestrationTools";
+import { allSources } from "$lib/sources";
 
 // The `gavin` tool kind is the one kind with no session behind it, and
 // three facts about it are invisible when they break:

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fileExtension, isMarkdown, isViewableExtension } from "./fileTypes";
+import { fileExtension, isMarkdown, isViewableExtension } from "$lib/fileTypes";
 
 describe("fileExtension", () => {
   it("returns the lowercased extension", () => {

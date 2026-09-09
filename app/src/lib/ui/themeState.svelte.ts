@@ -1,7 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import * as backend from "../backend";
-import { applyTerminalTheme } from "../terminalRegistry";
-import { resolveTheme, parseThemePref, type ThemePref, type EffectiveTheme } from "./theme";
+import * as backend from "$lib/backend";
+import { applyTerminalTheme } from "$lib/terminalRegistry";
+import { resolveTheme, parseThemePref, type ThemePref, type EffectiveTheme } from "$lib/ui/theme";
 
 /// "system" is stored as null on the Rust side (absent means default),
 /// so it never round-trips as the literal string.

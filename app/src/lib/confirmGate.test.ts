@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("./dialog", () => ({ askConfirm: vi.fn() }));
+vi.mock("$lib/dialog", () => ({ askConfirm: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { askConfirm } from "./dialog";
-import { confirmDestructive, grantForAnsweredPrompt, DAEMON_SUBJECT } from "./confirmGate";
+import { askConfirm } from "$lib/dialog";
+import { confirmDestructive, grantForAnsweredPrompt, DAEMON_SUBJECT } from "$lib/confirmGate";
 
 /// The host keyed by command name, so a bad reply is whatever the test
 /// puts here; `open_confirmation` answers with a prompt id and

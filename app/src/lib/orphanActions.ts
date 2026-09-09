@@ -14,10 +14,10 @@
 // permission layer -- which made this button do nothing at all.
 
 import { get } from "svelte/store";
-import * as backend from "./backend";
-import { askConfirm, showAlert } from "./dialog";
-import { layoutState, handleOrphanEnded } from "./layoutState";
-import { describeOrphan, endOrphanConfirm, endOrphanOutcome } from "./orphan";
+import * as backend from "$lib/backend";
+import { askConfirm, showAlert } from "$lib/dialog";
+import { layoutState, handleOrphanEnded } from "$lib/layoutState";
+import { describeOrphan, endOrphanConfirm, endOrphanOutcome } from "$lib/orphan";
 
 /// Confirms, asks the daemon to end the session's surviving process, and
 /// says what happened when it is worth saying.

@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { searchDrawer, searchOrchestration, stepMatches } from "./orchestrationSearch";
-import type { Tool } from "./orchestrationTools";
-import type { GroupTemplate } from "./orchestrationGroups";
-import type { CardEntry, Orchestration, Rail, UnplacedGroup } from "./orchestration";
-import type { PlanFileInfo } from "./gavin";
+import { searchDrawer, searchOrchestration, stepMatches } from "$lib/orchestrationSearch";
+import type { Tool } from "$lib/orchestrationTools";
+import type { GroupTemplate } from "$lib/orchestrationGroups";
+import type { CardEntry, Orchestration, Rail, UnplacedGroup } from "$lib/orchestration";
+import type { PlanFileInfo } from "$lib/gavin";
 
 function plan(fileName: string, title: string, over: Partial<PlanFileInfo> = {}): PlanFileInfo {
   return {

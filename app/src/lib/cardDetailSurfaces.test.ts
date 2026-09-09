@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // The card detail panel's LAYOUT, which no unit test can see and no
 // rendered-DOM test would catch either: what this pins is where things

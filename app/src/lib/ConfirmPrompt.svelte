@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Modal from "./Modal.svelte";
+  import Modal from "$lib/Modal.svelte";
 
   interface Choice {
     label: string;

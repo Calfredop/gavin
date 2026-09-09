@@ -18,7 +18,7 @@
 /// Pure and unit-tested, so the two `.svelte` surfaces that own the
 /// gesture (the ⌘N composer and the card detail modal) stay templates.
 
-import { bodyStart } from "./planChecklist";
+import { bodyStart } from "$lib/planChecklist";
 
 /// The fence. HTML comments, so markdown renders them as nothing: the
 /// human reads the sentence, in the modal's preview and in the file, and

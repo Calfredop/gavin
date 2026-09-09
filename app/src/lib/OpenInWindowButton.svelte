@@ -8,12 +8,12 @@
   // handOffWorkspace -- every rule about where a workspace may be lives
   // there, not here.
   import { AppWindow } from "@lucide/svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import { tooltip } from "./tooltip";
-  import { layoutState, handOffWorkspace } from "./layoutState";
-  import { getActiveWorkspace } from "./workspace";
-  import { windowActionLabel } from "./appWindow";
-  import { currentWindowLabel, workspaceWindows } from "./appWindowState";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import { tooltip } from "$lib/tooltip";
+  import { layoutState, handOffWorkspace } from "$lib/layoutState";
+  import { getActiveWorkspace } from "$lib/workspace";
+  import { windowActionLabel } from "$lib/appWindow";
+  import { currentWindowLabel, workspaceWindows } from "$lib/appWindowState";
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
   // `null` means there is nothing to offer -- this window IS that

@@ -8,14 +8,14 @@
     Settings2,
     Group,
   } from "@lucide/svelte";
-  import SearchInput from "./ui/SearchInput.svelte";
-  import { orchDragState } from "./orchestrationDrag";
-  import { searchDrawer } from "./orchestrationSearch";
-  import { toolKindLabel } from "./orchestrationTools";
-  import type { Tool } from "./orchestrationTools";
-  import type { UnplacedGroup } from "./orchestration";
-  import type { GroupTemplate } from "./orchestrationGroups";
-  import { toolIcon } from "./ui/toolKindIcon";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
+  import { orchDragState } from "$lib/orchestrationDrag";
+  import { searchDrawer } from "$lib/orchestrationSearch";
+  import { toolKindLabel } from "$lib/orchestrationTools";
+  import type { Tool } from "$lib/orchestrationTools";
+  import type { UnplacedGroup } from "$lib/orchestration";
+  import type { GroupTemplate } from "$lib/orchestrationGroups";
+  import { toolIcon } from "$lib/ui/toolKindIcon";
 
   interface Props {
     groups: UnplacedGroup[];

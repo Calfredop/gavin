@@ -7,7 +7,7 @@ import {
   normalizeTerminalFontSize,
   resolveTerminalFontSize,
   fontSizeOptions,
-} from "./terminalFont";
+} from "$lib/terminalFont";
 
 describe("normalizeTerminalFontSize", () => {
   it("accepts an in-range number, and the string a <select> hands back", () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
-import { closeWindowPrompt } from "./appClose";
-import { svelteSources } from "./sources";
+import { closeWindowPrompt } from "$lib/appClose";
+import { svelteSources } from "$lib/sources";
 
 // "A workspace is on screen in exactly one window" is a rule spread over
 // five files that nothing links: the registry (workspace_window.rs), the

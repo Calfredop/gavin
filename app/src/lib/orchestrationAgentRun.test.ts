@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable, type Writable } from "svelte/store";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   createSession: vi.fn(),
   getOrchestration: vi.fn(),
   setOrchestration: vi.fn(),
@@ -56,7 +56,7 @@ const layoutStore = vi.hoisted(() => {
   };
   return store;
 });
-vi.mock("./layoutState", () => ({
+vi.mock("$lib/layoutState", () => ({
   layoutState: layoutStore,
   resolvedAgentFor: vi.fn(() => ({
     command: "claude",
@@ -79,30 +79,30 @@ vi.mock("./layoutState", () => ({
   }),
   sessionExits: { subscribe: (fn: (v: unknown) => void) => (fn(new Map()), () => {}) },
 }));
-vi.mock("./cardRunActions", () => ({
+vi.mock("$lib/cardRunActions", () => ({
   resolveAttachmentsForRun: vi.fn(async () => ({ paths: [] })),
   revealSession: vi.fn(async () => true),
 }));
-vi.mock("./kanbanState", () => ({
+vi.mock("$lib/kanbanState", () => ({
   kanbanState: writable<Record<string, unknown>>({}),
   linkCardSessionAction: vi.fn(),
 }));
-vi.mock("./gavinState", () => ({
+vi.mock("$lib/gavinState", () => ({
   gavinTrees: writable<Record<string, unknown>>({}),
   patchPlanField: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async () => () => {},
 }));
-vi.mock("./gitState", () => ({
+vi.mock("$lib/gitState", () => ({
   gitStore: writable<Record<string, unknown>>({}),
   ensureGitView: vi.fn(),
   refresh: vi.fn(),
 }));
 
-import * as backend from "./backend";
-import * as layoutStateModule from "./layoutState";
-import * as cardRunActions from "./cardRunActions";
+import * as backend from "$lib/backend";
+import * as layoutStateModule from "$lib/layoutState";
+import * as cardRunActions from "$lib/cardRunActions";
 import {
   orchestrations,
   requestOrganize,
@@ -110,9 +110,9 @@ import {
   revealOrchestrationAgent,
   startOrchestrationAgentWatch,
   __resetForTesting,
-} from "./orchestrationState";
-import { emptyOrchestration } from "./orchestration";
-import type { Rail } from "./orchestration";
+} from "$lib/orchestrationState";
+import { emptyOrchestration } from "$lib/orchestration";
+import type { Rail } from "$lib/orchestration";
 
 const store = layoutStore as unknown as Writable<LayoutValue>;
 

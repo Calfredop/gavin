@@ -4,21 +4,21 @@ import { get } from "svelte/store";
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   setPlanFrontmatterField: vi.fn(),
 }));
-vi.mock("./dialog", () => ({
+vi.mock("$lib/dialog", () => ({
   askConfirm: vi.fn(),
   askConfirmChecked: vi.fn(),
 }));
 
-import * as backend from "./backend";
-import { askConfirmChecked } from "./dialog";
-import { gavinTrees } from "./gavinState";
-import { applyPlanDrop, placeCardAtColumnEnd, planCommitFromMerged } from "./planDrop";
-import { dropHold } from "./kanbanDrag";
-import type { GavinTree, PlanFileInfo } from "./gavin";
-import type { CardView } from "./planBoard";
+import * as backend from "$lib/backend";
+import { askConfirmChecked } from "$lib/dialog";
+import { gavinTrees } from "$lib/gavinState";
+import { applyPlanDrop, placeCardAtColumnEnd, planCommitFromMerged } from "$lib/planDrop";
+import { dropHold } from "$lib/kanbanDrag";
+import type { GavinTree, PlanFileInfo } from "$lib/gavin";
+import type { CardView } from "$lib/planBoard";
 
 function planInfo(path: string, status: string | null, order: number | null): PlanFileInfo {
   const fileName = path.split("/").at(-1) ?? path;

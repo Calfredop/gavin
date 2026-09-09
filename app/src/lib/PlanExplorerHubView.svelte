@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { pickPath } from "./picker";
-  import { daemonCompat, layoutState, openFileInSplit, switchWorkspaceView } from "./layoutState";
-  import { gavinTrees, refreshGavinTree } from "./gavinState";
-  import type { GavinTree } from "./gavin";
-  import { fetchBoard, kanbanState } from "./kanbanState";
+  import { pickPath } from "$lib/picker";
+  import { daemonCompat, layoutState, openFileInSplit, switchWorkspaceView } from "$lib/layoutState";
+  import { gavinTrees, refreshGavinTree } from "$lib/gavinState";
+  import type { GavinTree } from "$lib/gavin";
+  import { fetchBoard, kanbanState } from "$lib/kanbanState";
   import {
     buildExplorerTree,
     followRenamedPath,
@@ -17,27 +17,27 @@
     type ExplorerFile,
     type ExplorerSelection,
     type CreatableGroup,
-  } from "./planExplorer";
-  import { mergePlanCards, type CardView } from "./planBoard";
-  import { NEW_CARD_STATUS } from "./cardCompose";
-  import { placeCardAtColumnEnd } from "./planDrop";
-  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
-  import { grantForAnsweredPrompt } from "./confirmGate";
-  import { executeUnarchive } from "./archiveActions";
-  import { featureBlockedReason } from "./daemonCompat";
-  import { defaultMode } from "./fileEditing";
-  import PlanTree from "./PlanTree.svelte";
-  import FileEditor from "./FileEditor.svelte";
-  import PlanMetadataPanel from "./PlanMetadataPanel.svelte";
-  import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import FormatHelpModal from "./FormatHelpModal.svelte";
-  import SearchInput from "./ui/SearchInput.svelte";
-  import { orchestrations, fetchOrchestration } from "./orchestrationState";
-  import { ANY, filterExplorer, railIndex, statusFacets } from "./planFilter";
-  import { contextFacets, pruneFacets } from "./boardFilters";
-  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "./hubFacets";
-  import FacetFilters from "./FacetFilters.svelte";
-  import * as backend from "./backend";
+  } from "$lib/planExplorer";
+  import { mergePlanCards, type CardView } from "$lib/planBoard";
+  import { NEW_CARD_STATUS } from "$lib/cardCompose";
+  import { placeCardAtColumnEnd } from "$lib/planDrop";
+  import { deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cardDelete";
+  import { grantForAnsweredPrompt } from "$lib/confirmGate";
+  import { executeUnarchive } from "$lib/archiveActions";
+  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { defaultMode } from "$lib/fileEditing";
+  import PlanTree from "$lib/PlanTree.svelte";
+  import FileEditor from "$lib/FileEditor.svelte";
+  import PlanMetadataPanel from "$lib/PlanMetadataPanel.svelte";
+  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import FormatHelpModal from "$lib/FormatHelpModal.svelte";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
+  import { orchestrations, fetchOrchestration } from "$lib/orchestrationState";
+  import { ANY, filterExplorer, railIndex, statusFacets } from "$lib/planFilter";
+  import { contextFacets, pruneFacets } from "$lib/boardFilters";
+  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/hubFacets";
+  import FacetFilters from "$lib/FacetFilters.svelte";
+  import * as backend from "$lib/backend";
 
   interface Props {
     workspaceId: string;

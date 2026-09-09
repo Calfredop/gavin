@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // The toolbar's "Clear" -- a dropdown over the two ways to remove every
 // rail that has finished everything on it -- lives in the hub view's

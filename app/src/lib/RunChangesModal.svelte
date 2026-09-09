@@ -1,17 +1,17 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import Modal from "./Modal.svelte";
-  import GitFileRow from "./GitFileRow.svelte";
-  import GitDiffUnified from "./GitDiffUnified.svelte";
-  import { toUnifiedRows } from "./diffRows";
-  import { LARGE_HUNK_LINES, shortSha } from "./git";
+  import Modal from "$lib/Modal.svelte";
+  import GitFileRow from "$lib/GitFileRow.svelte";
+  import GitDiffUnified from "$lib/GitDiffUnified.svelte";
+  import { toUnifiedRows } from "$lib/diffRows";
+  import { LARGE_HUNK_LINES, shortSha } from "$lib/git";
   import {
     changesProblem,
     changesSummary,
     discardBlockedReason,
     discardOutcome,
     discardPrompt,
-  } from "./runChanges";
+  } from "$lib/runChanges";
   import {
     closeRunChanges,
     discardRun,
@@ -19,9 +19,9 @@
     refreshRunChanges,
     runChangesStore,
     selectRunFile,
-  } from "./runChangesState";
-  import { askConfirm } from "./dialog";
-  import { tooltip } from "./tooltip";
+  } from "$lib/runChangesState";
+  import { askConfirm } from "$lib/dialog";
+  import { tooltip } from "$lib/tooltip";
 
   interface Props {
     /// The card whose run this is. Also the store key: one view per card,

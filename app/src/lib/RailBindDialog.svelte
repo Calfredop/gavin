@@ -1,30 +1,30 @@
 <script lang="ts">
-  import Modal from "./Modal.svelte";
-  import GitForkDialog from "./GitForkDialog.svelte";
-  import { gitStore, createBranch } from "./gitState";
-  import { gavinTrees } from "./gavinState";
-  import { layoutState, createPage, resolvedAgentFor, daemonCompat } from "./layoutState";
+  import Modal from "$lib/Modal.svelte";
+  import GitForkDialog from "$lib/GitForkDialog.svelte";
+  import { gitStore, createBranch } from "$lib/gitState";
+  import { gavinTrees } from "$lib/gavinState";
+  import { layoutState, createPage, resolvedAgentFor, daemonCompat } from "$lib/layoutState";
   import {
     bindRailAction,
     orchestrations,
     runOnRailPage,
     setRailTriggerAction,
-  } from "./orchestrationState";
-  import { presetSingle } from "./layout";
-  import { freeBranchNameFrom, validateBranchName } from "./git";
-  import { featureBlockedReason } from "./daemonCompat";
+  } from "$lib/orchestrationState";
+  import { presetSingle } from "$lib/layout";
+  import { freeBranchNameFrom, validateBranchName } from "$lib/git";
+  import { featureBlockedReason } from "$lib/daemonCompat";
   import {
     RAIL_BIND_TABS,
     railBindChip,
     railBindTabAfterKey,
     type RailBindTab,
-  } from "./railBind";
-  import type { Rail, RailTrigger, RailTriggerKind } from "./orchestration";
+  } from "$lib/railBind";
+  import type { Rail, RailTrigger, RailTriggerKind } from "$lib/orchestration";
   import {
     RAIL_TRIGGER_CHOICES,
     emptyOrchestration,
     railTriggerVerdict,
-  } from "./orchestration";
+  } from "$lib/orchestration";
 
   interface Props {
     workspaceId: string;

@@ -50,17 +50,17 @@
 // takes seconds to reach the sample, and the point is the smallest
 // number of closes that clears the pressure, not the largest.
 
-import type { StatusSince } from "./attentionInbox";
-import type { ConfirmOptions } from "./dialog";
-import type { GavinTree } from "./gavin";
-import type { Board } from "./kanban";
-import type { LaunchConfig } from "./launchGate";
-import type { MemoryPressure } from "./memory";
-import type { Orchestration } from "./orchestration";
-import type { Workspace } from "./workspace";
-import { countsInFlight } from "./launchGate";
-import { isPinned } from "./layout";
-import { formatGb } from "./memory";
+import type { StatusSince } from "$lib/attentionInbox";
+import type { ConfirmOptions } from "$lib/dialog";
+import type { GavinTree } from "$lib/gavin";
+import type { Board } from "$lib/kanban";
+import type { LaunchConfig } from "$lib/launchGate";
+import type { MemoryPressure } from "$lib/memory";
+import type { Orchestration } from "$lib/orchestration";
+import type { Workspace } from "$lib/workspace";
+import { countsInFlight } from "$lib/launchGate";
+import { isPinned } from "$lib/layout";
+import { formatGb } from "$lib/memory";
 import {
   cardIndex,
   doneColumn,
@@ -68,11 +68,11 @@ import {
   planIndex,
   runningStageId,
   stepStateOf,
-} from "./orchestration";
-import { sessionLabel } from "./paths";
-import { slugStatus } from "./planBoard";
-import { count } from "./railConfirm";
-import { findSessionLocation } from "./workspace";
+} from "$lib/orchestration";
+import { sessionLabel } from "$lib/paths";
+import { slugStatus } from "$lib/planBoard";
+import { count } from "$lib/railConfirm";
+import { findSessionLocation } from "$lib/workspace";
 
 /// How long a session AND its card must have been quiet before the
 /// session may be closed by itself.

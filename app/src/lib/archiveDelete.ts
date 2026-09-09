@@ -15,9 +15,9 @@
 // no number attached is a destructive pick made blind. Every row carries
 // its own, and a row that would delete nothing is dark.
 
-import type { ContextMenuEntry } from "./contextMenu";
-import type { Orchestration } from "./orchestration";
-import type { CardView } from "./planBoard";
+import type { ContextMenuEntry } from "$lib/contextMenu";
+import type { Orchestration } from "$lib/orchestration";
+import type { CardView } from "$lib/planBoard";
 
 const HOUR = 3600;
 const DAY = 24 * HOUR;

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { PALETTE, normalizeColor } from "./settings";
+  import { PALETTE, normalizeColor } from "$lib/settings";
 
   interface Props {
     value: string;

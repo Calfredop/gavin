@@ -1,14 +1,14 @@
 <script lang="ts">
   import { CheckCheck, RotateCw, SkipForward, X } from "@lucide/svelte";
-  import BoardCard from "./BoardCard.svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import StatusBadge from "./ui/StatusBadge.svelte";
-  import { attentionIndicator, stepIndicator } from "./ui/indicators";
-  import { highlightedConflict } from "./orchestrationState";
-  import type { Label } from "./kanban";
-  import type { CardView, PlacedCardView } from "./planBoard";
-  import { attentionTip } from "./orchestration";
-  import type { StepAttention, StepState } from "./orchestration";
+  import BoardCard from "$lib/BoardCard.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import { attentionIndicator, stepIndicator } from "$lib/ui/indicators";
+  import { highlightedConflict } from "$lib/orchestrationState";
+  import type { Label } from "$lib/kanban";
+  import type { CardView, PlacedCardView } from "$lib/planBoard";
+  import { attentionTip } from "$lib/orchestration";
+  import type { StepAttention, StepState } from "$lib/orchestration";
 
   interface Props {
     /// Drives the drag engine's [data-orch-step] hook. It sits on the

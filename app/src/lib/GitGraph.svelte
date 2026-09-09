@@ -12,15 +12,15 @@
     resetTo,
     createBranch,
     currentBranch,
-  } from "./gitState";
-  import { matchesFilter, shortSha, type CommitInfo, type ResetMode } from "./git";
-  import { computeGraph } from "./graphLanes";
-  import { openContextMenuFromEvent, type ContextMenuEntry } from "./contextMenu";
-  import GitGraphRow from "./GitGraphRow.svelte";
-  import GitPromptDialog from "./GitPromptDialog.svelte";
-  import GitDiscardDialog from "./GitDiscardDialog.svelte";
-  import GitResetDialog from "./GitResetDialog.svelte";
-  import SearchInput from "./ui/SearchInput.svelte";
+  } from "$lib/gitState";
+  import { matchesFilter, shortSha, type CommitInfo, type ResetMode } from "$lib/git";
+  import { computeGraph } from "$lib/graphLanes";
+  import { openContextMenuFromEvent, type ContextMenuEntry } from "$lib/contextMenu";
+  import GitGraphRow from "$lib/GitGraphRow.svelte";
+  import GitPromptDialog from "$lib/GitPromptDialog.svelte";
+  import GitDiscardDialog from "$lib/GitDiscardDialog.svelte";
+  import GitResetDialog from "$lib/GitResetDialog.svelte";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
 
   interface Props {
     workspaceId: string;

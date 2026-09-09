@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createHoverIntent } from "./hoverIntent";
+import { createHoverIntent } from "$lib/hoverIntent";
 
 describe("createHoverIntent", () => {
   beforeEach(() => {

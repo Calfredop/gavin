@@ -28,8 +28,8 @@ import {
   presetTiled,
   paneOwnsActions,
   paneLeadsWindow,
-} from "./layout";
-import type { LayoutNode, Leaf } from "./layout";
+} from "$lib/layout";
+import type { LayoutNode, Leaf } from "$lib/layout";
 
 describe("findLeafPath", () => {
   it("finds a leaf at the root", () => {

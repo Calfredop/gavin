@@ -35,7 +35,7 @@
 // problem than a shared queue no window owns.
 
 import { derived, get, readable, writable, type Readable } from "svelte/store";
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   DEFAULT_LAUNCH,
   DRAIN_SPACING_MS,
@@ -45,14 +45,14 @@ import {
   mayDrain,
   type LaunchConfig,
   type LaunchVerdict,
-} from "./launchGate";
-import { fleetStrip, usedBytes as usedBytesOf, type FleetStrip } from "./memory";
-import { launchEstimate, type LaunchEstimate } from "./launchEstimate";
-import { agentSessions, fleetMemory, memoryPressure, storedMeans, systemMemory } from "./memoryState";
-import { layoutState, resolvedAgentFor } from "./layoutState";
-import { currentWindowLabel } from "./appWindowState";
-import { setGateReasonHook } from "./agentPauseState";
-import type { ReviewedCard } from "./codeReview";
+} from "$lib/launchGate";
+import { fleetStrip, usedBytes as usedBytesOf, type FleetStrip } from "$lib/memory";
+import { launchEstimate, type LaunchEstimate } from "$lib/launchEstimate";
+import { agentSessions, fleetMemory, memoryPressure, storedMeans, systemMemory } from "$lib/memoryState";
+import { layoutState, resolvedAgentFor } from "$lib/layoutState";
+import { currentWindowLabel } from "$lib/appWindowState";
+import { setGateReasonHook } from "$lib/agentPauseState";
+import type { ReviewedCard } from "$lib/codeReview";
 
 // ---- The config -------------------------------------------------------------
 
@@ -486,27 +486,27 @@ function lastLaunchObserved(): boolean {
 async function execute(intent: LaunchIntent): Promise<void> {
   switch (intent.kind) {
     case "card": {
-      const m = await import("./cardRunActions");
+      const m = await import("$lib/cardRunActions");
       await m.launchQueuedCard(intent);
       return;
     }
     case "tool": {
-      const m = await import("./workspaceToolsActions");
+      const m = await import("$lib/workspaceToolsActions");
       await m.launchQueuedTool(intent);
       return;
     }
     case "review": {
-      const m = await import("./codeReviewActions");
+      const m = await import("$lib/codeReviewActions");
       await m.launchQueuedReview(intent);
       return;
     }
     case "commit": {
-      const m = await import("./gitState");
+      const m = await import("$lib/gitState");
       await m.launchQueuedCommit(intent);
       return;
     }
     case "orchestration": {
-      const m = await import("./orchestrationState");
+      const m = await import("$lib/orchestrationState");
       await m.launchQueuedOrchestrationAgent(intent);
       return;
     }

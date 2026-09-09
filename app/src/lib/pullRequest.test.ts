@@ -8,8 +8,8 @@ import {
   prExhaustedReason,
   prRequirement,
   prWaitVerdict,
-} from "./pullRequest";
-import type { PrCheck, PrReport } from "./pullRequest";
+} from "$lib/pullRequest";
+import type { PrCheck, PrReport } from "$lib/pullRequest";
 
 const NOW = 1_000_000;
 

@@ -9,9 +9,9 @@
 // templates are upserted one at a time.
 
 import { writable, get } from "svelte/store";
-import * as backend from "./backend";
-import { templateLibrary, toTemplateRecord } from "./orchestrationGroups";
-import type { GroupTemplate, GroupTemplateRecord } from "./orchestrationGroups";
+import * as backend from "$lib/backend";
+import { templateLibrary, toTemplateRecord } from "$lib/orchestrationGroups";
+import type { GroupTemplate, GroupTemplateRecord } from "$lib/orchestrationGroups";
 
 /// The daemon's rows, by workspace. Null means "not fetched yet". Unlike
 /// the tool library there is no built-in fallback to render meanwhile: a

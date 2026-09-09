@@ -8,8 +8,8 @@ import {
   defaultReviewBase,
   composeReviewPrompt,
   reviewBlocker,
-} from "./codeReview";
-import type { BranchInfo } from "./git";
+} from "$lib/codeReview";
+import type { BranchInfo } from "$lib/git";
 
 function branch(name: string, over: Partial<BranchInfo> = {}): BranchInfo {
   return {

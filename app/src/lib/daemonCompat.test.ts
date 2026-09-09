@@ -4,7 +4,7 @@ import {
   featureBlockedReason,
   restartConfirmLines,
   restartOutcome,
-} from "./daemonCompat";
+} from "$lib/daemonCompat";
 
 describe("compatMessage", () => {
   it("says nothing when the daemon matches", () => {

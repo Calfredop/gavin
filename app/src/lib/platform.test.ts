@@ -8,7 +8,7 @@ vi.mock("@tauri-apps/plugin-os", () => ({ platform: platformMock }));
 // The module caches its answer, so each case re-imports it fresh.
 async function freshPlatform() {
   vi.resetModules();
-  return import("./platform");
+  return import("$lib/platform");
 }
 
 beforeEach(() => {

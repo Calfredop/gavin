@@ -8,7 +8,7 @@ import {
   saveWorkspaceExpansion,
   loadExpandedPages,
   saveExpandedPages,
-} from "./sidebarExpansion";
+} from "$lib/sidebarExpansion";
 
 function fakeStorage(initial: Record<string, string> = {}) {
   const data = { ...initial };

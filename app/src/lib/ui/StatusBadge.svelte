@@ -9,8 +9,8 @@
   // in a row (inline, baseline-safe, never shrinking) and how a tone maps
   // onto the theme's tokens -- the same two variables IconButton uses, so
   // an amber badge and an amber button beside it are the same amber.
-  import type { Indicator } from "./indicators";
-  import { tooltip } from "../tooltip";
+  import type { Indicator } from "$lib/ui/indicators";
+  import { tooltip } from "$lib/tooltip";
 
   interface Props {
     indicator: Indicator;

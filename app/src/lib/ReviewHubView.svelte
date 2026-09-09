@@ -15,14 +15,14 @@
   // the fetching in reviewState.ts, the remembering in reviewPrefs.ts.
   import { onDestroy, onMount, untrack } from "svelte";
   import { get } from "svelte/store";
-  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "./kanbanState";
-  import { gavinTrees } from "./gavinState";
-  import { layoutState, daemonCompat } from "./layoutState";
-  import { indexCardViews, mergePlanCards, type CardView } from "./planBoard";
-  import GitFileRow from "./GitFileRow.svelte";
-  import ReviewAgentPane from "./ReviewAgentPane.svelte";
-  import ReviewCardList from "./ReviewCardList.svelte";
-  import ReviewFilePane from "./ReviewFilePane.svelte";
+  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/kanbanState";
+  import { gavinTrees } from "$lib/gavinState";
+  import { layoutState, daemonCompat } from "$lib/layoutState";
+  import { indexCardViews, mergePlanCards, type CardView } from "$lib/planBoard";
+  import GitFileRow from "$lib/GitFileRow.svelte";
+  import ReviewAgentPane from "$lib/ReviewAgentPane.svelte";
+  import ReviewCardList from "$lib/ReviewCardList.svelte";
+  import ReviewFilePane from "$lib/ReviewFilePane.svelte";
   import {
     groupCandidates,
     resolveReviewColumns,
@@ -33,26 +33,26 @@
     toggleExpandedGroup,
     withBaselinePeers,
     type ReviewCandidate,
-  } from "./reviewBoard";
+  } from "$lib/reviewBoard";
   import {
     prefsFor,
     pruneReviewPrefsFor,
     reviewPrefs,
     setReviewPrefs,
     toggleReviewColumn,
-  } from "./reviewPrefs";
+  } from "$lib/reviewPrefs";
   import {
     clearReviewFile,
     loadTouchedFiles,
     reviewStore,
     selectReviewFile,
     type TouchRequest,
-  } from "./reviewState";
-  import { runBaseline, type RunBaseline } from "./runChanges";
-  import { orchestrations, fetchOrchestration } from "./orchestrationState";
-  import { railIndex } from "./planFilter";
-  import { contextFacets, pruneFacets } from "./boardFilters";
-  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "./hubFacets";
+  } from "$lib/reviewState";
+  import { runBaseline, type RunBaseline } from "$lib/runChanges";
+  import { orchestrations, fetchOrchestration } from "$lib/orchestrationState";
+  import { railIndex } from "$lib/planFilter";
+  import { contextFacets, pruneFacets } from "$lib/boardFilters";
+  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/hubFacets";
 
   interface Props {
     workspaceId: string;

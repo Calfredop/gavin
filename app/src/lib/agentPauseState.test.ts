@@ -7,9 +7,9 @@ const backendMock = vi.hoisted(() => ({
   agentUsage: vi.fn(),
 }));
 
-vi.mock("./backend", () => backendMock);
+vi.mock("$lib/backend", () => backendMock);
 
-vi.mock("./layoutState", async () => {
+vi.mock("$lib/layoutState", async () => {
   const { writable } = await import("svelte/store");
   return {
     layoutState: writable({
@@ -20,8 +20,8 @@ vi.mock("./layoutState", async () => {
   };
 });
 
-import { DEFAULT_CYCLE, type PauseCycle } from "./agentPause";
-import type { AgentUsageReport } from "./agentUsage";
+import { DEFAULT_CYCLE, type PauseCycle } from "$lib/agentPause";
+import type { AgentUsageReport } from "$lib/agentUsage";
 import {
   agentPauseStore,
   agentUsageStore,
@@ -36,8 +36,8 @@ import {
   refreshUsage,
   saveAgentPause,
   startBlockedReason,
-} from "./agentPauseState";
-import { layoutState } from "./layoutState";
+} from "$lib/agentPauseState";
+import { layoutState } from "$lib/layoutState";
 
 const ANCHOR = 1_700_000_000_000;
 const MIN = 60_000;

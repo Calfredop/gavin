@@ -23,7 +23,7 @@
 //   see orchestrationLoop.ts, which this module deliberately reuses
 //   rather than copies.
 
-import type { IndicatorTone } from "./ui/indicators";
+import type { IndicatorTone } from "$lib/ui/indicators";
 
 /// One CI check. Mirrors `PrCheck` in `pull_request.rs`.
 export interface PrCheck {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { describeFileDiscard, describeHunkDiscard } from "./discardFlow";
+import { describeFileDiscard, describeHunkDiscard } from "$lib/discardFlow";
 
 describe("describeFileDiscard", () => {
   it("names tracked discards", () => {

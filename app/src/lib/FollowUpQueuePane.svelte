@@ -6,9 +6,9 @@
   // Deliberately thin, like CardTabPane: it resolves the session's name
   // and hands the work to FollowUpQueueView, so the queue never has two
   // different faces depending on which host mounted it.
-  import FollowUpQueueView from "./FollowUpQueueView.svelte";
-  import { layoutState, closeSession } from "./layoutState";
-  import { sessionLabel } from "./paths";
+  import FollowUpQueueView from "$lib/FollowUpQueueView.svelte";
+  import { layoutState, closeSession } from "$lib/layoutState";
+  import { sessionLabel } from "$lib/paths";
 
   interface Props {
     /// The session whose queue this is -- NOT the tab it sits in. The two

@@ -26,8 +26,8 @@
 // right after a frontend reload, and right when the app was closed for a
 // day -- because none of them are inputs. The only input is `now`.
 
-import type { AgentUsageReport, UsageWindow } from "./agentUsage";
-import { formatDuration, formatResetsIn, usageBlock } from "./agentUsage";
+import type { AgentUsageReport, UsageWindow } from "$lib/agentUsage";
+import { formatDuration, formatResetsIn, usageBlock } from "$lib/agentUsage";
 
 /// A configured duty cycle. Mirrors `AgentPauseConfig` in `config.rs`.
 export interface PauseCycle {

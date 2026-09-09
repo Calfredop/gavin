@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { cardSessionBar } from "./cardDetail";
-import { svelteSources, tsSources } from "./sources";
+import { cardSessionBar } from "$lib/cardDetail";
+import { svelteSources, tsSources } from "$lib/sources";
 
 // One fact -- "an agent is rewriting this card" -- expressed on three
 // board surfaces that nothing links: the card face, its context menu and

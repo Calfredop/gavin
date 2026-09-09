@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { get } from "svelte/store";
-import type { BestOfNRun, RunCandidate } from "./bestOfN";
+import type { BestOfNRun, RunCandidate } from "$lib/bestOfN";
 import {
   bestOfNRuns,
   candidateLiveness,
@@ -15,7 +15,7 @@ import {
   runSummary,
   runsStorageKey,
   saveRuns,
-} from "./bestOfNState";
+} from "$lib/bestOfNState";
 
 function memoryStorage(seed: Record<string, string> = {}) {
   const map = new Map(Object.entries(seed));

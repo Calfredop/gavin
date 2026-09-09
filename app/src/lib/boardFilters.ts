@@ -14,11 +14,11 @@
 // card-path -> rail index behind the rail facet. Two surfaces asking the
 // same question must not answer it two ways.
 
-import { ANY, NO_RAIL, underContext, type RailIndex } from "./planFilter";
-import type { GavinTree } from "./gavin";
-import type { CardView } from "./planBoard";
-import { AUTO_KEY_PREFIX } from "./boardSearch";
-import type { MergedBoard } from "./boardSearch";
+import { ANY, NO_RAIL, underContext, type RailIndex } from "$lib/planFilter";
+import type { GavinTree } from "$lib/gavin";
+import type { CardView } from "$lib/planBoard";
+import { AUTO_KEY_PREFIX } from "$lib/boardSearch";
+import type { MergedBoard } from "$lib/boardSearch";
 
 export { ANY, NO_RAIL, underContext };
 

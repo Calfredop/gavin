@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { fileMenuItems, contextRowMenuItems, groupRowMenuItems, type TreeMenuCallbacks } from "./planTreeMenu";
-import type { ExplorerContextNode, ExplorerFile } from "./planExplorer";
+import { fileMenuItems, contextRowMenuItems, groupRowMenuItems, type TreeMenuCallbacks } from "$lib/planTreeMenu";
+import type { ExplorerContextNode, ExplorerFile } from "$lib/planExplorer";
 
 function callbacks(over: Partial<TreeMenuCallbacks> = {}): TreeMenuCallbacks {
   return {

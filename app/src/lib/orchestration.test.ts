@@ -76,16 +76,16 @@ import {
   railsWantingAttention,
   attentionTip,
   failedStepReason,
-} from "./orchestration";
-import { unreviewedStallReason } from "./cardReview";
-import type { CardEntry, Conflict, StepAttention, ToolSummary, UnplacedGroup } from "./orchestration";
-import { BUILTIN_TOOLS } from "./orchestrationTools";
-import { prKey } from "./pullRequest";
-import type { WorktreeInfo } from "./git";
-import type { Action, Orchestration, Rail, RailState, Stage, StageMode, Step, StepState } from "./orchestration";
-import type { Board } from "./kanban";
-import type { SessionStatus } from "./notifications";
-import type { GavinTree, PlanFileInfo } from "./gavin";
+} from "$lib/orchestration";
+import { unreviewedStallReason } from "$lib/cardReview";
+import type { CardEntry, Conflict, StepAttention, ToolSummary, UnplacedGroup } from "$lib/orchestration";
+import { BUILTIN_TOOLS } from "$lib/orchestrationTools";
+import { prKey } from "$lib/pullRequest";
+import type { WorktreeInfo } from "$lib/git";
+import type { Action, Orchestration, Rail, RailState, Stage, StageMode, Step, StepState } from "$lib/orchestration";
+import type { Board } from "$lib/kanban";
+import type { SessionStatus } from "$lib/notifications";
+import type { GavinTree, PlanFileInfo } from "$lib/gavin";
 
 function board(names: string[]): Board {
   return {

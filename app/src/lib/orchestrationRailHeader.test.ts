@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { source } from "./sources";
+import { source } from "$lib/sources";
 
 // The rail header used to be ONE row: name, conflict badges, state word,
 // attention chip and six icon buttons. A rail is a 280px grid column as

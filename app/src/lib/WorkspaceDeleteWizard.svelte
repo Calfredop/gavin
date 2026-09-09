@@ -6,11 +6,11 @@
   ///
   /// Nothing is removed until Delete on the last screen. Back always
   /// works, and every answer is a stored boolean until then.
-  import Modal from "./Modal.svelte";
-  import { layoutState } from "./layoutState";
-  import { allSessionIdsInWorkspace } from "./workspace";
-  import { sessionTabsOnly } from "./layout";
-  import * as backend from "./backend";
+  import Modal from "$lib/Modal.svelte";
+  import { layoutState } from "$lib/layoutState";
+  import { allSessionIdsInWorkspace } from "$lib/workspace";
+  import { sessionTabsOnly } from "$lib/layout";
+  import * as backend from "$lib/backend";
   import {
     applicableSteps,
     defaultAnswers,
@@ -21,9 +21,9 @@
     ROWS_DECLINE_NOTE,
     type DeleteAnswers,
     type GavinFootprint,
-  } from "./workspaceDelete";
-  import { executeWorkspaceDelete, type DeleteResult } from "./workspaceDeleteActions";
-  import { grantForAnsweredPrompt } from "./confirmGate";
+  } from "$lib/workspaceDelete";
+  import { executeWorkspaceDelete, type DeleteResult } from "$lib/workspaceDeleteActions";
+  import { grantForAnsweredPrompt } from "$lib/confirmGate";
 
   interface Props {
     workspaceId: string;

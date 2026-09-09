@@ -1,32 +1,32 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { get } from "svelte/store";
-import { gavinTrees, worktreeSetups } from "./gavinState";
-import { executionKeys, executionKeysHash } from "./workspaceTrust";
-import type { LayoutNode } from "./layout";
-import { allSessionIds } from "./layout";
-import type { Page, Workspace } from "./workspace";
-import { getActiveView } from "./workspace";
+import { gavinTrees, worktreeSetups } from "$lib/gavinState";
+import { executionKeys, executionKeysHash } from "$lib/workspaceTrust";
+import type { LayoutNode } from "$lib/layout";
+import { allSessionIds } from "$lib/layout";
+import type { Page, Workspace } from "$lib/workspace";
+import { getActiveView } from "$lib/workspace";
 import { listen } from "@tauri-apps/api/event";
-import { askConfirm } from "./dialog";
-import { kanbanState } from "./kanbanState";
-import { orchestrations } from "./orchestrationState";
-import { toolRecords } from "./toolsState";
+import { askConfirm } from "$lib/dialog";
+import { kanbanState } from "$lib/kanbanState";
+import { orchestrations } from "$lib/orchestrationState";
+import { toolRecords } from "$lib/toolsState";
 
 // setWorkspaceRoot's reclaim offer is the only dialog this module opens.
 // Defaults to "Start fresh" so every test that is not about the reclaim
 // takes the ordinary binding path.
-vi.mock("./dialog", () => ({ askConfirm: vi.fn().mockResolvedValue(false) }));
+vi.mock("$lib/dialog", () => ({ askConfirm: vi.fn().mockResolvedValue(false) }));
 // retryConnect asks before it restarts: the daemon it kills is shared
 // with every other gavin window (AS-05/R5). Granting by default keeps
 // every other test in this file about what it was about; the two that
 // care drive the answer themselves.
-vi.mock("./confirmGate", () => ({
+vi.mock("$lib/confirmGate", () => ({
   DAEMON_SUBJECT: "",
   confirmDestructive: vi.fn().mockResolvedValue("grant"),
   grantForAnsweredPrompt: vi.fn().mockResolvedValue("grant"),
 }));
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   createSession: vi.fn(),
   // Resolved by default: bootstrap asks the host where its temp directory
   // is (for a `until` step's check log) and never awaits the answer, so a
@@ -120,7 +120,7 @@ vi.mock("./backend", () => ({
   getTools: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("./terminalRegistry", () => ({
+vi.mock("$lib/terminalRegistry", () => ({
   destroyTerminal: vi.fn(),
   setCwdForLinks: vi.fn(),
   // themeState.init() runs at the top of bootstrap() and pushes the
@@ -132,7 +132,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
-vi.mock("./notifications", () => ({
+vi.mock("$lib/notifications", () => ({
   maybeNotifyStatusChange: vi.fn(),
   // bootstrap() starts the orchestration listeners, which register the
   // rail's voice over this module (see setRailNotificationVoice).
@@ -147,10 +147,10 @@ vi.mock("./notifications", () => ({
       : "unknown",
 }));
 
-import * as backend from "./backend";
-import * as notifications from "./notifications";
-import * as terminalRegistry from "./terminalRegistry";
-import { workspaceWindows } from "./appWindowState";
+import * as backend from "$lib/backend";
+import * as notifications from "$lib/notifications";
+import * as terminalRegistry from "$lib/terminalRegistry";
+import { workspaceWindows } from "$lib/appWindowState";
 import {
   layoutState,
   splitPane,
@@ -236,8 +236,8 @@ import {
   requireReviewDefault,
   markRequireReviewAsked,
   type LayoutState,
-} from "./layoutState";
-import { confirmDestructive } from "./confirmGate";
+} from "$lib/layoutState";
+import { confirmDestructive } from "$lib/confirmGate";
 
 function leaf(tabs: string[], activeTabIndex = 0): LayoutNode {
   return { type: "leaf", tabs, activeTabIndex };

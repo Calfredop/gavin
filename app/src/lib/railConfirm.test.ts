@@ -6,10 +6,10 @@ import {
   clearAndArchiveFinishedRailsConfirm,
   groupRemoveConfirm,
   runAllConfirm,
-} from "./railConfirm";
-import type { CardEntry, Orchestration, Rail, Stage, Step } from "./orchestration";
-import type { PlanFileInfo } from "./gavin";
-import { launchEstimate } from "./launchEstimate";
+} from "$lib/railConfirm";
+import type { CardEntry, Orchestration, Rail, Stage, Step } from "$lib/orchestration";
+import type { PlanFileInfo } from "$lib/gavin";
+import { launchEstimate } from "$lib/launchEstimate";
 
 function plan(fileName: string, overrides: Partial<PlanFileInfo> = {}): PlanFileInfo {
   return {

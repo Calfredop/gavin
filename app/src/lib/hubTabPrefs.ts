@@ -29,9 +29,9 @@ import {
   orderableHubViewIds,
   resolveHubView,
   type HubTabPrefs,
-} from "./hubViewMeta";
-import { getActiveView, getActiveWorkspace } from "./workspace";
-import { layoutState, switchWorkspaceView } from "./layoutState";
+} from "$lib/hubViewMeta";
+import { getActiveView, getActiveWorkspace } from "$lib/workspace";
+import { layoutState, switchWorkspaceView } from "$lib/layoutState";
 
 /// Injected (defaulting to the browser's) for the same two reasons
 /// sidebarExpansion.ts injects it: vitest's node environment has no

@@ -22,9 +22,9 @@
 // every render" into one request a minute (see MIN_INTERVAL_SECS there).
 
 import { get, writable } from "svelte/store";
-import * as backend from "./backend";
-import { prKey } from "./pullRequest";
-import type { PrReport } from "./pullRequest";
+import * as backend from "$lib/backend";
+import { prKey } from "$lib/pullRequest";
+import type { PrReport } from "$lib/pullRequest";
 
 // Re-exported so a caller reaching for the store does not have to know
 // the key lives with the pure rules. The scheduler imports it from

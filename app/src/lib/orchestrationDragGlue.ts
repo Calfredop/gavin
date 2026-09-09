@@ -29,8 +29,8 @@ import {
   type MeasuredStage,
   type OrchDragCallbacks,
   type OrchDropTarget,
-} from "./orchestrationDrag";
-import { autoScrollVelocity, type Rect } from "./pointerDrag";
+} from "$lib/orchestrationDrag";
+import { autoScrollVelocity, type Rect } from "$lib/pointerDrag";
 
 export const activeOrchDragRoot = writable<HTMLElement | null>(null);
 

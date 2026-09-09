@@ -1,6 +1,6 @@
-import type { ForeignMcpServer, IntegrationResult } from "./backend";
-import * as backend from "./backend";
-import { sha256Hex } from "./sha256";
+import type { ForeignMcpServer, IntegrationResult } from "$lib/backend";
+import * as backend from "$lib/backend";
+import { sha256Hex } from "$lib/sha256";
 
 /// The AG-07 gate: whether a workspace's target MCP config file already
 /// names servers gavin did not add, and what the human said about them.

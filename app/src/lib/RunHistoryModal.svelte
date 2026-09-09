@@ -6,10 +6,10 @@
   // at most, each of which the human can act on (open the session, see
   // what it changed). A bar chart of twelve values would be a decoration
   // over data that reads perfectly well as a table.
-  import Modal from "./Modal.svelte";
-  import StatusBadge from "./ui/StatusBadge.svelte";
-  import { runIndicator } from "./ui/indicators";
-  import { relativeTime } from "./appHub";
+  import Modal from "$lib/Modal.svelte";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import { runIndicator } from "$lib/ui/indicators";
+  import { relativeTime } from "$lib/appHub";
   import {
     historySummary,
     runRows,
@@ -17,7 +17,7 @@
     tokenProblem,
     tokenSummary,
     totalCost,
-  } from "./runHistory";
+  } from "$lib/runHistory";
   import {
     closeRunHistory,
     openRunHistory,
@@ -25,8 +25,8 @@
     runHistoryStore,
     tokensForRun,
     tokensPending,
-  } from "./runHistoryState";
-  import { tooltip } from "./tooltip";
+  } from "$lib/runHistoryState";
+  import { tooltip } from "$lib/tooltip";
 
   interface Props {
     /// The card whose runs these are. Also the store key.

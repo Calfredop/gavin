@@ -7,11 +7,11 @@ import {
   railTriggerVerdict,
   setRailTrigger,
   RAIL_TRIGGER_CHOICES,
-} from "./orchestration";
-import type { Orchestration, Rail, RailState, StepState } from "./orchestration";
-import type { Board } from "./kanban";
-import type { GavinTree, PlanFileInfo } from "./gavin";
-import { allSources } from "./sources";
+} from "$lib/orchestration";
+import type { Orchestration, Rail, RailState, StepState } from "$lib/orchestration";
+import type { Board } from "$lib/kanban";
+import type { GavinTree, PlanFileInfo } from "$lib/gavin";
+import { allSources } from "$lib/sources";
 
 // A rail's own start condition. The one rule in the scheduler that starts
 // a rail nobody pressed Start on, so the tests here are mostly about what

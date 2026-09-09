@@ -2,13 +2,13 @@
   // Save-as-template: one small modal, following ToolLibraryDialog's own
   // form conventions (the fields, the scope chips, the footer) so a
   // human who has already saved a tool recognises this immediately.
-  import Modal from "./Modal.svelte";
-  import { templateFromStage, droppedCardCount } from "./orchestrationGroups";
-  import type { GroupTemplateScope } from "./orchestrationGroups";
-  import type { Stage } from "./orchestration";
-  import { findTool } from "./orchestrationTools";
-  import type { Tool } from "./orchestrationTools";
-  import { count } from "./railConfirm";
+  import Modal from "$lib/Modal.svelte";
+  import { templateFromStage, droppedCardCount } from "$lib/orchestrationGroups";
+  import type { GroupTemplateScope } from "$lib/orchestrationGroups";
+  import type { Stage } from "$lib/orchestration";
+  import { findTool } from "$lib/orchestrationTools";
+  import type { Tool } from "$lib/orchestrationTools";
+  import { count } from "$lib/railConfirm";
 
   interface Props {
     stage: Stage;

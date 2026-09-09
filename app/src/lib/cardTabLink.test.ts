@@ -4,7 +4,7 @@ import { get } from "svelte/store";
 // openLinkedCard is the only thing here that touches the app: it
 // activates the workspace and flips its hub view. Mocked so the pure
 // half stays testable without the store graph behind layoutState.
-vi.mock("./layoutState", () => ({ switchWorkspace: vi.fn(), switchWorkspaceView: vi.fn() }));
+vi.mock("$lib/layoutState", () => ({ switchWorkspace: vi.fn(), switchWorkspaceView: vi.fn() }));
 
 import {
   cardPathForSession,
@@ -15,11 +15,11 @@ import {
   openLinkedCard,
   requestedCardDetail,
   takeCardDetailRequest,
-} from "./cardTabLink";
-import { switchWorkspace, switchWorkspaceView } from "./layoutState";
-import type { Board } from "./kanban";
-import type { GavinTree } from "./gavin";
-import type { Orchestration } from "./orchestration";
+} from "$lib/cardTabLink";
+import { switchWorkspace, switchWorkspaceView } from "$lib/layoutState";
+import type { Board } from "$lib/kanban";
+import type { GavinTree } from "$lib/gavin";
+import type { Orchestration } from "$lib/orchestration";
 
 const board = (...pairs: [string, string][]): Board => ({
   columns: [],

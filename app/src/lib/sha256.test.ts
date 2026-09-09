@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sha256Hex } from "./sha256";
+import { sha256Hex } from "$lib/sha256";
 
 /// Published vectors, not self-consistency: a hand-written digest that
 /// agrees with itself proves nothing, and this one is load-bearing for

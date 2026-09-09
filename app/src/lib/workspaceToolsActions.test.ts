@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable } from "svelte/store";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   createSession: vi.fn(),
   startToolRun: vi.fn().mockResolvedValue(undefined),
   setToolRunOutcome: vi.fn().mockResolvedValue(undefined),
   toolRuns: vi.fn().mockResolvedValue([]),
   getTools: vi.fn().mockResolvedValue([]),
 }));
-vi.mock("./layoutState", () => ({
+vi.mock("$lib/layoutState", () => ({
   layoutState: writable({ sessionStatusById: {} as Record<string, string> }),
   daemonCompat: writable({ daemonVersion: 30, appVersion: 30, degraded: false }),
   sessionExits: writable(new Map<string, number>()),
@@ -19,9 +19,9 @@ vi.mock("./layoutState", () => ({
   setSessionName: vi.fn().mockResolvedValue(undefined),
   workspaceRootPath: vi.fn(() => "/repo" as string | null),
 }));
-vi.mock("./cardRunActions", () => ({ revealSession: vi.fn().mockResolvedValue(true) }));
+vi.mock("$lib/cardRunActions", () => ({ revealSession: vi.fn().mockResolvedValue(true) }));
 
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   armFailureDetection,
   daemonCompat,
@@ -30,13 +30,13 @@ import {
   resolvedAgentFor,
   setSessionName,
   workspaceRootPath,
-} from "./layoutState";
-import { revealSession } from "./cardRunActions";
-import { toolRecords, __resetForTesting as resetTools } from "./toolsState";
+} from "$lib/layoutState";
+import { revealSession } from "$lib/cardRunActions";
+import { toolRecords, __resetForTesting as resetTools } from "$lib/toolsState";
 import {
   toolRunsStore,
   __resetForTesting as resetRuns,
-} from "./toolRunsState";
+} from "$lib/toolRunsState";
 import {
   cancelToolRun,
   confirmToolRun,
@@ -44,8 +44,8 @@ import {
   requestToolRun,
   toolRunRequest,
   __resetForTesting,
-} from "./workspaceToolsActions";
-import type { Tool } from "./orchestrationTools";
+} from "$lib/workspaceToolsActions";
+import type { Tool } from "$lib/orchestrationTools";
 
 const AGENT = {
   profileId: "claude-code",

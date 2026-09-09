@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { UnifiedRow } from "./diffRows";
+  import type { UnifiedRow } from "$lib/diffRows";
 
   interface Props {
     rows: UnifiedRow[];

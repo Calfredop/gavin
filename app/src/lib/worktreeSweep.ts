@@ -18,10 +18,10 @@
 // has to take on trust, and the badge, the tooltip and the confirmation
 // all have to be reading the same one.
 
-import type { ConfirmCheck, ConfirmOptions } from "./dialog";
-import { splitPath, type StatusResult, type WorktreeInfo } from "./git";
-import { isGavinOwnPath } from "./gitTracking";
-import { count } from "./railConfirm";
+import type { ConfirmCheck, ConfirmOptions } from "$lib/dialog";
+import { splitPath, type StatusResult, type WorktreeInfo } from "$lib/git";
+import { isGavinOwnPath } from "$lib/gitTracking";
+import { count } from "$lib/railConfirm";
 
 /// Why a worktree is being KEPT. Ordered by what is at stake, and that
 /// order is the order they are tested in: the first one that holds is

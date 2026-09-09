@@ -11,10 +11,10 @@
   // archive toggle), the same way the markup behaved before it moved
   // here.
   import { Link2, Link2Off } from "@lucide/svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import { tooltip } from "./tooltip";
-  import { ANY, NO_RAIL, KIND_FACETS, type BoardFacets, type ContextFacet } from "./boardFilters";
-  import type { RailIndex } from "./planFilter";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import { tooltip } from "$lib/tooltip";
+  import { ANY, NO_RAIL, KIND_FACETS, type BoardFacets, type ContextFacet } from "$lib/boardFilters";
+  import type { RailIndex } from "$lib/planFilter";
 
   interface Props {
     facets: BoardFacets;

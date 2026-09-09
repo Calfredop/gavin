@@ -11,15 +11,15 @@
   else in the app would ever mention it.
 -->
 <script lang="ts">
-  import Modal from "./Modal.svelte";
-  import { REVIEW_RULES_LABEL } from "./codeReview";
-  import type { ReviewRequest } from "./codeReviewActions";
+  import Modal from "$lib/Modal.svelte";
+  import { REVIEW_RULES_LABEL } from "$lib/codeReview";
+  import type { ReviewRequest } from "$lib/codeReviewActions";
   import {
     reviewRequest,
     cancelReview,
     confirmReview,
     createReviewRules,
-  } from "./codeReviewActions";
+  } from "$lib/codeReviewActions";
 
   // Seeded from the request and then owned here: the store holds what
   // the app worked out, this holds what the human has typed.

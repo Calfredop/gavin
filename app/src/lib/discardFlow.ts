@@ -2,7 +2,7 @@
 // what goes, and untracked files get their own sentence because `git
 // clean` deletes them from disk.
 
-import type { FileEntry } from "./git";
+import type { FileEntry } from "$lib/git";
 
 const MAX_LISTED = 8;
 

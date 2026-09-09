@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { pushModal, popModal, isTopModal, resetModalStack } from "./modalStack";
+import { pushModal, popModal, isTopModal, resetModalStack } from "$lib/modalStack";
 
 beforeEach(() => {
   resetModalStack();

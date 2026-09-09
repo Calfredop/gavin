@@ -11,10 +11,10 @@ import {
   railStepsFor,
   selectRowLabel,
   undatedCards,
-} from "./archiveDelete";
-import { isMenuItem, isSeparator, isHeading, type ContextMenuEntry } from "./contextMenu";
-import type { Orchestration } from "./orchestration";
-import type { CardView } from "./planBoard";
+} from "$lib/archiveDelete";
+import { isMenuItem, isSeparator, isHeading, type ContextMenuEntry } from "$lib/contextMenu";
+import type { Orchestration } from "$lib/orchestration";
+import type { CardView } from "$lib/planBoard";
 
 const NOW = Date.parse("2026-09-07T12:00:00Z");
 const DAY = 86_400;

@@ -6,7 +6,7 @@ import {
   autoScrollVelocity,
   type MeasuredColumn,
   type Rect,
-} from "./pointerDrag";
+} from "$lib/pointerDrag";
 
 const r = (left: number, top: number, width: number, height: number): Rect => ({ left, top, width, height });
 

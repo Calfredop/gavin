@@ -15,11 +15,11 @@
   // FileEditor autosaves and reconciles external writes on its own, which
   // is what makes that safe while the card's agent is alive in the first
   // column.
-  import GitDiffUnified from "./GitDiffUnified.svelte";
-  import FileEditor from "./FileEditor.svelte";
-  import { toUnifiedRows } from "./diffRows";
-  import { LARGE_HUNK_LINES, splitPath } from "./git";
-  import type { FileDiff } from "./git";
+  import GitDiffUnified from "$lib/GitDiffUnified.svelte";
+  import FileEditor from "$lib/FileEditor.svelte";
+  import { toUnifiedRows } from "$lib/diffRows";
+  import { LARGE_HUNK_LINES, splitPath } from "$lib/git";
+  import type { FileDiff } from "$lib/git";
 
   export type ReviewFileMode = "diff" | "edit";
 

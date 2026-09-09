@@ -24,12 +24,12 @@ import {
   untilMax,
   untilVerdict,
   withRetryPrefix,
-} from "./orchestrationLoop";
-import { nextActions } from "./orchestration";
-import type { Orchestration, Rail, ToolSummary } from "./orchestration";
-import { BUILTIN_TOOLS, findTool } from "./orchestrationTools";
-import type { Board } from "./kanban";
-import { allSources } from "./sources";
+} from "$lib/orchestrationLoop";
+import { nextActions } from "$lib/orchestration";
+import type { Orchestration, Rail, ToolSummary } from "$lib/orchestration";
+import { BUILTIN_TOOLS, findTool } from "$lib/orchestrationTools";
+import type { Board } from "$lib/kanban";
+import { allSources } from "$lib/sources";
 
 // ---- fixtures ---------------------------------------------------------------
 

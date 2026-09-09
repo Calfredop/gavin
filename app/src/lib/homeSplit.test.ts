@@ -6,7 +6,7 @@ import {
   agentShareFromWidth,
   homeGridColumns,
   resolveAgentShare,
-} from "./homeSplit";
+} from "$lib/homeSplit";
 
 describe("agentShareFromWidth", () => {
   it("turns a dragged width into the agent cell's share of the row", () => {

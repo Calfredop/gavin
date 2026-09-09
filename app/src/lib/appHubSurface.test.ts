@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // The app hub's fleet strip and its running-tasks column are pure
 // arithmetic in appHub.ts (covered in appHub.test.ts) rendered by one
@@ -85,7 +85,7 @@ describe("the running-tasks column", () => {
     // The same StatusBadge the board card draws for the same session,
     // from ui/indicators.ts -- not a private dot per phase.
     expect(hub).toContain("indicator={phaseIndicator(task.phase)}");
-    expect(hub).toContain('import StatusBadge from "./ui/StatusBadge.svelte"');
+    expect(hub).toContain('import StatusBadge from "$lib/ui/StatusBadge.svelte"');
     // The two phases that are not daemon statuses get their own entries;
     // the rest map onto the agent states by name.
     expect(hub).toContain('if (phase === "interrupted") return agentInterruptedIndicator();');
@@ -115,7 +115,7 @@ describe("the agent usage recap", () => {
     // a second requester here would double the calls against a route
     // that 429s.
     expect(source(HUB)).not.toContain("refreshUsage");
-    expect(source(HUB)).toContain('from "./agentPauseState"');
+    expect(source(HUB)).toContain('from "$lib/agentPauseState"');
   });
 
   it("draws the bar in the bands agentUsage.ts owns, never a percentage of its own", () => {

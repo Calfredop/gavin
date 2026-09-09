@@ -7,9 +7,9 @@ import {
   type HintState,
   type HintKeyEvent,
   type HintMode,
-} from "./shortcutHints";
+} from "$lib/shortcutHints";
 
-vi.mock("./platform", () => ({ cmdHeld: (e: HintKeyEvent) => e.metaKey }));
+vi.mock("$lib/platform", () => ({ cmdHeld: (e: HintKeyEvent) => e.metaKey }));
 
 const mods = (cmd: boolean, shift = false, alt = false): HintEvent => ({
   type: "modifier-state",

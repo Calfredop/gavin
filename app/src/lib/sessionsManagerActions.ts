@@ -13,9 +13,9 @@
 // does nothing at all. "Kill all does nothing" was exactly that.
 
 import { get } from "svelte/store";
-import * as backend from "./backend";
-import { restartOutcome, type DaemonCompat } from "./daemonCompat";
-import { askConfirm, showAlert } from "./dialog";
+import * as backend from "$lib/backend";
+import { restartOutcome, type DaemonCompat } from "$lib/daemonCompat";
+import { askConfirm, showAlert } from "$lib/dialog";
 import {
   handleAgentSessionSpawned,
   handleOrphanEnded,
@@ -24,9 +24,9 @@ import {
   restartDaemonInPlace,
   switchToSessionInPage,
   switchWorkspaceView,
-} from "./layoutState";
-import { findSessionLocation } from "./workspace";
-import { confirmDestructive, DAEMON_SUBJECT } from "./confirmGate";
+} from "$lib/layoutState";
+import { findSessionLocation } from "$lib/workspace";
+import { confirmDestructive, DAEMON_SUBJECT } from "$lib/confirmGate";
 import {
   killBatchConfirm,
   killConfirm,
@@ -39,7 +39,7 @@ import {
   survivorsAlert,
   type KillScope,
   type SessionRow,
-} from "./sessionsManager";
+} from "$lib/sessionsManager";
 
 /// Put the human in front of a session, giving it a tab first if nothing
 /// is showing it.

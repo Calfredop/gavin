@@ -15,9 +15,9 @@
 // because the session went idle.
 
 import { get } from "svelte/store";
-import * as backend from "./backend";
-import { featureBlockedReason } from "./daemonCompat";
-import { daemonCompat, queuedInputsById, handleQueuedInputsChanged } from "./layoutState";
+import * as backend from "$lib/backend";
+import { featureBlockedReason } from "$lib/daemonCompat";
+import { daemonCompat, queuedInputsById, handleQueuedInputsChanged } from "$lib/layoutState";
 import {
   composeRefusal,
   moveQueued,
@@ -25,7 +25,7 @@ import {
   withoutQueued,
   type QueueTarget,
   type QueuedInput,
-} from "./queuedInput";
+} from "$lib/queuedInput";
 
 /// What the app knows about a session's fitness to be queued for,
 /// assembled from the stores. The view reads this once and hands it to

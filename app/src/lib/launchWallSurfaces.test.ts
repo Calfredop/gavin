@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources, tsSources } from "./sources";
+import { svelteSources, tsSources } from "$lib/sources";
 
 // The static pre-flight for the memory wall.
 //
@@ -216,7 +216,7 @@ describe("the done-session reclaim", () => {
   // its parent -- the trap that once made rails re-run finished work.
   it("starts from bootstrap, after the queue it makes room for", () => {
     const layout = source("layoutState.ts");
-    expect(layout).toContain('await import("./doneSessionReclaimState")');
+    expect(layout).toContain('await import("$lib/doneSessionReclaimState")');
     expect(layout).toContain("unlisteners.push(startDoneSessionReclaim());");
     expect(layout.indexOf("startDoneSessionReclaim()")).toBeGreaterThan(
       layout.indexOf("startLaunchQueue()")
@@ -291,9 +291,9 @@ describe("the settings", () => {
 describe("the probe", () => {
   it("polls app-wide from bootstrap, not from a mounted component", () => {
     const layout = source("layoutState.ts");
-    expect(layout).toContain('await import("./memoryState")');
+    expect(layout).toContain('await import("$lib/memoryState")');
     expect(layout).toContain("unlisteners.push(startMemoryPoll());");
-    expect(layout).toContain('await import("./launchQueue")');
+    expect(layout).toContain('await import("$lib/launchQueue")');
     expect(layout).toContain("unlisteners.push(startLaunchQueue());");
   });
 

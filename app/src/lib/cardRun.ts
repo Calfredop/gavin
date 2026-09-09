@@ -1,9 +1,9 @@
 // Pure prompt/command composition for executable cards (card-model spec
 // §3). The run flow (cardRunActions.ts) wires these to real sessions.
 
-import { attachmentPromptBlock } from "./attachments";
-import { slugStatus } from "./planBoard";
-import { cardIsOutside } from "./worktreeCards";
+import { attachmentPromptBlock } from "$lib/attachments";
+import { slugStatus } from "$lib/planBoard";
+import { cardIsOutside } from "$lib/worktreeCards";
 
 // Every launched agent gets the same opening instruction, board Run and
 // orchestration alike: name the tab before doing anything else. A page

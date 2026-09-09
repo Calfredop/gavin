@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import type { Label } from "./kanban";
-  import { slugStatus, type CardView } from "./planBoard";
+  import type { Label } from "$lib/kanban";
+  import { slugStatus, type CardView } from "$lib/planBoard";
   import { FileText, TriangleAlert, StickyNote, Play, Route, Paperclip, Gauge, Bot, ChevronRight, ChevronDown } from "@lucide/svelte";
-  import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, parseComplexity } from "./complexity";
-  import { cardOverrideNote } from "./cardAgent";
-  import IconButton from "./ui/IconButton.svelte";
-  import StatusBadge from "./ui/StatusBadge.svelte";
+  import { COMPLEXITY_LABELS, COMPLEXITY_LEVELS, parseComplexity } from "$lib/complexity";
+  import { cardOverrideNote } from "$lib/cardAgent";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import {
     agentDevelopingIndicator,
     agentExitedIndicator,
@@ -16,21 +16,21 @@
     queuedBadgeText,
     agentInterruptedIndicator,
     priorityIndicator,
-  } from "./ui/indicators";
-  import { dragState, dropHold, buildNestedSlots } from "./kanbanDrag";
-  import { kanbanState, cardSessionFor } from "./kanbanState";
-  import { cancelLaunch, launchGateVerdict, launchQueue, queuedForCard } from "./launchQueue";
-  import { orchestrations } from "./orchestrationState";
-  import { cardRailBadge } from "./orchestration";
-  import { cardSessionState } from "./columnRunAction";
-  import { boardSelection } from "./boardSelection";
-  import { tooltip } from "./tooltip";
-  import { layoutState, resolvedAgents, attentionStatusById } from "./layoutState";
-  import { agentPromptBlocker } from "./cardRun";
-  import { jumpToBoundSession, revealDevelopingCard } from "./cardRunActions";
-  import { developingRunIn, DEVELOPING_BLOCK } from "./developingCards";
+  } from "$lib/ui/indicators";
+  import { dragState, dropHold, buildNestedSlots } from "$lib/kanbanDrag";
+  import { kanbanState, cardSessionFor } from "$lib/kanbanState";
+  import { cancelLaunch, launchGateVerdict, launchQueue, queuedForCard } from "$lib/launchQueue";
+  import { orchestrations } from "$lib/orchestrationState";
+  import { cardRailBadge } from "$lib/orchestration";
+  import { cardSessionState } from "$lib/columnRunAction";
+  import { boardSelection } from "$lib/boardSelection";
+  import { tooltip } from "$lib/tooltip";
+  import { layoutState, resolvedAgents, attentionStatusById } from "$lib/layoutState";
+  import { agentPromptBlocker } from "$lib/cardRun";
+  import { jumpToBoundSession, revealDevelopingCard } from "$lib/cardRunActions";
+  import { developingRunIn, DEVELOPING_BLOCK } from "$lib/developingCards";
   // Svelte 5 self-import for the nested-children recursion.
-  import BoardCardSelf from "./BoardCard.svelte";
+  import BoardCardSelf from "$lib/BoardCard.svelte";
 
   interface Props {
     card: CardView;

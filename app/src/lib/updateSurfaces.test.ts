@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // The update channel is expressed on two surfaces that nothing links: a
 // badge on the sidebar's Settings row, and the Updates section of the
@@ -27,7 +27,7 @@ const PANEL = "SettingsHubView.svelte";
 describe("the sidebar badge", () => {
   it("reads the store the launch check writes", () => {
     const text = source(SIDEBAR);
-    expect(text).toContain('import { availableUpdate } from "./updatesState";');
+    expect(text).toContain('import { availableUpdate } from "$lib/updatesState";');
     expect(text).toContain("{#if $availableUpdate}");
   });
 

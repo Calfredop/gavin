@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { source } from "./sources";
+import { source } from "$lib/sources";
 
 // The roll-call for `#[tauri::command]`.
 //

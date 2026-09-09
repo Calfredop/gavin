@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { filterFiles, filterBranches, filterRemotes, filterStashes } from "./gitSearch";
-import type { BranchInfo, FileEntry, RemoteInfo, StashInfo } from "./git";
+import { filterFiles, filterBranches, filterRemotes, filterStashes } from "$lib/gitSearch";
+import type { BranchInfo, FileEntry, RemoteInfo, StashInfo } from "$lib/git";
 
 const files: FileEntry[] = [
   { path: "src/lib/git.ts", status: "M" },

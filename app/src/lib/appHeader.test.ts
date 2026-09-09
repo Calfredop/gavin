@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 
 // The app's top edge is three bars in three files that have to agree:
 // the window's corner and the rail's top line (TitleBar.svelte), the

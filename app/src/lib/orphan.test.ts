@@ -7,8 +7,8 @@ import {
   orphanDetectionAvailable,
   restoredBadge,
   type OrphanProcess,
-} from "./orphan";
-import { FEATURE_MIN_VERSION, type DaemonCompat } from "./daemonCompat";
+} from "$lib/orphan";
+import { FEATURE_MIN_VERSION, type DaemonCompat } from "$lib/daemonCompat";
 
 const CURRENT: DaemonCompat = {
   daemonVersion: FEATURE_MIN_VERSION.orphanDetection,

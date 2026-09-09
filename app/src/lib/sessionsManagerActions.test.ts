@@ -5,15 +5,15 @@ import { writable } from "svelte/store";
 // capability-narrowed to the file picker, so a native confirm() here
 // rejects at the permission layer and the button silently does nothing
 // -- which is exactly the bug "kill all does nothing" turned out to be.
-vi.mock("./dialog", () => ({
+vi.mock("$lib/dialog", () => ({
   askConfirm: vi.fn().mockResolvedValue(true),
   showAlert: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   endOrphan: vi.fn(),
   killSession: vi.fn(),
 }));
-vi.mock("./layoutState", () => ({
+vi.mock("$lib/layoutState", () => ({
   layoutState: writable({ workspaces: [] }),
   handleAgentSessionSpawned: vi.fn(),
   handleOrphanEnded: vi.fn(),
@@ -23,8 +23,8 @@ vi.mock("./layoutState", () => ({
   switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { askConfirm, showAlert } from "./dialog";
-import * as backend from "./backend";
+import { askConfirm, showAlert } from "$lib/dialog";
+import * as backend from "$lib/backend";
 import {
   handleAgentSessionSpawned,
   handleOrphanEnded,
@@ -33,7 +33,7 @@ import {
   restartDaemonInPlace,
   switchToSessionInPage,
   switchWorkspaceView,
-} from "./layoutState";
+} from "$lib/layoutState";
 import {
   endAllSessions,
   endSelectedSessions,
@@ -41,8 +41,8 @@ import {
   endStaleSessions,
   jumpToSession,
   restartDaemon,
-} from "./sessionsManagerActions";
-import type { KillAlert, KillPrompt, SessionRow } from "./sessionsManager";
+} from "$lib/sessionsManagerActions";
+import type { KillAlert, KillPrompt, SessionRow } from "$lib/sessionsManager";
 
 /// The prompt the first ask carried. Throws rather than returning
 /// undefined so a test that expected a prompt fails on THAT, not on a

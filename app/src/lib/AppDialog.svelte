@@ -10,8 +10,8 @@
   that look almost alike is exactly what this card set out to remove.
 -->
 <script lang="ts">
-  import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import { dialogRequest, answerDialog } from "./dialog";
+  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import { dialogRequest, answerDialog } from "$lib/dialog";
 </script>
 
 {#if $dialogRequest}

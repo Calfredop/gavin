@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { hotState } from "./hotState";
+import { hotState } from "$lib/hotState";
 
 describe("hotState", () => {
   it("builds a fresh value when there is no hot context", () => {

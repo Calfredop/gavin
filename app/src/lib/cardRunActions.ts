@@ -5,13 +5,13 @@
 // binding jumps instead of double-spawning. The app never auto-completes.
 
 import { get } from "svelte/store";
-import * as backend from "./backend";
-import { agentForCard, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "./layoutState";
-import { gavinTrees } from "./gavinState";
-import { findSessionLocation } from "./workspace";
-import { cardSessionState } from "./columnRunAction";
-import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
-import { patchPlanField, patchPlanPath } from "./gavinState";
+import * as backend from "$lib/backend";
+import { agentForCard, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/layoutState";
+import { gavinTrees } from "$lib/gavinState";
+import { findSessionLocation } from "$lib/workspace";
+import { cardSessionState } from "$lib/columnRunAction";
+import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/kanbanState";
+import { patchPlanField, patchPlanPath } from "$lib/gavinState";
 import {
   composeTaskPrompt,
   composePlanPrompt,
@@ -25,25 +25,25 @@ import {
   noPromptReason,
   provisionalSessionName,
   runStatusNeeded,
-} from "./cardRun";
+} from "$lib/cardRun";
 import {
   developingBlocker,
   developingRunOn,
   recordDevelopingCard,
-} from "./developingCardsState";
-import { stripFrontmatter } from "./planChecklist";
+} from "$lib/developingCardsState";
+import { stripFrontmatter } from "$lib/planChecklist";
 import {
   missingAttachmentReason,
   resolvedAttachmentPaths,
   withheldAttachmentPaths,
   type AttachmentStatus,
-} from "./attachments";
-import { ensureCardReviewed } from "./cardReviewActions";
-import { UNREVIEWED_UNATTENDED } from "./cardReview";
-import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "./queuedInput";
-import { queueFollowUp, queueTargetFor } from "./queuedInputActions";
-import { cardViewForPath, type CardView } from "./planBoard";
-import { holdOrQueue, type CardIntent } from "./launchQueue";
+} from "$lib/attachments";
+import { ensureCardReviewed } from "$lib/cardReviewActions";
+import { UNREVIEWED_UNATTENDED } from "$lib/cardReview";
+import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "$lib/queuedInput";
+import { queueFollowUp, queueTargetFor } from "$lib/queuedInputActions";
+import { cardViewForPath, type CardView } from "$lib/planBoard";
+import { holdOrQueue, type CardIntent } from "$lib/launchQueue";
 
 /// The run gate for a card's attachments: the absolute paths to hand the
 /// agent (and the ones it named but gavin is withholding), or the reason

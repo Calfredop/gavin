@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { source, svelteSources } from "./sources";
+import { source, svelteSources } from "$lib/sources";
 
 /// The route components, re-keyed by bare file name so they sit beside
 /// the seam's entries in one map. `../routes` is outside lib and the

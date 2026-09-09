@@ -1,8 +1,8 @@
-import { fileExtension } from "./fileTypes";
+import { fileExtension } from "$lib/fileTypes";
 // Type-only import: erased at compile time, so it does not violate the
 // no-runtime-CodeMirror-imports rule below.
 import type { Extension } from "@codemirror/state";
-import { applyFormat, chordToKeyName, FORMAT_GROUPS, type FormatAction } from "./markdownFormatting";
+import { applyFormat, chordToKeyName, FORMAT_GROUPS, type FormatAction } from "$lib/markdownFormatting";
 
 // NO top-level runtime @codemirror imports in this module. Every one of
 // them is dynamic, inside a function, so codeMirror.test.ts can import

@@ -1,20 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   readFileForViewer: vi.fn(),
   writeFileForEditor: vi.fn().mockResolvedValue(undefined),
   setPlanFrontmatterField: vi.fn(),
 }));
 
-import * as backend from "./backend";
-import { svelteSources } from "./sources";
+import * as backend from "$lib/backend";
+import { svelteSources } from "$lib/sources";
 import {
   LEARNED_HEADING,
   adoptMemory,
   appendLearned,
   isMemoryCard,
   memoryBullet,
-} from "./memoryCard";
+} from "$lib/memoryCard";
 
 const MARKER_START = "<!-- gavin:start -->";
 const MARKER_END = "<!-- gavin:end -->";

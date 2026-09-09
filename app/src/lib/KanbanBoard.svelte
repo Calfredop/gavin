@@ -1,37 +1,37 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, addColumnAction, reorderColumnAction, saveErrors, dismissSaveError } from "./kanbanState";
-  import KanbanColumn from "./KanbanColumn.svelte";
-  import AutoKanbanColumn from "./AutoKanbanColumn.svelte";
-  import CardDetailModal from "./CardDetailModal.svelte";
-  import CardComposeModal from "./CardComposeModal.svelte";
-  import KanbanDragPreview from "./KanbanDragPreview.svelte";
-  import { gavinTrees } from "./gavinState";
-  import { mergePlanCards, type CardView } from "./planBoard";
-  import { planCommitFromMerged } from "./planDrop";
-  import { runCard, resumeCard, developCard, sendToMainAgent } from "./cardRunActions";
-  import { layoutState, daemonCompat } from "./layoutState";
-  import { columnDeletionPlan, deletionPlanFor, executeDeletion, type DeletionPlan } from "./cardDelete";
-  import { grantForAnsweredPrompt } from "./confirmGate";
-  import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import { openContextMenuFromEvent } from "./contextMenu";
-  import { buildCardMenuEntries } from "./cardMenu";
-  import { fetchOrchestration, refreshOrchestration, orchestrations } from "./orchestrationState";
-  import { cardSessionFor } from "./kanbanState";
-  import { requestedCardDetail, takeCardDetailRequest } from "./cardTabLink";
-  import { requestedCompose, takeComposeRequest, type ComposeTarget } from "./composeRequest";
-  import { defaultComposeStatus } from "./cardCompose";
-  import { attachBoardDrag } from "./kanbanDragGlue";
-  import BoardSelectionBar from "./BoardSelectionBar.svelte";
-  import ArchiveSelectionBar from "./ArchiveSelectionBar.svelte";
-  import { boardSelection, selectedCards, toggleCardSelected, clearBoardSelection } from "./boardSelection";
-  import { dragState, buildColumnSlots, type ActiveDrag } from "./kanbanDrag";
-  import SearchInput from "./ui/SearchInput.svelte";
-  import IconButton from "./ui/IconButton.svelte";
+  import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, addColumnAction, reorderColumnAction, saveErrors, dismissSaveError } from "$lib/kanbanState";
+  import KanbanColumn from "$lib/KanbanColumn.svelte";
+  import AutoKanbanColumn from "$lib/AutoKanbanColumn.svelte";
+  import CardDetailModal from "$lib/CardDetailModal.svelte";
+  import CardComposeModal from "$lib/CardComposeModal.svelte";
+  import KanbanDragPreview from "$lib/KanbanDragPreview.svelte";
+  import { gavinTrees } from "$lib/gavinState";
+  import { mergePlanCards, type CardView } from "$lib/planBoard";
+  import { planCommitFromMerged } from "$lib/planDrop";
+  import { runCard, resumeCard, developCard, sendToMainAgent } from "$lib/cardRunActions";
+  import { layoutState, daemonCompat } from "$lib/layoutState";
+  import { columnDeletionPlan, deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cardDelete";
+  import { grantForAnsweredPrompt } from "$lib/confirmGate";
+  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import { openContextMenuFromEvent } from "$lib/contextMenu";
+  import { buildCardMenuEntries } from "$lib/cardMenu";
+  import { fetchOrchestration, refreshOrchestration, orchestrations } from "$lib/orchestrationState";
+  import { cardSessionFor } from "$lib/kanbanState";
+  import { requestedCardDetail, takeCardDetailRequest } from "$lib/cardTabLink";
+  import { requestedCompose, takeComposeRequest, type ComposeTarget } from "$lib/composeRequest";
+  import { defaultComposeStatus } from "$lib/cardCompose";
+  import { attachBoardDrag } from "$lib/kanbanDragGlue";
+  import BoardSelectionBar from "$lib/BoardSelectionBar.svelte";
+  import ArchiveSelectionBar from "$lib/ArchiveSelectionBar.svelte";
+  import { boardSelection, selectedCards, toggleCardSelected, clearBoardSelection } from "$lib/boardSelection";
+  import { dragState, buildColumnSlots, type ActiveDrag } from "$lib/kanbanDrag";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import { Archive } from "@lucide/svelte";
-  import ArchiveGrid from "./ArchiveGrid.svelte";
-  import ArchiveDeleteButton from "./ArchiveDeleteButton.svelte";
-  import { archiveView } from "./archive";
+  import ArchiveGrid from "$lib/ArchiveGrid.svelte";
+  import ArchiveDeleteButton from "$lib/ArchiveDeleteButton.svelte";
+  import { archiveView } from "$lib/archive";
   import {
     archivePurgeLines,
     archivePurgeTitle,
@@ -40,25 +40,25 @@
     SELECTION_SUBJECT,
     undatedCards,
     type AgeBucket,
-  } from "./archiveDelete";
-  import { executeUnarchive } from "./archiveActions";
-  import { featureBlockedReason } from "./daemonCompat";
-  import { filterBoard, AUTO_KEY_PREFIX } from "./boardSearch";
-  import { isSearching } from "./search";
-  import { railIndex } from "./planFilter";
-  import { dropAgainstWholeBoard } from "./pageBoard";
+  } from "$lib/archiveDelete";
+  import { executeUnarchive } from "$lib/archiveActions";
+  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { filterBoard, AUTO_KEY_PREFIX } from "$lib/boardSearch";
+  import { isSearching } from "$lib/search";
+  import { railIndex } from "$lib/planFilter";
+  import { dropAgainstWholeBoard } from "$lib/pageBoard";
   import {
     contextFacets,
     facetsActive,
     filterBoardByFacets,
     filterCards,
     pruneFacets,
-  } from "./boardFilters";
-  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "./hubFacets";
-  import FacetFilters from "./FacetFilters.svelte";
+  } from "$lib/boardFilters";
+  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/hubFacets";
+  import FacetFilters from "$lib/FacetFilters.svelte";
   import { flip } from "svelte/animate";
-  import { tooltip } from "./tooltip";
-  import type { DropTarget } from "./pointerDrag";
+  import { tooltip } from "$lib/tooltip";
+  import type { DropTarget } from "$lib/pointerDrag";
 
   interface Props {
     workspaceId: string;

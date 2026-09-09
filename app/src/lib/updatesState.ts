@@ -13,8 +13,8 @@
 // Everything else here is driven by the button in Settings.
 
 import { writable, get } from "svelte/store";
-import * as backend from "./backend";
-import { shouldSurfaceCheckError, updateBlockedReason, type AvailableUpdate, type UpdateSettings } from "./updates";
+import * as backend from "$lib/backend";
+import { shouldSurfaceCheckError, updateBlockedReason, type AvailableUpdate, type UpdateSettings } from "$lib/updates";
 
 /// What the build says about its own channel. Null before the first read
 /// -- which is "not asked yet", not "no channel", and the surface has to

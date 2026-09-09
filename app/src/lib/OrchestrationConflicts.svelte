@@ -1,11 +1,11 @@
 <script lang="ts">
   import { ChevronDown, ChevronRight, TriangleAlert } from "@lucide/svelte";
-  import { highlightedConflict } from "./orchestrationState";
-  import { describeConflict, conflictRailId } from "./orchestration";
-  import { loadConflictsCollapsed, saveConflictsCollapsed } from "./orchestrationConflictBanner";
-  import type { CardEntry, NumberedConflict, Orchestration } from "./orchestration";
-  import type { Tool } from "./orchestrationTools";
-  import { railBindFix, type RailBindTab } from "./railBind";
+  import { highlightedConflict } from "$lib/orchestrationState";
+  import { describeConflict, conflictRailId } from "$lib/orchestration";
+  import { loadConflictsCollapsed, saveConflictsCollapsed } from "$lib/orchestrationConflictBanner";
+  import type { CardEntry, NumberedConflict, Orchestration } from "$lib/orchestration";
+  import type { Tool } from "$lib/orchestrationTools";
+  import { railBindFix, type RailBindTab } from "$lib/railBind";
 
   interface Props {
     /// Whose box this is: the collapse is remembered per workspace.

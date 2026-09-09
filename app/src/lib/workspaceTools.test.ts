@@ -17,10 +17,10 @@ import {
   toolRunVerdict,
   toolsEmptyMessage,
   type ToolRun,
-} from "./workspaceTools";
-import { BUILTIN_TOOLS, type Tool, type ToolKind } from "./orchestrationTools";
-import { runIndicator } from "./ui/indicators";
-import type { DaemonCompat } from "./daemonCompat";
+} from "$lib/workspaceTools";
+import { BUILTIN_TOOLS, type Tool, type ToolKind } from "$lib/orchestrationTools";
+import { runIndicator } from "$lib/ui/indicators";
+import type { DaemonCompat } from "$lib/daemonCompat";
 
 function tool(over: Partial<Tool> = {}): Tool {
   return {

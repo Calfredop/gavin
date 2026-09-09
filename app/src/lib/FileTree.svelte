@@ -1,10 +1,10 @@
 <script lang="ts">
   import { ChevronDown, ChevronRight, File, Folder, FolderOpen, Link } from "@lucide/svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import { formatSize, type FileNode, type TreeView } from "./fileTree";
-  import { isViewableExtension } from "./fileTypes";
-  import { openContextMenuFromEvent } from "./contextMenu";
-  import { rowMenuItems, type FileTreeMenuCallbacks } from "./fileTreeMenu";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import { formatSize, type FileNode, type TreeView } from "$lib/fileTree";
+  import { isViewableExtension } from "$lib/fileTypes";
+  import { openContextMenuFromEvent } from "$lib/contextMenu";
+  import { rowMenuItems, type FileTreeMenuCallbacks } from "$lib/fileTreeMenu";
 
   interface Props {
     /// The rows to draw, already ordered and filtered (fileTree.ts).

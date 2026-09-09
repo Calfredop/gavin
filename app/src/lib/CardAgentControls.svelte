@@ -14,10 +14,10 @@
   /// to the surface, is the caller's business. Its font SIZE is
   /// inherited, so the pair reads as part of a 0.8em strip and as part
   /// of a 0.85em meta row without either host restyling it.
-  import { CUSTOM_MODEL, modelChoices } from "./agentModel";
-  import { cardAgents } from "./layoutState";
-  import { NO_CARD_AGENT, cardModelUnreachable, type CardAgentFields } from "./cardAgent";
-  import type { AgentProfileInfo } from "./settings";
+  import { CUSTOM_MODEL, modelChoices } from "$lib/agentModel";
+  import { cardAgents } from "$lib/layoutState";
+  import { NO_CARD_AGENT, cardModelUnreachable, type CardAgentFields } from "$lib/cardAgent";
+  import type { AgentProfileInfo } from "$lib/settings";
 
   interface Props {
     workspaceId: string;

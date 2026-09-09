@@ -32,7 +32,7 @@ import {
   bodyForKind,
   toolBodyEditor,
   toolKindParamNote,
-} from "./orchestrationTools";
+} from "$lib/orchestrationTools";
 
 function record(over: Partial<ToolRecord> = {}): ToolRecord {
   return {

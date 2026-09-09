@@ -9,7 +9,7 @@ import {
   isAttributed,
   parseComplexity,
   type ComplexityTable,
-} from "./complexity";
+} from "$lib/complexity";
 
 describe("parseComplexity", () => {
   it("accepts every level, however it was typed", () => {

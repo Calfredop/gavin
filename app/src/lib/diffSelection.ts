@@ -1,7 +1,7 @@
 // Line-selection rules for partial staging (spec §3): only add/del lines,
 // one hunk at a time, shift-click/drag extends from an anchor.
 
-import { lineId, parseLineId, type Hunk } from "./git";
+import { lineId, parseLineId, type Hunk } from "$lib/git";
 
 export function selectionHunk(ids: ReadonlySet<string>): number | null {
   const first = ids.values().next();

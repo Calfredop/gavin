@@ -22,12 +22,12 @@ import {
   withBaselinePeers,
   type ReviewCandidate,
   type ReviewGroup,
-} from "./reviewBoard";
-import type { CardView, MergedProjection } from "./planBoard";
-import type { Column } from "./kanban";
-import { ANY, NO_FACETS, type BoardFacets } from "./boardFilters";
-import { railIndex } from "./planFilter";
-import type { Orchestration, Rail } from "./orchestration";
+} from "$lib/reviewBoard";
+import type { CardView, MergedProjection } from "$lib/planBoard";
+import type { Column } from "$lib/kanban";
+import { ANY, NO_FACETS, type BoardFacets } from "$lib/boardFilters";
+import { railIndex } from "$lib/planFilter";
+import type { Orchestration, Rail } from "$lib/orchestration";
 
 const NO_RAILS = railIndex(null);
 

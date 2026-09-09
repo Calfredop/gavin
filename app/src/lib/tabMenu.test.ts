@@ -1,28 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   openPathExternally: vi.fn().mockResolvedValue(undefined),
   revealPathExternally: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn().mockResolvedValue(undefined) }));
-vi.mock("./layoutState", () => ({
+vi.mock("$lib/layoutState", () => ({
   setTabPinned: vi.fn().mockResolvedValue(undefined),
   splitPane: vi.fn().mockResolvedValue(undefined),
   closeSession: vi.fn().mockResolvedValue(undefined),
   setSessionRead: vi.fn(),
 }));
-vi.mock("./tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
-vi.mock("./confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
-vi.mock("./bestOfNActions", () => ({ pickCandidate: vi.fn().mockResolvedValue(null) }));
+vi.mock("$lib/tabActions", () => ({ closeTabs: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("$lib/confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
+vi.mock("$lib/bestOfNActions", () => ({ pickCandidate: vi.fn().mockResolvedValue(null) }));
 
-import { openPathExternally, revealPathExternally } from "./backend";
+import { openPathExternally, revealPathExternally } from "$lib/backend";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { setTabPinned, splitPane, closeSession, setSessionRead } from "./layoutState";
-import { closeTabs } from "./tabActions";
-import { buildTabMenuEntries, type TabMenuContext, type TabMenuHooks } from "./tabMenu";
-import { bestOfNRuns } from "./bestOfNState";
-import { pickCandidate } from "./bestOfNActions";
-import { isSeparator, type ContextMenuItem } from "./contextMenu";
+import { setTabPinned, splitPane, closeSession, setSessionRead } from "$lib/layoutState";
+import { closeTabs } from "$lib/tabActions";
+import { buildTabMenuEntries, type TabMenuContext, type TabMenuHooks } from "$lib/tabMenu";
+import { bestOfNRuns } from "$lib/bestOfNState";
+import { pickCandidate } from "$lib/bestOfNActions";
+import { isSeparator, type ContextMenuItem } from "$lib/contextMenu";
 
 function ctx(extra: Partial<TabMenuContext> = {}): TabMenuContext {
   return {

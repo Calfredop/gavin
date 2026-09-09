@@ -6,8 +6,8 @@ import {
   rowMenuItems,
   trashPromptLines,
   type FileTreeMenuCallbacks,
-} from "./fileTreeMenu";
-import type { FileNode } from "./fileTree";
+} from "$lib/fileTreeMenu";
+import type { FileNode } from "$lib/fileTree";
 
 function node(over: Partial<FileNode> = {}): FileNode {
   return {

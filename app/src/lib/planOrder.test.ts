@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeOrderWrites, ORDER_GAP } from "./planOrder";
+import { computeOrderWrites, ORDER_GAP } from "$lib/planOrder";
 
 const c = (path: string, order: number | null) => ({ path, order });
 

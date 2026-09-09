@@ -13,9 +13,9 @@
 ///      reopened and finished, rather than removing the one handle the
 ///      user has on what is left.
 
-import * as backend from "./backend";
-import { deleteWorkspaceFromApp } from "./layoutState";
-import { plannedRemovals, touchesDisk, type DeleteAnswers, type GavinFootprint } from "./workspaceDelete";
+import * as backend from "$lib/backend";
+import { deleteWorkspaceFromApp } from "$lib/layoutState";
+import { plannedRemovals, touchesDisk, type DeleteAnswers, type GavinFootprint } from "$lib/workspaceDelete";
 
 export interface DeleteResult {
   /// Everything that landed, in the order it happened.

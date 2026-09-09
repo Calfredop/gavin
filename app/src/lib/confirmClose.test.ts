@@ -1,20 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { LayoutNode } from "./layout";
-import type { Page, Workspace } from "./workspace";
+import type { LayoutNode } from "$lib/layout";
+import type { Page, Workspace } from "$lib/workspace";
 
-vi.mock("./dialog", () => ({
+vi.mock("$lib/dialog", () => ({
   askConfirm: vi.fn(),
 }));
 
-import { askConfirm } from "./dialog";
-import { layoutState } from "./layoutState";
+import { askConfirm } from "$lib/dialog";
+import { layoutState } from "$lib/layoutState";
 import {
   confirmTabClose,
   confirmTabsClose,
   confirmPaneClose,
   confirmPageClose,
   confirmWorkspaceClose,
-} from "./confirmClose";
+} from "$lib/confirmClose";
 
 beforeEach(() => {
   vi.clearAllMocks();

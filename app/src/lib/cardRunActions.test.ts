@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable } from "svelte/store";
-import type { DaemonCompat } from "./daemonCompat";
-import type { SessionStatus } from "./notifications";
+import type { DaemonCompat } from "$lib/daemonCompat";
+import type { SessionStatus } from "$lib/notifications";
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   createSession: vi.fn(),
   readFileForViewer: vi.fn(),
   setPlanFrontmatterField: vi.fn(),
@@ -42,7 +42,7 @@ const agentMock = vi.hoisted(() =>
   }))
 );
 
-vi.mock("./layoutState", () => ({
+vi.mock("$lib/layoutState", () => ({
   layoutState: writable({
     workspaces: [
       {
@@ -103,10 +103,10 @@ vi.mock("./layoutState", () => ({
 // The interactive half of the same gate. A real `ensureCardReviewed`
 // would raise the app's dialog and wait for an answer that never comes;
 // this is the seam the sheet's yes/no is driven through.
-vi.mock("./cardReviewActions", () => ({
+vi.mock("$lib/cardReviewActions", () => ({
   ensureCardReviewed: vi.fn(async () => true),
 }));
-vi.mock("./workspace", () => {
+vi.mock("$lib/workspace", () => {
   const findSessionLocation = vi.fn();
   return {
     findSessionLocation,
@@ -125,13 +125,13 @@ vi.mock("./workspace", () => {
   };
 });
 
-import * as backend from "./backend";
-import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, daemonCompat, workspaceRootPath, resolvedAgentFor, agentForCard, conversationIdForLaunch, baseShaForLaunch, armFailureDetection, setDevelopingCards } from "./layoutState";
-import { cardReviewed } from "./layoutState";
-import { ensureCardReviewed } from "./cardReviewActions";
-import { findSessionLocation } from "./workspace";
-import { kanbanState } from "./kanbanState";
-import { gavinTrees } from "./gavinState";
+import * as backend from "$lib/backend";
+import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, daemonCompat, workspaceRootPath, resolvedAgentFor, agentForCard, conversationIdForLaunch, baseShaForLaunch, armFailureDetection, setDevelopingCards } from "$lib/layoutState";
+import { cardReviewed } from "$lib/layoutState";
+import { ensureCardReviewed } from "$lib/cardReviewActions";
+import { findSessionLocation } from "$lib/workspace";
+import { kanbanState } from "$lib/kanbanState";
+import { gavinTrees } from "$lib/gavinState";
 import {
   runCard,
   resumeCard,
@@ -140,9 +140,9 @@ import {
   relaunchCard,
   jumpToBoundSession,
   sendToMainAgent,
-} from "./cardRunActions";
-import type { CardView } from "./planBoard";
-import type { Board } from "./kanban";
+} from "$lib/cardRunActions";
+import type { CardView } from "$lib/planBoard";
+import type { Board } from "$lib/kanban";
 
 function card(kind: "note" | "task" | "plan", status: string | null): CardView {
   return {

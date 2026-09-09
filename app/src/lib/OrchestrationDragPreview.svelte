@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { orchDragState } from "./orchestrationDrag";
-  import { activeOrchDragRoot } from "./orchestrationDragGlue";
-  import BoardCard from "./BoardCard.svelte";
-  import type { Label } from "./kanban";
-  import type { PlacedCardView } from "./planBoard";
-  import { findStep, stageLabelById, type CardEntry, type Orchestration } from "./orchestration";
-  import type { Tool } from "./orchestrationTools";
-  import type { GroupTemplate } from "./orchestrationGroups";
+  import { orchDragState } from "$lib/orchestrationDrag";
+  import { activeOrchDragRoot } from "$lib/orchestrationDragGlue";
+  import BoardCard from "$lib/BoardCard.svelte";
+  import type { Label } from "$lib/kanban";
+  import type { PlacedCardView } from "$lib/planBoard";
+  import { findStep, stageLabelById, type CardEntry, type Orchestration } from "$lib/orchestration";
+  import type { Tool } from "$lib/orchestrationTools";
+  import type { GroupTemplate } from "$lib/orchestrationGroups";
 
   interface Props {
     orch: Orchestration | null;

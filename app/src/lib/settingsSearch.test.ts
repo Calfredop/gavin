@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { searchSettings, type SettingsSection } from "./settingsSearch";
+import { searchSettings, type SettingsSection } from "$lib/settingsSearch";
 
 const SECTIONS: SettingsSection[] = [
   { id: "workspace", keywords: ["Workspace", "Name", "Colour", "Color", "Root"] },

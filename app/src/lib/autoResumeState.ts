@@ -9,8 +9,8 @@
 // the effect, not by whichever component happens to be mounted.
 
 import { get, writable } from "svelte/store";
-import { pauseFor } from "./agentPauseState";
-import { mayLaunch } from "./launchQueue";
+import { pauseFor } from "$lib/agentPauseState";
+import { mayLaunch } from "$lib/launchQueue";
 import {
   autoResumeDecision,
   isImmediateRefailure,
@@ -19,24 +19,24 @@ import {
   staggerDelays,
   type AutoResumeDecision,
   type ResumeRecord,
-} from "./autoResume";
-import { claimKey, resumeClaims } from "./resumeClaim";
-import { featureBlockedReason } from "./daemonCompat";
+} from "$lib/autoResume";
+import { claimKey, resumeClaims } from "$lib/resumeClaim";
+import { featureBlockedReason } from "$lib/daemonCompat";
 import {
   daemonCompat,
   layoutState,
   resolvedAgentFor,
   setSessionFailureHook,
-} from "./layoutState";
-import { sessionLabel } from "./paths";
-import { kanbanState } from "./kanbanState";
-import { gavinTrees } from "./gavinState";
-import { orchestrations, resumeStep } from "./orchestrationState";
-import { resumeCard } from "./cardRunActions";
-import { cardViewForPath, slugStatus } from "./planBoard";
-import { cardIndex, doneColumn, effectiveStatus, planIndex, stageMode } from "./orchestration";
-import type { Rail, Step } from "./orchestration";
-import type { SessionStatus } from "./notifications";
+} from "$lib/layoutState";
+import { sessionLabel } from "$lib/paths";
+import { kanbanState } from "$lib/kanbanState";
+import { gavinTrees } from "$lib/gavinState";
+import { orchestrations, resumeStep } from "$lib/orchestrationState";
+import { resumeCard } from "$lib/cardRunActions";
+import { cardViewForPath, slugStatus } from "$lib/planBoard";
+import { cardIndex, doneColumn, effectiveStatus, planIndex, stageMode } from "$lib/orchestration";
+import type { Rail, Step } from "$lib/orchestration";
+import type { SessionStatus } from "$lib/notifications";
 
 /// What gavin has done about a run without being asked, by the thing it
 /// belongs to: a rail step id, or a card's file path.
@@ -235,7 +235,7 @@ function ownerLabel(owner: NonNullable<Owner>, sessionId: string): string {
 }
 
 async function notify(body: string): Promise<void> {
-  const { sendAutoResumeNotice } = await import("./autoResumeNotify");
+  const { sendAutoResumeNotice } = await import("$lib/autoResumeNotify");
   await sendAutoResumeNotice(body);
 }
 

@@ -1,4 +1,4 @@
-import { count } from "./railConfirm";
+import { count } from "$lib/railConfirm";
 
 /// What a newly created worktree will run, and how it will be described
 /// before the human commits to creating it.

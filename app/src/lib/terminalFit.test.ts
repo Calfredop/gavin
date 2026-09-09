@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { fitWorthTaking } from "./terminalFit";
-import { svelteSources } from "./sources";
+import { fitWorthTaking } from "$lib/terminalFit";
+import { svelteSources } from "$lib/sources";
 
 describe("fitWorthTaking", () => {
   it("takes an ordinary pane's measurement", () => {

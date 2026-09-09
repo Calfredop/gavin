@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { source } from "./sources";
+import { source } from "$lib/sources";
 
 // Git tracking is one question asked on five surfaces -- the sidebar's
 // "Initialize gavin here?" prompt, the Settings tab's own init modal, the

@@ -7,9 +7,9 @@
   // idiom OrchestrationHubView's own `.save-error` bar already uses for
   // "something's off, here's what to do about it."
   import { TriangleAlert } from "@lucide/svelte";
-  import { layoutState, daemonCompat, restartDaemonInPlace, runningSessionCount } from "./layoutState";
-  import { compatMessage, restartConfirmLines, restartOutcome } from "./daemonCompat";
-  import { confirmDestructive, DAEMON_SUBJECT } from "./confirmGate";
+  import { layoutState, daemonCompat, restartDaemonInPlace, runningSessionCount } from "$lib/layoutState";
+  import { compatMessage, restartConfirmLines, restartOutcome } from "$lib/daemonCompat";
+  import { confirmDestructive, DAEMON_SUBJECT } from "$lib/confirmGate";
 
   const message = $derived(compatMessage($daemonCompat, runningSessionCount($layoutState)));
 

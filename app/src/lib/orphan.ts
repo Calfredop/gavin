@@ -5,9 +5,9 @@
 // mentions a restored, interrupted or orphaned session reads its copy
 // from this file, so the three states cannot be described differently in
 // two places.
-import type { DaemonCompat } from "./daemonCompat";
-import { FEATURE_MIN_VERSION } from "./daemonCompat";
-import type { AlertOptions, ConfirmOptions } from "./dialog";
+import type { DaemonCompat } from "$lib/daemonCompat";
+import { FEATURE_MIN_VERSION } from "$lib/daemonCompat";
+import type { AlertOptions, ConfirmOptions } from "$lib/dialog";
 
 /// A process the daemon found still running with no tab in front of it.
 /// The pid is for the human to recognise in Activity Monitor; the

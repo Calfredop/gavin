@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { layoutState, daemonCompat, setPrdPath } from "./layoutState";
-  import { gavinTrees } from "./gavinState";
-  import { featureBlockedReason } from "./daemonCompat";
-  import { resolvePrdPath, prdPathFromPick } from "./settings";
-  import FileEditor from "./FileEditor.svelte";
-  import HubFilePicker from "./HubFilePicker.svelte";
+  import { layoutState, daemonCompat, setPrdPath } from "$lib/layoutState";
+  import { gavinTrees } from "$lib/gavinState";
+  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { resolvePrdPath, prdPathFromPick } from "$lib/settings";
+  import FileEditor from "$lib/FileEditor.svelte";
+  import HubFilePicker from "$lib/HubFilePicker.svelte";
 
   interface Props {
     workspaceId: string;

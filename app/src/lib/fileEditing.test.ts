@@ -8,7 +8,7 @@ import {
   resolveExternalChange,
   dirtyPaths,
   setPathDirty,
-} from "./fileEditing";
+} from "$lib/fileEditing";
 
 describe("modesFor", () => {
   it("offers all three modes for markdown", () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { COMPLEXITY_LEVELS } from "./complexity";
-import { svelteSources, tsSources } from "./sources";
+import { COMPLEXITY_LEVELS } from "$lib/complexity";
+import { svelteSources, tsSources } from "$lib/sources";
 
 // Complexity is one field expressed on six surfaces -- the ⌘N composer,
 // the card detail modal, the Plans tab's metadata strip, the shared
@@ -125,7 +125,7 @@ describe("the settings panels", () => {
     ["the app panel", APP_PANEL],
   ])("%s renders the shared table rather than its own", (_name, file) => {
     expect(source(file)).toContain("<ComplexityTable");
-    expect(source(file)).toContain('import ComplexityTable from "./ComplexityTable.svelte"');
+    expect(source(file)).toContain('import ComplexityTable from "$lib/ComplexityTable.svelte"');
   });
 
   it("gives the workspace panel the app table to fall through to", () => {

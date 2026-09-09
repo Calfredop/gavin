@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { toUnifiedRows, toSplitRows } from "./diffRows";
-import type { Hunk, Line } from "./git";
+import { toUnifiedRows, toSplitRows } from "$lib/diffRows";
+import type { Hunk, Line } from "$lib/git";
 
 const l = (kind: Line["kind"], text: string, oldNo?: number, newNo?: number): Line => ({ kind, text, oldNo, newNo });
 

@@ -10,7 +10,7 @@
 // index moveStepToNewStage expects.
 
 import { writable, get } from "svelte/store";
-import { exceedsThreshold, type Point, type Rect } from "./pointerDrag";
+import { exceedsThreshold, type Point, type Rect } from "$lib/pointerDrag";
 
 export interface MeasuredStep {
   id: string;

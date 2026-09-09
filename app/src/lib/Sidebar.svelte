@@ -1,20 +1,20 @@
 <script lang="ts">
-  import { accentVar } from "./settings";
-  import GlobalSettingsModal from "./GlobalSettingsModal.svelte";
-  import SessionsManagerModal from "./SessionsManagerModal.svelte";
-  import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import AgentUsageModal from "./AgentUsageModal.svelte";
-  import { activePause, nowStore, worstUsageProjection } from "./agentPauseState";
-  import { pauseLabel } from "./agentPause";
-  import { fleetStripLine, launchGateVerdict } from "./launchQueue";
-  import { projectionTooltip } from "./usageProjection";
+  import { accentVar } from "$lib/settings";
+  import GlobalSettingsModal from "$lib/GlobalSettingsModal.svelte";
+  import SessionsManagerModal from "$lib/SessionsManagerModal.svelte";
+  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import AgentUsageModal from "$lib/AgentUsageModal.svelte";
+  import { activePause, nowStore, worstUsageProjection } from "$lib/agentPauseState";
+  import { pauseLabel } from "$lib/agentPause";
+  import { fleetStripLine, launchGateVerdict } from "$lib/launchQueue";
+  import { projectionTooltip } from "$lib/usageProjection";
   // Which of the two app-level panels is open. A store rather than this
   // component's own `$state`, because the app hub's recaps open the same
   // two panels and a flag inside Sidebar.svelte can only be flipped from
   // inside Sidebar.svelte. The mount stays here: the sidebar is on
   // screen for the life of the window, and one mount point is what keeps
   // two openers from putting two panels on top of each other.
-  import { closeAppPanel, openAppPanel, showAppPanel } from "./appPanels";
+  import { closeAppPanel, openAppPanel, showAppPanel } from "$lib/appPanels";
   import {
     layoutState,
     switchWorkspace,
@@ -33,15 +33,15 @@
     agentProfilesStore,
     gitTrackingDefault,
     attentionState,
-  } from "./layoutState";
-  import { confirmWorkspaceClose, confirmPageClose } from "./confirmClose";
+  } from "$lib/layoutState";
+  import { confirmWorkspaceClose, confirmPageClose } from "$lib/confirmClose";
   // Naming a workspace into existence is the app hub's action now; the
   // sidebar's is "Open workspace…", which starts from a folder. The
   // prompt below is the one question that flow can ask.
-  import { pendingOpen, initAndOpen, bindWithoutInit, cancelOpen } from "./workspaceOpen";
-  import { INIT_TRACKING_LABEL, resolveGitTracking } from "./gitTracking";
-  import { sidebarCollapsed, scratchpadEnabled, toggleSidebarCollapsed } from "./sidebarPrefs";
-  import { endSidebarPeek, peekSidebar, sidebarPeek, sidebarShowsRail } from "./sidebarPeek";
+  import { pendingOpen, initAndOpen, bindWithoutInit, cancelOpen } from "$lib/workspaceOpen";
+  import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/gitTracking";
+  import { sidebarCollapsed, scratchpadEnabled, toggleSidebarCollapsed } from "$lib/sidebarPrefs";
+  import { endSidebarPeek, peekSidebar, sidebarPeek, sidebarShowsRail } from "$lib/sidebarPeek";
   import {
     closeSidebarSearch,
     searchSidebar,
@@ -49,10 +49,10 @@
     sidebarSearchQuery,
     type SidebarHit,
     type SidebarSearchResult,
-  } from "./sidebarSearch";
-  import { isSearching } from "./search";
-  import type { SessionStatus } from "./layoutState";
-  import { presetSingle, findLeafPath, getNodeAtPath } from "./layout";
+  } from "$lib/sidebarSearch";
+  import { isSearching } from "$lib/search";
+  import type { SessionStatus } from "$lib/layoutState";
+  import { presetSingle, findLeafPath, getNodeAtPath } from "$lib/layout";
   import {
     ChevronRight,
     ChevronDown,
@@ -75,19 +75,19 @@
     Pin,
     PanelLeftOpen,
   } from "@lucide/svelte";
-  import { themeState } from "./ui/themeState.svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import StatusBadge from "./ui/StatusBadge.svelte";
+  import { themeState } from "$lib/ui/themeState.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import {
     agentIndicator,
     agentIndicatorByState,
     gitIndicator,
     usageProjectionIndicator,
-  } from "./ui/indicators";
+  } from "$lib/ui/indicators";
 
-  import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "./paths";
-  import { resolveHubView, visibleHubViewIds } from "./hubViewMeta";
-  import { currentHubTabPrefs } from "./hubTabPrefs";
+  import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "$lib/paths";
+  import { resolveHubView, visibleHubViewIds } from "$lib/hubViewMeta";
+  import { currentHubTabPrefs } from "$lib/hubTabPrefs";
   import {
     setDragPayload,
     getDragKind,
@@ -96,8 +96,8 @@
     computeReorderPosition,
     type DropZone,
     type ReorderPosition,
-  } from "./dragDrop";
-  import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "./layoutState";
+  } from "$lib/dragDrop";
+  import { movePaneOrTab, reorderWorkspaceAction, movePageAction, switchToSessionInPage } from "$lib/layoutState";
   import {
     UNFILED_WORKSPACE_ID,
     getActiveView,
@@ -107,7 +107,7 @@
     type Workspace,
     type Page,
     type GitStatus,
-  } from "./workspace";
+  } from "$lib/workspace";
   import {
     workspaceGitSummary,
     kanbanSummary,
@@ -123,43 +123,43 @@
     type RailsSummary,
     type PageAgentsSummary,
     type PageTabRow,
-  } from "./sidebarSummary";
-  import { rowLinkedCard, openLinkedCard, linkForCardPath, type LinkedCard } from "./cardTabLink";
+  } from "$lib/sidebarSummary";
+  import { rowLinkedCard, openLinkedCard, linkForCardPath, type LinkedCard } from "$lib/cardTabLink";
   import {
     orchestrations,
     fetchOrchestration,
     stepAttentionsByWorkspace,
-  } from "./orchestrationState";
-  import { railsWantingAttention } from "./orchestration";
-  import { kanbanState, fetchBoard } from "./kanbanState";
-  import { gavinTrees } from "./gavinState";
-  import { tooltip } from "./tooltip";
-  import { availableUpdate } from "./updatesState";
-  import { hintMode } from "./shortcutHints";
-  import { agentCommitPhase, gitStore } from "./gitState";
-  import { hintDigitFor } from "./shortcuts";
-  import ShortcutHint from "./ui/ShortcutHint.svelte";
-  import { showAlert } from "./dialog";
-  import { openContextMenuFromEvent } from "./contextMenu";
+  } from "$lib/orchestrationState";
+  import { railsWantingAttention } from "$lib/orchestration";
+  import { kanbanState, fetchBoard } from "$lib/kanbanState";
+  import { gavinTrees } from "$lib/gavinState";
+  import { tooltip } from "$lib/tooltip";
+  import { availableUpdate } from "$lib/updatesState";
+  import { hintMode } from "$lib/shortcutHints";
+  import { agentCommitPhase, gitStore } from "$lib/gitState";
+  import { hintDigitFor } from "$lib/shortcuts";
+  import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
+  import { showAlert } from "$lib/dialog";
+  import { openContextMenuFromEvent } from "$lib/contextMenu";
   import {
     buildWorkspaceMenuEntries,
     buildPageMenuEntries,
     buildSessionRowMenuEntries,
     type SidebarMenuHooks,
-  } from "./sidebarMenu";
-  import { closeTabsNow } from "./tabActions";
-  import { windowDrag } from "./windowDrag";
-  import { isInAnotherWindow } from "./appWindow";
-  import { currentWindowLabel, workspaceWindows } from "./appWindowState";
-  import type { CloseIdleRequest } from "./idleTabs";
-  import type { TabMenuContext } from "./tabMenu";
+  } from "$lib/sidebarMenu";
+  import { closeTabsNow } from "$lib/tabActions";
+  import { windowDrag } from "$lib/windowDrag";
+  import { isInAnotherWindow } from "$lib/appWindow";
+  import { currentWindowLabel, workspaceWindows } from "$lib/appWindowState";
+  import type { CloseIdleRequest } from "$lib/idleTabs";
+  import type { TabMenuContext } from "$lib/tabMenu";
   import {
     loadWorkspaceExpansion,
     saveWorkspaceExpansion,
     loadExpandedPages,
     saveExpandedPages,
     type WorkspaceExpansion,
-  } from "./sidebarExpansion";
+  } from "$lib/sidebarExpansion";
 
   // Which workspaces show their page list, and which pages show their
   // tab list. Kept apart rather than in one Set, since workspace ids and

@@ -36,7 +36,7 @@ vi.mock("@tauri-apps/api/event", () => ({
     resolveListen = () => resolve(() => {});
   })),
 }));
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   writeInput: vi.fn().mockResolvedValue(undefined),
   snapshotSession: vi.fn().mockResolvedValue(undefined),
   viewableExtensions: vi.fn().mockResolvedValue([]),
@@ -44,13 +44,13 @@ vi.mock("./backend", () => ({
   openPathExternally: vi.fn().mockResolvedValue(undefined),
 }));
 
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   getOrCreateTerminal,
   restoreScreen,
   destroyTerminal,
   setTerminalFontSize,
-} from "./terminalRegistry";
+} from "$lib/terminalRegistry";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 

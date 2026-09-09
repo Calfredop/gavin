@@ -1,15 +1,15 @@
 <script lang="ts">
-  import type { Column, Label } from "./kanban";
-  import { isPermanentColumn, type CardView } from "./planBoard";
-  import BoardCard from "./BoardCard.svelte";
-  import { dragState, dropHold, buildDisplaySlots } from "./kanbanDrag";
+  import type { Column, Label } from "$lib/kanban";
+  import { isPermanentColumn, type CardView } from "$lib/planBoard";
+  import BoardCard from "$lib/BoardCard.svelte";
+  import { dragState, dropHold, buildDisplaySlots } from "$lib/kanbanDrag";
   import { flip } from "svelte/animate";
-  import { renameColumnAction, deleteColumnAction } from "./kanbanState";
-  import { kanbanState, cardSessionFor } from "./kanbanState";
-  import { tooltip } from "./tooltip";
-  import { layoutState, resolvedAgents } from "./layoutState";
-  import { agentPromptBlocker } from "./cardRun";
-  import { developingRunIn } from "./developingCards";
+  import { renameColumnAction, deleteColumnAction } from "$lib/kanbanState";
+  import { kanbanState, cardSessionFor } from "$lib/kanbanState";
+  import { tooltip } from "$lib/tooltip";
+  import { layoutState, resolvedAgents } from "$lib/layoutState";
+  import { agentPromptBlocker } from "$lib/cardRun";
+  import { developingRunIn } from "$lib/developingCards";
   import {
     columnRunAction,
     columnRunTargets,
@@ -18,20 +18,20 @@
     columnRunAllConfirm,
     cardSessionState,
     type CardSessionState,
-  } from "./columnRunAction";
+  } from "$lib/columnRunAction";
   import { Play, RotateCcw, Archive } from "@lucide/svelte";
-  import IconButton from "./ui/IconButton.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import { X } from "@lucide/svelte";
-  import { formatShortcut } from "./shortcuts";
-  import { estimateFor, launchGateVerdict } from "./launchQueue";
-  import { isMacSync } from "./platform";
-  import { columnDeletionPlan, executeDeletion, executeMoveCards } from "./cardDelete";
-  import { grantForAnsweredPrompt } from "./confirmGate";
-  import ConfirmPrompt from "./ConfirmPrompt.svelte";
-  import { openContextMenuFromEvent, type ContextMenuEntry } from "./contextMenu";
-  import { executeArchive, isDoneColumn } from "./archiveActions";
-  import { featureBlockedReason } from "./daemonCompat";
-  import { daemonCompat } from "./layoutState";
+  import { formatShortcut } from "$lib/shortcuts";
+  import { estimateFor, launchGateVerdict } from "$lib/launchQueue";
+  import { isMacSync } from "$lib/platform";
+  import { columnDeletionPlan, executeDeletion, executeMoveCards } from "$lib/cardDelete";
+  import { grantForAnsweredPrompt } from "$lib/confirmGate";
+  import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
+  import { openContextMenuFromEvent, type ContextMenuEntry } from "$lib/contextMenu";
+  import { executeArchive, isDoneColumn } from "$lib/archiveActions";
+  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { daemonCompat } from "$lib/layoutState";
 
   interface Props {
     workspaceId: string;

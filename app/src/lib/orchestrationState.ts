@@ -7,7 +7,7 @@
 
 import { writable, derived, get, type Readable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import {
   nextActions,
   firstUnfinishedStageId,
@@ -55,7 +55,7 @@ import {
   startRailTargetWorkspace,
   conflictCheckout,
   railRunsDiffer,
-} from "./orchestration";
+} from "$lib/orchestration";
 import type {
   Action,
   CardEntry,
@@ -68,10 +68,10 @@ import type {
   StepState,
   Step,
   ToolSummary,
-} from "./orchestration";
-import { composeOrganizePrompt, composeRailPrompt } from "./orchestrationPrompts";
-import { findTool, gavinActionOf, resolveToolBody, resolveToolParam } from "./orchestrationTools";
-import type { Tool } from "./orchestrationTools";
+} from "$lib/orchestration";
+import { composeOrganizePrompt, composeRailPrompt } from "$lib/orchestrationPrompts";
+import { findTool, gavinActionOf, resolveToolBody, resolveToolParam } from "$lib/orchestrationTools";
+import type { Tool } from "$lib/orchestrationTools";
 import {
   buildUntilScript,
   exhaustedReason,
@@ -80,18 +80,18 @@ import {
   stageIdOfStep,
   untilLogPath,
   withRetryPrefix,
-} from "./orchestrationLoop";
-import { currentPrReports, prReportFor, prReports, requestPr, startPrPolling } from "./prState";
-import { failingChecksNote, prExhaustedReason } from "./pullRequest";
-import { stepsFromTemplate } from "./orchestrationGroups";
-import type { GroupTemplate } from "./orchestrationGroups";
-import { libraryFor, toolRecords } from "./toolsState";
-import { kanbanState, cardSessionFor, linkCardSessionAction } from "./kanbanState";
-import { breakOutChildren, guardCompletion } from "./cardCompletion";
-import { gavinTrees, patchPlanField } from "./gavinState";
-import { gitStore, refresh as refreshGit } from "./gitState";
-import { branchResolvable } from "./git";
-import { isGavinOwnPath } from "./gitTracking";
+} from "$lib/orchestrationLoop";
+import { currentPrReports, prReportFor, prReports, requestPr, startPrPolling } from "$lib/prState";
+import { failingChecksNote, prExhaustedReason } from "$lib/pullRequest";
+import { stepsFromTemplate } from "$lib/orchestrationGroups";
+import type { GroupTemplate } from "$lib/orchestrationGroups";
+import { libraryFor, toolRecords } from "$lib/toolsState";
+import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/kanbanState";
+import { breakOutChildren, guardCompletion } from "$lib/cardCompletion";
+import { gavinTrees, patchPlanField } from "$lib/gavinState";
+import { gitStore, refresh as refreshGit } from "$lib/gitState";
+import { branchResolvable } from "$lib/git";
+import { isGavinOwnPath } from "$lib/gitTracking";
 import {
   layoutState,
   agentForCard,
@@ -107,9 +107,9 @@ import {
   setOrchestrationAgent,
   setSessionName,
   workspaceRootPath,
-} from "./layoutState";
-import { decoyEditedSteps } from "./worktreeCards";
-import { allSessionIds } from "./layout";
+} from "$lib/layoutState";
+import { decoyEditedSteps } from "$lib/worktreeCards";
+import { allSessionIds } from "$lib/layout";
 import {
   composeTaskPrompt,
   composePlanPrompt,
@@ -119,32 +119,32 @@ import {
   provisionalSessionName,
   buildToolCommand,
   runStatusNeeded,
-} from "./cardRun";
-import { stripFrontmatter } from "./planChecklist";
-import { slugStatus } from "./planBoard";
+} from "$lib/cardRun";
+import { stripFrontmatter } from "$lib/planChecklist";
+import { slugStatus } from "$lib/planBoard";
 import {
   maybeNotifyReviewWait,
   setRailNotificationVoice,
   type SessionStatus,
-} from "./notifications";
+} from "$lib/notifications";
 import {
   ORGANIZE_LABEL,
   orchestrationAgentOver,
   reorganizeLabel,
-} from "./orchestrationAgent";
-import { sessionLiveness } from "./workspace";
-import { developingBlocker } from "./developingCardsState";
-import { DEVELOPING_STALL } from "./developingCards";
-import { unreviewedStallReason } from "./cardReview";
-import type { OrchestrationAgentRecord } from "./workspace";
-import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "./cardRunActions";
-import { activePaused, mayStartWork, nowStore } from "./agentPauseState";
+} from "$lib/orchestrationAgent";
+import { sessionLiveness } from "$lib/workspace";
+import { developingBlocker } from "$lib/developingCardsState";
+import { DEVELOPING_STALL } from "$lib/developingCards";
+import { unreviewedStallReason } from "$lib/cardReview";
+import type { OrchestrationAgentRecord } from "$lib/workspace";
+import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "$lib/cardRunActions";
+import { activePaused, mayStartWork, nowStore } from "$lib/agentPauseState";
 import {
   holdOrQueue,
   launchHolding,
   mayLaunch,
   type OrchestrationIntent,
-} from "./launchQueue";
+} from "$lib/launchQueue";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
 
@@ -2031,7 +2031,7 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   // Dynamically imported to keep the dependency one-way: autoResumeState
   // reads this module (for resumeStep and orchestrations), so a static
   // import here would close a cycle.
-  const { startAutoResume } = await import("./autoResumeState");
+  const { startAutoResume } = await import("$lib/autoResumeState");
   const stopAutoResume = startAutoResume();
   return () => {
     stop();

@@ -9,10 +9,10 @@
     TriangleAlert,
     X,
   } from "@lucide/svelte";
-  import * as backend from "./backend";
-  import { daemonCompat, layoutState } from "./layoutState";
-  import { featureBlockedReason } from "./daemonCompat";
-  import { cmdHeld, isMacSync } from "./platform";
+  import * as backend from "$lib/backend";
+  import { daemonCompat, layoutState } from "$lib/layoutState";
+  import { featureBlockedReason } from "$lib/daemonCompat";
+  import { cmdHeld, isMacSync } from "$lib/platform";
   import {
     DEFAULT_SORT,
     NO_SELECTION,
@@ -36,7 +36,7 @@
     type SessionRow,
     type SortKey,
     type SortOrder,
-  } from "./sessionsManager";
+  } from "$lib/sessionsManager";
   import {
     endAllSessions,
     endSelectedSessions,
@@ -44,13 +44,13 @@
     endStaleSessions,
     jumpToSession,
     restartDaemon,
-  } from "./sessionsManagerActions";
-  import Modal from "./Modal.svelte";
-  import { tooltip } from "./tooltip";
-  import { askConfirm } from "./dialog";
-  import { takeSessionSortRequest } from "./appPanels";
-  import { watchmanRoots, watchmanStore, refreshMemory } from "./memoryState";
-  import { orchestrations } from "./orchestrationState";
+  } from "$lib/sessionsManagerActions";
+  import Modal from "$lib/Modal.svelte";
+  import { tooltip } from "$lib/tooltip";
+  import { askConfirm } from "$lib/dialog";
+  import { takeSessionSortRequest } from "$lib/appPanels";
+  import { watchmanRoots, watchmanStore, refreshMemory } from "$lib/memoryState";
+  import { orchestrations } from "$lib/orchestrationState";
 
   interface Props {
     onClose: () => void;

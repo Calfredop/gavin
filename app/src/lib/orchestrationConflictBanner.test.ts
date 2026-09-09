@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "./sources";
+import { svelteSources } from "$lib/sources";
 import {
   collapseStorageKey,
   loadConflictsCollapsed,
   saveConflictsCollapsed,
-} from "./orchestrationConflictBanner";
+} from "$lib/orchestrationConflictBanner";
 
 function fakeStorage(initial: Record<string, string> = {}) {
   const data = { ...initial };

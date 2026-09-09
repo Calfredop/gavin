@@ -2,7 +2,7 @@
 // (spec §3). Both carry the same "<hunk>:<line>" ids so the line selection
 // is shared between them.
 
-import { lineId, type Hunk, type Line, type LineKind } from "./git";
+import { lineId, type Hunk, type Line, type LineKind } from "$lib/git";
 
 export type HunkRow = { kind: "hunk"; hunkIndex: number; header: string; lineCount: number };
 export type UnifiedLineRow = { kind: "line"; hunkIndex: number; lineIndex: number; id: string; line: Line };

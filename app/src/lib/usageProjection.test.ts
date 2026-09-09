@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { AgentUsageReport, UsageWindow } from "./agentUsage";
+import type { AgentUsageReport, UsageWindow } from "$lib/agentUsage";
 import {
   CLEAR_MARGIN,
   LONG_WINDOW,
@@ -22,7 +22,7 @@ import {
   worstProjection,
   type UsageHistory,
   type WindowHistory,
-} from "./usageProjection";
+} from "$lib/usageProjection";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;

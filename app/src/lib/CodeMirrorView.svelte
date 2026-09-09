@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { createEditor, type EditorHandle } from "./codeMirror";
-  import type { FormatAction } from "./markdownFormatting";
-  import { themeState } from "./ui/themeState.svelte";
+  import { createEditor, type EditorHandle } from "$lib/codeMirror";
+  import type { FormatAction } from "$lib/markdownFormatting";
+  import { themeState } from "$lib/ui/themeState.svelte";
 
   interface Props {
     // Initial content only: once mounted, the EDITOR owns the buffer.

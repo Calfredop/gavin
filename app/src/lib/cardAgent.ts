@@ -25,7 +25,7 @@ import {
   COMPLEXITY_LABELS,
   type ComplexityAgent,
   type ComplexityTable,
-} from "./complexity";
+} from "$lib/complexity";
 
 /// What a card carries, as the frontmatter records it. Structural rather
 /// than `CardView` or `PlanFileInfo` so this module owes neither: both

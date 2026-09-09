@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { source } from "./sources";
+import { source } from "$lib/sources";
 
 // The setup wizard's width lives entirely in two <style> blocks and one
 // prop, none of which any other suite can see. It used to force a 520px

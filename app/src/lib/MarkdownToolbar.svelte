@@ -21,10 +21,10 @@
     Table,
     TextQuote,
   } from "@lucide/svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import { FORMAT_GROUPS, type FormatAction, type FormatButton } from "./markdownFormatting";
-  import { formatChord } from "./shortcuts";
-  import { isMacSync } from "./platform";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import { FORMAT_GROUPS, type FormatAction, type FormatButton } from "$lib/markdownFormatting";
+  import { formatChord } from "$lib/shortcuts";
+  import { isMacSync } from "$lib/platform";
 
   interface Props {
     onFormat: (action: FormatAction) => void;

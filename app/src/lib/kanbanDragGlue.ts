@@ -25,14 +25,14 @@ import {
   type DragKind,
   type DragCallbacks,
   type ClickModifiers,
-} from "./kanbanDrag";
+} from "$lib/kanbanDrag";
 import {
   autoScrollVelocity,
   type Measured,
   type MeasuredCard,
   type MeasuredColumn,
   type DropTarget,
-} from "./pointerDrag";
+} from "$lib/pointerDrag";
 
 // The board root that owns the current (or most recent) drag. Both
 // surfaces can show the same workspace simultaneously; each surface's

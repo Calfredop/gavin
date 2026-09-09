@@ -11,7 +11,7 @@ const captured = vi.hoisted(() => ({
     | null,
 }));
 
-vi.mock("./layoutState", async () => {
+vi.mock("$lib/layoutState", async () => {
   const { writable: w } = await import("svelte/store");
   return {
     layoutState: w({
@@ -35,17 +35,17 @@ vi.mock("./layoutState", async () => {
   };
 });
 
-vi.mock("./kanbanState", async () => {
+vi.mock("$lib/kanbanState", async () => {
   const { writable: w } = await import("svelte/store");
   return { kanbanState: w({} as Record<string, unknown>) };
 });
 
-vi.mock("./gavinState", async () => {
+vi.mock("$lib/gavinState", async () => {
   const { writable: w } = await import("svelte/store");
   return { gavinTrees: w({} as Record<string, unknown>) };
 });
 
-vi.mock("./orchestrationState", async () => {
+vi.mock("$lib/orchestrationState", async () => {
   const { writable: w } = await import("svelte/store");
   return {
     orchestrations: w({} as Record<string, unknown>),
@@ -53,22 +53,22 @@ vi.mock("./orchestrationState", async () => {
   };
 });
 
-vi.mock("./cardRunActions", () => ({
+vi.mock("$lib/cardRunActions", () => ({
   resumeCard: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock("./autoResumeNotify", () => ({
+vi.mock("$lib/autoResumeNotify", () => ({
   sendAutoResumeNotice: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { layoutState, daemonCompat } from "./layoutState";
-import { kanbanState } from "./kanbanState";
-import { gavinTrees } from "./gavinState";
-import { orchestrations, resumeStep } from "./orchestrationState";
-import { resumeCard } from "./cardRunActions";
-import { sendAutoResumeNotice } from "./autoResumeNotify";
-import { __resetAutoResume, __setAutoResumeClock, resumeTrail, startAutoResume } from "./autoResumeState";
-import { STAGGER_SPREAD_MS, WAVE_ABORT_WINDOW_MS } from "./autoResume";
+import { layoutState, daemonCompat } from "$lib/layoutState";
+import { kanbanState } from "$lib/kanbanState";
+import { gavinTrees } from "$lib/gavinState";
+import { orchestrations, resumeStep } from "$lib/orchestrationState";
+import { resumeCard } from "$lib/cardRunActions";
+import { sendAutoResumeNotice } from "$lib/autoResumeNotify";
+import { __resetAutoResume, __setAutoResumeClock, resumeTrail, startAutoResume } from "$lib/autoResumeState";
+import { STAGGER_SPREAD_MS, WAVE_ABORT_WINDOW_MS } from "$lib/autoResume";
 
 const NETWORK = "API Error: Connection dropped (ECONNRESET)";
 const AUTH = "Please run /login · API Error: 401 OAuth token has expired";

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { gitStore, cancelOp } from "./gitState";
+  import { gitStore, cancelOp } from "$lib/gitState";
 
   interface Props {
     workspaceId: string;

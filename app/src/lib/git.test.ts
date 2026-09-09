@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { lineId, parseLineId, splitPath, branchLabel, changedCount, defaultWorktreePath, validateBranchName, branchNameFrom, freeBranchNameFrom, branchResolvable, type RepoInfo, type RefsSnapshot } from "./git";
+import { lineId, parseLineId, splitPath, branchLabel, changedCount, defaultWorktreePath, validateBranchName, branchNameFrom, freeBranchNameFrom, branchResolvable, type RepoInfo, type RefsSnapshot } from "$lib/git";
 
 const repo: RepoInfo = {
   notARepo: false, root: "/r", branch: "main", detached: false, unborn: false,

@@ -20,17 +20,17 @@
   // disappear from under the cursor.
   import { onMount } from "svelte";
   import { Copy, FolderOpen, Pencil, Play, Plus, Settings2 } from "@lucide/svelte";
-  import { daemonCompat, layoutState, workspaceRootPath } from "./layoutState";
-  import { revealSession } from "./cardRunActions";
-  import { toolRecords, fetchTools, renderLibraryFor } from "./toolsState";
+  import { daemonCompat, layoutState, workspaceRootPath } from "$lib/layoutState";
+  import { revealSession } from "$lib/cardRunActions";
+  import { toolRecords, fetchTools, renderLibraryFor } from "$lib/toolsState";
   import {
     groupTemplateRecords,
     libraryFor as templateLibraryFor,
     fetchGroupTemplates,
-  } from "./groupTemplatesState";
-  import { toolRunsStore, refreshToolRuns } from "./toolRunsState";
-  import { requestToolRun } from "./workspaceToolsActions";
-  import { emptyTool, toolKindLabel, type Tool } from "./orchestrationTools";
+  } from "$lib/groupTemplatesState";
+  import { toolRunsStore, refreshToolRuns } from "$lib/toolRunsState";
+  import { requestToolRun } from "$lib/workspaceToolsActions";
+  import { emptyTool, toolKindLabel, type Tool } from "$lib/orchestrationTools";
   import {
     editDraftFor,
     lastRunsFor,
@@ -43,15 +43,15 @@
     toolRunTip,
     toolsEmptyMessage,
     type ToolRun,
-  } from "./workspaceTools";
-  import IconButton from "./ui/IconButton.svelte";
-  import { runIndicator } from "./ui/indicators";
-  import SearchInput from "./ui/SearchInput.svelte";
-  import StatusBadge from "./ui/StatusBadge.svelte";
-  import ToolLibraryDialog from "./ToolLibraryDialog.svelte";
-  import ToolRunDialog from "./ToolRunDialog.svelte";
-  import { tooltip } from "./tooltip";
-  import { toolIcon } from "./ui/toolKindIcon";
+  } from "$lib/workspaceTools";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import { runIndicator } from "$lib/ui/indicators";
+  import SearchInput from "$lib/ui/SearchInput.svelte";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import ToolLibraryDialog from "$lib/ToolLibraryDialog.svelte";
+  import ToolRunDialog from "$lib/ToolRunDialog.svelte";
+  import { tooltip } from "$lib/tooltip";
+  import { toolIcon } from "$lib/ui/toolKindIcon";
 
   interface Props {
     workspaceId: string;

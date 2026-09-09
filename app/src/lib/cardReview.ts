@@ -29,9 +29,9 @@
 /// is the same question one level down: config.toml names what gavin
 /// runs, a card body names what an AGENT runs.
 
-import { sha256Hex } from "./sha256";
-import { hasAutoCommit } from "./autoCommit";
-import type { AttachmentStatus } from "./attachments";
+import { sha256Hex } from "$lib/sha256";
+import { hasAutoCommit } from "$lib/autoCommit";
+import type { AttachmentStatus } from "$lib/attachments";
 
 /// The repo-controlled content of one card: everything a launch takes
 /// from the card FILE and hands to an agent.

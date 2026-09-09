@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { CLAIM_TTL_MS, ResumeClaims, claimKey } from "./resumeClaim";
+import { CLAIM_TTL_MS, ResumeClaims, claimKey } from "$lib/resumeClaim";
 
 function at(now: { t: number }) {
   return new ResumeClaims(() => now.t);

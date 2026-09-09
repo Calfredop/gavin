@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { toPosixPath } from "./paths";
+import { toPosixPath } from "$lib/paths";
 
 // The one place `@tauri-apps/plugin-dialog`'s file picker is called.
 //

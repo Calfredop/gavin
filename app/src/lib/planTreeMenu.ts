@@ -2,8 +2,8 @@
 // Pure builders so the choices (order, labels, when Delete appears) are
 // testable without mounting the tree.
 
-import { CREATABLE_GROUPS, groupFolder } from "./planExplorer";
-import type { CreatableGroup, ExplorerContextNode, ExplorerFile, ExplorerGroup } from "./planExplorer";
+import { CREATABLE_GROUPS, groupFolder } from "$lib/planExplorer";
+import type { CreatableGroup, ExplorerContextNode, ExplorerFile, ExplorerGroup } from "$lib/planExplorer";
 
 export interface TreeMenuItem {
   label: string;

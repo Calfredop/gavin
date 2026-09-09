@@ -3,15 +3,15 @@
 // names and "-2" collision suffixes. The Svelte composer only renders
 // and forwards.
 
-import { formatAttachments } from "./attachments";
-import { autoCommitAppliesTo, setAutoCommitInBody } from "./autoCommit";
-import { parseComplexity } from "./complexity";
-import { translateDropIndex } from "./pageBoard";
-import { slugFileName } from "./planExplorer";
-import { slugStatus, type CardView } from "./planBoard";
-import { formatChord, matchesChord, type Chord, type ChordEvent } from "./shortcuts";
-import type { MergedBoard } from "./boardSearch";
-import type { OrderedPlanCard } from "./planOrder";
+import { formatAttachments } from "$lib/attachments";
+import { autoCommitAppliesTo, setAutoCommitInBody } from "$lib/autoCommit";
+import { parseComplexity } from "$lib/complexity";
+import { translateDropIndex } from "$lib/pageBoard";
+import { slugFileName } from "$lib/planExplorer";
+import { slugStatus, type CardView } from "$lib/planBoard";
+import { formatChord, matchesChord, type Chord, type ChordEvent } from "$lib/shortcuts";
+import type { MergedBoard } from "$lib/boardSearch";
+import type { OrderedPlanCard } from "$lib/planOrder";
 
 export type ComposeKind = "note" | "task" | "plan";
 

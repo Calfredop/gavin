@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { source } from "./sources";
+import { source } from "$lib/sources";
 
 // The orchestration tab used to have ONE vertical scroll: the grid
 // scrolled in both axes, rails were content-height (`align-items: start`)

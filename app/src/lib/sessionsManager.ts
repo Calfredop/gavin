@@ -13,15 +13,15 @@
 // for -- an invisible session with a stale indicator -- and describing it
 // twice is how the two surfaces end up disagreeing.
 
-import type { AlertOptions, ConfirmOptions } from "./dialog";
-import { restartStopsAgentsLine, type DaemonCompat } from "./daemonCompat";
-import { describeOrphan, type OrphanProcess } from "./orphan";
+import type { AlertOptions, ConfirmOptions } from "$lib/dialog";
+import { restartStopsAgentsLine, type DaemonCompat } from "$lib/daemonCompat";
+import { describeOrphan, type OrphanProcess } from "$lib/orphan";
 
 /// dialog.ts lets a prompt omit its lines; every prompt here has some,
 /// and saying so in the type is what lets a test read them.
 export type KillPrompt = ConfirmOptions & { lines: string[] };
 export type KillAlert = AlertOptions & { lines: string[] };
-import { findSessionLocation, type Workspace } from "./workspace";
+import { findSessionLocation, type Workspace } from "$lib/workspace";
 
 /// One row as the Rust host hands it over (session::ManagedSession):
 /// what the daemon knows, joined with one sample of what it costs.

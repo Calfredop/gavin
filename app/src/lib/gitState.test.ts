@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
 
-vi.mock("./backend", () => ({
+vi.mock("$lib/backend", () => ({
   gitRepoInfo: vi.fn(),
   gitStatus: vi.fn(),
   gitDiff: vi.fn(),
@@ -67,8 +67,8 @@ vi.mock("@tauri-apps/api/event", () => ({
     });
   }),
 }));
-vi.mock("./notifications", () => ({ maybeNotifyAgentCommit: vi.fn().mockResolvedValue(undefined) }));
-vi.mock("./layoutState", async () => {
+vi.mock("$lib/notifications", () => ({ maybeNotifyAgentCommit: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("$lib/layoutState", async () => {
   const { writable } = await import("svelte/store");
   return {
     setGitViewPrefs: vi.fn().mockResolvedValue(undefined),
@@ -99,7 +99,7 @@ vi.mock("./layoutState", async () => {
   };
 });
 
-import * as backend from "./backend";
+import * as backend from "$lib/backend";
 import { listen } from "@tauri-apps/api/event";
 import {
   setGitViewPrefs,
@@ -109,7 +109,7 @@ import {
   sessionExits,
   handleAgentSessionSpawned,
   switchToSessionInPage,
-} from "./layoutState";
+} from "$lib/layoutState";
 import {
   gitStore, initialState, applyStatus, followSelection, splitMessage, joinMessage, canCommit,
   commitButtonLabel, amendRewritesPushed,
@@ -121,9 +121,9 @@ import {
   markResolved, saveConflict, openMergeTool,
   commitViaAgent, revealAgentCommit, agentCommitPhase, agentCommitBlocker, AGENT_COMMIT_FLASH_MS,
   adoptAgentCommits,
-} from "./gitState";
-import { maybeNotifyAgentCommit } from "./notifications";
-import type { RefsSnapshot, RepoInfo, StatusResult } from "./git";
+} from "$lib/gitState";
+import { maybeNotifyAgentCommit } from "$lib/notifications";
+import type { RefsSnapshot, RepoInfo, StatusResult } from "$lib/git";
 
 const snapshot: RefsSnapshot = {
   branches: [{ name: "main", current: true, upstream: "origin/main", ahead: 2, behind: 1, sha: "a", subject: "s" }],

@@ -29,10 +29,10 @@
 //    the rule a rail's agent tool step already runs on (agentTurnEnded).
 
 import { get, writable, type Readable } from "svelte/store";
-import * as backend from "./backend";
-import { buildRunCommand, buildToolCommand } from "./cardRun";
-import { revealSession } from "./cardRunActions";
-import { featureBlockedReason } from "./daemonCompat";
+import * as backend from "$lib/backend";
+import { buildRunCommand, buildToolCommand } from "$lib/cardRun";
+import { revealSession } from "$lib/cardRunActions";
+import { featureBlockedReason } from "$lib/daemonCompat";
 import {
   armFailureDetection,
   conversationIdForLaunch,
@@ -42,17 +42,17 @@ import {
   resolvedAgentFor,
   setSessionName,
   workspaceRootPath,
-} from "./layoutState";
+} from "$lib/layoutState";
 import {
   noteToolRunStarted,
   refreshToolRuns,
   startToolRunWatcher,
   toolRunsStore,
-} from "./toolRunsState";
-import { resolveToolBody, resolveToolCwd, type Tool } from "./orchestrationTools";
-import { holdOrQueue, type ToolIntent } from "./launchQueue";
-import { renderLibraryFor, toolRecords } from "./toolsState";
-import { cannotRunAloneReason, isRunnableStandalone, runBlockedReason } from "./workspaceTools";
+} from "$lib/toolRunsState";
+import { resolveToolBody, resolveToolCwd, type Tool } from "$lib/orchestrationTools";
+import { holdOrQueue, type ToolIntent } from "$lib/launchQueue";
+import { renderLibraryFor, toolRecords } from "$lib/toolsState";
+import { cannotRunAloneReason, isRunnableStandalone, runBlockedReason } from "$lib/workspaceTools";
 
 /// A launch the human has been asked to fill the parameters of.
 /// Everything the launch needs is resolved when the dialog OPENS -- the

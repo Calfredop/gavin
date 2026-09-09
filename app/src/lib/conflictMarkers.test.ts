@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseConflicts, applyChoice, hasMarkers, locateRegion, splitEol, joinEol } from "./conflictMarkers";
+import { parseConflicts, applyChoice, hasMarkers, locateRegion, splitEol, joinEol } from "$lib/conflictMarkers";
 
 const MERGE = "a\n<<<<<<< HEAD\nours1\nours2\n=======\ntheirs1\n>>>>>>> feature\nz\n";
 const DIFF3 = "a\n<<<<<<< HEAD\nours1\n||||||| base\nbase1\n=======\ntheirs1\n>>>>>>> feature\nz\n";

@@ -1,18 +1,18 @@
 <script lang="ts">
   import { RefreshCw } from "@lucide/svelte";
-  import Modal from "./Modal.svelte";
-  import IconButton from "./ui/IconButton.svelte";
-  import { agentProfilesStore } from "./layoutState";
-  import StatusBadge from "./ui/StatusBadge.svelte";
-  import { usageProjectionIndicator } from "./ui/indicators";
-  import { projectWindow, projectionSentence } from "./usageProjection";
+  import Modal from "$lib/Modal.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
+  import { agentProfilesStore } from "$lib/layoutState";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import { usageProjectionIndicator } from "$lib/ui/indicators";
+  import { projectWindow, projectionSentence } from "$lib/usageProjection";
   import {
     agentUsageStore,
     nowStore,
     profilesInUse,
     refreshUsage,
     usageHistoryStore,
-  } from "./agentPauseState";
+  } from "$lib/agentPauseState";
   import {
     barPercent,
     displayPercent,
@@ -21,7 +21,7 @@
     unavailableReason,
     usageSeverity,
     type AgentUsageReport,
-  } from "./agentUsage";
+  } from "$lib/agentUsage";
 
   interface Props {
     onClose: () => void;

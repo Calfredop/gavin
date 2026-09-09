@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DEFAULT_SHARE, MIN_LIST_PX, shareFromHeight } from "./gitChangesSplit";
+import { DEFAULT_SHARE, MIN_LIST_PX, shareFromHeight } from "$lib/gitChangesSplit";
 
 describe("shareFromHeight", () => {
   it("turns a dragged height into that block's share of the pair", () => {

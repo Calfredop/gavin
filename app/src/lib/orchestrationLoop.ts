@@ -21,11 +21,11 @@
 //    never carried in a variable, so a reload mid-loop does not silently
 //    drop it.
 
-import { shellQuote } from "./cardRun";
+import { shellQuote } from "$lib/cardRun";
 // Types only -- erased at compile time, so orchestration.ts is free to
 // import this module's VALUES without a runtime cycle.
-import type { Orchestration, Rail, Step } from "./orchestration";
-import type { ToolKind } from "./orchestrationTools";
+import type { Orchestration, Rail, Step } from "$lib/orchestration";
+import type { ToolKind } from "$lib/orchestrationTools";
 
 /// The built-in that loops. Nothing here branches on it -- the KIND is
 /// what the scheduler reads, so a duplicate under another id behaves the

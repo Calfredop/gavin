@@ -12,8 +12,8 @@
 // identity, which is the only way a second press can be told there is a
 // first one still thinking.
 
-import type { SessionStatus } from "./notifications";
-import type { OrchestrationAgentRecord, SessionLiveness } from "./workspace";
+import type { SessionStatus } from "$lib/notifications";
+import type { OrchestrationAgentRecord, SessionLiveness } from "$lib/workspace";
 
 /// The name a whole-tab Organize wears wherever a run is named.
 export const ORGANIZE_LABEL = "Organize";
