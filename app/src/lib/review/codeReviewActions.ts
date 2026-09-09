@@ -27,7 +27,7 @@ import {
   workspaceRootPath,
 } from "$lib/layoutState";
 import { gavinTrees } from "$lib/gavinState";
-import { kanbanState, cardSessionFor } from "$lib/kanbanState";
+import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
 import { revealSession } from "$lib/cardRunActions";
 import { buildRunCommand, provisionalSessionName } from "$lib/cardRun";
 import {

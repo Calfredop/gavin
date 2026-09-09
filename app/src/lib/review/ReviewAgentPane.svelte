@@ -28,8 +28,8 @@
   import { layoutState, terminalFontSizeDefault } from "$lib/layoutState";
   import { resolveTerminalFontSize } from "$lib/terminal/terminalFont";
   import { reviewCardSession } from "$lib/cardRunActions";
-  import { cardSessionState } from "$lib/columnRunAction";
-  import type { CardSession, Column, Label } from "$lib/kanban";
+  import { cardSessionState } from "$lib/board/columnRunAction";
+  import type { CardSession, Column, Label } from "$lib/board/kanban";
   import type { CardView } from "$lib/planBoard";
   import type { ReviewPane } from "$lib/review/reviewPrefs";
 

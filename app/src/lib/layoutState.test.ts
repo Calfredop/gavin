@@ -8,7 +8,7 @@ import type { Page, Workspace } from "$lib/workspace";
 import { getActiveView } from "$lib/workspace";
 import { listen } from "@tauri-apps/api/event";
 import { askConfirm } from "$lib/dialog";
-import { kanbanState } from "$lib/kanbanState";
+import { kanbanState } from "$lib/board/kanbanState";
 import { orchestrations } from "$lib/orchestrationState";
 import { toolRecords } from "$lib/toolsState";
 

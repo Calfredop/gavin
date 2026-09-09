@@ -86,7 +86,7 @@ import { failingChecksNote, prExhaustedReason } from "$lib/pullRequest";
 import { stepsFromTemplate } from "$lib/orchestrationGroups";
 import type { GroupTemplate } from "$lib/orchestrationGroups";
 import { libraryFor, toolRecords } from "$lib/toolsState";
-import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/kanbanState";
+import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
 import { breakOutChildren, guardCompletion } from "$lib/cardCompletion";
 import { gavinTrees, patchPlanField } from "$lib/gavinState";
 import { gitStore, refresh as refreshGit } from "$lib/gitState";

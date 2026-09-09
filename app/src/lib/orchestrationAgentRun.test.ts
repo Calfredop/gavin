@@ -83,7 +83,7 @@ vi.mock("$lib/cardRunActions", () => ({
   resolveAttachmentsForRun: vi.fn(async () => ({ paths: [] })),
   revealSession: vi.fn(async () => true),
 }));
-vi.mock("$lib/kanbanState", () => ({
+vi.mock("$lib/board/kanbanState", () => ({
   kanbanState: writable<Record<string, unknown>>({}),
   linkCardSessionAction: vi.fn(),
 }));

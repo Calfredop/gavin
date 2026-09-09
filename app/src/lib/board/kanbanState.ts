@@ -1,7 +1,7 @@
 import { writable, get } from "svelte/store";
 import * as backend from "$lib/backend";
-import * as kanban from "$lib/kanban";
-import type { Board, CardSession, Column, Label } from "$lib/kanban";
+import * as kanban from "$lib/board/kanban";
+import type { Board, CardSession, Column, Label } from "$lib/board/kanban";
 
 export const kanbanState = writable<Record<string, Board>>({});
 

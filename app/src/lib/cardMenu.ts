@@ -5,7 +5,7 @@
 import { get } from "svelte/store";
 import { openPathExternally } from "$lib/backend";
 import * as backend from "$lib/backend";
-import { kanbanState, cardSessionFor } from "$lib/kanbanState";
+import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
 import { layoutState, daemonCompat, switchWorkspaceView } from "$lib/layoutState";
 import { patchPlanField } from "$lib/gavinState";
 import { requestedExplorerFile } from "$lib/planExplorer";
@@ -21,7 +21,7 @@ import { developingRunOn } from "$lib/developingCardsState";
 import { DEVELOPING_MENU_LABEL } from "$lib/developingCards";
 import { requestCardReview } from "$lib/review/codeReviewActions";
 import { developAvailable } from "$lib/cardRun";
-import { cardSessionState } from "$lib/columnRunAction";
+import { cardSessionState } from "$lib/board/columnRunAction";
 import { findCardPlacement } from "$lib/orchestration";
 import {
   orchestrations,
@@ -33,7 +33,7 @@ import { bestOfNRequest, bestOfNRuns, runForCard } from "$lib/bestOfNState";
 import { featureBlockedReason } from "$lib/daemonCompat";
 import { cancelLaunch, launchBlockedReason, queuedForCard } from "$lib/launchQueue";
 import { isArchivedCard, slugStatus, type CardView } from "$lib/planBoard";
-import type { Column } from "$lib/kanban";
+import type { Column } from "$lib/board/kanban";
 import type { ContextMenuEntry } from "$lib/contextMenu";
 
 export interface CardMenuHooks {

@@ -11,7 +11,7 @@
   // Deliberately thin, like BoardPane: it locates the card in the board's
   // own projection and hands it to the same components the hub tabs
   // mount, so a card never has two different detail panels.
-  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/kanbanState";
+  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/board/kanbanState";
   import { fetchOrchestration, orchestrations } from "$lib/orchestrationState";
   import { gavinTrees } from "$lib/gavinState";
   import { indexCardViews, mergePlanCards, type CardView } from "$lib/planBoard";
@@ -22,7 +22,7 @@
     retargetCardTabs,
     setCardTabPath,
   } from "$lib/layoutState";
-  import { cardSessionState } from "$lib/columnRunAction";
+  import { cardSessionState } from "$lib/board/columnRunAction";
   import { runBaseline } from "$lib/runChanges";
   import { linkForCardPath, openLinkedCard } from "$lib/cardTabLink";
   import type { CardTabView } from "$lib/gavin";

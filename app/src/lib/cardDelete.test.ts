@@ -11,7 +11,7 @@ vi.mock("$lib/backend", () => ({
 
 import * as backend from "$lib/backend";
 import { deletionPlanFor, columnDeletionPlan, executeDeletion, executeMoveCards } from "$lib/cardDelete";
-import { kanbanState } from "$lib/kanbanState";
+import { kanbanState } from "$lib/board/kanbanState";
 import type { CardView } from "$lib/planBoard";
 
 function view(path: string, kind: "note" | "task" | "plan", status: string | null, extra: Partial<CardView> = {}): CardView {

@@ -8,7 +8,7 @@
 
 import * as backend from "$lib/backend";
 import { patchPlanRemoved, patchPlanField } from "$lib/gavinState";
-import { refreshBoard } from "$lib/kanbanState";
+import { refreshBoard } from "$lib/board/kanbanState";
 import type { CardView } from "$lib/planBoard";
 
 export interface DeletionPlan {

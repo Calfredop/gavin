@@ -5,7 +5,7 @@ import {
   archiveClosePrompt,
   type ClosableState,
 } from "$lib/archiveClose";
-import type { Board, CardSession } from "$lib/kanban";
+import type { Board, CardSession } from "$lib/board/kanban";
 import type { CardView } from "$lib/planBoard";
 
 const PLANS = "/ws/.gavin-root/plans";

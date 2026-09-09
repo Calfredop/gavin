@@ -3,7 +3,7 @@ import { parseAttachments } from "$lib/attachments";
 import { parseComplexity } from "$lib/complexity";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import * as backend from "$lib/backend";
-import { refreshBoard } from "$lib/kanbanState";
+import { refreshBoard } from "$lib/board/kanbanState";
 import type { GavinTree, PlanFileInfo } from "$lib/gavin";
 import type { Workspace } from "$lib/workspace";
 

@@ -25,7 +25,7 @@ import {
   type DragKind,
   type DragCallbacks,
   type ClickModifiers,
-} from "$lib/kanbanDrag";
+} from "$lib/board/kanbanDrag";
 import {
   autoScrollVelocity,
   type Measured,

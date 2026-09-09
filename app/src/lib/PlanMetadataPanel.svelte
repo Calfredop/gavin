@@ -3,7 +3,7 @@
   import type { PlanFileInfo } from "$lib/gavin";
   import { statusOptions } from "$lib/planExplorer";
   import { gavinTrees, patchPlanField } from "$lib/gavinState";
-  import { kanbanState } from "$lib/kanbanState";
+  import { kanbanState } from "$lib/board/kanbanState";
   import { cardIndex, nestedChildrenOf } from "$lib/orchestration";
   import { guardCompletion } from "$lib/cardCompletion";
   import * as backend from "$lib/backend";

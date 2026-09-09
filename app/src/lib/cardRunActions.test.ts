@@ -130,7 +130,7 @@ import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switc
 import { cardReviewed } from "$lib/layoutState";
 import { ensureCardReviewed } from "$lib/cardReviewActions";
 import { findSessionLocation } from "$lib/workspace";
-import { kanbanState } from "$lib/kanbanState";
+import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/gavinState";
 import {
   runCard,
@@ -142,7 +142,7 @@ import {
   sendToMainAgent,
 } from "$lib/cardRunActions";
 import type { CardView } from "$lib/planBoard";
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 
 function card(kind: "note" | "task" | "plan", status: string | null): CardView {
   return {

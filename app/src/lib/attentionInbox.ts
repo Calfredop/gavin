@@ -35,7 +35,7 @@ import { PHASE_LABEL } from "$lib/appHub";
 import type { PageTabState } from "$lib/sidebar/sidebarSummary";
 import type { LayoutNode } from "$lib/layout";
 import type { Workspace, WorkspacesData } from "$lib/workspace";
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/gavin";
 
 /// Why a row is in the inbox. The rails' own answers, reused rather than

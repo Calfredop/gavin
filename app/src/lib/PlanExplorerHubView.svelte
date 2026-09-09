@@ -3,7 +3,7 @@
   import { daemonCompat, layoutState, openFileInSplit, switchWorkspaceView } from "$lib/layoutState";
   import { gavinTrees, refreshGavinTree } from "$lib/gavinState";
   import type { GavinTree } from "$lib/gavin";
-  import { fetchBoard, kanbanState } from "$lib/kanbanState";
+  import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
   import {
     buildExplorerTree,
     followRenamedPath,
@@ -33,10 +33,10 @@
   import FormatHelpModal from "$lib/FormatHelpModal.svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { orchestrations, fetchOrchestration } from "$lib/orchestrationState";
-  import { ANY, filterExplorer, railIndex, statusFacets } from "$lib/planFilter";
-  import { contextFacets, pruneFacets } from "$lib/boardFilters";
-  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/hubFacets";
-  import FacetFilters from "$lib/FacetFilters.svelte";
+  import { ANY, filterExplorer, railIndex, statusFacets } from "$lib/board/planFilter";
+  import { contextFacets, pruneFacets } from "$lib/board/boardFilters";
+  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/board/hubFacets";
+  import FacetFilters from "$lib/board/FacetFilters.svelte";
   import * as backend from "$lib/backend";
 
   interface Props {

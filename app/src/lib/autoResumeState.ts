@@ -29,7 +29,7 @@ import {
   setSessionFailureHook,
 } from "$lib/layoutState";
 import { sessionLabel } from "$lib/paths";
-import { kanbanState } from "$lib/kanbanState";
+import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/gavinState";
 import { orchestrations, resumeStep } from "$lib/orchestrationState";
 import { resumeCard } from "$lib/cardRunActions";

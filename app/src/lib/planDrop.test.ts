@@ -16,7 +16,7 @@ import * as backend from "$lib/backend";
 import { askConfirmChecked } from "$lib/dialog";
 import { gavinTrees } from "$lib/gavinState";
 import { applyPlanDrop, placeCardAtColumnEnd, planCommitFromMerged } from "$lib/planDrop";
-import { dropHold } from "$lib/kanbanDrag";
+import { dropHold } from "$lib/board/kanbanDrag";
 import type { GavinTree, PlanFileInfo } from "$lib/gavin";
 import type { CardView } from "$lib/planBoard";
 

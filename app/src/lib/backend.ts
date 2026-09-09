@@ -7,7 +7,7 @@ import type { PrReport } from "$lib/pullRequest";
 import type { CardRun, TokenReport } from "$lib/runHistory";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$lib/workspace";
-import type { Board, Column, Label } from "$lib/kanban";
+import type { Board, Column, Label } from "$lib/board/kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "$lib/superpowers";
 import type { GavinTracking } from "$lib/gitTracking";
 import type { BoardTab, CardTab, GavinTree } from "$lib/gavin";

@@ -22,7 +22,7 @@ import { askConfirm, askConfirmChecked, type ConfirmOptions } from "$lib/dialog"
 import { patchPlanField, patchPlanPath } from "$lib/gavinState";
 import { doneColumnOf, firstColumnOf } from "$lib/orchestration";
 import { slugStatus, type CardView } from "$lib/planBoard";
-import type { Column } from "$lib/kanban";
+import type { Column } from "$lib/board/kanban";
 
 /// A nested child as the prompt needs it: enough to name it and to write
 /// its status. Deliberately not `CardView` -- the rail header's "Move

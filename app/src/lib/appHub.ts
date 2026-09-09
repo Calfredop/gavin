@@ -25,7 +25,7 @@ import {
   type WorkspaceAgentsSummary,
   type WorkspaceGitSummary,
 } from "$lib/sidebar/sidebarSummary";
-import { cardSessionState, type CardSessionState } from "$lib/columnRunAction";
+import { cardSessionState, type CardSessionState } from "$lib/board/columnRunAction";
 import { cardIsOnARail, type LinkedCard } from "$lib/cardTabLink";
 import { cardIndex, effectiveStatus, planIndex, type Orchestration } from "$lib/orchestration";
 import { slugStatus } from "$lib/planBoard";
@@ -39,7 +39,7 @@ import {
   type UsageWindow,
 } from "$lib/agentUsage";
 import type { AgentProfileInfo } from "$lib/settings";
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/gavin";
 import type { SessionStatus } from "$lib/notifications";
 // Build-time, not a Tauri round trip: the hub's header must render on

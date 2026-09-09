@@ -16,7 +16,7 @@
   import CardDetailModal from "$lib/CardDetailModal.svelte";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import { gavinTrees } from "$lib/gavinState";
-  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/kanbanState";
+  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/board/kanbanState";
   import {
     mergePlanCards,
     indexCardViews,

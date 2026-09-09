@@ -4,7 +4,7 @@
   import type { CardTab } from "$lib/gavin";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
   import FileViewerPane from "$lib/FileViewerPane.svelte";
-  import BoardPane from "$lib/BoardPane.svelte";
+  import BoardPane from "$lib/board/BoardPane.svelte";
   import CardTabPane from "$lib/CardTabPane.svelte";
   import FollowUpQueuePane from "$lib/FollowUpQueuePane.svelte";
   import {
@@ -26,7 +26,7 @@
     attentionStatusById,
   } from "$lib/layoutState";
   import { gavinTrees } from "$lib/gavinState";
-  import { kanbanState, cardSessionFor, fetchBoard } from "$lib/kanbanState";
+  import { kanbanState, cardSessionFor, fetchBoard } from "$lib/board/kanbanState";
   import { orchestrations, fetchOrchestration } from "$lib/orchestrationState";
   import { linkedCardFor, linkForCardPath, type LinkedCard } from "$lib/cardTabLink";
   import { chipTooltip, runBaseline } from "$lib/runChanges";

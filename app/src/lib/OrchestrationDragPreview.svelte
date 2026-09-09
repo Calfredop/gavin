@@ -1,8 +1,8 @@
 <script lang="ts">
   import { orchDragState } from "$lib/orchestrationDrag";
   import { activeOrchDragRoot } from "$lib/orchestrationDragGlue";
-  import BoardCard from "$lib/BoardCard.svelte";
-  import type { Label } from "$lib/kanban";
+  import BoardCard from "$lib/board/BoardCard.svelte";
+  import type { Label } from "$lib/board/kanban";
   import type { PlacedCardView } from "$lib/planBoard";
   import { findStep, stageLabelById, type CardEntry, type Orchestration } from "$lib/orchestration";
   import type { Tool } from "$lib/orchestrationTools";

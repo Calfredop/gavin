@@ -1,5 +1,5 @@
 import type { Complexity } from "$lib/complexity";
-import type { Board, Column } from "$lib/kanban";
+import type { Board, Column } from "$lib/board/kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
 
 export interface CardView {

@@ -53,7 +53,7 @@
 import type { StatusSince } from "$lib/attentionInbox";
 import type { ConfirmOptions } from "$lib/dialog";
 import type { GavinTree } from "$lib/gavin";
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 import type { LaunchConfig } from "$lib/launchGate";
 import type { MemoryPressure } from "$lib/memory";
 import type { Orchestration } from "$lib/orchestration";

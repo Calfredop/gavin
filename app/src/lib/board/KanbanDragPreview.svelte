@@ -1,10 +1,10 @@
 <script lang="ts">
   import { get } from "svelte/store";
-  import { dragState, dropHold, type ActiveDrag } from "$lib/kanbanDrag";
-  import { activeDragRoot } from "$lib/kanbanDragGlue";
-  import type { Board, Label } from "$lib/kanban";
+  import { dragState, dropHold, type ActiveDrag } from "$lib/board/kanbanDrag";
+  import { activeDragRoot } from "$lib/board/kanbanDragGlue";
+  import type { Board, Label } from "$lib/board/kanban";
   import type { CardView } from "$lib/planBoard";
-  import BoardCard from "$lib/BoardCard.svelte";
+  import BoardCard from "$lib/board/BoardCard.svelte";
 
   interface Props {
     board: Board | null;

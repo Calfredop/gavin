@@ -7,14 +7,14 @@
   import type { CardView } from "$lib/planBoard";
   import { Play, X } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { kanbanState, cardSessionFor } from "$lib/kanbanState";
+  import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
   import {
     boardSelection,
     clearBoardSelection,
     runnableSelection,
     selectedCards,
     selectionRunConfirm,
-  } from "$lib/boardSelection";
+  } from "$lib/board/boardSelection";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import { estimateFor, launchGateVerdict } from "$lib/launchQueue";
 

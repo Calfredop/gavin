@@ -28,7 +28,7 @@ import {
 import { nextActions } from "$lib/orchestration";
 import type { Orchestration, Rail, ToolSummary } from "$lib/orchestration";
 import { BUILTIN_TOOLS, findTool } from "$lib/orchestrationTools";
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 import { allSources } from "$lib/sources";
 
 // ---- fixtures ---------------------------------------------------------------

@@ -9,14 +9,14 @@
   // still opens a card and still shift-selects, so an archived card
   // behaves exactly like a board card that a search is filtering.
 
-  import BoardCard from "$lib/BoardCard.svelte";
+  import BoardCard from "$lib/board/BoardCard.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { ArchiveRestore, Check } from "@lucide/svelte";
-  import { attachBoardDrag } from "$lib/kanbanDragGlue";
-  import { boardSelection, toggleCardSelected, clearBoardSelection } from "$lib/boardSelection";
+  import { attachBoardDrag } from "$lib/board/kanbanDragGlue";
+  import { boardSelection, toggleCardSelected, clearBoardSelection } from "$lib/board/boardSelection";
   import { archivedOn } from "$lib/archive";
   import { tooltip } from "$lib/tooltip";
-  import type { Label } from "$lib/kanban";
+  import type { Label } from "$lib/board/kanban";
   import type { CardView } from "$lib/planBoard";
 
   interface Props {

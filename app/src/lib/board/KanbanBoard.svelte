@@ -1,11 +1,11 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, addColumnAction, reorderColumnAction, saveErrors, dismissSaveError } from "$lib/kanbanState";
-  import KanbanColumn from "$lib/KanbanColumn.svelte";
-  import AutoKanbanColumn from "$lib/AutoKanbanColumn.svelte";
+  import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, addColumnAction, reorderColumnAction, saveErrors, dismissSaveError } from "$lib/board/kanbanState";
+  import KanbanColumn from "$lib/board/KanbanColumn.svelte";
+  import AutoKanbanColumn from "$lib/board/AutoKanbanColumn.svelte";
   import CardDetailModal from "$lib/CardDetailModal.svelte";
   import CardComposeModal from "$lib/CardComposeModal.svelte";
-  import KanbanDragPreview from "$lib/KanbanDragPreview.svelte";
+  import KanbanDragPreview from "$lib/board/KanbanDragPreview.svelte";
   import { gavinTrees } from "$lib/gavinState";
   import { mergePlanCards, type CardView } from "$lib/planBoard";
   import { planCommitFromMerged } from "$lib/planDrop";
@@ -17,15 +17,15 @@
   import { openContextMenuFromEvent } from "$lib/contextMenu";
   import { buildCardMenuEntries } from "$lib/cardMenu";
   import { fetchOrchestration, refreshOrchestration, orchestrations } from "$lib/orchestrationState";
-  import { cardSessionFor } from "$lib/kanbanState";
+  import { cardSessionFor } from "$lib/board/kanbanState";
   import { requestedCardDetail, takeCardDetailRequest } from "$lib/cardTabLink";
   import { requestedCompose, takeComposeRequest, type ComposeTarget } from "$lib/composeRequest";
   import { defaultComposeStatus } from "$lib/cardCompose";
-  import { attachBoardDrag } from "$lib/kanbanDragGlue";
-  import BoardSelectionBar from "$lib/BoardSelectionBar.svelte";
+  import { attachBoardDrag } from "$lib/board/kanbanDragGlue";
+  import BoardSelectionBar from "$lib/board/BoardSelectionBar.svelte";
   import ArchiveSelectionBar from "$lib/ArchiveSelectionBar.svelte";
-  import { boardSelection, selectedCards, toggleCardSelected, clearBoardSelection } from "$lib/boardSelection";
-  import { dragState, buildColumnSlots, type ActiveDrag } from "$lib/kanbanDrag";
+  import { boardSelection, selectedCards, toggleCardSelected, clearBoardSelection } from "$lib/board/boardSelection";
+  import { dragState, buildColumnSlots, type ActiveDrag } from "$lib/board/kanbanDrag";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { Archive } from "@lucide/svelte";
@@ -43,19 +43,19 @@
   } from "$lib/archiveDelete";
   import { executeUnarchive } from "$lib/archiveActions";
   import { featureBlockedReason } from "$lib/daemonCompat";
-  import { filterBoard, AUTO_KEY_PREFIX } from "$lib/boardSearch";
+  import { filterBoard, AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
   import { isSearching } from "$lib/search";
-  import { railIndex } from "$lib/planFilter";
-  import { dropAgainstWholeBoard } from "$lib/pageBoard";
+  import { railIndex } from "$lib/board/planFilter";
+  import { dropAgainstWholeBoard } from "$lib/board/pageBoard";
   import {
     contextFacets,
     facetsActive,
     filterBoardByFacets,
     filterCards,
     pruneFacets,
-  } from "$lib/boardFilters";
-  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/hubFacets";
-  import FacetFilters from "$lib/FacetFilters.svelte";
+  } from "$lib/board/boardFilters";
+  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/board/hubFacets";
+  import FacetFilters from "$lib/board/FacetFilters.svelte";
   import { flip } from "svelte/animate";
   import { tooltip } from "$lib/tooltip";
   import type { DropTarget } from "$lib/pointerDrag";

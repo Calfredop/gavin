@@ -15,7 +15,7 @@ vi.mock("$lib/layoutState", () => ({
   workspaceRootPath: vi.fn(() => null as string | null),
 }));
 vi.mock("$lib/gavinState", () => ({ gavinTrees: writable({}) }));
-vi.mock("$lib/kanbanState", () => ({
+vi.mock("$lib/board/kanbanState", () => ({
   kanbanState: writable({}),
   cardSessionFor: vi.fn(() => null),
 }));
@@ -39,7 +39,7 @@ import {
   workspaceRootPath,
 } from "$lib/layoutState";
 import { gavinTrees } from "$lib/gavinState";
-import { cardSessionFor } from "$lib/kanbanState";
+import { cardSessionFor } from "$lib/board/kanbanState";
 import { revealSession } from "$lib/cardRunActions";
 import {
   reviewRequest,

@@ -42,9 +42,9 @@ import { buildRunCommand, composePlanPrompt, composeTaskPrompt, noPromptReason, 
 import { ensureCardReviewed } from "$lib/cardReviewActions";
 import { developingBlocker } from "$lib/developingCardsState";
 import { resolveAttachmentsForRun } from "$lib/cardRunActions";
-import { cardSessionState } from "$lib/columnRunAction";
+import { cardSessionState } from "$lib/board/columnRunAction";
 import { discardWorktrees, forkWorktree } from "$lib/gitState";
-import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/kanbanState";
+import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
 import { patchPlanField, patchPlanPath, worktreeSetups } from "$lib/gavinState";
 import { setupPlan } from "$lib/worktreeSetup";
 import { stripFrontmatter } from "$lib/planChecklist";

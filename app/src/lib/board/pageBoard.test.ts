@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { dropAgainstWholeBoard, pageHolding, pageScope, scopeBoardToPage, translateDropIndex } from "$lib/pageBoard";
-import { AUTO_KEY_PREFIX } from "$lib/boardSearch";
+import { dropAgainstWholeBoard, pageHolding, pageScope, scopeBoardToPage, translateDropIndex } from "$lib/board/pageBoard";
+import { AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
 import type { CardView, DisplayColumn } from "$lib/planBoard";
-import type { Board, CardSession, Column } from "$lib/kanban";
+import type { Board, CardSession, Column } from "$lib/board/kanban";
 import { emptyOrchestration } from "$lib/orchestration";
 import type { Orchestration, Rail, Stage, Step } from "$lib/orchestration";
 import type { Page, Workspace } from "$lib/workspace";

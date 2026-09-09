@@ -3,7 +3,7 @@
 // orchestrationState.ts owns every side effect. TS mirrors of
 // crates/protocol's orchestration shapes (camelCase on the wire).
 
-import type { Board, Column } from "$lib/kanban";
+import type { Board, Column } from "$lib/board/kanban";
 import type { GavinTree, PlanFileInfo } from "$lib/gavin";
 import type { WorktreeInfo } from "$lib/git";
 import type { SessionStatus } from "$lib/notifications";

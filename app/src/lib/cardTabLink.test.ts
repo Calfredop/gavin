@@ -17,7 +17,7 @@ import {
   takeCardDetailRequest,
 } from "$lib/cardTabLink";
 import { switchWorkspace, switchWorkspaceView } from "$lib/layoutState";
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/gavin";
 import type { Orchestration } from "$lib/orchestration";
 

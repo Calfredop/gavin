@@ -11,7 +11,7 @@ import { allSessionIds, sessionTabsOnly } from "$lib/layout";
 import { boardSummary } from "$lib/homeSummary";
 import { isStepFinished, railStateOf, stepStateOf, type Orchestration, type Rail } from "$lib/orchestration";
 import { slugStatus } from "$lib/planBoard";
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/gavin";
 import type { GitStatus, Page, Workspace } from "$lib/workspace";
 import type { SessionStatus } from "$lib/notifications";

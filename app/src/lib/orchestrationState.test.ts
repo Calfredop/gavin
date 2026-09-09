@@ -90,7 +90,7 @@ vi.mock("$lib/layoutState", () => ({
 // board, so the rail-control tests exercise arming without also running
 // the scheduler. The drop-onto-a-running-stage tests set a board into it
 // precisely because they need the scheduler to run.
-vi.mock("$lib/kanbanState", () => ({
+vi.mock("$lib/board/kanbanState", () => ({
   kanbanState: writable<Record<string, unknown>>({}),
   linkCardSessionAction: vi.fn(),
   // The real lookup rather than a stub: a resume READS the binding it is
@@ -256,7 +256,7 @@ import * as backend from "$lib/backend";
 import * as gitStateModule from "$lib/gitState";
 import * as gavinState from "$lib/gavinState";
 import * as layoutStateModule from "$lib/layoutState";
-import * as kanbanStateModule from "$lib/kanbanState";
+import * as kanbanStateModule from "$lib/board/kanbanState";
 import { toolRecords, __resetForTesting as toolsResetForTesting } from "$lib/toolsState";
 import { prReports, __resetForTesting as prResetForTesting } from "$lib/prState";
 import { prKey } from "$lib/pullRequest";

@@ -5,7 +5,7 @@
   import { renderMarkdown } from "$lib/markdown";
   import { pickPath } from "$lib/picker";
   import type { CardView } from "$lib/planBoard";
-  import type { Column, Label, Priority } from "$lib/kanban";
+  import type { Column, Label, Priority } from "$lib/board/kanban";
   import { isArchivedCard, slugStatus } from "$lib/planBoard";
   import { childCards, parentCard } from "$lib/cardRelations";
   import { parseChecklist, stripFrontmatter, type ChecklistItem } from "$lib/planChecklist";
@@ -57,7 +57,7 @@
   } from "$lib/ui/indicators";
   import { bestOfNRequest, bestOfNRuns, candidateLiveness, runForCard, runSummary } from "$lib/bestOfNState";
   import { pickCandidate, abandonRun } from "$lib/bestOfNActions";
-  import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "$lib/kanbanState";
+  import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "$lib/board/kanbanState";
   import { cancelLaunch, launchGateVerdict, launchQueue, queuedForCard } from "$lib/launchQueue";
   import {
     runCard,
@@ -68,7 +68,7 @@
     revealDevelopingCard,
   } from "$lib/cardRunActions";
   import { developingRunIn } from "$lib/developingCards";
-  import { cardSessionState } from "$lib/columnRunAction";
+  import { cardSessionState } from "$lib/board/columnRunAction";
   import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker } from "$lib/cardRun";
   import { cardContentReviewed, resolveRequireReview } from "$lib/cardReview";
   import { ensureCardReviewed } from "$lib/cardReviewActions";

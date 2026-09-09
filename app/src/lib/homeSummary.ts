@@ -1,4 +1,4 @@
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/gavin";
 import type { WorktreeInfo } from "$lib/git";
 import { detectConflicts, isStepFinished, railStateOf, stepStateOf } from "$lib/orchestration";

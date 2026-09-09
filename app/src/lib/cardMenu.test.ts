@@ -111,14 +111,14 @@ import { askConfirmChecked } from "$lib/dialog";
 import { findSessionLocation } from "$lib/workspace";
 import { requestCardReview } from "$lib/review/codeReviewActions";
 import { layoutState } from "$lib/layoutState";
-import { kanbanState } from "$lib/kanbanState";
+import { kanbanState } from "$lib/board/kanbanState";
 import { orchestrations } from "$lib/orchestrationState";
 import { emptyOrchestration, addRail, addStage, addStep } from "$lib/orchestration";
 import { buildCardMenuEntries, type CardMenuHooks } from "$lib/cardMenu";
 import { bestOfNRequest, bestOfNRuns } from "$lib/bestOfNState";
 import { isMenuItem, type ContextMenuItem } from "$lib/contextMenu";
 import type { CardView } from "$lib/planBoard";
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 
 function card(kind: "note" | "task" | "plan", status: string | null, extra: Partial<CardView> = {}): CardView {
   return {

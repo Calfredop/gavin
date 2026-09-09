@@ -15,7 +15,7 @@
   // the fetching in reviewState.ts, the remembering in reviewPrefs.ts.
   import { onDestroy, onMount, untrack } from "svelte";
   import { get } from "svelte/store";
-  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/kanbanState";
+  import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/board/kanbanState";
   import { gavinTrees } from "$lib/gavinState";
   import { layoutState, daemonCompat } from "$lib/layoutState";
   import { indexCardViews, mergePlanCards, type CardView } from "$lib/planBoard";
@@ -50,9 +50,9 @@
   } from "$lib/review/reviewState";
   import { runBaseline, type RunBaseline } from "$lib/runChanges";
   import { orchestrations, fetchOrchestration } from "$lib/orchestrationState";
-  import { railIndex } from "$lib/planFilter";
-  import { contextFacets, pruneFacets } from "$lib/boardFilters";
-  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/hubFacets";
+  import { railIndex } from "$lib/board/planFilter";
+  import { contextFacets, pruneFacets } from "$lib/board/boardFilters";
+  import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/board/hubFacets";
 
   interface Props {
     workspaceId: string;

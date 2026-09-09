@@ -20,7 +20,7 @@ import {
 } from "$lib/cardCompose";
 import { AUTO_COMMIT_BLOCK } from "$lib/autoCommit";
 import { isPermanentColumn, type CardView } from "$lib/planBoard";
-import type { MergedBoard } from "$lib/boardSearch";
+import type { MergedBoard } from "$lib/board/boardSearch";
 import { source } from "$lib/sources";
 
 describe("COMPOSE_KINDS", () => {

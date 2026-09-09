@@ -9,8 +9,8 @@ import * as backend from "$lib/backend";
 import { agentForCard, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/layoutState";
 import { gavinTrees } from "$lib/gavinState";
 import { findSessionLocation } from "$lib/workspace";
-import { cardSessionState } from "$lib/columnRunAction";
-import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/kanbanState";
+import { cardSessionState } from "$lib/board/columnRunAction";
+import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
 import { patchPlanField, patchPlanPath } from "$lib/gavinState";
 import {
   composeTaskPrompt,

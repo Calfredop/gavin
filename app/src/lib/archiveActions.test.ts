@@ -40,7 +40,7 @@ import { askConfirm } from "$lib/dialog";
 import * as backend from "$lib/backend";
 import { layoutState, closeSession } from "$lib/layoutState";
 import { ARCHIVE_CANCELLED, executeArchive, executeUnarchive, isDoneColumn } from "$lib/archiveActions";
-import { kanbanState } from "$lib/kanbanState";
+import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/gavinState";
 import type { CardView } from "$lib/planBoard";
 import type { PlanFileInfo } from "$lib/gavin";

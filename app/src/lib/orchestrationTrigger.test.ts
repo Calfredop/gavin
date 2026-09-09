@@ -9,7 +9,7 @@ import {
   RAIL_TRIGGER_CHOICES,
 } from "$lib/orchestration";
 import type { Orchestration, Rail, RailState, StepState } from "$lib/orchestration";
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 import type { GavinTree, PlanFileInfo } from "$lib/gavin";
 import { allSources } from "$lib/sources";
 

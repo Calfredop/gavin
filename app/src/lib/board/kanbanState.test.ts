@@ -23,8 +23,8 @@ import {
   cardSessionFor,
   saveErrors,
   dismissSaveError,
-} from "$lib/kanbanState";
-import type { Board } from "$lib/kanban";
+} from "$lib/board/kanbanState";
+import type { Board } from "$lib/board/kanban";
 
 function emptyBoard(): Board {
   return { columns: [{ id: "c1", name: "To Do", position: 0 }], labels: [], cardSessions: [] };

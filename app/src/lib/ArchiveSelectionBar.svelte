@@ -12,7 +12,7 @@
 
   import { Trash2, CheckCheck, X } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { boardSelection, selectedCards } from "$lib/boardSelection";
+  import { boardSelection, selectedCards } from "$lib/board/boardSelection";
   import type { CardView } from "$lib/planBoard";
 
   interface Props {

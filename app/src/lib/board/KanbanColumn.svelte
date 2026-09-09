@@ -1,11 +1,11 @@
 <script lang="ts">
-  import type { Column, Label } from "$lib/kanban";
+  import type { Column, Label } from "$lib/board/kanban";
   import { isPermanentColumn, type CardView } from "$lib/planBoard";
-  import BoardCard from "$lib/BoardCard.svelte";
-  import { dragState, dropHold, buildDisplaySlots } from "$lib/kanbanDrag";
+  import BoardCard from "$lib/board/BoardCard.svelte";
+  import { dragState, dropHold, buildDisplaySlots } from "$lib/board/kanbanDrag";
   import { flip } from "svelte/animate";
-  import { renameColumnAction, deleteColumnAction } from "$lib/kanbanState";
-  import { kanbanState, cardSessionFor } from "$lib/kanbanState";
+  import { renameColumnAction, deleteColumnAction } from "$lib/board/kanbanState";
+  import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
   import { tooltip } from "$lib/tooltip";
   import { layoutState, resolvedAgents } from "$lib/layoutState";
   import { agentPromptBlocker } from "$lib/cardRun";
@@ -18,7 +18,7 @@
     columnRunAllConfirm,
     cardSessionState,
     type CardSessionState,
-  } from "$lib/columnRunAction";
+  } from "$lib/board/columnRunAction";
   import { Play, RotateCcw, Archive } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { X } from "@lucide/svelte";

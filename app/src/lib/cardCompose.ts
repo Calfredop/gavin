@@ -6,12 +6,12 @@
 import { formatAttachments } from "$lib/attachments";
 import { autoCommitAppliesTo, setAutoCommitInBody } from "$lib/autoCommit";
 import { parseComplexity } from "$lib/complexity";
-import { translateDropIndex } from "$lib/pageBoard";
+import { translateDropIndex } from "$lib/board/pageBoard";
 import { slugFileName } from "$lib/planExplorer";
 import { slugStatus, type CardView } from "$lib/planBoard";
 import { formatChord, matchesChord, type Chord, type ChordEvent } from "$lib/shortcuts";
-import type { MergedBoard } from "$lib/boardSearch";
-import type { OrderedPlanCard } from "$lib/planOrder";
+import type { MergedBoard } from "$lib/board/boardSearch";
+import type { OrderedPlanCard } from "$lib/board/planOrder";
 
 export type ComposeKind = "note" | "task" | "plan";
 

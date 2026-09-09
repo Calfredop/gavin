@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { get } from "svelte/store";
-import { ANY, NO_FACETS, type BoardFacets } from "$lib/boardFilters";
-import { facetsFor, hubFacetState, isTabLinked, resetTabFacets, setTabFacets, setTabLinked } from "$lib/hubFacets";
+import { ANY, NO_FACETS, type BoardFacets } from "$lib/board/boardFilters";
+import { facetsFor, hubFacetState, isTabLinked, resetTabFacets, setTabFacets, setTabLinked } from "$lib/board/hubFacets";
 
 const WS = "ws1";
 

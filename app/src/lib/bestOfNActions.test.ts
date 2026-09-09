@@ -73,13 +73,13 @@ vi.mock("$lib/gitState", () => ({
 const linkCardSessionAction = vi.fn(async () => {
   trace.push("bind");
 });
-vi.mock("$lib/kanbanState", () => ({
+vi.mock("$lib/board/kanbanState", () => ({
   kanbanState: writable({ "ws-1": {} }),
   cardSessionFor: vi.fn(() => null),
   linkCardSessionAction: (...a: unknown[]) => linkCardSessionAction(...(a as [])),
 }));
 
-vi.mock("$lib/columnRunAction", () => ({ cardSessionState: vi.fn(() => "none") }));
+vi.mock("$lib/board/columnRunAction", () => ({ cardSessionState: vi.fn(() => "none") }));
 vi.mock("$lib/cardRunActions", () => ({
   resolveAttachmentsForRun: vi.fn(async () => ({ paths: [], withheld: [], statuses: [] })),
 }));
@@ -109,7 +109,7 @@ const { startBestOfN, pickCandidate, abandonRun } = await import("$lib/bestOfNAc
 const { bestOfNRuns } = await import("$lib/bestOfNState");
 const backend = await import("$lib/backend");
 const layoutState = await import("$lib/layoutState");
-const columnRunAction = await import("$lib/columnRunAction");
+const columnRunAction = await import("$lib/board/columnRunAction");
 
 const CARD: CardView = {
   id: "/repos/gavin/.gavin-root/plans/auth.md",

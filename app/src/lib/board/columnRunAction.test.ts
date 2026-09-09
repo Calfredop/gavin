@@ -7,7 +7,7 @@ import {
   columnRunAllConfirm,
   cardSessionState,
   type CardSessionState,
-} from "$lib/columnRunAction";
+} from "$lib/board/columnRunAction";
 import type { CardView } from "$lib/planBoard";
 import { launchEstimate } from "$lib/launchEstimate";
 

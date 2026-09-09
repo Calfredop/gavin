@@ -21,10 +21,10 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tooltip } from "$lib/tooltip";
   import { everyGroupExpanded, isGroupExpanded, type ReviewGroup } from "$lib/review/reviewBoard";
-  import { facetsActive, type BoardFacets, type ContextFacet } from "$lib/boardFilters";
-  import type { RailIndex } from "$lib/planFilter";
-  import FacetFilters from "$lib/FacetFilters.svelte";
-  import type { Column } from "$lib/kanban";
+  import { facetsActive, type BoardFacets, type ContextFacet } from "$lib/board/boardFilters";
+  import type { RailIndex } from "$lib/board/planFilter";
+  import FacetFilters from "$lib/board/FacetFilters.svelte";
+  import type { Column } from "$lib/board/kanban";
 
   interface Props {
     groups: ReviewGroup[];

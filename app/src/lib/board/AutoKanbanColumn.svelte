@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { CardView } from "$lib/planBoard";
-  import BoardCard from "$lib/BoardCard.svelte";
-  import type { Label } from "$lib/kanban";
-  import { dragState, dropHold, buildDisplaySlots } from "$lib/kanbanDrag";
+  import BoardCard from "$lib/board/BoardCard.svelte";
+  import type { Label } from "$lib/board/kanban";
+  import { dragState, dropHold, buildDisplaySlots } from "$lib/board/kanbanDrag";
   import { AUTO_COLUMN_PREFIX } from "$lib/planDrop";
   import { tooltip } from "$lib/tooltip";
   import { flip } from "svelte/animate";

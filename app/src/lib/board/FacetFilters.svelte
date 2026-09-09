@@ -13,8 +13,8 @@
   import { Link2, Link2Off } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tooltip } from "$lib/tooltip";
-  import { ANY, NO_RAIL, KIND_FACETS, type BoardFacets, type ContextFacet } from "$lib/boardFilters";
-  import type { RailIndex } from "$lib/planFilter";
+  import { ANY, NO_RAIL, KIND_FACETS, type BoardFacets, type ContextFacet } from "$lib/board/boardFilters";
+  import type { RailIndex } from "$lib/board/planFilter";
 
   interface Props {
     facets: BoardFacets;

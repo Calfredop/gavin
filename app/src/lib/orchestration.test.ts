@@ -83,7 +83,7 @@ import { BUILTIN_TOOLS } from "$lib/orchestrationTools";
 import { prKey } from "$lib/pullRequest";
 import type { WorktreeInfo } from "$lib/git";
 import type { Action, Orchestration, Rail, RailState, Stage, StageMode, Step, StepState } from "$lib/orchestration";
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 import type { SessionStatus } from "$lib/notifications";
 import type { GavinTree, PlanFileInfo } from "$lib/gavin";
 

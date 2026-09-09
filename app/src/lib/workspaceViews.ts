@@ -3,7 +3,7 @@ import { LayoutDashboard, Kanban, FileText, Bot, FolderTree, Files, Settings, Gi
 import HomeHubView from "$lib/HomeHubView.svelte";
 import GitHubView from "$lib/GitHubView.svelte";
 import SettingsHubView from "$lib/SettingsHubView.svelte";
-import KanbanBoard from "$lib/KanbanBoard.svelte";
+import KanbanBoard from "$lib/board/KanbanBoard.svelte";
 import OrchestrationHubView from "$lib/OrchestrationHubView.svelte";
 import WorkspaceToolsHubView from "$lib/WorkspaceToolsHubView.svelte";
 import ReviewHubView from "$lib/review/ReviewHubView.svelte";

@@ -41,7 +41,7 @@ import {
   type ReclaimRecord,
 } from "$lib/sessions/doneSessionReclaim";
 import { gavinTrees } from "$lib/gavinState";
-import { kanbanState } from "$lib/kanbanState";
+import { kanbanState } from "$lib/board/kanbanState";
 import { launchConfigStore, launchGateVerdict, launchQueue } from "$lib/launchQueue";
 import { closeSession, layoutState } from "$lib/layoutState";
 import { agentSessions, memoryPressure, systemMemory } from "$lib/memoryState";

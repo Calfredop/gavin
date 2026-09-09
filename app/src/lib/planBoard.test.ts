@@ -6,7 +6,7 @@ import {
   isPermanentColumn,
   indexCardViews,
 } from "$lib/planBoard";
-import type { Board, Column } from "$lib/kanban";
+import type { Board, Column } from "$lib/board/kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
 
 function col(id: string, name: string): Column {

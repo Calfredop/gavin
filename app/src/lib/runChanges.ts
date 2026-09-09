@@ -9,7 +9,7 @@
 // measured, and saying "no changes" about one is the single most
 // misleading thing this feature could do.
 
-import type { CardSession } from "$lib/kanban";
+import type { CardSession } from "$lib/board/kanban";
 import type { DiscardReport, FileEntry, RunChanges } from "$lib/git";
 import { shortSha } from "$lib/git";
 import { featureBlockedReason, type DaemonCompat } from "$lib/daemonCompat";

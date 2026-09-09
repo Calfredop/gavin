@@ -6,7 +6,7 @@
 // second rendering of cards the merge already built, and the archive
 // actions commit against paths, never against this projection.
 
-import { project } from "$lib/boardSearch";
+import { project } from "$lib/board/boardSearch";
 import { queryTokens } from "$lib/search";
 import type { CardView } from "$lib/planBoard";
 

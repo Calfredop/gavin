@@ -1,11 +1,11 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, saveErrors, dismissSaveError } from "$lib/kanbanState";
+  import { kanbanState, fetchBoard, refreshBoard, boardError, retryFetchBoard, saveErrors, dismissSaveError } from "$lib/board/kanbanState";
   import { gavinTrees } from "$lib/gavinState";
   import { mergePlanCards, type CardView } from "$lib/planBoard";
-  import KanbanColumn from "$lib/KanbanColumn.svelte";
-  import AutoKanbanColumn from "$lib/AutoKanbanColumn.svelte";
-  import KanbanDragPreview from "$lib/KanbanDragPreview.svelte";
+  import KanbanColumn from "$lib/board/KanbanColumn.svelte";
+  import AutoKanbanColumn from "$lib/board/AutoKanbanColumn.svelte";
+  import KanbanDragPreview from "$lib/board/KanbanDragPreview.svelte";
   import CardDetailModal from "$lib/CardDetailModal.svelte";
   import CardComposeModal from "$lib/CardComposeModal.svelte";
   import { planCommitFromMerged } from "$lib/planDrop";
@@ -17,18 +17,18 @@
   import { openContextMenuFromEvent } from "$lib/contextMenu";
   import { buildCardMenuEntries } from "$lib/cardMenu";
   import { fetchOrchestration, orchestrations } from "$lib/orchestrationState";
-  import { cardSessionFor } from "$lib/kanbanState";
-  import { attachBoardDrag } from "$lib/kanbanDragGlue";
-  import BoardSelectionBar from "$lib/BoardSelectionBar.svelte";
-  import { toggleCardSelected, clearBoardSelection } from "$lib/boardSelection";
-  import type { ActiveDrag } from "$lib/kanbanDrag";
+  import { cardSessionFor } from "$lib/board/kanbanState";
+  import { attachBoardDrag } from "$lib/board/kanbanDragGlue";
+  import BoardSelectionBar from "$lib/board/BoardSelectionBar.svelte";
+  import { toggleCardSelected, clearBoardSelection } from "$lib/board/boardSelection";
+  import type { ActiveDrag } from "$lib/board/kanbanDrag";
   import SearchInput from "$lib/ui/SearchInput.svelte";
-  import { filterBoard, AUTO_KEY_PREFIX } from "$lib/boardSearch";
+  import { filterBoard, AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
   import { isSearching } from "$lib/search";
   import type { DropTarget } from "$lib/pointerDrag";
   import { requestedCompose, takeComposeRequest, type ComposeTarget } from "$lib/composeRequest";
   import { defaultComposeStatus } from "$lib/cardCompose";
-  import { dropAgainstWholeBoard, pageHolding, pageScope, scopeBoardToPage } from "$lib/pageBoard";
+  import { dropAgainstWholeBoard, pageHolding, pageScope, scopeBoardToPage } from "$lib/board/pageBoard";
 
   interface Props {
     workspaceId: string;

@@ -18,13 +18,13 @@
 // misleading thing this tab could do -- it would quietly promise that a
 // card reviewed clean had been looked at.
 
-import type { Column } from "$lib/kanban";
+import type { Column } from "$lib/board/kanban";
 import { doneColumnOf } from "$lib/orchestration";
 import { slugStatus, type CardView, type MergedProjection } from "$lib/planBoard";
-import { cardMatches } from "$lib/boardSearch";
+import { cardMatches } from "$lib/board/boardSearch";
 import { queryTokens } from "$lib/search";
-import { cardPasses, type BoardFacets } from "$lib/boardFilters";
-import type { RailIndex } from "$lib/planFilter";
+import { cardPasses, type BoardFacets } from "$lib/board/boardFilters";
+import type { RailIndex } from "$lib/board/planFilter";
 
 /// One card up for review, with what its run touched.
 ///

@@ -1571,7 +1571,7 @@ async function restoreRemovedWorkspace(
   // close a cycle. The other two ride along rather than being imported
   // twice over.
   const [{ fetchBoard }, { fetchOrchestration }, { fetchTools }] = await Promise.all([
-    import("$lib/kanbanState"),
+    import("$lib/board/kanbanState"),
     import("$lib/orchestrationState"),
     import("$lib/toolsState"),
   ]);

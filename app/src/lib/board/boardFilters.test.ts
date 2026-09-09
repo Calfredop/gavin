@@ -11,10 +11,10 @@ import {
   pruneFacets,
   underContext,
   type BoardFacets,
-} from "$lib/boardFilters";
-import { AUTO_KEY_PREFIX } from "$lib/boardSearch";
-import { railIndex } from "$lib/planFilter";
-import type { RailIndex } from "$lib/planFilter";
+} from "$lib/board/boardFilters";
+import { AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
+import { railIndex } from "$lib/board/planFilter";
+import type { RailIndex } from "$lib/board/planFilter";
 import type { AutoColumn, CardView, DisplayColumn } from "$lib/planBoard";
 import type { GavinContext, GavinTree } from "$lib/gavin";
 import { emptyOrchestration } from "$lib/orchestration";

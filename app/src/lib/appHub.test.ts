@@ -25,7 +25,7 @@ import type { AgentProfileInfo } from "$lib/settings";
 import type { WorkspaceAgentsSummary } from "$lib/sidebar/sidebarSummary";
 import { UNFILED_WORKSPACE_ID, type Page, type Workspace } from "$lib/workspace";
 import type { LayoutNode } from "$lib/layout";
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/gavin";
 import type { Orchestration } from "$lib/orchestration";
 

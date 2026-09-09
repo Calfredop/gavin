@@ -13,7 +13,7 @@
   import { setupProgress, SETUP_STEPS } from "$lib/setupWizard";
   import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/superpowers";
   import { gavinTrees, refreshGavinTree } from "$lib/gavinState";
-  import { fetchBoard, kanbanState } from "$lib/kanbanState";
+  import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
   import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "$lib/homeSummary";
   import MainAgentPanel from "$lib/MainAgentPanel.svelte";
   import ConfigTrustNotice from "$lib/ConfigTrustNotice.svelte";

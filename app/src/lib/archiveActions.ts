@@ -12,7 +12,7 @@ import { askConfirm } from "$lib/dialog";
 import { get } from "svelte/store";
 import * as backend from "$lib/backend";
 import { patchPlanPath } from "$lib/gavinState";
-import { kanbanState, refreshBoard } from "$lib/kanbanState";
+import { kanbanState, refreshBoard } from "$lib/board/kanbanState";
 import { layoutState, closeSession } from "$lib/layoutState";
 import {
   closablesForArchive,

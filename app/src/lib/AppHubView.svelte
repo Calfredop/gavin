@@ -87,7 +87,7 @@
   } from "$lib/attentionInbox";
   import { openLinkedCard } from "$lib/cardTabLink";
   import { revealSession } from "$lib/cardRunActions";
-  import { kanbanState } from "$lib/kanbanState";
+  import { kanbanState } from "$lib/board/kanbanState";
   import { fleetStripLine } from "$lib/launchQueue";
   import { gavinTrees } from "$lib/gavinState";
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";

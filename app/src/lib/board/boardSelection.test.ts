@@ -8,7 +8,7 @@ import {
   selectedCards,
   runnableSelection,
   selectionRunConfirm,
-} from "$lib/boardSelection";
+} from "$lib/board/boardSelection";
 import { launchEstimate } from "$lib/launchEstimate";
 import type { CardView } from "$lib/planBoard";
 

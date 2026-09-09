@@ -31,7 +31,7 @@
   import { launchGateVerdict } from "$lib/launchQueue";
   import OrchestrationStepChip from "$lib/OrchestrationStepChip.svelte";
   import OrchestrationStepCard from "$lib/OrchestrationStepCard.svelte";
-  import type { Label } from "$lib/kanban";
+  import type { Label } from "$lib/board/kanban";
   import type { CardView, PlacedCardView } from "$lib/planBoard";
   import type {
     CardEntry,

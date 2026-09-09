@@ -24,7 +24,7 @@ import {
   type CompletionSubject,
 } from "$lib/cardCompletion";
 import type { CardView } from "$lib/planBoard";
-import type { Column } from "$lib/kanban";
+import type { Column } from "$lib/board/kanban";
 
 const COLUMNS: Column[] = [
   { id: "c1", name: "To Do", position: 0 },

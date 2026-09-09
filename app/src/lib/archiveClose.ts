@@ -13,7 +13,7 @@
 
 import { findSessionLocation } from "$lib/workspace";
 import type { Workspace } from "$lib/workspace";
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 import type { CardView } from "$lib/planBoard";
 
 /// The slice of LayoutState this projection reads. Structural rather

@@ -11,7 +11,7 @@
 // up on mount (or on the spot, if it is already showing) and clears it.
 
 import { writable } from "svelte/store";
-import type { Board } from "$lib/kanban";
+import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/gavin";
 import type { Orchestration } from "$lib/orchestration";
 import { cardIndex } from "$lib/orchestration";
