@@ -5,7 +5,7 @@ import GitHubView from "$lib/git/GitHubView.svelte";
 import SettingsHubView from "$lib/SettingsHubView.svelte";
 import KanbanBoard from "$lib/board/KanbanBoard.svelte";
 import OrchestrationHubView from "$lib/orchestration/OrchestrationHubView.svelte";
-import WorkspaceToolsHubView from "$lib/WorkspaceToolsHubView.svelte";
+import WorkspaceToolsHubView from "$lib/workspace/WorkspaceToolsHubView.svelte";
 import ReviewHubView from "$lib/review/ReviewHubView.svelte";
 import PrdHubView from "$lib/files/PrdHubView.svelte";
 import AgentFileHubView from "$lib/files/AgentFileHubView.svelte";

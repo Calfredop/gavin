@@ -15,7 +15,7 @@
 
 import * as backend from "$lib/backend";
 import { deleteWorkspaceFromApp } from "$lib/layoutState";
-import { plannedRemovals, touchesDisk, type DeleteAnswers, type GavinFootprint } from "$lib/workspaceDelete";
+import { plannedRemovals, touchesDisk, type DeleteAnswers, type GavinFootprint } from "$lib/workspace/workspaceDelete";
 
 export interface DeleteResult {
   /// Everything that landed, in the order it happened.

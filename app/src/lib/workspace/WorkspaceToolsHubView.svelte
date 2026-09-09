@@ -29,7 +29,7 @@
     fetchGroupTemplates,
   } from "$lib/orchestration/groupTemplatesState";
   import { toolRunsStore, refreshToolRuns } from "$lib/orchestration/toolRunsState";
-  import { requestToolRun } from "$lib/workspaceToolsActions";
+  import { requestToolRun } from "$lib/workspace/workspaceToolsActions";
   import { emptyTool, toolKindLabel, type Tool } from "$lib/orchestration/orchestrationTools";
   import {
     editDraftFor,
@@ -43,7 +43,7 @@
     toolRunTip,
     toolsEmptyMessage,
     type ToolRun,
-  } from "$lib/workspaceTools";
+  } from "$lib/workspace/workspaceTools";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { runIndicator } from "$lib/ui/indicators";
   import SearchInput from "$lib/ui/SearchInput.svelte";

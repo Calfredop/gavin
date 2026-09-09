@@ -8,7 +8,7 @@
   } from "$lib/layoutState";
   import { gavinTrees } from "$lib/gavinState";
   import { resolveAgentConfig, resolvePrdPath } from "$lib/settings";
-  import { setupProgress, type SetupStep } from "$lib/setupWizard";
+  import { setupProgress, type SetupStep } from "$lib/workspace/setupWizard";
   import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
   import * as backend from "$lib/backend";
   import Modal from "$lib/Modal.svelte";

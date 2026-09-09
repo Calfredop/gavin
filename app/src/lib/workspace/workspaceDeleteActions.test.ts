@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as backend from "$lib/backend";
 import { deleteWorkspaceFromApp } from "$lib/layoutState";
-import { executeWorkspaceDelete } from "$lib/workspaceDeleteActions";
-import { defaultAnswers, type GavinFootprint } from "$lib/workspaceDelete";
+import { executeWorkspaceDelete } from "$lib/workspace/workspaceDeleteActions";
+import { defaultAnswers, type GavinFootprint } from "$lib/workspace/workspaceDelete";
 
 vi.mock("$lib/backend", () => ({
   removeGavinFootprint: vi.fn().mockResolvedValue({ done: [], failed: [] }),

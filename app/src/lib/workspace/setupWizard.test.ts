@@ -6,7 +6,7 @@ import {
   prdHasPlaceholders,
   PRD_PLACEHOLDERS,
   SETUP_STEPS,
-} from "$lib/setupWizard";
+} from "$lib/workspace/setupWizard";
 import type { SuperpowersStatus } from "$lib/agents/superpowers";
 import { svelteSources } from "$lib/sources";
 

@@ -12,7 +12,7 @@
   // type at all. `toolBodyEditor` answers that per kind, and the three
   // branches below draw its three shapes.
   import { Plus, Copy, Pencil, Trash2, Group, FolderOpen } from "@lucide/svelte";
-  import { pickPath as openPicker } from "$lib/picker";
+  import { pickPath as openPicker } from "$lib/workspace/picker";
   import Modal from "$lib/Modal.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import {
@@ -32,7 +32,7 @@
     type ToolScope,
   } from "$lib/orchestration/orchestrationTools";
   import { saveToolAction, deleteToolAction } from "$lib/orchestration/toolsState";
-  import { isRunnableStandalone } from "$lib/workspaceTools";
+  import { isRunnableStandalone } from "$lib/workspace/workspaceTools";
   import { daemonCompat, workspaceRootPath } from "$lib/layoutState";
   import { featureBlockedReason } from "$lib/daemonCompat";
   import { tooltip } from "$lib/tooltip";

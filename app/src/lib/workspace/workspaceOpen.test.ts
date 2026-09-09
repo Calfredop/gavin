@@ -60,7 +60,7 @@ import {
   openWorkspaceFolder,
   pendingOpen,
   workspaceForRoot,
-} from "$lib/workspaceOpen";
+} from "$lib/workspace/workspaceOpen";
 
 /// Only the two fields this module reads. LayoutState has sixteen more,
 /// and listing them would make every fixture here about the store rather

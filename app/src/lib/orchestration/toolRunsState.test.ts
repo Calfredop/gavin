@@ -16,8 +16,8 @@ import {
   toolRunsStore,
   __resetForTesting,
 } from "$lib/orchestration/toolRunsState";
-import { lastRunsFor } from "$lib/workspaceTools";
-import type { ToolRun } from "$lib/workspaceTools";
+import { lastRunsFor } from "$lib/workspace/workspaceTools";
+import type { ToolRun } from "$lib/workspace/workspaceTools";
 
 function row(over: Partial<ToolRun> = {}): ToolRun {
   return {

@@ -62,17 +62,17 @@
     renameDecision,
     DEFAULT_ACCENT,
   } from "$lib/settings";
-  import { pickPath } from "$lib/picker";
+  import { pickPath } from "$lib/workspace/picker";
   import * as backend from "$lib/backend";
   import SuperpowersControls from "$lib/agents/SuperpowersControls.svelte";
-  import ConfigTrustNotice from "$lib/ConfigTrustNotice.svelte";
-  import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
+  import ConfigTrustNotice from "$lib/workspace/ConfigTrustNotice.svelte";
+  import WorkspaceRootControl from "$lib/workspace/WorkspaceRootControl.svelte";
   import ColourPicker from "$lib/ColourPicker.svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { searchSettings, type SettingsSection } from "$lib/settingsSearch";
   import Modal from "$lib/Modal.svelte";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
-  import WorkspaceDeleteWizard from "$lib/WorkspaceDeleteWizard.svelte";
+  import WorkspaceDeleteWizard from "$lib/workspace/WorkspaceDeleteWizard.svelte";
   import { tooltip } from "$lib/tooltip";
   import { MIN_PERIOD_MINUTES, validateCycle } from "$lib/agents/agentPause";
   import { agentPauseStore, editableCycle, nowStore, pauseFor } from "$lib/agents/agentPauseState";

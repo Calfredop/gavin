@@ -12,7 +12,7 @@ import {
   trustRows,
   trustedAgentConfig,
   trustedSetup,
-} from "$lib/workspaceTrust";
+} from "$lib/workspace/workspaceTrust";
 
 const PROFILES: AgentProfileInfo[] = [
   {
@@ -216,7 +216,7 @@ describe("a config gavin wrote itself", () => {
 // wrong.
 const TS_SOURCES = tsSources();
 const SVELTE_SOURCES = svelteSources();
-const ROUTE_SOURCES = import.meta.glob("../routes/**/*.svelte", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+const ROUTE_SOURCES = import.meta.glob("../../routes/**/*.svelte", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 
 const ALL = { ...TS_SOURCES, ...SVELTE_SOURCES, ...ROUTE_SOURCES };
 

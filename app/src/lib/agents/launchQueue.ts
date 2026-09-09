@@ -491,7 +491,7 @@ async function execute(intent: LaunchIntent): Promise<void> {
       return;
     }
     case "tool": {
-      const m = await import("$lib/workspaceToolsActions");
+      const m = await import("$lib/workspace/workspaceToolsActions");
       await m.launchQueuedTool(intent);
       return;
     }

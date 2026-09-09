@@ -8,8 +8,8 @@
   } from "$lib/layoutState";
   import { resolveAgentConfig } from "$lib/settings";
   import * as backend from "$lib/backend";
-  import { foreignMcpServersHash, runIntegration } from "$lib/mcpServerTrust";
-  import McpForeignChooser from "$lib/McpForeignChooser.svelte";
+  import { foreignMcpServersHash, runIntegration } from "$lib/workspace/mcpServerTrust";
+  import McpForeignChooser from "$lib/workspace/McpForeignChooser.svelte";
 
   interface Props {
     workspaceId: string;

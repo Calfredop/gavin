@@ -14,7 +14,7 @@
 // reason it is gone.
 
 import { get, writable } from "svelte/store";
-import { pickPath } from "$lib/picker";
+import { pickPath } from "$lib/workspace/picker";
 import * as backend from "$lib/backend";
 import {
   createWorkspace,

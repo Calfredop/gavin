@@ -2,7 +2,7 @@
 // tab rows inside an expanded page. Pure builders; the Sidebar supplies
 // inline-rename / new-page / error hooks.
 import { openPathExternally } from "$lib/backend";
-import { pickPath } from "$lib/picker";
+import { pickPath } from "$lib/workspace/picker";
 import * as backend from "$lib/backend";
 import {
   closeWorkspace,

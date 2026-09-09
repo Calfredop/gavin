@@ -22,7 +22,7 @@ import {
   commitNewWorkspace,
   skipSetup,
   finishSetup,
-} from "$lib/workspaceCreate";
+} from "$lib/workspace/workspaceCreate";
 import { createWorkspace, openWizard, layoutState } from "$lib/layoutState";
 
 const layoutStateMock = layoutState as ReturnType<typeof writable<{ activeWorkspaceId: string | null }>>;

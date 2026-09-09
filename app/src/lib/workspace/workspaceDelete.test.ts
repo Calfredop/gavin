@@ -11,7 +11,7 @@ import {
   DELETE_STEPS,
   type GavinFootprint,
   type DeleteAnswers,
-} from "$lib/workspaceDelete";
+} from "$lib/workspace/workspaceDelete";
 
 const full: GavinFootprint = {
   root: "/repo",

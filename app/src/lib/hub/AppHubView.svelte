@@ -77,7 +77,7 @@
     setNewWorkspaceName,
     commitNewWorkspace,
     cancelNewWorkspace,
-  } from "$lib/workspaceCreate";
+  } from "$lib/workspace/workspaceCreate";
   import {
     attentionInbox,
     rowTip,

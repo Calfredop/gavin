@@ -21,8 +21,8 @@
     ROWS_DECLINE_NOTE,
     type DeleteAnswers,
     type GavinFootprint,
-  } from "$lib/workspaceDelete";
-  import { executeWorkspaceDelete, type DeleteResult } from "$lib/workspaceDeleteActions";
+  } from "$lib/workspace/workspaceDelete";
+  import { executeWorkspaceDelete, type DeleteResult } from "$lib/workspace/workspaceDeleteActions";
   import { grantForAnsweredPrompt } from "$lib/confirmGate";
 
   interface Props {

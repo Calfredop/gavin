@@ -3,7 +3,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import DOMPurify from "dompurify";
   import { renderMarkdown } from "$lib/files/markdown";
-  import { pickPath } from "$lib/picker";
+  import { pickPath } from "$lib/workspace/picker";
   import type { CardView } from "$lib/planBoard";
   import type { Column, Label, Priority } from "$lib/board/kanban";
   import { isArchivedCard, slugStatus } from "$lib/planBoard";

@@ -63,7 +63,7 @@ import {
   hasExecutionKeys,
   trustedAgentConfig,
   type ExecutionKeys,
-} from "$lib/workspaceTrust";
+} from "$lib/workspace/workspaceTrust";
 import {
   cardContentDigest,
   cardContentReviewed,
@@ -71,7 +71,7 @@ import {
   resolveRequireReview,
   type CardContent,
 } from "$lib/cards/cardReview";
-import type { McpForeignChoice } from "$lib/mcpServerTrust";
+import type { McpForeignChoice } from "$lib/workspace/mcpServerTrust";
 import {
   activeWorkspaceForWindow,
   isInAnotherWindow,
@@ -1296,7 +1296,7 @@ export async function bootstrap(): Promise<void> {
   // owned by the tab, because a tool finishing while the human is
   // looking at its terminal is the ordinary case, not the exception.
   // Dynamically imported for the cycle reason above.
-  const { initWorkspaceToolListeners } = await import("$lib/workspaceToolsActions");
+  const { initWorkspaceToolListeners } = await import("$lib/workspace/workspaceToolsActions");
   unlisteners.push(initWorkspaceToolListeners());
   // The single quiet update check, started here for the same reason as
   // the others: it belongs to the app rather than to whichever tab is

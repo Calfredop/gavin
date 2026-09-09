@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { get } from "svelte/store";
 import { gavinTrees, worktreeSetups } from "$lib/gavinState";
-import { executionKeys, executionKeysHash } from "$lib/workspaceTrust";
+import { executionKeys, executionKeysHash } from "$lib/workspace/workspaceTrust";
 import type { LayoutNode } from "$lib/panes/layout";
 import { allSessionIds } from "$lib/panes/layout";
 import type { Page, Workspace } from "$lib/workspace";

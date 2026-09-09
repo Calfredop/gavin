@@ -38,7 +38,7 @@
   // Naming a workspace into existence is the app hub's action now; the
   // sidebar's is "Open workspace…", which starts from a folder. The
   // prompt below is the one question that flow can ask.
-  import { pendingOpen, initAndOpen, bindWithoutInit, cancelOpen } from "$lib/workspaceOpen";
+  import { pendingOpen, initAndOpen, bindWithoutInit, cancelOpen } from "$lib/workspace/workspaceOpen";
   import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/git/gitTracking";
   import { sidebarCollapsed, scratchpadEnabled, toggleSidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
   import { endSidebarPeek, peekSidebar, sidebarPeek, sidebarShowsRail } from "$lib/sidebar/sidebarPeek";

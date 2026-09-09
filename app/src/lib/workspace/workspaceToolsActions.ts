@@ -52,7 +52,7 @@ import {
 import { resolveToolBody, resolveToolCwd, type Tool } from "$lib/orchestration/orchestrationTools";
 import { holdOrQueue, type ToolIntent } from "$lib/agents/launchQueue";
 import { renderLibraryFor, toolRecords } from "$lib/orchestration/toolsState";
-import { cannotRunAloneReason, isRunnableStandalone, runBlockedReason } from "$lib/workspaceTools";
+import { cannotRunAloneReason, isRunnableStandalone, runBlockedReason } from "$lib/workspace/workspaceTools";
 
 /// A launch the human has been asked to fill the parameters of.
 /// Everything the launch needs is resolved when the dialog OPENS -- the

@@ -5,7 +5,7 @@
   // the tab's list re-renders under a search box, and a modal owned by a
   // row would go with the row.
   import Modal from "$lib/Modal.svelte";
-  import { toolRunRequest, confirmToolRun, cancelToolRun } from "$lib/workspaceToolsActions";
+  import { toolRunRequest, confirmToolRun, cancelToolRun } from "$lib/workspace/workspaceToolsActions";
 
   // A local copy of the request's seeds, so Cancel really cancels and a
   // second open starts from the tool's own defaults again rather than

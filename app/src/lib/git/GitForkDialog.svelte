@@ -1,6 +1,6 @@
 <script lang="ts">
   import Modal from "$lib/Modal.svelte";
-  import ConfigTrustNotice from "$lib/ConfigTrustNotice.svelte";
+  import ConfigTrustNotice from "$lib/workspace/ConfigTrustNotice.svelte";
   import {
     gitStore,
     ensureGitView,

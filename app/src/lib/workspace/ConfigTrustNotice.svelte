@@ -16,7 +16,7 @@
   import { Lock } from "@lucide/svelte";
   import Modal from "$lib/Modal.svelte";
   import { approveWorkspaceConfig, configTrusts, revokeWorkspaceConfig } from "$lib/layoutState";
-  import { configTrustNotice, trustRows } from "$lib/workspaceTrust";
+  import { configTrustNotice, trustRows } from "$lib/workspace/workspaceTrust";
 
   interface Props {
     workspaceId: string;

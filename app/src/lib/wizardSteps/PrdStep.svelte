@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { pickPath } from "$lib/picker";
+  import { pickPath } from "$lib/workspace/picker";
   import {
     layoutState,
     daemonCompat,
@@ -11,7 +11,7 @@
   } from "$lib/layoutState";
   import { featureBlockedReason } from "$lib/daemonCompat";
   import { resolveAgentConfig, prdPathFromPick } from "$lib/settings";
-  import { applyPrdSections, agentFlowAvailable, prdHasPlaceholders } from "$lib/setupWizard";
+  import { applyPrdSections, agentFlowAvailable, prdHasPlaceholders } from "$lib/workspace/setupWizard";
   import * as backend from "$lib/backend";
 
   interface Props {

@@ -44,7 +44,7 @@ import {
   requestToolRun,
   toolRunRequest,
   __resetForTesting,
-} from "$lib/workspaceToolsActions";
+} from "$lib/workspace/workspaceToolsActions";
 import type { Tool } from "$lib/orchestration/orchestrationTools";
 
 const AGENT = {

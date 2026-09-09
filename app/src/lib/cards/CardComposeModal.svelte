@@ -15,7 +15,7 @@
   // drops the body entirely.
   import { untrack } from "svelte";
   import { get } from "svelte/store";
-  import { pickPath } from "$lib/picker";
+  import { pickPath } from "$lib/workspace/picker";
   import Modal from "$lib/Modal.svelte";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import type { Column } from "$lib/board/kanban";

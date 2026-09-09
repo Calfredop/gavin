@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { pickPath } from "$lib/picker";
+  import { pickPath } from "$lib/workspace/picker";
   import { daemonCompat, layoutState, openFileInSplit, switchWorkspaceView } from "$lib/layoutState";
   import { gavinTrees, refreshGavinTree } from "$lib/gavinState";
   import type { GavinTree } from "$lib/gavin";

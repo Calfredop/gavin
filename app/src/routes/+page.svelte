@@ -31,12 +31,12 @@
     trustedAgentConfigs,
     wizardWorkspaceId,
   } from "$lib/layoutState";
-  import SetupWizard from "$lib/SetupWizard.svelte";
-  import WorkspaceCreateModal from "$lib/WorkspaceCreateModal.svelte";
+  import SetupWizard from "$lib/workspace/SetupWizard.svelte";
+  import WorkspaceCreateModal from "$lib/workspace/WorkspaceCreateModal.svelte";
   import BestOfNDialog from "$lib/cards/BestOfNDialog.svelte";
   import { bestOfNRequest, hydrateRuns } from "$lib/cards/bestOfNState";
   import { showAlert } from "$lib/dialog";
-  import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspaceCreate";
+  import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspace/workspaceCreate";
   import { resolveAgentConfig, accentVar } from "$lib/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
   import { sidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
@@ -51,7 +51,7 @@
   import CornerOverhang from "$lib/shell/CornerOverhang.svelte";
   import { isMacSync } from "$lib/platform";
   import AppHubView from "$lib/hub/AppHubView.svelte";
-  import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
+  import WorkspaceRootControl from "$lib/workspace/WorkspaceRootControl.svelte";
   import DaemonCompatBanner from "$lib/shell/DaemonCompatBanner.svelte";
   import DaemonRequestErrorBanner from "$lib/shell/DaemonRequestErrorBanner.svelte";
   import MemoryPressureBanner from "$lib/agents/MemoryPressureBanner.svelte";

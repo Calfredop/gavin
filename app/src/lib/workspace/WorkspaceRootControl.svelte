@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { pickPath } from "$lib/picker";
+  import { pickPath } from "$lib/workspace/picker";
   import {
     setWorkspaceRoot,
     switchWorkspaceView,
@@ -8,15 +8,15 @@
     recordMcpForeignChoice,
   } from "$lib/layoutState";
   import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/git/gitTracking";
-  import { applyInitTracking } from "$lib/workspaceOpen";
+  import { applyInitTracking } from "$lib/workspace/workspaceOpen";
   import { gavinTrees } from "$lib/gavinState";
   import { agentProfilesStore, agentModelDefaultsStore, trustedAgentConfigs } from "$lib/layoutState";
   import { resolveAgentConfig } from "$lib/settings";
   import * as backend from "$lib/backend";
-  import { foreignMcpServersHash, runIntegration } from "$lib/mcpServerTrust";
+  import { foreignMcpServersHash, runIntegration } from "$lib/workspace/mcpServerTrust";
   import { UNFILED_WORKSPACE_ID, type Workspace } from "$lib/workspace";
   import Modal from "$lib/Modal.svelte";
-  import McpForeignChooser from "$lib/McpForeignChooser.svelte";
+  import McpForeignChooser from "$lib/workspace/McpForeignChooser.svelte";
 
   interface Props {
     workspace: Workspace;

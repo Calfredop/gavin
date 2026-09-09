@@ -20,7 +20,7 @@
   import { PanelLeftClose, Search, FolderOpen } from "@lucide/svelte";
   import { sidebarCollapsed, toggleSidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
   import { sidebarSearchOpen, toggleSidebarSearch } from "$lib/sidebar/sidebarSearch";
-  import { openWorkspaceFolder } from "$lib/workspaceOpen";
+  import { openWorkspaceFolder } from "$lib/workspace/workspaceOpen";
   import { layoutState } from "$lib/layoutState";
 
   // Keyed off the preference rather than off sidebarShowsRail: a peek is

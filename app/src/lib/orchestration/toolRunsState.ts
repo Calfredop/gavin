@@ -29,7 +29,7 @@ import { daemonCompat, sessionExits } from "$lib/layoutState";
 // `layoutState.bootstrap`, and a value import of workspaceTools would
 // pull the whole `@lucide/svelte` barrel onto the start-up path. The
 // derivation the tab wants (`lastRunsFor`) lives there instead.
-import type { ToolRun } from "$lib/workspaceTools";
+import type { ToolRun } from "$lib/workspace/workspaceTools";
 
 export interface ToolRunsView {
   runs: ToolRun[];

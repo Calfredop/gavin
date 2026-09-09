@@ -5,7 +5,7 @@
   /// places `setupAgentIntegration` runs from -- so the two choices read
   /// identically wherever they appear.
   import type { ForeignMcpServer } from "$lib/backend";
-  import { mcpForeignNotice } from "$lib/mcpServerTrust";
+  import { mcpForeignNotice } from "$lib/workspace/mcpServerTrust";
 
   interface Props {
     servers: ForeignMcpServer[];

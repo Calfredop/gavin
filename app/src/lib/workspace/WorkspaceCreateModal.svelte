@@ -1,7 +1,7 @@
 <script lang="ts">
   import { layoutState, setWorkspaceColor } from "$lib/layoutState";
   import { DEFAULT_ACCENT } from "$lib/settings";
-  import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
+  import WorkspaceRootControl from "$lib/workspace/WorkspaceRootControl.svelte";
   import ColourPicker from "$lib/ColourPicker.svelte";
   import Modal from "$lib/Modal.svelte";
 

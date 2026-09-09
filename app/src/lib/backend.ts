@@ -14,14 +14,14 @@ import type { BoardTab, CardTab, GavinTree } from "$lib/gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "$lib/git/git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "$lib/orchestration/orchestration";
 import type { ToolRecord } from "$lib/orchestration/orchestrationTools";
-import type { ToolRun } from "$lib/workspaceTools";
+import type { ToolRun } from "$lib/workspace/workspaceTools";
 import type { GroupTemplateRecord } from "$lib/orchestration/orchestrationGroups";
 import type { DaemonCompat } from "$lib/daemonCompat";
 import type { SessionStatus } from "$lib/notifications";
 import type { OrphanProcess } from "$lib/sessions/orphan";
 import type { QueuedInput } from "$lib/agents/queuedInput";
 import type { ManagedSessions } from "$lib/sessions/sessionsManager";
-import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspaceDelete";
+import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspace/workspaceDelete";
 import type { AttachmentStatus } from "$lib/cards/attachments";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
 
