@@ -157,19 +157,23 @@
     font-size: 1em;
     padding: 3px 8px;
   }
+  /* Both controls are capped rather than sized by their content, the
+     same answer the settings panels' own model row reached: a native
+     select is as wide as its WIDEST option, and those options are agent
+     labels here but model names one box over.
+     The input is capped to the select's width rather than to the 240px
+     the panels use for a lone control, because these two sit side by
+     side under a 110px label -- matching them keeps the five rows
+     reading as a table. It was `flex: 1 1 auto`, which took every pixel
+     the row had left: harmless in the app modal, which is 380px wide,
+     and the full width of the pane in a workspace's Settings tab. */
+  select,
+  input.model {
+    flex: 0 1 220px;
+    min-width: 0;
+  }
   select {
     min-width: 140px;
-    max-width: 220px;
-  }
-  /* Capped at the select's own ceiling so the pair reads as one control
-     group. Without it the input is the row's only greedy box, and on the
-     workspace Settings tab -- a full-width hub tab, not a modal -- it
-     stretched a field that never holds more than a model id across the
-     whole pane. */
-  input.model {
-    flex: 1 1 auto;
-    min-width: 0;
-    max-width: 220px;
   }
   /* Kept in the flow even when there is nothing to clear, so the four
      rows above and below it stay on one grid. */
