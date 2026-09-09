@@ -50,7 +50,7 @@ import {
   restoreScreen,
   destroyTerminal,
   setTerminalFontSize,
-} from "$lib/terminalRegistry";
+} from "$lib/terminal/terminalRegistry";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 

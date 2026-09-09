@@ -120,7 +120,7 @@ vi.mock("$lib/backend", () => ({
   getTools: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("$lib/terminalRegistry", () => ({
+vi.mock("$lib/terminal/terminalRegistry", () => ({
   destroyTerminal: vi.fn(),
   setCwdForLinks: vi.fn(),
   // themeState.init() runs at the top of bootstrap() and pushes the
@@ -149,7 +149,7 @@ vi.mock("$lib/notifications", () => ({
 
 import * as backend from "$lib/backend";
 import * as notifications from "$lib/notifications";
-import * as terminalRegistry from "$lib/terminalRegistry";
+import * as terminalRegistry from "$lib/terminal/terminalRegistry";
 import { workspaceWindows } from "$lib/appWindowState";
 import {
   layoutState,

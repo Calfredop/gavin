@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fitWorthTaking } from "$lib/terminalFit";
+import { fitWorthTaking } from "$lib/terminal/terminalFit";
 import { svelteSources } from "$lib/sources";
 
 describe("fitWorthTaking", () => {

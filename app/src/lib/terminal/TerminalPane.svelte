@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as backend from "$lib/backend";
-  import { fitWorthTaking } from "$lib/terminalFit";
-  import { getOrCreateTerminal, restoreScreen, setTerminalFontSize } from "$lib/terminalRegistry";
+  import { fitWorthTaking } from "$lib/terminal/terminalFit";
+  import { getOrCreateTerminal, restoreScreen, setTerminalFontSize } from "$lib/terminal/terminalRegistry";
   import type { Terminal } from "@xterm/xterm";
   import type { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";

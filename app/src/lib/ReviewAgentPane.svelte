@@ -24,9 +24,9 @@
   // every call site to).
   import { Play } from "@lucide/svelte";
   import CardDetailModal from "$lib/CardDetailModal.svelte";
-  import TerminalPane from "$lib/TerminalPane.svelte";
+  import TerminalPane from "$lib/terminal/TerminalPane.svelte";
   import { layoutState, terminalFontSizeDefault } from "$lib/layoutState";
-  import { resolveTerminalFontSize } from "$lib/terminalFont";
+  import { resolveTerminalFontSize } from "$lib/terminal/terminalFont";
   import { reviewCardSession } from "$lib/cardRunActions";
   import { cardSessionState } from "$lib/columnRunAction";
   import type { CardSession, Column, Label } from "$lib/kanban";

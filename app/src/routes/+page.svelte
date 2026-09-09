@@ -41,7 +41,7 @@
   import { themeState } from "$lib/ui/themeState.svelte";
   import { sidebarCollapsed } from "$lib/sidebarPrefs";
   import { tabStripHubViews, visibleHubViews } from "$lib/workspaceViews";
-  import TerminalView from "$lib/TerminalView.svelte";
+  import TerminalView from "$lib/terminal/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
   import WindowResizeEdges from "$lib/WindowResizeEdges.svelte";
   import NewPageButton from "$lib/NewPageButton.svelte";
@@ -72,7 +72,7 @@
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";
   import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration";
   import { tooltip } from "$lib/tooltip";
-  import { wheelScrollsSideways, scrollsIntoLead } from "$lib/wheelScroll";
+  import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
   import { windowDrag } from "$lib/windowDrag";
   import { isMainWindow } from "$lib/appWindowState";
 

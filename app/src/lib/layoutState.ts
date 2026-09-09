@@ -6,7 +6,7 @@ import * as layout from "$lib/layout";
 import * as backend from "$lib/backend";
 import { setTempRoot } from "$lib/orchestrationLoop";
 import type { PauseCycle } from "$lib/agentPause";
-import * as terminalRegistry from "$lib/terminalRegistry";
+import * as terminalRegistry from "$lib/terminal/terminalRegistry";
 import { hotState } from "$lib/hotState";
 import * as workspace from "$lib/workspace";
 import type {
@@ -32,7 +32,7 @@ import {
   type McpFormatInfo,
 } from "$lib/settings";
 import { mergeDiscoveredModels } from "$lib/agentModel";
-import { normalizeTerminalFontSize, resolveTerminalFontSize } from "$lib/terminalFont";
+import { normalizeTerminalFontSize, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
 import { normalizeAutoCommit, resolveAutoCommit } from "$lib/autoCommit";
 import { normalizeGitTracking } from "$lib/gitTracking";
 import type { AgentConfig, BoardTab, CardTab, CardTabView, GavinTree } from "$lib/gavin";

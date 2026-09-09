@@ -26,7 +26,7 @@
   import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "$lib/confirmGate";
   import ComplexityTable from "$lib/ComplexityTable.svelte";
   import type { Complexity, ComplexityAgent } from "$lib/complexity";
-  import { fontSizeOptions, resolveTerminalFontSize } from "$lib/terminalFont";
+  import { fontSizeOptions, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
   import {
     autoCommitFromSelect,
     autoCommitOptions,

@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { paneLeadsWindow, paneOwnsActions, type LayoutNode } from "$lib/layout";
   import type { CardTab } from "$lib/gavin";
-  import TerminalPane from "$lib/TerminalPane.svelte";
+  import TerminalPane from "$lib/terminal/TerminalPane.svelte";
   import FileViewerPane from "$lib/FileViewerPane.svelte";
   import BoardPane from "$lib/BoardPane.svelte";
   import CardTabPane from "$lib/CardTabPane.svelte";
@@ -67,7 +67,7 @@
   import { hintMode } from "$lib/shortcutHints";
   import { hintDigitFor } from "$lib/shortcuts";
   import { tooltip } from "$lib/tooltip";
-  import { wheelScrollsSideways, scrollsIntoLead } from "$lib/wheelScroll";
+  import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
   import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "$lib/paths";
   import { queueBlockedReason, queueTip } from "$lib/queuedInput";
   import { queueTargetFor } from "$lib/queuedInputActions";

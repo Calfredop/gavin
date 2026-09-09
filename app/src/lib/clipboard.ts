@@ -1,7 +1,7 @@
 import { get } from "svelte/store";
 import { writeText, readText } from "@tauri-apps/plugin-clipboard-manager";
 import { layoutState } from "$lib/layoutState";
-import { getTerminal } from "$lib/terminalRegistry";
+import { getTerminal } from "$lib/terminal/terminalRegistry";
 import { writeInput } from "$lib/backend";
 
 export async function copySelection(): Promise<void> {

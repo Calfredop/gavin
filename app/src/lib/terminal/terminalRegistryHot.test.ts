@@ -67,13 +67,13 @@ vi.mock("$lib/backend", () => ({
   openPathExternally: vi.fn().mockResolvedValue(undefined),
 }));
 
-type Registry = typeof import("$lib/terminalRegistry");
+type Registry = typeof import("$lib/terminal/terminalRegistry");
 
 /// One execution of terminalRegistry.ts, as Vite produces when an edit
 /// anywhere in its dependency cone invalidates it.
 async function execute(): Promise<Registry> {
   vi.resetModules();
-  return import("$lib/terminalRegistry");
+  return import("$lib/terminal/terminalRegistry");
 }
 
 describe("terminalRegistry across a hot reload", () => {
