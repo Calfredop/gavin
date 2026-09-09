@@ -27,8 +27,8 @@
     trustedAgentConfigs,
   } from "$lib/layoutState";
   import { resolveAgentConfig } from "$lib/settings";
-  import { reviewBlocker } from "$lib/codeReview";
-  import { requestBranchReview } from "$lib/codeReviewActions";
+  import { reviewBlocker } from "$lib/review/codeReview";
+  import { requestBranchReview } from "$lib/review/codeReviewActions";
   import { tooltip } from "$lib/tooltip";
   import IconButton from "$lib/ui/IconButton.svelte";
   import GitPromptDialog from "$lib/GitPromptDialog.svelte";

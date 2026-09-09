@@ -8,7 +8,7 @@ import {
   defaultReviewBase,
   composeReviewPrompt,
   reviewBlocker,
-} from "$lib/codeReview";
+} from "$lib/review/codeReview";
 import type { BranchInfo } from "$lib/git";
 
 function branch(name: string, over: Partial<BranchInfo> = {}): BranchInfo {

@@ -20,9 +20,9 @@
   import { layoutState, daemonCompat } from "$lib/layoutState";
   import { indexCardViews, mergePlanCards, type CardView } from "$lib/planBoard";
   import GitFileRow from "$lib/GitFileRow.svelte";
-  import ReviewAgentPane from "$lib/ReviewAgentPane.svelte";
-  import ReviewCardList from "$lib/ReviewCardList.svelte";
-  import ReviewFilePane from "$lib/ReviewFilePane.svelte";
+  import ReviewAgentPane from "$lib/review/ReviewAgentPane.svelte";
+  import ReviewCardList from "$lib/review/ReviewCardList.svelte";
+  import ReviewFilePane from "$lib/review/ReviewFilePane.svelte";
   import {
     groupCandidates,
     resolveReviewColumns,
@@ -33,21 +33,21 @@
     toggleExpandedGroup,
     withBaselinePeers,
     type ReviewCandidate,
-  } from "$lib/reviewBoard";
+  } from "$lib/review/reviewBoard";
   import {
     prefsFor,
     pruneReviewPrefsFor,
     reviewPrefs,
     setReviewPrefs,
     toggleReviewColumn,
-  } from "$lib/reviewPrefs";
+  } from "$lib/review/reviewPrefs";
   import {
     clearReviewFile,
     loadTouchedFiles,
     reviewStore,
     selectReviewFile,
     type TouchRequest,
-  } from "$lib/reviewState";
+  } from "$lib/review/reviewState";
   import { runBaseline, type RunBaseline } from "$lib/runChanges";
   import { orchestrations, fetchOrchestration } from "$lib/orchestrationState";
   import { railIndex } from "$lib/planFilter";

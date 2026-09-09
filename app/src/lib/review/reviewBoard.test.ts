@@ -22,7 +22,7 @@ import {
   withBaselinePeers,
   type ReviewCandidate,
   type ReviewGroup,
-} from "$lib/reviewBoard";
+} from "$lib/review/reviewBoard";
 import type { CardView, MergedProjection } from "$lib/planBoard";
 import type { Column } from "$lib/kanban";
 import { ANY, NO_FACETS, type BoardFacets } from "$lib/boardFilters";

@@ -21,7 +21,7 @@
   import HubTabsModal from "$lib/HubTabsModal.svelte";
   import { buildHubTabMenuEntries } from "$lib/hubTabMenu";
   import AppDialog from "$lib/AppDialog.svelte";
-  import ReviewDialog from "$lib/ReviewDialog.svelte";
+  import ReviewDialog from "$lib/review/ReviewDialog.svelte";
   import { confirmWindowClose } from "$lib/appClose";
   import { getActiveWorkspace, getActiveView, getActiveTree, hubLabel } from "$lib/workspace";
   import { gavinTrees } from "$lib/gavinState";

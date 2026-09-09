@@ -19,7 +19,7 @@ import {
 } from "$lib/cardRunActions";
 import { developingRunOn } from "$lib/developingCardsState";
 import { DEVELOPING_MENU_LABEL } from "$lib/developingCards";
-import { requestCardReview } from "$lib/codeReviewActions";
+import { requestCardReview } from "$lib/review/codeReviewActions";
 import { developAvailable } from "$lib/cardRun";
 import { cardSessionState } from "$lib/columnRunAction";
 import { findCardPlacement } from "$lib/orchestration";

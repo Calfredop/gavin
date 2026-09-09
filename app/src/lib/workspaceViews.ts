@@ -6,7 +6,7 @@ import SettingsHubView from "$lib/SettingsHubView.svelte";
 import KanbanBoard from "$lib/KanbanBoard.svelte";
 import OrchestrationHubView from "$lib/OrchestrationHubView.svelte";
 import WorkspaceToolsHubView from "$lib/WorkspaceToolsHubView.svelte";
-import ReviewHubView from "$lib/ReviewHubView.svelte";
+import ReviewHubView from "$lib/review/ReviewHubView.svelte";
 import PrdHubView from "$lib/PrdHubView.svelte";
 import AgentFileHubView from "$lib/AgentFileHubView.svelte";
 import PlanExplorerHubView from "$lib/PlanExplorerHubView.svelte";

@@ -75,7 +75,7 @@ vi.mock("$lib/layoutState", () => ({
 }));
 // The review flow owns its own suite; here it only has to be reachable
 // from the menu, so the request function is the seam.
-vi.mock("$lib/codeReviewActions", () => ({
+vi.mock("$lib/review/codeReviewActions", () => ({
   requestCardReview: vi.fn().mockResolvedValue(null),
 }));
 // The first-Run review's interactive half owns its own suite too; Develop
@@ -109,7 +109,7 @@ vi.mock("$lib/workspace", () => {
 import * as backend from "$lib/backend";
 import { askConfirmChecked } from "$lib/dialog";
 import { findSessionLocation } from "$lib/workspace";
-import { requestCardReview } from "$lib/codeReviewActions";
+import { requestCardReview } from "$lib/review/codeReviewActions";
 import { layoutState } from "$lib/layoutState";
 import { kanbanState } from "$lib/kanbanState";
 import { orchestrations } from "$lib/orchestrationState";

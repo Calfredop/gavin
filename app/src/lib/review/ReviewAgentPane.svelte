@@ -31,7 +31,7 @@
   import { cardSessionState } from "$lib/columnRunAction";
   import type { CardSession, Column, Label } from "$lib/kanban";
   import type { CardView } from "$lib/planBoard";
-  import type { ReviewPane } from "$lib/reviewPrefs";
+  import type { ReviewPane } from "$lib/review/reviewPrefs";
 
   interface Props {
     workspaceId: string;

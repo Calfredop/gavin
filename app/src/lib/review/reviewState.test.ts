@@ -16,7 +16,7 @@ import {
   viewFor,
   type TouchRequest,
   type TouchedRun,
-} from "$lib/reviewState";
+} from "$lib/review/reviewState";
 import type { FileDiff, RunChanges } from "$lib/git";
 
 const WS = "ws1";

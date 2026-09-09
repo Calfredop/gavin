@@ -16,7 +16,7 @@
 // would be right only by coincidence, and wrong silently.
 
 import { get, writable } from "svelte/store";
-import { MAX_REMEMBERED_GROUPS } from "$lib/reviewBoard";
+import { MAX_REMEMBERED_GROUPS } from "$lib/review/reviewBoard";
 
 /// Injected (defaulting to the browser's) for the same two reasons every
 /// other prefs module injects it: vitest's node environment has no

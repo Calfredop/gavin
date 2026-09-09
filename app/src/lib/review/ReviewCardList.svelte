@@ -20,7 +20,7 @@
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tooltip } from "$lib/tooltip";
-  import { everyGroupExpanded, isGroupExpanded, type ReviewGroup } from "$lib/reviewBoard";
+  import { everyGroupExpanded, isGroupExpanded, type ReviewGroup } from "$lib/review/reviewBoard";
   import { facetsActive, type BoardFacets, type ContextFacet } from "$lib/boardFilters";
   import type { RailIndex } from "$lib/planFilter";
   import FacetFilters from "$lib/FacetFilters.svelte";

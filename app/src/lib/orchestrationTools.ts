@@ -15,7 +15,7 @@
 // per workspace or global to the machine.
 
 import { isAbsolutePath } from "$lib/paths";
-import { composeReviewPrompt, REVIEW_RULES_LABEL } from "$lib/codeReview";
+import { composeReviewPrompt, REVIEW_RULES_LABEL } from "$lib/review/codeReview";
 
 /// `gavin` is the odd one out: an action the APP performs, with no
 /// session and no checkout (tools spec T9). It is built-in-only -- the

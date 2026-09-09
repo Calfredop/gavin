@@ -12,14 +12,14 @@
 -->
 <script lang="ts">
   import Modal from "$lib/Modal.svelte";
-  import { REVIEW_RULES_LABEL } from "$lib/codeReview";
-  import type { ReviewRequest } from "$lib/codeReviewActions";
+  import { REVIEW_RULES_LABEL } from "$lib/review/codeReview";
+  import type { ReviewRequest } from "$lib/review/codeReviewActions";
   import {
     reviewRequest,
     cancelReview,
     confirmReview,
     createReviewRules,
-  } from "$lib/codeReviewActions";
+  } from "$lib/review/codeReviewActions";
 
   // Seeded from the request and then owned here: the store holds what
   // the app worked out, this holds what the human has typed.

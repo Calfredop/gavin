@@ -48,8 +48,8 @@ import {
   createReviewRules,
   requestBranchReview,
   requestCardReview,
-} from "$lib/codeReviewActions";
-import { REVIEW_RULES_STARTER } from "$lib/codeReview";
+} from "$lib/review/codeReviewActions";
+import { REVIEW_RULES_STARTER } from "$lib/review/codeReview";
 import type { CardView } from "$lib/planBoard";
 
 const AGENT = {

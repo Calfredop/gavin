@@ -52,7 +52,7 @@ import { agentSessions, fleetMemory, memoryPressure, storedMeans, systemMemory }
 import { layoutState, resolvedAgentFor } from "$lib/layoutState";
 import { currentWindowLabel } from "$lib/appWindowState";
 import { setGateReasonHook } from "$lib/agentPauseState";
-import type { ReviewedCard } from "$lib/codeReview";
+import type { ReviewedCard } from "$lib/review/codeReview";
 
 // ---- The config -------------------------------------------------------------
 
@@ -496,7 +496,7 @@ async function execute(intent: LaunchIntent): Promise<void> {
       return;
     }
     case "review": {
-      const m = await import("$lib/codeReviewActions");
+      const m = await import("$lib/review/codeReviewActions");
       await m.launchQueuedReview(intent);
       return;
     }

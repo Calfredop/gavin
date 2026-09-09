@@ -38,7 +38,7 @@ import {
   reviewRulesPath,
   REVIEW_RULES_STARTER,
   type ReviewedCard,
-} from "$lib/codeReview";
+} from "$lib/review/codeReview";
 import type { CardView } from "$lib/planBoard";
 import { holdOrQueue, type ReviewIntent } from "$lib/launchQueue";
 

@@ -8,7 +8,7 @@ import {
   saveReviewPrefs,
   toggleReviewColumn,
   type ReviewPrefs,
-} from "$lib/reviewPrefs";
+} from "$lib/review/reviewPrefs";
 
 function storage(seed: Record<string, string> = {}) {
   const data = new Map(Object.entries(seed));
