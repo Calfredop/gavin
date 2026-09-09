@@ -5,6 +5,7 @@ import {
   nearestContext,
   isPermanentColumn,
   indexCardViews,
+  flattenCardViews,
 } from "$lib/core/planBoard";
 import type { Board, Column } from "$lib/board/kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/core/gavin";
@@ -332,5 +333,45 @@ describe("indexCardViews", () => {
 
   it("is empty for a board with no cards", () => {
     expect(indexCardViews(mergePlanCards(board, tree([])))).toEqual(new Map());
+  });
+});
+
+describe("flattenCardViews", () => {
+  // A plan with one nested child and one free-standing sibling, plus a
+  // card already in the archive: the four surfaces that read this list
+  // (the detail modal, the delete plan, the selection bar, the purge
+  // plan) each have to resolve all of them by path.
+  const t = tree([
+    ctx("/ws", "root", [
+      plan("parent.md", "To Do"),
+      plan("child.md", null, { kind: "task", parent: "parent.md" }),
+      plan("loose.md", "In Progress", { kind: "task" }),
+      plan("auto.md", "Blocked"),
+      plan("filed.md", "Done", { path: "/ws/.gavin-root/plans/archive/filed.md" }),
+    ]),
+  ]);
+
+  it("lists every card, nested children and the archive included", () => {
+    const names = flattenCardViews(mergePlanCards(board, t)).map((c) => c.fileName);
+    expect(names.sort()).toEqual(["auto.md", "child.md", "filed.md", "loose.md", "parent.md"]);
+  });
+
+  // The nested child follows its parent rather than trailing the list:
+  // the order is the index's, which is the order the board draws.
+  it("keeps a nested child behind its parent", () => {
+    const names = flattenCardViews(mergePlanCards(board, t)).map((c) => c.fileName);
+    expect(names.indexOf("child.md")).toBe(names.indexOf("parent.md") + 1);
+  });
+
+  // The point of building it on indexCardViews: a path that resolves in
+  // one must resolve in the other, or a card opens from the rail and not
+  // from the board.
+  it("holds exactly the paths the index holds", () => {
+    const merged = mergePlanCards(board, t);
+    expect(flattenCardViews(merged).map((c) => c.id)).toEqual([...indexCardViews(merged).keys()]);
+  });
+
+  it("is empty for a board with no cards", () => {
+    expect(flattenCardViews(mergePlanCards(board, tree([])))).toEqual([]);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { filterBoard, cardMatches, AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
+import { filterBoard, cardMatches, hiddenAcross, AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
 import type { AutoColumn, CardView, DisplayColumn } from "$lib/core/planBoard";
 import type { Column } from "$lib/board/kanban";
 
@@ -110,5 +110,24 @@ describe("filterBoard", () => {
     // The original projection must not be mutated -- the drop path still
     // commits against it.
     expect(plan.nestedChildren).toHaveLength(2);
+  });
+});
+
+describe("hiddenAcross", () => {
+  const lens = (counts: Record<string, number>) => ({ hiddenIn: (key: string) => counts[key] ?? 0 });
+
+  it("sums what each lens is holding back", () => {
+    expect(hiddenAcross([lens({ todo: 3 }), lens({ todo: 2 })], "todo")).toBe(5);
+  });
+
+  // A lens that has not loaded yet is not a lens hiding nothing and a
+  // lens hiding everything -- it is absent, and absent contributes 0.
+  it("skips a lens that is null or undefined", () => {
+    expect(hiddenAcross([null, lens({ todo: 4 }), undefined], "todo")).toBe(4);
+  });
+
+  it("is zero for a column no lens knows", () => {
+    expect(hiddenAcross([lens({ todo: 3 })], "done")).toBe(0);
+    expect(hiddenAcross([], "todo")).toBe(0);
   });
 });

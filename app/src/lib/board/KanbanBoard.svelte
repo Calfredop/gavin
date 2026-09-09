@@ -7,11 +7,17 @@
   import CardComposeModal from "$lib/cards/CardComposeModal.svelte";
   import KanbanDragPreview from "$lib/board/KanbanDragPreview.svelte";
   import { gavinTrees } from "$lib/core/gavinState";
-  import { mergePlanCards, type CardView } from "$lib/core/planBoard";
+  import { flattenCardViews, mergePlanCards, type CardView } from "$lib/core/planBoard";
   import { planCommitFromMerged } from "$lib/files/planDrop";
   import { runCard, resumeCard, developCard, sendToMainAgent } from "$lib/cards/cardRunActions";
   import { layoutState, daemonCompat } from "$lib/core/layoutState";
-  import { columnDeletionPlan, deletionPlanFor, executeDeletion, type DeletionPlan } from "$lib/cards/cardDelete";
+  import {
+    cardDeleteLines,
+    columnDeletionPlan,
+    deletionPlanFor,
+    executeDeletion,
+    type DeletionPlan,
+  } from "$lib/cards/cardDelete";
   import { grantForAnsweredPrompt } from "$lib/core/confirmGate";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import { openContextMenuFromEvent } from "$lib/core/contextMenu";
@@ -43,7 +49,7 @@
   } from "$lib/files/archiveDelete";
   import { executeUnarchive } from "$lib/files/archiveActions";
   import { featureBlockedReason } from "$lib/core/daemonCompat";
-  import { filterBoard, AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
+  import { filterBoard, hiddenAcross, AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
   import { isSearching } from "$lib/core/search";
   import { railIndex } from "$lib/board/planFilter";
   import { dropAgainstWholeBoard } from "$lib/board/pageBoard";
@@ -56,6 +62,7 @@
   } from "$lib/board/boardFilters";
   import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/board/hubFacets";
   import FacetFilters from "$lib/board/FacetFilters.svelte";
+  import { columnComposerKey, commitColumnDraft } from "$lib/board/columnComposer";
   import { flip } from "svelte/animate";
   import { tooltip } from "$lib/core/tooltip";
   import type { DropTarget } from "$lib/panes/pointerDrag";
@@ -148,7 +155,7 @@
   // exact rather than approximate: the search ran over what the facets
   // had already left, so the two counts are disjoint.
   function hiddenIn(columnKey: string): number {
-    return (faceted?.hiddenIn(columnKey) ?? 0) + (view?.hiddenIn(columnKey) ?? 0);
+    return hiddenAcross([faceted, view], columnKey);
   }
 
   // The archive lens. A toggle rather than a tab: it is the same board's
@@ -216,15 +223,7 @@
   // detail modal must resolve a nested child's path too. The ARCHIVE is
   // in here as well: its cards are off the board but the grid opens,
   // deletes and selects them through exactly these paths.
-  const allCards = $derived<CardView[]>(
-    merged
-      ? [
-          ...merged.columns.flatMap((c) => c.planCards),
-          ...merged.autoColumns.flatMap((a) => a.planCards),
-          ...merged.archived,
-        ].flatMap((c) => [c, ...c.nestedChildren])
-      : []
-  );
+  const allCards = $derived<CardView[]>(merged ? flattenCardViews(merged) : []);
   const openPlan = $derived<CardView | null>(
     openPlanPath ? (allCards.find((p) => p.id === openPlanPath) ?? null) : null
   );
@@ -233,17 +232,16 @@
   const pendingPlan = $derived<DeletionPlan | null>(
     pendingDelete ? deletionPlanFor(pendingDelete, allCards) : null
   );
-  const pendingDeleteLines = $derived.by(() => {
-    if (!pendingDelete || !pendingPlan) return [];
-    const lines = [`Deletes ${pendingDelete.fileName} permanently.`];
-    const nested = pendingPlan.files.length - 1;
-    if (nested > 0) lines.push(`Also deletes ${nested} nested ${nested === 1 ? "task" : "tasks"}.`);
-    if (pendingPlan.unparent.length > 0)
-      lines.push(`${pendingPlan.unparent.length} free-standing ${pendingPlan.unparent.length === 1 ? "task keeps" : "tasks keep"} their column (un-parented).`);
-    if (pendingPlan.files.some((f) => cardSessionFor(board, f.id) !== null))
-      lines.push("A bound agent session keeps running on the Agents page.");
-    return lines;
-  });
+  const pendingDeleteLines = $derived(
+    pendingDelete && pendingPlan
+      ? cardDeleteLines({
+          fileName: pendingDelete.fileName,
+          files: pendingPlan.files.length,
+          unparent: pendingPlan.unparent.length,
+          boundSession: pendingPlan.files.some((f) => cardSessionFor(board, f.id) !== null),
+        })
+      : []
+  );
 
   async function confirmDelete(): Promise<void> {
     const plan = pendingPlan;
@@ -438,7 +436,7 @@
   });
 
   function commitColumnComposer(keepOpen: boolean): void {
-    const name = columnDraft.trim();
+    const { name, open, refocus } = commitColumnDraft(columnDraft, keepOpen);
     columnDraft = "";
     if (name) {
       void addColumnAction(workspaceId, {
@@ -447,15 +445,16 @@
         position: board?.columns.length ?? 0,
       });
     }
-    if (!keepOpen) addingColumn = false;
-    else columnInputEl?.focus();
+    addingColumn = open;
+    if (refocus) columnInputEl?.focus();
   }
 
   function handleColumnComposerKeydown(e: KeyboardEvent): void {
-    if (e.key === "Enter") {
+    const action = columnComposerKey(e.key);
+    if (action === "commit") {
       e.preventDefault();
       commitColumnComposer(true);
-    } else if (e.key === "Escape") {
+    } else if (action === "cancel") {
       columnDraft = "";
       addingColumn = false;
     }

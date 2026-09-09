@@ -18,7 +18,7 @@
   import { fetchBoard, refreshBoard, kanbanState, cardSessionFor } from "$lib/board/kanbanState";
   import { gavinTrees } from "$lib/core/gavinState";
   import { layoutState, daemonCompat } from "$lib/core/layoutState";
-  import { indexCardViews, mergePlanCards, type CardView } from "$lib/core/planBoard";
+  import { flattenCardViews, mergePlanCards, type CardView } from "$lib/core/planBoard";
   import GitFileRow from "$lib/git/GitFileRow.svelte";
   import ReviewAgentPane from "$lib/review/ReviewAgentPane.svelte";
   import ReviewCardList from "$lib/review/ReviewCardList.svelte";
@@ -118,9 +118,7 @@
   // review -- a nested task has no status of its own, and a finished
   // card's parent plan may be anywhere. Handing it the filtered list
   // would draw a panel whose own links resolve to nothing.
-  const allCards = $derived<CardView[]>(
-    merged ? [...indexCardViews(merged).values()].map((placed) => placed.view) : []
-  );
+  const allCards = $derived<CardView[]>(merged ? flattenCardViews(merged) : []);
 
   const listed = $derived<CardView[]>(
     merged

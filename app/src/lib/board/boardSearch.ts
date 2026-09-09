@@ -30,6 +30,28 @@ export interface FilteredBoard extends MergedBoard {
   hiddenIn: (columnKey: string) => number;
 }
 
+/// Anything that hides cards from a column and can say how many: the
+/// facet lens and the search lens both answer this shape.
+export interface ColumnLens {
+  hiddenIn: (columnKey: string) => number;
+}
+
+/// What a column is NOT showing, across every lens standing over it. A
+/// column header reads this to say "3 / 11", and its Clear, Delete and
+/// Archive-all refuse while it is non-zero -- so it has to count every
+/// card the column is holding back, not only the ones the last lens hid.
+///
+/// Summing is EXACT rather than approximate, and only because the lenses
+/// compose: each one filtered what the one before it left, so no card is
+/// hidden twice and the counts are disjoint. Stack two lenses over the
+/// same unfiltered board and this over-counts.
+export function hiddenAcross(
+  lenses: readonly (ColumnLens | null | undefined)[],
+  columnKey: string
+): number {
+  return lenses.reduce((sum, lens) => sum + (lens?.hiddenIn(columnKey) ?? 0), 0);
+}
+
 function ownFields(card: CardView): Field[] {
   return [card.title, card.fileName, card.status, card.kind, card.contextName, card.parentTitle, ...card.labels];
 }

@@ -347,3 +347,16 @@ export function indexCardViews(merged: {
   for (const view of merged.archived ?? []) add(view, null);
   return index;
 }
+
+/// Every card view in a merged projection, in the same order `indexCardViews`
+/// walks: each column's cards with their nested children behind them, then
+/// the auto columns, then the archive. Built ON the index rather than beside
+/// it, so the list a surface searches by path and the map another surface
+/// looks a path up in can never disagree about which cards exist.
+export function flattenCardViews(merged: {
+  columns: DisplayColumn[];
+  autoColumns: AutoColumn[];
+  archived?: CardView[];
+}): CardView[] {
+  return [...indexCardViews(merged).values()].map((placed) => placed.view);
+}

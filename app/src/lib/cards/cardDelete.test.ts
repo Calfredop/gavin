@@ -10,7 +10,13 @@ vi.mock("$lib/core/backend", () => ({
 }));
 
 import * as backend from "$lib/core/backend";
-import { deletionPlanFor, columnDeletionPlan, executeDeletion, executeMoveCards } from "$lib/cards/cardDelete";
+import {
+  deletionPlanFor,
+  columnDeletionPlan,
+  executeDeletion,
+  executeMoveCards,
+  cardDeleteLines,
+} from "$lib/cards/cardDelete";
 import { kanbanState } from "$lib/board/kanbanState";
 import type { CardView } from "$lib/core/planBoard";
 
@@ -127,5 +133,48 @@ describe("executeMoveCards", () => {
     expect(err).toContain("b.md");
     expect(err).toContain("read-only");
     expect(backend.setPlanFrontmatterField).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("cardDeleteLines", () => {
+  const bare = { fileName: "card.md", files: 1, unparent: 0, boundSession: false };
+
+  it("names the file and nothing else when the card stands alone", () => {
+    expect(cardDeleteLines(bare)).toEqual(["Deletes card.md permanently."]);
+  });
+
+  // `files` counts the card itself, so a plan with two nested tasks is
+  // three files -- the line has to say two.
+  it("counts nested tasks without counting the card", () => {
+    expect(cardDeleteLines({ ...bare, files: 3 })[1]).toBe("Also deletes 2 nested tasks.");
+    expect(cardDeleteLines({ ...bare, files: 2 })[1]).toBe("Also deletes 1 nested task.");
+  });
+
+  // The free-standing children survive; the line has to read as a
+  // consequence for THEM, not as more deletion.
+  it("says free-standing children keep their column", () => {
+    expect(cardDeleteLines({ ...bare, unparent: 1 })[1]).toBe(
+      "1 free-standing task keeps their column (un-parented)."
+    );
+    expect(cardDeleteLines({ ...bare, unparent: 2 })[1]).toBe(
+      "2 free-standing tasks keep their column (un-parented)."
+    );
+  });
+
+  it("warns that a bound session outlives the file", () => {
+    expect(cardDeleteLines({ ...bare, boundSession: true })[1]).toBe(
+      "A bound agent session keeps running on the Agents page."
+    );
+  });
+
+  // Certain first, conditional after: the file always goes, the rest
+  // depends on what was hanging off it.
+  it("orders the lines file, nested, un-parented, session", () => {
+    expect(cardDeleteLines({ fileName: "p.md", files: 2, unparent: 1, boundSession: true })).toEqual([
+      "Deletes p.md permanently.",
+      "Also deletes 1 nested task.",
+      "1 free-standing task keeps their column (un-parented).",
+      "A bound agent session keeps running on the Agents page.",
+    ]);
   });
 });

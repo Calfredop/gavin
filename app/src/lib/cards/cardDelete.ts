@@ -69,6 +69,42 @@ export function columnDeletionPlan(planCards: CardView[], allCards: CardView[]):
 // its nested tasks with it and the human answered for all of them. Each
 // file spends it once; a token that names a different set is refused by
 // the host, so this cannot be handed a plan it was not shown.
+/// What deleting ONE card takes with it, as the confirmation states it.
+/// Counted rather than carried, so the prompt can be checked without a
+/// board: the caller has already resolved the DeletionPlan and knows
+/// whether any of its files still holds a session.
+export interface CardDeleteFacts {
+  /// The card's own file name -- the prompt names the file, not the
+  /// title, because the file is what stops existing.
+  fileName: string;
+  /// Files the plan deletes: the card plus every nested child.
+  files: number;
+  /// Free-standing children elsewhere on the board that lose their
+  /// `parent:` line and keep their column.
+  unparent: number;
+  /// Whether any file going still has a live agent session bound. A
+  /// boolean, not a count: the sentence is about the surface the session
+  /// survives on, and one is as much of a surprise as three.
+  boundSession: boolean;
+}
+
+/// The confirmation's lines, certain consequence first. Every line after
+/// the first is a consequence the card itself does not show, which is
+/// the whole reason the prompt exists.
+export function cardDeleteLines(facts: CardDeleteFacts): string[] {
+  const lines = [`Deletes ${facts.fileName} permanently.`];
+  // The card's own file is in the count, so the nested tasks are what is
+  // left over -- a card with no children says nothing here.
+  const nested = facts.files - 1;
+  if (nested > 0) lines.push(`Also deletes ${nested} nested ${nested === 1 ? "task" : "tasks"}.`);
+  if (facts.unparent > 0)
+    lines.push(
+      `${facts.unparent} free-standing ${facts.unparent === 1 ? "task keeps" : "tasks keep"} their column (un-parented).`
+    );
+  if (facts.boundSession) lines.push("A bound agent session keeps running on the Agents page.");
+  return lines;
+}
+
 export async function executeDeletion(
   workspaceId: string,
   plan: DeletionPlan,
