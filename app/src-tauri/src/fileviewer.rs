@@ -238,18 +238,19 @@ pub fn resolve_path_under_cursor(
 
 /// Containment refuses by returning `None`, the same as every other
 /// invalid candidate this already handles (missing, a directory, no
-/// `HOME`) -- this command has no error channel to name a refusal on,
-/// and a hover link that silently fails to underline is indistinguishable
-/// from one that never matched.
+/// home directory) -- this command has no error channel to name a
+/// refusal on, and a hover link that silently fails to underline is
+/// indistinguishable from one that never matched.
+///
+/// The path primitives are the portable ones on purpose: `expand_tilde`
+/// rather than a bare `$HOME` read, which Windows does not set, and
+/// `protocol::canonical_path`, which strips the `\\?\` prefix that a
+/// Windows canonicalize returns and would otherwise leak into every
+/// comparison below.
 fn resolve_path_under_cursor_impl(candidate: &str, cwd: &str, roots: &[PathBuf]) -> Option<String> {
-    let expanded = if let Some(rest) = candidate.strip_prefix("~/") {
-        let home = std::env::var("HOME").ok()?;
-        PathBuf::from(home).join(rest)
-    } else {
-        PathBuf::from(candidate)
-    };
+    let expanded = crate::home::expand_tilde(candidate)?;
     let absolute = if expanded.is_absolute() { expanded } else { PathBuf::from(cwd).join(expanded) };
-    let canonical = std::fs::canonicalize(&absolute).ok()?;
+    let canonical = protocol::canonical_path(&absolute).ok()?;
     if !canonical.is_file() {
         return None;
     }
@@ -258,11 +259,27 @@ fn resolve_path_under_cursor_impl(candidate: &str, cwd: &str, roots: &[PathBuf])
     // extra contexts) -- a shell running outside any workspace root is
     // ordinary, and cwd here is the session's own tracked cwd
     // (`cwdForSession` in terminalRegistry.ts), not caller-chosen text.
-    let under_cwd = std::fs::canonicalize(cwd).is_ok_and(|root| inside_root(&root, &canonical));
+    let under_cwd =
+        protocol::canonical_path(Path::new(cwd)).is_ok_and(|root| inside_root(&root, &canonical));
     if !under_cwd && !roots.iter().any(|root| inside_root(root, &canonical)) {
         return None;
     }
-    Some(canonical.to_string_lossy().to_string())
+    Some(protocol::wire_path(&canonical))
+}
+
+/// The OS's temp directory, forward-slashed.
+///
+/// A `until` rail step tees its check's output to a file so the retry
+/// prompt and the exhausted step's reason can quote it, and BOTH sides
+/// have to name the same file: the shell writes it and this process
+/// reads it back. `/tmp` was that name, and it is not one on Windows --
+/// Git Bash maps `/tmp` to `%TEMP%` while a Rust read of `/tmp` looks
+/// for `C:\tmp`, so the check would write somewhere the app never
+/// looked. Asking the host once, at bootstrap, gives both sides the
+/// same directory on every platform.
+#[tauri::command]
+pub fn temp_dir() -> String {
+    protocol::wire_path(&std::env::temp_dir())
 }
 
 /// Active file watchers, keyed by the watched file's path, REFCOUNTED so
@@ -588,7 +605,12 @@ pub struct DirEntryInfo {
 /// `/private/tmp/x` -- comparing the two raw strings would refuse the
 /// human's own root.
 fn canonical_root(root: &str) -> Result<PathBuf, String> {
-    std::fs::canonicalize(root).map_err(|e| format!("workspace root {root} is unreadable: {e}"))
+    // Through `protocol::canonical_path` so the answer is comparable to
+    // everything else gavin holds: Windows canonicalisation returns a
+    // `\\?\C:\...` verbatim path, and `inside_root` below is a
+    // component-wise `starts_with` against paths that are not verbatim.
+    protocol::canonical_path(std::path::Path::new(root))
+        .map_err(|e| format!("workspace root {root} is unreadable: {e}"))
 }
 
 /// Component-wise containment, never a string prefix: `starts_with` on
@@ -602,8 +624,8 @@ fn inside_root(root: &Path, candidate: &Path) -> bool {
 /// the root. `allow_root` is false for the mutations: the workspace root
 /// itself is not a file the explorer may rename or trash.
 fn resolve_existing(root: &Path, path: &str, allow_root: bool) -> Result<PathBuf, String> {
-    let canonical =
-        std::fs::canonicalize(path).map_err(|e| format!("{path} could not be resolved: {e}"))?;
+    let canonical = protocol::canonical_path(std::path::Path::new(path))
+        .map_err(|e| format!("{path} could not be resolved: {e}"))?;
     if !inside_root(root, &canonical) {
         return Err(format!("{path} is outside the workspace root"));
     }
@@ -633,7 +655,7 @@ fn resolve_new(root: &Path, path: &str) -> Result<PathBuf, String> {
         return Err(format!("{path} is not a usable name"));
     }
     let parent = target.parent().ok_or_else(|| format!("{path} has no parent directory"))?;
-    let canonical_parent = std::fs::canonicalize(parent)
+    let canonical_parent = protocol::canonical_path(parent)
         .map_err(|e| format!("{} could not be resolved: {e}", parent.display()))?;
     if !inside_root(root, &canonical_parent) {
         return Err(format!("{path} is outside the workspace root"));

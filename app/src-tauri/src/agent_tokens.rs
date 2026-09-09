@@ -127,8 +127,12 @@ pub fn card_run_tokens(
     };
 
     let path = match log {
-        TokenLog::ClaudeSessionJsonl => claude_transcript(&claude_projects_dir(), &conversation_id),
-        TokenLog::CodexRollout => codex_rollout(&codex_sessions_dir(), &conversation_id),
+        TokenLog::ClaudeSessionJsonl => {
+            claude_projects_dir().and_then(|dir| claude_transcript(&dir, &conversation_id))
+        }
+        TokenLog::CodexRollout => {
+            codex_sessions_dir().and_then(|dir| codex_rollout(&dir, &conversation_id))
+        }
     };
     let Some(path) = path else {
         return TokenReport::Unavailable {
@@ -156,16 +160,14 @@ pub fn card_run_tokens(
     report
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+use crate::home::home_dir;
+
+fn claude_projects_dir() -> Option<PathBuf> {
+    Some(home_dir()?.join(".claude").join("projects"))
 }
 
-fn claude_projects_dir() -> PathBuf {
-    home_dir().unwrap_or_default().join(".claude").join("projects")
-}
-
-fn codex_sessions_dir() -> PathBuf {
-    home_dir().unwrap_or_default().join(".codex").join("sessions")
+fn codex_sessions_dir() -> Option<PathBuf> {
+    Some(home_dir()?.join(".codex").join("sessions"))
 }
 
 /// `<projects>/<slugged cwd>/<session id>.jsonl`, found by looking in

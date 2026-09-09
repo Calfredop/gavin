@@ -3,6 +3,8 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 
+pub mod transport;
+
 /// Cap on a single protocol line, so a client that never sends a newline
 /// can't grow the daemon's read buffer unbounded. `pub` so gavin-mcp's
 /// stdin reader (SC-10) can enforce the exact same cap instead of
@@ -1215,8 +1217,8 @@ pub fn server_proof(daemon_token: &str, nonce: &str) -> String {
 }
 
 /// Where the daemon writes its per-start token, `0600`, beside the socket.
-pub fn daemon_token_path() -> PathBuf {
-    app_support_dir().join("daemon.token")
+pub fn daemon_token_path() -> anyhow::Result<PathBuf> {
+    Ok(app_support_dir()?.join("daemon.token"))
 }
 
 /// The marker the daemon reads to decide whether an untokened local
@@ -1225,8 +1227,8 @@ pub fn daemon_token_path() -> PathBuf {
 /// connection is refused the privileged, process-starting requests
 /// (remote-access design §11 Q1). A file rather than a protocol field so
 /// the daemon can honour a live toggle with no restart and no new request.
-pub fn require_local_token_path() -> PathBuf {
-    app_support_dir().join("require_local_token")
+pub fn require_local_token_path() -> anyhow::Result<PathBuf> {
+    Ok(app_support_dir()?.join("require_local_token"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2362,18 +2364,239 @@ pub fn read_message<R: BufRead, T: for<'de> Deserialize<'de>>(
     Ok(Some(msg))
 }
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
-pub fn app_support_dir() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME not set");
-    PathBuf::from(home)
-        .join("Library")
-        .join("Application Support")
-        .join("gavin")
+/// The longest path `bind(2)` will accept for a Unix socket, in bytes.
+///
+/// `sockaddr_un::sun_path` is a fixed 104-byte array on macOS and 108 on
+/// Linux, one of which must be the terminating NUL -- so 103 is the
+/// figure that holds on both. It is not a limit anything reports well:
+/// the kernel answers a long path with EINVAL on macOS and
+/// ENAMETOOLONG on Linux, neither of which mentions a length, which is
+/// why `socket_path` checks it here instead of letting the daemon die
+/// on an opaque bind failure. `crates/daemon/tests/shutdown.rs` builds
+/// its fake $HOME under /tmp for exactly this reason.
+///
+/// Unix only, and `socket_path` applies it only there: the Windows
+/// endpoint is a pipe NAME derived from this path by hashing, so its
+/// length is fixed however long the path is, and refusing a perfectly
+/// good `%LOCALAPPDATA%` for being 110 characters would be a limit
+/// invented out of nothing.
+pub const SUN_PATH_MAX: usize = 103;
+
+/// Which OS's rule for where an application keeps its own state.
+///
+/// Named rather than a `bool`, because there are three answers now and
+/// "not macOS" stopped being one of them the moment Windows arrived:
+/// a two-valued flag would have quietly filed Windows under XDG and put
+/// the databases in `C:\Users\x\.local\share`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostOs {
+    MacOs,
+    Windows,
+    /// Linux and every other unix: the XDG base directory spec.
+    Xdg,
 }
 
-pub fn socket_path() -> PathBuf {
-    app_support_dir().join("daemon.sock")
+impl HostOs {
+    /// What this build is running on.
+    pub const fn current() -> HostOs {
+        if cfg!(target_os = "macos") {
+            HostOs::MacOs
+        } else if cfg!(windows) {
+            HostOs::Windows
+        } else {
+            HostOs::Xdg
+        }
+    }
+}
+
+/// Where gavin keeps its socket and its three SQLite stores.
+///
+/// Per-OS on purpose, and macOS deliberately does NOT consult XDG:
+/// every existing install already has its registry, kanban and
+/// orchestration databases under `~/Library/Application Support/gavin`,
+/// and a developer with `XDG_DATA_HOME` exported for some unrelated tool
+/// must not silently start a second, empty daemon beside the one holding
+/// their work. Linux (and any other unix) follows the XDG base
+/// directory spec: `$XDG_DATA_HOME/gavin`, defaulting to
+/// `~/.local/share/gavin`.
+///
+/// Fallible rather than panicking. `HOME` is missing in a launchd job,
+/// a systemd unit without `User=`, and a container that never set it;
+/// the old `expect` turned that into a daemon that aborts before it
+/// prints anything and an app whose only symptom is "daemon did not
+/// become reachable". An Err travels up through `bootstrap` instead and
+/// reaches the human as the connection banner, naming the variable.
+pub fn app_support_dir() -> anyhow::Result<PathBuf> {
+    resolve_app_support_dir(
+        std::env::var_os("HOME"),
+        std::env::var_os("XDG_DATA_HOME"),
+        std::env::var_os("LOCALAPPDATA"),
+        std::env::var_os("USERPROFILE"),
+        HostOs::current(),
+    )
+}
+
+/// The decision behind `app_support_dir`, with the environment passed in.
+///
+/// Split out so the per-OS rule can be tested at every interesting
+/// value without `set_var`: the suite runs multi-threaded, the daemon
+/// tests spawn real processes that read `HOME`, and mutating the
+/// process environment under that is how a green suite starts failing
+/// only on someone else's machine.
+pub fn resolve_app_support_dir(
+    home: Option<OsString>,
+    xdg_data_home: Option<OsString>,
+    local_app_data: Option<OsString>,
+    user_profile: Option<OsString>,
+    os: HostOs,
+) -> anyhow::Result<PathBuf> {
+    let home = home.filter(|h| !h.is_empty());
+    if os == HostOs::MacOs {
+        let home = home.ok_or_else(|| {
+            anyhow::anyhow!("HOME is not set, so gavin cannot find ~/Library/Application Support")
+        })?;
+        return Ok(PathBuf::from(home).join("Library").join("Application Support").join("gavin"));
+    }
+    // Windows, and deliberately NOT consulting XDG either: the same
+    // reasoning as macOS. `%LOCALAPPDATA%` is per-user, is not roamed
+    // (these are a socket and three SQLite files -- nothing that should
+    // follow a profile onto another machine mid-write), and is where
+    // every other desktop app of this shape keeps the same thing.
+    // `%USERPROFILE%\AppData\Local` is the documented default the
+    // variable holds, so it is the fallback rather than a guess.
+    if os == HostOs::Windows {
+        if let Some(local) = local_app_data.filter(|l| !l.is_empty()) {
+            return Ok(PathBuf::from(local).join("gavin"));
+        }
+        let profile = user_profile
+            .filter(|p| !p.is_empty())
+            .or(home)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "neither LOCALAPPDATA nor USERPROFILE is set, so gavin has nowhere to keep its socket and databases"
+                )
+            })?;
+        return Ok(PathBuf::from(profile).join("AppData").join("Local").join("gavin"));
+    }
+    // "If $XDG_DATA_HOME is either not set or empty, a default equal to
+    // $HOME/.local/share should be used" -- and the spec also says a
+    // relative value is invalid and must be ignored, which matters here
+    // because a relative data dir would put the socket somewhere that
+    // moves with the daemon's cwd.
+    let xdg = xdg_data_home
+        .filter(|x| !x.is_empty())
+        .map(PathBuf::from)
+        .filter(|x| x.is_absolute());
+    if let Some(xdg) = xdg {
+        return Ok(xdg.join("gavin"));
+    }
+    let home = home.ok_or_else(|| {
+        anyhow::anyhow!("neither XDG_DATA_HOME nor HOME is set, so gavin has nowhere to keep its socket and databases")
+    })?;
+    Ok(PathBuf::from(home).join(".local").join("share").join("gavin"))
+}
+
+/// Every path gavin puts on the wire or into the UI uses forward
+/// slashes.
+///
+/// The whole Windows path story, in one rule. Around forty frontend
+/// modules take a path apart with `split("/")` or `lastIndexOf("/")` --
+/// card paths, worktree paths, `.gavin*` relPaths, git status entries,
+/// the file tree -- and rewriting each of them to accept either
+/// separator would be forty chances to miss one. Windows accepts forward
+/// slashes in every API gavin calls (and git prints them already), so
+/// normalising once at the boundary costs one function and leaves those
+/// forty correct.
+///
+/// **Only on Windows.** A backslash is a legal character in a unix file
+/// name, and a file called `a\b` must not silently become the directory
+/// `a/b`.
+pub fn wire_path(path: &Path) -> String {
+    normalize_separators(&path.to_string_lossy(), cfg!(windows))
+}
+
+/// `wire_path` for a path that is already a string.
+pub fn wire_path_str(path: &str) -> String {
+    normalize_separators(path, cfg!(windows))
+}
+
+/// The rule with the platform passed in, so it can be tested where the
+/// suite runs.
+pub fn normalize_separators(path: &str, windows: bool) -> String {
+    if windows {
+        path.replace('\\', "/")
+    } else {
+        path.to_string()
+    }
+}
+
+/// `std::fs::canonicalize`, with the answer in the shape the rest of
+/// gavin compares against.
+///
+/// Windows canonicalisation returns a VERBATIM path -- `\\?\C:\Users\x`,
+/// or `\\?\UNC\server\share` for a network path. That prefix is not
+/// cosmetic: it turns off path parsing in the OS, it is not what the
+/// human's picker handed in, and every containment check gavin makes is
+/// `starts_with` against a stored root. Mix one verbatim path with one
+/// plain one and the file viewer refuses every file in the workspace.
+/// So it is stripped here, once, rather than guarded against at each of
+/// the eight call sites.
+pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
+    let canonical = std::fs::canonicalize(path)?;
+    if !cfg!(windows) {
+        return Ok(canonical);
+    }
+    Ok(PathBuf::from(strip_verbatim_prefix(&canonical.to_string_lossy())))
+}
+
+/// `\\?\C:\x` into `C:/x`, and `\\?\UNC\server\share` into
+/// `//server/share`. Anything else is only separator-normalised.
+///
+/// A verbatim prefix in front of anything OTHER than a drive letter is
+/// left alone: `\\?\Volume{...}` names a volume with no drive, and
+/// removing its prefix would produce a path that resolves to something
+/// else entirely rather than a tidier spelling of the same thing.
+pub fn strip_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!("//{}", normalize_separators(rest, true));
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        let b = rest.as_bytes();
+        let is_drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+        if is_drive {
+            return normalize_separators(rest, true);
+        }
+    }
+    normalize_separators(path, true)
+}
+
+pub fn socket_path() -> anyhow::Result<PathBuf> {
+    let path = app_support_dir()?.join("daemon.sock");
+    // The name outlives the mechanism on purpose: on Windows this path
+    // is never bound, it is hashed into a pipe name
+    // (`transport::pipe_name_for_path`), so keeping one spelling of "the
+    // endpoint" means every process still derives it the same way and
+    // every test still gets its own from a tempdir.
+    #[cfg(unix)]
+    check_sun_path(&path)?;
+    Ok(path)
+}
+
+/// Rejects a socket path the kernel would refuse, while there is still
+/// something useful to say about it.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn check_sun_path(path: &Path) -> anyhow::Result<()> {
+    let len = path.as_os_str().as_encoded_bytes().len();
+    if len > SUN_PATH_MAX {
+        anyhow::bail!(
+            "the daemon socket path is {len} bytes ({}), over the {SUN_PATH_MAX}-byte limit a unix socket address can hold -- point XDG_DATA_HOME at a shorter directory",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -4213,5 +4436,208 @@ mod tests {
         })
         .unwrap();
         assert!(json.contains(r#""mode":"sequence""#), "{json}");
+    }
+
+    // ---- the data directory seam ------------------------------------
+
+    fn os(s: &str) -> Option<OsString> {
+        Some(OsString::from(s))
+    }
+
+    #[test]
+    fn macos_keeps_application_support_and_ignores_xdg() {
+        // The compatibility promise of the Linux port: nobody who has
+        // XDG_DATA_HOME exported for some other tool wakes up on a
+        // second, empty daemon while their real one still holds the
+        // registry.
+        let dir = resolve_app_support_dir(os("/Users/x"), os("/Users/x/.local/share"), None, None, HostOs::MacOs).unwrap();
+        assert_eq!(dir, PathBuf::from("/Users/x/Library/Application Support/gavin"));
+    }
+
+    #[test]
+    fn linux_defaults_to_the_xdg_default_when_the_variable_is_unset() {
+        let dir = resolve_app_support_dir(os("/home/x"), None, None, None, HostOs::Xdg).unwrap();
+        assert_eq!(dir, PathBuf::from("/home/x/.local/share/gavin"));
+    }
+
+    #[test]
+    fn linux_honours_an_absolute_xdg_data_home() {
+        let dir = resolve_app_support_dir(os("/home/x"), os("/data/gavin-home"), None, None, HostOs::Xdg).unwrap();
+        assert_eq!(dir, PathBuf::from("/data/gavin-home/gavin"));
+    }
+
+    #[test]
+    fn an_empty_or_relative_xdg_data_home_is_ignored_the_way_the_spec_says() {
+        // The XDG base directory spec: empty means unset, and a relative
+        // value "is invalid and must be ignored". Honouring a relative
+        // one would put the socket somewhere that moves with whatever
+        // cwd the daemon happened to be spawned from.
+        for bad in ["", ".local/share", "gavin-data"] {
+            let dir = resolve_app_support_dir(os("/home/x"), os(bad), None, None, HostOs::Xdg).unwrap();
+            assert_eq!(dir, PathBuf::from("/home/x/.local/share/gavin"), "XDG_DATA_HOME={bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_missing_home_is_an_error_naming_the_variable_not_a_panic() {
+        // The old code was `expect("HOME not set")`, which aborts the
+        // daemon before it prints anything -- the app then only ever
+        // saw "daemon did not become reachable".
+        for os_kind in [HostOs::MacOs, HostOs::Xdg] {
+            let err = resolve_app_support_dir(None, None, None, None, os_kind)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("HOME"), "{err}");
+        }
+        // Empty is the same as unset: an exported-but-blank HOME would
+        // otherwise resolve the whole tree under "/".
+        assert!(resolve_app_support_dir(os(""), None, None, None, HostOs::Xdg).is_err());
+    }
+
+    #[test]
+    fn an_absolute_xdg_data_home_is_enough_on_its_own() {
+        // A systemd user unit sets XDG_DATA_HOME and may not set HOME.
+        let dir = resolve_app_support_dir(None, os("/run/user/1000/gavin-data"), None, None, HostOs::Xdg).unwrap();
+        assert_eq!(dir, PathBuf::from("/run/user/1000/gavin-data/gavin"));
+    }
+
+    #[test]
+    fn a_windows_path_reaches_the_wire_with_forward_slashes() {
+        assert_eq!(
+            normalize_separators(r"C:\Users\Ada\repo\.gavin-root\plans\x.md", true),
+            "C:/Users/Ada/repo/.gavin-root/plans/x.md"
+        );
+        // Mixed already, because git prints forward slashes and the app
+        // joins with them: idempotent either way.
+        assert_eq!(normalize_separators("C:/Users/Ada/repo", true), "C:/Users/Ada/repo");
+    }
+
+    #[test]
+    fn a_unix_backslash_is_a_file_name_and_stays_one() {
+        // `touch 'a\b'` is legal on every unix. Rewriting it would make
+        // the file viewer open a directory that does not exist.
+        assert_eq!(normalize_separators(r"/home/ada/a\b", false), r"/home/ada/a\b");
+    }
+
+    #[test]
+    fn the_verbatim_prefix_comes_off_a_canonicalized_drive_path() {
+        assert_eq!(strip_verbatim_prefix(r"\\?\C:\Users\Ada\repo"), "C:/Users/Ada/repo");
+        assert_eq!(strip_verbatim_prefix(r"\\?\UNC\server\share\repo"), "//server/share/repo");
+    }
+
+    #[test]
+    fn a_verbatim_volume_name_keeps_its_prefix() {
+        // `\\?\Volume{...}` is not a drive path with decoration on it --
+        // it is the only spelling of that volume, and stripping the
+        // prefix would name something else.
+        let volume = r"\\?\Volume{b75e2c83-0000-0000-0000-602f00000000}\x";
+        assert!(strip_verbatim_prefix(volume).starts_with("//?/Volume"));
+    }
+
+    #[test]
+    fn windows_keeps_its_state_in_local_appdata() {
+        let dir = resolve_app_support_dir(
+            None,
+            None,
+            os(r"C:\Users\Ada\AppData\Local"),
+            os(r"C:\Users\Ada"),
+            HostOs::Windows,
+        )
+        .unwrap();
+        // Joined rather than spelled out: `PathBuf::join` uses the HOST
+        // separator, so a literal with backslashes would pass only on
+        // Windows and this rule is tested where the suite runs.
+        assert_eq!(dir, PathBuf::from(r"C:\Users\Ada\AppData\Local").join("gavin"));
+    }
+
+    #[test]
+    fn windows_ignores_xdg_and_home_the_way_macos_does() {
+        // A developer who runs the app from a Git Bash shell has HOME
+        // set to an MSYS path, and may well have XDG_DATA_HOME exported
+        // too. Neither is where a Windows application keeps its state,
+        // and honouring either would start a second, empty daemon beside
+        // the one holding the registry.
+        let dir = resolve_app_support_dir(
+            os("/c/Users/Ada"),
+            os("/c/Users/Ada/.local/share"),
+            os(r"C:\Users\Ada\AppData\Local"),
+            os(r"C:\Users\Ada"),
+            HostOs::Windows,
+        )
+        .unwrap();
+        // Joined rather than spelled out: `PathBuf::join` uses the HOST
+        // separator, so a literal with backslashes would pass only on
+        // Windows and this rule is tested where the suite runs.
+        assert_eq!(dir, PathBuf::from(r"C:\Users\Ada\AppData\Local").join("gavin"));
+    }
+
+    #[test]
+    fn windows_falls_back_to_the_profile_when_localappdata_is_unset() {
+        // %LOCALAPPDATA% is documented as %USERPROFILE%\AppData\Local,
+        // so this is the same directory spelled out rather than a guess
+        // at a different one.
+        for local in [None, os("")] {
+            let dir = resolve_app_support_dir(
+                None,
+                None,
+                local.clone(),
+                os(r"C:\Users\Ada"),
+                HostOs::Windows,
+            )
+            .unwrap();
+            assert_eq!(
+                dir,
+                PathBuf::from(r"C:\Users\Ada").join("AppData").join("Local").join("gavin")
+            );
+        }
+    }
+
+    #[test]
+    fn windows_with_no_profile_at_all_is_an_error_naming_the_variables() {
+        let err = resolve_app_support_dir(None, None, None, None, HostOs::Windows)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("LOCALAPPDATA"), "{err}");
+        assert!(err.contains("USERPROFILE"), "{err}");
+    }
+
+    #[test]
+    fn a_windows_data_directory_is_not_measured_against_sun_path() {
+        // The Windows endpoint is a pipe name hashed from this path, so
+        // its length is fixed however long the path is. A deep profile
+        // directory that would blow the 103-byte socket budget is
+        // perfectly fine there, and `socket_path` only applies the check
+        // on unix for exactly this reason.
+        let deep = format!(r"C:\Users\{}\AppData\Local", "a".repeat(80));
+        let dir = resolve_app_support_dir(None, None, os(&deep), None, HostOs::Windows).unwrap();
+        let socket = dir.join("daemon.sock");
+        assert!(socket.as_os_str().as_encoded_bytes().len() > SUN_PATH_MAX);
+        assert!(crate::transport::pipe_name_for_path(&socket).len() < 64);
+    }
+
+    #[test]
+    fn the_socket_fits_sun_path_under_a_long_xdg_data_home() {
+        // The budget, stated as a test because nothing else reports it:
+        // bind() answers an over-long path with EINVAL on macOS and
+        // ENAMETOOLONG on Linux, and neither mentions a length. Linux
+        // adds "/gavin/daemon.sock" (18 bytes) to the data home against
+        // macOS's "/Library/Application Support/gavin/daemon.sock" (46),
+        // so the XDG layout is the roomier of the two -- a data home as
+        // long as this one still leaves headroom.
+        let long = format!("/home/{}/.local/share", "a".repeat(60));
+        assert_eq!(long.len(), 79);
+        let socket = resolve_app_support_dir(None, os(&long), None, None, HostOs::Xdg).unwrap().join("daemon.sock");
+        let len = socket.as_os_str().as_encoded_bytes().len();
+        assert!(len <= SUN_PATH_MAX, "{} is {len} bytes", socket.display());
+        assert!(check_sun_path(&socket).is_ok());
+    }
+
+    #[test]
+    fn an_over_long_socket_path_is_refused_with_the_limit_in_the_message() {
+        let long = format!("/{}", "a".repeat(SUN_PATH_MAX));
+        let socket = PathBuf::from(long).join("daemon.sock");
+        let err = check_sun_path(&socket).unwrap_err().to_string();
+        assert!(err.contains(&SUN_PATH_MAX.to_string()), "{err}");
+        assert!(err.contains("XDG_DATA_HOME"), "{err}");
     }
 }

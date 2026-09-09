@@ -8,9 +8,11 @@ mod daemon;
 mod edge_expand;
 mod fileviewer;
 mod git;
+mod home;
 mod layout;
 mod mac_window;
 mod memory;
+mod program;
 mod pull_request;
 mod session;
 mod superpowers;
@@ -273,7 +275,8 @@ pub fn run() {
             updater::update_settings,
             updater::set_update_endpoint,
             updater::check_for_update,
-            updater::install_update
+            updater::install_update,
+            fileviewer::temp_dir
         ])
         .run(context)
         .expect("error while running tauri application");

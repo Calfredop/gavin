@@ -8,9 +8,7 @@ use crate::status::{StatusEvent, StatusScanner, HEURISTIC_QUIET_PERIOD};
 use notify_debouncer_mini::Debouncer;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Read, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::io::AsRawFd;
-use std::os::unix::net::{UnixListener, UnixStream};
+use protocol::transport::{Listener, Stream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -1139,7 +1137,7 @@ pub struct SessionManager {
     kanban: Mutex<KanbanStore>,
     orchestration: Mutex<crate::orchestration::OrchestrationStore>,
     sessions: Mutex<HashMap<String, PtySession>>,
-    attached_writers: Mutex<HashMap<String, Arc<Mutex<UnixStream>>>>,
+    attached_writers: Mutex<HashMap<String, Arc<Mutex<Stream>>>>,
     /// What each live session's screen currently IS, so a client that
     /// reconnects can be sent the screen rather than a tail of the bytes that
     /// built it (see `screen.rs`). Each screen is behind its own mutex, held
@@ -1378,7 +1376,7 @@ impl SessionManager {
         manager: &Arc<Self>,
         workspace_id: &str,
         root_path: &str,
-        writer: Arc<Mutex<UnixStream>>,
+        writer: Arc<Mutex<Stream>>,
     ) {
         let generation = manager.begin_gavin_watch(workspace_id);
         let weak = Arc::downgrade(manager);
@@ -1505,8 +1503,7 @@ impl SessionManager {
     /// store canonicalized roots, so the incoming path is canonicalized
     /// before comparison.
     fn find_watcher_by_root(&self, root_path: &str) -> Option<Arc<crate::gavin::GavinWatcher>> {
-        let canonical = std::path::Path::new(root_path)
-            .canonicalize()
+        let canonical = protocol::canonical_path(std::path::Path::new(root_path))
             .unwrap_or_else(|_| std::path::PathBuf::from(root_path));
         self.gavin_watchers
             .lock()
@@ -2095,11 +2092,10 @@ impl SessionManager {
         // `<root>/./.gavin-root/plans/x.md`. Keyed on that spelling the
         // binding is real, invisible and unfixable: the board's card id
         // is the scanned path, and the two never compare equal.
-        let path = &std::path::Path::new(path)
-            .canonicalize()
-            .unwrap_or_else(|_| std::path::PathBuf::from(path))
-            .to_string_lossy()
-            .to_string();
+        let path = &protocol::wire_path(
+            &protocol::canonical_path(std::path::Path::new(path))
+                .unwrap_or_else(|_| std::path::PathBuf::from(path)),
+        );
 
         // The card's OWN status line, deliberately raw. A nested task
         // that carries no `status:` inherits its parent's, and reading
@@ -2767,7 +2763,7 @@ impl SessionManager {
         Ok(())
     }
 
-    pub fn attach(self: &Arc<Self>, id: &str, writer: Arc<Mutex<UnixStream>>) {
+    pub fn attach(self: &Arc<Self>, id: &str, writer: Arc<Mutex<Stream>>) {
         // Send the session's current known cwd immediately, before anything
         // else -- this gives a fresh Attach's frontend an instant baseline
         // (launch directory, or the last OSC-7-reported directory) without
@@ -2955,7 +2951,7 @@ impl SessionManager {
     /// is the lock the pump holds across feed-then-forward: that is what makes
     /// "the screen as of exactly the last chunk this client was sent" a
     /// meaningful thing to say.
-    pub fn write_snapshot(&self, id: &str, writer: &Arc<Mutex<UnixStream>>) {
+    pub fn write_snapshot(&self, id: &str, writer: &Arc<Mutex<Stream>>) {
         let screen = { self.screens.lock().unwrap().get(id).cloned() };
         let Some(screen) = screen else { return };
         let mut screen = screen.lock().unwrap();
@@ -3890,6 +3886,7 @@ pub fn authorize(
 /// runs as this daemon's own uid. The socket is `0600` in a `0700` dir, so
 /// this only ever fires if the socket escapes that dir -- defence in depth,
 /// not identity. Fails closed: a peer whose uid cannot be read is refused.
+#[cfg(unix)]
 fn peer_uid_ok(fd: std::os::unix::io::RawFd) -> bool {
     let mut uid: libc::uid_t = 0;
     let mut gid: libc::gid_t = 0;
@@ -3906,7 +3903,7 @@ fn peer_uid_ok(fd: std::os::unix::io::RawFd) -> bool {
 /// (the default) means no; present means yes. Read per request so the
 /// Settings toggle is live.
 fn require_local_token() -> bool {
-    protocol::require_local_token_path().exists()
+    protocol::require_local_token_path().is_ok_and(|p| p.exists())
 }
 
 /// Mint this daemon's per-start token and write it `0600` beside the
@@ -3914,9 +3911,15 @@ fn require_local_token() -> bool {
 /// previous daemon lifetime is worthless the moment this one rebinds.
 fn mint_daemon_token() -> anyhow::Result<String> {
     let token = protocol::random_hex(32)?;
-    let path = protocol::daemon_token_path();
+    let path = protocol::daemon_token_path()?;
     std::fs::write(&path, &token)?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    // 0600 where the OS has modes. Off unix the token inherits the ACL of
+    // the per-user data directory it sits in, which is the same audience.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(token)
 }
 
@@ -3936,22 +3939,28 @@ pub fn run_server(socket_path: &std::path::Path, manager: Arc<SessionManager>) -
 /// creates the file and `connect(2)` is refused until `listen(2)`, two
 /// syscalls later, so a connect aimed at the gap between them fails
 /// against a daemon that is moments from being ready.
-fn bind_server(socket_path: &std::path::Path) -> anyhow::Result<UnixListener> {
-    if socket_path.exists() {
-        if UnixStream::connect(socket_path).is_ok() {
-            anyhow::bail!(
-                "another gavin-daemon is already listening on {}",
-                socket_path.display()
-            );
-        }
-        std::fs::remove_file(socket_path)?;
+fn bind_server(socket_path: &std::path::Path) -> anyhow::Result<Listener> {
+    let endpoint = protocol::transport::Endpoint::new(socket_path.to_path_buf());
+    // Connecting, not `path.exists()`: on Windows there is no socket file
+    // to look for, and on Unix the file outliving its daemon is the
+    // normal case after a crash. `Listener::bind` clears that debris
+    // itself, so all this has to decide is whether someone answers.
+    if protocol::transport::is_listening(&endpoint) {
+        anyhow::bail!("another gavin-daemon is already listening on {endpoint}");
     }
-    let listener = UnixListener::bind(socket_path)?;
-    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    let listener = Listener::bind(&endpoint)?;
+    // 0600 on the socket file, where there is one. The Windows pipe is
+    // scoped by the DACL `transport` builds for it instead -- there is no
+    // per-user pipe namespace to fall back on.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(listener)
 }
 
-fn serve(listener: UnixListener, manager: Arc<SessionManager>) -> anyhow::Result<()> {
+fn serve(listener: Listener, manager: Arc<SessionManager>) -> anyhow::Result<()> {
     // After recover(), before the first connection: the watchdog's first
     // reading has to be taken while the daemon is definitely awake, and
     // it must be running before any session it might have to speak for.
@@ -3987,15 +3996,21 @@ impl Drop for ConnectionSlot<'_> {
     }
 }
 
-fn handle_connection(stream: UnixStream, manager: Arc<SessionManager>) -> anyhow::Result<()> {
+fn handle_connection(stream: Stream, manager: Arc<SessionManager>) -> anyhow::Result<()> {
     // The peer-uid floor, before anything else on this connection: a peer
     // whose uid is not this daemon's own is refused outright (§4). It only
     // fires if the socket ever escapes its 0700 dir; same-uid, which is
     // every client today, passes unchanged.
+    //
+    // Unix only, and not a gap off it: a Windows client reaches a named
+    // pipe whose DACL already names this user alone, so the check has
+    // nothing left to decide there. Written through `&stream` rather than
+    // by moving it, so the refusal path does not conditionally consume a
+    // value the caller still uses when the check passes.
+    #[cfg(unix)]
     if !peer_uid_ok(stream.as_raw_fd()) {
-        let mut refused = stream;
         let _ = write_message(
-            &mut refused,
+            &mut &stream,
             &Response::Error {
                 message: "gavin-daemon: refusing a connection from a different user".to_string(),
             },
@@ -4746,7 +4761,7 @@ mod tests {
         (socket_path, dir)
     }
 
-    fn request(stream: &mut UnixStream, req: &Request) -> Response {
+    fn request(stream: &mut Stream, req: &Request) -> Response {
         write_message(stream, req).unwrap();
         let mut reader = line_reader(stream.try_clone().unwrap());
         read_message(&mut reader).unwrap().unwrap()
@@ -4755,7 +4770,7 @@ mod tests {
     #[test]
     fn a_hello_with_the_daemon_token_becomes_app_with_a_valid_proof() {
         let (socket_path, _dir) = start_test_server();
-        let mut conn = UnixStream::connect(&socket_path).unwrap();
+        let mut conn = Stream::connect(&socket_path).unwrap();
         let resp = request(
             &mut conn,
             &Request::Hello {
@@ -4783,7 +4798,7 @@ mod tests {
     #[test]
     fn a_hello_with_no_auth_is_local_and_a_wrong_token_does_not_elevate() {
         let (socket_path, _dir) = start_test_server();
-        let mut conn = UnixStream::connect(&socket_path).unwrap();
+        let mut conn = Stream::connect(&socket_path).unwrap();
         match request(
             &mut conn,
             &Request::Hello {
@@ -4800,7 +4815,7 @@ mod tests {
             other => panic!("expected HelloAck, got {other:?}"),
         }
 
-        let mut conn2 = UnixStream::connect(&socket_path).unwrap();
+        let mut conn2 = Stream::connect(&socket_path).unwrap();
         match request(
             &mut conn2,
             &Request::Hello {
@@ -4818,7 +4833,7 @@ mod tests {
     #[test]
     fn a_second_hello_on_one_connection_is_refused() {
         let (socket_path, _dir) = start_test_server();
-        let mut conn = UnixStream::connect(&socket_path).unwrap();
+        let mut conn = Stream::connect(&socket_path).unwrap();
         let hello = Request::Hello {
             client: "app".into(),
             protocol_version: protocol::PROTOCOL_VERSION,
@@ -4843,7 +4858,7 @@ mod tests {
         // Create a session over the socket the way the app does; then a
         // second connection presents a *forged* session token (unknown to
         // the registry) and must fall back to local rather than agent.
-        let mut conn = UnixStream::connect(&socket_path).unwrap();
+        let mut conn = Stream::connect(&socket_path).unwrap();
         match request(
             &mut conn,
             &Request::Hello {
@@ -4882,7 +4897,7 @@ mod tests {
         let root = ws_dir.path().to_string_lossy().to_string();
 
         // A watching connection is what makes the root resolvable.
-        let mut watcher = UnixStream::connect(&socket_path).unwrap();
+        let mut watcher = Stream::connect(&socket_path).unwrap();
         write_message(
             &mut watcher,
             &Request::WatchGavinRoot { workspace_id: "ws-1".into(), root_path: root.clone() },
@@ -4892,7 +4907,7 @@ mod tests {
         let first: Option<Response> = read_message(&mut reader).unwrap();
         assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
 
-        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let mut cmd = Stream::connect(&socket_path).unwrap();
         let resp = request(
             &mut cmd,
             &Request::SetOrchestrationByRoot {
@@ -4928,7 +4943,7 @@ mod tests {
         crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
         let root = ws_dir.path().to_string_lossy().to_string();
 
-        let mut watcher = UnixStream::connect(&socket_path).unwrap();
+        let mut watcher = Stream::connect(&socket_path).unwrap();
         write_message(
             &mut watcher,
             &Request::WatchGavinRoot { workspace_id: "ws-1".into(), root_path: root.clone() },
@@ -4938,7 +4953,7 @@ mod tests {
         let first: Option<Response> = read_message(&mut reader).unwrap();
         assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
 
-        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let mut cmd = Stream::connect(&socket_path).unwrap();
         // The plan first, and its own push read off the watcher, so the
         // push asserted below is the one the run-state write produced.
         request(
@@ -5079,7 +5094,7 @@ mod tests {
         let ws_dir = tempfile::tempdir().unwrap();
         crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
 
-        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        let mut stream = Stream::connect(&socket_path).unwrap();
         write_message(
             &mut stream,
             &Request::WatchGavinRoot {
@@ -5121,7 +5136,7 @@ mod tests {
     #[test]
     fn watching_a_missing_root_reports_root_missing_and_get_tree_replies() {
         let (socket_path, _dir) = start_test_server();
-        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        let mut stream = Stream::connect(&socket_path).unwrap();
         write_message(
             &mut stream,
             &Request::WatchGavinRoot {
@@ -5138,7 +5153,7 @@ mod tests {
         }
 
         // GetGavinTree over a second (command-style) connection.
-        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let mut cmd = Stream::connect(&socket_path).unwrap();
         let resp = request(&mut cmd, &Request::GetGavinTree { workspace_id: "ws-2".to_string() });
         match resp {
             Response::GavinTreeSnapshot { workspace_id, tree } => {
@@ -5167,7 +5182,7 @@ mod tests {
         let manager = test_manager(&dir);
         let root = ws.path().to_path_buf();
         let start = |id: &str| {
-            let (_ours, theirs) = UnixStream::pair().unwrap();
+            let (_ours, theirs) = Stream::pair().unwrap();
             crate::gavin::GavinWatcher::start(
                 id.to_string(),
                 root.clone(),
@@ -5202,7 +5217,7 @@ mod tests {
         let ws_dir = tempfile::tempdir().unwrap();
         crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
         let root = ws_dir.path().to_string_lossy().to_string();
-        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let mut cmd = Stream::connect(&socket_path).unwrap();
 
         let resp = request(&mut cmd, &Request::GetBoardByRoot { root_path: root.clone() });
         assert!(matches!(resp, Response::Error { .. }));
@@ -5225,7 +5240,7 @@ mod tests {
         let root = ws_dir.path().to_string_lossy().to_string();
 
         // The "app": watches the root on a streaming connection.
-        let mut app = UnixStream::connect(&socket_path).unwrap();
+        let mut app = Stream::connect(&socket_path).unwrap();
         write_message(
             &mut app,
             &Request::WatchGavinRoot { workspace_id: "ws-a".to_string(), root_path: root.clone() },
@@ -5236,7 +5251,7 @@ mod tests {
         assert!(matches!(first, Response::GavinTreeChanged { .. }));
 
         // The "shim": spawns over a command connection.
-        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let mut cmd = Stream::connect(&socket_path).unwrap();
         let resp = request(
             &mut cmd,
             &Request::SpawnAgentSession {
@@ -5280,7 +5295,7 @@ mod tests {
     fn naming_a_session_pushes_on_the_connection_attached_to_it() {
         let (socket_path, _dir) = start_test_server();
 
-        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let mut cmd = Stream::connect(&socket_path).unwrap();
         // A session id this daemon never issued is refused rather than
         // pushed anywhere: an agent outliving its tab must hear about it.
         let resp = request(
@@ -5313,7 +5328,7 @@ mod tests {
         // The "app": attaches on a streaming connection. Note it never
         // watches a root -- naming is deliberately independent of that,
         // so an agent in a rail's worktree can still name its tab.
-        let mut app = UnixStream::connect(&socket_path).unwrap();
+        let mut app = Stream::connect(&socket_path).unwrap();
         write_message(&mut app, &Request::Attach { id: session_id.clone() }).unwrap();
         let mut app_reader = line_reader(app.try_clone().unwrap());
 
@@ -5359,7 +5374,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         crate::gavin::init_gavin_root(&root, "WS").unwrap();
 
-        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        let mut stream = Stream::connect(&socket_path).unwrap();
         write_message(
             &mut stream,
             &Request::WatchGavinRoot {
@@ -5401,7 +5416,7 @@ mod tests {
         let ws_dir = tempfile::tempdir().unwrap();
         crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
         let root = ws_dir.path().to_string_lossy().to_string();
-        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let mut cmd = Stream::connect(&socket_path).unwrap();
 
         let resp = request(&mut cmd, &Request::GetProtocolVersion);
         assert!(
@@ -5447,7 +5462,7 @@ mod tests {
     fn set_plan_frontmatter_field_over_socket_writes_and_rejects() {
         let (socket_path, _dir) = start_test_server();
         let ws_dir = tempfile::tempdir().unwrap();
-        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let mut cmd = Stream::connect(&socket_path).unwrap();
 
         // DP-03: a path outside any .gavin*/plans|docs|specs folder is
         // refused outright now -- it used to write the field and only
@@ -5501,7 +5516,7 @@ mod tests {
     fn init_and_create_context_over_socket_are_idempotent() {
         let (socket_path, _dir) = start_test_server();
         let ws_dir = tempfile::tempdir().unwrap();
-        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let mut cmd = Stream::connect(&socket_path).unwrap();
         let root = ws_dir.path().to_string_lossy().to_string();
 
         let resp = request(
@@ -5518,7 +5533,7 @@ mod tests {
         // CreateGavinContext is confined to a workspace this daemon
         // already watches (DP-03) -- unlike InitGavinRoot just above,
         // which exists to bootstrap a root nothing has watched yet.
-        let mut watcher = UnixStream::connect(&socket_path).unwrap();
+        let mut watcher = Stream::connect(&socket_path).unwrap();
         write_message(
             &mut watcher,
             &Request::WatchGavinRoot { workspace_id: "ws-1".into(), root_path: root.clone() },
@@ -5566,7 +5581,7 @@ mod tests {
         let lib = outside.path().join("shared-lib");
         std::fs::create_dir_all(&lib).unwrap();
 
-        let mut cmd = UnixStream::connect(&socket_path).unwrap();
+        let mut cmd = Stream::connect(&socket_path).unwrap();
 
         // DP-03: root_path names a workspace nobody has told this daemon
         // to watch, so the write is refused rather than landing on it
@@ -5582,7 +5597,7 @@ mod tests {
                 .contains("shared-lib")
         );
 
-        let mut watcher = UnixStream::connect(&socket_path).unwrap();
+        let mut watcher = Stream::connect(&socket_path).unwrap();
         write_message(
             &mut watcher,
             &Request::WatchGavinRoot { workspace_id: "ws-1".into(), root_path: root.clone() },
@@ -5617,7 +5632,7 @@ mod tests {
     #[test]
     fn create_list_and_kill_session_over_socket() {
         let (socket_path, _dir) = start_test_server();
-        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        let mut stream = Stream::connect(&socket_path).unwrap();
 
         let created = request(
             &mut stream,
@@ -5683,7 +5698,7 @@ mod tests {
         // The pump is what witnesses an exit, and only an Attach starts
         // one. The client end stays bound: dropping it would close the
         // socket the teardown reports the exit on.
-        let (_client, server) = UnixStream::pair().unwrap();
+        let (_client, server) = Stream::pair().unwrap();
         manager.attach(&id, Arc::new(Mutex::new(server)));
 
         assert!(
@@ -5712,7 +5727,7 @@ mod tests {
         );
         let manager = Arc::new(recovered_manager(&dir));
 
-        let (_client, server) = UnixStream::pair().unwrap();
+        let (_client, server) = Stream::pair().unwrap();
         manager.attach("orphan-kept", Arc::new(Mutex::new(server)));
         manager.write_input("orphan-kept", b"exit\n").unwrap();
 
@@ -5740,7 +5755,7 @@ mod tests {
     #[test]
     fn write_input_to_unknown_session_returns_error() {
         let (socket_path, _dir) = start_test_server();
-        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        let mut stream = Stream::connect(&socket_path).unwrap();
 
         let resp = request(
             &mut stream,
@@ -5757,7 +5772,7 @@ mod tests {
     /// all need a session that has genuinely produced something before they
     /// can ask for it back.
     fn drive_until(
-        stream: &mut UnixStream,
+        stream: &mut Stream,
         id: &str,
         input: &str,
         marker: &str,
@@ -5784,7 +5799,7 @@ mod tests {
     #[test]
     fn a_reconnecting_client_is_sent_the_screen_not_a_log_of_how_it_got_there() {
         let (socket_path, _dir) = start_test_server();
-        let mut first = UnixStream::connect(&socket_path).unwrap();
+        let mut first = Stream::connect(&socket_path).unwrap();
         let id = match request(
             &mut first,
             &Request::CreateSession {
@@ -5802,7 +5817,7 @@ mod tests {
         // A second client -- the app, restarted -- attaches and must be able
         // to reconstruct the screen from what it is sent, with no access to
         // anything that came before.
-        let mut second = UnixStream::connect(&socket_path).unwrap();
+        let mut second = Stream::connect(&socket_path).unwrap();
         write_message(&mut second, &Request::Attach { id: id.clone() }).unwrap();
         let mut reader = line_reader(second.try_clone().unwrap());
         let deadline = std::time::Instant::now() + PROCESS_BUDGET;
@@ -5829,7 +5844,7 @@ mod tests {
         // unconditionally on the app side -- so a frontend that reloaded and
         // wants its terminals back must have a way to ask for the screen ONLY.
         let (socket_path, _dir) = start_test_server();
-        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        let mut stream = Stream::connect(&socket_path).unwrap();
         let id = match request(
             &mut stream,
             &Request::CreateSession {
@@ -5887,7 +5902,7 @@ mod tests {
         // it -- for a session id the daemon has never pumped, silence is the
         // only safe answer.
         let (socket_path, _dir) = start_test_server();
-        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        let mut stream = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream, &Request::Snapshot { id: "never-existed".to_string() }).unwrap();
         // Prove the connection is still live and simply had nothing to say,
         // by putting a request behind it whose reply we know how to recognise.
@@ -5906,7 +5921,7 @@ mod tests {
         // Connection 1: create the session, then drop the connection
         // (simulating the GUI app closing).
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -5922,7 +5937,7 @@ mod tests {
         };
 
         // Connection 2: attach to the same session and drive it.
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
         write_message(
             &mut stream2,
@@ -5953,7 +5968,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -5970,7 +5985,7 @@ mod tests {
 
         // First attach, then drop the connection without the session exiting.
         {
-            let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+            let mut stream2 = Stream::connect(&socket_path).unwrap();
             write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
             // Give the pump thread a moment to start before we drop the connection.
             std::thread::sleep(Duration::from_millis(100));
@@ -5978,7 +5993,7 @@ mod tests {
 
         // Reattach from a third connection and drive the session — this must
         // not race with, or lose output to, the now-disconnected first pump.
-        let mut stream3 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream3 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream3, &Request::Attach { id: id.clone() }).unwrap();
         write_message(
             &mut stream3,
@@ -6009,7 +6024,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -6026,7 +6041,7 @@ mod tests {
 
         // First attach starts the pump (and the scrollback buffer), then detach.
         {
-            let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+            let mut stream2 = Stream::connect(&socket_path).unwrap();
             write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -6034,7 +6049,7 @@ mod tests {
         // Produce output while nobody is attached; the pump is still running
         // and keeps appending to the scrollback buffer even with no writer.
         {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let resp = request(
                 &mut stream,
                 &Request::WriteInput {
@@ -6047,7 +6062,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
 
         // Reattach: the replay must include output produced while detached.
-        let mut stream3 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream3 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream3, &Request::Attach { id: id.clone() }).unwrap();
 
         let mut reader = line_reader(stream3.try_clone().unwrap());
@@ -6068,7 +6083,7 @@ mod tests {
     #[test]
     fn create_session_rejects_nonexistent_cwd() {
         let (socket_path, _dir) = start_test_server();
-        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        let mut stream = Stream::connect(&socket_path).unwrap();
 
         let resp = request(
             &mut stream,
@@ -6126,7 +6141,7 @@ mod tests {
 
         let mut kept = Vec::new();
         for _ in 0..2 {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             // Round-trips a harmless request so the connection's thread
             // has definitely run past the ceiling check (and counted
             // itself) before the next connection is opened.
@@ -6135,7 +6150,7 @@ mod tests {
             kept.push(stream);
         }
 
-        let over = UnixStream::connect(&socket_path).unwrap();
+        let over = Stream::connect(&socket_path).unwrap();
         let mut reader = line_reader(over.try_clone().unwrap());
         let resp: Response = read_message(&mut reader).unwrap().unwrap();
         match resp {
@@ -6226,7 +6241,7 @@ mod tests {
         let root = ws.path().canonicalize().unwrap();
         let card = root.join(".gavin-root").join("plans").join("ship.md");
         std::fs::write(&card, format!("---\ntitle: Ship\nstatus: {status}\n---\n")).unwrap();
-        let (_ours, theirs) = UnixStream::pair().unwrap();
+        let (_ours, theirs) = Stream::pair().unwrap();
         SessionManager::watch_gavin_root(
             &manager,
             "ws-1",
@@ -6639,7 +6654,7 @@ mod tests {
         std::fs::rename(&card, &after).unwrap();
         let after = after.to_string_lossy().to_string();
 
-        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (ours, theirs) = Stream::pair().unwrap();
         ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         SessionManager::watch_gavin_root(
             &manager,
@@ -6685,7 +6700,7 @@ mod tests {
 
         // Watched only now, so the arrangement's own push is not in the
         // stream and the initial scan is the only thing to drain.
-        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (ours, theirs) = Stream::pair().unwrap();
         ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         SessionManager::watch_gavin_root(
             &manager,
@@ -6732,7 +6747,7 @@ mod tests {
         manager.link_card_session("ws-1", &path, "s-1", "/p", None, None, None, None, None).unwrap();
         manager.set_orchestration("ws-1", vec![orch_rail_at("r1", "t1", &path)], vec![]).unwrap();
 
-        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (ours, theirs) = Stream::pair().unwrap();
         ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         SessionManager::watch_gavin_root(
             &manager,
@@ -6781,7 +6796,7 @@ mod tests {
         let card = root.join(".gavin-root").join("plans").join("ship.md");
         std::fs::write(&card, "---\ntitle: Ship\n---\n").unwrap();
 
-        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (ours, theirs) = Stream::pair().unwrap();
         ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         SessionManager::watch_gavin_root(
             &manager,
@@ -6819,7 +6834,7 @@ mod tests {
         let path = card.to_string_lossy().to_string();
         manager.set_orchestration("ws-1", vec![orch_rail_at("r1", "t1", &path)], vec![]).unwrap();
 
-        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (ours, theirs) = Stream::pair().unwrap();
         ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         SessionManager::watch_gavin_root(
             &manager,
@@ -6945,7 +6960,7 @@ mod tests {
     /// the socket. A test that waited twice would then block for good on
     /// a status that had already arrived and been discarded.
     fn await_status(
-        reader: &mut BufReader<UnixStream>,
+        reader: &mut BufReader<Stream>,
         id: &str,
         status: &str,
     ) -> Option<String> {
@@ -6996,8 +7011,8 @@ mod tests {
     fn failure_test_session(
         socket_path: &std::path::Path,
         patterns: Option<&[&str]>,
-    ) -> (UnixStream, BufReader<UnixStream>, String) {
-        let mut stream = UnixStream::connect(socket_path).unwrap();
+    ) -> (Stream, BufReader<Stream>, String) {
+        let mut stream = Stream::connect(socket_path).unwrap();
         let created = request(
             &mut stream,
             &Request::CreateSession {
@@ -7183,7 +7198,7 @@ mod tests {
     #[test]
     fn resize_session_returns_ok_for_existing_session() {
         let (socket_path, _dir) = start_test_server();
-        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        let mut stream = Stream::connect(&socket_path).unwrap();
 
         let created = request(
             &mut stream,
@@ -7205,7 +7220,7 @@ mod tests {
     #[test]
     fn resize_session_returns_error_for_unknown_session() {
         let (socket_path, _dir) = start_test_server();
-        let mut stream = UnixStream::connect(&socket_path).unwrap();
+        let mut stream = Stream::connect(&socket_path).unwrap();
 
         let resp = request(
             &mut stream,
@@ -7219,7 +7234,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -7234,7 +7249,7 @@ mod tests {
             }
         };
 
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
 
         let mut reader = line_reader(stream2.try_clone().unwrap());
@@ -7253,7 +7268,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -7268,7 +7283,7 @@ mod tests {
             }
         };
 
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
 
         let mut reader = line_reader(stream2.try_clone().unwrap());
@@ -7291,7 +7306,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -7310,7 +7325,7 @@ mod tests {
         // teardown runs. It forgets the session outright, so the second
         // attach below is one to an id the daemon no longer knows -- the
         // shape a tab left holding a finished run actually has.
-        let mut stream1 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream1 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream1, &Request::Attach { id: id.clone() }).unwrap();
         write_message(&mut stream1, &Request::WriteInput { id: id.clone(), data: "exit\n".to_string() }).unwrap();
 
@@ -7329,7 +7344,7 @@ mod tests {
 
         // Now attach a second, fresh connection to the now-exited
         // session and confirm the baseline never includes StatusChanged.
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
 
         let mut reader2 = line_reader(stream2.try_clone().unwrap());
@@ -7379,7 +7394,7 @@ mod tests {
             "test premise: recovery must mark this row Exited and keep it"
         );
 
-        let (client, server) = UnixStream::pair().unwrap();
+        let (client, server) = Stream::pair().unwrap();
         // Set before attach, not after: this row is Exited, so attach()
         // has nothing to baseline and drops the far end of this pair
         // straight away -- and on macOS SO_RCVTIMEO on a socketpair whose
@@ -7412,7 +7427,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -7432,7 +7447,7 @@ mod tests {
         // attach below aimed at an id the daemon no longer knows.
         // Teardown also calls unregister_session_repo_mapping first, so
         // no mapping is left over from this first attach either.
-        let mut stream1 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream1 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream1, &Request::Attach { id: id.clone() }).unwrap();
         write_message(&mut stream1, &Request::WriteInput { id: id.clone(), data: "exit\n".to_string() }).unwrap();
 
@@ -7456,7 +7471,7 @@ mod tests {
         // thread will ever run for this session to tear it back down
         // again, leaking that poller (its filesystem watch and 3-minute
         // backstop timer thread) permanently.
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
 
         let mut reader2 = line_reader(stream2.try_clone().unwrap());
@@ -7477,7 +7492,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -7492,7 +7507,7 @@ mod tests {
             }
         };
 
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
         write_message(
             &mut stream2,
@@ -7523,7 +7538,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -7538,7 +7553,7 @@ mod tests {
             }
         };
 
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
         write_message(
             &mut stream2,
@@ -7569,7 +7584,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -7584,7 +7599,7 @@ mod tests {
             }
         };
 
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
         write_message(
             &mut stream2,
@@ -7616,7 +7631,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -7631,7 +7646,7 @@ mod tests {
             }
         };
 
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
         // A genuinely blocking read after the notification, so the
         // heuristic's renewed-output-activity rule can't clear
@@ -7676,7 +7691,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -7691,7 +7706,7 @@ mod tests {
             }
         };
 
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
         // Plain output with no OSC 133 markers at all -- this session
         // stays in heuristic mode for its whole life.
@@ -7737,7 +7752,7 @@ mod tests {
         "trap 'printf gavin_redraw' WINCH; printf gavin_painted; while :; do read _unused; done";
 
     fn create_session_with(socket_path: &std::path::Path, command: &str) -> String {
-        let mut stream = UnixStream::connect(socket_path).unwrap();
+        let mut stream = Stream::connect(socket_path).unwrap();
         let created = request(
             &mut stream,
             &Request::CreateSession {
@@ -7759,7 +7774,7 @@ mod tests {
     /// assertion could just mean the resize never reached the program,
     /// which would make the whole test vacuous.
     fn collect_after(
-        reader: &mut BufReader<UnixStream>,
+        reader: &mut BufReader<Stream>,
         id: &str,
         window: Duration,
     ) -> (Vec<String>, bool) {
@@ -7790,7 +7805,7 @@ mod tests {
     /// ONE: a `BufReader` dropped mid-stream takes whatever it had
     /// already pulled out of the socket with it, and the next one starts
     /// reading in the middle of a line.
-    fn wait_for_status(reader: &mut BufReader<UnixStream>, id: &str, want: &str) {
+    fn wait_for_status(reader: &mut BufReader<Stream>, id: &str, want: &str) {
         let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         while std::time::Instant::now() < deadline {
             if let Ok(Some(Response::StatusChanged { id: rid, status })) =
@@ -7807,8 +7822,8 @@ mod tests {
     /// An attached connection and its one reader, with a read timeout so
     /// a silent daemon ends a wait at its deadline instead of blocking
     /// forever.
-    fn attach_reader(socket_path: &std::path::Path, id: &str) -> BufReader<UnixStream> {
-        let mut stream = UnixStream::connect(socket_path).unwrap();
+    fn attach_reader(socket_path: &std::path::Path, id: &str) -> BufReader<Stream> {
+        let mut stream = Stream::connect(socket_path).unwrap();
         write_message(&mut stream, &Request::Attach { id: id.to_string() }).unwrap();
         stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
         line_reader(stream)
@@ -7834,7 +7849,7 @@ mod tests {
         wait_for_status(&mut attached, &id, "working");
         wait_for_status(&mut attached, &id, "idle");
 
-        let mut commands = UnixStream::connect(&socket_path).unwrap();
+        let mut commands = Stream::connect(&socket_path).unwrap();
         assert!(matches!(
             request(&mut commands, &Request::ResizeSession { id: id.clone(), cols: 100, rows: 30 }),
             Response::Ok
@@ -7868,7 +7883,7 @@ mod tests {
         // timer is about to speak for this session either way.
         std::thread::sleep(HEURISTIC_QUIET_PERIOD + Duration::from_millis(500));
 
-        let mut commands = UnixStream::connect(&socket_path).unwrap();
+        let mut commands = Stream::connect(&socket_path).unwrap();
         request(&mut commands, &Request::ResizeSession { id: id.clone(), cols: 100, rows: 30 });
 
         let (statuses, repainted) = collect_after(&mut attached, &id, Duration::from_millis(1500));
@@ -7901,7 +7916,7 @@ mod tests {
         let id = create_session_with(&socket_path, "cat");
         let mut attached = attach_reader(&socket_path, &id);
 
-        let mut commands = UnixStream::connect(&socket_path).unwrap();
+        let mut commands = Stream::connect(&socket_path).unwrap();
         // A real move, to give the PTY a size that can then be asked for
         // a second time -- and, since nothing answers it, long enough
         // ago that its window has certainly closed.
@@ -7948,7 +7963,7 @@ mod tests {
         wait_for_status(&mut attached, &id, "working");
         wait_for_status(&mut attached, &id, "idle");
 
-        let mut commands = UnixStream::connect(&socket_path).unwrap();
+        let mut commands = Stream::connect(&socket_path).unwrap();
         // Exactly what xterm sends when its textarea loses focus.
         request(
             &mut commands,
@@ -7994,7 +8009,7 @@ mod tests {
 
     /// The persisted status, read back the way any other client would.
     fn manager_status(socket_path: &std::path::Path, id: &str) -> String {
-        let mut stream = UnixStream::connect(socket_path).unwrap();
+        let mut stream = Stream::connect(socket_path).unwrap();
         match request(&mut stream, &Request::ListSessions) {
             Response::SessionList { sessions } => sessions
                 .into_iter()
@@ -8048,7 +8063,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             // `None`: exactly what the app sends for a terminal tab the
             // human opened (backend.createSession with no command).
             let created = request(
@@ -8065,7 +8080,7 @@ mod tests {
             }
         };
 
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
         // Typed, not run: bare characters with no newline are echoed by
         // the shell's line editor without executing anything, so this
@@ -8105,7 +8120,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -8120,7 +8135,7 @@ mod tests {
             }
         };
 
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
         // A real OSC 133 "C" marker, followed by plain output with no
         // further markers -- once this session has seen OSC 133 once,
@@ -8170,7 +8185,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -8185,7 +8200,7 @@ mod tests {
             }
         };
 
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
         // No OSC 133 markers at all -- stays in heuristic mode for its
         // whole life. Rings a bare bell, then genuinely blocks on `read`
@@ -8254,7 +8269,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -8269,7 +8284,7 @@ mod tests {
             }
         };
 
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
         write_message(
             &mut stream2,
@@ -8316,7 +8331,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let make_session = || {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -8334,7 +8349,7 @@ mod tests {
         let id_b = make_session();
 
         let attach_and_report_cwd = |id: &str| {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             write_message(&mut stream, &Request::Attach { id: id.to_string() }).unwrap();
             write_message(
                 &mut stream,
@@ -8349,7 +8364,7 @@ mod tests {
         let mut stream_a = attach_and_report_cwd(&id_a);
         let mut stream_b = attach_and_report_cwd(&id_b);
 
-        let wait_for_git_status = |stream: &mut UnixStream, expected_id: &str| {
+        let wait_for_git_status = |stream: &mut Stream, expected_id: &str| {
             let mut reader = line_reader(stream.try_clone().unwrap());
             let deadline = std::time::Instant::now() + PROCESS_BUDGET;
             while std::time::Instant::now() < deadline {
@@ -8374,7 +8389,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -8389,7 +8404,7 @@ mod tests {
             }
         };
 
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
         // /tmp itself is essentially never a git repo -- no OSC7 report
         // needed, the session's own launch cwd already qualifies.
@@ -8427,7 +8442,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -8448,7 +8463,7 @@ mod tests {
         // before detaching, so the SECOND attach below has something
         // real to find already cached.
         {
-            let mut stream1 = UnixStream::connect(&socket_path).unwrap();
+            let mut stream1 = Stream::connect(&socket_path).unwrap();
             write_message(&mut stream1, &Request::Attach { id: id.clone() }).unwrap();
             let mut reader = line_reader(stream1.try_clone().unwrap());
             let deadline = std::time::Instant::now() + PROCESS_BUDGET;
@@ -8468,7 +8483,7 @@ mod tests {
         // Second attach, a fresh connection: this is what actually
         // exercises the baseline path (a cache already populated by the
         // first attach above), not a fresh live check.
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
         let mut reader2 = line_reader(stream2.try_clone().unwrap());
 
@@ -8527,16 +8542,12 @@ mod tests {
         manager
             .write_input("leftover-1", b"echo recovered_ok\n")
             .unwrap();
-        let mut reader = manager.reader_for("leftover-1").unwrap();
-
-        let mut collected = String::new();
-        let mut buf = [0u8; 4096];
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !collected.contains("recovered_ok") {
-            let n = reader.read(&mut buf).unwrap();
-            collected.push_str(&String::from_utf8_lossy(&buf[..n]));
-            assert!(std::time::Instant::now() < deadline, "got: {collected}");
-        }
+        // Through pty_reads_until, not a bare read loop: the deadline has
+        // to bound the READ, not merely the gap between two of them.
+        let collected = pty_reads_until(&manager, "leftover-1", |c| {
+            c.matches("recovered_ok").count() > 1
+        });
+        assert!(collected.matches("recovered_ok").count() > 1, "got: {collected}");
     }
 
     /// A registry row exactly as a killed daemon would have left it: no
@@ -8629,6 +8640,12 @@ mod tests {
     /// Reads from a recovered session until `needle` shows up, or gives
     /// up. Proves there is a real interactive shell behind the id rather
     /// than merely a registry row.
+    ///
+    /// TWICE, because the tty echoes the typed line back before the
+    /// shell has run it -- so one occurrence proves only that the PTY
+    /// exists. The needle must therefore be a LITERAL the shell prints
+    /// unchanged; a needle the shell expands (`$PWD`) can only ever
+    /// appear once, in the echo.
     fn shell_echoes(manager: &SessionManager, id: &str, needle: &str) -> bool {
         manager.write_input(id, format!("echo {needle}\n").as_bytes()).unwrap();
         // The echo of the typed line carries the needle too, so what
@@ -8752,8 +8769,8 @@ mod tests {
         let manager = recovered_manager(&dir);
 
         assert!(
-            shell_echoes(&manager, "moved-1", "$PWD"),
-            "the recovered shell should print a directory at all"
+            shell_echoes(&manager, "moved-1", "recovered_shell_ok"),
+            "the recovered shell should answer at all"
         );
         manager.write_input("moved-1", b"case \"$PWD\" in *elsewhere) echo CWDMARK_yes;; *) echo CWDMARK_no;; esac\n").unwrap();
         let collected =
@@ -9210,7 +9227,7 @@ mod tests {
         );
         let manager = Arc::new(recovered_manager(&dir));
 
-        let (mut client, server) = UnixStream::pair().unwrap();
+        let (mut client, server) = Stream::pair().unwrap();
         manager.attach("orphan-6", Arc::new(Mutex::new(server)));
 
         let mut reader = line_reader(&mut client);
@@ -9248,7 +9265,7 @@ mod tests {
         );
         let manager = Arc::new(recovered_manager(&dir));
 
-        let (mut client, server) = UnixStream::pair().unwrap();
+        let (mut client, server) = Stream::pair().unwrap();
         manager.attach("plain-2", Arc::new(Mutex::new(server)));
 
         let mut reader = line_reader(&mut client);
@@ -9278,7 +9295,7 @@ mod tests {
         );
         let manager = Arc::new(recovered_manager(&dir));
 
-        let (client, server_side) = UnixStream::pair().unwrap();
+        let (client, server_side) = Stream::pair().unwrap();
         client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         manager.attach("agent-3", Arc::new(Mutex::new(server_side)));
 
@@ -9312,7 +9329,7 @@ mod tests {
         );
         let manager = Arc::new(recovered_manager(&dir));
 
-        let (client, server_side) = UnixStream::pair().unwrap();
+        let (client, server_side) = Stream::pair().unwrap();
         client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         manager.attach("shell-2", Arc::new(Mutex::new(server_side)));
 
@@ -9395,7 +9412,7 @@ mod tests {
 
         // A session mapped to this root with a live "client" on the other
         // end of a socketpair, so emitted responses are directly readable.
-        let (client, server_side) = UnixStream::pair().unwrap();
+        let (client, server_side) = Stream::pair().unwrap();
         // Set before anything can close the far end: on macOS,
         // SO_RCVTIMEO on a socketpair whose peer has already been dropped
         // fails with EINVAL.
@@ -9440,7 +9457,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -9455,7 +9472,7 @@ mod tests {
             }
         };
 
-        let mut stream2 = UnixStream::connect(&socket_path).unwrap();
+        let mut stream2 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream2, &Request::Attach { id: id.clone() }).unwrap();
         write_message(
             &mut stream2,
@@ -9510,7 +9527,7 @@ mod tests {
         let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh")).unwrap();
 
         // Attaching spawns the pump, which is what creates the screen.
-        let (client, server_side) = UnixStream::pair().unwrap();
+        let (client, server_side) = Stream::pair().unwrap();
         client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         manager.attach(&id, Arc::new(Mutex::new(server_side)));
 
@@ -9654,7 +9671,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let make_session = |cwd: &str| {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             let created = request(
                 &mut stream,
                 &Request::CreateSession {
@@ -9669,11 +9686,11 @@ mod tests {
             }
         };
         let attach = |id: &str| {
-            let stream = UnixStream::connect(&socket_path).unwrap();
+            let stream = Stream::connect(&socket_path).unwrap();
             write_message(&mut &stream, &Request::Attach { id: id.to_string() }).unwrap();
             stream
         };
-        let report_cwd = |stream: &UnixStream, id: &str, path: &str| {
+        let report_cwd = |stream: &Stream, id: &str, path: &str| {
             write_message(
                 &mut &*stream,
                 &Request::WriteInput {
@@ -9683,7 +9700,7 @@ mod tests {
             )
             .unwrap();
         };
-        let wait_for_status_in = |reader: &mut BufReader<UnixStream>, id: &str, root: &std::path::Path| {
+        let wait_for_status_in = |reader: &mut BufReader<Stream>, id: &str, root: &std::path::Path| {
             let want = std::fs::canonicalize(root).unwrap();
             let deadline = std::time::Instant::now() + PROCESS_BUDGET;
             while std::time::Instant::now() < deadline {
@@ -9770,7 +9787,7 @@ mod tests {
             "test premise broken: this session must have no live PTY"
         );
 
-        let (client, server_side) = UnixStream::pair().unwrap();
+        let (client, server_side) = Stream::pair().unwrap();
         // Set before attach, not after: the pump's error arm drops the
         // far end of this pair, and on macOS SO_RCVTIMEO on a socketpair
         // whose peer has already been dropped fails with EINVAL.
@@ -9806,6 +9823,13 @@ mod tests {
         }
     }
 
+    /// unix only, because the SUBJECT is: the failure being provoked is
+    /// a spawn into a directory the process may not enter, and `chmod
+    /// 000` is how that is arranged. Windows has no mode to remove --
+    /// the equivalent is a deny ACE, which is a different setup for the
+    /// same assertion and not one worth carrying to prove a
+    /// platform-independent code path.
+    #[cfg(unix)]
     #[test]
     fn recover_marks_a_failed_spawn_record_exited_instead_of_leaving_it_stale() {
         use std::os::unix::fs::PermissionsExt;
@@ -9950,7 +9974,7 @@ mod tests {
         // No recover() call -- `sessions` genuinely has no entry for this
         // id, simulating whatever unanticipated cause reaches this arm.
 
-        let (client, server_side) = UnixStream::pair().unwrap();
+        let (client, server_side) = Stream::pair().unwrap();
         // Set before attach, not after: the pump's error arm drops the far
         // end of this pair, and on macOS SO_RCVTIMEO on a socketpair whose
         // peer has already been dropped fails with EINVAL.
@@ -10016,7 +10040,7 @@ mod tests {
             test_orchestration_store(),
         ));
 
-        let (client, server_side) = UnixStream::pair().unwrap();
+        let (client, server_side) = Stream::pair().unwrap();
         client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         manager.attach("restored-1", Arc::new(Mutex::new(server_side)));
 
@@ -10058,7 +10082,7 @@ mod tests {
             test_orchestration_store(),
         ));
 
-        let (client, server_side) = UnixStream::pair().unwrap();
+        let (client, server_side) = Stream::pair().unwrap();
         client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         manager.attach("not-restored-1", Arc::new(Mutex::new(server_side)));
 
@@ -10393,7 +10417,7 @@ mod tests {
         // The writer is registered directly rather than through
         // `attach`, which would spawn a pump for a session that has no
         // PTY and tear the registration straight back down again.
-        let (client, server_side) = UnixStream::pair().unwrap();
+        let (client, server_side) = Stream::pair().unwrap();
         client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         manager
             .attached_writers
@@ -10433,7 +10457,7 @@ mod tests {
             test_orchestration_store(),
         ));
 
-        let (client, server_side) = UnixStream::pair().unwrap();
+        let (client, server_side) = Stream::pair().unwrap();
         client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         manager.attach("queued-1", Arc::new(Mutex::new(server_side)));
 
@@ -10472,7 +10496,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             match request(
                 &mut stream,
                 &Request::CreateSession {
@@ -10486,7 +10510,7 @@ mod tests {
             }
         };
 
-        let mut streaming = UnixStream::connect(&socket_path).unwrap();
+        let mut streaming = Stream::connect(&socket_path).unwrap();
         write_message(&mut streaming, &Request::Attach { id: id.clone() }).unwrap();
         // Chatty for about two and a half seconds -- longer than one
         // HEURISTIC_QUIET_PERIOD, so the session is unambiguously
@@ -10520,7 +10544,7 @@ mod tests {
         }
         assert!(working, "the shell never reported working");
 
-        let mut queue_stream = UnixStream::connect(&socket_path).unwrap();
+        let mut queue_stream = Stream::connect(&socket_path).unwrap();
         match request(
             &mut queue_stream,
             &Request::QueueInput { id: id.clone(), text: "QUEUED_MARK_OK".to_string() },
@@ -10544,7 +10568,7 @@ mod tests {
         }
         assert!(delivered, "the queued follow-up never reached the terminal");
 
-        let mut check = UnixStream::connect(&socket_path).unwrap();
+        let mut check = Stream::connect(&socket_path).unwrap();
         match request(&mut check, &Request::ListQueuedInputs) {
             Response::QueuedInputs { queued } => assert!(
                 queued.is_empty(),
@@ -10562,7 +10586,7 @@ mod tests {
         let (socket_path, _dir) = start_test_server();
 
         let id = {
-            let mut stream = UnixStream::connect(&socket_path).unwrap();
+            let mut stream = Stream::connect(&socket_path).unwrap();
             match request(
                 &mut stream,
                 &Request::CreateSession {
@@ -10576,12 +10600,12 @@ mod tests {
             }
         };
 
-        let mut streaming = UnixStream::connect(&socket_path).unwrap();
+        let mut streaming = Stream::connect(&socket_path).unwrap();
         write_message(&mut streaming, &Request::Attach { id: id.clone() }).unwrap();
         streaming.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
         let mut reader = line_reader(streaming.try_clone().unwrap());
 
-        let mut queue_stream = UnixStream::connect(&socket_path).unwrap();
+        let mut queue_stream = Stream::connect(&socket_path).unwrap();
         match request(
             &mut queue_stream,
             &Request::QueueInput { id: id.clone(), text: "STRAIGHT_THROUGH_OK".to_string() },

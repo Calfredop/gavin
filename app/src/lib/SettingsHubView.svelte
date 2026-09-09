@@ -62,7 +62,7 @@
     renameDecision,
     DEFAULT_ACCENT,
   } from "./settings";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { pickPath } from "./picker";
   import * as backend from "./backend";
   import SuperpowersControls from "./SuperpowersControls.svelte";
   import ConfigTrustNotice from "./ConfigTrustNotice.svelte";
@@ -573,9 +573,8 @@
   async function pickPrd(): Promise<void> {
     prdError = null;
     if (!ws?.rootPath) return;
-    const picked = await open({
+    const picked = await pickPath({
       directory: false,
-      multiple: false,
       defaultPath: ws.rootPath,
       title: "Choose the PRD file",
     });
@@ -595,9 +594,8 @@
   async function pickAgentFile(): Promise<void> {
     fileError = null;
     if (!ws?.rootPath) return;
-    const picked = await open({
+    const picked = await pickPath({
       directory: false,
-      multiple: false,
       defaultPath: ws.rootPath,
       title: "Choose the agent instructions file",
     });

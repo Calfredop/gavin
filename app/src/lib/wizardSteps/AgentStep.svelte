@@ -1,6 +1,6 @@
 <script lang="ts">
   import { editableCycle, saveAgentPause } from "../agentPauseState";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { pickPath } from "../picker";
   import {
     layoutState,
     agentProfilesStore,
@@ -53,9 +53,8 @@
     fileError = null;
     picking = true;
     try {
-      const picked = await open({
+      const picked = await pickPath({
         directory: false,
-        multiple: false,
         defaultPath: root,
         title: "Choose the agent instructions file",
       });

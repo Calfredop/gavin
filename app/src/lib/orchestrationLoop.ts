@@ -113,7 +113,34 @@ export function untilMax(tool: UntilParams | undefined, overrides: Record<string
 /// between the launch that writes it and the tick that reads it -- which
 /// is what makes the whole loop survive an app reload.
 export function untilLogPath(stepId: string): string {
-  return `/tmp/gavin-until-${stepId.replace(/[^A-Za-z0-9_-]/g, "")}.log`;
+  return untilLogPathIn(tempRoot, stepId);
+}
+
+/// The rule with the directory passed in.
+///
+/// Two processes have to agree on this file: the shell writes it
+/// (`tee`, inside the check's own session) and the app reads it back to
+/// quote the failure. `/tmp` was hardcoded and is not a directory on
+/// Windows -- Git Bash maps `/tmp` to `%TEMP%`, while a read of `/tmp`
+/// from the app looks for `C:\tmp` and finds nothing, so the retry
+/// prompt would quote an empty check forever. The host's own temp
+/// directory is the one answer both halves can reach.
+export function untilLogPathIn(tempRoot: string, stepId: string): string {
+  const base = tempRoot.replace(/[\\/]+$/, "");
+  return `${base}/gavin-until-${stepId.replace(/[^A-Za-z0-9_-]/g, "")}.log`;
+}
+
+/// Where `untilLogPath` writes, set once at bootstrap from the host.
+///
+/// A module-level value rather than a parameter threaded through
+/// `retrySourceFor` and every caller of it: it is one constant for the
+/// life of the process, and the alternative was five signatures carrying
+/// a string that never changes. `/tmp` until it is set, which is right
+/// on the two platforms where it is also the answer.
+let tempRoot = "/tmp";
+
+export function setTempRoot(dir: string): void {
+  if (dir.trim()) tempRoot = dir.trim();
 }
 
 /// The check, wrapped so it stays VISIBLE and still says what it did.

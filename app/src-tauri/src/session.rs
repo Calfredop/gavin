@@ -7,15 +7,16 @@ use protocol::{
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixStream;
+use protocol::transport::Stream;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct DaemonConnection {
-    writer: Arc<Mutex<UnixStream>>,
+    writer: Arc<Mutex<Stream>>,
 }
 
 /// The frontend's whole view of workspace/page state, sent over IPC (the
@@ -2161,20 +2162,13 @@ pub fn restart_daemon(
     if app_handle.try_state::<DaemonConnection>().is_some() {
         return reconnect(&app_handle).map_err(|e| e.to_string());
     }
-    crate::daemon::kill_running_daemons().map_err(|e| e.to_string())?;
-    // Let the old process actually exit before connect_or_spawn looks for
-    // a listener, so it doesn't reach a half-dead one.
-    std::thread::sleep(DAEMON_EXIT_GRACE);
+    let socket = socket_path().map_err(|e| e.to_string())?;
+    crate::daemon::stop_running_daemon(&socket).map_err(|e| e.to_string())?;
     if let Some(state) = app_handle.try_state::<BootstrapError>() {
         *state.0.lock().unwrap() = None;
     }
     bootstrap(app_handle).map_err(|e| e.to_string())
 }
-
-/// How long to let a killed daemon actually exit before looking for a
-/// listener again -- otherwise `connect_or_spawn` can reach the dying
-/// process's socket and believe it succeeded.
-const DAEMON_EXIT_GRACE: Duration = Duration::from_millis(300);
 
 /// Rewires a running app onto a freshly restarted daemon, with no
 /// relaunch.
@@ -2186,25 +2180,25 @@ const DAEMON_EXIT_GRACE: Duration = Duration::from_millis(300);
 /// why this command used to return "restarted, now relaunch".)
 ///
 /// But the state does not need replacing. Both connections are already
-/// mutexes around a `UnixStream`, so a reconnect just assigns fresh
+/// mutexes around a `Stream`, so a reconnect just assigns fresh
 /// streams into the ones the app is holding, and every command that
 /// borrows them keeps working untouched.
 fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
     // Bump BEFORE killing: the old relay thread notices its socket close
     // almost immediately, and this is the only thing keeping it quiet.
     app_handle.state::<ConnectionEpoch>().0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    crate::daemon::kill_running_daemons()?;
-    std::thread::sleep(DAEMON_EXIT_GRACE);
+    crate::daemon::stop_running_daemon(&socket_path()?)?;
     if let Some(state) = app_handle.try_state::<BootstrapError>() {
         *state.0.lock().unwrap() = None;
     }
 
+    let socket = socket_path()?;
     let mut stream_conn = crate::daemon::connect_or_spawn(
-        &socket_path(),
+        &socket,
         Duration::from_secs(3),
         crate::daemon::spawn_real_daemon,
     )?;
-    let probe = Mutex::new(UnixStream::connect(socket_path())?);
+    let probe = Mutex::new(Stream::connect(&socket)?);
     // Verified before ANYTHING is swapped in: a daemon that fails the
     // version probe must leave a named error and an app that is merely
     // disconnected, never one wired half onto each daemon.
@@ -2281,7 +2275,7 @@ pub fn gate(req: &Request, compat: &DaemonCompat) -> Result<(), String> {
 }
 
 fn send_request(
-    writer: &Arc<Mutex<UnixStream>>,
+    writer: &Arc<Mutex<Stream>>,
     req: &Request,
     compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
@@ -2299,7 +2293,7 @@ fn send_request(
 /// request-then-response cycles, one at a time, which is what makes
 /// correlation unambiguous without the daemon protocol needing a
 /// request-id field.
-pub struct CommandConnection(pub Mutex<UnixStream>);
+pub struct CommandConnection(pub Mutex<Stream>);
 
 /// What the app negotiated with the daemon it just connected to.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -2362,7 +2356,7 @@ pub fn classify(daemon: u32, app: u32, floor: u32) -> Result<DaemonCompat, Strin
 /// parse the request and closes the connection, which must map to the
 /// same actionable message as an explicit lower version (this turned the
 /// 2026-08-07 stale-daemon incident's mystery close into a named state).
-fn verify_daemon_protocol(command_conn: &Mutex<UnixStream>) -> anyhow::Result<DaemonCompat> {
+fn verify_daemon_protocol(command_conn: &Mutex<Stream>) -> anyhow::Result<DaemonCompat> {
     const UNREACHABLE: &str = "the gavin daemon is too old to talk to this app — restart it (quit gavin, then relaunch)";
     match send_command(command_conn, &Request::GetProtocolVersion) {
         Ok(Response::ProtocolVersion { version }) => {
@@ -2377,7 +2371,7 @@ fn verify_daemon_protocol(command_conn: &Mutex<UnixStream>) -> anyhow::Result<Da
     }
 }
 
-fn send_command(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Response> {
+fn send_command(conn: &Mutex<Stream>, req: &Request) -> anyhow::Result<Response> {
     let mut stream = conn.lock().unwrap();
     write_message(&mut *stream, req)?;
     let mut reader = BufReader::new(&mut *stream);
@@ -2392,7 +2386,7 @@ fn send_command(conn: &Mutex<UnixStream>, req: &Request) -> anyhow::Result<Respo
 /// this is read, and the token is written before the socket binds, so this
 /// only ever misses against a pre-v35 daemon).
 fn read_daemon_token() -> Option<String> {
-    std::fs::read_to_string(protocol::daemon_token_path())
+    std::fs::read_to_string(protocol::daemon_token_path().ok()?)
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -2425,7 +2419,7 @@ fn verify_app_ack(ack: Response, token: &str, nonce: &str) -> anyhow::Result<()>
 /// verify the proof. The command connection has already exchanged the
 /// version probe, which is fine: `Hello` need only be the first *Hello*,
 /// and both real clients probe the version before it.
-fn app_handshake_command(conn: &Mutex<UnixStream>, token: &str) -> anyhow::Result<()> {
+fn app_handshake_command(conn: &Mutex<Stream>, token: &str) -> anyhow::Result<()> {
     let nonce = protocol::random_hex(16)?;
     let ack = send_command(
         conn,
@@ -2443,7 +2437,7 @@ fn app_handshake_command(conn: &Mutex<UnixStream>, token: &str) -> anyhow::Resul
 /// connection and verify the proof. Read with a one-byte reader so no push
 /// that follows the ack is swallowed -- the same hazard the daemon tests'
 /// `line_reader` guards, though at bootstrap nothing is attached yet.
-fn app_handshake_stream(stream: &mut UnixStream, token: &str) -> anyhow::Result<()> {
+fn app_handshake_stream(stream: &mut Stream, token: &str) -> anyhow::Result<()> {
     let nonce = protocol::random_hex(16)?;
     write_message(
         stream,
@@ -2473,8 +2467,8 @@ fn app_handshake_stream(stream: &mut UnixStream, token: &str) -> anyhow::Result<
 /// today's full reach. A wrong server_proof IS an error -- that is DP-06.
 fn app_handshake(
     compat: &DaemonCompat,
-    command_conn: &Mutex<UnixStream>,
-    stream: &mut UnixStream,
+    command_conn: &Mutex<Stream>,
+    stream: &mut Stream,
 ) -> anyhow::Result<()> {
     const HELLO_MIN_VERSION: u32 = 35;
     if compat.daemon_version < HELLO_MIN_VERSION {
@@ -2492,7 +2486,7 @@ fn app_handshake(
 /// daemon reads this same marker file per request, so the toggle is live.
 #[tauri::command]
 pub fn get_require_local_token() -> bool {
-    protocol::require_local_token_path().exists()
+    protocol::require_local_token_path().is_ok_and(|p| p.exists())
 }
 
 /// Turn `require_local_token` on (write the marker `0600`) or off (remove
@@ -2500,9 +2494,10 @@ pub fn get_require_local_token() -> bool {
 /// it on the next request with no restart.
 #[tauri::command]
 pub fn set_require_local_token(enabled: bool) -> Result<(), String> {
-    let path = protocol::require_local_token_path();
+    let path = protocol::require_local_token_path().map_err(|e| e.to_string())?;
     if enabled {
         std::fs::write(&path, b"1").map_err(|e| e.to_string())?;
+        #[cfg(unix)]
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     } else if path.exists() {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
@@ -2542,14 +2537,14 @@ pub fn set_require_local_token(enabled: bool) -> Result<(), String> {
 /// own peer address rather than from a fixed, globally-resolved one; see
 /// its doc comment for why.
 fn send_command_reconnecting_at(
-    conn: &Mutex<UnixStream>,
+    conn: &Mutex<Stream>,
     socket_path: &Path,
     req: &Request,
 ) -> anyhow::Result<Response> {
     match send_command(conn, req) {
         Ok(resp) => Ok(resp),
         Err(_) => {
-            *conn.lock().unwrap() = UnixStream::connect(socket_path)?;
+            *conn.lock().unwrap() = Stream::connect(socket_path)?;
             send_command(conn, req)
         }
     }
@@ -2562,12 +2557,12 @@ fn send_command_reconnecting_at(
 /// there must stay a hard failure rather than get retried away.
 ///
 /// Reconnects to the peer THIS connection was already opened against,
-/// read back from the socket itself via `peer_addr()`, rather than
+/// read back from the connection itself via `peer_path()`, rather than
 /// resolving `protocol::socket_path()` (the real daemon) globally. Several
 /// of this function's callers -- `list_valid_session_ids`,
 /// `create_fresh_session`, `get_board_impl`, `set_board_impl`,
 /// `delete_board_impl` -- are themselves unit-tested against a bare
-/// `Mutex<UnixStream>` pointed at a tempdir fake socket, with no path
+/// `Mutex<Stream>` pointed at a tempdir fake socket, with no path
 /// threaded through for a reconnect to target. A global-path resolution
 /// here would have meant any of those tests reaching the retry branch --
 /// today only by accident, tomorrow by a one-off regression -- silently
@@ -2576,14 +2571,15 @@ fn send_command_reconnecting_at(
 /// the connection's own peer address closes that off structurally instead
 /// of relying on every test's response queue never running short.
 ///
-/// Falls back to a single, non-retried attempt if the peer address can't
-/// be determined (not a `SocketAddr::as_pathname` case, e.g. an unnamed
-/// or abstract socket) -- a missed retry is recoverable, a retry aimed at
-/// an unknown or wrong peer is not.
+/// Falls back to a single, non-retried attempt if the peer can't be
+/// named -- an unnamed socket, either half of a `Stream::pair()`, or the
+/// accepted side of a connection, none of which have a path to dial. A
+/// missed retry is recoverable, a retry aimed at an unknown or wrong peer
+/// is not.
 ///
 /// Gated here rather than in `send_command_reconnecting_at`: this function
 /// has TWO branches that can put bytes on the wire -- the peer-derived
-/// retry path through `_at`, and the `peer_addr()`-failed fallback that
+/// retry path through `_at`, and the `peer_path()`-failed fallback that
 /// calls `send_command` directly. Gating only inside `_at` would leave
 /// that fallback branch unprotected, and a gated request reaching the
 /// socket by that one uncommon path is exactly the failure this exists to
@@ -2592,17 +2588,12 @@ fn send_command_reconnecting_at(
 /// propagates that parse error with `?`, dropping the connection and
 /// every push riding on it.
 fn send_command_reconnecting(
-    conn: &Mutex<UnixStream>,
+    conn: &Mutex<Stream>,
     compat: &DaemonCompat,
     req: &Request,
 ) -> anyhow::Result<Response> {
     gate(req, compat).map_err(|e| anyhow::anyhow!(e))?;
-    let peer = conn
-        .lock()
-        .unwrap()
-        .peer_addr()
-        .ok()
-        .and_then(|addr| addr.as_pathname().map(|p| p.to_path_buf()));
+    let peer = conn.lock().unwrap().peer_path();
     match peer {
         Some(path) => send_command_reconnecting_at(conn, &path, req),
         None => send_command(conn, req),
@@ -2620,7 +2611,7 @@ fn send_command_reconnecting(
 /// every single launch.
 fn resolve_sessions(
     node: &mut LayoutNode,
-    command_conn: &Mutex<UnixStream>,
+    command_conn: &Mutex<Stream>,
     all_sessions: &HashMap<String, protocol::SessionSummary>,
     non_session_tab_ids: &HashSet<String>,
     compat: &DaemonCompat,
@@ -2892,7 +2883,7 @@ pub fn list_managed_sessions(
 }
 
 fn list_valid_session_ids(
-    command_conn: &Mutex<UnixStream>,
+    command_conn: &Mutex<Stream>,
     compat: &DaemonCompat,
 ) -> anyhow::Result<HashMap<String, protocol::SessionSummary>> {
     let resp = send_command_reconnecting(command_conn, compat, &Request::ListSessions)?;
@@ -2911,7 +2902,7 @@ fn list_valid_session_ids(
 /// or session is auto-created, and `ListSessions` isn't even called.
 fn resolve_workspaces(
     workspaces: &mut [Workspace],
-    command_conn: &Mutex<UnixStream>,
+    command_conn: &Mutex<Stream>,
     non_session_tab_ids: &HashSet<String>,
     compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
@@ -2941,7 +2932,7 @@ fn resolve_workspaces(
 #[cfg(test)]
 mod test_support {
     use super::*;
-    use std::os::unix::net::UnixListener;
+    use protocol::transport::Listener;
 
     /// A daemon at exact parity with this app -- gates nothing, so the
     /// tests below that aren't specifically exercising the gate itself
@@ -2960,15 +2951,15 @@ mod test_support {
     /// Spins up a minimal fake daemon: accepts one connection, then for
     /// each response given, reads exactly one Request and replies with
     /// that Response, in order. Returns the connected client-side
-    /// UnixStream ready to pass to send_command. Shared by
+    /// Stream ready to pass to send_command. Shared by
     /// command_connection_tests and resolve_workspaces_tests.
-    pub fn fake_daemon_replying_with(responses: Vec<Response>) -> (UnixStream, tempfile::TempDir) {
+    pub fn fake_daemon_replying_with(responses: Vec<Response>) -> (Stream, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("fake.sock");
-        let listener = UnixListener::bind(&socket_path).unwrap();
+        let listener = Listener::bind(&socket_path).unwrap();
 
         std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = listener.accept().unwrap();
             for response in responses {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let _req: Request = read_message(&mut reader).unwrap().unwrap();
@@ -2976,7 +2967,7 @@ mod test_support {
             }
         });
 
-        let client = UnixStream::connect(&socket_path).unwrap();
+        let client = Stream::connect(&socket_path).unwrap();
         (client, dir)
     }
 
@@ -2988,15 +2979,15 @@ mod test_support {
     /// which `cwd` a `CreateSession` request carried).
     pub fn fake_daemon_capturing_requests(
         responses: Vec<Response>,
-    ) -> (UnixStream, Arc<Mutex<Vec<Request>>>, tempfile::TempDir) {
+    ) -> (Stream, Arc<Mutex<Vec<Request>>>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("fake.sock");
-        let listener = UnixListener::bind(&socket_path).unwrap();
+        let listener = Listener::bind(&socket_path).unwrap();
         let captured = Arc::new(Mutex::new(Vec::new()));
         let captured_clone = Arc::clone(&captured);
 
         std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = listener.accept().unwrap();
             for response in responses {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let req: Request = read_message(&mut reader).unwrap().unwrap();
@@ -3005,7 +2996,7 @@ mod test_support {
             }
         });
 
-        let client = UnixStream::connect(&socket_path).unwrap();
+        let client = Stream::connect(&socket_path).unwrap();
         (client, captured, dir)
     }
 }
@@ -3014,7 +3005,7 @@ mod test_support {
 mod command_connection_tests {
     use super::test_support::{fake_daemon_replying_with, parity_compat};
     use super::*;
-    use std::os::unix::net::UnixListener;
+    use protocol::transport::Listener;
 
     /// A closed command connection must not stay dead forever: the daemon
     /// may simply have restarted between calls. The first connection
@@ -3024,12 +3015,12 @@ mod command_connection_tests {
     ///
     /// Goes through the production `send_command_reconnecting` wrapper,
     /// not `_at` directly -- this is the empirical check for whether
-    /// `UnixStream::peer_addr()` still resolves to the original peer path
+    /// `Stream::peer_addr()` still resolves to the original peer path
     /// once that peer has already hung up (the state the retry branch
     /// always runs in). If it didn't, the wrapper would silently fall back
     /// to a single non-retried attempt and this test's second `accept()`
     /// would never fire, hanging the test. Passing quickly is the proof:
-    /// peer_addr() survives the disconnect, and the retry lands back on
+    /// peer_path() survives the disconnect, and the retry lands back on
     /// this exact tempdir socket rather than on `protocol::socket_path()`
     /// (the real daemon), which reconnecting into would be the hazard this
     /// whole design change exists to close off.
@@ -3039,18 +3030,18 @@ mod command_connection_tests {
         // daemon that hung up), the second answers properly.
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("retry.sock");
-        let listener = UnixListener::bind(&sock).unwrap();
+        let listener = Listener::bind(&sock).unwrap();
 
         let server = std::thread::spawn(move || {
-            let (first, _) = listener.accept().unwrap();
+            let first = listener.accept().unwrap();
             drop(first);
-            let (mut second, _) = listener.accept().unwrap();
+            let mut second = listener.accept().unwrap();
             let mut reader = BufReader::new(second.try_clone().unwrap());
             let _req: Option<Request> = read_message(&mut reader).unwrap();
             write_message(&mut second, &Response::ProtocolVersion { version: 12 }).unwrap();
         });
 
-        let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
+        let conn = Mutex::new(Stream::connect(&sock).unwrap());
         let resp = send_command_reconnecting(&conn, &parity_compat(), &Request::GetProtocolVersion).unwrap();
         assert!(matches!(resp, Response::ProtocolVersion { version: 12 }));
         server.join().unwrap();
@@ -3064,16 +3055,16 @@ mod command_connection_tests {
     fn a_command_the_daemon_predates_never_reaches_the_wire() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("gated.sock");
-        let listener = UnixListener::bind(&sock).unwrap();
+        let listener = Listener::bind(&sock).unwrap();
 
         let server = std::thread::spawn(move || {
-            let (conn, _) = listener.accept().unwrap();
+            let conn = listener.accept().unwrap();
             let mut reader = BufReader::new(conn.try_clone().unwrap());
             // Returns None if the client correctly sent nothing and hung up.
             read_message::<_, Request>(&mut reader).unwrap()
         });
 
-        let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
+        let conn = Mutex::new(Stream::connect(&sock).unwrap());
         let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
         let too_new = Request::NameSession { session_id: "s-1".into(), name: "x".into() };
 
@@ -3089,16 +3080,16 @@ mod command_connection_tests {
     fn a_command_the_daemon_understands_still_reaches_the_wire() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("allowed.sock");
-        let listener = UnixListener::bind(&sock).unwrap();
+        let listener = Listener::bind(&sock).unwrap();
 
         let server = std::thread::spawn(move || {
-            let (mut conn, _) = listener.accept().unwrap();
+            let mut conn = listener.accept().unwrap();
             let mut reader = BufReader::new(conn.try_clone().unwrap());
             let _req: Option<Request> = read_message(&mut reader).unwrap();
             write_message(&mut conn, &Response::SessionList { sessions: vec![] }).unwrap();
         });
 
-        let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
+        let conn = Mutex::new(Stream::connect(&sock).unwrap());
         let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
 
         // ListSessions is v1, so a v9 daemon serves it fine.
@@ -3531,7 +3522,7 @@ fn drop_smoketest_workspace(workspaces: &mut Vec<Workspace>) {
 /// page sessions at all.
 fn reconcile_main_sessions(
     workspaces: &mut [Workspace],
-    command_conn: &Mutex<UnixStream>,
+    command_conn: &Mutex<Stream>,
     compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
     if !workspaces.iter().any(|w| w.main_session_id.is_some()) {
@@ -3602,8 +3593,8 @@ fn report_disconnect(app_handle: &AppHandle, epoch: u64, message: String) {
 /// which pushes are forwarded.
 fn attach_and_relay(
     app_handle: &AppHandle,
-    writer: &Arc<Mutex<UnixStream>>,
-    reader_stream: UnixStream,
+    writer: &Arc<Mutex<Stream>>,
+    reader_stream: Stream,
     session_ids: Vec<String>,
     // By value, not `&`: `DaemonCompat` is `Copy`, and the relay thread
     // spawned below needs its own owned copy to move into the `'static`
@@ -3765,15 +3756,16 @@ fn carry_over_agent_command(root_path: &str, legacy: Option<&str>) -> anyhow::Re
 }
 
 pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
+    let socket = socket_path()?;
     let mut stream_conn = crate::daemon::connect_or_spawn(
-        &socket_path(),
+        &socket,
         Duration::from_secs(3),
         crate::daemon::spawn_real_daemon,
     )?;
     // The daemon is confirmed reachable by the connect above (which may
     // have just spawned it) — this second connection should succeed
     // immediately, no retry/backoff needed.
-    let command_stream = UnixStream::connect(socket_path())?;
+    let command_stream = Stream::connect(&socket)?;
     let command_conn = Mutex::new(command_stream);
     let compat = verify_daemon_protocol(&command_conn)?;
     // Present the app's identity on both connections and verify the
@@ -3930,7 +3922,7 @@ pub fn write_input(
 /// not a duplication: it is how a second surface showing the same
 /// session's queue learns about a change it did not make.
 fn queued_inputs_request(
-    conn: &Mutex<UnixStream>,
+    conn: &Mutex<Stream>,
     compat: &DaemonCompatState,
     req: &Request,
 ) -> Result<Vec<protocol::QueuedInput>, String> {
@@ -4031,12 +4023,16 @@ pub fn resize_session(
 /// since it's gated on resolve_workspaces succeeding). So a rejected
 /// non-$HOME target falls back to $HOME once before giving up for real.
 fn create_fresh_session(
-    command_conn: &Mutex<UnixStream>,
+    command_conn: &Mutex<Stream>,
     cwd: Option<&str>,
     command: Option<&str>,
     compat: &DaemonCompat,
 ) -> anyhow::Result<String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+    // "/" only when there is no home at all: the point of the fallback
+    // is a directory that certainly exists, and every OS has that one.
+    let home = crate::home::home_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "/".to_string());
     let target = cwd.map(str::to_string).unwrap_or_else(|| home.clone());
     let command = command.map(str::to_string);
 
@@ -4180,8 +4176,8 @@ pub fn kill_session(
 /// session distinguishable from an unknown one -- both answer `false`
 /// here, because the caller does the same thing with either.
 fn adopt_session_impl(
-    command_conn: &Mutex<UnixStream>,
-    daemon_writer: &Arc<Mutex<UnixStream>>,
+    command_conn: &Mutex<Stream>,
+    daemon_writer: &Arc<Mutex<Stream>>,
     session_id: String,
     compat: &DaemonCompat,
 ) -> anyhow::Result<bool> {
@@ -4213,7 +4209,7 @@ pub fn adopt_session(
 }
 
 fn get_board_impl(
-    command_conn: &Mutex<UnixStream>,
+    command_conn: &Mutex<Stream>,
     workspace_id: String,
     compat: &DaemonCompat,
 ) -> anyhow::Result<Board> {
@@ -4239,7 +4235,7 @@ pub fn get_board(
 /// never been run -- which is why the panel reads
 /// `FEATURE_MIN_VERSION.runHistory` before it ever asks.
 fn card_runs_impl(
-    command_conn: &Mutex<UnixStream>,
+    command_conn: &Mutex<Stream>,
     workspace_id: String,
     path: String,
     compat: &DaemonCompat,
@@ -4262,7 +4258,7 @@ pub fn card_runs(
 }
 
 fn set_board_impl(
-    command_conn: &Mutex<UnixStream>,
+    command_conn: &Mutex<Stream>,
     workspace_id: String,
     columns: Vec<Column>,
     labels: Vec<Label>,
@@ -4293,7 +4289,7 @@ pub fn set_board(
 // parameter already owns the name `state` in this file's convention.
 
 fn get_orchestration_impl(
-    command_conn: &Mutex<UnixStream>,
+    command_conn: &Mutex<Stream>,
     workspace_id: String,
     compat: &DaemonCompat,
 ) -> anyhow::Result<Orchestration> {
@@ -4494,7 +4490,7 @@ pub fn set_tool_run_outcome(
 }
 
 fn tool_runs_impl(
-    command_conn: &Mutex<UnixStream>,
+    command_conn: &Mutex<Stream>,
     workspace_id: String,
     compat: &DaemonCompat,
 ) -> anyhow::Result<Vec<ToolRun>> {
@@ -4571,7 +4567,7 @@ pub fn delete_group_template(
 }
 
 fn delete_board_impl(
-    command_conn: &Mutex<UnixStream>,
+    command_conn: &Mutex<Stream>,
     workspace_id: String,
     compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
@@ -5457,7 +5453,7 @@ mod gate_tests {
 mod kanban_command_tests {
     use super::test_support::{fake_daemon_capturing_requests, fake_daemon_replying_with, parity_compat};
     use super::*;
-    use std::os::unix::net::UnixListener;
+    use protocol::transport::Listener;
 
     #[test]
     fn card_runs_impl_returns_the_cards_runs_newest_first() {
@@ -5520,7 +5516,7 @@ mod kanban_command_tests {
 
     /// Regression for the Critical finding in fix round 1: `get_board_impl`
     /// -- one of the several functions here that are unit-tested against a
-    /// bare `Mutex<UnixStream>` pointed at a tempdir fake socket, with no
+    /// bare `Mutex<Stream>` pointed at a tempdir fake socket, with no
     /// path threaded through for a reconnect -- must retry against THAT
     /// SAME fake socket when its connection drops, never against
     /// `protocol::socket_path()` (the real daemon). Built by hand rather
@@ -5535,12 +5531,12 @@ mod kanban_command_tests {
     fn get_board_impl_retries_against_the_same_fake_socket_not_the_real_daemon() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("board-retry.sock");
-        let listener = UnixListener::bind(&sock).unwrap();
+        let listener = Listener::bind(&sock).unwrap();
 
         let server = std::thread::spawn(move || {
-            let (first, _) = listener.accept().unwrap();
+            let first = listener.accept().unwrap();
             drop(first);
-            let (mut second, _) = listener.accept().unwrap();
+            let mut second = listener.accept().unwrap();
             let mut reader = BufReader::new(second.try_clone().unwrap());
             let _req: Request = read_message(&mut reader).unwrap().unwrap();
             write_message(
@@ -5554,7 +5550,7 @@ mod kanban_command_tests {
             .unwrap();
         });
 
-        let conn = Mutex::new(UnixStream::connect(&sock).unwrap());
+        let conn = Mutex::new(Stream::connect(&sock).unwrap());
         let board = get_board_impl(&conn, "ws-1".to_string(), &parity_compat()).unwrap();
 
         assert_eq!(board.columns.len(), 1);

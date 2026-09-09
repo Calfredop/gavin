@@ -221,7 +221,7 @@ pub fn scan(root: &Path) -> Result<GavinFootprint, String> {
         let plans = gavin_root_path.join("plans");
         let archive = plans.join("archive");
         GavinRootFootprint {
-            path: gavin_root_path.to_string_lossy().to_string(),
+            path: protocol::wire_path(&gavin_root_path),
             cards: count_cards(&plans, &archive),
             archived: count_archived(&archive),
         }
@@ -244,7 +244,7 @@ pub fn scan(root: &Path) -> Result<GavinFootprint, String> {
         }
     }
     skills.sort();
-    let skills: Vec<String> = skills.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let skills: Vec<String> = skills.iter().map(|p| protocol::wire_path(&p)).collect();
 
     // Reported only when it is really there, the same rule the MCP and
     // instructions entries follow: a screen offering to remove a file
@@ -252,15 +252,15 @@ pub fn scan(root: &Path) -> Result<GavinFootprint, String> {
     let agent_file = install
         .agent_file
         .filter(|p| p.is_file())
-        .map(|p| p.to_string_lossy().to_string());
+        .map(|p| protocol::wire_path(&p));
 
     let mcp = install.mcp.and_then(|(path, server_key)| {
         agent_setup::mcp_entry_present(root)
-            .then(|| McpFootprint { path: path.to_string_lossy().to_string(), server_key })
+            .then(|| McpFootprint { path: protocol::wire_path(&path), server_key })
     });
 
     let instructions = agent_setup::instructions_block_present(&install.instructions)
-        .then(|| install.instructions.to_string_lossy().to_string());
+        .then(|| protocol::wire_path(&install.instructions));
 
     let mut inside = Vec::new();
     walk_contexts(root, 1, &mut inside);
@@ -274,15 +274,15 @@ pub fn scan(root: &Path) -> Result<GavinFootprint, String> {
     inside.sort();
     let mut contexts: Vec<ContextFootprint> = inside
         .into_iter()
-        .map(|p| ContextFootprint { path: p.to_string_lossy().to_string(), outside: false })
+        .map(|p| ContextFootprint { path: protocol::wire_path(&p), outside: false })
         .collect();
     contexts.extend(outside_contexts(root).into_iter().map(|p| ContextFootprint {
-        path: p.to_string_lossy().to_string(),
+        path: protocol::wire_path(&p),
         outside: true,
     }));
 
     Ok(GavinFootprint {
-        root: root.to_string_lossy().to_string(),
+        root: protocol::wire_path(&root),
         gavin_root,
         skills,
         agent_file,

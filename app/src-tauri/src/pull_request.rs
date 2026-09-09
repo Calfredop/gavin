@@ -175,10 +175,12 @@ fn gh_binary() -> String {
     "gh".to_string()
 }
 
+/// Through `program` so the answer matches what the spawn will actually
+/// do: on Windows a bare `gh` on PATH is `gh.exe`, and looking for a
+/// file called exactly `gh` would report "not installed" on a machine
+/// that has it.
 fn on_path(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
-        .unwrap_or(false)
+    crate::program::on_path(name)
 }
 
 /// Runs `gh` in `cwd` with the pipes drained on threads -- the same
@@ -190,7 +192,7 @@ fn run_gh(cwd: &str, args: &[&str]) -> Result<Run, String> {
         return Err(format!("directory not found: {cwd}"));
     }
     let bin = gh_binary();
-    let mut child = Command::new(&bin)
+    let mut child = Command::new(crate::program::resolve_or_name(&bin))
         .args(args)
         .current_dir(cwd)
         // gh prompts for auth when it has none and a tty; there is no tty

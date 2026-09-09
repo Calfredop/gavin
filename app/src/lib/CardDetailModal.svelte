@@ -3,7 +3,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import DOMPurify from "dompurify";
   import { renderMarkdown } from "./markdown";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { pickPath } from "./picker";
   import type { CardView } from "./planBoard";
   import type { Column, Label, Priority } from "./kanban";
   import { isArchivedCard, slugStatus } from "./planBoard";
@@ -530,9 +530,8 @@
     }
     attachmentsBusy = true;
     try {
-      const picked = await open({
+      const picked = await pickPath({
         directory: false,
-        multiple: false,
         defaultPath: root,
         title: "Attach a file to this card",
       });

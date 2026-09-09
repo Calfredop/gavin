@@ -242,7 +242,9 @@ fn run(bin: &str, args: &[&str], cwd: &Path, timeout: Duration) -> Result<Run, S
     if !cwd.is_dir() {
         return Err(format!("directory not found: {}", cwd.display()));
     }
-    let mut child = Command::new(bin)
+    // `bin` is an agent CLI name (`claude`, `gemini`), which on Windows
+    // is an npm shim CreateProcess cannot start unresolved.
+    let mut child = Command::new(crate::program::resolve_or_name(bin))
         .args(args)
         .current_dir(cwd)
         // Nothing here is interactive, and a child that decides to ask
@@ -434,9 +436,7 @@ fn opencode_config_paths(root: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty())
-}
+use crate::home::home_dir;
 
 /// Turns a detector's answer plus the human's marker into the row.
 /// Separated from `detect` so it can be tested without a machine: the

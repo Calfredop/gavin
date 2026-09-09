@@ -138,6 +138,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   read_file_for_viewer: ["ordinary"],
   resolve_path_under_cursor: ["ordinary"],
   viewable_extensions: ["ordinary"],
+  temp_dir: ["ordinary"],
   watch_file_for_viewer: ["ordinary"],
   unwatch_file_for_viewer: ["ordinary"],
   write_file_for_editor: ["ordinary"],

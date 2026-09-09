@@ -69,6 +69,10 @@ export function resolvePathUnderCursor(candidate: string, cwd: string): Promise<
   return invoke("resolve_path_under_cursor", { candidate, cwd });
 }
 
+export function tempDir(): Promise<string> {
+  return invoke("temp_dir");
+}
+
 /// The Files tab's directory explorer. Every one of these takes the
 /// workspace ROOT alongside its target and the host refuses anything
 /// that resolves outside it -- see fileviewer.rs. One `list_directory`

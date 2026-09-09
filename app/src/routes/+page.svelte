@@ -43,6 +43,7 @@
   import { tabStripHubViews, visibleHubViews } from "$lib/workspaceViews";
   import TerminalView from "$lib/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
+  import WindowResizeEdges from "$lib/WindowResizeEdges.svelte";
   import NewPageButton from "$lib/NewPageButton.svelte";
   import OpenInWindowButton from "$lib/OpenInWindowButton.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
@@ -328,6 +329,11 @@
   class:wide-window-controls={!isMacSync()}
   style:--ws-accent={accent}
 >
+  <!-- Outside the body row and ahead of every connection branch, for
+       the same reason TitleBar is: a window that cannot reach its
+       daemon still has to be resizable. Draws nothing on macOS, whose
+       borderless windows keep the OS's own edge drag. -->
+  <WindowResizeEdges />
   <div class="body">
     <!-- The window's own column: its top line -- the window's controls
          in a corner of their own, over the rail's own top row -- and the

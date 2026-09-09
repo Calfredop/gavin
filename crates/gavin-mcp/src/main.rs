@@ -1,7 +1,7 @@
 use protocol::{read_message, write_message, Request, Response, MAX_LINE_BYTES, PROTOCOL_VERSION};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
+use protocol::transport::Stream;
 use std::path::{Path, PathBuf};
 
 // ---------- daemon transport ----------
@@ -26,7 +26,7 @@ const UNREACHABLE: &str =
 /// gap to match -- see `send_command_reconnecting_at` in
 /// `app/src-tauri/src/session.rs`.)
 struct Connection {
-    reader: BufReader<UnixStream>,
+    reader: BufReader<Stream>,
     daemon_version: u32,
 }
 
@@ -36,13 +36,24 @@ struct Connection {
 /// the window is USED, with the requests it predates gated off, rather
 /// than refused outright.
 struct SocketTransport {
-    socket_path: PathBuf,
+    /// The resolved socket path, or the reason there isn't one.
+    ///
+    /// A `Result` in a field rather than a fallible constructor because
+    /// the only way to resolve it can fail is a missing `HOME`/
+    /// `XDG_DATA_HOME`, and the honest response to that is to keep
+    /// answering on stdio with the real reason -- an MCP server that
+    /// exits at startup reaches the agent as "server failed to start",
+    /// which names nothing.
+    socket_path: Result<PathBuf, String>,
     conn: Option<Connection>,
 }
 
 impl SocketTransport {
     fn new() -> Self {
-        Self::at(protocol::socket_path())
+        Self {
+            socket_path: protocol::socket_path().map_err(|e| e.to_string()),
+            conn: None,
+        }
     }
 
     /// Takes the socket path rather than resolving one itself, so the
@@ -52,14 +63,18 @@ impl SocketTransport {
     /// `protocol::socket_path()`, would be racing every other test in the
     /// process for one global.
     fn at(socket_path: PathBuf) -> Self {
-        Self { socket_path, conn: None }
+        Self { socket_path: Ok(socket_path), conn: None }
     }
 
     fn connect(&mut self) -> anyhow::Result<()> {
         // Dropped before the probe, not after it: a failed connect must
         // not leave the previous daemon's version behind for the gate.
         self.conn = None;
-        let stream = UnixStream::connect(&self.socket_path)
+        let socket_path = match &self.socket_path {
+            Ok(path) => path,
+            Err(why) => anyhow::bail!("{why}"),
+        };
+        let stream = Stream::connect(socket_path)
             .map_err(|_| anyhow::anyhow!("gavin daemon isn't running — open the gavin app"))?;
         let mut reader = BufReader::new(stream);
         write_message(reader.get_mut(), &Request::GetProtocolVersion)
@@ -1138,7 +1153,7 @@ mod tests {
     ) -> (PathBuf, Arc<Mutex<Vec<Request>>>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fake.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let listener = protocol::transport::Listener::bind(&path).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorder = Arc::clone(&seen);
 
@@ -1147,7 +1162,7 @@ mod tests {
             // Accepts repeatedly, not once: SocketTransport reconnects on
             // failure, and a one-shot accept would hang that retry instead
             // of failing it.
-            while let Ok((mut stream, _)) = listener.accept() {
+            while let Ok(mut stream) = listener.accept() {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 while let Ok(Some(req)) = read_message::<_, Request>(&mut reader) {
                     recorder.lock().unwrap().push(req.clone());

@@ -19,6 +19,8 @@ import {
   stepAfter,
   stepBefore,
   untilLogPath,
+  untilLogPathIn,
+  setTempRoot,
   untilMax,
   untilVerdict,
   withRetryPrefix,
@@ -171,6 +173,28 @@ describe("untilLogPath", () => {
 
   it("keeps a hand-edited id out of the shell", () => {
     expect(untilLogPath("a b;rm -rf /")).toBe("/tmp/gavin-until-abrm-rf.log");
+  });
+
+  it("hangs off the temp directory the host names, not a hardcoded /tmp", () => {
+    // The Windows bug this parameter exists for: Git Bash maps `/tmp` to
+    // %TEMP% when the check writes the file, while a read of `/tmp` from
+    // the app looks for C:\tmp -- two names for what has to be one file.
+    expect(untilLogPathIn("C:/Users/ada/AppData/Local/Temp", "check")).toBe(
+      "C:/Users/ada/AppData/Local/Temp/gavin-until-check.log"
+    );
+    // However the host spelled it, and whatever it left on the end.
+    expect(untilLogPathIn("C:\\Users\\ada\\Temp\\", "check")).toBe(
+      "C:\\Users\\ada\\Temp/gavin-until-check.log"
+    );
+    expect(untilLogPathIn("/tmp/", "check")).toBe("/tmp/gavin-until-check.log");
+  });
+
+  it("uses /tmp until the host says otherwise, and blank never says otherwise", () => {
+    setTempRoot("   ");
+    expect(untilLogPath("check")).toBe("/tmp/gavin-until-check.log");
+    setTempRoot("/var/folders/xx/T");
+    expect(untilLogPath("check")).toBe("/var/folders/xx/T/gavin-until-check.log");
+    setTempRoot("/tmp");
   });
 });
 

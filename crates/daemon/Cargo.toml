@@ -20,7 +20,21 @@ notify-debouncer-mini = "0.7"
 toml = "0.8"
 toml_edit = "0.22"
 vt100 = "0.16"
-libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+
+# `proc.rs` reaches for libc on the two unix arms and for Win32 on the
+# third; neither exists on the other's target, and both are absent from
+# the platform-independent build.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+] }
