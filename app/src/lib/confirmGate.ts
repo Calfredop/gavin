@@ -31,6 +31,7 @@ import { askConfirm, type ConfirmOptions } from "./dialog";
 /// command's own registered name -- the host compares the two strings.
 export type GatedAction =
   | "delete_card_file"
+  | "install_update"
   | "remove_gavin_footprint"
   | "restart_daemon"
   | "trash_entry";
@@ -38,6 +39,12 @@ export type GatedAction =
 /// `restart_daemon` takes no path. There is one daemon, so its prompt
 /// names one subject and this is it (`confirm_gate::DAEMON_SUBJECT`).
 export const DAEMON_SUBJECT = "";
+
+// `install_update` gets no constant of its own, even though there is
+// only ever one app. Its subject is the VERSION the prompt named,
+// because what the human agreed to is "install 0.2.0" and not "update"
+// in the abstract -- so a token minted against a prompt for 0.2.0 is
+// refused by the host if the endpoint has moved on since (`updater.rs`).
 
 /// A token the host will refuse. Returned instead of throwing when the
 /// mint fails, so the refusal surfaces where every other failure of the

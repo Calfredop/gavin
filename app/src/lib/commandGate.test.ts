@@ -64,6 +64,18 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   delete_card_file: ["gated", "removes a card from the board and from disk"],
   remove_gavin_footprint: ["gated", "empties a workspace of gavin, through the delete wizard"],
   restart_daemon: ["gated", "pkills a daemon shared with every other gavin window"],
+  install_update: [
+    "gated",
+    "replaces the app bundle -- both sidecars with it -- and relaunches. The subject is the version, not a placeholder: the confirmation is for installing a particular release, and the host refuses the token if the endpoint has moved on.",
+  ],
+  // Reads. update_settings answers from the config and one small file;
+  // check_for_update makes an HTTPS GET and reports what it found and
+  // installs nothing. set_update_endpoint writes the URL this install
+  // polls, which is not a trust decision -- the pinned key is, and no
+  // command here can write one.
+  update_settings: ["ordinary"],
+  set_update_endpoint: ["ordinary"],
+  check_for_update: ["ordinary"],
   // A read and a marker-file write for require_local_token. Ordinary: the
   // read is pure, and the write flips a daemon setting the daemon reads
   // per request -- it starts nothing and kills nothing, so it needs no
@@ -305,8 +317,13 @@ describe("the gated set is the same set on both sides of the IPC", () => {
   it("has every gated command actually spend a token", () => {
     const sources = Object.values(RUST).join("\n");
     for (const action of gatedIn("gated")) {
+      // `async` is optional in the pattern: a command that reaches the
+      // network -- install_update downloads before it installs -- has to
+      // be async, and a spelling that only found the sync form reported
+      // it as "has no body" rather than as the unguarded command the
+      // check exists to catch.
       const body = sources.match(
-        new RegExp(`pub fn ${action}\\(([\\s\\S]*?)\\n\\}`)
+        new RegExp(`pub (?:async )?fn ${action}\\(([\\s\\S]*?)\\n\\}`)
       );
       expect(body, `${action} has no body in src-tauri/src`).not.toBeNull();
       expect((body as RegExpMatchArray)[0]).toContain("confirm_gate::spend");

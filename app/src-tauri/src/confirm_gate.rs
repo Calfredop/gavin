@@ -50,6 +50,7 @@ use tauri::State;
 /// honest record.
 pub const GATED_ACTIONS: &[&str] = &[
     "delete_card_file",
+    "install_update",
     "remove_gavin_footprint",
     "restart_daemon",
     "trash_entry",

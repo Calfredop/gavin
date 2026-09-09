@@ -18,8 +18,9 @@ Until gavin is actually distributed, none of this needs doing. Nothing in
 ## What produces a release
 
 `.github/workflows/release.yml`, on a `v*` tag. It builds macOS (arm64 and
-x86_64), Linux and Windows, signs each one, verifies each one, and uploads
-the results as workflow artefacts.
+x86_64), Linux and Windows, signs each one, verifies each one, composes the
+updater's `latest.json` from the signatures those builds produced, and
+uploads the results as workflow artefacts.
 
 It deliberately does **not** create a GitHub release. The workflow token is
 `contents: read`; publishing is a human act, done by downloading the
@@ -87,6 +88,8 @@ an accident nobody notices.
 | `LINUX_GPG_KEY` | base64 of `gpg --export-secret-keys --armor <id>` | generated once, for releases only |
 | `LINUX_GPG_KEY_ID` | that key's id or fingerprint | `gpg --list-secret-keys --keyid-format=long` |
 | `LINUX_GPG_KEY_PASSWORD` | its passphrase, if it has one | optional; `preflight` does not require it |
+| `TAURI_SIGNING_PRIVATE_KEY` | the updater's minisign private key — the contents of the file `tauri signer generate` wrote | `npx tauri signer generate -w gavin-updater.key` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | its passphrase | chosen at generation; **required**, for the reason below |
 
 The App Store Connect API key is used rather than an Apple ID and an
 app-specific password because it is scoped to notarization, is revocable on
@@ -94,11 +97,35 @@ its own, and carries no account password. The workflow writes it to a file
 outside the workspace (`notarytool --key` wants a path), and deletes it in
 an `if: always()` step.
 
+**The updater key is the odd one out**, and is why `preflight` requires
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` while it leaves
+`LINUX_GPG_KEY_PASSWORD` optional. Every other key here signs something a
+human chooses to download and the OS then checks. This one signs code a
+running install accepts and executes on its own, and there is nothing to
+revoke: the public half is compiled into every build that has ever
+shipped, so a leaked private key can push code to all of those installs
+until each is replaced by hand, and a lost one means none of them can
+ever be updated again. `tauri signer generate` will happily produce an
+unencrypted key, and nothing downstream would complain — the CLI treats a
+missing password in CI as an empty one. Hence the gate.
+
+Generate it on a machine that does not run agents, keep the master copy
+off the machine that builds, and put only a copy in the GitHub secret.
+The public half goes in `plugins.updater.pubkey` in
+`app/src-tauri/tauri.conf.json`, committed and reviewed like any other
+line of config; `preflight` refuses a release whose pubkey is empty,
+which is what stops the repository's placeholder shipping by accident.
+
 **Rotation.** Revoke and re-issue on any suspicion, and on every change in
 who holds them. Apple's Developer ID certificate outlives most of them —
 five years — which makes it the one worth watching: a revoked certificate
 invalidates signatures made with it unless they were notarized, which is a
-second reason notarization is not optional here.
+second reason notarization is not optional here. Rotating the UPDATER key
+is a different act, because there is nothing to revoke: a build signed
+with the new key is only accepted by an install that already carries the
+new public half, so the rotation has to reach existing installs through
+one last update signed with the OLD key. Anything older than that has to
+be downloaded again by hand.
 
 ## What each platform gets
 
@@ -175,7 +202,8 @@ job stays.
    manifests. `--locked` will otherwise fail the build, which is the
    intended outcome, but failing at step 3 is cheaper.
 4. Every secret in the table above is present. `preflight` checks this, but
-   check it first if any of them was rotated.
+   check it first if any of them was rotated. It also refuses a release
+   whose `plugins.updater.pubkey` is empty.
 5. Tag and push: `git tag -a vX.Y.Z -m 'gavin X.Y.Z' && git push origin vX.Y.Z`.
 6. Watch the run. Every job must be green: green means signed, verified and
    — on macOS — notarized and stapled.
@@ -186,7 +214,11 @@ job stays.
    was downloaded, not what was uploaded, is the only version of this check
    that means anything.
 9. Create the GitHub release by hand, attach the artefacts, and publish the
-   OpenPGP public key alongside them.
+   OpenPGP public key alongside them. **Attach `latest.json` too, and
+   attach every file it names under the name it names** — the manifest
+   points at `releases/download/<tag>/<file>`, so a renamed or omitted
+   artefact is an install that can never update. Open one URL from it in
+   a browser before calling the release done.
 
 ## Verifying a bundle by hand
 
@@ -204,13 +236,94 @@ Gatekeeper accepts it as notarized; the ticket is stapled.
 run against a local `codesign -s -` build. Never pass it in CI, and note
 that a bundle that only passes with the flag is not distributable.
 
+## The updater
+
+An update that is only ever a fresh manual download is an update most
+people do not make, and a stale install is the one a known bug stays
+exploitable in. So gavin has a channel. Precisely what it is:
+
+**The key is pinned; the URL is not.** `plugins.updater.pubkey` is
+committed and compiled in. `plugins.updater.endpoints` is a default each
+install can override from **Settings › Updates**, and that asymmetry is
+the whole security argument: minisign verification happens against the
+pinned key before a single byte is installed, so an endpoint can offer
+gavin anything at all and gavin refuses every bit of it. A configurable
+URL therefore costs nothing. A configurable key would cost everything,
+and no command in the app can write one.
+
+**Nothing installs itself.** One check when the app starts and nothing
+after it — there is no timer. An available update appears as a version
+beside Settings in the sidebar footer and as a line in Settings ›
+Updates, and installs only when somebody presses the button and answers
+the prompt.
+
+The prompt says what installing actually does *here*, which is the part
+peculiar to gavin. The app quits and relaunches, and every session
+survives, because the daemon owns them and outlives the window. But the
+update also replaced `gavin-daemon` inside the bundle, and the daemon
+that is *running* was exec'd from the old copy: it keeps running the old
+code until Settings › Daemon restarts it, and that restart ends every
+session it holds. So the prompt counts the live sessions and says so
+before the click rather than after.
+
+**The page cannot reach the plugin.** `updater:default` grants `check`,
+`download` and `install` to the webview, and is deliberately absent from
+`capabilities/default.json`. Tauri defines `__TAURI_INTERNALS__` on every
+page, so any permitted command is reachable by name from whatever is
+running in gavin's origin (AS-01/R5), and `plugin:updater|download_and_install`
+reachable that way is a code-execution primitive one `invoke` from a
+rendered markdown file. What the webview reaches instead is
+`app/src-tauri/src/updater.rs`: `check_for_update`, which only reads, and
+`install_update`, which spends a `confirm_gate` token bound to the exact
+version the prompt named — and which re-checks that the endpoint still
+offers that same version before installing it.
+
+**`createUpdaterArtifacts` lives in its own overlay.**
+`app/src-tauri/tauri.updater.conf.json`, passed only by the release
+workflow. Not in `tauri.conf.json`, because the CLI turns "a pubkey is
+configured and artefacts were asked for" into a hard error when
+`TAURI_SIGNING_PRIVATE_KEY` is absent — which would break the `npm run
+bundle` that this document says is fine for testing the packaging on a
+laptop. A release has the key; a laptop does not; the overlay is where
+the two part company.
+
+**`latest.json` is composed by CI, not by hand.** The `manifest` job
+reads the `.sig` files the three build jobs produced and writes the
+manifest from them, failing the run if any platform is missing one. A
+base64 signature pasted into a file by a human is a signature that can be
+pasted into the wrong platform's entry, and nobody finds out until an
+install refuses an update — or accepts one meant for another
+architecture. The URLs it writes point at
+`releases/download/<tag>/<file>`, which is a promise rather than a fact
+until step 9 of the checklist attaches those artefacts to that tag under
+those names.
+
+That job also makes the one check Tauri leaves as a warning. The CLI
+compares the key it signed with against the configured `pubkey` and, when
+they disagree, prints a line of yellow text and finishes green — so a
+release signed with the wrong key looks exactly like a good one, and the
+damage shows up later as every install refusing every update forever.
+The `manifest` job compares each signature's key number with the pinned
+one and fails the run instead. This is the check that matters during a
+key **rotation**, which is the only time the two realistically diverge.
+
+**The endpoint has to be somewhere public.** The committed default is
+`https://github.com/Calfredop/gavin/releases/latest/download/latest.json`,
+which resolves only once the repository — or a separate releases
+repository — is public: a private repo's release assets need an
+`Authorization` header, and there is no header an app can ship. Until
+then the launch check fails and says nothing, which is designed
+behaviour and not a fault (`shouldSurfaceCheckError` in
+`app/src/lib/updates.ts`), and any install can be pointed elsewhere from
+Settings in the meantime.
+
 ## Not done yet
 
-**The updater.** `plugins.updater` with a pinned public key and a release
-endpoint is the fourth item of the card behind this document, and it is
-promoted to its own card: it needs a signing keypair whose private half is
-a new custody question, an endpoint that has to exist and stay up, and a
-decision to give gavin a channel that delivers code to a running install.
-Until it exists, an update is a fresh download — signed and notarized,
-which is most of what the updater's signature would buy, but checked by the
-OS rather than by gavin.
+**Nothing.** The updater was the last item of the card behind this
+document. What remains is not work but a first run: no tagged release has
+happened, so everything needing a real Developer ID, a real Windows
+certificate or a real runner — notarization, stapling, the Gatekeeper
+assessment, the whole Linux and Windows jobs, and every line of the
+updater path beyond a local build — has never executed. Expect the first
+tagged release to need fixes, and read a red job on it as information
+rather than as a regression.

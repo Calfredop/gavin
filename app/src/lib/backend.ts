@@ -21,6 +21,7 @@ import type { QueuedInput } from "./queuedInput";
 import type { ManagedSessions } from "./sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "./workspaceDelete";
 import type { AttachmentStatus } from "./attachments";
+import type { AvailableUpdate, UpdateSettings } from "./updates";
 
 export function createSession(cwd?: string, command?: string): Promise<string> {
   return invoke("create_session", { cwd, command });
@@ -443,6 +444,34 @@ export function getBootstrapError(): Promise<string | null> {
 // was restarted but this app process needs a relaunch to rewire.
 export function restartDaemon(token: string): Promise<void> {
   return invoke("restart_daemon", { token });
+}
+
+/// The update channel, described without touching the network:
+/// this build's version, the endpoint it would poll, and whether it has
+/// a channel and a pinned key at all (`updater.rs`).
+export function updateSettings(): Promise<UpdateSettings> {
+  return invoke("update_settings");
+}
+
+/// Point this install at a different manifest, or clear the override
+/// with null and fall back to the one the build shipped with.
+export function setUpdateEndpoint(endpoint: string | null): Promise<void> {
+  return invoke("set_update_endpoint", { endpoint });
+}
+
+/// Ask the endpoint whether there is a newer release. Null means this
+/// install is current. A read -- nothing is downloaded here.
+export function checkForUpdate(): Promise<AvailableUpdate | null> {
+  return invoke("check_for_update");
+}
+
+/// Download, verify against the pinned key, install, and relaunch.
+/// Gated: `version` is the confirm-gate subject, so a token minted for
+/// one version cannot install another, and the host re-checks that the
+/// endpoint still offers exactly it before installing. Does not return
+/// on success -- the app is replaced.
+export function installUpdate(version: string, token: string): Promise<void> {
+  return invoke("install_update", { version, token });
 }
 
 // The compat verdict from the most recent connect/reconnect. null before

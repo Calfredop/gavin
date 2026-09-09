@@ -133,6 +133,7 @@
   import { kanbanState, fetchBoard } from "./kanbanState";
   import { gavinTrees } from "./gavinState";
   import { tooltip } from "./tooltip";
+  import { availableUpdate } from "./updatesState";
   import { hintMode } from "./shortcutHints";
   import { agentCommitPhase, gitStore } from "./gitState";
   import { hintDigitFor } from "./shortcuts";
@@ -1771,6 +1772,19 @@
     <button class="footer-row" onclick={() => (showGlobalSettings = true)}>
       <Settings size={12} />
       <span>Settings</span>
+      <!-- The whole of the "quiet check" the update channel makes: one
+           check at startup, and if it found something, this. It is a
+           label rather than a call to action because nothing here
+           installs -- the Updates section of a workspace's Settings tab
+           is where the version, the endpoint and the install live, and
+           this row is the only thing that says to go and look. -->
+      {#if $availableUpdate}
+        <span
+          class="footer-badge"
+          use:tooltip={`gavin ${$availableUpdate.version} is available — Settings › Updates`}
+          >{$availableUpdate.version}</span
+        >
+      {/if}
     </button>
   </div>
 </div>

@@ -29,6 +29,27 @@
 #   access to the repository is a bigger hole than the one it would close.
 #   See docs/RELEASING.md.
 #
+# The updater is the fourth thing this workflow produces. `tauri build`
+# gets `tauri.updater.conf.json` on top of the usual overlay, which is
+# the only place `bundle.createUpdaterArtifacts` is set -- deliberately
+# NOT in `tauri.conf.json`, because the CLI turns "a pubkey is configured
+# and artefacts were asked for" into a hard error when
+# `TAURI_SIGNING_PRIVATE_KEY` is absent, and that would break the
+# `npm run bundle` on a laptop that docs/RELEASING.md says is fine for
+# testing the packaging. A release has the key; a laptop does not; the
+# overlay is where the two part company.
+#
+# The `manifest` job then writes `latest.json` from the signatures the
+# three build jobs produced. It is composed here rather than by hand
+# because a signature pasted into a file by a human is a signature that
+# can be pasted wrong, and the failure mode -- every install refuses
+# every update, or worse, one platform silently gets another's build --
+# is not one anybody notices until the next release. That job also makes
+# the check Tauri does not: its CLI compares the signing key against the
+# configured pubkey and, on a mismatch, prints a warning and carries on.
+# A release signed with the wrong key is then a green build that no
+# install will ever accept an update from. Here it is a red job.
+#
 # Third-party actions are pinned to a full commit SHA (tag in a trailing
 # comment) for the reason ci.yml states: a tag can be moved by whoever
 # holds it, a SHA cannot.
@@ -79,6 +100,23 @@ jobs:
           fi
           echo "version $conf"
 
+      # An empty `pubkey` deserializes perfectly well and then fails
+      # every signature at runtime, which reads to a user as "the update
+      # server is broken" rather than as "this build can verify nothing".
+      # It is also what the repository carries until somebody generates
+      # the keypair, so this is the gate that stops a placeholder being
+      # released by accident. See the key custody section of
+      # docs/RELEASING.md.
+      - name: An update key is pinned
+        run: |
+          pubkey=$(node -p "require('./app/src-tauri/tauri.conf.json').plugins?.updater?.pubkey ?? ''")
+          if [ -z "$pubkey" ]; then
+            echo "plugins.updater.pubkey in app/src-tauri/tauri.conf.json is empty" >&2
+            echo "generate a keypair (npx tauri signer generate) and commit the PUBLIC half" >&2
+            exit 1
+          fi
+          echo "update key pinned (${#pubkey} chars)"
+
       # Named one at a time so the failure says WHICH one is missing. A
       # secret is never echoed -- only whether it is empty.
       - name: Every signing secret is present
@@ -93,12 +131,21 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           LINUX_GPG_KEY: ${{ secrets.LINUX_GPG_KEY }}
           LINUX_GPG_KEY_ID: ${{ secrets.LINUX_GPG_KEY_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           missing=0
+          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required here, unlike
+          # LINUX_GPG_KEY_PASSWORD which is optional: `tauri signer
+          # generate` will happily make an unencrypted key, and this is
+          # the one key whose leak lets somebody push code to every
+          # install that exists. The CLI treats a missing password in CI
+          # as an empty one, so nothing else would ever complain.
           for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
                       APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_P8 \
                       WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD \
-                      LINUX_GPG_KEY LINUX_GPG_KEY_ID; do
+                      LINUX_GPG_KEY LINUX_GPG_KEY_ID \
+                      TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
             if [ -z "${!name}" ]; then
               echo "missing secret: $name" >&2
               missing=1
@@ -164,6 +211,10 @@ jobs:
       # APPLE_API_* present means the bundler notarizes and staples in the
       # same run; absent, it signs and silently skips notarization, which
       # is what preflight exists to prevent.
+      # Not `npm run bundle`: the updater overlay has to sit before the
+      # `--` that starts cargo's own arguments, and npm appends whatever
+      # follows `--` to the END of the script. Same reason the Windows
+      # job spells its build out.
       - name: Build, sign, notarize
         working-directory: app
         env:
@@ -173,8 +224,14 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ runner.temp }}/notary/AuthKey.p8
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CI: true
-        run: npm run bundle
+        run: >
+          npx tauri build
+          --config src-tauri/tauri.bundle.conf.json
+          --config src-tauri/tauri.updater.conf.json
+          -- --locked
 
       - name: Delete the notarization key
         if: always()
@@ -198,14 +255,34 @@ jobs:
           trap 'hdiutil detach "$mnt" -quiet || true' EXIT
           ./scripts/verify-macos-bundle.sh "$mnt/Gavin.app"
 
-      # The .dmg only. A .app is a directory of symlinks and extended
-      # attributes, and actions/upload-artifact zips it: what comes back
-      # down no longer verifies. The disk image survives the round trip
-      # with its signature and its stapled ticket intact.
+      # The updater artefact is `Gavin.app.tar.gz`, and the bundler gives
+      # it that name on BOTH architectures -- so the two would collide
+      # the moment a human attached them to one GitHub release. Renamed
+      # per arch here, which is safe: verification is over the file's
+      # bytes against the signature named in latest.json, and neither
+      # cares what the file is called.
+      - name: Name the updater artefact for this architecture
+        run: |
+          set -euo pipefail
+          cd target/release/bundle/macos
+          mv Gavin.app.tar.gz "Gavin_${{ matrix.arch }}.app.tar.gz"
+          mv Gavin.app.tar.gz.sig "Gavin_${{ matrix.arch }}.app.tar.gz.sig"
+          test -s "Gavin_${{ matrix.arch }}.app.tar.gz.sig"
+
+      # The .dmg is what a human downloads; the .tar.gz is what the
+      # updater downloads. A .app is neither: it is a directory of
+      # symlinks and extended attributes, and actions/upload-artifact
+      # zips it, so what comes back down no longer verifies. Both of the
+      # files here survive the round trip -- the disk image with its
+      # signature and its stapled ticket, the tarball because a tarball
+      # is a file.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gavin-macos-${{ matrix.arch }}
-          path: target/release/bundle/dmg/*.dmg
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app.tar.gz
+            target/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: error
 
   linux:
@@ -239,8 +316,14 @@ jobs:
       - name: Build
         working-directory: app
         env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CI: true
-        run: npm run bundle
+        run: >
+          npx tauri build
+          --config src-tauri/tauri.bundle.conf.json
+          --config src-tauri/tauri.updater.conf.json
+          -- --locked
 
       # Linux has no OS-level code signature to attach, so the artefacts
       # get a detached OpenPGP signature over each file and a signed
@@ -259,6 +342,10 @@ jobs:
           mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"
           printf '%s' "$LINUX_GPG_KEY" | base64 --decode | gpg --batch --import
           cd target/release/bundle
+          # The updater's own `.sig` files (minisign, over the same
+          # artefacts) are deliberately not in this list: they are not
+          # downloads, and signing a signature would only invite somebody
+          # to check the wrong one.
           find . -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) -print0 \
             | sort -z | xargs -0 sha256sum > SHA256SUMS
           sign() {
@@ -299,6 +386,7 @@ jobs:
             target/release/bundle/deb/*.deb
             target/release/bundle/rpm/*.rpm
             target/release/bundle/appimage/*.AppImage
+            target/release/bundle/appimage/*.AppImage.sig
             target/release/bundle/SHA256SUMS*
             target/release/bundle/**/*.asc
           if-no-files-found: error
@@ -358,11 +446,14 @@ jobs:
       - name: Build and sign
         working-directory: app
         env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CI: true
         run: >
           npx tauri build
           --config src-tauri/tauri.bundle.conf.json
           --config src-tauri/tauri.signing.conf.json
+          --config src-tauri/tauri.updater.conf.json
           -- --locked
 
       - name: Remove the generated overlay
@@ -390,5 +481,146 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gavin-windows-x86_64
-          path: target/release/bundle/nsis/*.exe
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.exe.sig
+          if-no-files-found: error
+
+  # The manifest every install polls, written from the signatures the
+  # three build jobs actually produced.
+  #
+  # It is composed here rather than by hand for the reason the header
+  # gives: a base64 signature pasted into a file by a human is a
+  # signature that can be pasted into the wrong platform's entry, and
+  # nobody finds out until an install refuses an update -- or accepts one
+  # meant for another architecture and then fails to launch.
+  #
+  # The URLs point at the release the human is ABOUT to create, which is
+  # the one thing here that is a promise rather than a fact: this
+  # workflow deliberately publishes nothing (`contents: read`), so
+  # `latest.json` names `releases/download/<tag>/<file>` and is only true
+  # once the artefacts are attached to that tag under those names.
+  # Step 9 of docs/RELEASING.md's checklist is where that happens.
+  manifest:
+    name: Updater manifest
+    needs: [macos, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      # Checked out for one reason: the manifest step compares every
+      # signature against the pubkey pinned in tauri.conf.json.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artefacts
+
+      - name: Compose latest.json
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          node <<'EOF'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const tag = process.env.TAG;
+          const base = `https://github.com/${process.env.REPO}/releases/download/${tag}`;
+
+          // [platform key, the artefact the updater downloads]. The key
+          // is what `tauri_plugin_updater` looks itself up under
+          // (`<os>-<arch>`); the file is matched by suffix so a version
+          // number in the name needs no pattern here.
+          const wanted = [
+            ["darwin-aarch64", "gavin-macos-aarch64", "aarch64.app.tar.gz"],
+            ["darwin-x86_64", "gavin-macos-x86_64", "x86_64.app.tar.gz"],
+            ["linux-x86_64", "gavin-linux-x86_64", ".AppImage"],
+            ["windows-x86_64", "gavin-windows-x86_64", ".exe"],
+          ];
+
+          // The pinned public key, and the 8-byte key number inside it.
+          //
+          // This is the check Tauri does not make. Its CLI compares the
+          // signing key with the configured pubkey and, on a mismatch,
+          // prints a WARNING and carries on -- so a release signed with
+          // the wrong key is a green build with a line of yellow text in
+          // it, and the damage only appears later as every install
+          // refusing every update forever. That is precisely the failure
+          // mode docs/RELEASING.md exists to gate, so it is a hard error
+          // here.
+          //
+          // Both key numbers are read the same way, out of bytes 2..10 of
+          // the decoded body. Printed, that is the byte order REVERSED
+          // from the hex in minisign's own `untrusted comment:` line --
+          // do not "fix" it to match; what matters is that the two sides
+          // are parsed identically.
+          const conf = JSON.parse(fs.readFileSync("app/src-tauri/tauri.conf.json", "utf8"));
+          const pubkey = conf.plugins?.updater?.pubkey ?? "";
+          if (!pubkey) {
+            console.error("plugins.updater.pubkey is empty; preflight should have caught this");
+            process.exit(1);
+          }
+          const bodyLine = (blob) =>
+            Buffer.from(
+              Buffer.from(blob, "base64").toString("utf8").split("\n")[1],
+              "base64"
+            );
+          const keyNumber = (buf) => buf.subarray(2, 10).toString("hex").toUpperCase();
+          const expectedKeyNumber = keyNumber(bodyLine(pubkey));
+
+          const platforms = {};
+          const missing = [];
+          for (const [key, artefact, suffix] of wanted) {
+            const dir = path.join("artefacts", artefact);
+            let file = null;
+            const walk = (d) => {
+              for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+                const full = path.join(d, entry.name);
+                if (entry.isDirectory()) walk(full);
+                else if (entry.name.endsWith(suffix)) file = full;
+              }
+            };
+            if (fs.existsSync(dir)) walk(dir);
+            if (!file) {
+              missing.push(`${key}: no file ending in ${suffix} under ${dir}`);
+              continue;
+            }
+            const sig = `${file}.sig`;
+            if (!fs.existsSync(sig)) {
+              missing.push(`${key}: ${path.basename(file)} has no .sig beside it`);
+              continue;
+            }
+            const signature = fs.readFileSync(sig, "utf8").trim();
+            const signedBy = keyNumber(bodyLine(signature));
+            if (signedBy !== expectedKeyNumber) {
+              missing.push(
+                `${key}: ${path.basename(file)} was signed by key ${signedBy}, but this build ` +
+                  `pins ${expectedKeyNumber} — every install would refuse this update`
+              );
+              continue;
+            }
+            platforms[key] = { signature, url: `${base}/${path.basename(file)}` };
+          }
+
+          // Hard failure, not a partial manifest: a latest.json missing
+          // a platform is an install on that platform silently never
+          // updating again, which is exactly the state this card exists
+          // to end.
+          if (missing.length) {
+            console.error(missing.join("\n"));
+            process.exit(1);
+          }
+
+          const manifest = {
+            version: tag.replace(/^v/, ""),
+            notes: `gavin ${tag}. See the release notes.`,
+            pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+            platforms,
+          };
+          fs.writeFileSync("latest.json", JSON.stringify(manifest, null, 2) + "\n");
+          console.log(JSON.stringify(manifest, null, 2));
+          EOF
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gavin-updater-manifest
+          path: latest.json
           if-no-files-found: error

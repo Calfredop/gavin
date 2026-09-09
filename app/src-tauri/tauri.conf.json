@@ -43,5 +43,13 @@
       "digestAlgorithm": "sha256",
       "timestampUrl": "http://timestamp.digicert.com"
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQwRDhBMjU2QTk3MkM2MDAKUldRQXhuS3BWcUxZUUNOMk4ybE9INlQrQ1V3MGFtUEsyaEZhcW5TVkxET282WnQwb3o2Q1pVdEMK",
+      "endpoints": [
+        "https://github.com/Calfredop/gavin/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

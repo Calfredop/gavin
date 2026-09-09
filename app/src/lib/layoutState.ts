@@ -1261,6 +1261,14 @@ export async function bootstrap(): Promise<void> {
   // Dynamically imported for the cycle reason above.
   const { initWorkspaceToolListeners } = await import("./workspaceToolsActions");
   unlisteners.push(initWorkspaceToolListeners());
+  // The single quiet update check, started here for the same reason as
+  // the others: it belongs to the app rather than to whichever tab is
+  // mounted, and an update that only announced itself to somebody
+  // already looking at Settings would be announcing itself to the one
+  // person who did not need telling. It holds no timer -- one check per
+  // bootstrap, and everything else is the button in Settings.
+  const { startUpdateWatch } = await import("./updatesState");
+  unlisteners.push(startUpdateWatch());
   unlisteners.push(
     await listen<[string, string, string, string]>("agent-session-spawned", (event) => {
       handleAgentSessionSpawned(event.payload[0], event.payload[1]);
