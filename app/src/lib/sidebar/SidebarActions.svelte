@@ -18,8 +18,8 @@
   // .rail-chrome), where it costs exactly what a workspace row costs.
   import IconButton from "$lib/ui/IconButton.svelte";
   import { PanelLeftClose, Search, FolderOpen } from "@lucide/svelte";
-  import { sidebarCollapsed, toggleSidebarCollapsed } from "$lib/sidebarPrefs";
-  import { sidebarSearchOpen, toggleSidebarSearch } from "$lib/sidebarSearch";
+  import { sidebarCollapsed, toggleSidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
+  import { sidebarSearchOpen, toggleSidebarSearch } from "$lib/sidebar/sidebarSearch";
   import { openWorkspaceFolder } from "$lib/workspaceOpen";
   import { layoutState } from "$lib/layoutState";
 

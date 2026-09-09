@@ -15,7 +15,7 @@ import type { Board } from "$lib/kanban";
 import type { GavinTree } from "$lib/gavin";
 import type { Orchestration } from "$lib/orchestration";
 import { cardIndex } from "$lib/orchestration";
-import type { PageTabRow } from "$lib/sidebarSummary";
+import type { PageTabRow } from "$lib/sidebar/sidebarSummary";
 import { switchWorkspace, switchWorkspaceView } from "$lib/layoutState";
 
 /// Which hub tab a card is best seen in: a card on a rail belongs to the

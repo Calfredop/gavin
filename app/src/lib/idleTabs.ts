@@ -11,7 +11,7 @@
 // off a row reading "3 idle" would make both numbers untrustworthy.
 import { allLeaves, allSessionIds, sessionTabsOnly } from "$lib/layout";
 import { count } from "$lib/railConfirm";
-import type { PageTabState } from "$lib/sidebarSummary";
+import type { PageTabState } from "$lib/sidebar/sidebarSummary";
 import type { Page } from "$lib/workspace";
 
 /// A page's tabs, split by what "Close Idle Tabs" would do to each. The

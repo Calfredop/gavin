@@ -24,7 +24,7 @@ import {
   type RailsSummary,
   type WorkspaceAgentsSummary,
   type WorkspaceGitSummary,
-} from "$lib/sidebarSummary";
+} from "$lib/sidebar/sidebarSummary";
 import { cardSessionState, type CardSessionState } from "$lib/columnRunAction";
 import { cardIsOnARail, type LinkedCard } from "$lib/cardTabLink";
 import { cardIndex, effectiveStatus, planIndex, type Orchestration } from "$lib/orchestration";

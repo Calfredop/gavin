@@ -37,7 +37,7 @@
   // so this is one geometry instead of two rather than a change of
   // convention.
   import WindowControls from "$lib/WindowControls.svelte";
-  import SidebarActions from "$lib/SidebarActions.svelte";
+  import SidebarActions from "$lib/sidebar/SidebarActions.svelte";
   import { isMacSync } from "$lib/platform";
   import { windowDrag } from "$lib/windowDrag";
 

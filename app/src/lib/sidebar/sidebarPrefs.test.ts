@@ -30,7 +30,7 @@ import {
   saveScratchpadEnabled,
   scratchpadEnabled,
   setScratchpadEnabled,
-} from "$lib/sidebarPrefs";
+} from "$lib/sidebar/sidebarPrefs";
 import { layoutState } from "$lib/layoutState";
 import { UNFILED_WORKSPACE_ID } from "$lib/workspace";
 

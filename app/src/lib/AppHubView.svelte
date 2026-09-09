@@ -33,7 +33,7 @@
     attentionState,
   } from "$lib/layoutState";
   import { featureBlockedReason } from "$lib/daemonCompat";
-  import { workspaceAgentsSummary, kanbanColumnChips, railStripStats, showGitChip } from "$lib/sidebarSummary";
+  import { workspaceAgentsSummary, kanbanColumnChips, railStripStats, showGitChip } from "$lib/sidebar/sidebarSummary";
   import type { FleetSummary, RunningTask, TaskPhase, WorkspaceRunning } from "$lib/appHub";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import {

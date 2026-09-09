@@ -39,7 +39,7 @@
   import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspaceCreate";
   import { resolveAgentConfig, accentVar } from "$lib/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
-  import { sidebarCollapsed } from "$lib/sidebarPrefs";
+  import { sidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
   import { tabStripHubViews, visibleHubViews } from "$lib/workspaceViews";
   import TerminalView from "$lib/terminal/TerminalView.svelte";
   import TitleBar from "$lib/TitleBar.svelte";
@@ -47,7 +47,7 @@
   import NewPageButton from "$lib/NewPageButton.svelte";
   import OpenInWindowButton from "$lib/OpenInWindowButton.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import Sidebar from "$lib/Sidebar.svelte";
+  import Sidebar from "$lib/sidebar/Sidebar.svelte";
   import CornerOverhang from "$lib/CornerOverhang.svelte";
   import { isMacSync } from "$lib/platform";
   import AppHubView from "$lib/AppHubView.svelte";

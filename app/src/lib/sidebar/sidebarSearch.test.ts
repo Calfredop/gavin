@@ -8,8 +8,8 @@ import {
   sidebarSearchQuery,
   toggleSidebarSearch,
   type SidebarSearchInput,
-} from "$lib/sidebarSearch";
-import type { PageTabState } from "$lib/sidebarSummary";
+} from "$lib/sidebar/sidebarSearch";
+import type { PageTabState } from "$lib/sidebar/sidebarSummary";
 import type { LayoutNode } from "$lib/layout";
 import type { Page, Workspace } from "$lib/workspace";
 

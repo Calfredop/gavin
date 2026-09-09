@@ -82,9 +82,9 @@ import {
   buildSessionRowMenuEntries,
   changeWorkspaceRoot,
   type SidebarMenuHooks,
-} from "$lib/sidebarMenu";
+} from "$lib/sidebar/sidebarMenu";
 import type { TabMenuContext } from "$lib/tabMenu";
-import type { PageTabState } from "$lib/sidebarSummary";
+import type { PageTabState } from "$lib/sidebar/sidebarSummary";
 import { isSeparator, type ContextMenuItem, type ContextMenuEntry } from "$lib/contextMenu";
 import { UNFILED_WORKSPACE_ID, type Workspace, type Page } from "$lib/workspace";
 

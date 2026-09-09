@@ -40,8 +40,8 @@
   // prompt below is the one question that flow can ask.
   import { pendingOpen, initAndOpen, bindWithoutInit, cancelOpen } from "$lib/workspaceOpen";
   import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/gitTracking";
-  import { sidebarCollapsed, scratchpadEnabled, toggleSidebarCollapsed } from "$lib/sidebarPrefs";
-  import { endSidebarPeek, peekSidebar, sidebarPeek, sidebarShowsRail } from "$lib/sidebarPeek";
+  import { sidebarCollapsed, scratchpadEnabled, toggleSidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
+  import { endSidebarPeek, peekSidebar, sidebarPeek, sidebarShowsRail } from "$lib/sidebar/sidebarPeek";
   import {
     closeSidebarSearch,
     searchSidebar,
@@ -49,7 +49,7 @@
     sidebarSearchQuery,
     type SidebarHit,
     type SidebarSearchResult,
-  } from "$lib/sidebarSearch";
+  } from "$lib/sidebar/sidebarSearch";
   import { isSearching } from "$lib/search";
   import type { SessionStatus } from "$lib/layoutState";
   import { presetSingle, findLeafPath, getNodeAtPath } from "$lib/layout";
@@ -123,7 +123,7 @@
     type RailsSummary,
     type PageAgentsSummary,
     type PageTabRow,
-  } from "$lib/sidebarSummary";
+  } from "$lib/sidebar/sidebarSummary";
   import { rowLinkedCard, openLinkedCard, linkForCardPath, type LinkedCard } from "$lib/cardTabLink";
   import {
     orchestrations,
@@ -146,7 +146,7 @@
     buildPageMenuEntries,
     buildSessionRowMenuEntries,
     type SidebarMenuHooks,
-  } from "$lib/sidebarMenu";
+  } from "$lib/sidebar/sidebarMenu";
   import { closeTabsNow } from "$lib/tabActions";
   import { windowDrag } from "$lib/windowDrag";
   import { isInAnotherWindow } from "$lib/appWindow";
@@ -159,7 +159,7 @@
     loadExpandedPages,
     saveExpandedPages,
     type WorkspaceExpansion,
-  } from "$lib/sidebarExpansion";
+  } from "$lib/sidebar/sidebarExpansion";
 
   // Which workspaces show their page list, and which pages show their
   // tab list. Kept apart rather than in one Set, since workspace ids and

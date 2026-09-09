@@ -7,7 +7,7 @@ import {
   sidebarPeek,
   sidebarShowsFull,
   sidebarShowsRail,
-} from "$lib/sidebarPeek";
+} from "$lib/sidebar/sidebarPeek";
 
 const SOURCE = source("sidebarPeek.ts");
 

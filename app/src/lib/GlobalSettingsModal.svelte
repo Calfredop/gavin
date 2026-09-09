@@ -32,7 +32,7 @@
     requireReviewToSelect,
   } from "$lib/cardReview";
   import { resolveGitTracking } from "$lib/gitTracking";
-  import { scratchpadEnabled, setScratchpadEnabled } from "$lib/sidebarPrefs";
+  import { scratchpadEnabled, setScratchpadEnabled } from "$lib/sidebar/sidebarPrefs";
   import { hiddenHubViewCount, hubTabsHiddenDefault } from "$lib/hubTabPrefs";
   import HubTabsModal from "$lib/HubTabsModal.svelte";
   import { themeState } from "$lib/ui/themeState.svelte";

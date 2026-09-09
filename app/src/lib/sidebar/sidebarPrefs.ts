@@ -30,7 +30,7 @@
 
 import { get, writable } from "svelte/store";
 import { layoutState, openAppHub, switchWorkspace } from "$lib/layoutState";
-import { endSidebarPeek } from "$lib/sidebarPeek";
+import { endSidebarPeek } from "$lib/sidebar/sidebarPeek";
 import { UNFILED_WORKSPACE_ID } from "$lib/workspace";
 
 /// Injected (defaulting to the browser's) for the same two reasons

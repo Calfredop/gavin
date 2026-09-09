@@ -22,7 +22,7 @@ import {
 } from "$lib/workspace";
 import { tabStripHubViewIds } from "$lib/hubViewMeta";
 import { currentHubTabPrefs } from "$lib/hubTabPrefs";
-import { scratchpadEnabled } from "$lib/sidebarPrefs";
+import { scratchpadEnabled } from "$lib/sidebar/sidebarPrefs";
 import { cmdHeld, isMacSync } from "$lib/platform";
 import { digitFromCode, matchesChord, resolveIndex, SHORTCUTS } from "$lib/shortcuts";
 import { requestedCompose, resolveComposeTarget } from "$lib/composeRequest";

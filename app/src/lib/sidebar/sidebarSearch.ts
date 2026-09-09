@@ -16,7 +16,7 @@
 import { get, writable } from "svelte/store";
 import { matchesFields, queryTokens } from "$lib/search";
 import { sessionLabel } from "$lib/paths";
-import { pageTabRows, type PageTabState } from "$lib/sidebarSummary";
+import { pageTabRows, type PageTabState } from "$lib/sidebar/sidebarSummary";
 import type { SessionStatus } from "$lib/layoutState";
 import type { Workspace } from "$lib/workspace";
 

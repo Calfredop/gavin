@@ -11,8 +11,8 @@ import {
   pageAgentsSummary,
   workspaceAgentsSummary,
   pageTabRows,
-} from "$lib/sidebarSummary";
-import type { PageTabState } from "$lib/sidebarSummary";
+} from "$lib/sidebar/sidebarSummary";
+import type { PageTabState } from "$lib/sidebar/sidebarSummary";
 import type { LayoutNode } from "$lib/layout";
 import type { GitStatus, Page, Workspace } from "$lib/workspace";
 import type { Orchestration, Rail, Stage, Step } from "$lib/orchestration";
