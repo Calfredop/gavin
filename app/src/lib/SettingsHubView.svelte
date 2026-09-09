@@ -60,6 +60,8 @@
   import ConfigTrustNotice from "./ConfigTrustNotice.svelte";
   import WorkspaceRootControl from "./WorkspaceRootControl.svelte";
   import ColourPicker from "./ColourPicker.svelte";
+  import SearchInput from "./ui/SearchInput.svelte";
+  import { searchSettings, type SettingsSection } from "./settingsSearch";
   import Modal from "./Modal.svelte";
   import ConfirmPrompt from "./ConfirmPrompt.svelte";
   import WorkspaceDeleteWizard from "./WorkspaceDeleteWizard.svelte";
@@ -167,6 +169,51 @@
   let mcpFileError = $state<string | null>(null);
   let prdError = $state<string | null>(null);
   let pendingMove = $state<{ from: string; to: string } | null>(null);
+
+  // --- search -------------------------------------------------------------
+  /// One entry per section below, in the same order -- the id is what a
+  /// section's `hidden` attribute reads back, and the keywords are the
+  /// words a human would type for it: the title, its row labels, and a
+  /// few of its own nouns, not the connecting prose around them.
+  const SECTIONS: SettingsSection[] = [
+    { id: "workspace", keywords: ["Workspace", "Name", "rename", "Colour", "Color", "accent", "Root", "folder"] },
+    { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
+    { id: "terminal", keywords: ["Terminal", "Font size", "font"] },
+    { id: "cards", keywords: ["Cards", "Auto commit", "commit"] },
+    { id: "git", keywords: ["Git", "Track", "tracking", "gitignore", "repository"] },
+    { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
+    { id: "notifications", keywords: ["Notifications", "notify", "needs my input", "session finishes"] },
+    { id: "confirmations", keywords: ["Confirmations", "Close confirm", "tab close"] },
+    {
+      id: "unattended-recovery",
+      keywords: ["Unattended recovery", "Resume", "auto resume", "broken card run"],
+    },
+    { id: "agent-pause", keywords: ["Agent pause", "pause", "cycle", "limit", "usage"] },
+    {
+      id: "agent",
+      keywords: [
+        "Agent",
+        "Profile",
+        "Command",
+        "Model flag",
+        "Model",
+        "Agent file",
+        "PRD file",
+        "MCP config",
+        "MCP format",
+        "Superpowers",
+      ],
+    },
+    { id: "remote-access", keywords: ["Remote access", "token", "local access", "pairing"] },
+    {
+      id: "updates",
+      keywords: ["Updates", "Check for updates", "Install", "Endpoint", "update channel", "version"],
+    },
+    { id: "daemon", keywords: ["Daemon", "Restart daemon", "gavin-daemon"] },
+    { id: "danger-zone", keywords: ["Danger zone", "Delete workspace", "delete"] },
+  ];
+  let settingsQuery = $state("");
+  const settingsFilter = $derived(searchSettings(SECTIONS, settingsQuery));
 
   // --- terminal ---------------------------------------------------------
   /// What this workspace inherits when it sets no size of its own: the
@@ -674,7 +721,15 @@
 
 {#if ws}
   <div class="settings">
-    <section>
+    <SearchInput
+      bind:value={settingsQuery}
+      class="settings-search"
+      label="Search settings"
+      placeholder="Search settings…"
+      matches={settingsFilter.filtering ? settingsFilter : null}
+    />
+
+    <section hidden={!settingsFilter.visible("workspace")}>
       <h3>Workspace</h3>
       <label class="row">
         <span>Name</span>
@@ -703,7 +758,7 @@
       </div>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("hub-tabs")}>
       <h3>Hub tabs</h3>
       <div class="row">
         <span>Sections</span>
@@ -723,7 +778,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("terminal")}>
       <h3>Terminal</h3>
       <div class="row">
         <span>Font size</span>
@@ -746,7 +801,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("cards")}>
       <h3>Cards</h3>
       <div class="row">
         <span>Auto commit</span>
@@ -766,7 +821,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("git")}>
       <h3>Git</h3>
       {#if !hasRoot}
         <!-- Same shape the Agent section takes: without a root there is no
@@ -795,7 +850,7 @@
       {/if}
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("complexity")}>
       <h3>Complexity</h3>
       <p class="hint">
         Which agent runs a card of each difficulty, in this workspace only. A level left on its
@@ -810,7 +865,7 @@
       />
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("notifications")}>
       <h3>Notifications</h3>
       <label class="check">
         <input
@@ -834,7 +889,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("confirmations")}>
       <h3>Confirmations</h3>
       <label class="check">
         <input
@@ -850,7 +905,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("unattended-recovery")}>
       <h3>Unattended recovery</h3>
       <!-- Off by default, and the only setting on this screen that is.
            The others are habits; this one is consent -- a run that
@@ -874,7 +929,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("agent-pause")}>
       <h3>Agent pause</h3>
       <!-- Absent means INHERIT, which is not the same as off: a
            workspace that wants no pause while the app has one stores a
@@ -986,7 +1041,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("agent")}>
       <h3>Agent</h3>
       <!-- Above the Command field it gates: the field shows the RESOLVED
            command, so without this the panel would silently answer with
@@ -1223,7 +1278,7 @@
       {/if}
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("remote-access")}>
       <h3>Remote access</h3>
       <p class="hint">
         Every connection to the daemon carries an identity now: the app holds a token the daemon
@@ -1255,7 +1310,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("updates")}>
       <h3>Updates</h3>
       <p class="hint">
         gavin checks once when it starts, and installs nothing on its own. A download is
@@ -1325,7 +1380,7 @@
       {/if}
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("daemon")}>
       <h3>Daemon</h3>
       <p class="hint">
         gavin-daemon owns every terminal session and watches your plan files. Restart it after
@@ -1346,7 +1401,7 @@
       {/if}
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("danger-zone")}>
       <h3>Danger zone</h3>
       <p class="hint">
         Remove gavin from this workspace's folder: its plans, skills, MCP entry and instructions
@@ -1449,6 +1504,9 @@
     color: var(--text);
     font-family: monospace;
     font-size: 0.85em;
+  }
+  .settings :global(.settings-search) {
+    flex: 0 0 auto;
   }
   h3 {
     margin: 0 0 10px;

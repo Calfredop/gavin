@@ -30,6 +30,8 @@
   import { themeState } from "./ui/themeState.svelte";
   import type { ThemePref } from "./ui/theme";
   import IconButton from "./ui/IconButton.svelte";
+  import SearchInput from "./ui/SearchInput.svelte";
+  import { searchSettings, type SettingsSection } from "./settingsSearch";
   import Modal from "./Modal.svelte";
   import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, type PauseCycle, validateCycle } from "./agentPause";
   import { agentPauseStore, profilesInUse, saveAgentPause } from "./agentPauseState";
@@ -147,13 +149,42 @@
     else delete complexity[level];
     void setAgentDefaults({ ...$agentDefaultsStore, complexity });
   }
+
+  // --- search ---------------------------------------------------------
+  /// One entry per section below, in the same order -- see
+  /// SettingsHubView's own SECTIONS for why whole sections, not rows.
+  const SECTIONS: SettingsSection[] = [
+    { id: "appearance", keywords: ["Appearance", "Theme", "Light", "Dark", "system"] },
+    { id: "sidebar", keywords: ["Sidebar", "Scratchpad"] },
+    { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
+    { id: "terminal", keywords: ["Terminal", "Font size", "font"] },
+    { id: "cards", keywords: ["Cards", "Auto commit", "commit"] },
+    {
+      id: "git",
+      keywords: ["Git", "Track gavin's files", "tracking", "gitignore", "initialize"],
+    },
+    { id: "agent-pause", keywords: ["Agent pause", "pause", "cycle", "limit", "schedule", "usage"] },
+    { id: "agent-defaults", keywords: ["Agent defaults", "model", "Claude Code", "Codex"] },
+    { id: "custom-agent", keywords: ["Custom agent", "Command", "Model flag"] },
+    { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
+  ];
+  let settingsQuery = $state("");
+  const settingsFilter = $derived(searchSettings(SECTIONS, settingsQuery));
 </script>
 
 <Modal {onClose}>
   <div class="global-settings">
     <h2>Settings</h2>
 
-    <section>
+    <SearchInput
+      bind:value={settingsQuery}
+      class="settings-search"
+      label="Search settings"
+      placeholder="Search settings…"
+      matches={settingsFilter.filtering ? settingsFilter : null}
+    />
+
+    <section hidden={!settingsFilter.visible("appearance")}>
       <h3>Appearance</h3>
       <div class="row">
         <span>Theme</span>
@@ -172,7 +203,7 @@
       </div>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("sidebar")}>
       <h3>Sidebar</h3>
       <div class="row">
         <span>Scratchpad</span>
@@ -192,7 +223,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("hub-tabs")}>
       <h3>Hub tabs</h3>
       <div class="row">
         <span>Sections</span>
@@ -207,7 +238,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("terminal")}>
       <h3>Terminal</h3>
       <div class="row">
         <span>Font size</span>
@@ -229,7 +260,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("cards")}>
       <h3>Cards</h3>
       <div class="row">
         <span>Auto commit</span>
@@ -249,7 +280,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("git")}>
       <h3>Git</h3>
       <div class="row">
         <span>Track gavin's files</span>
@@ -273,7 +304,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("agent-pause")}>
       <h3>Agent pause</h3>
       <p class="hint">
         Sit out part of every window so a rail does not spend a subscription limit
@@ -344,7 +375,7 @@
       {/if}
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("agent-defaults")}>
       <h3>Agent defaults</h3>
       {#if profiles.length === 0}
         <p class="hint">Waiting for the agent profile table…</p>
@@ -382,7 +413,7 @@
       {/if}
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("custom-agent")}>
       <h3>Custom agent</h3>
       <div class="row">
         <span>Command</span>
@@ -419,7 +450,7 @@
       </p>
     </section>
 
-    <section>
+    <section hidden={!settingsFilter.visible("complexity")}>
       <h3>Complexity</h3>
       <p class="hint">
         A card can say how hard its work is, and each level can run a different agent — so a rename
@@ -457,6 +488,9 @@
     gap: 22px;
     font-size: 0.85em;
     min-width: 380px;
+  }
+  .global-settings :global(.settings-search) {
+    flex: 0 0 auto;
   }
   h2 {
     margin: 0;
