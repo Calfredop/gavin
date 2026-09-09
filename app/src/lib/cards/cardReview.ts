@@ -96,6 +96,35 @@ export function cardContentReviewed(
   return approved !== "" && approved === cardContentDigest(content);
 }
 
+/// Whether the card detail panel draws its review banner.
+///
+/// Three ways for the answer to be no even before the digest is
+/// compared, and each of them is a bug if it is left out:
+///
+///   * a NOTE is never executed, so there is no prompt to approve;
+///   * the file has not been READ yet -- `content` is null until the
+///     first read lands, and "not loaded" drawn as "not reviewed" is a
+///     banner that flashes onto every card the panel opens;
+///   * the gate is OFF for this workspace, in which case nothing is
+///     asking.
+///
+/// Only then does it fall through to the digest, which fails closed on
+/// its own (see cardContentReviewed).
+export function cardNeedsReview(input: {
+  cardKind: "note" | "task" | "plan";
+  /// Null while the read is out, never "" for an empty file -- the two
+  /// are different answers.
+  fileRead: boolean;
+  requireReview: boolean;
+  content: CardContent;
+  approvedDigest: string | null | undefined;
+}): boolean {
+  if (input.cardKind === "note") return false;
+  if (!input.fileRead) return false;
+  if (!input.requireReview) return false;
+  return !cardContentReviewed(input.content, input.approvedDigest);
+}
+
 /// Whether the gate above applies at all: a workspace's own choice, else
 /// the app-wide one, else gavin's default (require it) -- the security
 /// round's original always-on behaviour. Same three-level shape as

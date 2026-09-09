@@ -10,6 +10,7 @@ import * as backend from "$lib/core/backend";
 import { svelteSources } from "$lib/sources";
 import {
   LEARNED_HEADING,
+  adoptBlockedReason,
   adoptMemory,
   appendLearned,
   isMemoryCard,
@@ -243,5 +244,25 @@ describe("the card detail modal", () => {
     expect(body).not.toContain("switchWorkspaceView");
     expect(body).not.toContain("openFileInSplit");
     expect(body).not.toContain("onClose");
+  });
+});
+
+describe("adoptBlockedReason", () => {
+  it("is null once there is a root and a done column", () => {
+    expect(adoptBlockedReason(true, true)).toBeNull();
+  });
+
+  // The instructions file hangs off the root, so a rootless workspace
+  // has nothing to adopt INTO.
+  it("names the missing root first", () => {
+    expect(adoptBlockedReason(false, true)).toContain("no root folder");
+    expect(adoptBlockedReason(false, false)).toContain("no root folder");
+  });
+
+  // The last column is the human's to call whatever they like, so a
+  // board with no columns has nowhere to file the card once the fact is
+  // written.
+  it("names the missing done column when the root is there", () => {
+    expect(adoptBlockedReason(true, false)).toContain("done column");
   });
 });

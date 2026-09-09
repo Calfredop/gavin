@@ -97,6 +97,70 @@ export interface CardSessionBar {
   actions: CardBarAction[];
 }
 
+/// What the panel knows about the card and its run, before any
+/// precedence has been applied.
+export interface CardSituationInput {
+  cardKind: "note" | "task" | "plan";
+  /// A best-of-N run's one-line summary, or null when no run is going.
+  bestOfN: string | null;
+  /// The card's session binding, reduced to what the precedence needs.
+  binding: { phase: CardSessionPhase; status: SessionStatus | null; orphan: boolean } | null;
+  /// A "Develop into a plan…" run is rewriting this card's file.
+  developing: boolean;
+  canDevelop: boolean;
+  runBlocked: boolean;
+}
+
+/// One situation, from facts that are all simultaneously true.
+///
+/// The precedence is the whole function, and every step of it is a
+/// REPLACEMENT rather than a ranking:
+///
+///   * A note has no agent story at all.
+///   * A best-of-N run replaces the binding block, because there is no
+///     binding until a candidate is picked.
+///   * A binding replaces the launch block: the card is running.
+///   * A develop run replaces every launch, because the file is being
+///     rewritten and every launch is refused while it is
+///     (developingCards.ts).
+///
+/// It was a nested ternary in the panel, which is exactly where a
+/// precedence goes wrong quietly: swap two arms and the panel offers to
+/// launch a card an agent is mid-rewrite of, and nothing fails.
+export function cardSituation(input: CardSituationInput): CardSituation {
+  if (input.cardKind === "note") return { kind: "none" };
+  if (input.bestOfN !== null) return { kind: "best-of-n", summary: input.bestOfN };
+  if (input.binding) {
+    return {
+      kind: "bound",
+      phase: input.binding.phase,
+      // The daemon's status describes whatever occupies the session id
+      // NOW, so it is consulted only while the run is live -- an
+      // interrupted id holds a bare shell, and its status is the shell's.
+      status: input.binding.phase === "live" ? (input.binding.status ?? "idle") : null,
+      orphan: input.binding.orphan,
+    };
+  }
+  if (input.developing) return { kind: "developing" };
+  return {
+    kind: "unbound",
+    cardKind: input.cardKind,
+    canDevelop: input.canDevelop,
+    runBlocked: input.runBlocked,
+  };
+}
+
+/// Which of the bar's actions gets the accent, or null for none.
+///
+/// The FIRST ENABLED one, not simply the first: an exited session leads
+/// with a disabled "Jump to session", and painting that as the primary
+/// would point the eye at the one button that cannot be pressed. A
+/// danger action is never the accent -- ending something already carries
+/// its own, louder emphasis.
+export function primaryAction(bar: CardSessionBar | null): CardActionId | null {
+  return bar?.actions.find((a) => a.enabled && !a.danger)?.id ?? null;
+}
+
 /// The daemon's four statuses in the bar's own words. `idle` is
 /// deliberately not "finished": an idle agent is one that has been quiet
 /// for two seconds, which is a claim about the terminal and not about
@@ -125,6 +189,28 @@ const LIVE_WANTS_HUMAN: Record<SessionStatus, boolean> = {
   failed: true,
   unknown: false,
 };
+
+/// The session fold's own one-word status. Three copies of this
+/// precedence used to sit in the panel -- the situation, this word and
+/// the badge beside it -- and three spellings of "interrupted comes
+/// before the daemon's status" is three chances for the fold's header to
+/// disagree with the bar above it.
+///
+/// `interrupted` and `failed` lead for the same reason `cardSituation`
+/// puts them first: the daemon's status is not the RUN's. An interrupted
+/// id holds the bare shell that replaced the agent, and its status
+/// describes the shell.
+///
+/// Takes the phase rather than a whole situation, so it still answers
+/// for a binding the situation has been superseded by -- a best-of-N run
+/// replaces the bar, and the fold underneath still names the session it
+/// is showing.
+export function boundStatusLabel(phase: CardSessionPhase, status: SessionStatus | null): string {
+  if (phase === "interrupted") return "interrupted";
+  if (phase === "failed") return "stopped — something broke";
+  if (phase === "live") return status ?? "idle";
+  return "exited";
+}
 
 export function runLabel(cardKind: "task" | "plan"): string {
   return `▶ Run ${cardKind === "plan" ? "this plan" : "this task"} with the agent`;

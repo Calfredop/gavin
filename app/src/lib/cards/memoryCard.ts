@@ -137,3 +137,17 @@ export async function adoptMemory(
     return { error: `Couldn't adopt into ${fileName}: ${e instanceof Error ? e.message : e}` };
   }
 }
+
+/// Why "Adopt" is unavailable on a memory card, or null when it can run.
+///
+/// Both halves named rather than assumed. The instructions file hangs
+/// off the root, so a rootless workspace has nothing to adopt INTO; and
+/// the last column is the human's to call whatever they like, so a board
+/// with no columns has nowhere to file the card once the fact is
+/// written. A sentence rather than a dark button, since a disabled
+/// control cannot explain itself.
+export function adoptBlockedReason(hasRoot: boolean, hasDoneColumn: boolean): string | null {
+  if (!hasRoot) return "This workspace has no root folder, so it has no instructions file to adopt into.";
+  if (!hasDoneColumn) return "This board has no columns, so there is no done column to file the card into.";
+  return null;
+}

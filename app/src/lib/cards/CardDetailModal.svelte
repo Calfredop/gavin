@@ -68,9 +68,10 @@
     revealDevelopingCard,
   } from "$lib/cards/cardRunActions";
   import { developingRunIn } from "$lib/cards/developingCards";
+  import { isViewTab } from "$lib/panes/tabIdentity";
   import { cardSessionState } from "$lib/board/columnRunAction";
   import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker } from "$lib/cards/cardRun";
-  import { cardContentReviewed, resolveRequireReview } from "$lib/cards/cardReview";
+  import { cardNeedsReview, resolveRequireReview } from "$lib/cards/cardReview";
   import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
   import { resumeNoteFor } from "$lib/agents/autoResume";
   import { runBaseline } from "$lib/cards/runChanges";
@@ -79,7 +80,7 @@
   import RunHistoryModal from "$lib/cards/RunHistoryModal.svelte";
   import { resumeTrail } from "$lib/agents/autoResumeState";
   import { doneColumnOf, firstColumnOf, findCardPlacement, stepStateOf } from "$lib/orchestration/orchestration";
-  import { adoptMemory, isMemoryCard } from "$lib/cards/memoryCard";
+  import { adoptBlockedReason, adoptMemory, isMemoryCard } from "$lib/cards/memoryCard";
   import {
     orchestrations,
     sendCardToRailAction,
@@ -96,13 +97,17 @@
   import { waitLabel } from "$lib/agents/attentionInbox";
   import { nowStore } from "$lib/agents/agentPauseState";
   import {
+    boundStatusLabel,
     cardSessionBar,
+    cardSituation,
+    primaryAction,
     loadSectionsOpen,
     railSummary,
     saveSectionsOpen,
     settingsSummary,
     type CardActionId,
     type CardSectionId,
+    type CardSessionPhase,
     type CardSectionsOpen,
     type CardSituation,
   } from "$lib/cards/cardDetail";
@@ -553,13 +558,10 @@
   const anchorSessionId = $derived.by(() => {
     const focused = $layoutState.focusedSessionId;
     if (!focused) return null;
-    if (
-        $layoutState.fileTabsById[focused] ||
-        $layoutState.boardTabsById[focused] ||
-        $layoutState.cardTabsById[focused]
-      )
-        return null;
-    return focused;
+    // The same classification the pane itself applies (tabIdentity.ts):
+    // a tab in none of the three maps is a session, and only a session
+    // can be split beside.
+    return isViewTab(focused, $layoutState) ? null : focused;
   });
 
   async function openAttachment(status: AttachmentStatus): Promise<void> {
@@ -601,6 +603,13 @@
     binding ? ($layoutState.orphanBySessionId[binding.sessionId] ?? null) : null
   );
   const bindingFailed = $derived(sessionState === "failed");
+  /// Where this run stands, derived ONCE. cardSessionState
+  /// (columnRunAction.ts) is the one place that vocabulary comes from;
+  /// the situation, the fold's word and the badge all read this rather
+  /// than each re-deciding that an interrupted run is interrupted.
+  const bindingPhase = $derived<CardSessionPhase>(
+    bindingInterrupted ? "interrupted" : bindingFailed ? "failed" : bindingLive ? "live" : "exited"
+  );
   /// Where this run started, or why nobody knows. Never "no changes":
   /// an absent baseline is a run nobody measured (runChanges.ts).
   const baseline = $derived(runBaseline(binding, $daemonCompat));
@@ -615,6 +624,24 @@
   const failureReason = $derived(
     binding ? ($layoutState.failureReasonById[binding.sessionId] ?? null) : null
   );
+  /// The session fold's own word for where the run stands.
+  const bindingStatus = $derived(
+    boundStatusLabel(bindingPhase, binding ? ($attentionStatusById[binding.sessionId] ?? null) : null)
+  );
+  /// The same badge the board card, the terminal tab and the sidebar row
+  /// draw for this very session: the panel used to say the state in a
+  /// bare word, which is accurate but shares nothing with the three
+  /// surfaces the human just came from. Interrupted and failed lead for
+  /// the same reason the word above puts them first.
+  const bindingBadge = $derived(
+    bindingPhase === "interrupted"
+      ? agentInterruptedIndicator()
+      : bindingPhase === "failed"
+        ? agentFailedIndicator(failureReason)
+        : bindingPhase === "live"
+          ? agentIndicator(binding ? $attentionStatusById[binding.sessionId] : undefined)
+          : agentExitedIndicator()
+  );
 
   /// What gavin did to this run without being asked. The detail comes
   /// from the in-memory trail while the window that watched it is open;
@@ -622,34 +649,6 @@
   const resumeNote = $derived(
     binding ? resumeNoteFor($resumeTrail[binding.path], binding.resumeAttempts) : null
   );
-  // The daemon's status describes whatever occupies the session id NOW,
-  // which for an interrupted run is the bare shell that replaced the
-  // agent -- so it is not consulted at all there.
-  const bindingStatus = $derived(
-    bindingInterrupted
-      ? "interrupted"
-      : bindingFailed
-        ? "stopped — something broke"
-        : binding && bindingLive
-          ? ($attentionStatusById[binding.sessionId] ?? "idle")
-          : "exited"
-  );
-  // The same badge the board card, the terminal tab and the sidebar row
-  // draw for this very session -- the detail modal used to say the state
-  // in a bare word, which is accurate but shares nothing with the three
-  // surfaces the human just came from.
-  // Interrupted and failed come first for the same reason bindingStatus
-  // puts them first: the daemon's status is not the run's.
-  const bindingBadge = $derived(
-    bindingInterrupted
-      ? agentInterruptedIndicator()
-      : bindingFailed
-        ? agentFailedIndicator(failureReason)
-        : binding && bindingLive
-          ? agentIndicator($attentionStatusById[binding.sessionId])
-          : agentExitedIndicator()
-  );
-
   // A launch the wall is holding (launchQueue.ts). There is no session
   // yet -- that is the whole state -- so nothing above can report it,
   // and without this row the modal shows a card with a Run button and no
@@ -841,13 +840,7 @@
   // Both halves named rather than assumed: the instructions file hangs
   // off the root, and the last column is the human's to call whatever
   // they like -- adopting has to file the card into THAT one.
-  const adoptBlocked = $derived(
-    adoptRoot === null
-      ? "This workspace has no root folder, so it has no instructions file to adopt into."
-      : done === null
-        ? "This board has no columns, so there is no done column to file the card into."
-        : null
-  );
+  const adoptBlocked = $derived(adoptBlockedReason(adoptRoot !== null, done !== null));
   let adopting = $state(false);
 
   async function handleAdopt(): Promise<void> {
@@ -898,36 +891,20 @@
   // is no binding until one is picked), and a develop run replaces every
   // launch (the file is being rewritten, so every launch is refused).
   const situation = $derived<CardSituation>(
-    card.kind === "note"
-      ? { kind: "none" }
-      : bestOfNRun
-        ? { kind: "best-of-n", summary: runSummary(bestOfNRun, liveIds) }
-        : binding
-          ? {
-              kind: "bound",
-              phase: bindingInterrupted
-                ? "interrupted"
-                : bindingFailed
-                  ? "failed"
-                  : bindingLive
-                    ? "live"
-                    : "exited",
-              // The daemon's status describes whatever occupies the
-              // session id NOW, so it is consulted only while the run is
-              // live -- an interrupted id holds a bare shell.
-              status: bindingLive
-                ? ($attentionStatusById[binding.sessionId] ?? "idle")
-                : null,
-              orphan: bindingOrphan !== null,
-            }
-          : developing
-            ? { kind: "developing" }
-            : {
-                kind: "unbound",
-                cardKind: card.kind === "plan" ? "plan" : "task",
-                canDevelop,
-                runBlocked: runBlocked !== null,
-              }
+    cardSituation({
+      cardKind: card.kind,
+      bestOfN: bestOfNRun ? runSummary(bestOfNRun, liveIds) : null,
+      binding: binding
+        ? {
+            phase: bindingPhase,
+            status: $attentionStatusById[binding.sessionId] ?? null,
+            orphan: bindingOrphan !== null,
+          }
+        : null,
+      developing: developing !== null,
+      canDevelop,
+      runBlocked: runBlocked !== null,
+    })
   );
   const bar = $derived(cardSessionBar(situation));
 
@@ -947,7 +924,7 @@
   /// and painting that as the primary would point the eye at the one
   /// button that cannot be pressed. A danger action is never the accent
   /// -- it already carries its own, louder, emphasis.
-  const primaryActionId = $derived(bar?.actions.find((a) => a.enabled && !a.danger)?.id ?? null);
+  const primaryActionId = $derived(primaryAction(bar));
 
   /// How long the run has been waiting on a person. Shown only when it
   /// IS waiting: "working · 4m" is a fact nobody asked for, while
@@ -1017,10 +994,13 @@
   // been read, since "not loaded yet" must not draw as "not reviewed", and
   // never when the gate itself is off for this workspace.
   const needsReview = $derived(
-    card.kind !== "note" &&
-      content !== null &&
-      requireReview &&
-      !cardContentReviewed(reviewContent, reviewedCards?.[card.id])
+    cardNeedsReview({
+      cardKind: card.kind,
+      fileRead: content !== null,
+      requireReview,
+      content: reviewContent,
+      approvedDigest: reviewedCards?.[card.id],
+    })
   );
   let reviewBusy = $state(false);
 

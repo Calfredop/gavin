@@ -3,14 +3,20 @@ import {
   CARD_SECTION_KEY,
   DEFAULT_SECTIONS_OPEN,
   cardSessionBar,
+  boundStatusLabel,
+  cardSituation,
+  primaryAction,
   loadSectionsOpen,
   railSummary,
   runLabel,
   saveSectionsOpen,
   settingsSummary,
+  type CardActionId,
+  type CardBarAction,
   type CardSectionsOpen,
   type CardSituation,
 } from "$lib/cards/cardDetail";
+import type { SessionStatus } from "$lib/core/notifications";
 
 const ids = (situation: CardSituation): string[] =>
   (cardSessionBar(situation)?.actions ?? []).map((a) => a.id);
@@ -242,5 +248,152 @@ describe("section folding", () => {
     };
     expect(loadSectionsOpen(blocked)).toEqual(DEFAULT_SECTIONS_OPEN);
     expect(() => saveSectionsOpen(DEFAULT_SECTIONS_OPEN, blocked)).not.toThrow();
+  });
+});
+
+describe("cardSituation", () => {
+  const base = {
+    cardKind: "task" as const,
+    bestOfN: null,
+    binding: null,
+    developing: false,
+    canDevelop: false,
+    runBlocked: false,
+  };
+
+  it("gives a note no agent story at all", () => {
+    expect(cardSituation({ ...base, cardKind: "note", bestOfN: "3 running" })).toEqual({ kind: "none" });
+  });
+
+  // A best-of-N run REPLACES the binding block: there is no binding
+  // until a candidate is picked.
+  it("puts a best-of-N run ahead of everything but a note", () => {
+    const s = cardSituation({
+      ...base,
+      bestOfN: "3 running",
+      binding: { phase: "live", status: "working", orphan: false },
+      developing: true,
+    });
+    expect(s).toEqual({ kind: "best-of-n", summary: "3 running" });
+  });
+
+  // A develop run replaces every LAUNCH, but a card that is already
+  // running is running -- the binding wins.
+  it("puts a binding ahead of a develop run", () => {
+    const s = cardSituation({
+      ...base,
+      binding: { phase: "live", status: "working", orphan: false },
+      developing: true,
+    });
+    expect(s.kind).toBe("bound");
+  });
+
+  // The arm order that matters most: a card mid-rewrite must not offer
+  // to launch, because every launch is refused while it is.
+  it("puts a develop run ahead of the launch block", () => {
+    expect(cardSituation({ ...base, developing: true })).toEqual({ kind: "developing" });
+  });
+
+  it("falls through to the launch block, carrying both its gates", () => {
+    expect(cardSituation({ ...base, cardKind: "plan", canDevelop: true, runBlocked: true })).toEqual({
+      kind: "unbound",
+      cardKind: "plan",
+      canDevelop: true,
+      runBlocked: true,
+    });
+  });
+
+  // The daemon's status describes whatever occupies the session id NOW,
+  // so an interrupted or exited id -- which holds a bare shell -- must
+  // not report one.
+  it("consults the daemon's status only while the run is live", () => {
+    const live = cardSituation({ ...base, binding: { phase: "live", status: "waiting_for_input", orphan: false } });
+    expect(live).toMatchObject({ status: "waiting_for_input" });
+    for (const phase of ["interrupted", "failed", "exited"] as const) {
+      expect(cardSituation({ ...base, binding: { phase, status: "working", orphan: true } })).toMatchObject({
+        phase,
+        status: null,
+        orphan: true,
+      });
+    }
+  });
+
+  it("reads a live session the daemon has said nothing about as idle", () => {
+    expect(cardSituation({ ...base, binding: { phase: "live", status: null, orphan: false } })).toMatchObject({
+      status: "idle",
+    });
+  });
+});
+
+describe("primaryAction", () => {
+  const action = (id: CardActionId, over: Partial<CardBarAction> = {}): CardBarAction => ({
+    id,
+    label: id,
+    enabled: true,
+    ...over,
+  });
+
+  it("is null for no bar and for a bar with no actions", () => {
+    expect(primaryAction(null)).toBeNull();
+    expect(primaryAction({ headline: "", tone: "neutral", wantsHuman: false, actions: [] })).toBeNull();
+  });
+
+  // An exited session leads with a disabled "Jump to session"; painting
+  // that as the primary points the eye at the one button that cannot be
+  // pressed.
+  it("skips a disabled action to reach the first one that can be pressed", () => {
+    const bar = {
+      headline: "",
+      tone: "neutral" as const,
+      wantsHuman: false,
+      actions: [action("jump", { enabled: false }), action("relaunch")],
+    };
+    expect(primaryAction(bar)).toBe("relaunch");
+  });
+
+  // Ending something already carries its own, louder emphasis.
+  it("never accents a danger action", () => {
+    const bar = {
+      headline: "",
+      tone: "neutral" as const,
+      wantsHuman: false,
+      actions: [action("end-orphan", { danger: true }), action("run")],
+    };
+    expect(primaryAction(bar)).toBe("run");
+  });
+
+  it("is null when every action is disabled or dangerous", () => {
+    const bar = {
+      headline: "",
+      tone: "neutral" as const,
+      wantsHuman: false,
+      actions: [action("jump", { enabled: false }), action("end-orphan", { danger: true })],
+    };
+    expect(primaryAction(bar)).toBeNull();
+  });
+});
+
+describe("boundStatusLabel", () => {
+  // The daemon's status is not the RUN's: an interrupted id holds the
+  // bare shell that replaced the agent, so its status describes the
+  // shell and must not be read.
+  it("leads with interrupted and failed, whatever the daemon says", () => {
+    expect(boundStatusLabel("interrupted", "working")).toBe("interrupted");
+    expect(boundStatusLabel("failed", "working")).toBe("stopped — something broke");
+  });
+
+  it("reports the daemon's status while the run is live", () => {
+    expect(boundStatusLabel("live", "waiting_for_input")).toBe("waiting_for_input");
+  });
+
+  // A live session the daemon has said nothing about yet is idle, not
+  // blank -- the same fallback cardSituation applies.
+  it("reads an unreported live session as idle", () => {
+    expect(boundStatusLabel("live", null)).toBe("idle");
+  });
+
+  it("says exited when the run is over", () => {
+    expect(boundStatusLabel("exited", null)).toBe("exited");
+    expect(boundStatusLabel("exited", "working")).toBe("exited");
   });
 });

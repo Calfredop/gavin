@@ -78,11 +78,15 @@ describe("the card detail modal", () => {
   it("replaces the unbound block with the develop note and one jump", () => {
     const text = source(DETAIL);
     // The launch buttons now live in the pinned session bar, so the
-    // branch that replaces them is the SITUATION the bar is built from.
-    // It has to come before the unbound one, or the Run buttons it
-    // replaces are the ones that render.
-    expect(text).toContain('{ kind: "developing" }');
-    expect(text.indexOf('{ kind: "developing" }')).toBeLessThan(text.indexOf('kind: "unbound"'));
+    // branch that replaces them is the SITUATION the bar is built from
+    // -- cardSituation's precedence, where it is unit-tested. The panel
+    // has to feed it the fact and read the answer, not re-decide it.
+    expect(text).toContain("developing: developing !== null,");
+    // cardSituation's BODY: the type above it declares the same arms in
+    // reading order rather than precedence order.
+    const module = source("cardDetail.ts");
+    const fn = module.slice(module.indexOf("export function cardSituation("));
+    expect(fn.indexOf('{ kind: "developing" }')).toBeLessThan(fn.indexOf('kind: "unbound"'));
     // And the note itself, which is what the bar has no room for.
     expect(text).toContain("{:else if developing}");
     expect(text).toContain("An agent is developing this card");

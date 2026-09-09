@@ -8,6 +8,7 @@ import {
   attachmentReviewLine,
   cardContentDigest,
   cardContentReviewed,
+  cardNeedsReview,
   formatBytes,
   isUnreviewedStall,
   normalizeRequireReview,
@@ -245,5 +246,48 @@ describe("the require-review picker's rows", () => {
   it("reads anything unrecognised as inherit", () => {
     expect(requireReviewToSelect(undefined)).toBe("");
     expect(requireReviewFromSelect("nonsense")).toBe(null);
+  });
+});
+
+describe("cardNeedsReview", () => {
+  const content = { title: "Fix the thing", body: "do it", attachments: [] };
+  const approved = cardContentDigest(content);
+  const base = {
+    cardKind: "task" as const,
+    fileRead: true,
+    requireReview: true,
+    content,
+    approvedDigest: null as string | null,
+  };
+
+  it("asks for an unreviewed card the gate applies to", () => {
+    expect(cardNeedsReview(base)).toBe(true);
+  });
+
+  it("stops asking once this exact content is approved", () => {
+    expect(cardNeedsReview({ ...base, approvedDigest: approved })).toBe(false);
+  });
+
+  // Nothing executes a note, so there is no prompt to approve.
+  it("never asks about a note", () => {
+    expect(cardNeedsReview({ ...base, cardKind: "note" })).toBe(false);
+  });
+
+  // "Not loaded yet" drawn as "not reviewed" is a banner that flashes
+  // onto every card the panel opens.
+  it("stays quiet until the file has actually been read", () => {
+    expect(cardNeedsReview({ ...base, fileRead: false })).toBe(false);
+  });
+
+  it("stays quiet where the workspace has turned the gate off", () => {
+    expect(cardNeedsReview({ ...base, requireReview: false })).toBe(false);
+  });
+
+  // The digest fails closed on its own, and that has to survive being
+  // wrapped: a marker from DIFFERENT content is not an approval.
+  it("asks again once the content has changed under an old marker", () => {
+    expect(cardNeedsReview({ ...base, content: { ...content, body: "do something else" }, approvedDigest: approved })).toBe(
+      true
+    );
   });
 });

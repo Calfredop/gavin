@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { svelteSources } from "$lib/sources";
+import { svelteSources, tsSources } from "$lib/sources";
 
 // The card detail panel's LAYOUT, which no unit test can see and no
 // rendered-DOM test would catch either: what this pins is where things
@@ -22,6 +22,15 @@ const SOURCES = svelteSources();
 
 const DETAIL = SOURCES["CardDetailModal.svelte"] ?? "";
 const MODAL = SOURCES["Modal.svelte"] ?? "";
+const CARD_DETAIL_TS = tsSources()["cardDetail.ts"] ?? "";
+/// cardSituation's BODY, not the whole module: the CardSituation type
+/// above it declares the same five arms in reading order rather than in
+/// precedence order, and measuring against that would pass on any
+/// precedence at all.
+const SITUATION_FN = CARD_DETAIL_TS.slice(
+  CARD_DETAIL_TS.indexOf("export function cardSituation("),
+  CARD_DETAIL_TS.indexOf("/// Which of the bar's actions gets the accent")
+);
 
 /// Index of a fragment, asserted present first -- `indexOf` returning -1
 /// would otherwise make every ordering assertion below pass by accident.
@@ -80,19 +89,25 @@ describe("the session bar", () => {
   it("keeps the precedence the old nested blocks had", () => {
     // A best-of-N run replaces the binding block (there is no binding
     // until one is picked); a develop run replaces every launch (the
-    // file is being rewritten, so every launch is refused).
-    const best = at(DETAIL, '{ kind: "best-of-n"');
-    const bound = at(DETAIL, 'kind: "bound"');
-    const developing = at(DETAIL, '{ kind: "developing" }');
-    const unbound = at(DETAIL, 'kind: "unbound"');
+    // file is being rewritten, so every launch is refused). The order is
+    // cardSituation's now, where it is unit-tested -- what stays worth
+    // pinning here is that the panel does not grow a second copy of it.
+    expect(DETAIL).toContain("cardSituation({");
+    expect(DETAIL).not.toContain('{ kind: "best-of-n"');
+    expect(DETAIL).not.toContain('kind: "unbound"');
+    const best = at(SITUATION_FN, '{ kind: "best-of-n"');
+    const bound = at(SITUATION_FN, 'kind: "bound"');
+    const developing = at(SITUATION_FN, '{ kind: "developing" }');
+    const unbound = at(SITUATION_FN, 'kind: "unbound"');
     expect(best).toBeLessThan(bound);
     expect(bound).toBeLessThan(developing);
     expect(developing).toBeLessThan(unbound);
   });
 
   it("accents the first action that can actually be pressed", () => {
-    expect(DETAIL).toContain(
-      "const primaryActionId = $derived(bar?.actions.find((a) => a.enabled && !a.danger)?.id ?? null);"
+    expect(DETAIL).toContain("const primaryActionId = $derived(primaryAction(bar));");
+    expect(CARD_DETAIL_TS).toContain(
+      "return bar?.actions.find((a) => a.enabled && !a.danger)?.id ?? null;"
     );
     expect(DETAIL).toContain("class:primary={action.id === primaryActionId}");
   });
