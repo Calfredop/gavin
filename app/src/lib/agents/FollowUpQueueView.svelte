@@ -26,14 +26,14 @@
     queueBlockedReason,
     queueCountLabel,
     queuedAgeLabel,
-  } from "$lib/queuedInput";
+  } from "$lib/agents/queuedInput";
   import {
     cancelFollowUp,
     moveFollowUp,
     queueFollowUp,
     queueTargetFor,
     sendFollowUpNow,
-  } from "$lib/queuedInputActions";
+  } from "$lib/agents/queuedInputActions";
 
   interface Props {
     sessionId: string;

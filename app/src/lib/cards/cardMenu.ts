@@ -31,7 +31,7 @@ import {
 import { executeArchive, executeUnarchive } from "$lib/files/archiveActions";
 import { bestOfNRequest, bestOfNRuns, runForCard } from "$lib/cards/bestOfNState";
 import { featureBlockedReason } from "$lib/daemonCompat";
-import { cancelLaunch, launchBlockedReason, queuedForCard } from "$lib/launchQueue";
+import { cancelLaunch, launchBlockedReason, queuedForCard } from "$lib/agents/launchQueue";
 import { isArchivedCard, slugStatus, type CardView } from "$lib/planBoard";
 import type { Column } from "$lib/board/kanban";
 import type { ContextMenuEntry } from "$lib/contextMenu";

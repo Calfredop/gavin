@@ -9,8 +9,8 @@
 // the effect, not by whichever component happens to be mounted.
 
 import { get, writable } from "svelte/store";
-import { pauseFor } from "$lib/agentPauseState";
-import { mayLaunch } from "$lib/launchQueue";
+import { pauseFor } from "$lib/agents/agentPauseState";
+import { mayLaunch } from "$lib/agents/launchQueue";
 import {
   autoResumeDecision,
   isImmediateRefailure,
@@ -19,8 +19,8 @@ import {
   staggerDelays,
   type AutoResumeDecision,
   type ResumeRecord,
-} from "$lib/autoResume";
-import { claimKey, resumeClaims } from "$lib/resumeClaim";
+} from "$lib/agents/autoResume";
+import { claimKey, resumeClaims } from "$lib/agents/resumeClaim";
 import { featureBlockedReason } from "$lib/daemonCompat";
 import {
   daemonCompat,
@@ -235,7 +235,7 @@ function ownerLabel(owner: NonNullable<Owner>, sessionId: string): string {
 }
 
 async function notify(body: string): Promise<void> {
-  const { sendAutoResumeNotice } = await import("$lib/autoResumeNotify");
+  const { sendAutoResumeNotice } = await import("$lib/agents/autoResumeNotify");
   await sendAutoResumeNotice(body);
 }
 

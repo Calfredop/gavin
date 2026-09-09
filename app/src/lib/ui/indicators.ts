@@ -72,7 +72,7 @@ import type { SessionStatus } from "$lib/notifications";
 import type { RailState, StepAttention, StepState } from "$lib/orchestration/orchestration";
 // Same reason: usageProjection.ts owns the three bands and the rule that
 // produces them, so this file names them rather than defining a second set.
-import type { ProjectionBand } from "$lib/usageProjection";
+import type { ProjectionBand } from "$lib/agents/usageProjection";
 
 /// The five meanings colour is allowed to carry. Matches IconButton's own
 /// tone scale one for one, so a badge and a button beside it never

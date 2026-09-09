@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { editableCycle, saveAgentPause } from "$lib/agentPauseState";
+  import { editableCycle, saveAgentPause } from "$lib/agents/agentPauseState";
   import { pickPath } from "$lib/picker";
   import {
     layoutState,

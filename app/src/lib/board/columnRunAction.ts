@@ -12,7 +12,7 @@
 import { slugStatus, type CardView } from "$lib/planBoard";
 import { sessionLiveness, type WorkspacesData } from "$lib/workspace";
 import { count } from "$lib/orchestration/railConfirm";
-import { estimateLines, type LaunchEstimate } from "$lib/launchEstimate";
+import { estimateLines, type LaunchEstimate } from "$lib/agents/launchEstimate";
 
 /// "start" and "run" spawn the ordinary run prompt; "resume" spawns the
 /// gavin-resume one.

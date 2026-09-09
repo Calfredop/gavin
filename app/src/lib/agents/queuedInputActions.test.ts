@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get, writable } from "svelte/store";
 import type { DaemonCompat } from "$lib/daemonCompat";
-import type { QueuedInput } from "$lib/queuedInput";
+import type { QueuedInput } from "$lib/agents/queuedInput";
 
 vi.mock("$lib/backend", () => ({
   queueInput: vi.fn(),
@@ -38,7 +38,7 @@ import {
   queueTargetFor,
   queueFor,
   sendFollowUpNow,
-} from "$lib/queuedInputActions";
+} from "$lib/agents/queuedInputActions";
 
 function entry(id: string, text = `message ${id}`): QueuedInput {
   return { id, sessionId: "s-1", text, createdAtUs: 1_000 };

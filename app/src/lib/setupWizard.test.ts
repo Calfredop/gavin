@@ -7,7 +7,7 @@ import {
   PRD_PLACEHOLDERS,
   SETUP_STEPS,
 } from "$lib/setupWizard";
-import type { SuperpowersStatus } from "$lib/superpowers";
+import type { SuperpowersStatus } from "$lib/agents/superpowers";
 import { svelteSources } from "$lib/sources";
 
 /// A settled check that found nothing: enough to keep the derivation off

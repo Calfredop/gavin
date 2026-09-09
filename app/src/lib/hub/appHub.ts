@@ -10,7 +10,7 @@ import {
   type Workspace,
   type WorkspacesData,
 } from "$lib/workspace";
-import type { FleetStrip } from "$lib/memory";
+import type { FleetStrip } from "$lib/agents/memory";
 import { sessionTabsOnly } from "$lib/panes/layout";
 import {
   gitSummaryOf,
@@ -37,7 +37,7 @@ import {
   type AgentUsageReport,
   type UsageSeverity,
   type UsageWindow,
-} from "$lib/agentUsage";
+} from "$lib/agents/agentUsage";
 import type { AgentProfileInfo } from "$lib/settings";
 import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/gavin";

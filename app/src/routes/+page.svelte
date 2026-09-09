@@ -54,7 +54,7 @@
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
   import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
   import DaemonRequestErrorBanner from "$lib/DaemonRequestErrorBanner.svelte";
-  import MemoryPressureBanner from "$lib/MemoryPressureBanner.svelte";
+  import MemoryPressureBanner from "$lib/agents/MemoryPressureBanner.svelte";
   import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/git/gitState";
   import { hubViewBusy, hubViewAttention, moveHubViewId } from "$lib/hub/hubViewMeta";
   import {

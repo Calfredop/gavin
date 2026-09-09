@@ -12,7 +12,7 @@ import {
 } from "$lib/orchestration/orchestration";
 import type { CardEntry, Orchestration, Rail, Stage } from "$lib/orchestration/orchestration";
 import { slugStatus } from "$lib/planBoard";
-import { estimateLines, type LaunchEstimate } from "$lib/launchEstimate";
+import { estimateLines, type LaunchEstimate } from "$lib/agents/launchEstimate";
 
 /// What a destructive rail action asks before it runs: the prompt's
 /// title, its consequence lines, and the word on the button. Built here

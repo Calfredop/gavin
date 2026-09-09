@@ -19,7 +19,7 @@
   } from "$lib/ui/indicators";
   import { dragState, dropHold, buildNestedSlots } from "$lib/board/kanbanDrag";
   import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
-  import { cancelLaunch, launchGateVerdict, launchQueue, queuedForCard } from "$lib/launchQueue";
+  import { cancelLaunch, launchGateVerdict, launchQueue, queuedForCard } from "$lib/agents/launchQueue";
   import { orchestrations } from "$lib/orchestration/orchestrationState";
   import { cardRailBadge } from "$lib/orchestration/orchestration";
   import { cardSessionState } from "$lib/board/columnRunAction";

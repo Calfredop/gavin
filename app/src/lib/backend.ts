@@ -1,14 +1,14 @@
 import type { AgentDefaults } from "$lib/cards/complexity";
-import type { PauseCycle } from "$lib/agentPause";
-import type { AgentUsageReport } from "$lib/agentUsage";
-import type { SystemMemorySample, WatchmanSample } from "$lib/memory";
-import type { LaunchConfig } from "$lib/launchGate";
+import type { PauseCycle } from "$lib/agents/agentPause";
+import type { AgentUsageReport } from "$lib/agents/agentUsage";
+import type { SystemMemorySample, WatchmanSample } from "$lib/agents/memory";
+import type { LaunchConfig } from "$lib/agents/launchGate";
 import type { PrReport } from "$lib/git/pullRequest";
 import type { CardRun, TokenReport } from "$lib/cards/runHistory";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$lib/workspace";
 import type { Board, Column, Label } from "$lib/board/kanban";
-import type { SuperpowersMark, SuperpowersStatus } from "$lib/superpowers";
+import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
 import type { GavinTracking } from "$lib/git/gitTracking";
 import type { BoardTab, CardTab, GavinTree } from "$lib/gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "$lib/git/git";
@@ -19,7 +19,7 @@ import type { GroupTemplateRecord } from "$lib/orchestration/orchestrationGroups
 import type { DaemonCompat } from "$lib/daemonCompat";
 import type { SessionStatus } from "$lib/notifications";
 import type { OrphanProcess } from "$lib/sessions/orphan";
-import type { QueuedInput } from "$lib/queuedInput";
+import type { QueuedInput } from "$lib/agents/queuedInput";
 import type { ManagedSessions } from "$lib/sessions/sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspaceDelete";
 import type { AttachmentStatus } from "$lib/cards/attachments";

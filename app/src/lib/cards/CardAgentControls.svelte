@@ -14,7 +14,7 @@
   /// to the surface, is the caller's business. Its font SIZE is
   /// inherited, so the pair reads as part of a 0.8em strip and as part
   /// of a 0.85em meta row without either host restyling it.
-  import { CUSTOM_MODEL, modelChoices } from "$lib/agentModel";
+  import { CUSTOM_MODEL, modelChoices } from "$lib/agents/agentModel";
   import { cardAgents } from "$lib/layoutState";
   import { NO_CARD_AGENT, cardModelUnreachable, type CardAgentFields } from "$lib/cards/cardAgent";
   import type { AgentProfileInfo } from "$lib/settings";

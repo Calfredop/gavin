@@ -3,11 +3,11 @@
   import GlobalSettingsModal from "$lib/GlobalSettingsModal.svelte";
   import SessionsManagerModal from "$lib/sessions/SessionsManagerModal.svelte";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
-  import AgentUsageModal from "$lib/AgentUsageModal.svelte";
-  import { activePause, nowStore, worstUsageProjection } from "$lib/agentPauseState";
-  import { pauseLabel } from "$lib/agentPause";
-  import { fleetStripLine, launchGateVerdict } from "$lib/launchQueue";
-  import { projectionTooltip } from "$lib/usageProjection";
+  import AgentUsageModal from "$lib/agents/AgentUsageModal.svelte";
+  import { activePause, nowStore, worstUsageProjection } from "$lib/agents/agentPauseState";
+  import { pauseLabel } from "$lib/agents/agentPause";
+  import { fleetStripLine, launchGateVerdict } from "$lib/agents/launchQueue";
+  import { projectionTooltip } from "$lib/agents/usageProjection";
   // Which of the two app-level panels is open. A store rather than this
   // component's own `$state`, because the app hub's recaps open the same
   // two panels and a flag inside Sidebar.svelte can only be flipped from

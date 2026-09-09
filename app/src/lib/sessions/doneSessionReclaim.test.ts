@@ -16,7 +16,7 @@ import {
   type ReclaimRecord,
   type ReclaimState,
 } from "$lib/sessions/doneSessionReclaim";
-import { DEFAULT_LAUNCH } from "$lib/launchGate";
+import { DEFAULT_LAUNCH } from "$lib/agents/launchGate";
 import type { Board } from "$lib/board/kanban";
 import type { GavinTree, PlanFileInfo } from "$lib/gavin";
 import type { Orchestration } from "$lib/orchestration/orchestration";

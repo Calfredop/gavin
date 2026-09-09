@@ -17,7 +17,7 @@
   } from "$lib/layoutState";
   import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
   import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
-  import { modelOptions, CUSTOM_MODEL } from "$lib/agentModel";
+  import { modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
   import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "$lib/terminal/terminalFont";
   import {
     DEFAULT_AUTO_COMMIT,
@@ -41,10 +41,10 @@
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { searchSettings, type SettingsSection } from "$lib/settingsSearch";
   import Modal from "$lib/Modal.svelte";
-  import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, type PauseCycle, validateCycle } from "$lib/agentPause";
-  import { agentPauseStore, profilesInUse, saveAgentPause } from "$lib/agentPauseState";
-  import { launchConfigStore, saveLaunchConfig } from "$lib/launchQueue";
-  import type { LaunchConfig } from "$lib/launchGate";
+  import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, type PauseCycle, validateCycle } from "$lib/agents/agentPause";
+  import { agentPauseStore, profilesInUse, saveAgentPause } from "$lib/agents/agentPauseState";
+  import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
+  import type { LaunchConfig } from "$lib/agents/launchGate";
 
   interface Props {
     onClose: () => void;

@@ -25,7 +25,7 @@ vi.mock("$lib/cards/cardRunActions", () => ({ revealSession: vi.fn().mockResolve
 // dependency cone reaches layoutState -- which this file replaces with a
 // handful of functions. `holdOrQueue` returning null is "the gate is
 // open", which is the state every assertion here assumes.
-vi.mock("$lib/launchQueue", () => ({
+vi.mock("$lib/agents/launchQueue", () => ({
   holdOrQueue: vi.fn(() => null),
   mayLaunch: vi.fn(() => true),
   launchBlockedReason: vi.fn(() => null),

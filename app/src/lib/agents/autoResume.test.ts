@@ -16,7 +16,7 @@ import {
   staggerDelays,
   type AutoResumeInput,
   type FailureCausePattern,
-} from "$lib/autoResume";
+} from "$lib/agents/autoResume";
 
 // claude-code's table, in the order agent_setup.rs lists it. Copied
 // rather than imported because the point of several tests below is that

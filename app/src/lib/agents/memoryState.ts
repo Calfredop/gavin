@@ -39,7 +39,7 @@ import {
   type MemoryPressure,
   type SystemMemorySample,
   type WatchmanSample,
-} from "$lib/memory";
+} from "$lib/agents/memory";
 import { layoutState, resolvedAgentFor } from "$lib/layoutState";
 import { findSessionLocation } from "$lib/workspace";
 import type { ManagedSession } from "$lib/sessions/sessionsManager";

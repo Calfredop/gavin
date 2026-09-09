@@ -50,12 +50,12 @@ const probe = vi.hoisted(() => {
 vi.mock("$lib/layoutState", () => ({ layoutState: probe.layoutState, closeSession: probe.closeSession }));
 vi.mock("$lib/board/kanbanState", () => ({ kanbanState: probe.kanbanState }));
 vi.mock("$lib/gavinState", () => ({ gavinTrees: probe.gavinTrees }));
-vi.mock("$lib/memoryState", () => ({
+vi.mock("$lib/agents/memoryState", () => ({
   agentSessions: probe.agentSessions,
   memoryPressure: probe.memoryPressure,
   systemMemory: probe.systemMemory,
 }));
-vi.mock("$lib/launchQueue", () => ({
+vi.mock("$lib/agents/launchQueue", () => ({
   launchConfigStore: probe.launchConfigStore,
   launchGateVerdict: probe.launchGateVerdict,
   launchQueue: probe.launchQueue,

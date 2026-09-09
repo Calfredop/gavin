@@ -20,7 +20,7 @@
     superpowersLed,
     type SuperpowersMark,
     type SuperpowersStatus,
-  } from "$lib/superpowers";
+  } from "$lib/agents/superpowers";
 
   interface Props {
     rootPath: string | null;

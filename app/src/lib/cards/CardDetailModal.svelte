@@ -58,7 +58,7 @@
   import { bestOfNRequest, bestOfNRuns, candidateLiveness, runForCard, runSummary } from "$lib/cards/bestOfNState";
   import { pickCandidate, abandonRun } from "$lib/cards/bestOfNActions";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "$lib/board/kanbanState";
-  import { cancelLaunch, launchGateVerdict, launchQueue, queuedForCard } from "$lib/launchQueue";
+  import { cancelLaunch, launchGateVerdict, launchQueue, queuedForCard } from "$lib/agents/launchQueue";
   import {
     runCard,
     resumeCard,
@@ -72,12 +72,12 @@
   import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker } from "$lib/cards/cardRun";
   import { cardContentReviewed, resolveRequireReview } from "$lib/cards/cardReview";
   import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
-  import { resumeNoteFor } from "$lib/autoResume";
+  import { resumeNoteFor } from "$lib/agents/autoResume";
   import { runBaseline } from "$lib/cards/runChanges";
   import RunChangesModal from "$lib/cards/RunChangesModal.svelte";
   import { historyBlockedReason } from "$lib/cards/runHistory";
   import RunHistoryModal from "$lib/cards/RunHistoryModal.svelte";
-  import { resumeTrail } from "$lib/autoResumeState";
+  import { resumeTrail } from "$lib/agents/autoResumeState";
   import { doneColumnOf, firstColumnOf, findCardPlacement, stepStateOf } from "$lib/orchestration/orchestration";
   import { adoptMemory, isMemoryCard } from "$lib/cards/memoryCard";
   import {
@@ -93,8 +93,8 @@
   import { interruptedCardNote } from "$lib/sessions/orphan";
   import { endSessionOrphan } from "$lib/sessions/orphanActions";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
-  import { waitLabel } from "$lib/attentionInbox";
-  import { nowStore } from "$lib/agentPauseState";
+  import { waitLabel } from "$lib/agents/attentionInbox";
+  import { nowStore } from "$lib/agents/agentPauseState";
   import {
     cardSessionBar,
     loadSectionsOpen,

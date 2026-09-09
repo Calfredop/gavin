@@ -138,13 +138,13 @@ import { DEVELOPING_STALL } from "$lib/cards/developingCards";
 import { unreviewedStallReason } from "$lib/cards/cardReview";
 import type { OrchestrationAgentRecord } from "$lib/workspace";
 import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "$lib/cards/cardRunActions";
-import { activePaused, mayStartWork, nowStore } from "$lib/agentPauseState";
+import { activePaused, mayStartWork, nowStore } from "$lib/agents/agentPauseState";
 import {
   holdOrQueue,
   launchHolding,
   mayLaunch,
   type OrchestrationIntent,
-} from "$lib/launchQueue";
+} from "$lib/agents/launchQueue";
 
 export const orchestrations = writable<Record<string, Orchestration>>({});
 
@@ -2031,7 +2031,7 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   // Dynamically imported to keep the dependency one-way: autoResumeState
   // reads this module (for resumeStep and orchestrations), so a static
   // import here would close a cycle.
-  const { startAutoResume } = await import("$lib/autoResumeState");
+  const { startAutoResume } = await import("$lib/agents/autoResumeState");
   const stopAutoResume = startAutoResume();
   return () => {
     stop();

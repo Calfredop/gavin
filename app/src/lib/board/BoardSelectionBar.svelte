@@ -16,7 +16,7 @@
     selectionRunConfirm,
   } from "$lib/board/boardSelection";
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
-  import { estimateFor, launchGateVerdict } from "$lib/launchQueue";
+  import { estimateFor, launchGateVerdict } from "$lib/agents/launchQueue";
 
   interface Props {
     workspaceId: string;

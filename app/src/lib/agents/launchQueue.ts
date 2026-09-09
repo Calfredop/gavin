@@ -45,13 +45,13 @@ import {
   mayDrain,
   type LaunchConfig,
   type LaunchVerdict,
-} from "$lib/launchGate";
-import { fleetStrip, usedBytes as usedBytesOf, type FleetStrip } from "$lib/memory";
-import { launchEstimate, type LaunchEstimate } from "$lib/launchEstimate";
-import { agentSessions, fleetMemory, memoryPressure, storedMeans, systemMemory } from "$lib/memoryState";
+} from "$lib/agents/launchGate";
+import { fleetStrip, usedBytes as usedBytesOf, type FleetStrip } from "$lib/agents/memory";
+import { launchEstimate, type LaunchEstimate } from "$lib/agents/launchEstimate";
+import { agentSessions, fleetMemory, memoryPressure, storedMeans, systemMemory } from "$lib/agents/memoryState";
 import { layoutState, resolvedAgentFor } from "$lib/layoutState";
 import { currentWindowLabel } from "$lib/appWindowState";
-import { setGateReasonHook } from "$lib/agentPauseState";
+import { setGateReasonHook } from "$lib/agents/agentPauseState";
 import type { ReviewedCard } from "$lib/review/codeReview";
 
 // ---- The config -------------------------------------------------------------

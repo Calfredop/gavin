@@ -11,7 +11,7 @@
   } from "$lib/layoutState";
   import { resolveAgentConfig, resolvePrdPath } from "$lib/settings";
   import { setupProgress, SETUP_STEPS } from "$lib/setupWizard";
-  import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/superpowers";
+  import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
   import { gavinTrees, refreshGavinTree } from "$lib/gavinState";
   import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
   import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "$lib/hub/homeSummary";

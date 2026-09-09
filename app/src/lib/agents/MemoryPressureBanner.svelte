@@ -16,8 +16,8 @@
   // says so when it has.
   import { MemoryStick } from "@lucide/svelte";
   import { get } from "svelte/store";
-  import { pressureBannerLine } from "$lib/memory";
-  import { fleetMemory, memoryPressure, systemMemory } from "$lib/memoryState";
+  import { pressureBannerLine } from "$lib/agents/memory";
+  import { fleetMemory, memoryPressure, systemMemory } from "$lib/agents/memoryState";
   import { showAppPanel } from "$lib/panes/appPanels";
   import { layoutState } from "$lib/layoutState";
   import { askConfirm } from "$lib/dialog";

@@ -57,7 +57,7 @@ vi.mock("$lib/cards/cardRunActions", () => ({
   resumeCard: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock("$lib/autoResumeNotify", () => ({
+vi.mock("$lib/agents/autoResumeNotify", () => ({
   sendAutoResumeNotice: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -66,9 +66,9 @@ import { kanbanState } from "$lib/board/kanbanState";
 import { gavinTrees } from "$lib/gavinState";
 import { orchestrations, resumeStep } from "$lib/orchestration/orchestrationState";
 import { resumeCard } from "$lib/cards/cardRunActions";
-import { sendAutoResumeNotice } from "$lib/autoResumeNotify";
-import { __resetAutoResume, __setAutoResumeClock, resumeTrail, startAutoResume } from "$lib/autoResumeState";
-import { STAGGER_SPREAD_MS, WAVE_ABORT_WINDOW_MS } from "$lib/autoResume";
+import { sendAutoResumeNotice } from "$lib/agents/autoResumeNotify";
+import { __resetAutoResume, __setAutoResumeClock, resumeTrail, startAutoResume } from "$lib/agents/autoResumeState";
+import { STAGGER_SPREAD_MS, WAVE_ABORT_WINDOW_MS } from "$lib/agents/autoResume";
 
 const NETWORK = "API Error: Connection dropped (ECONNRESET)";
 const AUTH = "Please run /login · API Error: 401 OAuth token has expired";

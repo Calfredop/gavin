@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentUsageReport } from "$lib/agentUsage";
+import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import {
   DEFAULT_CYCLE,
   MIN_PERIOD_MINUTES,
@@ -10,7 +10,7 @@ import {
   pauseLabel,
   pauseVerdict,
   validateCycle,
-} from "$lib/agentPause";
+} from "$lib/agents/agentPause";
 
 const MIN = 60_000;
 const ANCHOR = 1_700_000_000_000;

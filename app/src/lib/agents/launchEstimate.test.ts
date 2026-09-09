@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { estimateLines, launchEstimate, slotsNow, type EstimateInput } from "$lib/launchEstimate";
-import { MIN_AGENT_RSS_BYTES, type SystemMemorySample } from "$lib/memory";
+import { estimateLines, launchEstimate, slotsNow, type EstimateInput } from "$lib/agents/launchEstimate";
+import { MIN_AGENT_RSS_BYTES, type SystemMemorySample } from "$lib/agents/memory";
 
 const GB = 1024 ** 3;
 

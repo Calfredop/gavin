@@ -17,8 +17,8 @@
     Zap,
   } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { resumeNoteFor } from "$lib/autoResume";
-  import { resumeTrail } from "$lib/autoResumeState";
+  import { resumeNoteFor } from "$lib/agents/autoResume";
+  import { resumeTrail } from "$lib/agents/autoResumeState";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { tooltip } from "$lib/tooltip";
   import {
@@ -28,7 +28,7 @@
     railIndicator,
     railRetryIndicator,
   } from "$lib/ui/indicators";
-  import { launchGateVerdict } from "$lib/launchQueue";
+  import { launchGateVerdict } from "$lib/agents/launchQueue";
   import OrchestrationStepChip from "$lib/orchestration/OrchestrationStepChip.svelte";
   import OrchestrationStepCard from "$lib/orchestration/OrchestrationStepCard.svelte";
   import type { Label } from "$lib/board/kanban";

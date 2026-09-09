@@ -40,7 +40,7 @@ import {
   type ReviewedCard,
 } from "$lib/review/codeReview";
 import type { CardView } from "$lib/planBoard";
-import { holdOrQueue, type ReviewIntent } from "$lib/launchQueue";
+import { holdOrQueue, type ReviewIntent } from "$lib/agents/launchQueue";
 
 /// A review the human has been asked to confirm the base for. Everything
 /// the prompt needs except the base itself, resolved when the dialog

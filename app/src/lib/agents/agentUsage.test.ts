@@ -13,7 +13,7 @@ import {
   usageSummary,
   unavailableReason,
   worstWindow,
-} from "$lib/agentUsage";
+} from "$lib/agents/agentUsage";
 
 const NOW_MS = 1_700_000_000_000;
 const NOW_S = Math.floor(NOW_MS / 1000);

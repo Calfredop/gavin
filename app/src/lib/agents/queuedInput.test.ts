@@ -14,7 +14,7 @@ import {
   shouldQueueForMainAgent,
   type QueuedInput,
   type QueueTarget,
-} from "$lib/queuedInput";
+} from "$lib/agents/queuedInput";
 
 const NOW = 1_700_000_000_000;
 

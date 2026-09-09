@@ -42,9 +42,9 @@ import {
 } from "$lib/sessions/doneSessionReclaim";
 import { gavinTrees } from "$lib/gavinState";
 import { kanbanState } from "$lib/board/kanbanState";
-import { launchConfigStore, launchGateVerdict, launchQueue } from "$lib/launchQueue";
+import { launchConfigStore, launchGateVerdict, launchQueue } from "$lib/agents/launchQueue";
 import { closeSession, layoutState } from "$lib/layoutState";
-import { agentSessions, memoryPressure, systemMemory } from "$lib/memoryState";
+import { agentSessions, memoryPressure, systemMemory } from "$lib/agents/memoryState";
 import { orchestrations } from "$lib/orchestration/orchestrationState";
 import { closeTabsNow } from "$lib/panes/tabActions";
 import { findSessionLocation } from "$lib/workspace";

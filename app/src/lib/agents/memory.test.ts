@@ -14,7 +14,7 @@ import {
   rootsFromWatchList,
   usedBytes,
   type SystemMemorySample,
-} from "$lib/memory";
+} from "$lib/agents/memory";
 
 const GB = 1024 ** 3;
 

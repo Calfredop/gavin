@@ -24,7 +24,7 @@ const TS = tsSources();
 
 /// The route file, which is where every app-wide banner is actually
 /// mounted. Its own glob because it lives outside `src/lib`.
-const ROUTES = import.meta.glob("../routes/*.svelte", {
+const ROUTES = import.meta.glob("../../routes/*.svelte", {
   query: "?raw",
   import: "default",
   eager: true,
@@ -300,9 +300,9 @@ describe("the settings", () => {
 describe("the probe", () => {
   it("polls app-wide from bootstrap, not from a mounted component", () => {
     const layout = source("layoutState.ts");
-    expect(layout).toContain('await import("$lib/memoryState")');
+    expect(layout).toContain('await import("$lib/agents/memoryState")');
     expect(layout).toContain("unlisteners.push(startMemoryPoll());");
-    expect(layout).toContain('await import("$lib/launchQueue")');
+    expect(layout).toContain('await import("$lib/agents/launchQueue")');
     expect(layout).toContain("unlisteners.push(startLaunchQueue());");
   });
 

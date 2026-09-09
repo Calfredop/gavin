@@ -50,17 +50,17 @@
 // takes seconds to reach the sample, and the point is the smallest
 // number of closes that clears the pressure, not the largest.
 
-import type { StatusSince } from "$lib/attentionInbox";
+import type { StatusSince } from "$lib/agents/attentionInbox";
 import type { ConfirmOptions } from "$lib/dialog";
 import type { GavinTree } from "$lib/gavin";
 import type { Board } from "$lib/board/kanban";
-import type { LaunchConfig } from "$lib/launchGate";
-import type { MemoryPressure } from "$lib/memory";
+import type { LaunchConfig } from "$lib/agents/launchGate";
+import type { MemoryPressure } from "$lib/agents/memory";
 import type { Orchestration } from "$lib/orchestration/orchestration";
 import type { Workspace } from "$lib/workspace";
-import { countsInFlight } from "$lib/launchGate";
+import { countsInFlight } from "$lib/agents/launchGate";
 import { isPinned } from "$lib/panes/layout";
-import { formatGb } from "$lib/memory";
+import { formatGb } from "$lib/agents/memory";
 import {
   cardIndex,
   doneColumn,

@@ -40,10 +40,10 @@ import {
 } from "$lib/cards/attachments";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { UNREVIEWED_UNATTENDED } from "$lib/cards/cardReview";
-import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "$lib/queuedInput";
-import { queueFollowUp, queueTargetFor } from "$lib/queuedInputActions";
+import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "$lib/agents/queuedInput";
+import { queueFollowUp, queueTargetFor } from "$lib/agents/queuedInputActions";
 import { cardViewForPath, type CardView } from "$lib/planBoard";
-import { holdOrQueue, type CardIntent } from "$lib/launchQueue";
+import { holdOrQueue, type CardIntent } from "$lib/agents/launchQueue";
 
 /// The run gate for a card's attachments: the absolute paths to hand the
 /// agent (and the ones it named but gavin is withholding), or the reason

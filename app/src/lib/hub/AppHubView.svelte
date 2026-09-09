@@ -68,8 +68,8 @@
     type ManagedSessions,
     type SessionRow,
   } from "$lib/sessions/sessionsManager";
-  import { barPercent, displayPercent, formatResetsIn } from "$lib/agentUsage";
-  import { agentUsageStore, nowStore, pausedWorkspaces } from "$lib/agentPauseState";
+  import { barPercent, displayPercent, formatResetsIn } from "$lib/agents/agentUsage";
+  import { agentUsageStore, nowStore, pausedWorkspaces } from "$lib/agents/agentPauseState";
   import { openAppPanel, showAppPanel } from "$lib/panes/appPanels";
   import {
     newWorkspaceFlow,
@@ -84,11 +84,11 @@
     waitLabel,
     REASON_LABEL,
     type AttentionRow,
-  } from "$lib/attentionInbox";
+  } from "$lib/agents/attentionInbox";
   import { openLinkedCard } from "$lib/cards/cardTabLink";
   import { revealSession } from "$lib/cards/cardRunActions";
   import { kanbanState } from "$lib/board/kanbanState";
-  import { fleetStripLine } from "$lib/launchQueue";
+  import { fleetStripLine } from "$lib/agents/launchQueue";
   import { gavinTrees } from "$lib/gavinState";
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestration/orchestrationState";
   import { railsWantingAttention } from "$lib/orchestration/orchestration";

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { MessageSquarePlus } from "@lucide/svelte";
   import TerminalPane from "$lib/terminal/TerminalPane.svelte";
-  import FollowUpQueueView from "$lib/FollowUpQueueView.svelte";
+  import FollowUpQueueView from "$lib/agents/FollowUpQueueView.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tooltip } from "$lib/tooltip";
   import {
@@ -15,8 +15,8 @@
   } from "$lib/layoutState";
   import { gavinTrees } from "$lib/gavinState";
   import { resolveTerminalFontSize } from "$lib/terminal/terminalFont";
-  import { queueBlockedReason, queueTip } from "$lib/queuedInput";
-  import { queueTargetFor } from "$lib/queuedInputActions";
+  import { queueBlockedReason, queueTip } from "$lib/agents/queuedInput";
+  import { queueTargetFor } from "$lib/agents/queuedInputActions";
 
   interface Props {
     workspaceId: string;

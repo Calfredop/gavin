@@ -115,7 +115,7 @@ describe("the agent usage recap", () => {
     // a second requester here would double the calls against a route
     // that 429s.
     expect(source(HUB)).not.toContain("refreshUsage");
-    expect(source(HUB)).toContain('from "$lib/agentPauseState"');
+    expect(source(HUB)).toContain('from "$lib/agents/agentPauseState"');
   });
 
   it("draws the bar in the bands agentUsage.ts owns, never a percentage of its own", () => {

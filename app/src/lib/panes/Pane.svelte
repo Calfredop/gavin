@@ -6,7 +6,7 @@
   import FileViewerPane from "$lib/files/FileViewerPane.svelte";
   import BoardPane from "$lib/board/BoardPane.svelte";
   import CardTabPane from "$lib/cards/CardTabPane.svelte";
-  import FollowUpQueuePane from "$lib/FollowUpQueuePane.svelte";
+  import FollowUpQueuePane from "$lib/agents/FollowUpQueuePane.svelte";
   import {
     layoutState,
     daemonCompat,
@@ -69,8 +69,8 @@
   import { tooltip } from "$lib/tooltip";
   import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
   import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "$lib/paths";
-  import { queueBlockedReason, queueTip } from "$lib/queuedInput";
-  import { queueTargetFor } from "$lib/queuedInputActions";
+  import { queueBlockedReason, queueTip } from "$lib/agents/queuedInput";
+  import { queueTargetFor } from "$lib/agents/queuedInputActions";
   import {
     setDragPayload,
     getDragKind,

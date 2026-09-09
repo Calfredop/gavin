@@ -50,7 +50,7 @@ import {
   toolRunsStore,
 } from "$lib/orchestration/toolRunsState";
 import { resolveToolBody, resolveToolCwd, type Tool } from "$lib/orchestration/orchestrationTools";
-import { holdOrQueue, type ToolIntent } from "$lib/launchQueue";
+import { holdOrQueue, type ToolIntent } from "$lib/agents/launchQueue";
 import { renderLibraryFor, toolRecords } from "$lib/orchestration/toolsState";
 import { cannotRunAloneReason, isRunnableStandalone, runBlockedReason } from "$lib/workspaceTools";
 

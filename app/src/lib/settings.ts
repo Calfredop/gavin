@@ -1,5 +1,5 @@
-import { composeLaunchCommand } from "$lib/agentModel";
-import type { FailureCausePattern } from "$lib/autoResume";
+import { composeLaunchCommand } from "$lib/agents/agentModel";
+import type { FailureCausePattern } from "$lib/agents/autoResume";
 import type { AgentConfig } from "$lib/gavin";
 import { isAbsolutePath } from "$lib/paths";
 import type { EffectiveTheme } from "$lib/ui/theme";

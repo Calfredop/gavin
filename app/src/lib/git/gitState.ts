@@ -26,9 +26,9 @@ import {
   autoResumePolicy,
   classifyFailure,
   resumeDelayMs,
-} from "$lib/autoResume";
+} from "$lib/agents/autoResume";
 import { featureBlockedReason } from "$lib/daemonCompat";
-import { holdOrQueue, type CommitIntent } from "$lib/launchQueue";
+import { holdOrQueue, type CommitIntent } from "$lib/agents/launchQueue";
 import type {
   ApplyMode,
   Area,
@@ -714,7 +714,7 @@ async function maybeRetryCommitRun(
     if (current(workspaceId)?.agentCommit) return;
     void commitViaAgent(workspaceId, spent + 1).then((ok) => {
       if (!ok) return;
-      void import("$lib/autoResumeNotify").then(({ sendAutoResumeNotice }) =>
+      void import("$lib/agents/autoResumeNotify").then(({ sendAutoResumeNotice }) =>
         sendAutoResumeNotice(`Commit via agent broke and was retried automatically — ${said}`)
       );
     });

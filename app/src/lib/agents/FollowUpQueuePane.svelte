@@ -6,7 +6,7 @@
   // Deliberately thin, like CardTabPane: it resolves the session's name
   // and hands the work to FollowUpQueueView, so the queue never has two
   // different faces depending on which host mounted it.
-  import FollowUpQueueView from "$lib/FollowUpQueueView.svelte";
+  import FollowUpQueueView from "$lib/agents/FollowUpQueueView.svelte";
   import { layoutState, closeSession } from "$lib/layoutState";
   import { sessionLabel } from "$lib/paths";
 

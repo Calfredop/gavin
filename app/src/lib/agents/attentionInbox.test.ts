@@ -6,9 +6,9 @@ import {
   REASON_LABEL,
   type AttentionInboxInput,
   type AttentionState,
-} from "$lib/attentionInbox";
+} from "$lib/agents/attentionInbox";
 import { PHASE_LABEL } from "$lib/hub/appHub";
-import type { AttentionRow } from "$lib/attentionInbox";
+import type { AttentionRow } from "$lib/agents/attentionInbox";
 import type { Page, Workspace } from "$lib/workspace";
 import type { LayoutNode } from "$lib/panes/layout";
 import type { Board } from "$lib/board/kanban";

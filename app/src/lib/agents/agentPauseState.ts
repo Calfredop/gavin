@@ -24,8 +24,8 @@ import {
   type PauseVerdict,
   pauseBlockedReason,
   pauseVerdict,
-} from "$lib/agentPause";
-import type { AgentUsageReport } from "$lib/agentUsage";
+} from "$lib/agents/agentPause";
+import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import {
   loadUsageHistory,
   projectUsage,
@@ -34,7 +34,7 @@ import {
   worstProjection,
   type UsageHistory,
   type UsageProjection,
-} from "$lib/usageProjection";
+} from "$lib/agents/usageProjection";
 import { layoutState, resolvedAgentFor } from "$lib/layoutState";
 
 /// The app-wide cycle, or null for no cycle at all -- the shipped

@@ -20,7 +20,7 @@ import {
   type WorkspaceRunning,
 } from "$lib/hub/appHub";
 import { totalUsage, type SessionRow } from "$lib/sessions/sessionsManager";
-import type { AgentUsageReport } from "$lib/agentUsage";
+import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import type { AgentProfileInfo } from "$lib/settings";
 import type { WorkspaceAgentsSummary } from "$lib/sidebar/sidebarSummary";
 import { UNFILED_WORKSPACE_ID, type Page, type Workspace } from "$lib/workspace";

@@ -9,7 +9,7 @@ import {
   type CardSessionState,
 } from "$lib/board/columnRunAction";
 import type { CardView } from "$lib/planBoard";
-import { launchEstimate } from "$lib/launchEstimate";
+import { launchEstimate } from "$lib/agents/launchEstimate";
 
 function card(id: string, kind: "note" | "task" | "plan" = "task"): CardView {
   return {

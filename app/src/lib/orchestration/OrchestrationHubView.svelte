@@ -33,7 +33,7 @@
   import { requestedCardDetail, takeCardDetailRequest } from "$lib/cards/cardTabLink";
   import { layoutState, daemonCompat } from "$lib/layoutState";
   import { featureBlockedReason } from "$lib/daemonCompat";
-  import { estimateFor, launchGateVerdict } from "$lib/launchQueue";
+  import { estimateFor, launchGateVerdict } from "$lib/agents/launchQueue";
   import { executeArchive, ARCHIVE_CANCELLED } from "$lib/files/archiveActions";
   import {
     cardIndex,

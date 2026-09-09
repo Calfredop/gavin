@@ -5,7 +5,7 @@ import type { LayoutNode } from "$lib/panes/layout";
 import * as layout from "$lib/panes/layout";
 import * as backend from "$lib/backend";
 import { setTempRoot } from "$lib/orchestration/orchestrationLoop";
-import type { PauseCycle } from "$lib/agentPause";
+import type { PauseCycle } from "$lib/agents/agentPause";
 import * as terminalRegistry from "$lib/terminal/terminalRegistry";
 import { hotState } from "$lib/hotState";
 import * as workspace from "$lib/workspace";
@@ -31,7 +31,7 @@ import {
   type AgentProfileInfo,
   type McpFormatInfo,
 } from "$lib/settings";
-import { mergeDiscoveredModels } from "$lib/agentModel";
+import { mergeDiscoveredModels } from "$lib/agents/agentModel";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
 import { normalizeAutoCommit, resolveAutoCommit } from "$lib/git/autoCommit";
 import { normalizeGitTracking } from "$lib/git/gitTracking";
@@ -40,14 +40,14 @@ import { themeState } from "$lib/ui/themeState.svelte";
 import { featureBlockedReason, restartConfirmLines, type DaemonCompat } from "$lib/daemonCompat";
 import { confirmDestructive, DAEMON_SUBJECT } from "$lib/confirmGate";
 import type { OrphanProcess } from "$lib/sessions/orphan";
-import type { StatusSince } from "$lib/attentionInbox";
+import type { StatusSince } from "$lib/agents/attentionInbox";
 import {
   attentionStatuses,
   clearSessionRead,
   withSessionRead,
   type ReadSessions,
 } from "$lib/sessions/sessionRead";
-import { indexQueued, type QueuedInput } from "$lib/queuedInput";
+import { indexQueued, type QueuedInput } from "$lib/agents/queuedInput";
 import { candidateAgentConfig, type Candidate } from "$lib/cards/bestOfN";
 import {
   agentConfigWithAttribution,
@@ -1260,7 +1260,7 @@ export async function bootstrap(): Promise<void> {
   // resolvedAgentFor from this module. Started here rather than from a
   // component, because a pause whose clock only advances while one tab is
   // mounted is the bug that made rails tick only on their own tab.
-  const { startPauseClock } = await import("$lib/agentPauseState");
+  const { startPauseClock } = await import("$lib/agents/agentPauseState");
   unlisteners.push(startPauseClock());
   // The memory probe, on the same terms and for a sharper version of the
   // same reason: the launch gate reads its sample at the moment somebody
@@ -1268,12 +1268,12 @@ export async function bootstrap(): Promise<void> {
   // different workspace -- and a queue whose poll has stalled is work
   // that silently never starts. Dynamically imported for the cycle
   // reason above (memoryState reads resolvedAgentFor from this module).
-  const { startMemoryPoll } = await import("$lib/memoryState");
+  const { startMemoryPoll } = await import("$lib/agents/memoryState");
   unlisteners.push(startMemoryPoll());
   // ...and the queue that drains behind the gate the probe feeds. After
   // the poller, so its first drain reads a sample rather than a null,
   // and module-level for the same reason both of those are.
-  const { startLaunchQueue } = await import("$lib/launchQueue");
+  const { startLaunchQueue } = await import("$lib/agents/launchQueue");
   unlisteners.push(startLaunchQueue());
   // ...and the one thing the wall may END: an idle agent of a done card,
   // while memory is short. After the queue, because its closes are what

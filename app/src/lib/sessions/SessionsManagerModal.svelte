@@ -49,7 +49,7 @@
   import { tooltip } from "$lib/tooltip";
   import { askConfirm } from "$lib/dialog";
   import { takeSessionSortRequest } from "$lib/panes/appPanels";
-  import { watchmanRoots, watchmanStore, refreshMemory } from "$lib/memoryState";
+  import { watchmanRoots, watchmanStore, refreshMemory } from "$lib/agents/memoryState";
   import { orchestrations } from "$lib/orchestration/orchestrationState";
 
   interface Props {

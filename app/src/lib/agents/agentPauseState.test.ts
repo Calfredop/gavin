@@ -20,8 +20,8 @@ vi.mock("$lib/layoutState", async () => {
   };
 });
 
-import { DEFAULT_CYCLE, type PauseCycle } from "$lib/agentPause";
-import type { AgentUsageReport } from "$lib/agentUsage";
+import { DEFAULT_CYCLE, type PauseCycle } from "$lib/agents/agentPause";
+import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import {
   agentPauseStore,
   agentUsageStore,
@@ -36,7 +36,7 @@ import {
   refreshUsage,
   saveAgentPause,
   startBlockedReason,
-} from "$lib/agentPauseState";
+} from "$lib/agents/agentPauseState";
 import { layoutState } from "$lib/layoutState";
 
 const ANCHOR = 1_700_000_000_000;

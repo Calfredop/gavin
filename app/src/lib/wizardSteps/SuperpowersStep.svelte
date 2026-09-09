@@ -2,8 +2,8 @@
   import { agentModelDefaultsStore, agentProfilesStore, layoutState, trustedAgentConfigs } from "$lib/layoutState";
   import { resolveAgentConfig } from "$lib/settings";
   import * as backend from "$lib/backend";
-  import SuperpowersControls from "$lib/SuperpowersControls.svelte";
-  import type { SuperpowersMark, SuperpowersStatus } from "$lib/superpowers";
+  import SuperpowersControls from "$lib/agents/SuperpowersControls.svelte";
+  import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
 
   interface Props {
     workspaceId: string;

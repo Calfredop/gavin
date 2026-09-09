@@ -23,7 +23,7 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import { X } from "@lucide/svelte";
   import { formatShortcut } from "$lib/shortcuts";
-  import { estimateFor, launchGateVerdict } from "$lib/launchQueue";
+  import { estimateFor, launchGateVerdict } from "$lib/agents/launchQueue";
   import { isMacSync } from "$lib/platform";
   import { columnDeletionPlan, executeDeletion, executeMoveCards } from "$lib/cards/cardDelete";
   import { grantForAnsweredPrompt } from "$lib/confirmGate";

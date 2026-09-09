@@ -56,7 +56,7 @@ import {
   formatDuration,
   type AgentUsageReport,
   type UsageWindow,
-} from "$lib/agentUsage";
+} from "$lib/agents/agentUsage";
 
 // ---- Window classes ----------------------------------------------------------
 

@@ -218,7 +218,7 @@ const gateMock = vi.hoisted(() => {
   };
 });
 
-vi.mock("$lib/launchQueue", () => ({
+vi.mock("$lib/agents/launchQueue", () => ({
   holdOrQueue: vi.fn(() => null),
   mayLaunch: () => gateMock.allowed.value,
   launchBlockedReason: () => (gateMock.allowed.value ? null : "Waiting for a slot"),

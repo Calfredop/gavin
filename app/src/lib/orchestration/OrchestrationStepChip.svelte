@@ -15,7 +15,7 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { agentQueuedIndicator, attentionIndicator, stepIndicator } from "$lib/ui/indicators";
-  import { launchGateVerdict } from "$lib/launchQueue";
+  import { launchGateVerdict } from "$lib/agents/launchQueue";
   import { describeOverrides, toolKindLabel } from "$lib/orchestration/orchestrationTools";
   import type { Tool } from "$lib/orchestration/orchestrationTools";
   import { attentionTip } from "$lib/orchestration/orchestration";

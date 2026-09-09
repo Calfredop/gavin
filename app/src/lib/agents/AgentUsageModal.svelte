@@ -5,14 +5,14 @@
   import { agentProfilesStore } from "$lib/layoutState";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { usageProjectionIndicator } from "$lib/ui/indicators";
-  import { projectWindow, projectionSentence } from "$lib/usageProjection";
+  import { projectWindow, projectionSentence } from "$lib/agents/usageProjection";
   import {
     agentUsageStore,
     nowStore,
     profilesInUse,
     refreshUsage,
     usageHistoryStore,
-  } from "$lib/agentPauseState";
+  } from "$lib/agents/agentPauseState";
   import {
     barPercent,
     displayPercent,
@@ -21,7 +21,7 @@
     unavailableReason,
     usageSeverity,
     type AgentUsageReport,
-  } from "$lib/agentUsage";
+  } from "$lib/agents/agentUsage";
 
   interface Props {
     onClose: () => void;

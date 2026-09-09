@@ -13,7 +13,7 @@
 import { writable, get } from "svelte/store";
 import type { CardView } from "$lib/planBoard";
 import { count } from "$lib/orchestration/railConfirm";
-import { estimateLines, type LaunchEstimate } from "$lib/launchEstimate";
+import { estimateLines, type LaunchEstimate } from "$lib/agents/launchEstimate";
 
 /// Card paths, in the order they were picked.
 export const boardSelection = writable<string[]>([]);

@@ -49,7 +49,7 @@
   } from "$lib/git/gitTracking";
   import { gavinTrees } from "$lib/gavinState";
   import { featureBlockedReason, restartOutcome, restartConfirmLines } from "$lib/daemonCompat";
-  import { modelOptions, CUSTOM_MODEL } from "$lib/agentModel";
+  import { modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
   import {
     resolveAgentConfig,
     validateAgentFileName,
@@ -64,7 +64,7 @@
   } from "$lib/settings";
   import { pickPath } from "$lib/picker";
   import * as backend from "$lib/backend";
-  import SuperpowersControls from "$lib/SuperpowersControls.svelte";
+  import SuperpowersControls from "$lib/agents/SuperpowersControls.svelte";
   import ConfigTrustNotice from "$lib/ConfigTrustNotice.svelte";
   import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
   import ColourPicker from "$lib/ColourPicker.svelte";
@@ -74,9 +74,9 @@
   import ConfirmPrompt from "$lib/ConfirmPrompt.svelte";
   import WorkspaceDeleteWizard from "$lib/WorkspaceDeleteWizard.svelte";
   import { tooltip } from "$lib/tooltip";
-  import { MIN_PERIOD_MINUTES, validateCycle } from "$lib/agentPause";
-  import { agentPauseStore, editableCycle, nowStore, pauseFor } from "$lib/agentPauseState";
-  import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "$lib/superpowers";
+  import { MIN_PERIOD_MINUTES, validateCycle } from "$lib/agents/agentPause";
+  import { agentPauseStore, editableCycle, nowStore, pauseFor } from "$lib/agents/agentPauseState";
+  import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
   import { UNFILED_WORKSPACE_ID } from "$lib/workspace";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
   import {

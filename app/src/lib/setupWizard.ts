@@ -1,5 +1,5 @@
-import type { SuperpowersMark, SuperpowersStatus } from "$lib/superpowers";
-import { superpowersDone } from "$lib/superpowers";
+import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
+import { superpowersDone } from "$lib/agents/superpowers";
 
 export type SetupStep = "agent" | "integration" | "superpowers" | "git" | "review" | "prd" | "launch";
 

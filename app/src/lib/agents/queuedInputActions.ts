@@ -25,7 +25,7 @@ import {
   withoutQueued,
   type QueueTarget,
   type QueuedInput,
-} from "$lib/queuedInput";
+} from "$lib/agents/queuedInput";
 
 /// What the app knows about a session's fitness to be queued for,
 /// assembled from the stores. The view reads this once and hands it to

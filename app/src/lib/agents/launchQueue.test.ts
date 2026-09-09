@@ -53,7 +53,7 @@ const probe = vi.hoisted(() => {
   };
 });
 const { agentSessions, memoryPressure, systemMemory, layoutState } = probe;
-vi.mock("$lib/memoryState", () => ({
+vi.mock("$lib/agents/memoryState", () => ({
   agentSessions: probe.agentSessions,
   memoryPressure: probe.memoryPressure,
   systemMemory: probe.systemMemory,
@@ -66,7 +66,7 @@ vi.mock("$lib/layoutState", () => ({
 }));
 
 vi.mock("$lib/appWindowState", () => ({ currentWindowLabel: () => "main" }));
-vi.mock("$lib/agentPauseState", () => ({ setGateReasonHook: vi.fn() }));
+vi.mock("$lib/agents/agentPauseState", () => ({ setGateReasonHook: vi.fn() }));
 vi.mock("$lib/backend", () => ({
   getLaunchConfig: vi.fn().mockResolvedValue(null),
   setLaunchConfig: vi.fn().mockResolvedValue(undefined),
@@ -107,7 +107,7 @@ import {
   startLaunchQueue,
   stopLaunchQueue,
   type LaunchIntent,
-} from "$lib/launchQueue";
+} from "$lib/agents/launchQueue";
 
 /// A localStorage stand-in: vitest's node environment has none, which is
 /// exactly why every persistence function here takes one.
