@@ -119,3 +119,18 @@ export function computeTabInsertion(
   }
   return { index: boxes.length, anchorIndex: boxes.length - 1, position: "after" };
 }
+
+/// The same insertion point, renumbered for a move WITHIN the pane the
+/// tab already sits in.
+///
+/// The caret's index counts the moving tab; moveTabWithinLeaf's does not,
+/// because it splices that tab out before inserting it. So an insertion
+/// point to the RIGHT of where the tab started is one place further along
+/// than the caret said, and dropping a tab past its neighbour used to
+/// overshoot it by exactly one.
+///
+/// Only for the same-pane case: a tab arriving from another pane is not
+/// spliced out of this one, so its caret index is already right.
+export function reorderIndexWithin(insertionIndex: number, fromIndex: number): number {
+  return insertionIndex > fromIndex ? insertionIndex - 1 : insertionIndex;
+}

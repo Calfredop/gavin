@@ -61,8 +61,15 @@ describe("the tab bar's two chips", () => {
     // card pane beside itself.
     const text = source(PANE);
     expect(text).toContain("function isViewTab(tabId: string): boolean");
-    expect(text).toContain("return Boolean(boardTab(tabId) || fileTabPath(tabId) || cardTab(tabId));");
     expect(text).toContain("if (isViewTab(sessionId)) return null;");
+    // The classification itself lives in tabIdentity.ts, where it is
+    // unit-tested. What matters here is that it covers all three view
+    // maps -- a kind missed there is a chip drawn on a view pane.
+    const identity = source("tabIdentity.ts");
+    for (const map of ["boardTabsById", "cardTabsById", "fileTabsById"]) {
+      expect(identity).toContain(`maps.${map}[tabId]`);
+    }
+    expect(identity).toContain('return tabKind(tabId, maps) !== "terminal";');
   });
 
   it("renders the pane it opens", () => {

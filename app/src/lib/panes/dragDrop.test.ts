@@ -6,6 +6,7 @@ import {
   computeDropZone,
   computeReorderPosition,
   computeTabInsertion,
+  reorderIndexWithin,
   type DragPayload,
 } from "$lib/panes/dragDrop";
 
@@ -125,5 +126,29 @@ describe("computeTabInsertion", () => {
 
   it("has no answer for a bar with no tabs", () => {
     expect(computeTabInsertion([], 10)).toBeNull();
+  });
+});
+
+describe("reorderIndexWithin", () => {
+  // Dropping [a,b,c]'s `a` after `b` reads as caret index 2, but the
+  // splice has already made b index 0 -- so the landing index is 1.
+  // Without this the tab overshoots its neighbour by one.
+  it("steps back an insertion to the right of where the tab started", () => {
+    expect(reorderIndexWithin(2, 0)).toBe(1);
+    expect(reorderIndexWithin(3, 0)).toBe(2);
+  });
+
+  // Leftwards nothing is spliced out ahead of the caret, so the index
+  // the caret named is already the one to land on.
+  it("leaves an insertion to the left alone", () => {
+    expect(reorderIndexWithin(0, 2)).toBe(0);
+    expect(reorderIndexWithin(1, 2)).toBe(1);
+  });
+
+  // Both sides of the tab's own position mean "stay put", and both have
+  // to resolve to the index it is already at.
+  it("is a no-op on either side of the tab's own place", () => {
+    expect(reorderIndexWithin(1, 1)).toBe(1);
+    expect(reorderIndexWithin(2, 1)).toBe(1);
   });
 });

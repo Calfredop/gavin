@@ -12,6 +12,7 @@ import {
   queuedBadgeText,
   agentExitedIndicator,
   agentFailedIndicator,
+  tabAgentIndicator,
   allIndicators,
   attentionIndicator,
   gitIndicator,
@@ -351,5 +352,28 @@ describe("usageProjectionIndicator", () => {
     expect(badge.tip).toBe("Usage · Claude Code · Weekly runs out first");
     expect(badge.label).toBe(badge.tip);
     expect(badge.tone).toBe("danger");
+  });
+});
+
+describe("tabAgentIndicator", () => {
+  // A strip of tabs is mostly idle; a badge on every one of them says
+  // nothing. So idle -- and every state that is not live -- draws none.
+  it("draws nothing for idle or an unreported session", () => {
+    expect(tabAgentIndicator("idle")).toBeNull();
+    expect(tabAgentIndicator(null)).toBeNull();
+    expect(tabAgentIndicator(undefined)).toBeNull();
+  });
+
+  it("draws the shared agent badge for the two live states", () => {
+    expect(tabAgentIndicator("working")).toEqual(agentIndicator("working"));
+    expect(tabAgentIndicator("waiting_for_input")).toEqual(agentIndicator("waiting_for_input"));
+  });
+
+  // The case this function exists for: a broken agent used to read as
+  // idle, and idle on a tab is no badge -- so a tab whose agent had
+  // stopped looked exactly like one whose agent was done.
+  it("draws failed, carrying the agent's own line", () => {
+    expect(tabAgentIndicator("failed")).toEqual(agentFailedIndicator(null));
+    expect(tabAgentIndicator("failed", "API Error: 529")?.tip).toContain("API Error: 529");
   });
 });

@@ -25,7 +25,7 @@ function source(name: string): string {
 
 describe("the surfaces that nag read the acknowledged view", () => {
   it("the tab badge", () => {
-    expect(source("Pane.svelte")).toContain("const status = $attentionStatusById[sessionId];");
+    expect(source("Pane.svelte")).toContain("tabAgentIndicator($attentionStatusById[sessionId]");
   });
 
   it("the sidebar's recap, its expanded tab rows and its search hits", () => {

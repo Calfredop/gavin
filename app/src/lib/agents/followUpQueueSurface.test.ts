@@ -83,13 +83,17 @@ describe("the queue tab", () => {
 
   it("is named after its terminal, by the label that terminal's own tab wears", () => {
     expect(source("paths.ts")).toContain("export function followUpsTabLabel");
-    for (const name of [PANE, "Sidebar.svelte"]) {
+    // The pane names its tabs through tabIdentity.ts, which is where the
+    // rule now lives and is unit-tested; the sidebar still spells it out
+    // for its own rows.
+    for (const name of ["tabIdentity.ts", "Sidebar.svelte"]) {
       const text = source(name);
       expect(text).toContain("followUpsTabLabel(");
       // Narrowed on `view`, so cardTabLabel below it still only ever
       // sees the two views it can name.
-      expect(text).toContain('tab.view === "followups"');
+      expect(text).toContain('view === "followups"');
     }
+    expect(source(PANE)).toContain('from "$lib/panes/tabIdentity"');
   });
 
   it("closes its own tab, never the session it is the queue for", () => {

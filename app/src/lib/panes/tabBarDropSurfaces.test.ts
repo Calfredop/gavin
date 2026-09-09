@@ -51,8 +51,13 @@ describe("the tab bar takes the drop", () => {
     const text = source(PANE);
     expect(text).toContain("targetIndex: insertion.index");
     // And converts to moveTabWithinLeaf's post-removal coordinates for a
-    // same-pane reorder, which the old per-tab handler never did.
-    expect(text).toContain("insertion.index > from ? insertion.index - 1 : insertion.index");
+    // same-pane reorder, which the old per-tab handler never did. The
+    // conversion is dragDrop.ts's, where it is unit-tested; what this
+    // pins is that the same-pane branch actually goes through it.
+    expect(text).toContain("reorderTabWithinPane(payload.sessionId, reorderIndexWithin(insertion.index, from))");
+    expect(source("dragDrop.ts")).toContain(
+      "return insertionIndex > fromIndex ? insertionIndex - 1 : insertionIndex;"
+    );
   });
 
   it("tints the whole bar while it is the target, not just one tab", () => {

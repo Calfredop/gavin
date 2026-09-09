@@ -28,7 +28,7 @@
   import { gavinTrees } from "$lib/core/gavinState";
   import { kanbanState, cardSessionFor, fetchBoard } from "$lib/board/kanbanState";
   import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
-  import { linkedCardFor, linkForCardPath, type LinkedCard } from "$lib/cards/cardTabLink";
+  import { linkedCardFor, type LinkedCard } from "$lib/cards/cardTabLink";
   import { chipTooltip, runBaseline } from "$lib/cards/runChanges";
   import { nearestContext } from "$lib/core/planBoard";
   import { confirmTabClose, confirmPaneClose } from "$lib/shell/confirmClose";
@@ -56,11 +56,10 @@
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import {
-    agentFailedIndicator,
-    agentIndicator,
     gitIndicator,
     shellOrphanIndicator,
     shellRestartedIndicator,
+    tabAgentIndicator,
     unsavedEditsIndicator,
     type Indicator,
   } from "$lib/ui/indicators";
@@ -68,7 +67,14 @@
   import { hintDigitFor } from "$lib/core/shortcuts";
   import { tooltip } from "$lib/core/tooltip";
   import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
-  import { sessionLabel, folderName, boardTabLabel, cardTabLabel, followUpsTabLabel } from "$lib/core/paths";
+  import {
+    followUpsSessionFor,
+    isViewTab as tabIsView,
+    renameable,
+    tabLabel as labelForTab,
+    tabTooltip as tooltipForTab,
+    type TabNaming,
+  } from "$lib/panes/tabIdentity";
   import { queueBlockedReason, queueTip } from "$lib/agents/queuedInput";
   import { queueTargetFor } from "$lib/agents/queuedInputActions";
   import {
@@ -77,6 +83,7 @@
     getDragPayload,
     computeDropZone,
     computeTabInsertion,
+    reorderIndexWithin,
     type DropZone,
     type ReorderPosition,
   } from "$lib/panes/dragDrop";
@@ -128,6 +135,18 @@
     }
   }
 
+  // Everything tabIdentity.ts needs to say what a tab is and what it is
+  // called, gathered once per store change rather than per tab per call.
+  const naming = $derived<TabNaming>({
+    fileTabsById: $layoutState.fileTabsById,
+    boardTabsById: $layoutState.boardTabsById,
+    cardTabsById: $layoutState.cardTabsById,
+    sessionNames: $layoutState.sessionNames,
+    cwdBySessionId: $layoutState.cwdBySessionId,
+    trees: $gavinTrees,
+    orchestrations: $orchestrations,
+  });
+
   function fileTabPath(tabId: string): string | null {
     return $layoutState.fileTabsById[tabId]?.path ?? null;
   }
@@ -140,78 +159,20 @@
     return $layoutState.cardTabsById[tabId] ?? null;
   }
 
-  /// The session a follow-ups tab is the queue FOR, or null when this tab
-  /// is anything else. A queue tab is a card tab with no card: its
-  /// subject rides in `sessionId`, because an agent's queue outlives
-  /// whatever card it happens to be running.
   function followUpsFor(tabId: string): string | null {
-    const tab = cardTab(tabId);
-    return tab?.view === "followups" ? (tab.sessionId ?? null) : null;
+    return followUpsSessionFor(tabId, naming);
   }
 
-  /// True for every tab this pane renders as something other than a
-  /// terminal. The chips below hang off a SESSION, so each of them opens
-  /// with this -- and a card pane offering to open a card pane beside
-  /// itself is exactly what a missing check here would produce.
   function isViewTab(tabId: string): boolean {
-    return Boolean(boardTab(tabId) || fileTabPath(tabId) || cardTab(tabId));
-  }
-
-  // A board tab's label names its context, live from the tree -- exact
-  // information like a file tab's filename, and equally not renameable.
-  // The format itself lives in paths.ts, shared with the sidebar's page
-  // expansion, so one tab never goes by two names.
-  function boardLabel(tabId: string): string {
-    const tab = boardTab(tabId);
-    if (!tab) return tabId;
-    const name = $gavinTrees[tab.workspaceId]?.contexts.find((c) => c.folderPath === tab.contextFolder)?.name;
-    return boardTabLabel(name, tab.contextFolder);
-  }
-
-  // A card tab's label names the card and which of its two views this
-  // pane holds -- exact information from the tree, like a board tab's, so
-  // it is not renameable either (see startEditing).
-  function cardLabel(tabId: string): string {
-    const tab = cardTab(tabId);
-    if (!tab) return tabId;
-    // Named after the terminal it belongs to rather than after a card,
-    // because it has none -- see followUpsFor. Written as a check on
-    // `view` rather than on followUpsFor's result so the call below
-    // narrows to the two views cardTabLabel can name.
-    if (tab.view === "followups") {
-      return followUpsTabLabel(
-        sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, tab.sessionId ?? tabId)
-      );
-    }
-    const title = linkForCardPath(
-      $orchestrations[tab.workspaceId],
-      $gavinTrees[tab.workspaceId],
-      tab.path
-    ).title;
-    return cardTabLabel(title, tab.view);
+    return tabIsView(tabId, naming);
   }
 
   function tabLabel(sessionId: string): string {
-    if (boardTab(sessionId)) return boardLabel(sessionId);
-    if (cardTab(sessionId)) return cardLabel(sessionId);
-    const path = fileTabPath(sessionId);
-    // A file tab's label is always its filename -- exact, known
-    // information, unlike a terminal's cwd-derived guess, which is why it
-    // is also not renameable (see the startEditing guard below).
-    if (path) return folderName(path);
-    return sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, sessionId);
+    return labelForTab(sessionId, naming);
   }
 
   function tabTooltip(sessionId: string): string {
-    const tab = boardTab(sessionId);
-    if (tab) return tab.contextFolder;
-    const queueFor = followUpsFor(sessionId);
-    if (queueFor) return tabTooltip(queueFor);
-    const card = cardTab(sessionId);
-    if (card) return card.path;
-    const path = fileTabPath(sessionId);
-    if (path) return path;
-    return $layoutState.sessionNames[sessionId] ?? $layoutState.cwdBySessionId[sessionId] ?? sessionId;
+    return tooltipForTab(sessionId, naming);
   }
 
   // The active terminal tab's nearest gavin context, if any -- drives the
@@ -284,7 +245,7 @@
   // lost entry is permanent, and costs a `pty-output` listener plus a
   // resize the daemon refuses every time the pane is rebuilt.
   $effect(() => {
-    const unknown = leaf.tabs.filter((id) => !boardTab(id) && !fileTabPath(id));
+    const unknown = leaf.tabs.filter((id) => !isViewTab(id));
     if (unknown.length > 0) void repairUnknownTabs(unknown);
   });
 
@@ -299,15 +260,7 @@
     // the human marked as read draws no badge, which is the whole point
     // of the mark. Everything else on this tab -- the follow-up queue's
     // gate below, most of all -- still reads the daemon's own status.
-    const status = $attentionStatusById[sessionId];
-    // Before every other status: this is the one that used to be
-    // indistinguishable from idle -- i.e. from no badge at all -- so a tab
-    // whose agent had broken looked exactly like one whose agent was
-    // done. The reason is the agent's own line, and the tab is where the
-    // human goes to read the rest of it.
-    if (status === "failed") return agentFailedIndicator($layoutState.failureReasonById[sessionId]);
-    if (status !== "working" && status !== "waiting_for_input") return null;
-    return agentIndicator(status);
+    return tabAgentIndicator($attentionStatusById[sessionId], $layoutState.failureReasonById[sessionId]);
   }
 
   // What the ↻/⚠ badge on this tab says, or null for no badge. All three
@@ -358,7 +311,7 @@
   function startEditing(sessionId: string): void {
     // File, board and card tabs are never renameable -- their labels are
     // exact.
-    if (isViewTab(sessionId)) return;
+    if (!renameable(sessionId, naming)) return;
     editingSessionId = sessionId;
     editValue = tabLabel(sessionId);
   }
@@ -486,16 +439,10 @@
       payload.workspaceId === location.workspaceId &&
       payload.pageId === location.pageId
     ) {
-      // Reordering within this same pane's own tab bar. The caret's index
-      // counts the moving tab; moveTabWithinLeaf's does not, because it
-      // splices that tab out first. So an insertion point to the RIGHT of
-      // where the tab started is one place further along than the caret
-      // said, and dropping a tab past a neighbour used to overshoot it.
+      // Reordering within this same pane's own tab bar; the caret's index
+      // has to be renumbered for the splice (see reorderIndexWithin).
       const from = leaf.tabs.indexOf(payload.sessionId);
-      await reorderTabWithinPane(
-        payload.sessionId,
-        insertion.index > from ? insertion.index - 1 : insertion.index
-      );
+      await reorderTabWithinPane(payload.sessionId, reorderIndexWithin(insertion.index, from));
     } else {
       // A tab from another pane on this page (or, via the sidebar's own
       // routes, another page): it JOINS this pane at the caret rather
