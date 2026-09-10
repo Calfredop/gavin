@@ -125,7 +125,7 @@ foreach ($d in $daemons) {
 }
 
 if ($env:CLAUDECODE) {
-    Warn "started from an agent's tool call: every tab in this Gavin will inherit that agent's CLAUDE_* environment."
+    Say "started from an agent's tool call. A daemon built since the launcher-env fix strips that agent's session identity and its non-interactive git pins from every tab it opens; an installed build older than that still passes them through."
 }
 
 # --- go ---------------------------------------------------------------------
