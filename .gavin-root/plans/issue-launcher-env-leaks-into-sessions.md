@@ -2,7 +2,7 @@
 order: 10240
 kind: task
 title: [issue] launcher env leaks into sessions
-status: To Do
+status: In Progress
 ---
 A session inherits whatever environment the GUI was launched from, so an
 agent that starts the app hands its own session identity to every tab.
