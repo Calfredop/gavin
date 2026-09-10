@@ -230,6 +230,12 @@ export interface Workspace {
   /// legitimate, and leaving the gate on its default is indistinguishable
   /// on disk from nobody having decided yet.
   requireReviewAsked?: boolean;
+  /// This workspace's own resume flag for the `custom` agent profile
+  /// (v38), e.g. `--resume`. Absent means inherit the app-wide default
+  /// (`getCustomResumeArgs`), and failing that no resume at all for
+  /// `custom`. Machine-local like `terminalFontSize`: a resume flag is a
+  /// fact about the binary on THIS machine, not the repository.
+  customResumeArgs?: string;
 }
 
 /// A workspace that left the app through the sidebar X, kept so its

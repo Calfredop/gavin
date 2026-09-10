@@ -353,6 +353,21 @@ export function setLaunchConfig(launch: LaunchConfig | null): Promise<void> {
   return invoke("set_launch_config", { launch });
 }
 
+/// The app-wide resume flag for the `custom` agent profile (v38), e.g.
+/// `--resume`. `null` means nobody has set one, so `custom` resumes not
+/// at all -- absence rather than "", the same convention `launch` above
+/// takes. A workspace's own override lives on `Workspace.customResumeArgs`
+/// instead, alongside `terminalFontSize` and `color`, since it travels
+/// with the ordinary workspaces save rather than its own command.
+export function getCustomResumeArgs(): Promise<string | null> {
+  return invoke("get_custom_resume_args");
+}
+
+/// Replaces the app-wide `custom` resume flag; `null` clears it.
+export function setCustomResumeArgs(customResumeArgs: string | null): Promise<void> {
+  return invoke("set_custom_resume_args", { customResumeArgs });
+}
+
 /// The app-wide custom agent (command + model flag) and the complexity
 /// table. Machine-local beside the theme and the model defaults, and for
 /// the same reason: which CLI is installed here and which model tier this
@@ -916,6 +931,7 @@ export function agentProfiles(): Promise<
     failurePatterns: string[];
     failureCauses: Array<{ pattern: string; cause: string }>;
     sessionIdArgs: string;
+    sessionIdDiscovery: string;
     resumeArgs: string;
     usageProbe: string | null;
   }>

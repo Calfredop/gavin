@@ -50,6 +50,12 @@ export interface AgentProfileInfo {
   /// Conversation resume: the argv that fixes a session id at launch and
   /// the one that reopens it. Both empty unless BOTH are verified.
   sessionIdArgs: string;
+  /// A shell one-liner that finds this agent's OWN newest conversation
+  /// id, for a CLI that mints its own instead of taking one from the
+  /// caller (agent_setup.rs's `AgentProfile::session_id_discovery`).
+  /// Empty where unverified, not applicable, or where `sessionIdArgs`
+  /// already covers resume for this profile.
+  sessionIdDiscovery: string;
   resumeArgs: string;
   /// How gavin reads this agent's subscription limits ("anthropic-oauth",
   /// "codex-rollout"), or null where it cannot -- which is three of the
@@ -366,7 +372,16 @@ export function resolveAgentConfig(
   /// agent" reproduces exactly the behaviour those call sites have
   /// today. Making it required would have forced a dozen edits to
   /// restate the empty case.
-  customAgent: { command: string; modelFlag: string } = { command: "", modelFlag: "" }
+  customAgent: { command: string; modelFlag: string } = { command: "", modelFlag: "" },
+  /// The `custom` profile's resume flag (v38): this workspace's own
+  /// override (`Workspace.customResumeArgs`), then the app-wide default
+  /// (`getCustomResumeArgs`). Unlike `customAgent` above this has no
+  /// `.gavin-root/config.toml` layer at all -- a resume flag is a fact
+  /// about the binary on THIS machine, not the repository -- so there is
+  /// no `config?.resumeArgs` to check first. OPTIONAL for the same
+  /// reason `customAgent` is: every existing call site keeps resolving
+  /// "no custom resume flag" exactly as it does today.
+  customResumeArgs: { workspace?: string; app?: string } = {}
 ): ResolvedAgent {
   const requested = nonEmpty(config?.profile) ?? FALLBACK_PROFILE;
   const configured = nonEmpty(config?.mcpFile);
@@ -437,7 +452,17 @@ export function resolveAgentConfig(
     failurePatterns: effective?.failurePatterns ?? [],
     failureCauses: effective?.failureCauses ?? [],
     sessionIdArgs: effective?.sessionIdArgs ?? "",
-    resumeArgs: effective?.resumeArgs ?? "",
+    // `custom` has no row of its own to carry a verified resumeArgs, so
+    // ITS answer comes from the config.json layer instead -- the
+    // workspace's own flag, else the app-wide one, else none. Every
+    // other profile keeps the table's verified answer unconditionally,
+    // the same no-fallback-BETWEEN-rows rule headlessArgs/sessionIdArgs
+    // already take: claude-code's `--resume` on somebody else's agent is
+    // garbage in its argv.
+    resumeArgs:
+      profileId === "custom"
+        ? nonEmpty(customResumeArgs.workspace) ?? nonEmpty(customResumeArgs.app) ?? ""
+        : effective?.resumeArgs ?? "",
     // Same no-fallback-BETWEEN-rows rule: a row that takes no prompt
     // gets null, and cursor's null never becomes claude-code's "".
     //

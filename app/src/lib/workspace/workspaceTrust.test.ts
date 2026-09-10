@@ -29,6 +29,7 @@ const PROFILES: AgentProfileInfo[] = [
     failurePatterns: [],
     failureCauses: [],
     sessionIdArgs: "",
+    sessionIdDiscovery: "",
     resumeArgs: "",
     usageProbe: null,
   },

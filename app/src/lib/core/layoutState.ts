@@ -1379,6 +1379,11 @@ export async function bootstrap(): Promise<void> {
     .then((size) => terminalFontSizeDefault.set(normalizeTerminalFontSize(size)))
     .catch(() => {});
 
+  void backend
+    .getCustomResumeArgs()
+    .then((args) => customResumeArgsDefault.set(args))
+    .catch(() => {});
+
   // Normalized on the way in for the same reason: config.json is a file a
   // user can edit, and anything that is not a boolean has to read as "no
   // setting" so a workspace still falls through to gavin's default.
@@ -1655,6 +1660,16 @@ export const agentModelDefaultsStore = writable<Record<string, string>>({});
 /// Re-fetched on every bootstrap like the model defaults, so it is
 /// deliberately not parked across an HMR remount.
 export const agentDefaultsStore = writable<AgentDefaults>(EMPTY_AGENT_DEFAULTS);
+
+/// The app-wide `custom` agent's resume flag (v38) from config.json, or
+/// null when nobody has set one. A dedicated get/set pair rather than a
+/// field of `AgentDefaults` -- config.json carries it as a sibling of
+/// `launch`/`theme`, not nested in `agent_defaults` -- the same shape
+/// `terminalFontSizeDefault` takes for the same reason: null tells
+/// "chose none" from "never chose", so a workspace with no flag of its
+/// own still falls all the way through to "no resume for custom" rather
+/// than a wrong one.
+export const customResumeArgsDefault = writable<string | null>(null);
 
 /// The app-wide terminal font size from config.json, or null when the user
 /// has never set one. Null rather than the default so the global panel can
@@ -1987,7 +2002,8 @@ export function resolvedAgentFor(workspaceId: string) {
     trustedAgentConfigFor(workspaceId),
     get(agentProfilesStore),
     get(agentModelDefaultsStore),
-    customAgentDefault(get(agentDefaultsStore))
+    customAgentDefault(get(agentDefaultsStore)),
+    customResumeArgsFor(workspaceId)
   );
 }
 
@@ -2029,7 +2045,8 @@ export function agentForCard(
     agentConfigWithAttribution(workspaceAgentConfig(workspaceId), entry),
     get(agentProfilesStore),
     get(agentModelDefaultsStore),
-    customAgentDefault(get(agentDefaultsStore))
+    customAgentDefault(get(agentDefaultsStore)),
+    customResumeArgsFor(workspaceId)
   );
 }
 
@@ -2057,7 +2074,8 @@ export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
     candidateAgentConfig(workspaceAgentConfig(workspaceId), candidate),
     get(agentProfilesStore),
     get(agentModelDefaultsStore),
-    customAgentDefault(get(agentDefaultsStore))
+    customAgentDefault(get(agentDefaultsStore)),
+    customResumeArgsFor(workspaceId)
   );
 }
 
@@ -2075,10 +2093,19 @@ export function candidateAgentFor(workspaceId: string, candidate: Candidate) {
 /// the workspace id is a prop the component already has and the three
 /// inputs are app-wide.
 export const resolvedAgents = derived(
-  [trustedAgentConfigs, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
-  ([$configs, $profiles, $models, $defaults]) =>
+  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore, customResumeArgsDefault],
+  ([$configs, $layout, $profiles, $models, $defaults, $customResumeArgs]) =>
     (workspaceId: string) =>
-      resolveAgentConfig($configs(workspaceId), $profiles, $models, customAgentDefault($defaults))
+      resolveAgentConfig(
+        $configs(workspaceId),
+        $profiles,
+        $models,
+        customAgentDefault($defaults),
+        {
+          workspace: $layout.workspaces.find((w) => w.id === workspaceId)?.customResumeArgs,
+          app: $customResumeArgs ?? undefined,
+        }
+      )
 );
 
 /// The same answer for a CARD, reactively: `$cardAgents(workspaceId,
@@ -2092,8 +2119,8 @@ export const resolvedAgents = derived(
 /// model flag for a card the human pointed at codex, and would go on
 /// showing it for the life of the modal.
 export const cardAgents = derived(
-  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore],
-  ([$configs, $layout, $profiles, $models, $defaults]) =>
+  [trustedAgentConfigs, layoutState, agentProfilesStore, agentModelDefaultsStore, agentDefaultsStore, customResumeArgsDefault],
+  ([$configs, $layout, $profiles, $models, $defaults, $customResumeArgs]) =>
     (workspaceId: string, card: CardAgentFields | null | undefined) => {
       const base = $configs(workspaceId);
       const entry = cardAgentEntry(
@@ -2105,7 +2132,11 @@ export const cardAgents = derived(
         agentConfigWithAttribution(base, entry),
         $profiles,
         $models,
-        customAgentDefault($defaults)
+        customAgentDefault($defaults),
+        {
+          workspace: $layout.workspaces.find((w) => w.id === workspaceId)?.customResumeArgs,
+          app: $customResumeArgs ?? undefined,
+        }
       );
     }
 );
@@ -2301,6 +2332,49 @@ export async function setWorkspaceFontSize(
   );
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// The app-wide `custom` resume flag. Null clears it back to "no resume
+/// for custom", the same shape `setTerminalFontSizeDefault` takes.
+export async function setCustomResumeArgsDefault(args: string | null): Promise<void> {
+  try {
+    await backend.setCustomResumeArgs(args);
+    customResumeArgsDefault.set(args);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
+/// One workspace's own `custom` resume flag, or null to inherit the
+/// app-wide one. Rides the workspace record (config.json) like
+/// `terminalFontSize`, not config.toml: which flag resumes the binary on
+/// THIS machine is not a project fact to commit.
+export async function setWorkspaceCustomResumeArgs(
+  workspaceId: string,
+  args: string | null
+): Promise<void> {
+  const state = get(layoutState);
+  const trimmed = args?.trim();
+  const normalized = trimmed ? trimmed : undefined;
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, customResumeArgs: normalized } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// The `custom` profile's resume flag, resolved for one workspace: its
+/// own override, else the app-wide default -- the shape
+/// `resolveAgentConfig`'s `customResumeArgs` parameter takes. Mirrors
+/// `customAgentDefault` one section up, but keyed by workspace instead
+/// of read straight off `AgentDefaults`, because the workspace override
+/// lives on the workspace record rather than the app-wide config.
+function customResumeArgsFor(workspaceId: string) {
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  return {
+    workspace: workspace?.customResumeArgs,
+    app: get(customResumeArgsDefault) ?? undefined,
+  };
 }
 
 /// The app-wide auto-commit default. Machine-local like the theme, the

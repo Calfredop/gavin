@@ -343,13 +343,29 @@ pub struct AgentProfile {
     /// `headless_args` takes, and for the same reason: a wrong flag puts
     /// garbage in the agent's argv.
     pub session_id_args: &'static str,
+    /// A shell one-liner the naming skill runs (v38) to find THIS agent's
+    /// own newest conversation id, for a CLI that mints its own instead
+    /// of taking one from the caller -- codex/gemini/opencode, unlike
+    /// Claude Code, which `session_id_args` already covers. The agent
+    /// runs it itself and self-reports the result over
+    /// `gavin_name_session`'s `agent_conversation_id` argument
+    /// (`agent-session-id-self-report.md`), which the daemon stores in
+    /// `card_sessions.conversation_id` exactly where a minted id lives.
+    ///
+    /// Empty where unverified or not applicable, the same posture
+    /// `headless_args` takes: a wrong discovery command reports the
+    /// wrong id, or none, which is worse than admitting gavin has none to
+    /// offer.
+    pub session_id_discovery: &'static str,
     /// The argv that reopens that conversation: `<command> <resume_args>
     /// <uuid>`, run in the directory the run was LAUNCHED in.
     ///
-    /// Always empty when `session_id_args` is (see the guard test): an id
-    /// gavin never fixed at launch is an id it cannot resume by, and
-    /// resuming by anything else is how you get a silent fresh
-    /// conversation wearing a better name.
+    /// Empty unless EITHER `session_id_args` (a minted id) OR
+    /// `session_id_discovery` (a self-reported one) is set -- see the
+    /// guard test: a profile may resume by an id gavin fixed at launch,
+    /// by one the agent handed back, or not at all, but never claims
+    /// resume with no way to ever learn an id. Resuming by anything else
+    /// is how you get a silent fresh conversation wearing a better name.
     ///
     /// A profile with none keeps today's behaviour and falls back to
     /// `composeResumeTaskPrompt` -- a written reconstruction instead of
@@ -610,6 +626,8 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // instead of `--fork-session`. The failed attempt stays readable
         // either way, so the one argument for forking does not apply.
         session_id_args: "--session-id",
+        // Not needed: gavin already mints this profile's id at launch.
+        session_id_discovery: "",
         resume_args: "--resume",
         usage_probe: Some(UsageProbe::AnthropicOauth),
         token_log: Some(TokenLog::ClaudeSessionJsonl),
@@ -667,6 +685,11 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         failure_patterns: &[],
         failure_causes: &[],
         session_id_args: "",
+        // Unverified: no `codex` binary was available to check
+        // `codex resume <id>` or the newest-rollout-file discovery
+        // against (2026-09-10). Left empty rather than guessed, the
+        // same posture every other unverified row in this file takes.
+        session_id_discovery: "",
         resume_args: "",
         usage_probe: Some(UsageProbe::CodexRollout),
         token_log: Some(TokenLog::CodexRollout),
@@ -702,6 +725,16 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         failure_patterns: &[],
         failure_causes: &[],
         session_id_args: "",
+        // Verified INCOMPATIBLE, not merely unverified (0.35.3,
+        // 2026-09-10): `gemini --help` really does carry `-r, --resume`,
+        // but its value is "latest" or a session INDEX ("--resume 5"),
+        // never an arbitrary id -- so the self-reported opaque id this
+        // table's `<command> <resume_args> <uuid>` shape always appends
+        // would be garbage in gemini's argv. There is nothing to
+        // discover that this mechanism could use, so both this field
+        // and `resume_args` stay empty on purpose rather than wire up a
+        // flag that resumes the wrong session (or none).
+        session_id_discovery: "",
         resume_args: "",
         usage_probe: None,
         token_log: None,
@@ -730,6 +763,9 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         failure_patterns: &[],
         failure_causes: &[],
         session_id_args: "",
+        // Out of scope, not merely unverified: `cursor` never enters
+        // the headless resume path at all (see `prompt_args` above).
+        session_id_discovery: "",
         resume_args: "",
         usage_probe: None,
         token_log: None,
@@ -777,7 +813,24 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         failure_patterns: &[],
         failure_causes: &[],
         session_id_args: "",
-        resume_args: "",
+        // Verified against the real binary and its own on-disk store
+        // (1.18.25, 2026-09-10): opencode has moved off the flat
+        // `storage/session/<hash>/*.json` layout older docs describe and
+        // onto a SQLite db at `~/.local/share/opencode/opencode.db`,
+        // whose `session` table has a `directory` column holding the
+        // exact launch cwd (not a hash of it) -- read with real gavin
+        // spike data still in that table from `/private/tmp/gavin-oc-*`.
+        // macOS/Linux XDG path only; not checked on Windows.
+        session_id_discovery: "sqlite3 \"$HOME/.local/share/opencode/opencode.db\" \"SELECT id FROM session WHERE directory = '$(pwd)' ORDER BY time_updated DESC LIMIT 1;\"",
+        // Top-level `-s/--session <id>` (`opencode --help`, not the
+        // `run` subcommand's own copy of the same flag): the interactive
+        // TUI command this profile already launches with via
+        // `--prompt=` above, continued at a specific session instead of
+        // a fresh one -- the same "no new prompt, reopen the transcript"
+        // shape `claude --resume` already has. `run --session <id>` was
+        // rejected: `run` is the ONE-SHOT headless subcommand
+        // (`headless_args` above), not what a live launched session is.
+        resume_args: "--session",
         usage_probe: None,
         token_log: None,
         // opencode reads `.claude/skills/` too, but a workspace that
@@ -831,6 +884,11 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         failure_patterns: &[],
         failure_causes: &[],
         session_id_args: "",
+        // No table row to verify a discovery command against -- `custom`
+        // is whatever binary the human names, and this row describes no
+        // particular one. Its resume flag is `custom_resume_args`
+        // (config.json, app-default + workspace-override) instead.
+        session_id_discovery: "",
         resume_args: "",
         usage_probe: None,
         token_log: None,
@@ -1789,6 +1847,12 @@ pub struct AgentProfileDto {
     /// The launch and resume argv for conversation resume, both empty
     /// where the convention is unverified.
     pub session_id_args: String,
+    /// A shell one-liner that finds this agent's own newest conversation
+    /// id, for a CLI that mints its own instead of taking one from the
+    /// caller (see AgentProfile::session_id_discovery). Empty where
+    /// unverified, not applicable, or where `session_id_args` already
+    /// covers conversation resume for this profile.
+    pub session_id_discovery: String,
     pub resume_args: String,
     /// How gavin reads this agent's subscription limits, or `None` where
     /// it cannot (see AgentProfile::usage_probe). The usage panel keys on
@@ -1851,6 +1915,7 @@ pub fn agent_profiles() -> Vec<AgentProfileDto> {
                 .map(|c| FailureCauseDto { pattern: c.pattern.to_string(), cause: c.cause.to_string() })
                 .collect(),
             session_id_args: p.session_id_args.to_string(),
+            session_id_discovery: p.session_id_discovery.to_string(),
             resume_args: p.resume_args.to_string(),
             usage_probe: p.usage_probe.map(|u| u.id().to_string()),
         })
@@ -2072,25 +2137,48 @@ mod tests {
         }
     }
 
-    /// Conversation resume is all-or-nothing per profile. Resuming by an
-    /// id gavin never fixed at launch is not resume at all -- the CLI
-    /// would open a picker, or start fresh, which is precisely the
+    /// Conversation resume never claims a flag with no way to ever learn
+    /// an id to feed it. Resuming by an id gavin never fixed at launch
+    /// AND never learned back from the agent is not resume at all -- the
+    /// CLI would open a picker, or start fresh, which is precisely the
     /// silent from-scratch second attempt this feature exists to
-    /// prevent. So a row either verifies both halves or ships neither,
-    /// and the app falls back to a written reconstruction.
+    /// prevent. So `resume_args` is empty unless `session_id_args` (a
+    /// minted id, claude-code) or `session_id_discovery` (a
+    /// self-reported one, opencode) is set, and the app falls back to a
+    /// written reconstruction for every other row.
     #[test]
     fn conversation_resume_argv_is_all_or_nothing_per_profile() {
         let resumable: Vec<&str> =
             AGENT_PROFILES.iter().filter(|p| !p.resume_args.is_empty()).map(|p| p.id).collect();
-        assert_eq!(resumable, ["claude-code"]);
+        assert_eq!(resumable, ["claude-code", "opencode"]);
         for p in AGENT_PROFILES {
-            assert_eq!(
-                p.resume_args.is_empty(),
-                p.session_id_args.is_empty(),
-                "{} verifies one half of conversation resume and not the other",
+            assert!(
+                p.resume_args.is_empty() || !p.session_id_args.is_empty() || !p.session_id_discovery.is_empty(),
+                "{} claims resume argv with no minted or self-reported id to feed it",
                 p.id
             );
         }
+    }
+
+    /// The discovery field's own guard, mirroring
+    /// `prompt_args_is_set_only_where_the_convention_is_verified`: pinned
+    /// so a future row's shell one-liner is a deliberate, reviewed act
+    /// rather than a copy-paste from unverified documentation.
+    #[test]
+    fn session_id_discovery_is_set_only_where_the_convention_is_verified() {
+        let column: Vec<(&str, bool)> =
+            AGENT_PROFILES.iter().map(|p| (p.id, !p.session_id_discovery.is_empty())).collect();
+        assert_eq!(
+            column,
+            [
+                ("claude-code", false),
+                ("codex", false),
+                ("gemini", false),
+                ("cursor", false),
+                ("opencode", true),
+                ("custom", false),
+            ]
+        );
     }
 
     /// Which profiles claim they can be asked about their limits, pinned

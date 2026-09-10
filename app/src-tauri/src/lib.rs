@@ -204,6 +204,8 @@ pub fn run() {
             session::set_agent_pause,
             session::get_launch_config,
             session::set_launch_config,
+            session::get_custom_resume_args,
+            session::set_custom_resume_args,
             session::get_agent_defaults,
             session::set_agent_defaults,
             agent_setup::mcp_formats,

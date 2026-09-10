@@ -20,9 +20,9 @@ import {
 } from "$lib/core/settings";
 
 const PROFILES: AgentProfileInfo[] = [
-  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArgs: "", headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", resumeArgs: "--resume", usageProbe: "anthropic-oauth" },
-  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArgs: "", headlessArgs: "", modelFlag: "--model", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", resumeArgs: "", usageProbe: "codex-rollout" },
-  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArgs: null, headlessArgs: "", modelFlag: "", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", resumeArgs: "", usageProbe: null },
+  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArgs: "", headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", sessionIdDiscovery: "", resumeArgs: "--resume", usageProbe: "anthropic-oauth" },
+  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArgs: "", headlessArgs: "", modelFlag: "--model", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", sessionIdDiscovery: "", resumeArgs: "", usageProbe: "codex-rollout" },
+  { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArgs: null, headlessArgs: "", modelFlag: "", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", sessionIdDiscovery: "", resumeArgs: "", usageProbe: null },
 ];
 
 describe("normalizeColor", () => {
@@ -344,6 +344,44 @@ describe("resolveAgentConfig", () => {
     );
     expect(r.command).toBe("other-agent");
     expect(r.launchCommand).toBe("other-agent -m big");
+  });
+
+  it("gives the custom profile the app-wide resume flag when the workspace names none", () => {
+    const r = resolveAgentConfig(
+      { profile: "custom", file: null, command: "my-agent" },
+      PROFILES,
+      {},
+      undefined,
+      { app: "--resume-app" }
+    );
+    expect(r.resumeArgs).toBe("--resume-app");
+  });
+
+  it("lets the workspace's own custom resume flag beat the app-wide one", () => {
+    const r = resolveAgentConfig(
+      { profile: "custom", file: null, command: "my-agent" },
+      PROFILES,
+      {},
+      undefined,
+      { workspace: "--resume-ws", app: "--resume-app" }
+    );
+    expect(r.resumeArgs).toBe("--resume-ws");
+  });
+
+  it("leaves a stock profile's verified resume argv alone regardless of the custom config", () => {
+    const r = resolveAgentConfig(
+      { profile: "claude-code", file: null, command: null },
+      PROFILES,
+      {},
+      undefined,
+      { workspace: "--resume-ws", app: "--resume-app" }
+    );
+    expect(r.resumeArgs).toBe("--resume");
+  });
+
+  it("resolves custom with no resume flag configured anywhere to empty", () => {
+    const r = resolveAgentConfig({ profile: "custom", file: null, command: "my-agent" }, PROFILES, {});
+    expect(r.resumeArgs).toBe("");
   });
 
   it("never lends the app-wide custom command to a stock profile", () => {
