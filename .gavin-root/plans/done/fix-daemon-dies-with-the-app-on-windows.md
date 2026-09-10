@@ -1,7 +1,7 @@
 ---
 order: 9216
 title: [fix] on Windows the daemon dies with the app, taking every session with it
-status: In Progress
+status: Done
 priority: high
 complexity: moderate
 ---
@@ -42,6 +42,10 @@ while a log line claims a daemon started is worse than the bug.
       `CREATE_BREAKAWAY_FROM_JOB` attempt that falls back when refused. This is
       what a packaged build needs, where there is no hostile job — and the
       console and Ctrl-C isolation are worth having regardless.
+      Since then `DETACHED_PROCESS` became `CREATE_NO_WINDOW`
+      ([fix-release-app-console-windows-on-windows.md](./fix-release-app-console-windows-on-windows.md)):
+      a daemon with no console at all handed every `git` it ran a console
+      window of its own. The job handling did not change.
 - [x] Give the detached daemon somewhere to speak: `%LOCALAPPDATA%\gavin\daemon.log`,
       appended and never truncated, since the interesting case is a daemon that
       died and was replaced. `DETACHED_PROCESS` costs it a console, and its
@@ -59,19 +63,53 @@ while a log line claims a daemon started is worse than the bug.
       rather than on a spawned process, because whether a job permits breakaway
       is a property of whatever launched the test runner.
 
-## Still open
+## Was open
 
-- [ ] Confirm the packaged app needs none of the script half — a bundled Gavin
+- [x] Confirm the packaged app needs none of the script half — a bundled Gavin
       is not launched inside tauri dev's job, so the app-side detachment should
-      be sufficient there. Unverified: it wants an installed build, which is
-      section 1 of
-      [the windows port card](./feat-windows-port-on-a-windows-machine.md).
-- [ ] Decide whether the app should be able to escape a hostile job on its own
+      be sufficient there. Confirmed 2026-09-10 on the release build in the
+      stable worktree, launched from a terminal — the three exes in its
+      `target\release\` are exactly what the NSIS installer copies. The daemon
+      it spawned logged no breakaway refusal, and a probe that evening
+      answered `IsProcessInJob` **false** for both `Gavin.exe` (pid 8016) and
+      `gavin-daemon.exe` (pid 18464), while the probing shell's own pid
+      answered true — the probe discriminates, and no job, tauri dev's
+      included, can reach that daemon. The terminal that launched them is
+      gone and both are still up. Not re-run against the NSIS-installed copy
+      (nothing is under `Programs\Gavin` yet), but job membership comes from
+      the creator, not the folder, so installing cannot change it. The
+      script half is dev-only. Record on
+      [chore-stable-release-install-on-windows.md](./chore-stable-release-install-on-windows.md).
+- [x] Decide whether the app should be able to escape a hostile job on its own
       rather than depending on the launcher. The route that works when
       breakaway is refused is to have a process outside the job do the
       creating — `Win32_Process.Create` over WMI is the usual one, since the
       WMI service is the creator. It costs the `Child` handle and the stdio
       redirect, so it is a real trade, not an obvious win.
-- [ ] `scripts/start-dev-mac.sh` is deliberately untouched: reparenting already
+      **Decided 2026-09-10: no.** The only job that has ever refused
+      breakaway is `tauri dev`'s, and that case is handled where the job is
+      made — `start-dev-win.ps1` starts the daemon before the app exists —
+      while the packaged app has no hostile job (item above). What the escape
+      costs is concrete. With a third party as creator the app gets a pid at
+      best, not a `Child`, so the stdout/stderr redirect that writes
+      `daemon.log` goes with it and the daemon would have to open its own log;
+      the environment becomes the creator's, not the app's; and the app grows
+      a COM dependency — WMI, the Task Scheduler, or `Shell.Application`
+      through explorer.exe, same trade with a different creator — that only a
+      dev flow exercises. The refusal is logged rather than swallowed, so if a
+      packaged launch ever lands in a job without
+      `JOB_OBJECT_LIMIT_BREAKAWAY_OK` — a launcher or installer that wraps the
+      app in one — the log names it, and that is what reopens this. Until
+      then the launcher is the contract for dev.
+- [x] `scripts/start-dev-mac.sh` is deliberately untouched: reparenting already
       gives macOS the behaviour this arranges by hand. If the Linux port lands,
-      check which of the two it resembles.
+      check which of the two it resembles. Answered from the code, 2026-09-10:
+      Linux is macOS, not Windows. `spawn_detached` is the plain spawn on every
+      non-Windows target, tauri-cli's rebuild kill is the same unix code on
+      both, and an orphan reparents to init (or the nearest subreaper) on
+      both. The Linux-only ways to lose the daemon are a `PR_SET_PDEATHSIG`
+      the daemon never sets and a systemd scope killing its whole cgroup,
+      which no dev flow does. Nothing to change in the mac script or the
+      code; the check on a real box now sits on
+      [the Linux port card](./feat-linux-port-on-a-linux-machine.md) §2,
+      where it will actually be run.

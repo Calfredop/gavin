@@ -43,6 +43,13 @@ Nothing below has been seen on a screen. The first four are ports of
 working macOS behaviour; the rest is **new code that has never run**.
 
 - [ ] Launch, spawn a shell, run a card.
+- [ ] Edit one `.rs` file while `tauri dev` runs and confirm the daemon, and
+      the sessions it owns, outlive the rebuild. Expected to behave like
+      macOS, not Windows: the spawn is plain on every unix and an orphan
+      reparents instead of dying with a job object. If it dies anyway, the
+      fix is the Windows one — start the daemon from the dev script before
+      the app exists — not a flag on the spawn; see
+      [fix-daemon-dies-with-the-app-on-windows.md](./done/fix-daemon-dies-with-the-app-on-windows.md).
 - [ ] Restart the daemon from Settings.
 - [ ] Delete a workspace and confirm it is in the desktop's Trash **and
       that "Put back" works** — the `.trashinfo` now carries the
