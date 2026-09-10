@@ -6,7 +6,7 @@
 
 import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
-import { agentForCard, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import { agentForCard, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, resolvedAgentFor, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { findSessionLocation } from "$lib/core/workspace";
 import { cardSessionState } from "$lib/board/columnRunAction";
@@ -302,7 +302,7 @@ export async function developCard(
   const command = buildRunCommand(
     agent.launchCommand,
     agent.promptArgs,
-    composeDevelopPrompt(card.id, card.title)
+    composeDevelopPrompt(card.id, card.title, agent.sessionIdDiscovery)
   );
   if (command === null) return noPromptReason(agent.label);
 
@@ -463,17 +463,18 @@ async function launchCard(
         kind,
         body,
         resolved.paths,
-        resolved.withheld
+        resolved.withheld,
+        agent.sessionIdDiscovery
       );
     }
     if (kind === "task") {
       return mode === "resume"
-        ? composeResumeTaskPrompt(at, card.title, body, resolved.paths, resolved.withheld)
-        : composeTaskPrompt(at, card.title, body, resolved.paths, null, resolved.withheld);
+        ? composeResumeTaskPrompt(at, card.title, body, resolved.paths, resolved.withheld, agent.sessionIdDiscovery)
+        : composeTaskPrompt(at, card.title, body, resolved.paths, null, resolved.withheld, agent.sessionIdDiscovery);
     }
     return mode === "resume"
-      ? composeResumePlanPrompt(at, resolved.paths, resolved.withheld)
-      : composePlanPrompt(at, resolved.paths, null, resolved.withheld);
+      ? composeResumePlanPrompt(at, resolved.paths, resolved.withheld, agent.sessionIdDiscovery)
+      : composePlanPrompt(at, resolved.paths, null, resolved.withheld, agent.sessionIdDiscovery);
   };
   if (!reopening) {
     const file = await backend.readFileForViewer(card.id);
@@ -742,10 +743,15 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   const file = await backend.readFileForViewer(card.id);
   if (!file.exists) return `Card file not found: ${card.id}`;
   const body = stripFrontmatter(file.content).trim();
+  // The WORKSPACE's own agent, not `agentForCard`: this text is pasted
+  // into the main agent's existing terminal, which is already running
+  // whatever CLI the workspace chose -- a card's own `agent:`/`model:`
+  // attribution never changes that.
+  const agent = resolvedAgentFor(workspaceId);
   const composePrompt = (at: string): string =>
     card.kind === "task"
-      ? composeTaskPrompt(at, card.title, body, resolved.paths, null, resolved.withheld)
-      : composePlanPrompt(at, resolved.paths, null, resolved.withheld);
+      ? composeTaskPrompt(at, card.title, body, resolved.paths, null, resolved.withheld, agent.sessionIdDiscovery)
+      : composePlanPrompt(at, resolved.paths, null, resolved.withheld, agent.sessionIdDiscovery);
   const reviewed = await ensureCardReviewed({
     workspaceId,
     path: card.id,

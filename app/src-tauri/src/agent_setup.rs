@@ -3235,6 +3235,11 @@ mod tests {
 
         let workflow = std::fs::read_to_string(&paths[0]).unwrap();
         assert!(workflow.contains("gavin_create_plan"), "{workflow}");
+        // v38: the self-report half of naming a tab, spelled apart from
+        // NameSession's own session_id everywhere it appears -- losing
+        // this line from the installed file is how an agent never
+        // learns it can hand its own conversation id back at all.
+        assert!(workflow.contains("gavin_name_session(name, agent_conversation_id)"), "{workflow}");
         let orchestrate = std::fs::read_to_string(&paths[1]).unwrap();
         assert!(orchestrate.contains("gavin_get_orchestration"), "{orchestrate}");
         // Tool steps are half the step vocabulary; a skill that never

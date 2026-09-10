@@ -1020,8 +1020,16 @@
         statuses: attachmentStatuses,
         prompt:
           card.kind === "task"
-            ? composeTaskPrompt(card.id, card.title, reviewContent.body, paths, null, withheld)
-            : composePlanPrompt(card.id, paths, null, withheld),
+            ? composeTaskPrompt(
+                card.id,
+                card.title,
+                reviewContent.body,
+                paths,
+                null,
+                withheld,
+                $resolvedAgents(workspaceId).sessionIdDiscovery
+              )
+            : composePlanPrompt(card.id, paths, null, withheld, $resolvedAgents(workspaceId).sessionIdDiscovery),
       });
     } finally {
       reviewBusy = false;

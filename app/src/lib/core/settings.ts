@@ -349,6 +349,14 @@ export interface ResolvedAgent {
   /// a better name. Empty leaves conversation resume off and the written
   /// reconstruction (`composeResumeTaskPrompt`) in its place.
   sessionIdArgs: string;
+  /// A shell one-liner that finds this agent's OWN newest conversation
+  /// id (v38), for a CLI that mints its own instead of taking one from
+  /// the caller -- opencode today. No fallback chain, the same posture
+  /// `sessionIdArgs` takes: it describes the BINARY, so an unrelated
+  /// agent's discovery command on this one would report the wrong id or
+  /// none. Consumed by `cardRun.ts`'s composers to tell the agent when
+  /// and how to self-report over `gavin_name_session`.
+  sessionIdDiscovery: string;
   resumeArgs: string;
 }
 
@@ -452,6 +460,7 @@ export function resolveAgentConfig(
     failurePatterns: effective?.failurePatterns ?? [],
     failureCauses: effective?.failureCauses ?? [],
     sessionIdArgs: effective?.sessionIdArgs ?? "",
+    sessionIdDiscovery: effective?.sessionIdDiscovery ?? "",
     // `custom` has no row of its own to carry a verified resumeArgs, so
     // ITS answer comes from the config.json layer instead -- the
     // workspace's own flag, else the app-wide one, else none. Every

@@ -215,6 +215,7 @@ describe("resolveAgentConfig", () => {
       failurePatterns: [],
       failureCauses: [],
       sessionIdArgs: "",
+      sessionIdDiscovery: "",
       resumeArgs: "",
     });
   });
@@ -233,7 +234,7 @@ describe("resolveAgentConfig", () => {
       model: "", modelFlag: "--model", launchCommand: "claude",
       failurePatterns: ["API Error:"],
       failureCauses: [{ pattern: "/login", cause: "auth" }],
-      sessionIdArgs: "--session-id", resumeArgs: "--resume",
+      sessionIdArgs: "--session-id", sessionIdDiscovery: "", resumeArgs: "--resume",
     });
     expect(resolveAgentConfig({ profile: "not-a-thing", file: null, command: null }, PROFILES, {}).profileId).toBe(
       "claude-code"
@@ -427,6 +428,7 @@ describe("resolveAgentConfig", () => {
       failurePatterns: [],
       failureCauses: [],
       sessionIdArgs: "",
+      sessionIdDiscovery: "",
       resumeArgs: "",
     });
     // Custom with nothing filled in still resolves to something safe.

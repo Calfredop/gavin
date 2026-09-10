@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   NAME_TAB_FIRST,
+  nameTabFirst,
   composeTaskPrompt,
   composePlanPrompt,
   composeResumeTaskPrompt,
   composeResumePlanPrompt,
   composeDevelopPrompt,
+  composeReviewLaunchPrompt,
   shellQuote,
   buildRunCommand,
   buildResumeCommand,
@@ -206,17 +208,69 @@ describe("composeDevelopPrompt", () => {
 describe("every launched prompt", () => {
   it("opens by ordering the agent to name its tab", () => {
     // Board Run, board Resume and an orchestration launch all compose
-    // through these four -- naming the tab is not optional for any of them.
+    // through these six -- naming the tab is not optional for any of them.
     for (const p of [
       composeTaskPrompt("/p/t.md", "T", "b"),
       composePlanPrompt("/p/plan.md"),
       composeResumeTaskPrompt("/p/t.md", "T", "b"),
       composeResumePlanPrompt("/p/plan.md"),
       composeDevelopPrompt("/p/t.md", "T"),
+      composeReviewLaunchPrompt("/p/t.md", "T", "task", "b"),
     ]) {
       expect(p.startsWith(NAME_TAB_FIRST)).toBe(true);
       expect(p).toContain("gavin_name_session");
     }
+  });
+
+  it("appends nothing when the profile has no discovery command, for every composer", () => {
+    // Absent, empty and whitespace-only all read as "no discovery" --
+    // the same posture the profile table itself takes.
+    for (const missing of [undefined, null, "", "   "]) {
+      for (const p of [
+        composeTaskPrompt("/p/t.md", "T", "b", [], null, [], missing),
+        composePlanPrompt("/p/plan.md", [], null, [], missing),
+        composeResumeTaskPrompt("/p/t.md", "T", "b", [], [], missing),
+        composeResumePlanPrompt("/p/plan.md", [], [], missing),
+        composeDevelopPrompt("/p/t.md", "T", missing),
+        composeReviewLaunchPrompt("/p/t.md", "T", "task", "b", [], [], missing),
+      ]) {
+        expect(p.startsWith(`${NAME_TAB_FIRST}\n\n`)).toBe(true);
+      }
+    }
+  });
+
+  it("appends the discovery instruction when the profile has one, for every composer", () => {
+    const cmd = "codex resume-id-finder";
+    for (const p of [
+      composeTaskPrompt("/p/t.md", "T", "b", [], null, [], cmd),
+      composePlanPrompt("/p/plan.md", [], null, [], cmd),
+      composeResumeTaskPrompt("/p/t.md", "T", "b", [], [], cmd),
+      composeResumePlanPrompt("/p/plan.md", [], [], cmd),
+      composeDevelopPrompt("/p/t.md", "T", cmd),
+      composeReviewLaunchPrompt("/p/t.md", "T", "task", "b", [], [], cmd),
+    ]) {
+      expect(p).toContain(NAME_TAB_FIRST);
+      expect(p).toContain(`run \`${cmd}\``);
+      expect(p).toContain("gavin_name_session's second argument");
+      // Still one instruction ahead of the card content, not a second
+      // paragraph -- the "\n\n" after it is what every composer splits on.
+      expect(p.indexOf("\n\n")).toBeGreaterThan(p.indexOf(cmd));
+    }
+  });
+});
+
+describe("nameTabFirst", () => {
+  it("returns the plain instruction unchanged when there is nothing to discover", () => {
+    expect(nameTabFirst(undefined)).toBe(NAME_TAB_FIRST);
+    expect(nameTabFirst(null)).toBe(NAME_TAB_FIRST);
+    expect(nameTabFirst("")).toBe(NAME_TAB_FIRST);
+  });
+
+  it("appends the discovery step, verbatim, when the profile has one", () => {
+    const withDiscovery = nameTabFirst("gemini --list-sessions");
+    expect(withDiscovery.startsWith(NAME_TAB_FIRST)).toBe(true);
+    expect(withDiscovery).toContain("run `gemini --list-sessions`");
+    expect(withDiscovery).toContain("gavin_name_session's second argument");
   });
 });
 

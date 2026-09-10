@@ -18,6 +18,15 @@ for yourself: "login flow", "git tab conflicts", "kanban drag bug".
 Un-named tabs all show the same folder name, and a page of them is
 unreadable. Re-name yourself if the work turns into something else.
 
+If your own CLI mints its own conversation id, rather than one gavin
+fixed for you at launch, pass it the moment you have it as
+`gavin_name_session`'s second, optional argument:
+`gavin_name_session(name, agent_conversation_id)`. Gavin stores it so a
+later Resume can reopen this exact conversation instead of writing a
+fresh one from an account of it. Only call it with a real id your CLI
+actually handed you — nothing to pass otherwise, and most CLIs need
+nothing here at all.
+
 ## 1. Read the PRD first
 
 `gavin_read_prd` (or read `{prd}`). It is the lead document —
