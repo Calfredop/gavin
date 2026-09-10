@@ -1150,14 +1150,37 @@ pub fn gate_request(req: &Request, daemon_version: u32) -> Result<(), GatedReque
 /// token from the environment. One home means the HMAC construction and
 /// the hashing can never drift between minting and checking.
 ///
-/// A 32-byte value, hex-encoded, read from the OS CSPRNG. `/dev/urandom`
-/// rather than a crate so this stays dependency-light and identical on
-/// every platform gavin runs on; a failure to read it is fatal to the
-/// caller, because a predictable token is worse than none.
+/// A 32-byte value, hex-encoded, read from the OS CSPRNG. A failure to
+/// read it is fatal to the caller, because a predictable token is worse
+/// than none -- which is why neither arm below carries a fallback.
+///
+/// Unix reads `/dev/urandom` directly rather than through a crate, which
+/// is what keeps this dependency-light. Windows has no such file, and
+/// opening it is where a daemon on that OS died: `mint_daemon_token` is
+/// the first thing `run_server` does, so the whole daemon failed to
+/// start with `os error 3` before it ever reached the pipe.
+#[cfg(not(windows))]
 pub fn random_hex(n_bytes: usize) -> std::io::Result<String> {
     let mut buf = vec![0u8; n_bytes];
     let mut f = std::fs::File::open("/dev/urandom")?;
     f.read_exact(&mut buf)?;
+    Ok(hex_encode(&buf))
+}
+
+/// `ProcessPrng` rather than `BCryptGenRandom`: it is the documented
+/// user-mode entry point to the same system CSPRNG, and it needs neither
+/// an algorithm handle nor the open/close dance around one. It is
+/// documented to always return TRUE; the check is here regardless,
+/// because the failure it would hide is a token of zeroes.
+#[cfg(windows)]
+pub fn random_hex(n_bytes: usize) -> std::io::Result<String> {
+    use windows::Win32::Security::Cryptography::ProcessPrng;
+    let mut buf = vec![0u8; n_bytes];
+    // SAFETY: ProcessPrng only writes into the slice it is handed, and
+    // the slice outlives the call.
+    if !unsafe { ProcessPrng(&mut buf) }.as_bool() {
+        return Err(std::io::Error::last_os_error());
+    }
     Ok(hex_encode(&buf))
 }
 
