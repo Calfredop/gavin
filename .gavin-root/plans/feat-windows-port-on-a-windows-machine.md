@@ -1,5 +1,5 @@
 ---
-order: 4096
+order: 9216
 title: [feat] windows port — the half that needs a Windows machine
 status: To Do
 ---
@@ -26,12 +26,28 @@ Node 22, and the agent CLIs installed the way a user would install them
       [fix-daemon-server-test-flakiness.md](./fix-daemon-server-test-flakiness.md),
       which predates this work; a DIFFERENT test each run is that, the SAME one
       twice is ours.
+      First `cargo test -p app --release` on Windows (2026-09-10, stable
+      worktree): 438 pass, 8 fail, all path-shape, none flaky --
+      `agent_setup` x2 (expected `/`, got `\` in the opencode skill paths),
+      `fileviewer::extra_context_roots_…` (a `\\?\` verbatim temp path is
+      not matched), `memory::pid_file_sits_under_the_user_state_directory`,
+      `session::command_connection_tests::a_command_the_daemon_predates_…`,
+      `workspace_delete` x3 (forward-slash vs backslash comparison, and the
+      trash count). The same forward-slash normalisation section 3 mentions
+      is what most of them want.
 - [ ] `cd app && npm ci && npm test && npm run check && npm run build`.
 - [ ] `npm run tauri dev` launches and reaches its daemon.
-- [ ] `npm run bundle` produces an **NSIS installer** (`tauri.windows.conf.json`
+- [x] `npm run bundle` produces an **NSIS installer** (`tauri.windows.conf.json`
       narrows `bundle.targets` to that; `app/src-tauri/BUNDLING.md` says why the
       `--config` flag must not be dropped). The staging script is Node now
       precisely so this step does not need `sh.exe` on PATH — confirm it did not.
+      Done 2026-09-10 in the stable worktree
+      ([chore-stable-release-install-on-windows.md](./chore-stable-release-install-on-windows.md)):
+      `Gavin_0.1.0_x64-setup.exe`, staging ran under `cmd /C` with no `sh.exe`
+      involved, and the generated `installer.nsi` installs both sidecars with
+      the triple stripped. The install-and-check item below is still the
+      human's; the installer's per-user default folder is `%LOCALAPPDATA%\Gavin`,
+      which is the daemon's state directory under another case.
 - [ ] **The spec's open item, now with an extension on it:** install the
       package and check `externalBin` stripped the target triple and left
       `gavin-daemon.exe` and `gavin-mcp.exe` **beside `Gavin.exe`**.
@@ -44,6 +60,15 @@ Node 22, and the agent CLIs installed the way a user would install them
       daemon. That is the sibling lookup working end to end.
 - [ ] Run the wizard's integration step and confirm the absolute `gavin-mcp`
       path it writes into the agent config resolves.
+
+What broke on the first packaged launch (2026-09-10): the release `Gavin.exe`
+is `windows_subsystem = "windows"` and the daemon is spawned with
+`DETACHED_PROCESS`, so neither has a console, and every `git`, `gh` and
+`claude` either of them runs opens a console window of its own -- a full
+Windows Terminal window on this machine. The dev build never shows it because
+debug binaries keep a console. Structural, since no `Command::new` in the app
+or the daemon sets `CREATE_NO_WINDOW`:
+[fix-release-app-console-windows-on-windows.md](./fix-release-app-console-windows-on-windows.md).
 
 ## 2. The shell assumption — everything rests on this one
 
