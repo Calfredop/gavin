@@ -1,4 +1,5 @@
 ---
+order: 6144
 title: Hold the thin-template rule on the six components that broke it
 status: To Do
 priority: low

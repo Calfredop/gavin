@@ -1,5 +1,5 @@
 ---
-order: 11264
+order: 3072
 kind: task
 title: [feat] search in settings
 status: Done

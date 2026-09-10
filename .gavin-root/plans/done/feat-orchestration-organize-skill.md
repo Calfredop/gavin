@@ -1,5 +1,5 @@
 ---
-order: 7168
+order: 1024
 kind: task
 title: [feat] orchestration organize skill
 status: Done
