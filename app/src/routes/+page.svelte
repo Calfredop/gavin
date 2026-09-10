@@ -808,6 +808,9 @@
     font-family: monospace;
     font-size: var(--tab-font-size);
   }
+  .tab:hover {
+    color: var(--text);
+  }
   .tab-spinner {
     width: 10px;
     height: 10px;

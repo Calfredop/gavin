@@ -940,6 +940,9 @@
     font-size: var(--tab-font-size);
     cursor: pointer;
   }
+  .tab:hover {
+    color: var(--text);
+  }
   /* The hub row's separator, to the pixel (theme.css): down the middle
      of the gap, and short of the row's height so it reads as a rule
      between tabs rather than a box around each one. Off .tab, which is
