@@ -130,6 +130,104 @@ impl PtySession {
         cmd.env_remove("NO_COLOR");
         cmd.env_remove("NODE_DISABLE_COLORS");
 
+        // Same leak, one layer up: NO_COLOR was a launcher answering a
+        // question about the terminal, and these are a launcher answering
+        // questions about *which session this is*. When the GUI is started
+        // from inside a coding agent -- the normal dev loop on this
+        // project, `scripts/start-dev-win.ps1` run from an agent's shell
+        // tool -- that agent has already stamped its own session identity
+        // into the environment for its children, and the whole chain
+        // (npm -> node -> cargo -> Gavin.exe -> gavin-daemon) carries it
+        // down into every PTY this function opens.
+        //
+        // Not inert. Claude Code reads CLAUDE_CODE_CHILD_SESSION as "you
+        // are a nested child, not a top-level session" and responds by
+        // turning transcript persistence off, so `--resume` and
+        // `--continue` cannot find the session afterwards, and prompt
+        // history is dropped. It says so on screen, and this repo already
+        // holds the receipt: tests/fixtures/claude-code-tui.raw, captured
+        // from an agent running in a gavin tab, contains the banner
+        // "Transcript saving is off - inherited CLAUDE_CODE_CHILD_SESSION
+        // marker". An app whose purpose is hosting agent sessions in tabs
+        // must not be the reason those sessions cannot be resumed.
+        //
+        // That marker has an escape hatch for exactly this shape of
+        // mistake, but it only covers tmux: an inherited marker is
+        // forgiven when it came from tmux's global environment, on the
+        // grounds that it is ambient rather than a real parent-child
+        // link. A PTY opened here is the same ambient case and gets no
+        // such reprieve, so the daemon has to answer it by not passing
+        // the marker on.
+        //
+        // The test applied below is whether a variable names the
+        // LAUNCHER'S SESSION rather than this one. That is why this is a
+        // list and not a CLAUDE_*/GIT_* sweep: ANTHROPIC_API_KEY,
+        // CLAUDE_CODE_USE_BEDROCK and friends are user configuration a
+        // terminal session should keep, and CLAUDE_CODE_EXECPATH names an
+        // *install* -- two sessions of the same install share it -- so
+        // none of those are this bug. Deliberately still passed in above:
+        // GAVIN_SESSION_ID and GAVIN_SESSION_TOKEN, which name THIS
+        // session and are the entire point of setting them.
+        for key in [
+            // "you are running under Claude Code", and by which entrypoint.
+            "CLAUDECODE",
+            "CLAUDE_CODE_ENTRYPOINT",
+            // The nested-child marker, and the session ids it refers to.
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_BRIDGE_SESSION_ID",
+            // The launcher's process id. Claude Code builds a `pkill`
+            // guard around it; inherited, that guard is aimed at a
+            // process in a different tree entirely.
+            "CLAUDE_PID",
+            // The launcher's cross-session messaging channel and the
+            // bearer token for it. Left in place, an agent in a tab joins
+            // the launching agent's message bus instead of being
+            // reachable as itself -- the sharpest of these, because it is
+            // a live credential for somebody else's session.
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+            // "your parent is an agent, and here is which one, and how
+            // hard it was told to think".
+            "AI_AGENT",
+            "CLAUDE_EFFORT",
+        ] {
+            cmd.env_remove(key);
+        }
+
+        // The other half of the same inheritance, and the closest relative
+        // of NO_COLOR: a launcher that had no terminal, telling everything
+        // downstream not to ask the user anything. A session in this app
+        // DOES have a terminal -- the app draws it -- so the premise is
+        // simply false in here.
+        //
+        // GIT_TERMINAL_PROMPT=0 and GCM_INTERACTIVE=never are set as a
+        // pair, the second being the one that bites on Windows: Git
+        // Credential Manager is the helper this platform ships, and
+        // "never" tells it to refuse its own UI. Inherited, a `git push`
+        // in a tab fails with an auth error instead of asking, and the
+        // failure reads as a broken credential store rather than a stray
+        // variable. GIT_EDITOR=true is worse than a refusal: it makes
+        // `git commit` with no -m succeed with an empty message and
+        // `git rebase -i` skip its todo list, which is lost work rather
+        // than a visible failure.
+        //
+        // Removed unconditionally, for the reason the NO_COLOR block
+        // gives: absent is what "decide normally" looks like, and a user
+        // who genuinely wants any of these still has the shell profile an
+        // interactive session reads. This is only the INHERITED
+        // environment -- where gavin itself wants non-interactive git it
+        // says so explicitly per invocation, in
+        // app/src-tauri/src/git/run.rs, and nothing here changes that.
+        for key in [
+            "GIT_TERMINAL_PROMPT",
+            "GIT_ASKPASS",
+            "GCM_INTERACTIVE",
+            "GIT_EDITOR",
+        ] {
+            cmd.env_remove(key);
+        }
+
         let child = pair.slave.spawn_command(cmd)?;
         let writer = pair.master.take_writer()?;
 
@@ -306,6 +404,16 @@ mod tests {
     // other project's typical tolerance for this well-known Rust hazard.
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
+    /// Take ENV_MUTEX, recovering from a poisoned lock rather than
+    /// panicking on it. It guards `()` -- there is no invariant a panic
+    /// could have left half-written -- so poison here carries no
+    /// information except "an earlier env test failed", and propagating it
+    /// turns one real failure into a cascade of misleading ones in every
+    /// other test that touches process env.
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn spawn_pins_term_program_regardless_of_what_the_daemon_inherited() {
         // The daemon inherits its environment from whatever launched the
@@ -316,7 +424,7 @@ mod tests {
         // NOTHING AT ALL when it is unset -- so leaving it inherited makes
         // waiting-for-input detection silently depend on how the app was
         // launched. See status.rs for the detection side.
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = lock_env();
         std::env::set_var("TERM_PROGRAM", "some-other-terminal");
 
         let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "test-session", None).unwrap();
@@ -342,7 +450,7 @@ mod tests {
         // replaced with a fake version because the only thing that reads it
         // (color-depth detection) consults it solely for iTerm2 and
         // Apple_Terminal, neither of which we claim to be.
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = lock_env();
         std::env::set_var("TERM_PROGRAM_VERSION", "9.9.9-inherited");
 
         let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "test-session", None).unwrap();
@@ -371,7 +479,7 @@ mod tests {
         // above: this is the one that has to run on the OS the report
         // came from. `printf` is a shell builtin everywhere, so it needs
         // nothing on PATH.
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = lock_env();
         std::env::set_var("NO_COLOR", "1");
 
         let cwd = std::env::temp_dir().to_string_lossy().into_owned();
@@ -388,6 +496,139 @@ mod tests {
         session.kill().unwrap();
         std::env::remove_var("NO_COLOR");
         assert!(output.contains("NCMARK=[]"), "got: {output}");
+    }
+
+    #[test]
+    fn spawn_clears_the_launchers_claude_session_identity() {
+        // The bug: start the GUI from inside a coding agent -- which is
+        // how this project is developed -- and that agent's session
+        // identity rides the whole npm/cargo/Tauri chain down into every
+        // tab. The hosted agent then reads itself as a nested child of
+        // whoever launched the app rather than the top-level session it
+        // actually is.
+        //
+        // Not cosmetic: an inherited CLAUDE_CODE_CHILD_SESSION turns
+        // transcript persistence off, so the session cannot be resumed
+        // afterwards. tests/fixtures/claude-code-tui.raw is a capture of
+        // that happening in a real gavin tab.
+        let _guard = lock_env();
+        let leaked = [
+            ("CLAUDECODE", "1"),
+            ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+            ("CLAUDE_CODE_CHILD_SESSION", "1"),
+            ("CLAUDE_CODE_SESSION_ID", "launcher-session-uuid"),
+            ("CLAUDE_CODE_BRIDGE_SESSION_ID", "session_launcher"),
+            ("CLAUDE_PID", "4242"),
+            ("CLAUDE_CODE_MESSAGING_SOCKET", r"\\.\pipe\LOCAL\cc-msg-x"),
+            ("CLAUDE_CODE_MESSAGING_TOKEN", "launcher-secret"),
+            ("AI_AGENT", "claude-code_0-0-0_agent"),
+            ("CLAUDE_EFFORT", "xhigh"),
+        ];
+        for (key, value) in leaked {
+            std::env::set_var(key, value);
+        }
+
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(concat!(
+                r#"printf 'ID%s=[%s][%s][%s][%s][%s][%s][%s][%s][%s][%s]\n' MARK "#,
+                r#""$CLAUDECODE" "$CLAUDE_CODE_ENTRYPOINT" "#,
+                r#""$CLAUDE_CODE_CHILD_SESSION" "$CLAUDE_CODE_SESSION_ID" "#,
+                r#""$CLAUDE_CODE_BRIDGE_SESSION_ID" "$CLAUDE_PID" "#,
+                r#""$CLAUDE_CODE_MESSAGING_SOCKET" "$CLAUDE_CODE_MESSAGING_TOKEN" "#,
+                r#""$AI_AGENT" "$CLAUDE_EFFORT""#,
+            )),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "IDMARK=[", Duration::from_secs(5));
+        session.kill().unwrap();
+        for (key, _) in leaked {
+            std::env::remove_var(key);
+        }
+        assert!(
+            output.contains("IDMARK=[][][][][][][][][][]"),
+            "got: {output}"
+        );
+    }
+
+    #[test]
+    fn spawn_keeps_inherited_claude_config_that_is_not_session_identity() {
+        // The guard against fixing the above with a CLAUDE_* sweep, which
+        // would be a different bug. CLAUDE_CODE_EXECPATH names an
+        // *install*, not a session -- every session of that install has
+        // the same value -- and ANTHROPIC_API_KEY is user configuration a
+        // terminal session is entitled to inherit. Neither one answers
+        // "which session is this", so neither is stripped.
+        let _guard = lock_env();
+        std::env::set_var("CLAUDE_CODE_EXECPATH", "/opt/claude/claude");
+        std::env::set_var("ANTHROPIC_API_KEY", "user-configured-key");
+
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(r#"printf 'KEPT%s=[%s][%s]\n' MARK "$CLAUDE_CODE_EXECPATH" "$ANTHROPIC_API_KEY""#),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "KEPTMARK=[", Duration::from_secs(5));
+        session.kill().unwrap();
+        std::env::remove_var("CLAUDE_CODE_EXECPATH");
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        assert!(
+            output.contains("KEPTMARK=[/opt/claude/claude][user-configured-key]"),
+            "got: {output}"
+        );
+    }
+
+    #[test]
+    fn spawn_clears_the_launchers_non_interactive_git_pins() {
+        // Same shape as NO_COLOR: a launcher with no terminal telling
+        // everything downstream not to ask the user anything. A tab has a
+        // terminal, so git in it should be able to prompt.
+        //
+        // GCM_INTERACTIVE is the one that bites on Windows -- Git
+        // Credential Manager is the helper here and "never" forbids its
+        // UI -- and GIT_EDITOR=true is the one that loses work, by making
+        // a bare `git commit` succeed with an empty message.
+        let _guard = lock_env();
+        let leaked = [
+            ("GIT_TERMINAL_PROMPT", "0"),
+            ("GIT_ASKPASS", ""),
+            ("GCM_INTERACTIVE", "never"),
+            ("GIT_EDITOR", "true"),
+        ];
+        for (key, value) in leaked {
+            std::env::set_var(key, value);
+        }
+
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(concat!(
+                r#"printf 'GIT%s=[%s][%s][%s][%s]\n' MARK "#,
+                r#""$GIT_TERMINAL_PROMPT" "$GIT_ASKPASS" "#,
+                r#""$GCM_INTERACTIVE" "$GIT_EDITOR""#,
+            )),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "GITMARK=[", Duration::from_secs(5));
+        session.kill().unwrap();
+        for (key, _) in leaked {
+            std::env::remove_var(key);
+        }
+        assert!(output.contains("GITMARK=[][][][]"), "got: {output}");
     }
 
     #[test]
