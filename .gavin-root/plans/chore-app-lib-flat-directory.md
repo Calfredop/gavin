@@ -1,6 +1,6 @@
 ---
 title: Break app/src/lib out of one flat directory
-status: To Do
+status: Done
 priority: medium
 complexity: complex
 ---
@@ -35,6 +35,23 @@ files into 15 domains with 27 stragglers:
 The 27 stragglers are a `workspace/` lifecycle group (create / delete / tools /
 root control) and cross-cutting guard tests.
 
+## Agreed folders
+
+Sixteen, agreed 2026-09-09: the table's fourteen plus `workspace/` for the
+lifecycle group and `guards/` for the cross-cutting static tests that belong to
+no domain. `ui/`, `wizardSteps/` and `fixtures/` stay exactly where they are.
+
+```
+agents/  board/  cards/  core/  files/  git/  guards/  hub/
+orchestration/  panes/  review/  sessions/  shell/  sidebar/
+terminal/  workspace/
+```
+
+`core/` is a real folder rather than a residue left at the root (step 7's
+question, settled early so nothing moves twice): after the reorganization
+`lib/` holds folders and `sources.ts`, nothing else. A listing that is
+entirely folders needs no rule explaining which loose files are special.
+
 ## Two constraints that decide the order of work
 
 **1. ~60 test files glob the flat directory.** They build their subject with
@@ -55,27 +72,42 @@ file.
 
 ## Steps
 
-- [ ] Land the source-map seam (nested task) — `lib/sources.ts` resolving a bare
+- [x] Land the source-map seam (nested task) — `lib/sources.ts` resolving a bare
       name to its glob key at any depth, plus a floor assertion, and every
       `import.meta.glob` guard moved onto it
-- [ ] Codemod intra-lib relative imports to `$lib/...` (`./x` → `$lib/x`,
+- [x] Codemod intra-lib relative imports to `$lib/...` (`./x` → `$lib/x`,
       `../routes` untouched); `npm run check` and `npm test` green with zero
       files moved — this commit must be pure text
-- [ ] Agree the folder list on this card before moving anything; `ui/` and
-      `wizardSteps/` stay where they are
-- [ ] Move `terminal/`, `sessions/`, `review/`, `sidebar/` first — smallest, and
+- [x] Agree the folder list on this card before moving anything; `ui/` and
+      `wizardSteps/` stay where they are — see **Agreed folders** below
+- [x] Move `terminal/`, `sessions/`, `review/`, `sidebar/` first — smallest, and
       they exercise the seam on a batch that is cheap to revert
-- [ ] Move `board/`, `cards/`, `hub/`, `panes/`, `files/`
-- [ ] Move `git/`, `orchestration/`, `agents/` — the three largest
-- [ ] Decide `core/`: either a `core/` folder or the deliberate residue left at
+- [x] Move `board/`, `cards/`, `hub/`, `panes/`, `files/`
+- [x] Move `git/`, `orchestration/`, `agents/` — the three largest
+- [x] Decide `core/`: either a `core/` folder or the deliberate residue left at
       `lib/` root (`layoutState`, `backend`, `workspace`, `gavin`, `planBoard`
       are the five highest fan-in modules at 106/86/71/58/56 importers)
-- [ ] Give the stragglers a home: `workspace/` for the lifecycle group, and a
+- [x] Give the stragglers a home: `workspace/` for the lifecycle group, and a
       home for the cross-cutting guards that belong to no domain
       (`viewBoundary`, `globalStyleScope`, `appHeader`, `devCsp`,
       `viteStyleCache`, `openerScope`, `commandGate`)
-- [ ] Add `app/src/lib/README.md`: one line per folder saying what lives there
-- [ ] `cargo test --workspace`, `cd app && npm test && npm run check && npm run build`
+- [x] Add `app/src/lib/README.md`: one line per folder saying what lives there
+- [x] `cargo test --workspace`, `cd app && npm test && npm run check && npm run build`
+
+## Result
+
+`app/src/lib` lists nineteen folders, `sources.ts`, `sources.test.ts` and
+`README.md` — down from 526 entries. Eighteen commits on `code-reorg`, one per
+domain plus the seam, the `$lib` codemod and the README, so `git log --follow`
+answers for any file.
+
+All green in the detached worktree: `cargo test --workspace` (1108 passing),
+`npm test` (5226 in 236 files), `npm run check` (0 errors, the same 35
+pre-existing a11y warnings), `npm run build`. Every `$lib/...` specifier in
+`app/src` was checked against the filesystem — none dangle.
+
+Rendered UI is untouched by construction (no `.svelte` template changed except
+its own import lines) but is still the owner's to confirm in the running app.
 
 ## Notes
 
