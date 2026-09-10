@@ -135,7 +135,8 @@ fn wait_until_gone(socket_path: &Path) -> bool {
 fn kill_running_daemons() -> anyhow::Result<()> {
     #[cfg(windows)]
     {
-        let status = Command::new("taskkill").args(["/F", "/IM", "gavin-daemon.exe"]).status()?;
+        let status =
+            crate::program::command("taskkill").args(["/F", "/IM", "gavin-daemon.exe"]).status()?;
         return match status.code() {
             // 128 == "no tasks matching", the normal already-gone case.
             Some(0) | Some(128) => Ok(()),
@@ -144,7 +145,7 @@ fn kill_running_daemons() -> anyhow::Result<()> {
     }
     #[cfg(not(windows))]
     {
-        let status = Command::new("pkill").arg("-x").arg("gavin-daemon").status()?;
+        let status = crate::program::command("pkill").arg("-x").arg("gavin-daemon").status()?;
         match status.code() {
             // 1 == "no processes matched", which is a normal already-gone case.
             Some(0) | Some(1) => Ok(()),
@@ -229,11 +230,11 @@ mod tests {
     fn a_child_that_binds_nothing() -> std::io::Result<std::process::Child> {
         #[cfg(unix)]
         {
-            Command::new("sleep").arg("5").spawn()
+            crate::program::command("sleep").arg("5").spawn()
         }
         #[cfg(windows)]
         {
-            Command::new("ping")
+            crate::program::command("ping")
                 .args(["-n", "6", "127.0.0.1"])
                 .stdout(std::process::Stdio::null())
                 .spawn()

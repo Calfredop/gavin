@@ -36,7 +36,7 @@
 
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How long the watchman CLI may take before the probe gives up. It is
@@ -250,7 +250,7 @@ fn watchman_pid() -> Option<u32> {
             return Some(pid);
         }
     }
-    let out = Command::new("/usr/bin/pgrep").arg("-x").arg("watchman").output().ok()?;
+    let out = crate::program::command("/usr/bin/pgrep").arg("-x").arg("watchman").output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -354,7 +354,7 @@ fn watchman_binary() -> Option<String> {
 /// blocks forever if the parent waits before reading.
 fn watchman_command(args: &[&str]) -> Option<String> {
     let bin = watchman_binary()?;
-    let mut child = Command::new(bin)
+    let mut child = crate::program::command(bin)
         .arg("--no-spawn")
         .arg("--no-local")
         .args(args)

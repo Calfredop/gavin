@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -192,7 +192,7 @@ fn run_gh(cwd: &str, args: &[&str]) -> Result<Run, String> {
         return Err(format!("directory not found: {cwd}"));
     }
     let bin = gh_binary();
-    let mut child = Command::new(crate::program::resolve_or_name(&bin))
+    let mut child = crate::program::command(crate::program::resolve_or_name(&bin))
         .args(args)
         .current_dir(cwd)
         // gh prompts for auth when it has none and a tty; there is no tty
