@@ -327,6 +327,7 @@
   class="app"
   class:sidebar-collapsed={$sidebarCollapsed}
   class:wide-window-controls={!isMacSync()}
+  class:rounded-corners={isMacSync()}
   style:--ws-accent={accent}
 >
   <!-- Outside the body row and ahead of every connection branch, for
@@ -656,7 +657,6 @@
     background: var(--surface-base);
     display: flex;
     flex-direction: column;
-    border-radius: 10px;
     overflow: hidden;
     /* How wide the window's own column is, open and collapsed. A
        variable rather than two rules on .rail because the head of the
@@ -674,6 +674,18 @@
   }
   .app.wide-window-controls {
     --window-corner-width: 96px;
+  }
+  /* The shell clips its own corners only where the native surface under
+     it is rounded to the same value: macOS, whose content layer
+     mac_window.rs masks to this radius (windowCorners.test.ts holds the
+     two numbers together). Everywhere else the OS shapes the window
+     itself -- Windows rounds a floating window at its own, smaller
+     radius and squares a maximized, snapped or full-screen one -- and
+     the WebView paints white wherever the shell does not. A radius here
+     on every platform was a white crescent in each corner of a floating
+     window and four white corners on a maximized one. */
+  .app.rounded-corners {
+    border-radius: 10px;
   }
   .app.sidebar-collapsed {
     --rail-width: var(--rail-collapsed-width);
