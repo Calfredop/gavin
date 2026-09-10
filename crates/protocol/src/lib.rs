@@ -18,6 +18,28 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v37 lets an AGENT author this workspace's tools: `SaveToolByRoot`,
+/// `DeleteToolByRoot` and the `ToolsChanged` push. Two new request
+/// TYPES, so `min_version_for` is the whole wire gate and no
+/// daemonCompat.ts mirror is owed -- the app never sends either one, it
+/// writes tools for a workspace whose id it already has.
+///
+/// The `ByRoot` pair exists so the DAEMON, not the caller, decides the
+/// scope. `SaveTool` takes the scope from the payload, and an agent
+/// handed that request could store a tool global to the machine or
+/// rewrite one -- so the agent role is refused it (`agent_allows`) and
+/// gets these instead, which resolve the root to one watched workspace
+/// and stamp that workspace's id over whatever arrived. A built-in id,
+/// a global tool and another workspace's tool are all refused rather
+/// than silently re-scoped.
+///
+/// `ToolsChanged` is the push half, and it is the point in the same way
+/// `set_rail_run_by_root`'s is: the tool library had no push because
+/// every write originated in the app that already held the state, and
+/// that stopped being true the moment an agent could write one. Without
+/// it the Tools tab shows a library that is missing the tool the agent
+/// just made until something else happens to refetch.
+///
 /// v36 widened `Rail` with `trigger` (a rail's own start condition).
 /// `serde(default)` on an EXISTING request, which `min_version_for` gates
 /// by TYPE and therefore cannot see -- so FEATURE_MIN_VERSION.railTrigger
@@ -315,7 +337,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 36;
+pub const PROTOCOL_VERSION: u32 = 37;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -789,6 +811,32 @@ pub enum Request {
     GetToolsByRoot {
         root_path: String,
     },
+    /// Upsert a tool INTO the workspace at `root_path` -- gavin-mcp's
+    /// `gavin_save_tool`, and nothing else.
+    ///
+    /// Not `SaveTool` with a `workspace_id` filled in, and the
+    /// difference is the whole reason this variant exists: there the
+    /// SCOPE is the caller's to name, and an agent that could name it
+    /// could store a tool global to every workspace on the machine, or
+    /// re-scope an existing global one by re-saving it. Here the daemon
+    /// resolves the root to one watched workspace and stamps THAT id
+    /// over whatever the payload carried, so the only tool an agent can
+    /// write is one of its own workspace's.
+    ///
+    /// `tool.workspace_id` is therefore ignored, and `tool.position` is
+    /// the caller's (the app's rule: a new tool lands at the end).
+    SaveToolByRoot {
+        root_path: String,
+        tool: ToolDef,
+    },
+    /// Delete one of the workspace-at-`root_path`'s OWN tools. A
+    /// `builtin:` id, a GLOBAL tool and another workspace's tool are all
+    /// refused by name rather than silently doing nothing: the agent
+    /// that asked is entitled to know which of the three it hit.
+    DeleteToolByRoot {
+        root_path: String,
+        id: String,
+    },
     /// This workspace's group templates PLUS every global one, per
     /// GetTools. Never an error for an unknown workspace -- an empty list.
     GetGroupTemplates {
@@ -975,6 +1023,23 @@ pub fn min_version_for(req: &Request) -> u32 {
         | Request::GetTools { .. }
         | Request::GetToolsByRoot { .. }
         | Request::SaveTool { .. } => 11,
+
+        // An agent authoring its own workspace's tools (gavin-mcp's
+        // `gavin_save_tool` / `gavin_delete_tool`). Two new request
+        // TYPES, so this match is the whole gate and no daemonCompat.ts
+        // mirror is owed -- the app never sends either, it writes tools
+        // for a workspace whose id it already has, exactly as it does
+        // for `SetRailRunByRoot` at 28.
+        //
+        // Nothing here is the guard, and that is worth saying in the
+        // one place a reader might look for it: the scope rule
+        // ("workspace tools only, never gavin's own") is enforced in
+        // `save_tool_by_root`/`delete_tool_by_root`, which stamp the
+        // watched workspace's id over the payload and refuse a
+        // `builtin:` id, a global row and another workspace's row. A
+        // version gate only decides whether the request reaches the
+        // wire at all.
+        Request::DeleteToolByRoot { .. } | Request::SaveToolByRoot { .. } => 37,
 
         Request::Shutdown => 12,
 
@@ -1319,6 +1384,20 @@ pub enum Response {
         step_runs: Vec<StepRun>,
     },
     Tools { tools: Vec<ToolDef> },
+    /// Push: this workspace's tool library changed under the app's feet
+    /// -- an agent authored, edited or deleted a tool over gavin-mcp.
+    /// Carries the whole library (this workspace's rows plus every
+    /// global one, exactly what `GetTools` answers), never a delta, so a
+    /// client that missed one cannot drift.
+    ///
+    /// It exists for the reason `OrchestrationChanged` does: until v37
+    /// every tool write originated in the app that already held the
+    /// state, so a push would have told it what it just did. An agent
+    /// writing one changes that, and without this the Tools tab keeps
+    /// drawing a library missing the tool the agent made -- `fetchTools`
+    /// is a load-once, so nothing would refetch until the whole
+    /// workspace reloaded.
+    ToolsChanged { workspace_id: String, tools: Vec<ToolDef> },
     GroupTemplates { templates: Vec<GroupTemplate> },
     GavinTreeSnapshot { workspace_id: String, tree: GavinTree },
     GavinTreeChanged { workspace_id: String, tree: GavinTree },
@@ -3296,6 +3375,13 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v37: SaveToolByRoot + DeleteToolByRoot + the ToolsChanged
+        // push -- an agent authoring its OWN workspace's tools. Two new
+        // request TYPES, so min_version_for really is the whole gate and
+        // no daemonCompat.ts entry is owed (the app sends neither). The
+        // scope guard is not a version at all: the daemon stamps the
+        // watched workspace's id over the payload and refuses a
+        // `builtin:` id, a global row and another workspace's row.
         // v36: Rail.trigger -- a rail's own start condition, so a rail can
         // wait for the others to finish instead of being armed by a step
         // on whichever rail happens to run last. serde(default) and no
@@ -3424,7 +3510,7 @@ mod tests {
         // daemon answers Unsupported and every client reads "no identity
         // yet"; nothing is silently dropped. The same version also widened
         // Rail with `trigger`, which is a field and so invisible here.
-        assert_eq!(PROTOCOL_VERSION, 36);
+        assert_eq!(PROTOCOL_VERSION, 37);
     }
 
     #[test]
@@ -3736,6 +3822,24 @@ mod tests {
                 },
             },
             Request::DeleteTool { id: "t".into() },
+            // v37's scoped pair: the same two writes with the SCOPE
+            // taken out of the caller's hands.
+            Request::SaveToolByRoot {
+                root_path: "r".into(),
+                tool: ToolDef {
+                    id: "t".into(),
+                    workspace_id: None,
+                    name: "n".into(),
+                    description: "d".into(),
+                    kind: "command".into(),
+                    body: "b".into(),
+                    params: vec![],
+                    position: 0,
+                    cwd: None,
+                    icon: None,
+                },
+            },
+            Request::DeleteToolByRoot { root_path: "r".into(), id: "t".into() },
             Request::ArchiveCard { path: "/p/t.md".into() },
             Request::UnarchiveCard { path: "/p/t.md".into() },
             Request::Shutdown,
@@ -3800,7 +3904,8 @@ mod tests {
     /// (ClaimCardForSession), v24=1 (EndOrphan), v25=1 (SessionProcesses),
     /// v27=1 (CardRuns), v28=1 (SetRailRunByRoot), v29=4 (the
     /// follow-up queue), v30=3 (standalone tool runs), v35=1 (Hello --
-    /// client identity), plus Unknown.
+    /// client identity), v37=2 (an agent authoring its own workspace's
+    /// tools), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -3832,6 +3937,8 @@ mod tests {
         expected.insert(29, 4);
         expected.insert(30, 3);
         expected.insert(35, 1); // Request::Hello -- client identity
+        // Save/DeleteToolByRoot -- agent-authored workspace tools.
+        expected.insert(37, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

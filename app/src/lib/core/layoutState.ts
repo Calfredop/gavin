@@ -1256,6 +1256,11 @@ export async function bootstrap(): Promise<void> {
   // module is fully evaluated and the load is safe.
   const { initOrchestrationListeners } = await import("$lib/orchestration/orchestrationState");
   unlisteners.push(await initOrchestrationListeners());
+  // The tool library's own push, on the same terms: an agent authoring a
+  // tool over gavin-mcp is the one tool write this app does not make
+  // itself, and `fetchTools` is a load-once that would never refetch.
+  const { initToolListeners } = await import("$lib/orchestration/toolsState");
+  unlisteners.push(await initToolListeners());
   // Same dynamic-import reason as above: agentPauseState reads
   // resolvedAgentFor from this module. Started here rather than from a
   // component, because a pause whose clock only advances while one tab is

@@ -3692,6 +3692,13 @@ fn attach_and_relay(
                 Response::GavinTreeChanged { workspace_id, tree } => {
                     let _ = reader_app_handle.emit("gavin-tree-changed", (workspace_id, tree));
                 }
+                Response::ToolsChanged { workspace_id, tools } => {
+                    // An agent authored a tool over gavin-mcp (v37). The
+                    // whole library, never a delta, so the frontend
+                    // replaces its rows for this workspace the same way
+                    // a fetch would -- and cannot drift by missing one.
+                    let _ = reader_app_handle.emit("tools-changed", (workspace_id, tools));
+                }
                 Response::SessionNamed { session_id, name } => {
                     // The frontend applies it through setSessionName, the
                     // very path the tab's own rename UI takes -- so an
@@ -5387,6 +5394,27 @@ mod gate_tests {
             Request::NameSession { session_id: "s".into(), name: "n".into() },
             Request::GetProtocolVersion,
             Request::Shutdown,
+            // v37's agent-authored workspace tools. The app sends
+            // neither -- it writes tools for a workspace whose id it
+            // already has -- but the sweep is about `gate` agreeing with
+            // the table for every variant, and these two sit exactly on
+            // the current parity boundary, which is the case it catches.
+            Request::SaveToolByRoot {
+                root_path: "r".into(),
+                tool: ToolDef {
+                    id: "t".into(),
+                    workspace_id: None,
+                    name: "n".into(),
+                    description: "d".into(),
+                    kind: "command".into(),
+                    body: "b".into(),
+                    params: vec![],
+                    position: 0,
+                    cwd: None,
+                    icon: None,
+                },
+            },
+            Request::DeleteToolByRoot { root_path: "r".into(), id: "t".into() },
             // Deserialize-only in production, but nothing stops Rust code
             // from constructing it -- and the sweep needs to, to prove it
             // is refused everywhere rather than just trusting the comment

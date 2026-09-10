@@ -8,6 +8,7 @@
 // wholesale while tools are upserted one at a time.
 
 import { writable, get } from "svelte/store";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import * as backend from "$lib/core/backend";
 import { toolLibrary, toRecord, isBuiltinId, BUILTIN_TOOLS } from "$lib/orchestration/orchestrationTools";
 import type { Tool, ToolRecord } from "$lib/orchestration/orchestrationTools";
@@ -64,9 +65,32 @@ export async function refreshTools(workspaceId: string): Promise<void> {
   }
 }
 
+/// An agent authored, edited or deleted one of this workspace's tools
+/// over gavin-mcp (v37). The push carries the WHOLE library, exactly what
+/// `getTools` answers, so this lands it the same way a fetch would and a
+/// client that missed one cannot drift.
+///
+/// It exists because the assumption below -- that every tool write
+/// originates in this app -- stopped being true. `fetchTools` is a
+/// load-once, so without this the Tools tab keeps drawing a library
+/// missing the tool the agent just made until the whole workspace is
+/// reloaded.
+///
+/// Registered in layoutState.bootstrap beside initOrchestrationListeners,
+/// and for the same reason: a Tauri event emitted with no listener is
+/// lost, not buffered, so it has to be up before any watchGavinRoot can
+/// fire -- and it belongs to the app, not to whichever tab is mounted.
+export async function initToolListeners(): Promise<UnlistenFn> {
+  return await listen<[string, ToolRecord[]]>("tools-changed", (event) => {
+    const [workspaceId, rows] = event.payload;
+    toolRecords.update((s) => ({ ...s, [workspaceId]: rows }));
+  });
+}
+
 /// Every loaded workspace re-reads. A GLOBAL tool saved here belongs to
-/// all of them, and there is no push for tool writes -- they always
-/// originate in this app, so refreshing is both sufficient and cheap.
+/// all of them, and an app write gets no push back -- it originates
+/// here, so this app is already holding the state. (An AGENT's write
+/// does push: see initToolListeners.)
 async function refreshEveryWorkspace(): Promise<void> {
   for (const workspaceId of Object.keys(get(toolRecords))) {
     await refreshTools(workspaceId);

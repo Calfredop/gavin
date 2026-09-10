@@ -1833,8 +1833,10 @@ impl SessionManager {
     // ---- The tool library ------------------------------------------------
     // Targeted, like link_card_session -- a tool outlives every
     // arrangement that references it, so there is nothing to replace
-    // wholesale. No push either: writes originate in the app that is
-    // already holding the state.
+    // wholesale. The plain three take the scope from the caller and push
+    // nothing: they are the APP's, and the app already holds the state it
+    // just wrote. The `_by_root` pair below is gavin-mcp's, and differs
+    // on both counts.
 
     pub fn tools(&self, workspace_id: &str) -> anyhow::Result<Vec<protocol::ToolDef>> {
         self.orchestration.lock().unwrap().tools(workspace_id)
@@ -1846,6 +1848,102 @@ impl SessionManager {
 
     pub fn delete_tool(&self, id: &str) -> anyhow::Result<()> {
         self.orchestration.lock().unwrap().delete_tool(id)
+    }
+
+    /// The one tool an agent may write: this workspace's own.
+    ///
+    /// The guard is DETERMINISTIC and it lives here, not in gavin-mcp's
+    /// argument checking and not in a tool description an agent is asked
+    /// to respect. Three rules, in order, and each one a refusal rather
+    /// than a silent correction:
+    ///
+    /// 1. A `builtin:` id is refused. Built-ins are gavin's own, they
+    ///    are TypeScript constants that never reach this table (tools
+    ///    spec T7), and a row wearing one of their ids would SHADOW the
+    ///    real one in the app's merge -- which is `save_tool`'s reason
+    ///    for refusing it too. Checked here as well so the refusal names
+    ///    the agent's mistake before the store's generic message does.
+    /// 2. An id that already belongs to a GLOBAL row or to ANOTHER
+    ///    workspace is refused. `save_tool` upserts by id and takes the
+    ///    scope from the payload, so without this an agent could rewrite
+    ///    a tool every workspace on the machine shares -- body and all --
+    ///    by saving over its id, and the re-scope would look like a
+    ///    routine edit.
+    /// 3. The scope is not the caller's to state. Whatever
+    ///    `tool.workspace_id` arrived, the watched workspace's id is
+    ///    stamped over it, so "workspace tools only" is a property of
+    ///    the write rather than a hope about the payload.
+    ///
+    /// Answers with the tool as STORED, so the caller reports the id and
+    /// scope the daemon settled on rather than the ones it proposed.
+    pub fn save_tool_by_root(
+        &self,
+        root_path: &str,
+        mut tool: protocol::ToolDef,
+    ) -> anyhow::Result<protocol::ToolDef> {
+        let watcher = self
+            .find_watcher_by_root(root_path)
+            .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        if is_builtin_tool_id(&tool.id) {
+            anyhow::bail!(
+                "{} is one of gavin's built-in tools — an agent can only author this workspace's own tools",
+                tool.id
+            );
+        }
+        if let Some(existing) = self.orchestration.lock().unwrap().tool(&tool.id)? {
+            guard_workspace_owns(&existing, &watcher.workspace_id, "edit")?;
+        }
+        tool.workspace_id = Some(watcher.workspace_id.clone());
+        self.orchestration.lock().unwrap().save_tool(&tool)?;
+        self.push_tools(&watcher.workspace_id);
+        Ok(tool)
+    }
+
+    /// The delete half, guarded on the same three rules -- with one
+    /// difference that is deliberate: an id NOTHING owns is refused too.
+    ///
+    /// `delete_tool` is a no-op on an unknown id, which is right for the
+    /// app (the row is gone either way, and the human is looking at the
+    /// list). It is wrong here: an agent that mistyped an id, or aimed
+    /// at a `builtin:` one, would read "ok" and believe a tool it can
+    /// still see was deleted.
+    pub fn delete_tool_by_root(&self, root_path: &str, id: &str) -> anyhow::Result<()> {
+        let watcher = self
+            .find_watcher_by_root(root_path)
+            .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
+        if is_builtin_tool_id(id) {
+            anyhow::bail!(
+                "{id} is one of gavin's built-in tools — it is not stored in this workspace and cannot be deleted"
+            );
+        }
+        let existing = self
+            .orchestration
+            .lock()
+            .unwrap()
+            .tool(id)?
+            .ok_or_else(|| anyhow::anyhow!("no tool with id {id} in this workspace"))?;
+        guard_workspace_owns(&existing, &watcher.workspace_id, "delete")?;
+        self.orchestration.lock().unwrap().delete_tool(id)?;
+        self.push_tools(&watcher.workspace_id);
+        Ok(())
+    }
+
+    /// Best-effort push of the whole library on the watching app
+    /// connection, on the same terms as `push_orchestration`: silent when
+    /// nothing is watching this workspace, because the app's next fetch
+    /// catches up.
+    ///
+    /// Only the `_by_root` writes call it. An app write needs no push --
+    /// it is the state the app is already holding -- and pushing one back
+    /// would be the app telling itself what it just did.
+    fn push_tools(&self, workspace_id: &str) {
+        let watcher = self.gavin_watchers.lock().unwrap().get(workspace_id).cloned();
+        let Some(watcher) = watcher else { return };
+        let Ok(tools) = self.tools(workspace_id) else { return };
+        watcher.push_response(&protocol::Response::ToolsChanged {
+            workspace_id: workspace_id.to_string(),
+            tools,
+        });
     }
 
     // ---- Standalone tool runs (v30) --------------------------------------
@@ -3398,6 +3496,15 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::GetToolsByRoot { root_path } => {
             manager.tools_by_root(&root_path).map(|tools| Response::Tools { tools })
         }
+        // Answered with the tool as STORED (a one-element `Tools`), not
+        // `Ok`: the daemon decides the scope, so the caller has to be
+        // told what it decided rather than assume its payload survived.
+        Request::SaveToolByRoot { root_path, tool } => manager
+            .save_tool_by_root(&root_path, tool)
+            .map(|saved| Response::Tools { tools: vec![saved] }),
+        Request::DeleteToolByRoot { root_path, id } => {
+            manager.delete_tool_by_root(&root_path, &id).map(|_| Response::Ok)
+        }
         Request::GetGroupTemplates { workspace_id } => manager
             .group_templates(&workspace_id)
             .map(|templates| Response::GroupTemplates { templates }),
@@ -3657,6 +3764,43 @@ impl ClientIdentity {
     }
 }
 
+/// Gavin's OWN tools, by the one thing that marks them: the `builtin:`
+/// id prefix (tools spec T7, and `isBuiltinId` in
+/// `orchestrationTools.ts`). They are constants in the app and never
+/// rows in this table, so nothing here can be "one of them" -- which is
+/// exactly why a save wearing one of their ids has to be refused rather
+/// than stored: the app merges the library by id, and a stored row would
+/// shadow the built-in everywhere it is drawn.
+fn is_builtin_tool_id(id: &str) -> bool {
+    id.starts_with("builtin:")
+}
+
+/// Whether `tool` is the named workspace's own, said as a refusal that
+/// names WHICH kind of tool it is. A global tool belongs to every
+/// workspace on the machine and another workspace's belongs to that one;
+/// neither is this agent's to `verb`.
+fn guard_workspace_owns(
+    tool: &protocol::ToolDef,
+    workspace_id: &str,
+    verb: &str,
+) -> anyhow::Result<()> {
+    match tool.workspace_id.as_deref() {
+        Some(owner) if owner == workspace_id => Ok(()),
+        // The distinction matters to the agent reading the message: a
+        // global tool is shared with every workspace on this machine and
+        // a foreign one is somebody else's board, and neither is fixed
+        // by retrying.
+        None => anyhow::bail!(
+            "{} is a GLOBAL tool, shared by every workspace on this machine — an agent can only {verb} this workspace's own tools",
+            tool.id
+        ),
+        Some(_) => anyhow::bail!(
+            "{} belongs to another workspace — an agent can only {verb} this workspace's own tools",
+            tool.id
+        ),
+    }
+}
+
 /// The `type` tag of a request, for a `Forbidden`/error message. Via serde
 /// rather than a 60-arm match: refusals are not a hot path, and the tag is
 /// always exactly the wire name this way.
@@ -3751,6 +3895,20 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::InitGavinRoot { root_path, .. } => agent_root_in_scope(id, root_path),
         Request::SetOrchestrationByRoot { root_path, .. }
         | Request::SetRailRunByRoot { root_path, .. } => agent_root_in_scope(id, root_path),
+
+        // Authoring this workspace's tools (v37). Scoped by root like
+        // every other `*ByRoot` write, and that is only the OUTER gate:
+        // it says which workspace the agent is standing in. Which tools
+        // inside that workspace it may touch is `save_tool_by_root` /
+        // `delete_tool_by_root`'s guard -- built-ins and global tools
+        // are gavin's and the machine's, not this workspace's, and they
+        // are refused there even though the root checks out.
+        //
+        // The un-scoped `SaveTool`/`DeleteTool` stay denied below, and
+        // must: those take the scope from the payload, which is exactly
+        // the decision an agent does not get to make.
+        Request::SaveToolByRoot { root_path, .. }
+        | Request::DeleteToolByRoot { root_path, .. } => agent_root_in_scope(id, root_path),
 
         // Scoped card/folder writes by PATH.
         Request::SetPlanFrontmatterField { path, .. }
@@ -4596,6 +4754,50 @@ mod tests {
         }
     }
 
+    /// The agent role's half of the tool guard, and only its half: this
+    /// says WHICH WORKSPACE an agent is standing in. Which tools inside
+    /// it are writable is `save_tool_by_root`'s guard, tested above --
+    /// authorize cannot answer that, because the answer is a row in the
+    /// database rather than anything in the request.
+    ///
+    /// The unscoped pair stays refused, and that is the point of the
+    /// `ByRoot` variants existing at all: `SaveTool` takes the scope
+    /// from its payload, so an agent allowed to send it could store a
+    /// tool global to every workspace on the machine.
+    #[test]
+    fn an_agent_may_author_its_own_workspaces_tools_and_never_the_unscoped_pair() {
+        let (_ws, root, _card) = workspace_with_card();
+        let (_other, other_root, _other_card) = workspace_with_card();
+        let id = ClientIdentity::agent("sess-1", &root, &root);
+
+        for req in [
+            Request::SaveToolByRoot { root_path: root.clone(), tool: a_tool("u1", None) },
+            Request::DeleteToolByRoot { root_path: root.clone(), id: "u1".into() },
+            Request::GetToolsByRoot { root_path: root.clone() },
+        ] {
+            assert!(
+                authorize(&id, &req, false).is_ok(),
+                "agent should be allowed {} in its own workspace",
+                request_type_name(&req)
+            );
+        }
+
+        for req in [
+            // Another workspace's root: outside its scope.
+            Request::SaveToolByRoot { root_path: other_root.clone(), tool: a_tool("u1", None) },
+            Request::DeleteToolByRoot { root_path: other_root, id: "u1".into() },
+            // The unscoped pair: the scope would be the payload's.
+            Request::SaveTool { tool: a_tool("u1", None) },
+            Request::DeleteTool { id: "u1".into() },
+        ] {
+            assert!(
+                matches!(authorize(&id, &req, false), Err(Response::Forbidden { role, .. }) if role == "agent"),
+                "agent should be refused {}",
+                request_type_name(&req)
+            );
+        }
+    }
+
     #[test]
     fn an_agent_owns_only_its_own_session_id() {
         let (_ws, root, _card) = workspace_with_card();
@@ -4695,6 +4897,8 @@ mod tests {
             Request::GetTools { workspace_id: "w".into() },
             Request::GetToolsByRoot { root_path: "/x".into() },
             Request::DeleteTool { id: "t".into() },
+            Request::DeleteToolByRoot { root_path: "/x".into(), id: "t".into() },
+            Request::SaveToolByRoot { root_path: "/x".into(), tool: a_tool("t", None) },
             Request::GetGroupTemplates { workspace_id: "w".into() },
             Request::DeleteGroupTemplate { id: "g".into() },
             Request::GitDirtyPaths { cwd: "/x".into(), limit: 10 },
@@ -4929,6 +5133,255 @@ mod tests {
                 assert_eq!(orchestration.rails[0].stages[0].steps[0].id, "t1");
             }
             other => panic!("expected OrchestrationChanged, got {other:?}"),
+        }
+    }
+
+
+    // ---- Agent-authored workspace tools (v37) ------------------------------
+    //
+    // Every test below is about the GUARD, and the guard is the feature:
+    // an agent may author this workspace's own tools and nothing else.
+    // Gavin's built-ins and the machine's global tools are refused by the
+    // daemon, deterministically, whatever the caller asked for -- so none
+    // of this rests on gavin-mcp checking its arguments first.
+
+    /// A watched workspace, ready for `*ByRoot` calls: the socket, the
+    /// root, the watcher's reader (for the pushes) and a command
+    /// connection. The first `GavinTreeChanged` is drained, so the next
+    /// message off `reader` is whatever the test's own write produced.
+    fn watched_workspace() -> (
+        std::path::PathBuf,
+        String,
+        std::io::BufReader<Stream>,
+        Stream,
+        tempfile::TempDir,
+        tempfile::TempDir,
+    ) {
+        let (socket_path, server_dir) = start_test_server();
+        let ws_dir = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws_dir.path(), "WS").unwrap();
+        let root = ws_dir.path().to_string_lossy().to_string();
+
+        let mut watcher = Stream::connect(&socket_path).unwrap();
+        write_message(
+            &mut watcher,
+            &Request::WatchGavinRoot { workspace_id: "ws-1".into(), root_path: root.clone() },
+        )
+        .unwrap();
+        let mut reader = line_reader(watcher.try_clone().unwrap());
+        let first: Option<Response> = read_message(&mut reader).unwrap();
+        assert!(matches!(first, Some(Response::GavinTreeChanged { .. })));
+
+        let cmd = Stream::connect(&socket_path).unwrap();
+        (socket_path, root, reader, cmd, server_dir, ws_dir)
+    }
+
+    fn error_message(resp: Response) -> String {
+        match resp {
+            Response::Error { message } => message,
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    /// The scope is the daemon's, not the payload's. A tool asking to be
+    /// global -- which is what `workspace_id: None` means to `SaveTool`
+    /// -- is stored as this workspace's, and the reply says so, so the
+    /// caller reports what was written rather than what it proposed.
+    #[test]
+    fn save_tool_by_root_stamps_the_watched_workspaces_scope_over_the_payload() {
+        let (_sock, root, mut reader, mut cmd, _d1, _d2) = watched_workspace();
+
+        let mut asked_for_global = a_tool("u1", None);
+        asked_for_global.name = "Deploy".into();
+        let resp = request(
+            &mut cmd,
+            &Request::SaveToolByRoot { root_path: root.clone(), tool: asked_for_global },
+        );
+        match resp {
+            Response::Tools { tools } => {
+                assert_eq!(tools.len(), 1);
+                assert_eq!(tools[0].workspace_id.as_deref(), Some("ws-1"));
+            }
+            other => panic!("expected Tools, got {other:?}"),
+        }
+
+        // Stored as the workspace's own, and therefore invisible to a
+        // workspace that is not this one -- which a global tool would not
+        // be.
+        match request(&mut cmd, &Request::GetTools { workspace_id: "ws-2".into() }) {
+            Response::Tools { tools } => assert!(tools.is_empty(), "{tools:?}"),
+            other => panic!("expected Tools, got {other:?}"),
+        }
+
+        // ...and a workspace_id naming somebody else fares no better.
+        let mut asked_for_another = a_tool("u2", Some("ws-2"));
+        asked_for_another.name = "Sneak".into();
+        request(
+            &mut cmd,
+            &Request::SaveToolByRoot { root_path: root.clone(), tool: asked_for_another },
+        );
+        match request(&mut cmd, &Request::GetTools { workspace_id: "ws-2".into() }) {
+            Response::Tools { tools } => assert!(tools.is_empty(), "{tools:?}"),
+            other => panic!("expected Tools, got {other:?}"),
+        }
+        match request(&mut cmd, &Request::GetTools { workspace_id: "ws-1".into() }) {
+            Response::Tools { tools } => assert_eq!(tools.len(), 2),
+            other => panic!("expected Tools, got {other:?}"),
+        }
+
+        // An EDIT of the workspace's own tool still goes through: the
+        // guard is about whose tool it is, not about the id being new.
+        let mut edited = a_tool("u1", None);
+        edited.name = "Deploy twice".into();
+        request(&mut cmd, &Request::SaveToolByRoot { root_path: root, tool: edited });
+        match request(&mut cmd, &Request::GetTools { workspace_id: "ws-1".into() }) {
+            Response::Tools { tools } => {
+                assert_eq!(tools.len(), 2, "an edit is not a third tool: {tools:?}");
+                let own = tools.iter().find(|t| t.id == "u1").expect("u1");
+                assert_eq!(own.name, "Deploy twice");
+            }
+            other => panic!("expected Tools, got {other:?}"),
+        }
+
+        // Every write pushed the whole library at the watching app.
+        for expected in [1, 2, 2] {
+            match read_message(&mut reader).unwrap() {
+                Some(Response::ToolsChanged { workspace_id, tools }) => {
+                    assert_eq!(workspace_id, "ws-1");
+                    assert_eq!(tools.len(), expected);
+                }
+                other => panic!("expected ToolsChanged, got {other:?}"),
+            }
+        }
+    }
+
+    /// Gavin's own tools are not this workspace's. They are constants in
+    /// the app and never rows in this table, so a save wearing one of
+    /// their ids is not an edit -- it is a row that would SHADOW the
+    /// built-in everywhere the app merges the library by id.
+    #[test]
+    fn save_tool_by_root_refuses_one_of_gavins_built_in_ids() {
+        let (_sock, root, _reader, mut cmd, _d1, _d2) = watched_workspace();
+        let message = error_message(request(
+            &mut cmd,
+            &Request::SaveToolByRoot {
+                root_path: root.clone(),
+                tool: a_tool("builtin:push", Some("ws-1")),
+            },
+        ));
+        // The BY-ROOT refusal, named: `save_tool` refuses a `builtin:`
+        // id too, so an assertion on the word "built-in" alone would
+        // pass with this guard deleted.
+        assert!(message.contains("an agent can only author"), "{message}");
+        assert!(message.contains("builtin:push"), "{message}");
+
+        match request(&mut cmd, &Request::GetTools { workspace_id: "ws-1".into() }) {
+            Response::Tools { tools } => assert!(tools.is_empty(), "{tools:?}"),
+            other => panic!("expected Tools, got {other:?}"),
+        }
+    }
+
+    /// A GLOBAL tool belongs to every workspace on the machine. Saving
+    /// over its id is how a tool changes scope, so without this guard an
+    /// agent could rewrite a shared tool's body and pull it into one
+    /// workspace in a single call that looks like an ordinary edit.
+    #[test]
+    fn save_tool_by_root_refuses_to_overwrite_a_global_or_foreign_tool() {
+        let (_sock, root, _reader, mut cmd, _d1, _d2) = watched_workspace();
+        // Seeded the way the APP writes them -- the unscoped SaveTool,
+        // which an agent connection is refused outright.
+        request(&mut cmd, &Request::SaveTool { tool: a_tool("g1", None) });
+        request(&mut cmd, &Request::SaveTool { tool: a_tool("f1", Some("ws-2")) });
+
+        let mut hijacked = a_tool("g1", Some("ws-1"));
+        hijacked.body = "rm -rf /".into();
+        let message = error_message(request(
+            &mut cmd,
+            &Request::SaveToolByRoot { root_path: root.clone(), tool: hijacked },
+        ));
+        assert!(message.contains("GLOBAL"), "{message}");
+
+        let message = error_message(request(
+            &mut cmd,
+            &Request::SaveToolByRoot { root_path: root, tool: a_tool("f1", Some("ws-1")) },
+        ));
+        assert!(message.contains("another workspace"), "{message}");
+
+        // Refused, not partly applied: the global tool still has its own
+        // body and its own scope.
+        match request(&mut cmd, &Request::GetTools { workspace_id: "ws-1".into() }) {
+            Response::Tools { tools } => {
+                let global = tools.iter().find(|t| t.id == "g1").expect("global tool");
+                assert_eq!(global.workspace_id, None);
+                assert!(!global.body.contains("rm -rf"), "{:?}", global.body);
+                assert!(!tools.iter().any(|t| t.id == "f1"), "{tools:?}");
+            }
+            other => panic!("expected Tools, got {other:?}"),
+        }
+    }
+
+    /// The same three rules on the way out, plus one the app does not
+    /// need: an id nothing owns is an ERROR here. `delete_tool` is a
+    /// no-op on an unknown id, which would leave an agent that mistyped
+    /// one reading "ok" about a tool it can still see.
+    #[test]
+    fn delete_tool_by_root_removes_this_workspaces_own_and_refuses_every_other_id() {
+        let (_sock, root, mut reader, mut cmd, _d1, _d2) = watched_workspace();
+        request(&mut cmd, &Request::SaveTool { tool: a_tool("g1", None) });
+        request(&mut cmd, &Request::SaveTool { tool: a_tool("f1", Some("ws-2")) });
+        request(&mut cmd, &Request::SaveToolByRoot { root_path: root.clone(), tool: a_tool("u1", None) });
+        assert!(matches!(
+            read_message::<_, Response>(&mut reader).unwrap(),
+            Some(Response::ToolsChanged { .. })
+        ));
+
+        for (id, expected) in [
+            ("builtin:push", "built-in"),
+            ("g1", "GLOBAL"),
+            ("f1", "another workspace"),
+            ("nope", "no tool with id"),
+        ] {
+            let message = error_message(request(
+                &mut cmd,
+                &Request::DeleteToolByRoot { root_path: root.clone(), id: id.into() },
+            ));
+            assert!(message.contains(expected), "deleting {id}: {message}");
+        }
+
+        // Its own, though, goes -- and the app hears about it.
+        assert!(matches!(
+            request(&mut cmd, &Request::DeleteToolByRoot { root_path: root, id: "u1".into() }),
+            Response::Ok
+        ));
+        match request(&mut cmd, &Request::GetTools { workspace_id: "ws-1".into() }) {
+            Response::Tools { tools } => {
+                assert!(!tools.iter().any(|t| t.id == "u1"), "{tools:?}");
+                assert!(tools.iter().any(|t| t.id == "g1"), "the global tool is untouched");
+            }
+            other => panic!("expected Tools, got {other:?}"),
+        }
+        match read_message(&mut reader).unwrap() {
+            Some(Response::ToolsChanged { tools, .. }) => {
+                assert!(!tools.iter().any(|t| t.id == "u1"), "{tools:?}");
+            }
+            other => panic!("expected ToolsChanged, got {other:?}"),
+        }
+    }
+
+    /// A root no watcher claims is a refusal, not a write nobody will
+    /// ever see -- the same rule every other `*ByRoot` write follows.
+    #[test]
+    fn tool_writes_by_root_need_the_workspace_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        for req in [
+            Request::SaveToolByRoot { root_path: "/nope".into(), tool: a_tool("u1", None) },
+            Request::DeleteToolByRoot { root_path: "/nope".into(), id: "u1".into() },
+        ] {
+            match handle_request(&manager, req) {
+                Response::Error { message } => assert!(message.contains("not open"), "{message}"),
+                other => panic!("expected Error, got {other:?}"),
+            }
         }
     }
 

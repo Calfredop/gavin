@@ -284,6 +284,24 @@ never invent a `toolId` outside either one:
   and prefer omitting, so a later edit to that default reaches the step.
 - A tool step needs no `cardPath` at all. Sending both is refused.
 
+### Making a tool this workspace does not have yet
+
+If the work needs a step neither catalog covers, author it: `gavin_get_tools`
+reads the library with bodies and parameters, `gavin_save_tool` creates or
+updates one, `gavin_delete_tool` removes one. A new tool is placeable the
+moment it is saved — the `id` the save reports is the `toolId` for a step.
+
+**Only this workspace's own tools.** Gavin's built-ins (`builtin:…`) and
+GLOBAL tools — the ones shared with every workspace on the machine — are
+readable and placeable, and neither is yours to change. The daemon refuses
+those writes, so save a copy instead: read the one you want with
+`gavin_get_tools` and save it back with no `id` at all, which creates a new
+workspace tool.
+
+Prefer an existing tool over a new one. A library that grows a
+near-duplicate per rail is worse than one tool with a parameter, and the
+human maintains what you leave behind.
+
 ### Chaining one rail to the next
 
 `Start rail` is the tool for a dependency between rails: put it at the

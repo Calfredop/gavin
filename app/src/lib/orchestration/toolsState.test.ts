@@ -7,6 +7,15 @@ vi.mock("$lib/core/backend", () => ({
   deleteTool: vi.fn(),
 }));
 
+/// The push side, held by name so a test can fire what the daemon would.
+const tauriEvents = { handlers: new Map<string, (event: { payload: unknown }) => void>() };
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+    tauriEvents.handlers.set(name, handler);
+    return () => tauriEvents.handlers.delete(name);
+  },
+}));
+
 import * as backend from "$lib/core/backend";
 import {
   toolRecords,
@@ -16,6 +25,7 @@ import {
   refreshTools,
   saveToolAction,
   deleteToolAction,
+  initToolListeners,
   __resetForTesting,
 } from "$lib/orchestration/toolsState";
 import { BUILTIN_TOOLS, emptyTool, type Tool, type ToolRecord } from "$lib/orchestration/orchestrationTools";
@@ -166,5 +176,45 @@ describe("deleteToolAction", () => {
   it("returns the daemon's message rather than throwing", async () => {
     vi.mocked(backend.deleteTool).mockRejectedValue(new Error("nope"));
     expect(await deleteToolAction("ws-1", "u1")).toBe("nope");
+  });
+});
+
+// An agent authoring a tool over gavin-mcp is the one tool write this
+// app does not make itself, and `fetchTools` is a load-once -- so
+// without the push the Tools tab draws a library missing the tool the
+// agent just made until the whole workspace reloads.
+describe("tools-changed — an agent's write reaches the open app", () => {
+  it("replaces the workspace's rows with the pushed library", async () => {
+    toolRecords.set({ "ws-1": [record()], "ws-2": [record({ id: "other", workspaceId: "ws-2" })] });
+    const unlisten = await initToolListeners();
+
+    const authored = record({ id: "agent-made", name: "Run e2e" });
+    tauriEvents.handlers.get("tools-changed")?.({ payload: ["ws-1", [record(), authored]] });
+
+    expect(get(toolRecords)["ws-1"]?.map((r) => r.id)).toEqual(["u1", "agent-made"]);
+    // Scoped to the workspace the push named; every other one is left alone.
+    expect(get(toolRecords)["ws-2"]?.map((r) => r.id)).toEqual(["other"]);
+    unlisten();
+  });
+
+  it("carries a DELETE through, not just an addition", async () => {
+    toolRecords.set({ "ws-1": [record(), record({ id: "u2" })] });
+    const unlisten = await initToolListeners();
+
+    tauriEvents.handlers.get("tools-changed")?.({ payload: ["ws-1", [record({ id: "u2" })]] });
+
+    // The whole library, never a delta: a row absent from the push is a
+    // row that is gone.
+    expect(get(toolRecords)["ws-1"]?.map((r) => r.id)).toEqual(["u2"]);
+    unlisten();
+  });
+
+  it("lands a library for a workspace that had never fetched one", async () => {
+    const unlisten = await initToolListeners();
+    tauriEvents.handlers.get("tools-changed")?.({ payload: ["ws-3", [record({ workspaceId: "ws-3" })]] });
+    // Not null any more -- which is what the scheduler reads as
+    // "loaded", so a tool step no longer stalls waiting for a fetch.
+    expect(libraryFor(get(toolRecords), "ws-3")).not.toBeNull();
+    unlisten();
   });
 });

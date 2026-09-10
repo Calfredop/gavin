@@ -36,6 +36,7 @@ one that WRITES it, and still nothing that reads it.*
 | T12 | **Added 2026-09-04:** a tool can be run **standalone** from a per-workspace **Tools** hub tab — the same library, filtered to the three kinds that mean anything without a rail (`agent`, `command`, `script`), with **one session per run** and a run the **daemon** remembers. Sequencing stays orchestration's job: a multi-step deploy is written as one `script` tool, because bash already sequences. See §10. |
 | T14 | **Added 2026-09-07:** a tool carries its own **icon** — a NAME from the app's curated library (`ui/iconLibrary.ts`), never an image — drawn wherever tools are listed, in place of the glyph its KIND imposes. Absent means "wear the kind's", which is what every tool authored before v33 means. A name this build cannot resolve falls back to the kind and is **kept** on the next save. See §12. |
 | T13 | **Added 2026-09-04:** a human can author **every** kind, and the Tools tab **edits** as well as runs. What kept `gavin`, `until` and `pr` built-in-only was never the scheduler — every rule about them branches on the KIND — it was an edit form with one body field. The form now has three (source / an action select / none), so all six are authorable and every built-in offers Duplicate. The Tools tab lists the whole library, with Run dark and a reason on the three that only mean something as a step. See §11. |
+| T15 | **Added 2026-09-10:** an agent authors **this workspace's** tools over MCP — read, save, delete. Built-in and global tools are refused, and the guard is **deterministic and daemon-side**: the `agent` role loses `SaveTool`/`DeleteTool` (whose scope comes from the payload) and gets `SaveToolByRoot`/`DeleteToolByRoot`, which stamp the watched workspace's id over what arrives. See §13. |
 
 ---
 
@@ -859,3 +860,97 @@ the search text survives, so reconsidering costs one click. Clearing is
 its own control ("Use the kind's icon") rather than a second click on the
 selected cell: no cell in a grid can mean *none*, and without an explicit
 one the only route back from a wrong glyph would be deleting the tool.
+
+---
+
+## 13. An agent authoring tools (added 2026-09-10, T15)
+
+Until now the library was the human's alone: §6 gave an agent the tools
+list so it could **place** a step, and nothing that could make one. An
+agent asked to arrange work it has no tool for had two bad options —
+write the command into a card's prompt, where nothing can reuse it, or
+ask the human to open the dialog and type.
+
+`gavin_get_tools`, `gavin_save_tool` and `gavin_delete_tool` close that:
+read the library with bodies, create or update a tool, remove one. A tool
+saved this way is placeable in the same write that places it — the save
+answers with the id.
+
+### 13.1 The scope rule, and where it is enforced
+
+**Only this workspace's own tools.** The other two scopes are refused:
+
+- **built-in** — gavin's own. They are TypeScript constants that never
+  reach the daemon's table (T7), so a stored row wearing a `builtin:` id
+  is not an edit of one: it is a row that would **shadow** the built-in
+  everywhere the app merges the library by id.
+- **global** — the machine's. One belongs to every workspace on it, and
+  an agent working in one workspace is not the right author for a change
+  that lands in all of them.
+
+To start from either, save a **copy**: read it, save it back with no id.
+That is Duplicate, which is what the library dialog offers a human on a
+built-in for the same reason.
+
+The guard is **deterministic and daemon-side**, and this is the load-bearing
+decision of the whole section. It is not the MCP validating its arguments,
+and it is not a sentence in a tool description asking an agent to behave —
+either would hold only for a caller that read it and meant it. `SaveTool`
+takes the scope **from its payload**, so an agent that could send one could
+store a global tool, or re-scope an existing one by saving over its id. So:
+
+- the `agent` role is refused `SaveTool`/`DeleteTool` outright
+  (`agent_allows`), and
+- gets `SaveToolByRoot`/`DeleteToolByRoot` instead, which resolve the root
+  to **one watched workspace**, stamp that workspace's id over whatever
+  arrived, and refuse a `builtin:` id, a global row and another workspace's
+  row by name.
+
+Three rules, three refusals, each proved by a test that fails when the
+check is removed. An id **nothing** owns is a refusal too on the delete
+path — unlike `delete_tool`, which is a no-op there. That is right for the
+app (the row is gone either way and the human is looking at the list) and
+wrong for an agent, which would read "ok" about a tool it can still see.
+
+### 13.2 What the MCP layer does own
+
+Not the scope — the payload's SHAPE, and the argument checks the daemon
+deliberately does not make:
+
+- **An update is a patch.** The endpoint reads the library first, so a
+  call naming only `description` keeps the body, the params, the working
+  directory and the icon. An agent adjusting a sentence must not silently
+  blank the script.
+- **The id is generated, never asked for.** An agent inventing `deploy`
+  would collide with the human's tool of that id in the next workspace,
+  which is why the app's own ids are opaque too.
+- **Position** follows `saveToolAction`: a new tool lands at the end, an
+  edit keeps its place.
+- **The silent mistakes are refused before the wire** (`{{my-param}}`
+  never substitutes; a `{{param}}` in `cwd` is never substituted at all) —
+  a mirror of `validateTool`, minus the parts that are the app's
+  vocabulary. The **kind** is deliberately not checked against a list, for
+  the reason T2 was amended: that vocabulary lives in the app, and a copy
+  here would be the third.
+
+### 13.3 The push
+
+`Response::ToolsChanged` carries the whole library to the watching app on
+every `_by_root` write. It is the point, exactly as it is for
+`set_rail_run_by_root`: the tool library had no push because every write
+originated in the app that already held the state, and that stopped being
+true the moment an agent could write one. `fetchTools` is a load-once, so
+without it the Tools tab keeps drawing a library missing the tool the
+agent just made until the whole workspace reloads.
+
+An app write still pushes nothing — it would be the app telling itself
+what it just did.
+
+### 13.4 Version
+
+v37. Two new request TYPES, so `min_version_for` is the whole wire gate
+and **no `daemonCompat.ts` entry is owed**: the app sends neither request:
+it writes tools for a workspace whose id it already has. That is the
+`SetRailRunByRoot` shape at v28, not the `toolCwd`/`toolIcon` shape — those
+widened an existing payload, which a version gate on request types cannot
+see.

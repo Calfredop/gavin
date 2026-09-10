@@ -697,6 +697,40 @@ impl OrchestrationStore {
         Ok(tools)
     }
 
+    /// One tool by id, whatever its scope -- including a GLOBAL row and
+    /// one belonging to a workspace that is not the caller's.
+    ///
+    /// `tools()` cannot answer this: it filters to "this workspace plus
+    /// global", so a row owned by another workspace comes back as
+    /// absent, and "no such tool" and "not yours" are the two answers a
+    /// scope guard has to be able to tell apart. `save_tool_by_root`
+    /// and `delete_tool_by_root` are what need it.
+    pub fn tool(&self, id: &str) -> anyhow::Result<Option<ToolDef>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, workspace_id, name, description, kind, body, params, position, cwd, icon
+             FROM orch_tools WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            let params_json: String = row.get(6)?;
+            Ok(ToolDef {
+                id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                name: row.get(2)?,
+                description: row.get(3)?,
+                kind: row.get(4)?,
+                body: row.get(5)?,
+                params: serde_json::from_str::<Vec<ToolParam>>(&params_json).unwrap_or_default(),
+                position: row.get(7)?,
+                cwd: row.get(8)?,
+                icon: row.get(9)?,
+            })
+        })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
     /// Upsert by id. Re-saving with the other `workspace_id` is how a
     /// tool moves between this-workspace and global scope, which is why
     /// the column is in the UPDATE list.
@@ -1446,6 +1480,28 @@ mod tests {
         assert_eq!(back.params.len(), 1);
         assert_eq!(back.params[0].name, "what");
         assert_eq!(back.params[0].default, "hi");
+    }
+
+    /// The lookup a scope guard needs, and the one thing `tools()`
+    /// cannot do: see a row belonging to a workspace that is not the
+    /// caller's. Through `tools("ws-1")` a foreign tool and a
+    /// non-existent one are the same answer -- absent -- and "not yours"
+    /// and "no such tool" are two different refusals.
+    #[test]
+    fn one_tool_by_id_is_found_whatever_its_scope() {
+        let mut s = store();
+        s.save_tool(&tool("u1", Some("ws-1"))).unwrap();
+        s.save_tool(&tool("g1", None)).unwrap();
+        s.save_tool(&tool("f1", Some("ws-2"))).unwrap();
+
+        assert_eq!(s.tool("u1").unwrap().unwrap().workspace_id.as_deref(), Some("ws-1"));
+        assert_eq!(s.tool("g1").unwrap().unwrap().workspace_id, None);
+        assert_eq!(s.tool("f1").unwrap().unwrap().workspace_id.as_deref(), Some("ws-2"));
+        assert!(s.tool("nope").unwrap().is_none());
+
+        // The contrast that makes this function necessary: ws-1's own
+        // view cannot see f1 at all.
+        assert!(!s.tools("ws-1").unwrap().iter().any(|t| t.id == "f1"));
     }
 
     #[test]

@@ -243,6 +243,20 @@ fn tool_definitions() -> Value {
         { "name": "gavin_start_rail", "description": "Arm a rail by NAME, exactly as the human's Start button does: gavin runs it from its first unfinished stage, on the rail's own page. Refuses a name no rail has, a name two rails share, and a PAUSED rail (a pause is a human's or a stalled step's, and resuming it is theirs). A rail already running is left alone — starting it would rewind it — and so is one with nothing unfinished; both answer with what they are, not an error. Never write run state to the daemon socket yourself. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {
             "rail": { "type": "string", "description": "The rail's name as gavin_get_orchestration reports it; matched case- and space-insensitively" }
         }, "required": ["rail"] } },
+        { "name": "gavin_get_tools", "description": "This workspace's tool library: every tool a rail step or a standalone run can use here, with its body, parameters, working directory and scope. `editable` says whether this workspace owns it — a `workspace` tool is yours to change, a `global` one is shared with every workspace on this machine and is read-only from here. Gavin's own built-in tools (ids beginning `builtin:`) are not listed: they are constants in the app, not rows, and they cannot be edited or deleted — duplicate one with gavin_save_tool instead. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "gavin_save_tool", "description": "Create or update one of THIS WORKSPACE'S tools. Omit `id` to create one (an id is generated); pass the `id` of an existing workspace tool to update it — an update is a patch, so every field you leave out keeps its current value. Refused for anything that is not this workspace's own: a `builtin:` id (gavin's own tools), a global tool, and another workspace's. To base a new tool on one of those, read it with gavin_get_tools and save the copy with no id. A tool's body is text with `{{parameter}}` placeholders substituted literally at launch — the tool author owns the quoting. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {
+            "id": { "type": "string", "description": "The tool to update. Omit to create a new one" },
+            "name": { "type": "string", "description": "What it is called wherever tools are listed" },
+            "description": { "type": "string", "description": "One line saying what it does" },
+            "kind": { "type": "string", "enum": ["agent", "command", "script", "until", "pr", "review", "gavin"], "description": "How the body runs: `agent` a prompt for the workspace's agent, `command` a shell command line, `script` a bash script, `until` a shell check that sends the rail BACK over the previous step when it fails, `pr` waits on the pull request for the rail's branch (no body run), `review` waits for a human, `gavin` an action the app performs itself (body names it, e.g. start-rail)" },
+            "body": { "type": "string", "description": "The prompt, command line or script — with {{parameter}} placeholders" },
+            "params": { "type": "array", "description": "Parameters substituted into the body as {{name}}. Each: { name, label, default }; label defaults to the name and default to empty. Names are letters, digits and underscores, not starting with a digit. Replaces the whole list when given", "items": { "type": "object" } },
+            "cwd": { "type": "string", "description": "Where a STANDALONE run happens: relative resolves against the workspace root, absolute is taken as written, empty clears it back to the root. A rail step ignores it and runs in the rail's own checkout. No {{parameter}} here — only the body is substituted" },
+            "icon": { "type": "string", "description": "A glyph name from gavin's icon library, drawn in place of the one the kind imposes. Empty clears it" }
+        } } },
+        { "name": "gavin_delete_tool", "description": "Delete one of THIS WORKSPACE'S tools. Refused for a `builtin:` id (gavin's own), a global tool and another workspace's. A rail step still pointing at the tool is allowed to stall rather than blocking the delete — that stall is visible and repairable. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {
+            "id": { "type": "string", "description": "The tool's id, as gavin_get_tools reports it" }
+        }, "required": ["id"] } },
         { "name": "gavin_spawn_session", "description": "Spawn a terminal session in the gavin app (visible to the human on the Agents page). Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {
             "command": { "type": "string", "description": "Program to run, e.g. claude" },
             "cwd": { "type": "string", "description": "Defaults to the workspace root" }
@@ -313,6 +327,19 @@ fn dispatch_tool(
     // one: it is not one request but a read, a decision and a write.
     if name == "gavin_start_rail" {
         return start_rail(root, &require_arg(args, "rail")?, transport);
+    }
+
+    // The tool library. `gavin_save_tool` is a read, a decision and a
+    // write for the same reason; the other two are one request each and
+    // sit here beside it so the three read as one endpoint.
+    if name == "gavin_get_tools" {
+        return get_tools(root, transport);
+    }
+    if name == "gavin_save_tool" {
+        return save_tool(root, args, transport);
+    }
+    if name == "gavin_delete_tool" {
+        return delete_tool(root, &require_arg(args, "id")?, transport);
     }
 
     let req = match name {
@@ -814,6 +841,256 @@ fn get_orchestration(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow
         "unplacedCards": unplaced,
         "tools": tools_json,
     }))?)
+}
+
+// ---------- the workspace's tool library ----------
+//
+// An agent authoring the tools its own workspace's rails run (tools spec
+// §13). THIS WORKSPACE'S tools and no others: gavin's built-ins are
+// constants in the app and never rows in the daemon's table at all, and a
+// GLOBAL tool belongs to every workspace on the machine.
+//
+// Nothing in this module is the guard. The scope rule is enforced in the
+// daemon (`save_tool_by_root` / `delete_tool_by_root`), which stamps the
+// watched workspace's id over whatever arrives and refuses a `builtin:`
+// id, a global row and another workspace's row -- so it holds against a
+// caller that never read a tool description, and against this file being
+// wrong. What lives here is the SHAPE of the payload: an id to write
+// under, a position, and the argument checks the daemon deliberately does
+// not make (below).
+
+/// What `validateTool` in `orchestrationTools.ts` refuses, minus the
+/// parts that are the APP's vocabulary.
+///
+/// Not a security check -- the daemon settles who may write what. This
+/// catches the mistakes that are SILENT: a parameter named `my-param` is
+/// never substituted (the body keeps the literal `{{my-param}}` and the
+/// step runs it), and a `{{param}}` in the working directory looks
+/// substituted and is not, because only the body ever is.
+///
+/// The KIND is deliberately not checked against a list. The daemon
+/// refuses an empty one and owns nothing else about it (tools spec T2,
+/// amended 2026-09-07), because the vocabulary lives in the app -- a list
+/// here would be a third copy, and the second copy already drifted three
+/// times.
+fn validate_tool_payload(tool: &protocol::ToolDef) -> anyhow::Result<()> {
+    if tool.name.trim().is_empty() {
+        anyhow::bail!("a tool needs a name");
+    }
+    if tool.kind.trim().is_empty() {
+        anyhow::bail!("a tool needs a kind — agent, command, script, until, pr, review or gavin");
+    }
+    if tool.body.trim().is_empty() {
+        anyhow::bail!("a tool needs a body");
+    }
+    let mut seen: HashSet<&str> = HashSet::new();
+    for param in &tool.params {
+        let name = param.name.as_str();
+        let usable = !name.is_empty()
+            && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !usable {
+            anyhow::bail!(
+                "\u{201c}{name}\u{201d} is not a usable parameter name — letters, digits and underscores, not starting with a digit"
+            );
+        }
+        if !seen.insert(name) {
+            anyhow::bail!("two parameters are both called \u{201c}{name}\u{201d}");
+        }
+    }
+    if let Some(cwd) = tool.cwd.as_deref() {
+        if cwd.contains("{{") {
+            anyhow::bail!("a working directory can't take a {{{{parameter}}}} — only the body is substituted");
+        }
+    }
+    Ok(())
+}
+
+/// The `params` argument: `[{ "name": ..., "label": ..., "default": ... }]`.
+/// `label` falls back to the name and `default` to empty, so the common
+/// case is one field per parameter.
+fn parse_tool_params(value: Option<&Value>) -> anyhow::Result<Vec<protocol::ToolParam>> {
+    let Some(value) = value.filter(|v| !v.is_null()) else { return Ok(vec![]) };
+    let items = value.as_array().ok_or_else(|| {
+        anyhow::anyhow!("params must be an array of {{ name, label, default }} objects")
+    })?;
+    items
+        .iter()
+        .map(|item| {
+            let name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("every parameter needs a name"))?
+                .to_string();
+            let label = item
+                .get("label")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&name)
+                .to_string();
+            let default =
+                item.get("default").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            Ok(protocol::ToolParam { name, label, default })
+        })
+        .collect()
+}
+
+/// One tool as an agent reads it. Bodies INCLUDED, unlike
+/// `gavin_get_orchestration`'s list: there the question is which tools
+/// exist and what each takes, here it is what a tool currently does --
+/// which is the thing an edit has to start from.
+///
+/// `editable` is the scope rule said in the payload rather than left for
+/// the agent to derive from `scope`. A global tool is readable, placeable
+/// on a rail, and not this workspace's to change.
+fn tool_json(tool: &protocol::ToolDef) -> Value {
+    let workspace_scoped = tool.workspace_id.is_some();
+    json!({
+        "id": tool.id,
+        "name": tool.name,
+        "description": tool.description,
+        "kind": tool.kind,
+        "body": tool.body,
+        "params": tool.params.iter().map(|p| json!({
+            "name": p.name, "label": p.label, "default": p.default
+        })).collect::<Vec<_>>(),
+        "cwd": tool.cwd,
+        "icon": tool.icon,
+        "scope": if workspace_scoped { "workspace" } else { "global" },
+        "editable": workspace_scoped,
+    })
+}
+
+fn library(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow::Result<Vec<protocol::ToolDef>> {
+    match transport
+        .request(&Request::GetToolsByRoot { root_path: root.to_string_lossy().to_string() })?
+    {
+        Response::Tools { tools } => Ok(tools),
+        Response::Error { message } => Err(anyhow::anyhow!(message)),
+        other => Err(anyhow::anyhow!("unexpected response: {other:?}")),
+    }
+}
+
+fn get_tools(root: &Path, transport: &mut dyn DaemonTransport) -> anyhow::Result<String> {
+    let tools = library(root, transport)?;
+    Ok(serde_json::to_string_pretty(&json!({
+        "tools": tools.iter().map(tool_json).collect::<Vec<_>>(),
+    }))?)
+}
+
+/// Create or update one of this workspace's tools.
+///
+/// A read, a decision and a write, so it has its own path like
+/// `gavin_get_orchestration` does. The read is what makes an UPDATE
+/// partial: a call naming only `name` keeps the body, the params and the
+/// working directory the tool already has, because an agent adjusting a
+/// description must not silently blank the script.
+///
+/// An absent `id` means CREATE, and the id is generated here rather than
+/// asked for: an agent inventing "deploy" would collide with the human's
+/// tool of that id on the next workspace, and the app's own ids are
+/// opaque for the same reason.
+fn save_tool(root: &Path, args: &Value, transport: &mut dyn DaemonTransport) -> anyhow::Result<String> {
+    let existing_library = library(root, transport)?;
+    let id = str_arg(args, "id").map(|id| id.trim().to_string()).filter(|id| !id.is_empty());
+    let existing = id
+        .as_deref()
+        .and_then(|id| existing_library.iter().find(|t| t.id == id))
+        .cloned();
+    let creating = existing.is_none();
+    let id = match id {
+        Some(id) => id,
+        None => format!(
+            "tool-{}",
+            protocol::random_hex(16).map_err(|e| anyhow::anyhow!("could not generate an id: {e}"))?
+        ),
+    };
+
+    // Every field falls back to the tool as it stands, so an update is a
+    // patch. On a CREATE the fallbacks are empty and `validate_tool_payload`
+    // is what refuses the three that have to be there.
+    let previous = existing.as_ref();
+    let tool = protocol::ToolDef {
+        id,
+        // Ignored by the daemon, which stamps this workspace's id over
+        // it. Sent as None rather than a guess so nothing here reads as
+        // a scope this side chose.
+        workspace_id: None,
+        name: str_arg(args, "name")
+            .unwrap_or_else(|| previous.map(|t| t.name.clone()).unwrap_or_default()),
+        description: str_arg(args, "description")
+            .unwrap_or_else(|| previous.map(|t| t.description.clone()).unwrap_or_default()),
+        kind: str_arg(args, "kind")
+            .unwrap_or_else(|| previous.map(|t| t.kind.clone()).unwrap_or_default()),
+        body: str_arg(args, "body")
+            .unwrap_or_else(|| previous.map(|t| t.body.clone()).unwrap_or_default()),
+        params: match args.get("params") {
+            Some(v) if !v.is_null() => parse_tool_params(Some(v))?,
+            _ => previous.map(|t| t.params.clone()).unwrap_or_default(),
+        },
+        // A new tool lands at the END of the library, exactly as the
+        // dialog's save does (`saveToolAction`), and an edit keeps the
+        // place the human put it in.
+        position: previous.map(|t| t.position).unwrap_or(existing_library.len() as i64),
+        cwd: match str_arg(args, "cwd") {
+            // An empty string is how a caller CLEARS the directory; the
+            // daemon stores that as NULL. Absent is "leave it alone".
+            Some(cwd) => Some(cwd),
+            None => previous.and_then(|t| t.cwd.clone()),
+        },
+        icon: match str_arg(args, "icon") {
+            Some(icon) => Some(icon),
+            None => previous.and_then(|t| t.icon.clone()),
+        },
+    };
+    validate_tool_payload(&tool)?;
+
+    let resp = transport.request(&Request::SaveToolByRoot {
+        root_path: root.to_string_lossy().to_string(),
+        tool,
+    })?;
+    match resp {
+        // The tool as STORED: the daemon settled the scope, so the id
+        // and scope reported back are the ones on disk.
+        Response::Tools { tools } => {
+            let saved = tools
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("the daemon saved the tool but described none"))?;
+            Ok(format!(
+                "{} tool {} (\u{201c}{}\u{201d}) in this workspace\n{}",
+                if creating { "created" } else { "updated" },
+                saved.id,
+                saved.name,
+                serde_json::to_string_pretty(&tool_json(saved))?
+            ))
+        }
+        Response::Error { message } => Err(anyhow::anyhow!(message)),
+        other => Err(anyhow::anyhow!("unexpected response: {other:?}")),
+    }
+}
+
+/// Delete one of this workspace's own tools.
+///
+/// The refusals -- a built-in id, a global tool, another workspace's,
+/// and an id nothing owns -- all come back from the daemon, verbatim.
+/// Re-deriving them here would put the rule in two places and only one
+/// of them is enforced.
+///
+/// A step still pointing at the tool is deliberately NOT a refusal (tools
+/// spec T8): that step stalls with "tool is no longer in the library",
+/// which the human can see and repair, where a refused delete would make
+/// the library hostage to an arrangement nobody remembers.
+fn delete_tool(root: &Path, id: &str, transport: &mut dyn DaemonTransport) -> anyhow::Result<String> {
+    let resp = transport.request(&Request::DeleteToolByRoot {
+        root_path: root.to_string_lossy().to_string(),
+        id: id.to_string(),
+    })?;
+    match resp {
+        Response::Ok => Ok(format!(
+            "deleted tool {id} — any rail step still pointing at it will stall with \u{201c}tool is no longer in the library\u{201d}"
+        )),
+        Response::Error { message } => Err(anyhow::anyhow!(message)),
+        other => Err(anyhow::anyhow!("unexpected response: {other:?}")),
+    }
 }
 
 // ---------- arming a rail ----------
@@ -1803,6 +2080,226 @@ mod tests {
             labels: vec![],
             card_sessions: vec![],
         }
+    }
+
+    // ---- The tool library endpoint (v37) ----------------------------------
+
+    fn a_tool(id: &str, workspace_id: Option<&str>) -> protocol::ToolDef {
+        protocol::ToolDef {
+            id: id.into(),
+            workspace_id: workspace_id.map(str::to_string),
+            name: format!("Tool {id}"),
+            description: "does a thing".into(),
+            kind: "command".into(),
+            body: "echo {{what}}".into(),
+            params: vec![protocol::ToolParam {
+                name: "what".into(),
+                label: "What".into(),
+                default: "hi".into(),
+            }],
+            position: 3,
+            cwd: Some("app".into()),
+            icon: Some("terminal".into()),
+        }
+    }
+
+    /// Calls a tool with arguments and returns the reply's text, whether
+    /// it is an answer or an error -- the two are the same field, and a
+    /// refusal is a result an agent reads rather than a transport
+    /// failure.
+    fn call_with(tool: &str, args: Value, transport: &mut dyn DaemonTransport) -> String {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": tool, "arguments": args },
+        })
+        .to_string();
+        let reply = handle_line(&line, Some(Path::new("/ws")), transport).unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        v.pointer("/result/content/0/text").unwrap().as_str().unwrap().to_string()
+    }
+
+    fn saved_tool(t: &MockTransport) -> &protocol::ToolDef {
+        match t.requests.last().expect("a request") {
+            Request::SaveToolByRoot { tool, .. } => tool,
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    /// What the endpoint is FOR: an agent reads the library with bodies,
+    /// and is told which rows are this workspace's to change.
+    #[test]
+    fn get_tools_carries_bodies_and_says_which_rows_are_editable() {
+        let mut t = mock(vec![Response::Tools {
+            tools: vec![a_tool("u1", Some("ws-1")), a_tool("g1", None)],
+        }]);
+        let text = call_with("gavin_get_tools", json!({}), &mut t);
+        let payload: Value = serde_json::from_str(&text).unwrap();
+        let tools = payload["tools"].as_array().unwrap();
+
+        assert_eq!(tools[0]["id"], "u1");
+        assert_eq!(tools[0]["scope"], "workspace");
+        assert_eq!(tools[0]["editable"], true);
+        // The body is the part gavin_get_orchestration's list leaves out,
+        // and the part an edit has to start from.
+        assert_eq!(tools[0]["body"], "echo {{what}}");
+        assert_eq!(tools[0]["params"][0]["name"], "what");
+        assert_eq!(tools[0]["cwd"], "app");
+
+        // A global tool is readable and placeable, and not this
+        // workspace's to change.
+        assert_eq!(tools[1]["scope"], "global");
+        assert_eq!(tools[1]["editable"], false);
+    }
+
+    /// Creating: an id is generated rather than taken from the agent, and
+    /// the new tool lands at the END of the library the way the app's own
+    /// save does.
+    #[test]
+    fn saving_without_an_id_creates_a_tool_at_the_end_of_the_library() {
+        let mut t = mock(vec![
+            Response::Tools { tools: vec![a_tool("u1", Some("ws-1")), a_tool("g1", None)] },
+            Response::Tools { tools: vec![a_tool("tool-x", Some("ws-1"))] },
+        ]);
+        let text = call_with(
+            "gavin_save_tool",
+            json!({
+                "name": "Run tests",
+                "kind": "command",
+                "body": "npm test",
+                "params": [{ "name": "suite", "default": "unit" }],
+            }),
+            &mut t,
+        );
+
+        let sent = saved_tool(&t);
+        assert!(sent.id.starts_with("tool-"), "generated id: {}", sent.id);
+        assert_eq!(sent.position, 2, "a new tool lands at the end");
+        assert_eq!(sent.body, "npm test");
+        // `label` falls back to the name, so one field per parameter is
+        // the common case.
+        assert_eq!(sent.params[0].label, "suite");
+        assert_eq!(sent.params[0].default, "unit");
+        // The SCOPE is never this side's to choose -- the daemon stamps
+        // it -- so nothing here may look like a decision about it.
+        assert_eq!(sent.workspace_id, None);
+        assert!(text.contains("created tool"), "{text}");
+    }
+
+    /// Updating is a PATCH. An agent adjusting a description must not
+    /// silently blank the script the tool runs.
+    #[test]
+    fn saving_with_an_id_keeps_every_field_the_call_leaves_out() {
+        let mut t = mock(vec![
+            Response::Tools { tools: vec![a_tool("u1", Some("ws-1"))] },
+            Response::Tools { tools: vec![a_tool("u1", Some("ws-1"))] },
+        ]);
+        let text =
+            call_with("gavin_save_tool", json!({ "id": "u1", "description": "now documented" }), &mut t);
+
+        let sent = saved_tool(&t);
+        assert_eq!(sent.description, "now documented");
+        assert_eq!(sent.body, "echo {{what}}", "the body survived a description edit");
+        assert_eq!(sent.name, "Tool u1");
+        assert_eq!(sent.params.len(), 1);
+        assert_eq!(sent.cwd.as_deref(), Some("app"));
+        assert_eq!(sent.icon.as_deref(), Some("terminal"));
+        // An edit keeps the place in the library the human put it in.
+        assert_eq!(sent.position, 3);
+        assert!(text.contains("updated tool"), "{text}");
+    }
+
+    /// The mistakes that are otherwise SILENT: a parameter name nothing
+    /// substitutes, and a `{{param}}` in a directory that is never
+    /// substituted at all. Refused before the wire, so the agent is told
+    /// which field is wrong rather than shipping a tool that misbehaves
+    /// only at launch.
+    #[test]
+    fn a_payload_that_would_never_substitute_is_refused_before_the_wire() {
+        for (args, expected) in [
+            (json!({ "name": "T", "kind": "command", "body": "echo hi",
+                     "params": [{ "name": "my-param" }] }), "parameter name"),
+            (json!({ "name": "T", "kind": "command", "body": "echo hi",
+                     "params": [{ "name": "a" }, { "name": "a" }] }), "both called"),
+            (json!({ "name": "T", "kind": "command", "body": "echo hi",
+                     "cwd": "{{env}}/app" }), "working directory"),
+            (json!({ "kind": "command", "body": "echo hi" }), "needs a name"),
+            (json!({ "name": "T", "body": "echo hi" }), "needs a kind"),
+            (json!({ "name": "T", "kind": "command" }), "needs a body"),
+        ] {
+            let mut t = mock(vec![Response::Tools { tools: vec![] }]);
+            let text = call_with("gavin_save_tool", args, &mut t);
+            assert!(text.contains(expected), "expected {expected:?} in: {text}");
+            assert!(
+                !t.requests.iter().any(|r| matches!(r, Request::SaveToolByRoot { .. })),
+                "a refused payload must never reach the daemon: {:?}",
+                t.requests
+            );
+        }
+    }
+
+    /// The scope guard is the DAEMON's, and this proves the endpoint
+    /// carries its refusal through instead of inventing an answer. The
+    /// rule is not re-derived here: one authority, and it is the one that
+    /// is enforced.
+    #[test]
+    fn a_refusal_from_the_daemon_reaches_the_agent_verbatim() {
+        let mut t = mock(vec![
+            Response::Tools { tools: vec![a_tool("g1", None)] },
+            Response::Error {
+                message: "g1 is a GLOBAL tool, shared by every workspace on this machine \
+                          — an agent can only edit this workspace's own tools"
+                    .into(),
+            },
+        ]);
+        let text = call_with("gavin_save_tool", json!({ "id": "g1", "name": "Mine now" }), &mut t);
+        assert!(text.contains("GLOBAL"), "{text}");
+
+        let mut t = mock(vec![Response::Error {
+            message: "builtin:push is one of gavin's built-in tools — it is not stored in this \
+                      workspace and cannot be deleted"
+                .into(),
+        }]);
+        let text = call_with("gavin_delete_tool", json!({ "id": "builtin:push" }), &mut t);
+        assert!(text.contains("built-in"), "{text}");
+    }
+
+    /// Deleting goes straight to the daemon -- no read first, because
+    /// every refusal it could produce is one the daemon makes.
+    #[test]
+    fn deleting_names_the_tool_and_warns_about_steps_still_pointing_at_it() {
+        let mut t = mock(vec![Response::Ok]);
+        let text = call_with("gavin_delete_tool", json!({ "id": "u1" }), &mut t);
+        match &t.requests[0] {
+            Request::DeleteToolByRoot { root_path, id } => {
+                assert_eq!(root_path, "/ws");
+                assert_eq!(id, "u1");
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+        assert!(text.contains("deleted tool u1"), "{text}");
+        assert!(text.contains("stall"), "a step still aimed at it is the cost: {text}");
+    }
+
+    /// Every one of the three is gated on the version that introduced
+    /// the write pair, so an older daemon answers with a version to fix
+    /// rather than a mystery -- and the two writes produce zero bytes on
+    /// the wire there, which is the contract a gate exists for.
+    #[test]
+    fn the_tool_writes_never_reach_a_daemon_that_predates_them() {
+        let needed =
+            protocol::min_version_for(&Request::DeleteToolByRoot { root_path: "/ws".into(), id: "u1".into() });
+        let (path, seen, _dir) = fake_daemon(needed - 1, vec![]);
+        let mut t = SocketTransport::at(path);
+        let text = call_with("gavin_delete_tool", json!({ "id": "u1" }), &mut t);
+        assert!(text.contains(&format!("v{needed}")), "{text}");
+
+        // The probe and the identity handshake are the connection's own
+        // traffic; the WRITE is what must never have left.
+        let seen = seen.lock().unwrap();
+        assert!(
+            !seen.iter().any(|r| matches!(r, Request::DeleteToolByRoot { .. })),
+            "a gated write must produce nothing on the wire, but the daemon saw {seen:?}"
+        );
     }
 
     fn tools_reply() -> Response {
