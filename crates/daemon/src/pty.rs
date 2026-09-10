@@ -104,6 +104,32 @@ impl PtySession {
         // contradict the pin above; drop it rather than invent one.
         cmd.env_remove("TERM_PROGRAM_VERSION");
 
+        // The last inherited thing that can contradict the pins above: a
+        // blanket "emit no colour" left in the environment by whatever
+        // started the GUI. Every session in the app drew in black and
+        // white on a machine whose daemon had been launched from a shell
+        // that exports NO_COLOR=1 -- nothing in the pipeline strips
+        // colour, so the tools inside were simply being told not to emit
+        // any, and obeyed. Node reported a colour depth of 1 for a PTY
+        // that is in fact a full sixteen-slot xterm theme
+        // (app/src/lib/ui/terminalTheme.ts).
+        //
+        // The terminal a session gets is one this app draws itself, so
+        // whether it can show colour is not a question the daemon's
+        // launcher gets to answer -- the same reason TERM and TERM_PROGRAM
+        // are pinned rather than inherited. Removed rather than
+        // overridden: absent is what "detect normally" looks like, and
+        // detection against a real PTY reaches the right answer on its
+        // own. A user who genuinely wants monochrome still has the shell
+        // profile a terminal session reads.
+        //
+        // Only the two pure suppressors. CLICOLOR and FORCE_COLOR are not
+        // touched: their positive forms are what makes `ls` colour on
+        // macOS and what forces colour through a pipe, so dropping them
+        // would take colour away rather than give it back.
+        cmd.env_remove("NO_COLOR");
+        cmd.env_remove("NODE_DISABLE_COLORS");
+
         let child = pair.slave.spawn_command(cmd)?;
         let writer = pair.master.take_writer()?;
 
@@ -329,6 +355,39 @@ mod tests {
         session.kill().unwrap();
         std::env::remove_var("TERM_PROGRAM_VERSION");
         assert!(output.contains("TPVMARK=[]"), "got: {output}");
+    }
+
+    #[test]
+    fn spawn_clears_an_inherited_no_color() {
+        // The bug this exists for: every session in the app drew in black
+        // and white, on a machine whose daemon had been started from a
+        // shell that exports NO_COLOR=1. Nothing in the pipeline strips
+        // colour -- ConPTY forwards SGR, the screen model round-trips it,
+        // the app relays it verbatim into a full sixteen-slot xterm theme
+        // -- so the tools inside the sessions were simply being told not
+        // to emit any, and they obeyed.
+        //
+        // The cwd and command are written portably, unlike the tests
+        // above: this is the one that has to run on the OS the report
+        // came from. `printf` is a shell builtin everywhere, so it needs
+        // nothing on PATH.
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("NO_COLOR", "1");
+
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(r#"printf 'NC%s=[%s]\n' MARK "$NO_COLOR""#),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "NCMARK=[", Duration::from_secs(5));
+        session.kill().unwrap();
+        std::env::remove_var("NO_COLOR");
+        assert!(output.contains("NCMARK=[]"), "got: {output}");
     }
 
     #[test]
