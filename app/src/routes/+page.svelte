@@ -665,13 +665,15 @@
     --rail-width: var(--sidebar-width);
     /* And how wide that corner is -- the platform's own controls. macOS
        draws three 12px lights 8px apart inside a 12px pad; everything
-       else three 40px buttons. Stated rather than measured because the
-       row beside the corner has to leave room for it before either has
-       been laid out. Keep in step with WindowControls.svelte. */
+       else three 26px tiles 2px apart inside an 8px/6px pad. Stated
+       rather than measured because the row beside the corner has to
+       leave room for it before either has been laid out. Keep in step
+       with WindowControls.svelte -- windowControls.test.ts adds the
+       tiles up and checks the total against the value below. */
     --window-corner-width: 76px;
   }
   .app.wide-window-controls {
-    --window-corner-width: 120px;
+    --window-corner-width: 96px;
   }
   .app.sidebar-collapsed {
     --rail-width: var(--rail-collapsed-width);

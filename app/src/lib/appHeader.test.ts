@@ -227,7 +227,8 @@ describe("the window's corner and the rail under it", () => {
       "max(0px, calc(var(--window-corner-width) - var(--rail-width)))"
     );
     expect(rule(PAGE, ".app")["--window-corner-width"]).toBe("76px");
-    expect(rule(PAGE, ".app.wide-window-controls")["--window-corner-width"]).toBe("120px");
+    // The tiles off macOS, added up in windowControls.test.ts.
+    expect(rule(PAGE, ".app.wide-window-controls")["--window-corner-width"]).toBe("96px");
     expect(PAGE).toContain("class:wide-window-controls={!isMacSync()}");
   });
 
