@@ -262,7 +262,8 @@ fn tool_definitions() -> Value {
             "cwd": { "type": "string", "description": "Defaults to the workspace root" }
         }, "required": ["command"] } },
         { "name": "gavin_name_session", "description": "Name your own tab in the gavin app — do this first, so the human can tell your session apart from every other one. Short and specific: what this session is working on, not who you are.", "inputSchema": { "type": "object", "properties": {
-            "name": { "type": "string", "description": "2-4 words, e.g. \"login flow\" or \"git tab conflicts\"" }
+            "name": { "type": "string", "description": "2-4 words, e.g. \"login flow\" or \"git tab conflicts\"" },
+            "agent_conversation_id": { "type": "string", "description": "Optional. Your own CLI's native conversation/session id — NOT this argument's cousin above, which only labels the tab. Pass it once your CLI generates its own session id and told you what it is (a profile whose CLI mints one up front instead needs no second call). Gavin stores it so Resume can replay your real conversation instead of writing a fresh prompt reconstructing it." }
         }, "required": ["name"] } }
     ])
 }
@@ -289,6 +290,7 @@ fn dispatch_tool(
     if name == "gavin_name_session" {
         return name_session(
             &require_arg(args, "name")?,
+            str_arg(args, "agent_conversation_id"),
             current_session_id(),
             transport,
         );
@@ -576,16 +578,37 @@ const NOT_IN_A_SESSION: &str =
 
 fn name_session(
     raw_name: &str,
+    raw_agent_conversation_id: Option<String>,
     session_id: Option<String>,
     transport: &mut dyn DaemonTransport,
 ) -> anyhow::Result<String> {
     let session_id = session_id.ok_or_else(|| anyhow::anyhow!(NOT_IN_A_SESSION))?;
     let name = clean_session_name(raw_name)?;
-    let resp = transport.request(&Request::NameSession { session_id, name: name.clone() })?;
+    let agent_conversation_id = raw_agent_conversation_id.and_then(|raw| clean_agent_conversation_id(&raw));
+    let resp = transport.request(&Request::NameSession {
+        session_id,
+        name: name.clone(),
+        agent_conversation_id,
+    })?;
     match resp {
         Response::Ok => Ok(format!("named this tab \"{name}\"")),
         Response::Error { message } => Err(anyhow::anyhow!(message)),
         other => Err(anyhow::anyhow!("unexpected response: {other:?}")),
+    }
+}
+
+/// A native CLI session/conversation id, not a display label: trimmed
+/// like `name`, but never whitespace-collapsed or length-capped -- a
+/// codex/gemini/opencode id is an opaque token, not prose a tab bar has
+/// to fit. Empty or whitespace-only is treated as absent rather than an
+/// error, so a caller that ran a discovery command and got nothing back
+/// can still pass the empty string without the whole tool call failing.
+fn clean_agent_conversation_id(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -2797,12 +2820,13 @@ mod tests {
     #[test]
     fn naming_a_session_sends_the_id_the_pty_exported() {
         let mut t = mock(vec![Response::Ok]);
-        let reply = name_session("  login  flow ", Some("s-1".into()), &mut t).unwrap();
+        let reply = name_session("  login  flow ", None, Some("s-1".into()), &mut t).unwrap();
         assert!(reply.contains("login flow"));
         match &t.requests[0] {
-            Request::NameSession { session_id, name } => {
+            Request::NameSession { session_id, name, agent_conversation_id } => {
                 assert_eq!(session_id, "s-1");
                 assert_eq!(name, "login flow");
+                assert_eq!(agent_conversation_id, &None);
             }
             other => panic!("wrong request: {other:?}"),
         }
@@ -2811,9 +2835,33 @@ mod tests {
     #[test]
     fn naming_outside_a_gavin_session_says_so_without_calling_the_daemon() {
         let mut t = mock(vec![]);
-        let err = name_session("x", None, &mut t).unwrap_err();
+        let err = name_session("x", None, None, &mut t).unwrap_err();
         assert!(err.to_string().contains("GAVIN_SESSION_ID"));
         assert!(t.requests.is_empty());
+    }
+
+    #[test]
+    fn naming_a_session_forwards_a_self_reported_agent_conversation_id() {
+        let mut t = mock(vec![Response::Ok]);
+        name_session("codex run", Some("  rollout-abc123  ".into()), Some("s-1".into()), &mut t).unwrap();
+        match &t.requests[0] {
+            Request::NameSession { agent_conversation_id, .. } => {
+                assert_eq!(agent_conversation_id, &Some("rollout-abc123".to_string()));
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_blank_agent_conversation_id_is_sent_as_absent() {
+        let mut t = mock(vec![Response::Ok]);
+        name_session("codex run", Some("   ".into()), Some("s-1".into()), &mut t).unwrap();
+        match &t.requests[0] {
+            Request::NameSession { agent_conversation_id, .. } => {
+                assert_eq!(agent_conversation_id, &None);
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
     }
 
     #[test]

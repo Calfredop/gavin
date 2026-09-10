@@ -3066,7 +3066,7 @@ mod command_connection_tests {
 
         let conn = Mutex::new(Stream::connect(&sock).unwrap());
         let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
-        let too_new = Request::NameSession { session_id: "s-1".into(), name: "x".into() };
+        let too_new = Request::NameSession { session_id: "s-1".into(), name: "x".into(), agent_conversation_id: None };
 
         let err = send_command_reconnecting(&conn, &compat, &too_new).unwrap_err().to_string();
         assert!(err.contains("v10"), "should name the version needed: {err}");
@@ -5291,7 +5291,7 @@ mod gate_tests {
     #[test]
     fn a_request_the_daemon_predates_is_refused_before_it_is_sent() {
         let compat = DaemonCompat { daemon_version: 9, app_version: 12, degraded: true };
-        let too_new = Request::NameSession { session_id: "s-1".into(), name: "x".into() };
+        let too_new = Request::NameSession { session_id: "s-1".into(), name: "x".into(), agent_conversation_id: None };
         let err = gate(&too_new, &compat).unwrap_err();
         assert!(err.contains("v10"), "should name the version needed: {err}");
         assert!(err.contains("v9"), "should name the version running: {err}");
@@ -5306,7 +5306,7 @@ mod gate_tests {
     #[test]
     fn an_exact_match_gates_nothing() {
         let compat = DaemonCompat { daemon_version: 12, app_version: 12, degraded: false };
-        let newest = Request::NameSession { session_id: "s-1".into(), name: "x".into() };
+        let newest = Request::NameSession { session_id: "s-1".into(), name: "x".into(), agent_conversation_id: None };
         assert!(gate(&newest, &compat).is_ok());
     }
 
@@ -5391,7 +5391,7 @@ mod gate_tests {
             Request::GetOrchestrationByRoot { root_path: "r".into() },
             Request::SetOrchestrationByRoot { root_path: "r".into(), rails: vec![], conflict_notes: vec![] },
             Request::GitDirtyPaths { cwd: "c".into(), limit: 10 },
-            Request::NameSession { session_id: "s".into(), name: "n".into() },
+            Request::NameSession { session_id: "s".into(), name: "n".into(), agent_conversation_id: None },
             Request::GetProtocolVersion,
             Request::Shutdown,
             // v37's agent-authored workspace tools. The app sends

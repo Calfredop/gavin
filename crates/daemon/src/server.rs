@@ -1551,7 +1551,20 @@ impl SessionManager {
     /// connection attached to it. A session this daemon has never heard
     /// of, or one nothing is attached to, is refused: a stale
     /// GAVIN_SESSION_ID must be told, not silently swallowed.
-    pub fn name_session(&self, session_id: &str, name: &str) -> anyhow::Result<()> {
+    ///
+    /// `agent_conversation_id`, when present, is the reporting agent's
+    /// OWN CLI-native session id (v38) -- never gavin's `session_id`
+    /// above. Stored into this session's bound `card_sessions.
+    /// conversation_id`, exactly where a minted id already lives, so
+    /// resume treats a self-reported id and a minted one alike. A
+    /// session with no bound card is a no-op, not an error: there is
+    /// nothing yet to link it to, and the tab still gets renamed.
+    pub fn name_session(
+        &self,
+        session_id: &str,
+        name: &str,
+        agent_conversation_id: Option<&str>,
+    ) -> anyhow::Result<()> {
         if self.registry.lock().unwrap().get(session_id)?.is_none() {
             anyhow::bail!("no such session: {session_id}");
         }
@@ -1566,6 +1579,12 @@ impl SessionManager {
                 name: name.to_string(),
             },
         )?;
+        if let Some(conversation_id) = agent_conversation_id {
+            self.kanban
+                .lock()
+                .unwrap()
+                .set_conversation_id_for_session(session_id, conversation_id)?;
+        }
         Ok(())
     }
 
@@ -3686,9 +3705,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::SpawnAgentSession { root_path, cwd, command } => manager
             .spawn_agent_session(&root_path, &cwd, &command)
             .map(|id| Response::SessionCreated { id }),
-        Request::NameSession { session_id, name } => {
-            manager.name_session(&session_id, &name).map(|_| Response::Ok)
-        }
+        Request::NameSession { session_id, name, agent_conversation_id } => manager
+            .name_session(&session_id, &name, agent_conversation_id.as_deref())
+            .map(|_| Response::Ok),
         // handle_connection intercepts Shutdown first (mirroring
         // Attach/WatchGavinRoot) so it can reply and then exit the process.
         // This arm only exists so the match stays exhaustive; it is never
@@ -4804,14 +4823,14 @@ mod tests {
         let id = ClientIdentity::agent("sess-1", &root, &root);
         assert!(authorize(
             &id,
-            &Request::NameSession { session_id: "sess-1".into(), name: "x".into() },
+            &Request::NameSession { session_id: "sess-1".into(), name: "x".into(), agent_conversation_id: None },
             false
         )
         .is_ok());
         assert!(matches!(
             authorize(
                 &id,
-                &Request::NameSession { session_id: "sess-2".into(), name: "x".into() },
+                &Request::NameSession { session_id: "sess-2".into(), name: "x".into(), agent_conversation_id: None },
                 false
             ),
             Err(Response::Forbidden { .. })
@@ -4902,7 +4921,7 @@ mod tests {
             Request::GetGroupTemplates { workspace_id: "w".into() },
             Request::DeleteGroupTemplate { id: "g".into() },
             Request::GitDirtyPaths { cwd: "/x".into(), limit: 10 },
-            Request::NameSession { session_id: "s".into(), name: "n".into() },
+            Request::NameSession { session_id: "s".into(), name: "n".into(), agent_conversation_id: None },
             Request::CardRuns { workspace_id: "w".into(), path: "/x/a.md".into() },
             Request::ToolRuns { workspace_id: "w".into() },
             Request::GetProtocolVersion,
@@ -5753,7 +5772,7 @@ mod tests {
         // pushed anywhere: an agent outliving its tab must hear about it.
         let resp = request(
             &mut cmd,
-            &Request::NameSession { session_id: "ghost".to_string(), name: "x".to_string() },
+            &Request::NameSession { session_id: "ghost".to_string(), name: "x".to_string(), agent_conversation_id: None },
         );
         assert!(matches!(resp, Response::Error { .. }));
 
@@ -5774,7 +5793,7 @@ mod tests {
         // there is nowhere for a name to land.
         let resp = request(
             &mut cmd,
-            &Request::NameSession { session_id: session_id.clone(), name: "x".to_string() },
+            &Request::NameSession { session_id: session_id.clone(), name: "x".to_string(), agent_conversation_id: None },
         );
         assert!(matches!(resp, Response::Error { .. }));
 
@@ -5795,6 +5814,7 @@ mod tests {
                 &Request::NameSession {
                     session_id: session_id.clone(),
                     name: "login flow".to_string(),
+                    agent_conversation_id: None,
                 },
             );
             if matches!(resp, Response::Ok) {
@@ -5814,6 +5834,86 @@ mod tests {
             })
             .expect("no SessionNamed push arrived");
         assert_eq!(named, (session_id.clone(), "login flow".to_string()));
+
+        // A self-reported agent_conversation_id lands on this session's
+        // bound card, once it has one -- exactly the same conversation_id
+        // column LinkCardSession's own minted id would occupy.
+        let resp = request(
+            &mut cmd,
+            &Request::LinkCardSession {
+                workspace_id: "ws-1".to_string(),
+                path: "/p/t.md".to_string(),
+                session_id: session_id.clone(),
+                cwd: "/tmp".to_string(),
+                command: None,
+                conversation_id: None,
+                launch_cwd: None,
+                resume_attempts: None,
+                base_sha: None,
+            },
+        );
+        assert!(matches!(resp, Response::Ok));
+
+        let resp = request(
+            &mut cmd,
+            &Request::NameSession {
+                session_id: session_id.clone(),
+                name: "login flow".to_string(),
+                agent_conversation_id: Some("rollout-abc123".to_string()),
+            },
+        );
+        assert!(matches!(resp, Response::Ok));
+
+        let resp = request(&mut cmd, &Request::GetBoard { workspace_id: "ws-1".to_string() });
+        match resp {
+            Response::Board { card_sessions, .. } => {
+                let bound = card_sessions.iter().find(|s| s.path == "/p/t.md").expect("card not bound");
+                assert_eq!(bound.conversation_id, Some("rollout-abc123".to_string()));
+            }
+            other => panic!("expected Board, got {other:?}"),
+        }
+
+        let resp = request(&mut cmd, &Request::KillSession { id: session_id });
+        assert!(matches!(resp, Response::Ok));
+    }
+
+    #[test]
+    fn a_self_reported_conversation_id_for_an_unbound_session_is_still_a_successful_rename() {
+        let (socket_path, _dir) = start_test_server();
+        let mut cmd = Stream::connect(&socket_path).unwrap();
+
+        let resp = request(
+            &mut cmd,
+            &Request::CreateSession {
+                workspace_path: "/tmp".to_string(),
+                cwd: "/tmp".to_string(),
+                command: Some("/bin/sh".to_string()),
+            },
+        );
+        let session_id = match resp {
+            Response::SessionCreated { id } => id,
+            other => panic!("expected SessionCreated, got {other:?}"),
+        };
+
+        let mut app = Stream::connect(&socket_path).unwrap();
+        write_message(&mut app, &Request::Attach { id: session_id.clone() }).unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let resp = request(
+                &mut cmd,
+                &Request::NameSession {
+                    session_id: session_id.clone(),
+                    name: "no card yet".to_string(),
+                    agent_conversation_id: Some("rollout-xyz".to_string()),
+                },
+            );
+            if matches!(resp, Response::Ok) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "attach never registered: {resp:?}");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
 
         let resp = request(&mut cmd, &Request::KillSession { id: session_id });
         assert!(matches!(resp, Response::Ok));

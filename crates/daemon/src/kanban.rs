@@ -576,6 +576,27 @@ impl KanbanStore {
         Ok(())
     }
 
+    /// An agent self-reporting its own CLI's conversation id after the
+    /// fact (`gavin_name_session`'s second argument), for a profile that
+    /// cannot have one minted at launch the way Claude Code's is
+    /// (codex/gemini/opencode -- `agent-session-id-self-report.md`).
+    /// Keyed by `session_id` alone: the caller only knows its own gavin
+    /// tab/PTY session id, never the (workspace_id, path) pair, and a
+    /// session is bound to at most one card at a time. Returns whether a
+    /// row was updated -- a session with no bound card is a no-op, there
+    /// is nothing yet to link it to, not an error.
+    pub fn set_conversation_id_for_session(
+        &mut self,
+        session_id: &str,
+        conversation_id: &str,
+    ) -> anyhow::Result<bool> {
+        let updated = self.conn.execute(
+            "UPDATE card_sessions SET conversation_id = ?1 WHERE session_id = ?2",
+            params![conversation_id, session_id],
+        )?;
+        Ok(updated > 0)
+    }
+
     /// Removes a binding; absent is a no-op.
     pub fn unlink_card_session(&mut self, workspace_id: &str, path: &str) -> anyhow::Result<()> {
         self.finish_runs_for_card(workspace_id, path)?;
@@ -916,6 +937,25 @@ mod tests {
         store.unlink_card_session("ws-1", "/p/absent.md").unwrap(); // no-op
         assert!(store.get_board("ws-1").unwrap().card_sessions.is_empty());
         assert_eq!(store.get_board("ws-2").unwrap().card_sessions.len(), 1);
+    }
+
+    #[test]
+    fn a_self_reported_conversation_id_lands_on_the_bound_card() {
+        let (_dir, mut store) = store();
+        store.link_card_session("ws-1", "/p/t.md", "s-1", "/p", None, None, None, None, None).unwrap();
+
+        let updated = store.set_conversation_id_for_session("s-1", "rollout-abc123").unwrap();
+        assert!(updated);
+
+        let session = store.card_session("ws-1", "/p/t.md").unwrap().unwrap();
+        assert_eq!(session.conversation_id, Some("rollout-abc123".to_string()));
+    }
+
+    #[test]
+    fn a_conversation_id_for_an_unbound_session_is_a_no_op() {
+        let (_dir, mut store) = store();
+        let updated = store.set_conversation_id_for_session("s-nobody", "rollout-abc123").unwrap();
+        assert!(!updated);
     }
 
     /// The budget is the one field a resume WRITES rather than merely
