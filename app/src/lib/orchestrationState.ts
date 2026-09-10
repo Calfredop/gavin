@@ -119,6 +119,7 @@ import {
   provisionalSessionName,
   buildToolCommand,
   runStatusNeeded,
+  unresumableConversationReason,
 } from "./cardRun";
 import { stripFrontmatter } from "./planChecklist";
 import { slugStatus } from "./planBoard";
@@ -137,7 +138,12 @@ import { developingBlocker } from "./developingCardsState";
 import { DEVELOPING_STALL } from "./developingCards";
 import { unreviewedStallReason } from "./cardReview";
 import type { OrchestrationAgentRecord } from "./workspace";
-import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "./cardRunActions";
+import {
+  conversationLogFor,
+  pasteToMainAgent,
+  resolveAttachmentsForRun,
+  revealSession,
+} from "./cardRunActions";
 import { activePaused, mayStartWork, nowStore } from "./agentPauseState";
 import {
   holdOrQueue,
@@ -751,7 +757,17 @@ export async function resumeStep(
     ? null
     : (cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath)?.plan ?? null);
   const agent = agentForCard(workspaceId, resumingCard);
-  const command = buildResumeCommand(agent.launchCommand, agent.resumeArgs, run.conversationId);
+  // Whether the conversation is there to be reopened at all. The id was
+  // minted before the agent did anything, so it proves a launch was
+  // attempted, not that a transcript was written -- and auto-resume
+  // reaches this with nobody watching, so a step whose agent died at
+  // launch has to be refused HERE rather than by the CLI's own error in
+  // a tab nobody is looking at. Retry is the way on, for the same reason
+  // it is below: a fresh run is the honest answer to no conversation.
+  const log = await conversationLogFor(agent, run.conversationId);
+  const unresumable = unresumableConversationReason(log, "Use Retry to start it again.");
+  if (unresumable) return unresumable;
+  const command = buildResumeCommand(agent.launchCommand, agent.resumeArgs, run.conversationId, log);
   if (!command) {
     // Either the profile verified no resume argv, or this run predates
     // the conversation id. Both mean the same thing and neither is an

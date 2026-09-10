@@ -269,14 +269,69 @@ export function withFreshConversationId(
 ///
 /// Null when the profile verified no resume argv, which is the signal to
 /// fall back to `composeResumeTaskPrompt`.
+///
+/// Also null when the conversation's log is known to be MISSING. The id
+/// is proof that a launch was attempted, not that a conversation
+/// happened: gavin mints it before the agent has done anything at all,
+/// so an agent that died at launch leaves an id with no transcript
+/// behind it, and `<resume argv> <uuid>` has nothing to open -- the CLI
+/// says so and exits, and a card that kept offering the button offered
+/// it for ever. The caller tells a missing log apart from a missing argv
+/// with `unresumableConversationReason`, because the two nulls want
+/// different answers: fall through, or refuse and say why.
+///
+/// `unknown` builds the command. Only a log root gavin can see, which
+/// does not hold the file, is evidence that the conversation is gone;
+/// everywhere else -- a profile with no `TokenLog`, a CLI pointed at
+/// another config dir, the check itself failing -- the CLI is the one
+/// that answers, which is what it always did.
 export function buildResumeCommand(
   agentCommand: string,
   resumeArgs: string,
-  conversationId: string | null | undefined
+  conversationId: string | null | undefined,
+  log: ConversationLog = "unknown"
 ): string | null {
   const args = resumeArgs.trim();
   if (!args || !conversationId?.trim()) return null;
+  if (log === "missing") return null;
   return `${agentCommand} ${args} ${conversationId.trim()}`;
+}
+
+/// Whether the conversation a binding recorded is still on this machine
+/// to be reopened. Mirrors `ConversationLog` in `agent_tokens.rs`, which
+/// is where the question is answered: the same resolver the token read
+/// uses, so the two can never disagree about where a conversation lives.
+///
+/// Three values rather than a bool, because `unknown` and `missing` are
+/// different sentences and only one of them may stop a resume.
+export type ConversationLog = "present" | "missing" | "unknown";
+
+/// Why a resume must not be launched, or null when it may be.
+///
+/// One sentence for every surface that offers Resume -- the detail
+/// modal, the card menu, the column button, a rail step, auto-resume's
+/// notification -- because they all reach the same launch, and a refusal
+/// the human reads in one place has to be the refusal they read in the
+/// others. It says what happened (the agent never completed a turn, so
+/// it wrote nothing and edited nothing) and then `wayForward`, which is
+/// the caller's to name: Re-launch on a card, Retry on a rail step. The
+/// two verbs differ and the sentence must not guess.
+///
+/// Refusing, rather than quietly taking the written reconstruction, is
+/// the point. That prompt tells the agent work on the card "already
+/// started and stopped" and sends it looking for what was done -- which
+/// for an agent that died at launch is nothing, under a verb that
+/// promised continuity. `resume_args`'s own doc comment calls that the
+/// silent fresh conversation wearing a better name.
+export function unresumableConversationReason(
+  log: ConversationLog,
+  wayForward: string
+): string | null {
+  if (log !== "missing") return null;
+  return (
+    `This agent stopped before it wrote a line of its conversation, so there is nothing ` +
+    `to resume. ${wayForward}`
+  );
 }
 
 // Why this workspace's agent cannot be started on a card. Never about

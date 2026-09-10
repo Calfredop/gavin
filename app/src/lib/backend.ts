@@ -5,6 +5,7 @@ import type { SystemMemorySample, WatchmanSample } from "./memory";
 import type { LaunchConfig } from "./launchGate";
 import type { PrReport } from "./pullRequest";
 import type { CardRun, TokenReport } from "./runHistory";
+import type { ConversationLog } from "./cardRun";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "./workspace";
 import type { Board, Column, Label } from "./kanban";
@@ -874,6 +875,18 @@ export function cardRunTokens(
   conversationId: string | null
 ): Promise<TokenReport> {
   return invoke("card_run_tokens", { profileId, conversationId });
+}
+
+/// Whether the conversation a run recorded is still on this machine to
+/// be reopened -- answered by the same resolver `cardRunTokens` reads
+/// through, so a resume and a token read can never disagree about where
+/// a transcript lives. `unknown` is the answer whenever gavin cannot
+/// tell, and is the one that changes nothing.
+export function conversationLog(
+  profileId: string,
+  conversationId: string | null
+): Promise<ConversationLog> {
+  return invoke("conversation_log", { profileId, conversationId });
 }
 
 export function deleteBoard(workspaceId: string): Promise<void> {

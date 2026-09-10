@@ -9,6 +9,7 @@ import {
   shellQuote,
   buildRunCommand,
   buildResumeCommand,
+  unresumableConversationReason,
   mintConversationId,
   withFreshConversationId,
   noPromptReason,
@@ -369,6 +370,42 @@ describe("buildResumeCommand", () => {
     expect(buildResumeCommand("claude", "--resume", null)).toBeNull();
     expect(buildResumeCommand("claude", "--resume", undefined)).toBeNull();
     expect(buildResumeCommand("claude", "--resume", "  ")).toBeNull();
+  });
+
+  // The id gavin minted is proof that a launch was ATTEMPTED, not that a
+  // conversation happened: minting it is the one thing gavin does before
+  // the agent has done anything at all. A binding whose transcript does
+  // not exist gets no command -- `claude --resume <uuid>` would open,
+  // say it cannot find that session, and exit, and the card would offer
+  // the same doomed button for ever.
+  it("refuses an id whose conversation was never written", () => {
+    expect(buildResumeCommand("claude", "--resume", "u1", "missing")).toBeNull();
+  });
+
+  // Only a log gavin can SEE and which does not hold the file is evidence
+  // the conversation is gone. `unknown` -- no TokenLog for the profile,
+  // a CLAUDE_CONFIG_DIR pointed elsewhere, the check itself failing -- is
+  // today's behaviour: build the command and let the CLI answer.
+  it("reopens a conversation whose log is present or unknowable", () => {
+    expect(buildResumeCommand("claude", "--resume", "u1", "present")).toBe("claude --resume u1");
+    expect(buildResumeCommand("claude", "--resume", "u1", "unknown")).toBe("claude --resume u1");
+    expect(buildResumeCommand("claude", "--resume", "u1")).toBe("claude --resume u1");
+  });
+});
+
+describe("unresumableConversationReason", () => {
+  // The refusal has to say what happened AND what to do instead: the
+  // human who pressed Resume is looking at a card that still says its
+  // agent stopped, and the honest way forward is the button beside it.
+  it("names the cause and the way forward for a missing log", () => {
+    const reason = unresumableConversationReason("missing", "Re-launch starts the card again");
+    expect(reason).toMatch(/before it wrote a line/);
+    expect(reason).toContain("Re-launch starts the card again");
+  });
+
+  it("has nothing to say when the conversation is there or unknowable", () => {
+    expect(unresumableConversationReason("present", "x")).toBeNull();
+    expect(unresumableConversationReason("unknown", "x")).toBeNull();
   });
 });
 

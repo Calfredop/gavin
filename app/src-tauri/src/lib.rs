@@ -200,6 +200,7 @@ pub fn run() {
             memory::watchman_forget,
             pull_request::pr_status,
             agent_tokens::card_run_tokens,
+            agent_tokens::conversation_log,
             session::get_agent_pause,
             session::set_agent_pause,
             session::get_launch_config,
