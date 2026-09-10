@@ -66,6 +66,16 @@ trash = { version = "5", default-features = false }
 # "Restorable" is the entire promise trash_path makes over `rm`.
 trash = { version = "5", default-features = false, features = ["chrono"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# COM back on, and it is not optional. The Windows backend is
+# IFileOperation, and trash-5.2.6 src/windows.rs:278 is a deliberate
+# compile error when neither `coinit_apartmentthreaded` nor
+# `coinit_multithreaded` is selected -- CoInitializeEx has to be told a
+# threading model and the crate refuses to guess one. Apartment-threaded
+# is what default-features would have brought and what the shell APIs
+# expect; the multithreaded arm exists for callers already in an MTA.
+trash = { version = "5", default-features = false, features = ["coinit_apartmentthreaded"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # The memory probe: sysctlbyname for the machine's own figures and
 # proc_pidinfo for watchman's, exactly as crates/daemon/src/proc.rs
