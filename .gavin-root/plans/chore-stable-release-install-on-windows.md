@@ -93,11 +93,21 @@ sessions only ever happens when the human chooses to upgrade.
       without its sidecars, say which daemon binary is already listening,
       start the app detached from the terminal. `-DryRun` does every check
       without starting anything; `-Path` overrides the search.
-- [ ] Human: install, launch, and confirm the daemon survives a `tauri dev`
+- [x] Human: install, launch, and confirm the daemon survives a `tauri dev`
       rebuild in the shared tree (this closes the packaged-app item on
       [fix-daemon-dies-with-the-app-on-windows.md](./fix-daemon-dies-with-the-app-on-windows.md))
-- [ ] Human: commit the Windows work, then re-cut the worktree from the commit
+- [x] Human: commit the Windows work, then re-cut the worktree from the commit
       and drop the snapshot
+      Landed on `win/windows-dev-setup` as e29019a..80881d5 (the daemon
+      detachment, the hidden consoles, the launcher, and the rest). Re-cut
+      2026-09-10 17:08: every snapshot file was byte-identical to 80881d5
+      once CRLF was ignored (the worktree checks out with `autocrlf`), and
+      the one that was not, the windows-port card, was a strictly older copy
+      of the committed one — so the worktree moved with
+      `git checkout -m --detach 80881d5`, which carried the snapshot forward
+      onto itself and discarded nothing. `git status` there is clean.
+      `target\release\` is untouched, so the running app and daemon are
+      still the 16:00 build; "Re-cut" below says what that build lacks.
 
 ## First launch, 2026-09-10
 
@@ -123,3 +133,53 @@ that afternoon took the stable daemon and its sessions down. Filed as
 [fix-app-tests-kill-the-running-daemon.md](./fix-app-tests-kill-the-running-daemon.md);
 until it lands, run the app suite only when the daemon holds nothing you
 need.
+
+## Re-cut, 2026-09-10 17:08
+
+The worktree is detached at 80881d5, the tip of `win/windows-dev-setup`,
+with no local changes. The binaries in `target\release\` (`Gavin.exe`
+16:00, `gavin-daemon.exe` and `gavin-mcp.exe` 14:39) were built from the
+snapshot, which equals the tip for every file it touched. What the tip
+changed that the snapshot never carried, and the running build therefore
+lacks: `agent_tokens.rs` and `lib.rs` (the resume-conversation fix),
+`gavin_develop_skill.md` (the embedded skill), the `cardRun`,
+`cardRunActions`, `orchestrationState` and `backend` modules on the
+frontend, `windowCorners.test.ts`, `LICENSE`, and the plan cards. Bringing
+the install up to 80881d5 is step 4 of the recipe: quit Gavin, stop the
+daemon, `npm run bundle`, install, relaunch. The link step cannot replace a
+running `Gavin.exe` or `gavin-daemon.exe`, and the checkout bumped every
+mtime, so cargo will recompile most of the workspace on that run.
+
+Pre-flight for the install item, checked against the running system:
+
+- The app up now is the worktree's `target\release\Gavin.exe` (pid 8016,
+  since 16:03); its daemon is pid 18464 from the same folder.
+  `IsProcessInJob` answers false for both, so no job — `tauri dev`'s
+  included — can take the daemon down; the only things that reach it are
+  kills by name (`cargo test -p app`, Restart daemon in either app). The
+  daemon log holds the one breakaway refusal, the 14:17 daemon's, and none
+  for the four daemons since.
+- Nothing is installed yet: neither `%LOCALAPPDATA%\Programs\Gavin` nor a
+  `Gavin.exe` under `%LOCALAPPDATA%\Gavin` exists.
+- The installer's `CheckIfAppIsRunning` looks for `Gavin.exe` by name in
+  the current user's session. Interactive, it asks before killing; `/S`
+  and `/P` kill without asking. Quit the worktree app first, or the
+  installer will. `gavin-daemon.exe` is not on that list and survives
+  either way.
+- Silent install into the right folder (`/D=` must be the last argument
+  and unquoted), from the stable worktree:
+  `.\target\release\bundle\nsis\Gavin_0.1.0_x64-setup.exe /S /D=C:\Users\calfr\AppData\Local\Programs\Gavin`
+  The interactive installer wants the same folder typed over its default.
+- The installed app adopts the worktree daemon on first launch (the
+  launcher says so, with pid and path). To run the INSTALLED daemon, use
+  Restart daemon in Settings once: the polite shutdown lands, sessions end,
+  and the app respawns from beside itself. Then a `tauri dev` rebuild in
+  the shared tree (`scripts\start-dev-win.ps1` from a plain terminal, touch
+  one `.rs` file) must leave `Get-Process gavin-daemon` showing the same
+  pid under `Programs\Gavin`. Do not run `cargo test -p app` during that
+  check.
+- Why an agent did not do this: the installer kills the app the human is
+  looking at, a dev app started from an agent's tool call hands its
+  `CLAUDE_*` environment to every tab
+  ([issue-launcher-env-leaks-into-sessions.md](./issue-launcher-env-leaks-into-sessions.md)),
+  and the rebuild it would confirm restarts an app on the desktop.
