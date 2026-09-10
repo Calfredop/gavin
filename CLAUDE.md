@@ -5,6 +5,7 @@ This repo is a gavin workspace. Read `.gavin-root/PRD.md` first — it leads all
 development. Follow the gavin workflow skill in `.claude/skills/gavin/SKILL.md`
 (plan before coding, keep plan statuses current, use the gavin_* MCP tools).
 <!-- gavin:end -->
+
 ## What this repo is
 
 Gavin itself — the app the PRD describes. A Rust workspace plus a Tauri/Svelte app:
