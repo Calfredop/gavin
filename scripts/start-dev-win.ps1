@@ -118,6 +118,38 @@ try {
 }
 finally { Pop-Location }
 
+# --- the daemon, started HERE and not by the app ---------------------------
+
+# A daemon the app spawns is a child of the app, and on Windows a child
+# joins its parent's job object. `tauri dev` kills that job on every
+# rebuild, so a source edit took the daemon -- and every terminal session it
+# owned -- down with the app about two seconds later. An agent developing
+# gavin inside gavin edits source constantly, which made that workflow
+# impossible rather than merely noisy.
+#
+# The app cannot fix this from the inside. It asks for
+# CREATE_BREAKAWAY_FROM_JOB and tauri dev's job REFUSES it -- the app records
+# that refusal in its daemon log rather than pretending it detached.
+# Starting the daemon HERE, before the app exists, is what actually works: it
+# is a child of this script, it never enters that job, and the app finds it
+# already listening and adopts it instead of spawning one of its own.
+#
+# Only when nothing is listening. A daemon that outlived the last dev session
+# is exactly the one worth keeping -- that is the whole point of it outliving
+# the app.
+$listening = @([System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -like '*gavin-daemon-sock*' })
+if ($listening.Count -gt 0) {
+    Say 'a daemon is already listening -- leaving it alone'
+}
+else {
+    $state = Join-Path $env:LOCALAPPDATA 'gavin'
+    New-Item -ItemType Directory -Force $state | Out-Null
+    $log = Join-Path $state 'daemon.log'
+    $exe = Join-Path $Root 'target\debug\gavin-daemon.exe'
+    Say "starting gavin-daemon detached from the app (output -> $log)"
+    Start-Process -FilePath $exe -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err" | Out-Null
+}
+
 # --- run -------------------------------------------------------------------
 
 Say 'starting the app (npm run tauri dev)'

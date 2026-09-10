@@ -5,6 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+// The daemon's console flag, shared with every other program the app
+// starts (`program::command`), for the reason written on it there.
+#[cfg(windows)]
+use crate::program::CREATE_NO_WINDOW;
+
 /// `EXE_SUFFIX` rather than a bare name: it is "" on unix and ".exe" on
 /// Windows, where a file without it is not executable and `externalBin`
 /// bundles the binary WITH it. Same rule in `resolve_mcp_binary_path`,
@@ -49,9 +54,146 @@ pub fn connect_or_spawn(
     }
 }
 
+/// Starts the daemon as a PEER of the app, not a member of its process
+/// tree.
+///
+/// The daemon is designed to outlive the app -- `docs/dev-setup.md` says
+/// so, and every session it owns depends on it. On unix that costs
+/// nothing: an orphan is reparented to init and keeps running, which is
+/// why a plain spawn was right for years.
+///
+/// On Windows a plain spawn is NOT right, and the difference is a job
+/// object. A child joins its parent's job by default, and killing a job
+/// kills everything in it -- so `tauri dev` tearing the app down to
+/// rebuild took the daemon with it, every PTY session included, two
+/// seconds after any source edit. An agent developing gavin inside gavin
+/// edits source constantly, which made that workflow impossible rather
+/// than merely noisy.
 pub fn spawn_real_daemon() -> anyhow::Result<std::process::Child> {
     let binary = resolve_daemon_binary_path()?;
+    spawn_detached(&binary)
+}
+
+/// Unix: nothing to arrange. Reparenting to init is what makes the
+/// daemon outlive the app, and it happens whether or not anyone asks.
+#[cfg(not(windows))]
+fn spawn_detached(binary: &Path) -> anyhow::Result<std::process::Child> {
     Ok(Command::new(binary).spawn()?)
+}
+
+/// Escapes the parent's job object. The one flag that fixes the bug: a
+/// daemon inside the app's job dies when that job is killed, and
+/// `tauri dev` kills it on every rebuild.
+///
+/// A job is allowed to REFUSE breakaway, and then `CreateProcess` fails
+/// outright rather than ignoring the flag -- so this is attempted, not
+/// assumed, and `spawn_detached` retries without it.
+#[cfg(windows)]
+const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+
+/// Its own process group, so a Ctrl-C aimed at the app's group is not
+/// also delivered here.
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
+/// Signal-isolated, on a hidden console of its own, but still inside
+/// the job.
+///
+/// `CREATE_NO_WINDOW` and not `DETACHED_PROCESS`, which is what this
+/// was. Both keep the daemon off the launching terminal's console -- a
+/// daemon holding that console dies when the terminal closes, the same
+/// "outlives the app" promise broken a second way -- but they differ in
+/// what the daemon's own children get. Detached means NO console, and a
+/// child with nothing to inherit allocates one, and a new console is a
+/// window: the packaged app flashed a terminal for every `git` the
+/// daemon ran. No-window means one invisible console the daemon owns
+/// and every child inherits. Either way its stdout goes where nobody
+/// can see it, which is why the log below exists.
+#[cfg(windows)]
+const DETACHED_FLAGS: u32 = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+
+/// What is asked for first: the above, plus out of the job entirely.
+#[cfg(windows)]
+const DETACHED_FLAGS_WITH_BREAKAWAY: u32 = DETACHED_FLAGS | CREATE_BREAKAWAY_FROM_JOB;
+
+/// Windows: on a hidden console of its own, out of the job, and logging
+/// to a file.
+///
+/// The breakaway is tried first and dropped if the job forbids it
+/// (`ERROR_ACCESS_DENIED`). Falling back rather than failing is
+/// deliberate: a daemon that dies with the app is bad, and a daemon that
+/// never starts is worse -- the app would have nothing to connect to at
+/// all.
+#[cfg(windows)]
+fn spawn_detached(binary: &Path) -> anyhow::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+
+    /// `ERROR_ACCESS_DENIED`, which is how a job that forbids breakaway
+    /// answers -- not a permissions problem to report to anyone.
+    const ACCESS_DENIED: i32 = 5;
+
+    let log = daemon_log_file();
+    let attempt = |flags: u32| -> std::io::Result<std::process::Child> {
+        let mut command = Command::new(binary);
+        command.creation_flags(flags);
+        // The daemon's console has no window, so anything it printed
+        // there would never be seen. Its startup line names the socket
+        // it bound, which is the first thing anyone debugging a
+        // connection asks for.
+        match &log {
+            Some(file) => {
+                command.stdout(file.try_clone()?).stderr(file.try_clone()?);
+            }
+            None => {
+                command.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            }
+        }
+        command.spawn()
+    };
+
+    match attempt(DETACHED_FLAGS_WITH_BREAKAWAY) {
+        Ok(child) => Ok(child),
+        Err(e) if e.raw_os_error() == Some(ACCESS_DENIED) => {
+            // Said out loud, because this fallback REINSTATES the bug:
+            // a daemon that could not leave the job dies with the app,
+            // and the only thing worse than that is it happening
+            // silently while a log line claims a daemon started.
+            note_breakaway_refused(&log);
+            Ok(attempt(DETACHED_FLAGS)?)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Records that the daemon had to stay inside the app's job object.
+///
+/// Written where its output goes, so the line sits immediately before
+/// the startup line of the daemon it describes.
+#[cfg(windows)]
+fn note_breakaway_refused(log: &Option<std::fs::File>) {
+    use std::io::Write;
+    if let Some(file) = log {
+        if let Ok(mut file) = file.try_clone() {
+            let _ = writeln!(
+                file,
+                "gavin: the job object refused CREATE_BREAKAWAY_FROM_JOB, so this daemon is inside the app's job and will be killed with it"
+            );
+        }
+    }
+}
+
+/// The file a detached daemon's output goes to, beside its databases.
+///
+/// Appended, never truncated: the interesting case is a daemon that died
+/// and was replaced, and truncating on start is exactly when the line
+/// explaining the death would be lost. `None` if it cannot be opened,
+/// which sends the output to null rather than refusing to start a daemon
+/// over a log file.
+#[cfg(windows)]
+fn daemon_log_file() -> Option<std::fs::File> {
+    let dir = protocol::app_support_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::OpenOptions::new().create(true).append(true).open(dir.join("daemon.log")).ok()
 }
 
 /// How long a daemon gets to exit after being asked, before the blunt
@@ -279,5 +421,63 @@ mod tests {
         });
 
         assert!(result.is_err());
+    }
+
+    /// The contract the fallback in `spawn_detached` depends on: the
+    /// first attempt leaves the job, the second does not, and neither
+    /// keeps a console. Asserted on the flag words rather than on a
+    /// spawned process because a job that forbids breakaway is a
+    /// property of whatever launched the test runner -- CI, a terminal,
+    /// an IDE -- and a test may not assume which.
+    #[cfg(windows)]
+    #[test]
+    fn the_first_spawn_attempt_breaks_out_of_the_job_and_the_retry_does_not() {
+        assert_eq!(
+            DETACHED_FLAGS_WITH_BREAKAWAY & CREATE_BREAKAWAY_FROM_JOB,
+            CREATE_BREAKAWAY_FROM_JOB,
+            "the first attempt is the one that escapes tauri dev's job"
+        );
+        assert_eq!(
+            DETACHED_FLAGS & CREATE_BREAKAWAY_FROM_JOB,
+            0,
+            "the retry must drop the flag the job refused, or it fails the same way again"
+        );
+        for flags in [DETACHED_FLAGS, DETACHED_FLAGS_WITH_BREAKAWAY] {
+            assert_eq!(
+                flags & CREATE_NEW_PROCESS_GROUP,
+                CREATE_NEW_PROCESS_GROUP,
+                "no inherited Ctrl-C"
+            );
+        }
+    }
+
+    /// The daemon must OWN a console -- a hidden one -- rather than have
+    /// none. A process with no console at all (`DETACHED_PROCESS`) has
+    /// nothing to hand its children, so every `git` the daemon runs
+    /// allocates a console of its own, and a new console is a window:
+    /// the packaged app flashed a terminal for every command it ran.
+    /// `CREATE_NO_WINDOW` gives the daemon one invisible console that
+    /// every child inherits, and it is still not the launching
+    /// terminal's, so closing that terminal still cannot take the daemon.
+    /// What `DETACHED_FLAGS` used to carry and must not again: no
+    /// console at all.
+    #[cfg(windows)]
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+    #[cfg(windows)]
+    #[test]
+    fn the_daemon_owns_a_hidden_console_rather_than_none() {
+        for flags in [DETACHED_FLAGS, DETACHED_FLAGS_WITH_BREAKAWAY] {
+            assert_eq!(
+                flags & CREATE_NO_WINDOW,
+                CREATE_NO_WINDOW,
+                "a hidden console of its own, for its children to inherit"
+            );
+            assert_eq!(
+                flags & DETACHED_PROCESS,
+                0,
+                "DETACHED_PROCESS leaves children nothing to inherit, and CreateProcess does not combine it with CREATE_NO_WINDOW"
+            );
+        }
     }
 }
