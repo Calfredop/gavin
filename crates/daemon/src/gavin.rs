@@ -2178,6 +2178,42 @@ impl GavinWatcher {
 mod tests {
     use super::*;
 
+    /// Makes a symlink the way the running OS makes one, and reports
+    /// whether the OS allowed it at all.
+    ///
+    /// Two things differ off unix. `std::os::unix::fs::symlink` does not
+    /// exist on Windows -- there the file and directory cases are
+    /// separate calls, because a Windows symlink records which kind of
+    /// object it points at. And creating one needs the
+    /// SeCreateSymbolicLink privilege, which an ordinary account does
+    /// not hold: without Developer Mode or elevation the call fails with
+    /// ERROR_PRIVILEGE_NOT_HELD (1314). That is the normal state of a
+    /// Windows machine, not a broken one, so it returns `false` and the
+    /// caller returns early rather than failing a suite over something
+    /// the OS refused. Every other error still panics -- a symlink that
+    /// could have been made and wasn't is a real failure.
+    ///
+    /// The confinement guards these tests cover are therefore proved on
+    /// every unix run, and on a Windows box with Developer Mode on;
+    /// on a stock Windows account they are skipped, which is recorded on
+    /// the windows-port card.
+    #[must_use]
+    fn try_symlink(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let made = if target.is_dir() {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        };
+        match made {
+            Ok(()) => true,
+            Err(e) if cfg!(windows) && e.raw_os_error() == Some(1314) => false,
+            Err(e) => panic!("symlink {} -> {}: {e}", target.display(), link.display()),
+        }
+    }
+
     fn plan(content: &str) -> PlanFileInfo {
         plan_file_info(Path::new("/tmp/plans/auth-flow.md"), content)
     }
@@ -2801,7 +2837,9 @@ mod tests {
         let victim = outside.path().join("victim.md");
         std::fs::write(&victim, "x").unwrap();
         let link = plans.join("looks-like-a-card.md");
-        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        if !try_symlink(&victim, &link) {
+            return; // this account cannot make one; see try_symlink
+        }
         assert!(confine_card_path(&link).is_err());
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "x");
     }
@@ -3016,7 +3054,9 @@ mod tests {
         write_card(&outside.path().join(GAVIN_DIR).join("plans"), "leak.md", "---\ntitle: Leak\n---\n");
 
         let link = root.path().join("escape");
-        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        if !try_symlink(outside.path(), &link) {
+            return; // this account cannot make one; see try_symlink
+        }
 
         let tree = scan_root(root.path());
         // Only the Root context -- the symlink was never descended into,
@@ -3037,7 +3077,9 @@ mod tests {
         let plans = root.path().join(GAVIN_ROOT_DIR).join("plans");
         let real = write_card(&plans, "real.md", "---\ntitle: Real\n---\n");
         let link = plans.join("linked.md");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
+        if !try_symlink(&real, &link) {
+            return; // this account cannot make one; see try_symlink
+        }
 
         let tree = scan_root(root.path());
         assert!(tree.contexts[0].plans.iter().any(|p| p.file_name == "linked.md" && p.title == "Real"));
