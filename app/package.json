@@ -1,7 +1,7 @@
 {
-  "name": "app",
+  "name": "gavin-app",
   "version": "0.1.0",
-  "description": "",
+  "description": "Gavin's desktop frontend: a SvelteKit SPA served by the Tauri host, talking to gavin-daemon.",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
