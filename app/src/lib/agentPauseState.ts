@@ -250,23 +250,40 @@ export const pausedWorkspaces: Readable<PausedWorkspace[]> = derived(
       .filter((w) => w.verdict.paused)
 );
 
-/// The active workspace's paused flag, emitting ONLY when it flips.
+/// WHICH workspaces are paused, as one comparable key, emitting ONLY
+/// when that set changes. The scheduler's pause input.
 ///
-/// `activePause` rides the clock, so it emits every thirty seconds
-/// forever. That is fine for a countdown on screen and wrong as a
-/// scheduler input: the scheduler would run a pass twice a minute for the
-/// life of the app, whether or not anything changed. Deduping to the
-/// boolean means it emits exactly twice per pause -- once when work stops
-/// and once when it may start again, which is the second that matters.
+/// `pausedWorkspaces` rides the clock, so it emits every thirty seconds
+/// forever. That is fine for a list on screen and wrong as a scheduler
+/// input: the scheduler would run a pass twice a minute for the life of
+/// the app, whether or not anything changed. Deduping to the id set
+/// means it emits exactly twice per pause -- once when work stops and
+/// once when it may start again, which is the second that matters.
+///
+/// Every workspace and not just the active one, because the scheduler
+/// ticks every LOADED workspace (see startScheduler): a rail paused in
+/// the workspace you are not looking at is the one whose resume nothing
+/// else would announce, and it would sit there until some unrelated
+/// push happened along -- in a paused workspace, where every session is
+/// by definition quiet, that can be a long time.
+///
+/// A joined id string rather than a boolean or the array: the array is a
+/// fresh object every clock tick and a boolean cannot tell "A paused" from
+/// "A resumed as B paused", which is one workspace owed a tick it would
+/// never get.
 ///
 /// `readable` with its own subscription rather than `derived`, because
 /// `derived` re-emits on every input change regardless of value.
-export const activePaused: Readable<boolean> = readable(false, (set) => {
-  let last: boolean | null = null;
-  return activePause.subscribe((verdict) => {
-    if (verdict.paused === last) return;
-    last = verdict.paused;
-    set(verdict.paused);
+export const pausedWorkspaceKey: Readable<string> = readable("", (set) => {
+  let last: string | null = null;
+  return pausedWorkspaces.subscribe((paused) => {
+    const key = paused
+      .map((w) => w.id)
+      .sort()
+      .join(" ");
+    if (key === last) return;
+    last = key;
+    set(key);
   });
 });
 

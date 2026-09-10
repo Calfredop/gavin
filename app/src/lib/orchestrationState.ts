@@ -138,7 +138,7 @@ import { DEVELOPING_STALL } from "./developingCards";
 import { unreviewedStallReason } from "./cardReview";
 import type { OrchestrationAgentRecord } from "./workspace";
 import { pasteToMainAgent, resolveAttachmentsForRun, revealSession } from "./cardRunActions";
-import { activePaused, mayStartWork, nowStore } from "./agentPauseState";
+import { mayStartWork, nowStore, pausedWorkspaceKey } from "./agentPauseState";
 import {
   holdOrQueue,
   launchHolding,
@@ -1624,7 +1624,7 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
       // Skipped, not stalled: a pause is not a failure, and writing
       // `stalled` on the run row would need a human to clear something
       // that clears itself. The action is simply not taken, and the tick
-      // that runs when the pause lifts (activePaused is an input below)
+      // that runs when the pause lifts (pausedWorkspaceKey is an input below)
       // emits it again -- which is the whole of "resume".
       if (!mayStartWork(workspaceId)) continue;
       // ...and the launch wall, at the same seam and on the same terms.
@@ -1753,6 +1753,13 @@ async function runTick(workspaceId: string): Promise<boolean> {
   const orch = get(orchestrations)[workspaceId];
   const board = get(kanbanState)[workspaceId];
   if (!orch || !board) return false;
+  // Before any of the reads below, for the reason stepAttentions does
+  // the same before its own tree walk: this now runs once per LOADED
+  // workspace on every emission of nine stores, and a workspace with no
+  // rails has nothing to schedule however many sessions and cards it
+  // holds. `nextActions` is a loop over rails and nothing else, so an
+  // empty list can only ever return an empty list.
+  if (orch.rails.length === 0) return false;
   const tree = get(gavinTrees)[workspaceId];
   // null, not [] -- an unloaded refs snapshot must not look like "every
   // worktree is gone" and stall every bound rail on a cold start.
@@ -1846,10 +1853,11 @@ async function runTick(workspaceId: string): Promise<boolean> {
 /// module must not require every store it will eventually subscribe to
 /// to exist yet.
 function tickInputStores(): Readable<unknown>[] {
-  // activePaused, not activePause: the verdict rides a thirty-second
-  // clock and would tick the scheduler twice a minute forever, while the
-  // deduped flag emits exactly twice per pause -- once when starts stop,
-  // once when they may resume.
+  // pausedWorkspaceKey, not pausedWorkspaces: the list rides a
+  // thirty-second clock and would tick the scheduler twice a minute
+  // forever, while the deduped key emits exactly twice per pause -- once
+  // when starts stop, once when they may resume. And the key covers
+  // every workspace, because so does the tick below.
   // prReports is here for the same reason sessionExits is: it is how a
   // `pr` step's verdict ARRIVES. Without it a rail waiting on CI would
   // sit until some unrelated event ticked -- which is exactly the bug
@@ -1861,7 +1869,7 @@ function tickInputStores(): Readable<unknown>[] {
     toolRecords,
     layoutState,
     sessionExits,
-    activePaused,
+    pausedWorkspaceKey,
     // The deduped flag, not `launchGateVerdict`: the verdict rides a
     // five-second poll and would tick the scheduler twelve times a
     // minute for the life of the app, while this emits exactly twice per
@@ -1873,24 +1881,37 @@ function tickInputStores(): Readable<unknown>[] {
 
 let stopScheduler: (() => void) | null = null;
 
-/// Ticks the ACTIVE workspace whenever anything the scheduler reads
-/// changes. Deliberately still one workspace: a single mounted hub view
-/// is what this replaces, and ticking every loaded workspace -- running
-/// rails in workspaces the human is not looking at -- is a separate
-/// change to make deliberately. Returns its own teardown; started by
+/// Ticks EVERY loaded workspace whenever anything the scheduler reads
+/// changes. Returns its own teardown; started by
 /// initOrchestrationListeners, which bootstrap registers and teardown
 /// unwinds.
+///
+/// It ticked only the ACTIVE workspace until this, on the theory that a
+/// single mounted hub view was what it replaced -- but a rail exists to
+/// run while the human is somewhere else, and another WORKSPACE is
+/// somewhere else. A rail in a workspace not on screen froze mid-run:
+/// its step's session went idle, no pass ever read that, and the step
+/// sat `running` with the rail behind it stopped. The freeze was
+/// invisible on top of that, because `stepAttentionsByWorkspace` is
+/// derived for every workspace -- the step's agent badge went on
+/// tracking the session live, so the tab and the sidebar row went idle
+/// beside a step that never moved. Opening that session was the cure
+/// only because activating its workspace was what let the scheduler see
+/// the rail at all.
+///
+/// `orchestrations` is the set, the same one `startDecoyWatch` sweeps: a
+/// workspace whose plan has not arrived has no rails to run, and `tick`
+/// would bail on it anyway. It is deliberately NOT a tick input (see
+/// tickInputStores), so reading it here subscribes to nothing -- a plan
+/// ARRIVING ticks by hand from each of the three places it can arrive.
 export function startScheduler(): () => void {
   stopScheduler?.();
   const unsubscribes = tickInputStores().map((store) =>
     store.subscribe(() => {
-      // Null while the app is still connecting, and on a window with no
-      // workspace at all; either way there is nothing to tick.
-      const workspaceId = get(layoutState).activeWorkspaceId;
       // Not recursion, even though a pass writes to `layoutState` itself
       // when it creates a step's session: an emission raised while a
       // pass is in flight collapses into `tick`'s single replay.
-      if (workspaceId) void tick(workspaceId);
+      for (const workspaceId of Object.keys(get(orchestrations))) void tick(workspaceId);
     })
   );
   const stop = () => {
@@ -2002,9 +2023,12 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
     if (runStateMoved) void refreshOrchestration(workspaceId);
     // A plan arrival like any other (an agent editing rails over MCP),
     // so it ticks like the other two: a step added to the stage a rail
-    // is running must start, not wait for the human to come back. This
-    // is also the ONLY thing that starts a rail armed in a workspace the
-    // human is not looking at -- the scheduler ticks the active one.
+    // is running must start, not wait for the human to come back. Still
+    // by hand now that the scheduler covers every loaded workspace,
+    // because the plan is the one input it cannot subscribe to (see
+    // tickInputStores) -- and a workspace whose plan is arriving for the
+    // FIRST time is not in `orchestrations` for the scheduler to have
+    // ticked at all.
     void tick(workspaceId);
   });
   const stop = startScheduler();

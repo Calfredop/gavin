@@ -31,6 +31,7 @@ import {
   mayStartWork,
   nowStore,
   pausedWorkspaces,
+  pausedWorkspaceKey,
   pauseFor,
   profilesInUse,
   refreshUsage,
@@ -239,5 +240,65 @@ describe("pausedWorkspaces", () => {
     layoutState.set({ workspaces: [{ id: "w1", name: "One" }], activeWorkspaceId: "w1" } as never);
     nowStore.set(ANCHOR);
     expect(get(pausedWorkspaces)).toEqual([]);
+  });
+
+  // The scheduler's own input. It ticks every loaded workspace, so this
+  // has to speak for every loaded workspace too -- and it has to stay
+  // quiet on the thirty-second clock underneath, or the scheduler runs a
+  // pass twice a minute for the life of the app.
+  describe("pausedWorkspaceKey", () => {
+    const twoWorkspaces = () =>
+      layoutState.set({
+        workspaces: [
+          { id: "w1", name: "One" },
+          { id: "w2", name: "Two" },
+        ],
+        activeWorkspaceId: "w1",
+      } as never);
+
+    it("emits once when a pause starts and once when it lifts", () => {
+      agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+      agentUsageStore.set({ "claude-code": atLimit(12) });
+      twoWorkspaces();
+      nowStore.set(ANCHOR);
+
+      const seen: string[] = [];
+      const stop = pausedWorkspaceKey.subscribe((k) => seen.push(k));
+      // The clock moving is not news: nothing about what is held changed.
+      nowStore.set(ANCHOR + 30_000);
+      nowStore.set(ANCHOR + 60_000);
+      expect(seen).toEqual([""]);
+
+      agentUsageStore.set({ "claude-code": atLimit(97) });
+      agentUsageStore.set({ "claude-code": atLimit(12) });
+      stop();
+      expect(seen).toEqual(["", "w1 w2", ""]);
+    });
+
+    // The half a boolean cannot carry. One workspace resuming while
+    // another is held reads as "still paused" to a flag, and the rail
+    // that just became free never gets the tick that would launch it.
+    it("emits when the SET moves, even though something is still held", () => {
+      agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+      agentUsageStore.set({ "claude-code": atLimit(97) });
+      twoWorkspaces();
+      nowStore.set(ANCHOR);
+
+      const seen: string[] = [];
+      const stop = pausedWorkspaceKey.subscribe((k) => seen.push(k));
+      // w2 sets a tighter limit of its own, so it stays held by the very
+      // reading that frees w1.
+      layoutState.set({
+        workspaces: [
+          { id: "w1", name: "One" },
+          { id: "w2", name: "Two", agentPause: cycle({ enabled: false, limitPercent: 10 }) },
+        ],
+        activeWorkspaceId: "w1",
+      } as never);
+      agentUsageStore.set({ "claude-code": atLimit(12) });
+      stop();
+      expect(seen.at(0)).toBe("w1 w2");
+      expect(seen.at(-1)).toBe("w2");
+    });
   });
 });

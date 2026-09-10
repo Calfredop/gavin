@@ -136,7 +136,7 @@ export const launchGateVerdict: Readable<LaunchVerdict> = derived(
 
 /// Whether the gate is holding, emitting ONLY when it flips.
 ///
-/// The same shape and the same reason as `activePaused`: the verdict
+/// The same shape and the same reason as `pausedWorkspaceKey`: the verdict
 /// rides a five-second poll, so a scheduler subscribed to it would run a
 /// pass twelve times a minute for the life of the app. The deduped flag
 /// emits exactly twice per hold -- once when starts stop, once when they

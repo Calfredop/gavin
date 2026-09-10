@@ -2726,8 +2726,9 @@ function armWorkspace(): void {
     sessionStatusById: {},
     // Nothing broke.
     failureReasonById: {},
-    // The scheduler ticks the workspace the human is looking at, so a
-    // workspace nothing has activated is one it leaves alone.
+    // Set because plenty of surfaces read it, not because the scheduler
+    // does: it ticks every LOADED workspace, so which one is on screen
+    // decides nothing about which rails run.
     activeWorkspaceId: "ws-1",
   });
 }
@@ -3291,17 +3292,58 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
     );
   });
 
-  // One workspace, the one on screen -- which is what a single mounted
-  // hub view amounted to. Running the rails of a workspace the human is
-  // not in is a separate change, not a side effect of this one.
-  it("leaves a workspace the human is not in alone", async () => {
+  // The point of a rail is that it runs while you are somewhere else,
+  // and "somewhere else" includes another WORKSPACE. This used to tick
+  // the active one only, so a rail in the workspace not on screen froze
+  // mid-run -- and froze INVISIBLY, because stepAttentions is computed
+  // for every workspace: the step's agent badge kept tracking the
+  // session live while the step it belonged to never moved. Opening
+  // that session was the cure, and only because activating its
+  // workspace was what let the scheduler see the rail at all.
+  it("advances a rail in a workspace the human is not in", async () => {
     layoutStore.update((s) => ({
       ...s,
       activeWorkspaceId: "ws-2",
       sessionStatusById: { "sess-1": "idle" },
     }));
-    await settle();
-    expect(backend.setStepRun).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null, null)
+    );
+  });
+
+  // And every loaded workspace, not just whichever one happens to hold
+  // the tick. Two rails in two workspaces is the ordinary shape here --
+  // one repo's rail running while you work in another -- and the one
+  // that made the freeze look like a bug in the rail rather than in
+  // which workspace the scheduler was looking at.
+  it("advances rails in two workspaces at once", async () => {
+    boardStore.update((b) => ({ ...b, "ws-2": b["ws-1"] }));
+    layoutStore.update((s) => ({
+      ...s,
+      workspaces: [
+        ...s.workspaces,
+        {
+          id: "ws-2",
+          pages: [{ id: "p1", name: "backend", layout: { type: "leaf", tabs: ["sess-2", "sess-9"] } }],
+        },
+      ],
+    }));
+    toolRecords.update((t) => ({ ...t, "ws-2": [] }));
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...agentToolRail(),
+      stepRuns: [{ stepId: "t1", state: "running", sessionId: "sess-2", reason: null }],
+    });
+    await fetchOrchestration("ws-2");
+    vi.mocked(backend.setStepRun).mockClear();
+
+    layoutStore.update((s) => ({
+      ...s,
+      sessionStatusById: { "sess-1": "idle", "sess-2": "idle" },
+    }));
+    await vi.waitFor(() => {
+      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null, null);
+      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-2", null, null, null, null);
+    });
   });
 
   // The plan is the one input the scheduler cannot subscribe to, so its
