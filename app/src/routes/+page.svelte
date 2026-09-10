@@ -9,54 +9,54 @@
     switchWorkspaceView,
     retryConnect,
     appHubOpen,
-  } from "$lib/layoutState";
-  import { signalFrontendReady } from "$lib/backend";
-  import { installKeyboardShortcuts } from "$lib/keyboard";
-  import { installLineClipboard } from "$lib/lineClipboard";
-  import { installHintTracking, hintMode } from "$lib/shortcutHints";
-  import { hintDigitFor } from "$lib/shortcuts";
+  } from "$lib/core/layoutState";
+  import { signalFrontendReady } from "$lib/core/backend";
+  import { installKeyboardShortcuts } from "$lib/core/keyboard";
+  import { installLineClipboard } from "$lib/git/lineClipboard";
+  import { installHintTracking, hintMode } from "$lib/core/shortcutHints";
+  import { hintDigitFor } from "$lib/core/shortcuts";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
-  import ContextMenu from "$lib/ContextMenu.svelte";
-  import { openContextMenuFromEvent } from "$lib/contextMenu";
-  import HubTabsModal from "$lib/HubTabsModal.svelte";
-  import { buildHubTabMenuEntries } from "$lib/hubTabMenu";
-  import AppDialog from "$lib/AppDialog.svelte";
-  import ReviewDialog from "$lib/ReviewDialog.svelte";
-  import { confirmWindowClose } from "$lib/appClose";
-  import { getActiveWorkspace, getActiveView, getActiveTree, hubLabel } from "$lib/workspace";
-  import { gavinTrees } from "$lib/gavinState";
+  import ContextMenu from "$lib/core/ContextMenu.svelte";
+  import { openContextMenuFromEvent } from "$lib/core/contextMenu";
+  import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
+  import { buildHubTabMenuEntries } from "$lib/hub/hubTabMenu";
+  import AppDialog from "$lib/core/AppDialog.svelte";
+  import ReviewDialog from "$lib/review/ReviewDialog.svelte";
+  import { confirmWindowClose } from "$lib/shell/appClose";
+  import { getActiveWorkspace, getActiveView, getActiveTree, hubLabel } from "$lib/core/workspace";
+  import { gavinTrees } from "$lib/core/gavinState";
   import {
     agentProfilesStore,
     agentModelDefaultsStore,
     trustedAgentConfigs,
     wizardWorkspaceId,
-  } from "$lib/layoutState";
-  import SetupWizard from "$lib/SetupWizard.svelte";
-  import WorkspaceCreateModal from "$lib/WorkspaceCreateModal.svelte";
-  import BestOfNDialog from "$lib/BestOfNDialog.svelte";
-  import { bestOfNRequest, hydrateRuns } from "$lib/bestOfNState";
-  import { showAlert } from "$lib/dialog";
-  import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspaceCreate";
-  import { resolveAgentConfig, accentVar } from "$lib/settings";
+  } from "$lib/core/layoutState";
+  import SetupWizard from "$lib/workspace/SetupWizard.svelte";
+  import WorkspaceCreateModal from "$lib/workspace/WorkspaceCreateModal.svelte";
+  import BestOfNDialog from "$lib/cards/BestOfNDialog.svelte";
+  import { bestOfNRequest, hydrateRuns } from "$lib/cards/bestOfNState";
+  import { showAlert } from "$lib/core/dialog";
+  import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspace/workspaceCreate";
+  import { resolveAgentConfig, accentVar } from "$lib/core/settings";
   import { themeState } from "$lib/ui/themeState.svelte";
-  import { sidebarCollapsed } from "$lib/sidebarPrefs";
-  import { tabStripHubViews, visibleHubViews } from "$lib/workspaceViews";
-  import TerminalView from "$lib/TerminalView.svelte";
-  import TitleBar from "$lib/TitleBar.svelte";
-  import WindowResizeEdges from "$lib/WindowResizeEdges.svelte";
-  import NewPageButton from "$lib/NewPageButton.svelte";
-  import OpenInWindowButton from "$lib/OpenInWindowButton.svelte";
+  import { sidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
+  import { tabStripHubViews, visibleHubViews } from "$lib/hub/workspaceViews";
+  import TerminalView from "$lib/terminal/TerminalView.svelte";
+  import TitleBar from "$lib/shell/TitleBar.svelte";
+  import WindowResizeEdges from "$lib/shell/WindowResizeEdges.svelte";
+  import NewPageButton from "$lib/panes/NewPageButton.svelte";
+  import OpenInWindowButton from "$lib/panes/OpenInWindowButton.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import Sidebar from "$lib/Sidebar.svelte";
-  import CornerOverhang from "$lib/CornerOverhang.svelte";
-  import { isMacSync } from "$lib/platform";
-  import AppHubView from "$lib/AppHubView.svelte";
-  import WorkspaceRootControl from "$lib/WorkspaceRootControl.svelte";
-  import DaemonCompatBanner from "$lib/DaemonCompatBanner.svelte";
-  import DaemonRequestErrorBanner from "$lib/DaemonRequestErrorBanner.svelte";
-  import MemoryPressureBanner from "$lib/MemoryPressureBanner.svelte";
-  import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/gitState";
-  import { hubViewBusy, hubViewAttention, moveHubViewId } from "$lib/hubViewMeta";
+  import Sidebar from "$lib/sidebar/Sidebar.svelte";
+  import CornerOverhang from "$lib/shell/CornerOverhang.svelte";
+  import { isMacSync } from "$lib/core/platform";
+  import AppHubView from "$lib/hub/AppHubView.svelte";
+  import WorkspaceRootControl from "$lib/workspace/WorkspaceRootControl.svelte";
+  import DaemonCompatBanner from "$lib/shell/DaemonCompatBanner.svelte";
+  import DaemonRequestErrorBanner from "$lib/shell/DaemonRequestErrorBanner.svelte";
+  import MemoryPressureBanner from "$lib/agents/MemoryPressureBanner.svelte";
+  import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/git/gitState";
+  import { drawableHubViewId, hubViewBusy, hubViewAttention, moveHubViewId } from "$lib/hub/hubViewMeta";
   import {
     hubTabOrderByWorkspace,
     hubTabPrefsFor,
@@ -66,15 +66,16 @@
     setWorkspaceHubTabOrder,
     setWorkspaceHubTabsHidden,
     toggleHubTabsUnlocked,
-  } from "$lib/hubTabPrefs";
-  import { getDragKind, getDragPayload, setDragPayload } from "$lib/dragDrop";
+  } from "$lib/hub/hubTabPrefs";
+  import { computeReorderPositionX, getDragKind, getDragPayload, setDragPayload } from "$lib/panes/dragDrop";
   import { Lock, LockOpen } from "@lucide/svelte";
-  import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestrationState";
-  import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration";
-  import { tooltip } from "$lib/tooltip";
-  import { wheelScrollsSideways, scrollsIntoLead } from "$lib/wheelScroll";
-  import { windowDrag } from "$lib/windowDrag";
-  import { isMainWindow } from "$lib/appWindowState";
+  import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestration/orchestrationState";
+  import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration/orchestration";
+  import { tooltip } from "$lib/core/tooltip";
+  import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
+  import { windowDrag } from "$lib/shell/windowDrag";
+  import { isMainWindow } from "$lib/shell/appWindowState";
+  import { needsChromeRow as chromeRowFor } from "$lib/shell/windowChrome";
 
   let closeConfirmed = false;
   // The prompt is a DOM modal now, so the window can keep sending close
@@ -88,17 +89,17 @@
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
   const activeView = $derived(activeWorkspace ? getActiveView(activeWorkspace) : "terminal");
-  // Whether this window has to draw a header row of its own. These are
-  // the branches that have none -- the two connection states, the app
-  // hub, a window with no workspace, and a workspace whose page has no
-  // panes yet -- and a window's top edge has two jobs it cannot go
-  // without: leaving room for whatever of the window's corner overhangs
-  // a collapsed rail, and offering somewhere to grab the window.
+  // Whether this window has to draw a header row of its own
+  // (windowChrome.ts, which says which branches have none and why a
+  // window's top edge cannot go without one).
   const needsChromeRow = $derived(
-    $layoutState.status !== "ready" ||
-      $appHubOpen ||
-      !activeWorkspace ||
-      (activeView === "terminal" && getActiveTree($layoutState) === null)
+    chromeRowFor({
+      status: $layoutState.status,
+      appHubOpen: $appHubOpen,
+      hasWorkspace: activeWorkspace !== null,
+      activeView,
+      hasPageTree: getActiveTree($layoutState) !== null,
+    })
   );
   // Not HUB_VIEWS directly: a view that edits files under the bound root
   // must never appear in a workspace that has no root.
@@ -122,18 +123,15 @@
   // is what the tabs and their ⌘-digit badges are counted from.
   const tabViews = $derived(tabStripHubViews(Boolean(activeWorkspace?.rootPath), hubTabPrefs));
   const settingsView = $derived(hubViews.find((v) => v.id === "settings") ?? null);
-  // Which views this row can point AT: the tabs it draws, plus the ones
-  // reached by a button. A workspace parked on a tab that has since been
-  // hidden would otherwise keep rendering it with nothing in the row
-  // underlined -- reachable until the human clicked away, and then not
-  // at all. It falls back to the first tab instead.
-  const drawableViews = $derived(
-    new Set([...tabViews.map((v) => v.id), ...hubViews.filter((v) => v.viaAction).map((v) => v.id)])
+  // Which view this row actually renders. A workspace parked on a tab
+  // that has since been hidden falls back to the first tab the strip
+  // draws -- the same answer its Hub button lands on, from the same
+  // function (hubViewMeta's drawableHubViewId), so the two cannot point
+  // at different tabs.
+  const drawableView = $derived(
+    drawableHubViewId(activeView, Boolean(activeWorkspace?.rootPath), hubTabPrefs)
   );
-  const activeViewDef = $derived(
-    (drawableViews.has(activeView) ? hubViews.find((v) => v.id === activeView) : undefined) ??
-      tabViews[0]
-  );
+  const activeViewDef = $derived(hubViews.find((v) => v.id === drawableView) ?? tabViews[0]);
   // Resolved once: the agent-file tab's label, and (via normalizeColor)
   // the accent every tab indicator in this workspace reads.
   const activeAgent = $derived(
@@ -193,8 +191,7 @@
   }
 
   function dropSide(event: DragEvent): "before" | "after" {
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    return (event.clientX - rect.left) / rect.width < 0.5 ? "before" : "after";
+    return computeReorderPositionX((event.currentTarget as HTMLElement).getBoundingClientRect(), event.clientX);
   }
 
   function clearHubTabDrop(): void {

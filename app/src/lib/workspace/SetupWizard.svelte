@@ -1,0 +1,221 @@
+<script lang="ts">
+  import {
+    layoutState,
+    closeWizard,
+    agentProfilesStore,
+    agentModelDefaultsStore,
+    trustedAgentConfigs,
+  } from "$lib/core/layoutState";
+  import { gavinTrees } from "$lib/core/gavinState";
+  import { resolveAgentConfig, resolvePrdPath } from "$lib/core/settings";
+  import { setupProgress, type SetupStep } from "$lib/workspace/setupWizard";
+  import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
+  import * as backend from "$lib/core/backend";
+  import Modal from "$lib/core/Modal.svelte";
+  import AgentStep from "$lib/wizardSteps/AgentStep.svelte";
+  import IntegrationStep from "$lib/wizardSteps/IntegrationStep.svelte";
+  import PrdStep from "$lib/wizardSteps/PrdStep.svelte";
+  import SuperpowersStep from "$lib/wizardSteps/SuperpowersStep.svelte";
+  import GitStep from "$lib/wizardSteps/GitStep.svelte";
+  import ReviewStep from "$lib/wizardSteps/ReviewStep.svelte";
+  import LaunchStep from "$lib/wizardSteps/LaunchStep.svelte";
+
+  interface Props {
+    workspaceId: string;
+  }
+  let { workspaceId }: Props = $props();
+
+  const STEPS: Array<{ id: SetupStep; label: string }> = [
+    { id: "agent", label: "Agent" },
+    { id: "integration", label: "Integration" },
+    { id: "superpowers", label: "Superpowers" },
+    { id: "git", label: "Git" },
+    { id: "review", label: "Review" },
+    { id: "prd", label: "PRD" },
+    { id: "launch", label: "Launch" },
+  ];
+
+  const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
+  const tree = $derived($gavinTrees[workspaceId]);
+  const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
+  const agentCfg = $derived(
+    resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
+  );
+  const prdPath = $derived(resolvePrdPath(rootContext));
+
+  // The two file bodies the derivation needs. Re-read on demand rather
+  // than watched: the wizard is short-lived, so a watcher would be more
+  // machinery than the case deserves. undefined until the first read
+  // lands -- null is already "no such file", and the step to open on is
+  // decided once, so reading an unfinished load as an unfinished step
+  // opened the wizard on the wrong one for good.
+  let agentFileBody = $state<string | null | undefined>(undefined);
+  let prdBody = $state<string | null | undefined>(undefined);
+  // The Superpowers check joins them, undefined for the same reason: a
+  // detector still running is not a detector that found nothing.
+  let superpowers = $state<SuperpowersStatus | undefined>(undefined);
+  let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
+
+  async function reread(): Promise<void> {
+    const root = ws?.rootPath;
+    if (!root) return;
+    const [agentFile, prd, sp, marks] = await Promise.all([
+      backend.readFileForViewer(`${root}/${agentCfg.file}`).catch(() => null),
+      backend.readFileForViewer(`${root}/${prdPath}`).catch(() => null),
+      // A detector that threw still has to settle the pending flag, or
+      // the wizard never renders at all. UNKNOWN_STATUS is the honest
+      // stand-in: it offers no button and completes no step.
+      backend.superpowersStatus(root, agentCfg.command).catch(() => UNKNOWN_STATUS),
+      backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
+    ]);
+    agentFileBody = agentFile?.exists ? agentFile.content : null;
+    prdBody = prd?.exists ? prd.content : null;
+    superpowers = sp;
+    superpowersMark = marks[root];
+  }
+
+  $effect(() => {
+    void agentCfg.file;
+    void prdPath;
+    void ws?.rootPath;
+    void reread();
+  });
+
+  const progress = $derived(
+    setupProgress({
+      hasRoot: Boolean(ws?.rootPath),
+      configCommand: $trustedAgentConfigs(workspaceId)?.command ?? null,
+      agentFileBody,
+      prdBody,
+      mainSessionId: ws?.mainSessionId ?? null,
+      superpowers,
+      superpowersMark,
+      // Off the workspace record, so this input never joins `pending`:
+      // the git step's evidence is a recorded answer, and there is no
+      // read in flight that could change it.
+      gitTrackingAsked: Boolean(ws?.gitTrackingAsked),
+      // Same shape, same reason -- see the git field above.
+      requireReviewAsked: Boolean(ws?.requireReviewAsked),
+    })
+  );
+
+  let current = $state<SetupStep>("agent");
+  let started = $state(false);
+  // Open at the first unfinished step -- once, so advancing through a
+  // step does not immediately bounce you somewhere else. That one shot
+  // has to wait for the reads: latching on a pending derivation is
+  // latching on "nothing is done yet".
+  $effect(() => {
+    if (started || progress.pending) return;
+    if (progress.next) current = progress.next;
+    // Latched even when everything is done: the answer is settled, and a
+    // reopened wizard on a complete workspace still has to land on a step.
+    started = true;
+  });
+
+  function advance(): void {
+    void reread();
+    const i = STEPS.findIndex((s) => s.id === current);
+    if (i < STEPS.length - 1) current = STEPS[i + 1].id;
+    else closeWizard();
+  }
+</script>
+
+<!-- Held until the reads settle: the modal's first frame is the one
+     that picks the step, so showing it early shows the wrong step. -->
+{#if ws && !progress.pending}
+  <!-- `wide`: the panel's default cap is 480px, and this column of six
+       steps plus a form row (label, control, Pick) needs more than that.
+       The wizard itself only sets a preferred width and lets the panel's
+       cap win on a narrow window -- a min-width above the cap is how it
+       used to scroll sideways inside the modal. -->
+  <Modal wide onClose={closeWizard}>
+    <div class="wizard">
+      <ol class="steps">
+        {#each STEPS as step, i (step.id)}
+          <li class:current={step.id === current} class:done={progress.done.includes(step.id)}>
+            <span class="n">{i + 1}</span>
+            {step.label}
+          </li>
+        {/each}
+      </ol>
+
+      <div class="body">
+        {#if current === "agent"}
+          <AgentStep {workspaceId} onDone={advance} />
+        {:else if current === "integration"}
+          <IntegrationStep {workspaceId} onDone={advance} />
+        {:else if current === "superpowers"}
+          <SuperpowersStep
+            {workspaceId}
+            status={superpowers}
+            mark={superpowersMark}
+            onChanged={() => void reread()}
+            onDone={advance}
+          />
+        {:else if current === "git"}
+          <GitStep {workspaceId} onDone={advance} />
+        {:else if current === "review"}
+          <ReviewStep {workspaceId} onDone={advance} />
+        {:else if current === "prd"}
+          <!-- integrationDone comes from the same derivation the stepper
+               draws, so a PRD repointed here rewrites the integration
+               files exactly when there are files to rewrite. -->
+          <PrdStep
+            {workspaceId}
+            {prdBody}
+            {prdPath}
+            integrationDone={progress.done.includes("integration")}
+            onDone={advance}
+          />
+        {:else}
+          <LaunchStep {workspaceId} onDone={closeWizard} />
+        {/if}
+      </div>
+    </div>
+  </Modal>
+{/if}
+
+<style>
+  .wizard {
+    width: 640px;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .steps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    list-style: none;
+    margin: 0 0 18px;
+    padding: 0 0 12px;
+    border-bottom: 1px solid #333;
+    font-family: monospace;
+    font-size: 0.8em;
+    color: #777;
+  }
+  .steps li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .steps li.current {
+    color: #eee;
+  }
+  .steps li.done {
+    color: #8bc98b;
+  }
+  .n {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid currentColor;
+    font-size: 0.85em;
+  }
+  .body {
+    min-height: 220px;
+  }
+</style>

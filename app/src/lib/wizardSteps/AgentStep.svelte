@@ -1,15 +1,15 @@
 <script lang="ts">
-  import { editableCycle, saveAgentPause } from "../agentPauseState";
-  import { pickPath } from "../picker";
+  import { editableCycle, saveAgentPause } from "$lib/agents/agentPauseState";
+  import { pickPath } from "$lib/workspace/picker";
   import {
     layoutState,
     agentProfilesStore,
     agentModelDefaultsStore,
     setAgentField,
     trustedAgentConfigs,
-  } from "./../layoutState";
-  import { resolveAgentConfig, agentFileFromPick } from "./../settings";
-  import ConfigTrustNotice from "./../ConfigTrustNotice.svelte";
+  } from "$lib/core/layoutState";
+  import { resolveAgentConfig, agentFileFromPick } from "$lib/core/settings";
+  import ConfigTrustNotice from "$lib/workspace/ConfigTrustNotice.svelte";
 
   interface Props {
     workspaceId: string;

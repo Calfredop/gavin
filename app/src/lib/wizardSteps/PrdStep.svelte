@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { pickPath } from "../picker";
+  import { pickPath } from "$lib/workspace/picker";
   import {
     layoutState,
     daemonCompat,
@@ -8,11 +8,11 @@
     setPrdPath,
     startMainAgentWithPrompt,
     trustedAgentConfigs,
-  } from "./../layoutState";
-  import { featureBlockedReason } from "./../daemonCompat";
-  import { resolveAgentConfig, prdPathFromPick } from "./../settings";
-  import { applyPrdSections, agentFlowAvailable, prdHasPlaceholders } from "./../setupWizard";
-  import * as backend from "./../backend";
+  } from "$lib/core/layoutState";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
+  import { resolveAgentConfig, prdPathFromPick } from "$lib/core/settings";
+  import { applyPrdSections, agentFlowAvailable, prdHasPlaceholders } from "$lib/workspace/setupWizard";
+  import * as backend from "$lib/core/backend";
 
   interface Props {
     workspaceId: string;

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
-import { xtermTheme } from "./terminalTheme";
+import { xtermTheme } from "$lib/ui/terminalTheme";
+import { svelteSources } from "$lib/sources";
 
 // theme.css gives every scroller the app's own grey handle with the two
 // STANDARD properties, `scrollbar-color` and `scrollbar-width`, and the
@@ -31,10 +32,7 @@ import { xtermTheme } from "./terminalTheme";
 // same constraint appHeader.test.ts and chevronSharpening.test.ts work
 // around).
 const SOURCES = {
-  ...(import.meta.glob("../**/*.svelte", { query: "?raw", import: "default", eager: true }) as Record<
-    string,
-    string
-  >),
+  ...svelteSources(),
   ...(import.meta.glob("../../routes/**/*.svelte", { query: "?raw", import: "default", eager: true }) as Record<
     string,
     string
@@ -82,7 +80,7 @@ describe("custom WebKit scrollbars", () => {
 
   it("still covers the two tab strips, whose bars must not reach the indicator", () => {
     const strips = webkitScrollbarRules().filter((rule) => rule.selector.includes(".tab-strip"));
-    expect(strips.map((rule) => rule.file).sort()).toEqual(["../../routes/+page.svelte", "../Pane.svelte"]);
+    expect(strips.map((rule) => rule.file).sort()).toEqual(["../../routes/+page.svelte", "Pane.svelte"]);
     for (const { file, body } of strips) {
       const decls = declarations(body);
       expect(decls.width, `${file} — the strip's bar is back`).toBe("0");

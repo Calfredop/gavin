@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { agentModelDefaultsStore, agentProfilesStore, layoutState, trustedAgentConfigs } from "./../layoutState";
-  import { resolveAgentConfig } from "./../settings";
-  import * as backend from "./../backend";
-  import SuperpowersControls from "./../SuperpowersControls.svelte";
-  import type { SuperpowersMark, SuperpowersStatus } from "./../superpowers";
+  import { agentModelDefaultsStore, agentProfilesStore, layoutState, trustedAgentConfigs } from "$lib/core/layoutState";
+  import { resolveAgentConfig } from "$lib/core/settings";
+  import * as backend from "$lib/core/backend";
+  import SuperpowersControls from "$lib/agents/SuperpowersControls.svelte";
+  import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
 
   interface Props {
     workspaceId: string;

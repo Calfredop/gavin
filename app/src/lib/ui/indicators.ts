@@ -66,13 +66,13 @@ import {
   TriangleAlert,
   Unlink2,
 } from "@lucide/svelte";
-import type { SessionStatus } from "../notifications";
+import type { SessionStatus } from "$lib/core/notifications";
 // The rails already own these three; re-declaring them here would be a
 // second definition free to drift from the one the scheduler runs on.
-import type { RailState, StepAttention, StepState } from "../orchestration";
+import type { RailState, StepAttention, StepState } from "$lib/orchestration/orchestration";
 // Same reason: usageProjection.ts owns the three bands and the rule that
 // produces them, so this file names them rather than defining a second set.
-import type { ProjectionBand } from "../usageProjection";
+import type { ProjectionBand } from "$lib/agents/usageProjection";
 
 /// The five meanings colour is allowed to carry. Matches IconButton's own
 /// tone scale one for one, so a badge and a button beside it never
@@ -649,6 +649,29 @@ export function attentionIndicator(attention: StepAttention): Indicator {
   // so there is not even a session that has gone quiet.
   if (attention === "unreviewed") return unreviewedCardIndicator();
   return AGENT.turn_ended;
+}
+
+/// The badge on a terminal TAB, or null for no badge at all.
+///
+/// A tab is not a board card: idle draws nothing rather than a
+/// neutral-toned something, because a strip of tabs is mostly idle and a
+/// badge on every one of them says nothing. So only the two live states
+/// draw -- and `failed` before either, which is the whole reason this is
+/// a function and not `agentIndicator`. A failed agent's daemon status is
+/// `failed`, but the two quiet seconds behind it used to read as idle,
+/// and idle on a tab is no badge: a tab whose agent had BROKEN looked
+/// exactly like one whose agent was done.
+///
+/// `status` is the acknowledged view (layoutState's attentionStatusById),
+/// so a wait the human marked as read draws nothing -- which is what the
+/// mark is for.
+export function tabAgentIndicator(
+  status: SessionStatus | null | undefined,
+  failureReason?: string | null
+): Indicator | null {
+  if (status === "failed") return agentFailedIndicator(failureReason);
+  if (status !== "working" && status !== "waiting_for_input") return null;
+  return agentIndicator(status);
 }
 
 /// Every indicator the app can draw. Exists for the invariant tests --

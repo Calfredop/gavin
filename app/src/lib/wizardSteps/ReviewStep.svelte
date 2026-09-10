@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { layoutState, requireReviewDefault, setWorkspaceRequireReview, markRequireReviewAsked } from "./../layoutState";
+  import { layoutState, requireReviewDefault, setWorkspaceRequireReview, markRequireReviewAsked } from "$lib/core/layoutState";
   import {
     requireReviewFromSelect,
     requireReviewOptions,
     requireReviewToSelect,
     resolveRequireReview,
-  } from "./../cardReview";
+  } from "$lib/cards/cardReview";
 
   interface Props {
     workspaceId: string;

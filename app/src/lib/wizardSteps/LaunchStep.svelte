@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { layoutState, startMainAgent, switchWorkspaceView } from "./../layoutState";
+  import { layoutState, startMainAgent, switchWorkspaceView } from "$lib/core/layoutState";
 
   interface Props {
     workspaceId: string;

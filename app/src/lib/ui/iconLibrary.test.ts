@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render } from "svelte/server";
 import type { Component } from "svelte";
-import { ICON_LIBRARY, ICON_NAMES, iconByName, iconLabel, searchIcons } from "./iconLibrary";
+import { ICON_LIBRARY, ICON_NAMES, iconByName, iconLabel, searchIcons } from "$lib/ui/iconLibrary";
 
 /// The rendered lucide class of a glyph -- the only stable identity an
 /// icon component has from the outside. Borrowed from toolKindIcon.test.ts,

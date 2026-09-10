@@ -1,5 +1,5 @@
 import type { ITheme } from "@xterm/xterm";
-import type { EffectiveTheme } from "./theme";
+import type { EffectiveTheme } from "$lib/ui/theme";
 
 /// xterm needs resolved colour strings, not var() references, and it needs
 /// 16 ANSI slots that the semantic token set deliberately does not carry.

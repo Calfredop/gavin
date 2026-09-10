@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { source, svelteSources } from "$lib/sources";
 
 // indicators.ts can only promise that the vocabulary is coherent. What it
 // cannot see is a surface quietly hand-rolling a badge again -- and that
@@ -10,17 +11,21 @@ import { describe, it, expect } from "vitest";
 // rendered assertion is impossible; a grep over the files is the only
 // thing that can hold this line. Same tactic as chevronSharpening.test.ts.
 
-const SOURCES = import.meta.glob("../../**/*.svelte", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
-
-function source(file: string): string {
-  const key = Object.keys(SOURCES).find((k) => k.endsWith(`/${file}`));
-  expect(key, `${file} is no longer where this test looks for it`).toBeDefined();
-  return SOURCES[key as string];
+/// The route components, re-keyed by bare file name so they sit beside
+/// the seam's entries in one map. `../routes` is outside lib and the
+/// reorganization does not move it, so the glob stays here.
+function routeSources(): Record<string, string> {
+  const raw = import.meta.glob("../../routes/**/*.svelte", {
+    query: "?raw",
+    import: "default",
+    eager: true,
+  }) as Record<string, string>;
+  return Object.fromEntries(
+    Object.entries(raw).map(([path, text]) => [path.slice(path.lastIndexOf("/") + 1), text]),
+  );
 }
+
+const SOURCES = { ...svelteSources(), ...routeSources() };
 
 /// A CSS declaration block, so a rule's properties can be read together
 /// rather than line by line -- "round" and "filled amber" only matter
@@ -86,7 +91,7 @@ describe("no surface hand-rolls an indicator", () => {
     ["OrchestrationRail.svelte", "the rail's own state"],
     ["HomeHubView.svelte", "each rail's state in the hub's list"],
   ])("%s draws %s through StatusBadge", (file) => {
-    expect(source(file)).toMatch(/import StatusBadge from "\.{1,2}\/(ui\/)?StatusBadge\.svelte"/);
+    expect(source(file)).toMatch(/import StatusBadge from "\$lib\/(?:[\w.-]+\/)*StatusBadge\.svelte"/);
   });
 
   // The specific collision the card opened with: on the board the amber
