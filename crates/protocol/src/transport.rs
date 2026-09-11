@@ -172,6 +172,74 @@ mod imp {
         pub fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
             std::os::unix::io::AsRawFd::as_raw_fd(&self.0)
         }
+
+        /// The peer's pid, read out of the kernel's record of the
+        /// connection. See the cross-platform `server_pid` for what it is
+        /// for and why only the connecting side may ask.
+        ///
+        /// Two spellings because the two unixes never agreed on one:
+        /// Linux answers a whole `struct ucred` to `SO_PEERCRED`, macOS
+        /// answers a bare pid to `LOCAL_PEERPID` at the `SOL_LOCAL`
+        /// level. Both are read at CONNECT time by the kernel, so the
+        /// answer names the process that owned the listening socket then
+        /// -- not whatever holds the pid now.
+        pub(super) fn peer_pid(&self) -> Option<u32> {
+            use std::os::unix::io::AsRawFd;
+            let fd = self.0.as_raw_fd();
+            #[cfg(target_os = "linux")]
+            {
+                let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+                let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+                // SAFETY: `fd` is a live connected socket for the duration
+                // of the call; the pointers are to locals whose sizes are
+                // the `len` handed alongside them.
+                let rc = unsafe {
+                    libc::getsockopt(
+                        fd,
+                        libc::SOL_SOCKET,
+                        libc::SO_PEERCRED,
+                        (&mut cred as *mut libc::ucred).cast(),
+                        &mut len,
+                    )
+                };
+                if rc != 0 || cred.pid <= 0 {
+                    return None;
+                }
+                Some(cred.pid as u32)
+            }
+            #[cfg(target_vendor = "apple")]
+            {
+                // Spelled out rather than taken from `libc` so this arm
+                // does not ride on which release first exported them:
+                // `SOL_LOCAL` is 0 (sys/socket.h) and `LOCAL_PEERPID` is
+                // 0x002 (sys/un.h).
+                const SOL_LOCAL: libc::c_int = 0;
+                const LOCAL_PEERPID: libc::c_int = 0x002;
+                let mut pid: libc::pid_t = 0;
+                let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+                // SAFETY: as above.
+                let rc = unsafe {
+                    libc::getsockopt(
+                        fd,
+                        SOL_LOCAL,
+                        LOCAL_PEERPID,
+                        (&mut pid as *mut libc::pid_t).cast(),
+                        &mut len,
+                    )
+                };
+                if rc != 0 || pid <= 0 {
+                    return None;
+                }
+                Some(pid as u32)
+            }
+            // A unix that is neither: no portable spelling, and the
+            // caller's contract is already "None means nothing to act on".
+            #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+            {
+                let _ = fd;
+                None
+            }
+        }
     }
 
     impl Stream {
@@ -212,9 +280,10 @@ mod imp {
     use std::time::Instant;
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{
-        CloseHandle, LocalFree, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA,
-        ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED,
-        GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL, INVALID_HANDLE_VALUE, WIN32_ERROR,
+        CloseHandle, LocalFree, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING,
+        ERROR_MORE_DATA, ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY,
+        ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE,
+        HLOCAL, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT, WIN32_ERROR,
     };
     use windows::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -225,15 +294,18 @@ mod imp {
         TOKEN_USER,
     };
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_NONE, OPEN_EXISTING,
+        CreateFileW, ReadFile, WriteFile, FILE_FLAG_OVERLAPPED, FILE_SHARE_NONE, OPEN_EXISTING,
         PIPE_ACCESS_DUPLEX,
     };
     use windows::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, PeekNamedPipe, WaitNamedPipeW, PIPE_READMODE_BYTE,
-        PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerProcessId, PeekNamedPipe,
+        WaitNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-    use windows::Win32::System::IO::CancelIoEx;
+    use windows::Win32::System::Threading::{
+        CreateEventW, GetCurrentProcess, OpenProcessToken, WaitForSingleObject, INFINITE,
+    };
+    use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
     /// How long a client keeps asking when the name is not there at all.
     ///
@@ -258,6 +330,135 @@ mod imp {
 
     fn last_error() -> WIN32_ERROR {
         WIN32_ERROR(io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32)
+    }
+
+    /// The error code inside an `io::Error` this module built, so a
+    /// caller can re-read what `complete` reported. An error minted from
+    /// a `Kind` rather than an OS code (the timeout below) carries none,
+    /// and 0 matches no arm.
+    fn code_of(e: &io::Error) -> WIN32_ERROR {
+        WIN32_ERROR(e.raw_os_error().unwrap_or(0) as u32)
+    }
+
+    /// One overlapped operation, and the event the kernel signals when it
+    /// ends.
+    ///
+    /// Every read, write and accept gets its own rather than sharing one
+    /// per stream: the kernel owns an `OVERLAPPED` until its operation
+    /// completes, so a second operation cannot borrow it while the first
+    /// is in flight -- and being in flight concurrently is the entire
+    /// point of this type existing.
+    ///
+    /// Boxed so the address handed to the kernel does not move if the
+    /// caller's stack frame does.
+    struct Op {
+        ov: Box<OVERLAPPED>,
+        event: HANDLE,
+    }
+
+    impl Op {
+        /// Manual-reset, so a completion that lands before the wait
+        /// starts is still visible to it -- an auto-reset event would let
+        /// a fast completion go unnoticed and hang the waiter.
+        fn new() -> io::Result<Op> {
+            let event = unsafe { CreateEventW(None, true, false, PCWSTR::null()) }
+                .map_err(|e| io::Error::from_raw_os_error(e.code().0))?;
+            let mut ov = Box::new(OVERLAPPED::default());
+            ov.hEvent = event;
+            Ok(Op { ov, event })
+        }
+
+        fn ptr(&mut self) -> *mut OVERLAPPED {
+            &mut *self.ov as *mut OVERLAPPED
+        }
+    }
+
+    impl Drop for Op {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = CloseHandle(self.event);
+            }
+        }
+    }
+
+    /// Waits out an overlapped operation and reports the bytes it moved.
+    ///
+    /// `started` is what `ReadFile`/`WriteFile`/`ConnectNamedPipe`
+    /// answered. On an overlapped handle they usually report
+    /// `ERROR_IO_PENDING` and finish later, but they are allowed to
+    /// finish on the spot, and both have to be handled -- a wait that
+    /// assumed "pending" would be waiting on an event nobody will set
+    /// again.
+    ///
+    /// A timed-out operation is cancelled and then REAPED with a blocking
+    /// `GetOverlappedResult` before this returns. The kernel owns the
+    /// `OVERLAPPED` and the caller's buffer until the operation truly
+    /// ends; returning while it is still in flight would hand back memory
+    /// the kernel is still writing into. A cancel that raced a completion
+    /// is reported AS that completion, so a timeout never swallows bytes
+    /// that actually arrived.
+    fn complete(
+        handle: HANDLE,
+        op: &mut Op,
+        started: windows::core::Result<()>,
+        timeout_ms: u32,
+    ) -> io::Result<u32> {
+        let mut moved: u32 = 0;
+        if started.is_err() {
+            let err = last_error();
+            if err != ERROR_IO_PENDING {
+                return Err(io::Error::from_raw_os_error(err.0 as i32));
+            }
+            let waited = unsafe { WaitForSingleObject(op.event, timeout_ms) };
+            if waited == WAIT_TIMEOUT {
+                unsafe {
+                    let _ = CancelIoEx(handle, Some(op.ptr() as *const OVERLAPPED));
+                }
+                return match unsafe {
+                    GetOverlappedResult(handle, op.ptr() as *const OVERLAPPED, &mut moved, true)
+                } {
+                    Ok(()) => Ok(moved),
+                    Err(_) => match last_error() {
+                        ERROR_OPERATION_ABORTED => {
+                            Err(io::Error::new(io::ErrorKind::WouldBlock, "read timed out"))
+                        }
+                        e => Err(io::Error::from_raw_os_error(e.0 as i32)),
+                    },
+                };
+            }
+            if waited != WAIT_OBJECT_0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        match unsafe {
+            GetOverlappedResult(handle, op.ptr() as *const OVERLAPPED, &mut moved, false)
+        } {
+            Ok(()) => Ok(moved),
+            Err(_) => match last_error() {
+                // Byte-mode pipes do not raise this, but a handle that
+                // arrived in message mode would -- and the bytes ARE in
+                // the buffer, so it is a short read, not a failure.
+                ERROR_MORE_DATA => Ok(moved),
+                e => Err(io::Error::from_raw_os_error(e.0 as i32)),
+            },
+        }
+    }
+
+    /// Waits for a client on a listening instance.
+    ///
+    /// `ConnectNamedPipe` on an overlapped handle must be given an
+    /// `OVERLAPPED` -- passing null is an error rather than a blocking
+    /// call. `ERROR_PIPE_CONNECTED` still means a client is already
+    /// attached, which is success and is the return value everybody gets
+    /// wrong; in that arm nothing was queued, so there is nothing to wait
+    /// for and the event would never be set.
+    fn connect_instance(handle: HANDLE) -> io::Result<()> {
+        let mut op = Op::new()?;
+        let started = unsafe { ConnectNamedPipe(handle, Some(op.ptr())) };
+        if started.is_err() && last_error() == ERROR_PIPE_CONNECTED {
+            return Ok(());
+        }
+        complete(handle, &mut op, started, INFINITE).map(|_| ())
     }
 
     /// A pipe handle and the state a Unix socket keeps inside the kernel.
@@ -312,7 +513,7 @@ mod imp {
                         FILE_SHARE_NONE,
                         None,
                         OPEN_EXISTING,
-                        FILE_FLAGS_AND_ATTRIBUTES(0),
+                        FILE_FLAG_OVERLAPPED,
                         None,
                     )
                 };
@@ -362,7 +563,7 @@ mod imp {
             let server = unsafe {
                 CreateNamedPipeW(
                     PCWSTR(wide_name.as_ptr()),
-                    PIPE_ACCESS_DUPLEX,
+                    PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
                     PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                     1,
                     PIPE_BUFFER_BYTES,
@@ -381,7 +582,7 @@ mod imp {
                     FILE_SHARE_NONE,
                     None,
                     OPEN_EXISTING,
-                    FILE_FLAGS_AND_ATTRIBUTES(0),
+                    FILE_FLAG_OVERLAPPED,
                     None,
                 )
             };
@@ -398,15 +599,12 @@ mod imp {
             // ERROR_PIPE_CONNECTED rather than success -- which IS the
             // success case, and is the one return value of
             // ConnectNamedPipe everybody gets wrong.
-            unsafe {
-                if ConnectNamedPipe(server, None).is_err() {
-                    let err = last_error();
-                    if err != ERROR_PIPE_CONNECTED {
-                        let _ = CloseHandle(server);
-                        let _ = CloseHandle(client);
-                        return Err(io::Error::from_raw_os_error(err.0 as i32));
-                    }
+            if let Err(e) = connect_instance(server) {
+                unsafe {
+                    let _ = CloseHandle(server);
+                    let _ = CloseHandle(client);
                 }
+                return Err(e);
             }
             Ok((Stream::wrap(client, None), Stream::wrap(server, None)))
         }
@@ -451,6 +649,20 @@ mod imp {
 
         pub fn peer_path(&self) -> Option<PathBuf> {
             self.0.peer.clone()
+        }
+
+        /// The pid of the process serving this pipe. See the
+        /// cross-platform `server_pid` for what it is for.
+        ///
+        /// `GetNamedPipeServerProcessId` answers for the SERVER end
+        /// whichever end asks, so on an accepted handle it names this
+        /// process -- which is why the wrapper refuses to ask there.
+        pub(super) fn peer_pid(&self) -> Option<u32> {
+            let mut pid = 0u32;
+            // SAFETY: the handle is a live pipe owned by this `Inner`,
+            // and the only pointer is to a local `u32` the call writes.
+            unsafe { GetNamedPipeServerProcessId(self.0.handle, &mut pid) }.ok()?;
+            (pid != 0).then_some(pid)
         }
     }
 
@@ -501,40 +713,40 @@ mod imp {
                     std::thread::sleep(POLL_INTERVAL);
                 }
             }
-            let mut read: u32 = 0;
-            let ok = unsafe { ReadFile(self.0.handle, Some(buf), Some(&mut read), None) };
-            if ok.is_err() {
-                return match last_error() {
+            let mut op = Op::new()?;
+            let started = unsafe { ReadFile(self.0.handle, Some(buf), None, Some(op.ptr())) };
+            match complete(self.0.handle, &mut op, started, INFINITE) {
+                Ok(read) => Ok(read as usize),
+                Err(e) => match code_of(&e) {
                     // The peer closed its last handle. A socket answers
                     // this with a zero-length read, and `read_message`
                     // turns THAT into the `Ok(None)` every connection
                     // loop breaks on -- so an error here would turn every
                     // ordinary disconnect into a logged failure.
                     ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED => Ok(0),
-                    // Byte-mode pipes do not raise this, but a handle
-                    // that arrived in message mode would, and the bytes
-                    // ARE in the buffer.
-                    ERROR_MORE_DATA => Ok(read as usize),
-                    e => Err(io::Error::from_raw_os_error(e.0 as i32)),
-                };
+                    // `shutdown` cancelled this read. That is the end of
+                    // stream a shut-down socket reports, and the flag is
+                    // what tells it apart from any other cancellation.
+                    ERROR_OPERATION_ABORTED if self.0.read_closed.load(Ordering::SeqCst) => Ok(0),
+                    _ => Err(e),
+                },
             }
-            Ok(read as usize)
         }
     }
 
     impl Stream {
         pub fn write_ref(&self, buf: &[u8]) -> io::Result<usize> {
-            let mut written: u32 = 0;
-            let ok = unsafe { WriteFile(self.0.handle, Some(buf), Some(&mut written), None) };
-            if ok.is_err() {
-                return match last_error() {
+            let mut op = Op::new()?;
+            let started = unsafe { WriteFile(self.0.handle, Some(buf), None, Some(op.ptr())) };
+            match complete(self.0.handle, &mut op, started, INFINITE) {
+                Ok(written) => Ok(written as usize),
+                Err(e) => match code_of(&e) {
                     ERROR_BROKEN_PIPE | ERROR_NO_DATA | ERROR_PIPE_NOT_CONNECTED => Err(
                         io::Error::new(io::ErrorKind::BrokenPipe, "the peer closed the pipe"),
                     ),
-                    e => Err(io::Error::from_raw_os_error(e.0 as i32)),
-                };
+                    _ => Err(e),
+                },
             }
-            Ok(written as usize)
         }
 
         /// Deliberately not `FlushFileBuffers`.
@@ -671,14 +883,11 @@ mod imp {
                     None => create_instance(&self.wide_name, &self.sd)?,
                 }
             };
-            unsafe {
-                if ConnectNamedPipe(handle, None).is_err() {
-                    let err = last_error();
-                    if err != ERROR_PIPE_CONNECTED {
-                        let _ = CloseHandle(handle);
-                        return Err(io::Error::from_raw_os_error(err.0 as i32));
-                    }
+            if let Err(e) = connect_instance(handle) {
+                unsafe {
+                    let _ = CloseHandle(handle);
                 }
+                return Err(e);
             }
             match create_instance(&self.wide_name, &self.sd) {
                 Ok(next) => *self.waiting.lock().unwrap() = Some(next),
@@ -709,7 +918,7 @@ mod imp {
         let handle = unsafe {
             CreateNamedPipeW(
                 PCWSTR(wide_name.as_ptr()),
-                PIPE_ACCESS_DUPLEX,
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                 PIPE_UNLIMITED_INSTANCES,
                 PIPE_BUFFER_BYTES,
@@ -770,6 +979,31 @@ impl Stream {
     /// type name and nothing else.
     pub fn connect(endpoint: impl Into<Endpoint>) -> io::Result<Stream> {
         Stream::connect_at(&endpoint.into())
+    }
+
+    /// Which process is serving the endpoint this stream was connected
+    /// to -- the daemon's pid, asked of the kernel rather than of a
+    /// process list.
+    ///
+    /// This is the only honest way to address "the daemon on THIS
+    /// socket". A name is not one: `taskkill /IM gavin-daemon.exe` and
+    /// `pkill -x gavin-daemon` reach every daemon on the machine, which
+    /// is how `cargo test -p app` used to take down the one holding a
+    /// human's sessions, and how Restart daemon in the dev app used to
+    /// take the stable app's with it.
+    ///
+    /// Only the CONNECTING side may ask. An accepted stream and a
+    /// `pair()` are unnamed -- they have no endpoint they reached for --
+    /// and the platform primitives answer something different or
+    /// something useless for them, so both get `None`. `peer_path` is
+    /// already exactly that distinction, so it is the gate.
+    ///
+    /// `None` also covers "the kernel would not say", and every caller
+    /// must treat it as "no process to act on" rather than falling back
+    /// to a broader guess -- a broader guess is the bug this replaces.
+    pub fn server_pid(&self) -> Option<u32> {
+        self.peer_path()?;
+        self.peer_pid()
     }
 }
 
@@ -916,6 +1150,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The whole point of `server_pid`: the connection itself names the
+    /// process serving it, so a caller that wants to stop THAT daemon
+    /// never has to ask the machine for everything called gavin-daemon.
+    ///
+    /// The listener here is bound in-process, so the pid the kernel
+    /// reports back is one the test already knows.
+    #[test]
+    fn a_connection_names_the_process_serving_the_endpoint() {
+        let dir = std::env::temp_dir().join(format!("gavin-transport-pid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let endpoint = Endpoint::new(dir.join("owner.sock"));
+        let listener = Listener::bind(&endpoint).unwrap();
+        let accepted = std::thread::spawn(move || listener.accept().unwrap());
+
+        let client = Stream::connect(&endpoint).unwrap();
+        assert_eq!(
+            client.server_pid(),
+            Some(std::process::id()),
+            "this process bound the endpoint, so this process is what stopping it would reach"
+        );
+
+        // The other side has no endpoint it reached for, and the platform
+        // primitives answer something else entirely there -- the peer's
+        // pid on unix, this process's own on Windows. Neither is "who
+        // serves this socket", so the answer is that there is none.
+        let server = accepted.join().unwrap();
+        assert_eq!(server.server_pid(), None, "an accepted connection names no server");
+        let (a, _b) = Stream::pair().unwrap();
+        assert_eq!(a.server_pid(), None, "nor does a pair");
+
+        drop(client);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Separate from the round-trip test above on purpose: probing IS a
     /// connection, and a listener that accepted the probe would be
     /// answering it instead of the client that came next.
@@ -937,5 +1205,53 @@ mod tests {
         let endpoint = Endpoint::new(dir.join("never.sock"));
         assert!(!is_listening(&endpoint));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A push must not wait on a read that only the peer can end.
+    ///
+    /// This is the shape `server.rs` runs all day: the connection thread
+    /// parks in `read` waiting for the next request, while another thread
+    /// writes an unsolicited push through a `try_clone` of the same
+    /// stream (the `Arc<Mutex<Stream>>` writer). A Unix socket is full
+    /// duplex, so it has always worked there.
+    ///
+    /// A Windows pipe handle opened without `FILE_FLAG_OVERLAPPED` is
+    /// synchronous, and the kernel serialises every operation on a
+    /// synchronous handle: the write queues behind the read and never
+    /// returns. It queues holding the writer mutex besides, so the first
+    /// push wedges every later one -- which is a hung app, not a slow one.
+    ///
+    /// Guarded by a timeout rather than left to deadlock: a test that
+    /// hangs reports nothing and takes the suite with it.
+    #[test]
+    fn a_push_completes_while_another_thread_is_parked_in_read() {
+        let (client, server) = Stream::pair().unwrap();
+        let parked_on = server.try_clone().unwrap();
+
+        // Nothing is ever sent to this end, exactly as when the app is
+        // idle and the daemon is waiting for its next request.
+        let parked = std::thread::spawn(move || {
+            let mut buf = [0u8; 1];
+            let _ = parked_on.read_ref(&mut buf);
+        });
+        // Let the reader reach the kernel before the write is issued --
+        // the ordering the bug needs, and the one the daemon always has.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let pusher = std::thread::spawn(move || {
+            let _ = tx.send(server.write_ref(b"push\n"));
+        });
+
+        let wrote = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the push deadlocked behind a parked reader on the same handle");
+        assert_eq!(wrote.unwrap(), 5);
+
+        // Drop the far end so the parked reader sees the pipe close and
+        // this test leaves no thread behind.
+        drop(client);
+        let _ = pusher.join();
+        let _ = parked.join();
     }
 }

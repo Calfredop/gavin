@@ -13,7 +13,7 @@
     "bundle": "tauri build --config src-tauri/tauri.bundle.conf.json -- --locked",
     "test": "vitest run"
   },
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "dependencies": {
     "@codemirror/commands": "^6.11.0",
     "@codemirror/lang-css": "^6.3.1",

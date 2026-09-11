@@ -2,7 +2,6 @@ use crate::proc::ProcessHandle;
 use protocol::QueuedInput;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::os::unix::fs::PermissionsExt;
 
 /// Tightens a database file to owner-only (0600), matching the socket
 /// beside it (`server::bind_server`) and the app-support directory around
@@ -17,7 +16,18 @@ use std::os::unix::fs::PermissionsExt;
 /// schema version -- so reasserting the mode unconditionally is the whole
 /// migration for a database written before this existed.
 pub fn secure_db_file(path: &std::path::Path) -> anyhow::Result<()> {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    // Only unix states this as a mode. On Windows these files sit under
+    // %LOCALAPPDATA%, already inside the user's own profile and inheriting
+    // its ACL -- the same reason `main` tightens the app-support directory
+    // on unix alone, and the same reason the socket beside them is a named
+    // pipe carrying its own DACL rather than a file to chmod.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -766,10 +776,17 @@ mod tests {
         assert_eq!(registry.list().unwrap().len(), 0);
     }
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(unix)]
     fn mode_of(path: &std::path::Path) -> u32 {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 
+    // A mode is a unix concept and the Windows arm above is a no-op, so
+    // these two assert nothing there.
+    #[cfg(unix)]
     #[test]
     fn a_freshly_opened_database_is_owner_only() {
         // R7: the socket beside it is 0600 (`bind_server`); the database
@@ -783,6 +800,7 @@ mod tests {
         assert_eq!(mode_of(&db_path), 0o600);
     }
 
+    #[cfg(unix)]
     #[test]
     fn opening_a_database_already_at_0644_tightens_it_to_0600() {
         // The upgrade path: a file this fix predates sits on disk at the

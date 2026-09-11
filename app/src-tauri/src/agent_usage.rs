@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -218,7 +218,7 @@ fn claude_version() -> String {
     // `CreateProcess` will not start it without the extension (see
     // `program`). A miss leaves the fallback version below, which is the
     // same answer this already gave for a machine with no CLI.
-    Command::new(crate::program::resolve_or_name("claude"))
+    crate::program::command(crate::program::resolve_or_name("claude"))
         .arg("--version")
         .output()
         .ok()
@@ -267,7 +267,7 @@ fn credentials_blob(keychain: Option<String>, file: &Path) -> Option<String> {
 /// it.
 #[cfg(target_os = "macos")]
 fn keychain_credentials() -> Option<String> {
-    Command::new("security")
+    crate::program::command("security")
         .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
         .output()
         .ok()
@@ -381,7 +381,7 @@ fn run_curl(config: &str) -> Result<String, String> {
     // `.exe`. (PowerShell's `curl` alias for `Invoke-WebRequest` is a
     // shell alias and is not what `CreateProcess` finds.) `-K -` reads
     // the config, including the header lines, from stdin on all of them.
-    let mut child = Command::new(crate::program::resolve_or_name("curl"))
+    let mut child = crate::program::command(crate::program::resolve_or_name("curl"))
         .arg("-K")
         .arg("-")
         .stdin(Stdio::piped())

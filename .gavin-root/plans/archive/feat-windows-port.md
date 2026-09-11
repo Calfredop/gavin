@@ -45,6 +45,32 @@ What is confirmed here, on a mac, and what the Windows pass owes:
   `.cmd`, and inside `sh.exe` the shim is the one that wins, which is the
   whole reason this route was chosen; and that `git --exec-path` answers
   before any workspace is open, since the resolution happens at PTY spawn.
+- **CONFIRMED on Windows 11, 2026-09-11, and the decision stands.** ConPTY
+  gives `sh.exe` a tty at both ends; `git --exec-path` answers before any
+  workspace is open and resolves `<git>/usr/bin/sh.exe`; Claude Code's
+  full-screen TUI draws in a session and sits waiting for a keystroke; the
+  POSIX epilogue re-raises its exit code through a real PTY and an `&&`
+  chain short-circuits. All of it is `shell::tests` and `pty::tests` now
+  rather than a session's say-so. Still unproven for want of the software
+  on the machine: the npm-shim claim itself — the only CLI installed was
+  `claude`, by winget, as a native `.exe`.
+- **What confirming it cost, because it was not free.** The bullet above
+  — "this decision spends a dependency the app had already taken" — is
+  true of `git.exe` and NOT of the shell's own toolbox. A default Git for
+  Windows install puts only `<git>\cmd` on the machine PATH, and `sh -c`
+  is neither a login nor an interactive shell so it reads no profile. The
+  shell every emitted command line ran in therefore had **no `bash`, no
+  `ls`, no `sed`, no `grep`** — measured on a stock box as
+  `bash=[] ls=[] sed=[] git=[/cmd/git]`. `buildToolCommand` emits every
+  `script`-kind tool as `bash -c <body>`, so each one died with "command
+  not found" before its body ran and the epilogue reported 127 about a
+  tool that never started. A dev build hides it completely: a daemon
+  launched from a terminal inherits Git Bash's already-fixed PATH. The
+  daemon now prepends `<git>/mingw64/bin`, `<git>/usr/local/bin` and
+  `<git>/usr/bin` for the POSIX shell only
+  (`shell::path_with_posix_tools`), in `/etc/profile`'s own order, for a
+  shell that will never read it. A plain `%COMSPEC%` tab is untouched and
+  keeps the PATH Windows gave it.
 
 The Rust side does **not** inherit this. `Command::new("claude")` still
 cannot start a `.cmd` or an extensionless script — `CreateProcess` runs
@@ -73,6 +99,21 @@ neither — so the CLI probes need their own answer under "Binaries".
   -p gavin-mcp --target x86_64-pc-windows-msvc`, which swaps the bundled
   build for a linked one that `check` never has to link. The honest gate
   is the CI job.
+- **A PTY is not platform-neutral at the point it ENDS**, and this card
+  assumed it was. Nothing above says so, because nothing above had to:
+  portable-pty hands back a reader on both platforms and the daemon's
+  pump breaks on `Ok(0)`. But a ConPTY's output pipe is held by
+  `conhost.exe` as well as by the child, so on Windows **the child
+  exiting gives the reader no EOF** — the pump never breaks, and with it
+  `finish_tool_runs_for_session`, `SessionExited`, `forget_session` and
+  the screen-model drop are all unreachable for a session that ends by
+  itself. A tool's exit code never becomes its verdict and a rail step
+  never completes. Found by running it on 2026-09-11;
+  `fix-windows-sessions-never-report-exit` carries it, with
+  `pty::tests::a_readers_stream_ends_when_the_command_does` as the
+  one-command reproduction. `kill_session` closes the pty itself and so
+  is unaffected, which is why every interactive path a human tries looks
+  right.
 
 ## Window chrome: the controls stay top-left (decided)
 

@@ -25,6 +25,8 @@ import {
   noPromptReason,
   provisionalSessionName,
   runStatusNeeded,
+  unresumableConversationReason,
+  type ConversationLog,
 } from "$lib/cards/cardRun";
 import {
   developingBlocker,
@@ -94,6 +96,44 @@ export async function resolveAttachmentsForRun(
     statuses,
   };
 }
+
+/// Whether the conversation this binding recorded can be reopened: the
+/// existence check a resume needs, asked of the backend that owns the
+/// resolver (`agent_tokens.rs`'s `conversation_log`).
+///
+/// Skipped entirely -- `unknown` without a call -- for a profile with no
+/// resume argv or a binding with no id: neither can reopen anything, so
+/// there is nothing to check and the written reconstruction is already
+/// the answer. Shared with the rail scheduler's `resumeStep`, so a step
+/// and a card refuse on exactly the same evidence.
+///
+/// Fails OPEN. A check that threw -- the command missing from an older
+/// host, a permissions error on the log root -- reads as `unknown`, which
+/// builds the command and lets the CLI answer, exactly as before the
+/// check existed. A guard that refused on its own error would refuse
+/// every resume on any machine where it happened to be broken, and
+/// `missing` has to stay a claim about the conversation, never about the
+/// checker.
+export async function conversationLogFor(
+  agent: { profileId: string; resumeArgs: string },
+  conversationId: string | null | undefined
+): Promise<ConversationLog> {
+  const id = conversationId?.trim();
+  if (!agent.resumeArgs.trim() || !id) return "unknown";
+  try {
+    const log = await backend.conversationLog(agent.profileId, id);
+    return log === "present" || log === "missing" ? log : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/// The sentence a card's Resume answers with when its conversation was
+/// never written. Re-launch is the way forward here because it is the
+/// button beside Resume in the detail modal and the card menu, and it
+/// replays the launch command with a fresh id -- the run that never
+/// happened, rather than the resume that cannot.
+const RELAUNCH_WAY_FORWARD = "Re-launch starts the card again from the beginning.";
 
 /// Put the human in front of a session: the terminal view, on whichever
 /// page holds it, with its tab active. False when no page holds the id
@@ -384,6 +424,24 @@ async function launchCard(
   const agent = agentForCard(workspaceId, card);
   if (agent.promptArgs === null) return noPromptReason(agent.label);
 
+  // Whether the conversation a resume would reopen exists at all. Asked
+  // here, ahead of the launch wall, so the refusal reaches the surface
+  // that pressed the button: a resume that queued and was refused at
+  // drain time would be refused into a void (launchQueuedCard discards
+  // the answer), and the card would sit In Progress offering the same
+  // button. Only a resume refuses -- a review has an honest written
+  // fallback (composeReviewLaunchPrompt) and takes it below, exactly as
+  // a profile with no resume argv would. Nothing has been written yet,
+  // so a refused card is exactly the card that was there.
+  const conversationLog =
+    mode === "resume" || mode === "review"
+      ? await conversationLogFor(agent, binding?.conversationId)
+      : "unknown";
+  if (mode === "resume") {
+    const unresumable = unresumableConversationReason(conversationLog, RELAUNCH_WAY_FORWARD);
+    if (unresumable) return unresumable;
+  }
+
   // The launch wall, last of the gates and the only one that does not
   // refuse: a held launch is QUEUED and starts by itself when a slot
   // frees or pressure clears (launchQueue.ts). Before the status write
@@ -432,7 +490,7 @@ async function launchCard(
   // question in it.
   const resumeCommand =
     mode === "resume" || mode === "review"
-      ? buildResumeCommand(agent.launchCommand, agent.resumeArgs, binding?.conversationId)
+      ? buildResumeCommand(agent.launchCommand, agent.resumeArgs, binding?.conversationId, conversationLog)
       : null;
   const reopening = resumeCommand !== null && binding !== null;
 

@@ -1,4 +1,5 @@
 ---
+order: 5120
 title: Break app/src/lib out of one flat directory
 status: Done
 priority: medium

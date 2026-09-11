@@ -15,6 +15,10 @@ vi.mock("$lib/core/backend", () => ({
   writeInput: vi.fn(),
   getBoard: vi.fn(),
   attachmentStatus: vi.fn(),
+  // "unknown" by default: gavin cannot tell whether the transcript is
+  // there, which is today's behaviour -- build the resume command and
+  // let the CLI answer. The tests about the guard drive it to "missing".
+  conversationLog: vi.fn(async () => "unknown" as const),
   // Resolved by default with an empty queue: the reply is applied to the
   // store, not asserted on, so every test that is not about queueing
   // just needs it not to reject.
@@ -1348,6 +1352,114 @@ describe("a failed binding", () => {
 
     expect(await resumeCard("ws-1", card("task", "In Progress"))).toBeNull();
     expect(vi.mocked(backend.createSession).mock.calls[0][1]).toContain("gavin-resume");
+  });
+
+  /// A binding whose conversation id gavin minted at launch, exactly as
+  /// the resume-by-id test above -- the one difference is what the
+  /// backend says about the transcript.
+  function bindingWithConversation(): void {
+    vi.mocked(resolvedAgentFor).mockReturnValue({ ...claudeAgent, profileId: "claude-code" } as never);
+    kanbanState.set({
+      "ws-1": board([
+        {
+          path: "/ws/.gavin-root/plans/t.md",
+          sessionId: "s-live",
+          cwd: "/ws",
+          command: "claude --session-id u-1 'go'",
+          conversationId: "u-1",
+          launchCwd: "/ws",
+          resumeAttempts: 0,
+        },
+      ]),
+    });
+    broke("s-live");
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+  }
+
+  // The spec's own "left open" item, closed. Gavin mints the conversation
+  // id BEFORE the agent has done anything, so holding one proves a launch
+  // was attempted, not that a conversation happened. An agent that died
+  // before it wrote a line leaves `claude --resume <uuid>` nothing to
+  // open -- the CLI says so and exits -- and a card that kept offering
+  // that button offered it for ever.
+  it("refuses to resume a conversation the agent never wrote, and writes nothing", async () => {
+    bindingWithConversation();
+    vi.mocked(backend.conversationLog).mockResolvedValueOnce("missing");
+
+    const err = await resumeCard("ws-1", card("task", "In Progress"));
+
+    expect(err).toMatch(/before it wrote a line/);
+    // The way forward is named, and it is the button beside Resume.
+    expect(err).toContain("Re-launch");
+    expect(backend.conversationLog).toHaveBeenCalledWith("claude-code", "u-1");
+    expect(backend.createSession).not.toHaveBeenCalled();
+    // Refused BEFORE anything is written or shown: no status, no review
+    // sheet, no file read -- and the binding still carries the LAUNCH
+    // command, which is what makes Re-launch replay the run that never
+    // happened rather than the resume that cannot.
+    expect(backend.readFileForViewer).not.toHaveBeenCalled();
+    expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
+    expect(ensureCardReviewed).not.toHaveBeenCalled();
+    expect(get(kanbanState)["ws-1"].cardSessions[0]).toMatchObject({
+      sessionId: "s-live",
+      command: "claude --session-id u-1 'go'",
+      conversationId: "u-1",
+    });
+  });
+
+  // Auto-resume reaches resumeCard without a human. The same refusal
+  // stops it: no agent launch is spent on a command that cannot work,
+  // and the budget is not touched, because nothing was attempted.
+  it("refuses an UNATTENDED resume the same way, spending no launch", async () => {
+    bindingWithConversation();
+    vi.mocked(backend.conversationLog).mockResolvedValueOnce("missing");
+
+    const err = await resumeCard("ws-1", card("task", "In Progress"), { automatic: true });
+
+    expect(err).toMatch(/before it wrote a line/);
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(get(kanbanState)["ws-1"].cardSessions[0]).toMatchObject({ resumeAttempts: 0 });
+  });
+
+  // A review is a different action with an honest written fallback
+  // (composeReviewLaunchPrompt): the reviewer's agent is being asked what
+  // the work was for, and the card says that in writing. So a missing log
+  // does not refuse it -- it takes the fallback, exactly as a profile
+  // with no resume argv would.
+  it("lets a review fall back to the written prompt instead of refusing", async () => {
+    bindingWithConversation();
+    vi.mocked(backend.conversationLog).mockResolvedValueOnce("missing");
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\n---\nDo it.\n",
+      truncated: false,
+      exists: true,
+    });
+
+    expect(await reviewCardSession("ws-1", card("task", "Done"))).toBeNull();
+
+    const command = vi.mocked(backend.createSession).mock.calls[0][1] as string;
+    expect(command).toContain("is finished and is being reviewed");
+    expect(command).not.toContain("--resume");
+  });
+
+  // Only a log gavin can SEE, which does not hold the file, is evidence.
+  // "unknown" -- no TokenLog for the profile, a CLAUDE_CONFIG_DIR pointed
+  // elsewhere -- keeps today's behaviour, and so does the check itself
+  // failing: a guard that refused on its own error would refuse every
+  // resume on a machine where it happened to be broken.
+  it("reopens as before when the log is present, unknowable, or the check fails", async () => {
+    for (const answer of ["present", "unknown"] as const) {
+      vi.clearAllMocks();
+      bindingWithConversation();
+      vi.mocked(backend.conversationLog).mockResolvedValueOnce(answer);
+      expect(await resumeCard("ws-1", card("task", "In Progress"))).toBeNull();
+      expect(backend.createSession).toHaveBeenCalledWith("/ws", "claude --resume u-1", "/ws");
+    }
+    vi.clearAllMocks();
+    bindingWithConversation();
+    vi.mocked(backend.conversationLog).mockRejectedValueOnce(new Error("no such command"));
+    expect(await resumeCard("ws-1", card("task", "In Progress"))).toBeNull();
+    expect(backend.createSession).toHaveBeenCalledWith("/ws", "claude --resume u-1", "/ws");
   });
 });
 

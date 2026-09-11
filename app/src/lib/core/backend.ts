@@ -5,6 +5,7 @@ import type { SystemMemorySample, WatchmanSample } from "$lib/agents/memory";
 import type { LaunchConfig } from "$lib/agents/launchGate";
 import type { PrReport } from "$lib/git/pullRequest";
 import type { CardRun, TokenReport } from "$lib/cards/runHistory";
+import type { ConversationLog } from "$lib/cards/cardRun";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Board, Column, Label } from "$lib/board/kanban";
@@ -732,6 +733,12 @@ export interface McpForeignServers {
 export interface IntegrationResult {
   written: string[];
   skipped: Array<[string, string]>;
+  /// The managed files whose previous contents were not gavin's own, as
+  /// [file, where the displaced bytes were kept]. Apart from `written`
+  /// because it is the only part of a run that says something was LOST,
+  /// and empty on an ordinary re-run, which writes bytes that are
+  /// already there.
+  replaced: Array<[string, string]>;
   mcpForeign?: McpForeignServers;
 }
 
@@ -902,6 +909,18 @@ export function cardRunTokens(
   conversationId: string | null
 ): Promise<TokenReport> {
   return invoke("card_run_tokens", { profileId, conversationId });
+}
+
+/// Whether the conversation a run recorded is still on this machine to
+/// be reopened -- answered by the same resolver `cardRunTokens` reads
+/// through, so a resume and a token read can never disagree about where
+/// a transcript lives. `unknown` is the answer whenever gavin cannot
+/// tell, and is the one that changes nothing.
+export function conversationLog(
+  profileId: string,
+  conversationId: string | null
+): Promise<ConversationLog> {
+  return invoke("conversation_log", { profileId, conversationId });
 }
 
 export function deleteBoard(workspaceId: string): Promise<void> {

@@ -201,6 +201,10 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   agent_usage: ["ordinary"],
   pr_status: ["ordinary"],
   card_run_tokens: ["ordinary"],
+  // A read: whether the transcript for a conversation id is on disk, off
+  // the same resolver card_run_tokens reads through. It writes nothing and
+  // reaches nothing but files the CLI wrote on this machine.
+  conversation_log: ["ordinary"],
   get_agent_pause: ["ordinary"],
   set_agent_pause: ["ordinary"],
   get_agent_defaults: ["ordinary"],

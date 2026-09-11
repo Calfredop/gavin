@@ -38,7 +38,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -222,7 +222,7 @@ fn on_path(name: &str) -> bool {
 /// documents: a child that fills the pipe buffer blocks forever if the
 /// parent waits before reading, and 450 lines is not a small pipe.
 fn run(bin: &str, args: &[&str]) -> Option<String> {
-    let mut child = Command::new(bin)
+    let mut child = crate::program::command(bin)
         .args(args)
         // The temp dir, not a workspace: the profile table is app-wide,
         // so the answer must be the machine's catalogue rather than

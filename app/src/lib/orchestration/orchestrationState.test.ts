@@ -20,6 +20,9 @@ vi.mock("$lib/core/backend", () => ({
   attachmentStatus: vi.fn(),
   // prState reads the backend through the same module object.
   prStatus: vi.fn(),
+  // "unknown" by default -- gavin cannot tell whether the transcript is
+  // there, which is today's behaviour. The guard test drives it.
+  conversationLog: vi.fn(async () => "unknown" as const),
 }));
 
 // tick() reads four stores through get(), so each mock must expose a
@@ -905,6 +908,38 @@ describe("rail controls", () => {
     const err = await resumeStep("ws-1", "t1");
     expect(err).toMatch(/no conversation to reopen/);
     expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+
+  // Gavin minted the conversation id before the agent did anything, so
+  // the id proves a launch was ATTEMPTED, not that a conversation was
+  // written. A step whose agent died at launch has nothing to reopen --
+  // `claude --resume <uuid>` would say so and exit -- and auto-resume
+  // reaches this without a human, so the refusal has to happen here, not
+  // in the agent's own error text. Retry (a fresh run) is the way on.
+  it("Resume step refuses a conversation the agent never wrote", async () => {
+    setRailPageLive();
+    vi.mocked(layoutStateModule.resolvedAgentFor).mockReturnValue({
+      profileId: "claude-code",
+      launchCommand: "claude",
+      promptArgs: "",
+      resumeArgs: "--resume",
+      failurePatterns: [],
+      failureCauses: [],
+      sessionIdArgs: "--session-id",
+    } as never);
+    vi.mocked(backend.conversationLog).mockResolvedValueOnce("missing");
+    await setStepRunAction("ws-1", "t1", "stalled", "sess-1", "broke", "conv-1", "/x/wt");
+    vi.mocked(backend.setStepRun).mockClear();
+
+    const err = await resumeStep("ws-1", "t1");
+
+    expect(err).toMatch(/before it wrote a line/);
+    expect(err).toMatch(/Retry/);
+    expect(backend.conversationLog).toHaveBeenCalledWith("claude-code", "conv-1");
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+    // Nothing launched, so nothing written: the step stays stalled where
+    // it was, with its reason.
+    expect(backend.setStepRun).not.toHaveBeenCalled();
   });
 
   // Consent is part of the PLAN, so it rides the same wholesale save
