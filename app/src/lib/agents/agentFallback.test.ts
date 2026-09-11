@@ -83,6 +83,22 @@ describe("agentLimitSpent", () => {
     expect(agentLimitSpent(atLimit(95), true, 95)).toBe(true);
     expect(agentLimitSpent(atLimit(94), true, 95)).toBe(false);
   });
+
+  it("does not spend Cursor on the Other-Models pool when Auto has room", () => {
+    const cursor: AgentUsageReport = {
+      state: "ready",
+      windows: [
+        { id: "total", label: "Total", usedPercent: 45, resetsAt: ANCHOR },
+        { id: "auto", label: "Auto", usedPercent: 45, resetsAt: ANCHOR },
+        { id: "api", label: "API", usedPercent: 100, resetsAt: ANCHOR },
+      ],
+      plan: null,
+      observedAt: ANCHOR,
+      cached: false,
+    };
+    expect(agentLimitSpent(cursor, true, 90, "cursor")).toBe(false);
+    expect(agentLimitSpent(cursor, true, 90, "claude-code")).toBe(true);
+  });
 });
 
 describe("fallbackThresholdFor", () => {
@@ -171,6 +187,41 @@ describe("decideLaunch", () => {
     ).toEqual({ kind: "pause", why: "usage-limit" });
   });
 
+  it("uses the workspace agent when the card's agent is spent and the chain is empty", () => {
+    expect(
+      decide({
+        chain: [],
+        workspaceProfileId: "cursor",
+        usageByProfile: { "claude-code": atLimit(99), cursor: atLimit(45) },
+      })
+    ).toEqual({ kind: "use", profileId: "cursor", viaFallback: true });
+  });
+
+  it("prefers the workspace agent over a later chain entry", () => {
+    expect(
+      decide({
+        chain: ["gemini"],
+        workspaceProfileId: "cursor",
+        armed: new Set(["gemini"]),
+        usageByProfile: {
+          "claude-code": atLimit(99),
+          cursor: atLimit(10),
+          gemini: atLimit(10),
+        },
+      })
+    ).toEqual({ kind: "use", profileId: "cursor", viaFallback: true });
+  });
+
+  it("still pauses when the workspace agent is the spent primary and the chain is empty", () => {
+    expect(
+      decide({
+        chain: [],
+        workspaceProfileId: "claude-code",
+        usageByProfile: { "claude-code": atLimit(99) },
+      })
+    ).toEqual({ kind: "pause", why: "usage-limit" });
+  });
+
   it("never walks on resume — a spent primary stays a hold", () => {
     expect(
       decide({
@@ -248,7 +299,10 @@ describe("fallbackBlockedReason", () => {
       /not set up/
     );
     expect(fallbackBlockedReason({ kind: "pause", why: "usage-limit" })).toMatch(
-      /fallback chain/
+      /usage limit/
+    );
+    expect(fallbackBlockedReason({ kind: "pause", why: "usage-limit" })).not.toMatch(
+      /fallback/
     );
   });
 });

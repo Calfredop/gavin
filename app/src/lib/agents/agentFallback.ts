@@ -1,6 +1,9 @@
 // When a launch's resolved agent is over its usage-probe threshold, walk
 // an ordered fallback chain instead of pausing — without rewriting the
-// workspace's active agent.
+// workspace's active agent. The workspace's own agent is tried first
+// after the resolved one, so a card the complexity table still points at
+// a spent CLI can run on the agent this workspace actually uses, even
+// when nobody configured a chain.
 //
 // Cycle pause is a hard hold on every new start. Limit pause is replaced
 // by the chain when any later agent is under threshold. Resume of an
@@ -14,7 +17,7 @@
 // profile is treated as armed by the init/switch wizard, not this list.
 
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
-import { usageBlock } from "$lib/agents/agentUsage";
+import { usageBlock, usageForLaunchGate } from "$lib/agents/agentUsage";
 
 /// Ordered profile ids. Empty means no fallback (pause-only).
 export type FallbackChain = string[];
@@ -78,11 +81,12 @@ export function sanitizeFallbackThreshold(n: number): number {
 export function agentLimitSpent(
   usage: AgentUsageReport | undefined,
   limitEnabled: boolean,
-  limitPercent: number
+  limitPercent: number,
+  profileId?: string | null
 ): boolean {
   if (!limitEnabled) return false;
   if (!usage) return false;
-  return usageBlock(usage, limitPercent).blocked;
+  return usageBlock(usageForLaunchGate(profileId, usage), limitPercent).blocked;
 }
 
 export type FallbackDecision =
@@ -92,6 +96,11 @@ export type FallbackDecision =
 
 export interface LaunchDecisionInput {
   resolvedProfileId: string;
+  /// The workspace's own agent. Tried after the resolved agent is spent
+  /// and before the configured chain, so a card attributed to a spent CLI
+  /// (the complexity table) still launches on the agent this workspace
+  /// actually runs. Ignored when it is the resolved agent or on resume.
+  workspaceProfileId?: string | null;
   chain: readonly string[];
   usageByProfile: Record<string, AgentUsageReport | undefined>;
   armed: ReadonlySet<string> | ((id: string) => boolean);
@@ -122,7 +131,7 @@ export function decideLaunch(input: LaunchDecisionInput): FallbackDecision {
       ? input.limitPercent
       : fallbackThresholdFor(id, input.fallbackThresholds);
   const spent = (id: string) =>
-    agentLimitSpent(input.usageByProfile[id], input.limitEnabled, percentFor(id));
+    agentLimitSpent(input.usageByProfile[id], input.limitEnabled, percentFor(id), id);
   const primary = (input.resolvedProfileId ?? "").trim();
 
   if (input.resume) {
@@ -134,10 +143,14 @@ export function decideLaunch(input: LaunchDecisionInput): FallbackDecision {
     return { kind: "use", profileId: primary, viaFallback: false };
   }
 
-  for (const id of sanitizeChain(input.chain)) {
+  const workspace = (input.workspaceProfileId ?? "").trim();
+  for (const id of sanitizeChain([workspace, ...input.chain])) {
     if (id === primary) continue;
     if (spent(id)) continue;
-    if (!isArmed(input.armed, id)) return { kind: "arm", profileId: id };
+    // The workspace's own agent is armed by init / agent-change, not by
+    // the fallback-arming list. Asking to set it up again would block the
+    // one hop this field exists to make.
+    if (id !== workspace && !isArmed(input.armed, id)) return { kind: "arm", profileId: id };
     return { kind: "use", profileId: id, viaFallback: true };
   }
 
@@ -167,5 +180,5 @@ export function fallbackBlockedReason(decision: FallbackDecision): string | null
   }
   return decision.why === "cycle"
     ? null
-    : "work is paused: every agent in the fallback chain is at its usage limit";
+    : "work is paused: no remaining agent is under its usage limit";
 }

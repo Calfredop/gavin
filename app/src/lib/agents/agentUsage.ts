@@ -189,6 +189,25 @@ export interface UsageBlock {
   until: number | null;
 }
 
+/// The windows that may hold a NEW launch of this profile.
+///
+/// Claude / Codex / OpenCode meter stacked windows: hitting any of them
+/// stops work. Cursor does not — Auto and Other-Models are alternative
+/// pools, and the `agent` CLI spends Auto. A full API bar must not refuse
+/// a launch whose Auto window still has room. Enterprise payloads with no
+/// Auto bar fall through to Total, which is the only number they publish.
+export function usageForLaunchGate(
+  profileId: string | null | undefined,
+  report: AgentUsageReport
+): AgentUsageReport {
+  if ((profileId ?? "").trim() !== "cursor" || report.state !== "ready") return report;
+  const auto = report.windows.filter((w) => w.id === "auto");
+  if (auto.length > 0) return { ...report, windows: auto };
+  const total = report.windows.filter((w) => w.id === "total");
+  if (total.length > 0) return { ...report, windows: total };
+  return report;
+}
+
 export function usageBlock(
   report: AgentUsageReport,
   atOrAbove: number

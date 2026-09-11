@@ -9,6 +9,10 @@ const backendMock = vi.hoisted(() => ({
 
 vi.mock("$lib/core/backend", () => backendMock);
 
+const resolvedAgentForMock = vi.hoisted(() =>
+  vi.fn(() => ({ profileId: "claude-code" }))
+);
+
 vi.mock("$lib/core/layoutState", async () => {
   const { writable } = await import("svelte/store");
   return {
@@ -16,7 +20,7 @@ vi.mock("$lib/core/layoutState", async () => {
       workspaces: [] as unknown[],
       activeWorkspaceId: null as string | null,
     }),
-    resolvedAgentFor: vi.fn(() => ({ profileId: "claude-code" })),
+    resolvedAgentFor: resolvedAgentForMock,
     agentDefaultsStore: writable({
       customCommand: "",
       customModelFlag: "",
@@ -58,6 +62,7 @@ function cycle(over: Partial<PauseCycle> = {}): PauseCycle {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resolvedAgentForMock.mockReturnValue({ profileId: "claude-code" });
   agentPauseStore.set(null);
   agentUsageStore.set({});
   layoutState.set({ workspaces: [], activeWorkspaceId: null } as never);
@@ -308,6 +313,40 @@ describe("the gate", () => {
     });
     expect(mayStartWork("w1")).toBe(false);
     expect(launchPauseHold("w1", ANCHOR).why).toMatch(/not set up/);
+  });
+
+  /// A card whose complexity table names Claude still has to be able to
+  /// start on this workspace's own agent when Claude is spent and nobody
+  /// configured a fallback chain — switching the workspace to Cursor is
+  /// how the human already said "run here instead".
+  it("uses the workspace agent when the card's agent is spent and the chain is empty", () => {
+    resolvedAgentForMock.mockReturnValue({ profileId: "cursor" });
+    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    layoutState.set({ workspaces: [{ id: "w1" }], activeWorkspaceId: "w1" } as never);
+    agentUsageStore.set({
+      "claude-code": {
+        state: "ready",
+        windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: null }],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+      cursor: {
+        state: "ready",
+        windows: [
+          { id: "total", label: "Total", usedPercent: 45, resetsAt: null },
+          { id: "auto", label: "Auto", usedPercent: 45, resetsAt: null },
+        ],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+    });
+    expect(launchDecision("w1", "claude-code", false)).toEqual({
+      kind: "use",
+      profileId: "cursor",
+      viaFallback: true,
+    });
   });
 
   it("does not invent a usage pause when no cycle is configured at all", () => {

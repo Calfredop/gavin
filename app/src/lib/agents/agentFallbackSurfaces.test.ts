@@ -48,4 +48,12 @@ describe("fallback agent surfaces", () => {
     expect(source("orchestrationState.ts")).toContain("requestArm");
     expect(source("Sidebar.svelte")).toContain("AgentArmWizard");
   });
+
+  it("tries the workspace agent before the configured chain", () => {
+    expect(source("agentPauseState.ts")).toContain("workspaceProfileId");
+    expect(source("agentFallback.ts")).toContain("workspaceProfileId");
+    expect(source("agentFallback.ts")).not.toContain(
+      "every agent in the fallback chain is at its usage limit"
+    );
+  });
 });

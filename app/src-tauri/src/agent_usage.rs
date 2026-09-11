@@ -922,6 +922,9 @@ fn parse_cursor(body: &str, now: i64) -> Option<UsageReport> {
     if let Some(pct) = plan.and_then(|p| p.get("autoPercentUsed").and_then(as_percent)) {
         windows.push(window("auto", "Auto", pct, resets_at));
     }
+    // Other-Models / named-model pool. Shown in the panel; the launch
+    // gate ignores it (`usageForLaunchGate`) because Auto is a separate
+    // quota and `agent` spends Auto.
     if let Some(pct) = plan.and_then(|p| p.get("apiPercentUsed").and_then(as_percent)) {
         windows.push(window("api", "API", pct, resets_at));
     }

@@ -197,7 +197,7 @@ export function pauseFor(workspaceId: string | null, nowMs: number): PauseVerdic
   const usage: AgentUsageReport = (profileId && get(agentUsageStore)[profileId]) || {
     state: "unsupported",
   };
-  return pauseVerdict(cycle, usage, nowMs);
+  return pauseVerdict(cycle, usage, nowMs, profileId);
 }
 
 /// The active workspace's verdict, recomputed on every clock tick and
@@ -326,6 +326,7 @@ export function launchDecision(
   // start pausing installs that never configured a pause.
   return decideLaunch({
     resolvedProfileId: resolvedProfileId ?? "",
+    workspaceProfileId: workspaceProfile,
     chain,
     usageByProfile: get(agentUsageStore),
     armed,

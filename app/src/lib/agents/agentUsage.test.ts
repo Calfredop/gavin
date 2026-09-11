@@ -9,6 +9,7 @@ import {
   formatResetsIn,
   reportSeverity,
   usageBlock,
+  usageForLaunchGate,
   usageSeverity,
   usageSummary,
   unavailableReason,
@@ -198,6 +199,26 @@ describe("usageBlock", () => {
     );
     expect(block.blocked).toBe(true);
     expect(block.until).toBeNull();
+  });
+
+  /// Cursor's Auto and Other-Models pools are alternatives, not stacked
+  /// windows. A full API bar must not refuse an `agent` launch whose Auto
+  /// window still has room — that is the number the dashboard headline
+  /// and the CLI actually spend.
+  it("gates a Cursor launch on Auto, not the Other-Models pool", () => {
+    const report = ready([
+      window({ id: "total", label: "Total", usedPercent: 45, resetsAt: null }),
+      window({ id: "auto", label: "Auto", usedPercent: 45, resetsAt: null }),
+      window({ id: "api", label: "API", usedPercent: 100, resetsAt: null }),
+    ]);
+    expect(usageBlock(report, 90).blocked).toBe(true);
+    expect(usageBlock(usageForLaunchGate("cursor", report), 90).blocked).toBe(false);
+    expect(usageBlock(usageForLaunchGate("claude-code", report), 90).blocked).toBe(true);
+    const enterprise = ready([
+      window({ id: "total", label: "Total", usedPercent: 45, resetsAt: null }),
+      window({ id: "api", label: "API", usedPercent: 100, resetsAt: null }),
+    ]);
+    expect(usageBlock(usageForLaunchGate("cursor", enterprise), 90).blocked).toBe(false);
   });
 
   /// Gavin not knowing is not evidence of a limit. A failed read that

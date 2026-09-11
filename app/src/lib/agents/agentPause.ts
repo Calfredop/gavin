@@ -27,7 +27,7 @@
 // day -- because none of them are inputs. The only input is `now`.
 
 import type { AgentUsageReport, UsageWindow } from "$lib/agents/agentUsage";
-import { formatDuration, formatResetsIn, usageBlock } from "$lib/agents/agentUsage";
+import { formatDuration, formatResetsIn, usageBlock, usageForLaunchGate } from "$lib/agents/agentUsage";
 
 /// A configured duty cycle. Mirrors `AgentPauseConfig` in `config.rs`.
 export interface PauseCycle {
@@ -160,10 +160,11 @@ const RUNNING: PauseVerdict = { paused: false, reason: null, why: null, until: n
 export function pauseVerdict(
   cycle: PauseCycle,
   usage: AgentUsageReport,
-  nowMs: number
+  nowMs: number,
+  profileId?: string | null
 ): PauseVerdict {
   if (cycle.limitEnabled) {
-    const block = usageBlock(usage, cycle.limitPercent);
+    const block = usageBlock(usageForLaunchGate(profileId, usage), cycle.limitPercent);
     if (block.blocked && block.window) {
       const until = block.until == null ? null : block.until * 1000;
       const clock = formatResetsIn(block.until, nowMs);
