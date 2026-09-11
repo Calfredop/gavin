@@ -1,5 +1,6 @@
 version = 1
 
 [agent]
-profile = "claude-code"
-command = "cclaude --dontask --chrome"
+profile = "cursor"
+command = "agent"
+file = "CLAUDE.md"
