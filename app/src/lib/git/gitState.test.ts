@@ -99,8 +99,13 @@ vi.mock("$lib/core/layoutState", async () => {
     handleAgentSessionSpawned: vi.fn(),
     switchWorkspaceView: vi.fn().mockResolvedValue(undefined),
     switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
+    // What the commit run tells the daemon its session belongs to, so the
+    // agent it hosts is scoped to the workspace and not only to the
+    // directory git happens to be looking at.
+    workspaceRootPath: vi.fn(() => "/repos/gavin"),
   };
 });
+
 
 import * as backend from "$lib/core/backend";
 import { listen } from "@tauri-apps/api/event";
@@ -733,8 +738,13 @@ describe("commit via agent", () => {
     const { done } = await launch();
     expect(backend.createSession).toHaveBeenCalledWith(
       "/r",
-      'claude -p --allowedTools "Bash(git *)" -- \'Commit pending and unversioned changes, in logical chunks. Do not push.\''
+      'claude -p --allowedTools "Bash(git *)" -- \'Commit pending and unversioned changes, in logical chunks. Do not push.\'',
+      // The view's cwd is where it RUNS; the workspace root is what the
+      // daemon scopes the agent against, and they are not the same answer
+      // once the git view is following a worktree.
+      "/repos/gavin"
     );
+
     // Hidden: nothing lands on the Agents page unless the human asks.
     expect(handleAgentSessionSpawned).not.toHaveBeenCalled();
     // Named anyway, for the moment they do ask.

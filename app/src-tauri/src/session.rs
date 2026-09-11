@@ -2791,12 +2791,18 @@ fn send_command_reconnecting(
 /// without this check every persisted file tab would be treated as a
 /// stale session and silently replaced by a freshly spawned shell on
 /// every single launch.
+/// `workspace_root` is the root of the workspace whose page this layout
+/// belongs to -- the authority on which workspace a replacement session
+/// is for, which is why it comes from the saved layout rather than from
+/// the dead row's own recorded `workspace_path`: a row written before that
+/// field carried the workspace still names only a cwd.
 fn resolve_sessions(
     node: &mut LayoutNode,
     command_conn: &Mutex<Stream>,
     all_sessions: &HashMap<String, protocol::SessionSummary>,
     non_session_tab_ids: &HashSet<String>,
     compat: &DaemonCompat,
+    workspace_root: Option<&str>,
 ) -> anyhow::Result<()> {
     match node {
         LayoutNode::Leaf { tabs, pinned, .. } => {
@@ -2807,7 +2813,8 @@ fn resolve_sessions(
                 let is_valid = all_sessions.get(id.as_str()).is_some_and(|s| s.status != "exited");
                 if !is_valid {
                     let last_known_cwd = all_sessions.get(id.as_str()).map(|s| s.cwd.as_str());
-                    let fresh = create_fresh_session(command_conn, last_known_cwd, None, compat)?;
+                    let fresh =
+                        create_fresh_session(command_conn, last_known_cwd, workspace_root, None, compat)?;
                     // A pin belongs to the tab slot, not the dead process:
                     // carry it over so a daemon restart doesn't unpin it.
                     if let Some(pin) = pinned.iter_mut().find(|p| **p == *id) {
@@ -2820,7 +2827,14 @@ fn resolve_sessions(
         }
         LayoutNode::Split { children, .. } => {
             for child in children.iter_mut() {
-                resolve_sessions(child, command_conn, all_sessions, non_session_tab_ids, compat)?;
+                resolve_sessions(
+                    child,
+                    command_conn,
+                    all_sessions,
+                    non_session_tab_ids,
+                    compat,
+                    workspace_root,
+                )?;
             }
             Ok(())
         }
@@ -3104,10 +3118,19 @@ fn resolve_workspaces(
     }
     let all_sessions = list_valid_session_ids(command_conn, compat)?;
     for workspace in workspaces.iter_mut() {
+        let workspace_root = workspace.root_path.clone();
         for page in workspace.pages.iter_mut() {
-            resolve_sessions(&mut page.layout, command_conn, &all_sessions, non_session_tab_ids, compat)?;
+            resolve_sessions(
+                &mut page.layout,
+                command_conn,
+                &all_sessions,
+                non_session_tab_ids,
+                compat,
+                workspace_root.as_deref(),
+            )?;
         }
     }
+
     Ok(())
 }
 
@@ -3570,8 +3593,39 @@ mod resolve_workspaces_tests {
         }
     }
 
+    /// The restore counterpart of
+    /// `create_fresh_session_names_the_owning_workspace_not_a_second_copy_of_cwd`:
+    /// a replacement lands back in the dead session's own worktree, but it
+    /// is still the workspace's session, and the daemon has to be told
+    /// which workspace that is or the agent it hosts loses its card writes.
+    #[test]
+    fn a_replacement_keeps_its_workspace_root_even_when_it_comes_back_in_a_worktree() {
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![
+            Response::SessionList {
+                sessions: vec![exited_session("exited-1", "/Users/alice/project-rail")],
+            },
+            Response::SessionCreated { id: "fresh-a".to_string() },
+        ]);
+        let conn = Mutex::new(client);
+        let mut ws = workspace("ws-1", vec![page("page-1", leaf(&["exited-1"]))]);
+        ws.root_path = Some("/Users/alice/project".to_string());
+        let mut workspaces = vec![ws];
+
+        resolve_workspaces(&mut workspaces, &conn, &no_file_tabs(), &parity_compat()).unwrap();
+
+        let requests = captured.lock().unwrap();
+        match &requests[1] {
+            Request::CreateSession { cwd, workspace_path, .. } => {
+                assert_eq!(cwd, "/Users/alice/project-rail");
+                assert_eq!(workspace_path, "/Users/alice/project");
+            }
+            other => panic!("expected the second request to be CreateSession, got {other:?}"),
+        }
+    }
+
     #[test]
     fn falls_back_to_home_only_when_the_id_has_no_registry_record_at_all() {
+
         let (client, captured, _dir) = fake_daemon_capturing_requests(vec![
             Response::SessionList { sessions: vec![] },
             Response::SessionCreated { id: "fresh-b".to_string() },
@@ -3630,7 +3684,8 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = Mutex::new(client);
 
-        create_fresh_session(&conn, Some("/tmp"), None, &parity_compat()).unwrap();
+        create_fresh_session(&conn, Some("/tmp"), None, None, &parity_compat()).unwrap();
+
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
@@ -3645,11 +3700,62 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = Mutex::new(client);
 
-        create_fresh_session(&conn, Some("/tmp"), Some("npm test"), &parity_compat()).unwrap();
+        create_fresh_session(&conn, Some("/tmp"), None, Some("npm test"), &parity_compat())
+            .unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
             Request::CreateSession { command, .. } => assert_eq!(command, &Some("npm test".to_string())),
+            other => panic!("expected CreateSession, got {other:?}"),
+        }
+    }
+
+    /// The field the daemon's agent scope gate reads. A rail agent runs in
+    /// a worktree that is not its workspace root, and the two are
+    /// different answers -- sending the cwd twice is what confined such an
+    /// agent to the worktree and had the daemon refuse the card write its
+    /// own run prompt demanded.
+    #[test]
+    fn create_fresh_session_names_the_owning_workspace_not_a_second_copy_of_cwd() {
+        let (client, captured, _dir) =
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+        let conn = Mutex::new(client);
+
+        create_fresh_session(
+            &conn,
+            Some("/Users/alice/project-rail"),
+            Some("/Users/alice/project"),
+            None,
+            &parity_compat(),
+        )
+        .unwrap();
+
+        let requests = captured.lock().unwrap();
+        match &requests[0] {
+            Request::CreateSession { cwd, workspace_path, .. } => {
+                assert_eq!(cwd, "/Users/alice/project-rail");
+                assert_eq!(workspace_path, "/Users/alice/project");
+            }
+            other => panic!("expected CreateSession, got {other:?}"),
+        }
+    }
+
+    /// No workspace to name (a bare terminal) keeps exactly what every
+    /// caller sent before the field meant anything.
+    #[test]
+    fn create_fresh_session_without_a_workspace_falls_back_to_its_cwd() {
+        let (client, captured, _dir) =
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+        let conn = Mutex::new(client);
+
+        create_fresh_session(&conn, Some("/tmp/loose"), None, None, &parity_compat()).unwrap();
+
+        let requests = captured.lock().unwrap();
+        match &requests[0] {
+            Request::CreateSession { cwd, workspace_path, .. } => {
+                assert_eq!(cwd, "/tmp/loose");
+                assert_eq!(workspace_path, "/tmp/loose");
+            }
             other => panic!("expected CreateSession, got {other:?}"),
         }
     }
@@ -4215,9 +4321,21 @@ pub fn resize_session(
 /// subsequent launch (persist_workspaces never runs to fix up the config,
 /// since it's gated on resolve_workspaces succeeding). So a rejected
 /// non-$HOME target falls back to $HOME once before giving up for real.
+/// `workspace_root` is the workspace the session BELONGS to, which is not
+/// always where it runs: a rail launches its agent in a worktree, and the
+/// card it is told to write lives in the main checkout. The daemon records
+/// the two separately and its agent scope gate reads both
+/// (`scope_roots`), so sending the cwd for both -- which is what every
+/// caller did while the field carried no information -- confines such an
+/// agent to the worktree and has the daemon refuse the one card write the
+/// run prompt demands of it.
+///
+/// `None` means the caller has no workspace to name (a bare terminal, a
+/// tool run outside any root), and keeps the cwd in both fields.
 fn create_fresh_session(
     command_conn: &Mutex<Stream>,
     cwd: Option<&str>,
+    workspace_root: Option<&str>,
     command: Option<&str>,
     compat: &DaemonCompat,
 ) -> anyhow::Result<String> {
@@ -4227,12 +4345,13 @@ fn create_fresh_session(
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "/".to_string());
     let target = cwd.map(str::to_string).unwrap_or_else(|| home.clone());
+    let workspace = workspace_root.map(str::to_string).unwrap_or_else(|| target.clone());
     let command = command.map(str::to_string);
 
     let resp = send_command_reconnecting(
         command_conn,
         compat,
-        &Request::CreateSession { workspace_path: target.clone(), cwd: target.clone(), command: command.clone() },
+        &Request::CreateSession { workspace_path: workspace, cwd: target.clone(), command: command.clone() },
     )?;
     match resp {
         Response::SessionCreated { id } => return Ok(id),
@@ -4242,6 +4361,11 @@ fn create_fresh_session(
         other => anyhow::bail!("expected SessionCreated, got {other:?}"),
     }
 
+    // The workspace is dropped here along with the cwd, deliberately. This
+    // branch means the directory the session was meant for could not be
+    // honoured, so what comes back is a plain shell in $HOME rather than
+    // that workspace's session -- and an agent scope the session's cwd no
+    // longer sits inside is not one to hand it on an error path.
     let resp = send_command_reconnecting(
         command_conn,
         compat,
@@ -4256,14 +4380,22 @@ fn create_fresh_session(
 #[tauri::command]
 pub fn create_session(
     cwd: Option<String>,
+    workspace_root: Option<String>,
     command: Option<String>,
     command_state: State<CommandConnection>,
     daemon_state: State<DaemonConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
     let compat = current_compat(&compat);
-    let id = create_fresh_session(&command_state.0, cwd.as_deref(), command.as_deref(), &compat)
-        .map_err(|e| e.to_string())?;
+    let id = create_fresh_session(
+        &command_state.0,
+        cwd.as_deref(),
+        workspace_root.as_deref(),
+        command.as_deref(),
+        &compat,
+    )
+    .map_err(|e| e.to_string())?;
+
     send_request(&daemon_state.writer, &Request::Attach { id: id.clone() }, &compat)
         .map_err(|e| e.to_string())?;
     Ok(id)

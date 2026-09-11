@@ -15,7 +15,9 @@ import {
   handleAgentSessionSpawned,
   switchWorkspaceView,
   switchToSessionInPage,
+  workspaceRootPath,
 } from "$lib/core/layoutState";
+
 import { findSessionLocation, hubViewIsOnScreen } from "$lib/core/workspace";
 import type { AgentCommitRecord, Workspace } from "$lib/core/workspace";
 import { folderName } from "$lib/core/paths";
@@ -617,7 +619,8 @@ export async function commitViaAgent(
   update(workspaceId, (st) => ({ ...st, agentCommit: { sessionId: null }, agentCommitDone: false, error: null }));
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(s.cwd, command);
+    sessionId = await backend.createSession(s.cwd, command, workspaceRootPath(workspaceId) ?? undefined);
+
   } catch (e) {
     update(workspaceId, (st) => ({ ...st, agentCommit: null, error: `Commit via agent failed: ${errorText(e)}` }));
     return false;

@@ -550,7 +550,11 @@ export function runningSessionCount(state: LayoutState): number {
 // than duplicating their own try/catch.
 async function createFreshSession(workspaceId: string): Promise<string | null> {
   try {
-    return await backend.createSession(freshSessionCwd(workspaceId));
+    return await backend.createSession(
+      freshSessionCwd(workspaceId),
+      undefined,
+      workspaceRootPath(workspaceId) ?? undefined
+    );
   } catch (e) {
     setError(String(e));
     return null;
@@ -2151,7 +2155,7 @@ export async function startMainAgent(workspaceId: string): Promise<void> {
   const agent = resolvedAgentFor(workspaceId);
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(ws.rootPath, agent.launchCommand);
+    sessionId = await backend.createSession(ws.rootPath, agent.launchCommand, ws.rootPath);
   } catch (e) {
     setError(String(e));
     return;
@@ -2196,15 +2200,14 @@ export async function startMainAgentWithPrompt(
   const command = buildRunCommand(agent.launchCommand, agent.promptArgs, prompt);
   // The wizard gates this button on agentFlowAvailable, so reaching here
   // means the profile changed under an open wizard. Say why rather than
-  // launching `cursor '<a whole prompt>'`, which opens a file picker on
-  // a path nobody named.
+  // launching a CLI that takes no prompt at all.
   if (command === null) {
     setError(noPromptReason(agent.label));
     return;
   }
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(ws.rootPath, command);
+    sessionId = await backend.createSession(ws.rootPath, command, ws.rootPath);
   } catch (e) {
     setError(String(e));
     return;
@@ -2265,6 +2268,41 @@ export async function setAgentField(
       hasExecutionKeys(keys) ? executionKeysHash(keys) : undefined
     );
   }
+}
+
+/// Writes a new workspace agent profile together with that profile's
+/// default command and instructions file, and stamps trust once for both
+/// execution keys.
+///
+/// Writing only `profile` leaves a leftover `[agent] command` from the
+/// previous CLI in place — `resolveAgentConfig` prefers the explicit
+/// command, so the switch appeared to do nothing. The defaults are
+/// applied in one go here so the new profile actually launches. Throws on
+/// a refused write (unlike `setAgentField`) so a confirm wizard can show
+/// the error in place.
+export async function switchWorkspaceAgentProfile(
+  workspaceId: string,
+  profileId: string,
+  defaults: { command: string; file: string }
+): Promise<void> {
+  const ws = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!ws?.rootPath) throw new Error("Bind a root folder before switching agent.");
+  const root = ws.rootPath;
+  const command = defaults.command.trim();
+  const file = defaults.file.trim();
+  await backend.setRootConfigField(root, "profile", profileId);
+  if (command) await backend.setRootConfigField(root, "command", command);
+  if (file) await backend.setRootConfigField(root, "file", file);
+  const trust = configTrustFor(workspaceId);
+  const keys = {
+    ...trust.keys,
+    ...(command ? { command } : {}),
+    ...(file ? { file } : {}),
+  };
+  await stampConfigTrust(
+    workspaceId,
+    hasExecutionKeys(keys) ? executionKeysHash(keys) : undefined
+  );
 }
 
 /// The root config's `prd` — which document leads this workspace. Its own
@@ -3708,9 +3746,14 @@ export async function createPage(
   let freshIds: string[];
   try {
     const sessionCwd = opts.cwd || freshSessionCwd(workspaceId);
+    // Not `sessionCwd`: `opts.cwd` is how a caller launches into a
+    // worktree, and the workspace the session belongs to is still this one.
+    const workspaceRoot = workspaceRootPath(workspaceId) ?? undefined;
     freshIds = await Promise.all(
       Array.from({ length: sessionCount }, () =>
-        agent ? backend.createSession(sessionCwd, agent.launchCommand) : backend.createSession(sessionCwd)
+        agent
+          ? backend.createSession(sessionCwd, agent.launchCommand, workspaceRoot)
+          : backend.createSession(sessionCwd, undefined, workspaceRoot)
       )
     );
   } catch (e) {
@@ -3773,7 +3816,14 @@ export async function createTiledPage(
       // "" and null both mean "the default", exactly as they do on a
       // SessionLink -- a one-pane page is spawned by callers that carry
       // a rail's launch, not only by best-of-N's real worktree paths.
-      sessionIds.push(await backend.createSession(spec.cwd || undefined, spec.command ?? undefined));
+      sessionIds.push(
+        await backend.createSession(
+          spec.cwd || undefined,
+          spec.command ?? undefined,
+          workspaceRootPath(workspaceId) ?? undefined
+        )
+      );
+
     }
   } catch (e) {
     setError(String(e));
@@ -3853,7 +3903,11 @@ export async function createSessionOnPage(
 
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(cwd || undefined, command ?? undefined);
+    sessionId = await backend.createSession(
+      cwd || undefined,
+      command ?? undefined,
+      ws.rootPath ?? undefined
+    );
   } catch (e) {
     setError(String(e));
     return null;
@@ -3880,7 +3934,12 @@ export async function createSessionForCard(
 
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(cwd || undefined, command ?? undefined);
+    sessionId = await backend.createSession(
+      cwd || undefined,
+      command ?? undefined,
+      ws.rootPath ?? undefined
+    );
+
   } catch (e) {
     setError(String(e));
     return null;

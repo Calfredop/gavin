@@ -308,7 +308,11 @@ export async function developCard(
 
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(card.contextFolder, command);
+    sessionId = await backend.createSession(
+      card.contextFolder,
+      command,
+      workspaceRootPath(workspaceId) ?? undefined
+    );
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
@@ -530,7 +534,11 @@ async function launchCard(
     const resumeCwd = binding.launchCwd ?? binding.cwd;
     let resumed: string;
     try {
-      resumed = await backend.createSession(resumeCwd, resumeCommand);
+      resumed = await backend.createSession(
+        resumeCwd,
+        resumeCommand,
+        workspaceRootPath(workspaceId) ?? undefined
+      );
     } catch (e) {
       return `Couldn't resume the conversation: ${e instanceof Error ? e.message : e}`;
     }
@@ -619,7 +627,7 @@ async function launchCard(
 
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(cwd, command);
+    sessionId = await backend.createSession(cwd, command, workspaceRootPath(workspaceId) ?? undefined);
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
@@ -838,7 +846,12 @@ export async function relaunchCard(
   const baseSha = await baseShaForLaunch(binding.launchCwd ?? binding.cwd);
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(binding.cwd, fresh.command ?? undefined);
+    sessionId = await backend.createSession(
+      binding.cwd,
+      fresh.command ?? undefined,
+      workspaceRootPath(workspaceId) ?? undefined
+    );
+
   } catch (e) {
     return `Couldn't re-launch: ${e instanceof Error ? e.message : e}`;
   }

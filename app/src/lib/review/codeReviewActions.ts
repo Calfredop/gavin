@@ -277,8 +277,13 @@ async function launchReview(request: {
 
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(request.cwd, command);
+    sessionId = await backend.createSession(
+      request.cwd,
+      command,
+      workspaceRootPath(request.workspaceId) ?? undefined
+    );
   } catch (e) {
+
     return `Couldn't start the review: ${e instanceof Error ? e.message : e}`;
   }
   pending.set(null);

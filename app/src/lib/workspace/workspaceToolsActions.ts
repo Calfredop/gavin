@@ -180,7 +180,8 @@ async function launch(
 
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(cwd, command);
+    sessionId = await backend.createSession(cwd, command, workspaceRootPath(workspaceId) ?? undefined);
+
   } catch (e) {
     return `Couldn't start ${tool.name}: ${e instanceof Error ? e.message : e}`;
   }

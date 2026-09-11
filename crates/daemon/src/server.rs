@@ -2664,10 +2664,15 @@ impl SessionManager {
     /// still exists, else the workspace root, else nowhere.
     ///
     /// `create_session` has always spawned in `cwd` while `recover` spawned in
-    /// `workspace_path`, and the app happens to pass the same value for both --
-    /// so recovery landed in the right directory by coincidence. `Attach`
-    /// reports `record.cwd` either way, which is what a session that had cd'd
-    /// somewhere else would have contradicted.
+    /// `workspace_path`. For as long as the app sent one value for both fields
+    /// those were the same directory and recovery landed correctly by
+    /// coincidence; now that `workspace_path` names the workspace a session
+    /// BELONGS to, the second candidate is a real fallback, and it does what
+    /// this function's second line has always claimed -- a rail session whose
+    /// worktree has since been removed comes back at the workspace root
+    /// instead of being written off as exited. `Attach` reports `record.cwd`
+    /// either way, which is what a session that had cd'd somewhere else would
+    /// have contradicted.
     fn recovery_cwd(record: &SessionRecord) -> Option<&str> {
         for candidate in [record.cwd.as_str(), record.workspace_path.as_str()] {
             if std::path::Path::new(candidate).is_dir() {
@@ -3837,6 +3842,13 @@ fn request_type_name(req: &Request) -> String {
 /// `name_session` documents -- so confining to only one would refuse the
 /// other's legitimate writes. Canonicalized so `starts_with` survives the
 /// `/private` symlink macOS puts in front of `/tmp` and `/var`.
+///
+/// This is only ever two roots because the app sends two values: while
+/// `create_fresh_session` passed its cwd for both, every worktree agent
+/// was confined to the worktree and refused the card write its own run
+/// prompt names (`cardHomeNote`), which is what
+/// `an_agent_in_a_worktree_may_still_write_its_own_workspaces_card` pins.
+
 fn scope_roots(id: &ClientIdentity) -> Vec<std::path::PathBuf> {
     [id.workspace_root.as_ref(), id.cwd.as_ref()]
         .into_iter()
@@ -4750,6 +4762,47 @@ mod tests {
         // A path that does not resolve at all is refused, not waved through.
         assert!(authorize(&id, &sff("/no/such/card.md"), false).is_err());
     }
+
+    /// The shape every rail agent actually has, and the one this gate was
+    /// written for: running in a WORKTREE, writing a card that lives in
+    /// the workspace it was launched from. Both scope roots are load
+    /// bearing here -- the card is under neither the cwd nor any ancestor
+    /// of it -- which is why the app has to send the workspace and the cwd
+    /// as two different values on `CreateSession`. Sending the cwd twice
+    /// is what had the daemon refuse the one write `cardHomeNote` tells
+    /// such an agent to make.
+    #[test]
+    fn an_agent_in_a_worktree_may_still_write_its_own_workspaces_card() {
+        let (_ws, root, card) = workspace_with_card();
+        let worktree = tempfile::tempdir().unwrap();
+        let cwd = worktree.path().to_string_lossy().to_string();
+        let id = ClientIdentity::agent("sess-1", &root, &cwd);
+
+        assert!(authorize(&id, &sff(&card), false).is_ok());
+        assert!(authorize(&id, &Request::CreatePlan {
+            context_folder: root.clone(),
+            file_name: "b.md".into(),
+            title: "B".into(),
+            status: None,
+            priority: None,
+            body: None,
+            kind: None,
+            parent: None,
+            attachments: None,
+            complexity: None,
+        }, false)
+        .is_ok());
+        assert!(authorize(&id, &Request::GitDirtyPaths { cwd: cwd.clone(), limit: 10 }, false).is_ok());
+
+
+        // Still only its own: another workspace's card stays refused.
+        let (_other, _other_root, other_card) = workspace_with_card();
+        assert!(matches!(
+            authorize(&id, &sff(&other_card), false),
+            Err(Response::Forbidden { role, .. }) if role == "agent"
+        ));
+    }
+
 
     #[test]
     fn an_agent_cannot_spawn_a_shell_end_the_daemon_or_drive_another_session() {

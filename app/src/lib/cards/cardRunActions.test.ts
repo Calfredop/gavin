@@ -1124,7 +1124,7 @@ describe("relaunchCard", () => {
     const err = await relaunchCard("ws-1", "/p/t.md");
 
     expect(err).toBeNull();
-    expect(backend.createSession).toHaveBeenCalledWith("/p", "claude 'x'");
+    expect(backend.createSession).toHaveBeenCalledWith("/p", "claude 'x'", "/ws");
     expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws-1", "s-new");
     expect(get(kanbanState)["ws-1"].cardSessions[0].sessionId).toBe("s-new");
   });
@@ -1312,7 +1312,11 @@ describe("a failed binding", () => {
     expect(err).toBeNull();
     // The LAUNCH cwd, not the session's: `cwd` follows OSC 7 and drifts
     // the moment the agent moves into a worktree.
-    expect(backend.createSession).toHaveBeenCalledWith("/ws/worktree", "claude --resume u-1");
+    // Relaunched in the worktree the run was launched in, scoped to the
+    // workspace whose card it is writing -- the two directories a rail
+    // agent needs the daemon to hold at once.
+    expect(backend.createSession).toHaveBeenCalledWith("/ws/worktree", "claude --resume u-1", "/ws");
+
     // Nothing composed and nothing read: the transcript already holds
     // the whole task.
     expect(backend.readFileForViewer).not.toHaveBeenCalled();

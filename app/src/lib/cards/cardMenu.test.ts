@@ -66,7 +66,12 @@ vi.mock("$lib/core/layoutState", () => ({
   // resolve through `agentForCard` -- and a missing export here is an
   // unmocked-import throw at the click, not a wrong agent.
   agentForCard: agentMock,
+  // Owed here for the same reason `agentForCard` is: every launch the menu
+  // offers now names the workspace the session belongs to, and a missing
+  // export is an unmocked-import throw at the click.
+  workspaceRootPath: vi.fn(() => "/p"),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
+
   // null = no conversation id, which is what a daemon too old to persist
   // one gives every launch. These tests are about which menu entries
   // appear, so the resume they exercise is the written-reconstruction

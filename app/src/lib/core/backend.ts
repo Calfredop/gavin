@@ -26,9 +26,21 @@ import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspace
 import type { AttachmentStatus } from "$lib/cards/attachments";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
 
-export function createSession(cwd?: string, command?: string): Promise<string> {
-  return invoke("create_session", { cwd, command });
+/// `workspaceRoot` is the workspace the session BELONGS to, as distinct
+/// from `cwd`, where it runs. The two differ whenever gavin launches into
+/// a worktree — a rail step, a best-of-N candidate — and the daemon keeps
+/// them apart because its agent scope gate reads both: an agent confined
+/// to its cwd alone is refused every write to the card it was launched
+/// for, which lives in the main checkout. Omit it only where there is no
+/// workspace to name.
+export function createSession(
+  cwd?: string,
+  command?: string,
+  workspaceRoot?: string
+): Promise<string> {
+  return invoke("create_session", { cwd, command, workspaceRoot });
 }
+
 
 export function killSession(sessionId: string): Promise<void> {
   return invoke("kill_session", { sessionId });

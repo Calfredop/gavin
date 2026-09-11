@@ -102,7 +102,11 @@ describe("requestToolRun", () => {
   it("launches a parameterless tool straight away", async () => {
     expect(await requestToolRun("ws-1", tool())).toBeNull();
     expect(get(toolRunRequest)).toBeNull();
-    expect(backend.createSession).toHaveBeenCalledWith("/repo", expect.stringContaining("./deploy.sh"));
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/repo",
+      expect.stringContaining("./deploy.sh"),
+      "/repo"
+    );
   });
 
   it("asks for parameters before launching a tool that has them", async () => {
@@ -146,7 +150,10 @@ describe("requestToolRun", () => {
 describe("the launch", () => {
   it("runs a tool with its own directory THERE, not at the root", async () => {
     await requestToolRun("ws-1", tool({ cwd: "apps/web" }));
-    expect(backend.createSession).toHaveBeenCalledWith("/repo/apps/web", expect.any(String));
+    // Its own directory is where it RUNS; the workspace root is the scope
+    // the daemon gives the agent, and a tool with a cwd of its own is
+    // exactly where those two part company.
+    expect(backend.createSession).toHaveBeenCalledWith("/repo/apps/web", expect.any(String), "/repo");
   });
 
   it("substitutes the values the dialog collected", async () => {
@@ -157,8 +164,10 @@ describe("the launch", () => {
     expect(await confirmToolRun({ env: "prod" })).toBeNull();
     expect(backend.createSession).toHaveBeenCalledWith(
       "/repo",
-      expect.stringContaining("./deploy.sh prod")
+      expect.stringContaining("./deploy.sh prod"),
+      "/repo"
     );
+
     expect(get(toolRunRequest)).toBeNull();
   });
 

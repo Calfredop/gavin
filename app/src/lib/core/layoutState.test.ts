@@ -1013,7 +1013,7 @@ describe("splitPane", () => {
 
     await splitPane("a", "row");
 
-    expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin");
+    expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin", undefined, "/repos/gavin");
   });
 
   it("is a no-op when there is no active page", async () => {
@@ -1129,7 +1129,7 @@ describe("addTab", () => {
 
     await addTab("a");
 
-    expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin");
+    expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin", undefined, "/repos/gavin");
   });
 });
 
@@ -2137,7 +2137,10 @@ describe("createPage", () => {
     await createPage("ws-1", ([x, y]) => ({ type: "split", direction: "row", children: [leaf([x]), leaf([y])], sizes: [0.5, 0.5] }), 2, "Page 1");
 
     expect(backend.createSession).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(backend.createSession).mock.calls).toEqual([["/repos/gavin"], ["/repos/gavin"]]);
+    expect(vi.mocked(backend.createSession).mock.calls).toEqual([
+      ["/repos/gavin", undefined, "/repos/gavin"],
+      ["/repos/gavin", undefined, "/repos/gavin"],
+    ]);
   });
 
   it("leaves the cwd unset for a workspace with no root, so the daemon picks $HOME", async () => {
@@ -2146,7 +2149,7 @@ describe("createPage", () => {
 
     await createPage("ws-1", ([x]) => leaf([x]), 1, "Page 1");
 
-    expect(backend.createSession).toHaveBeenCalledWith(undefined);
+    expect(backend.createSession).toHaveBeenCalledWith(undefined, undefined, undefined);
   });
 
   it("is a no-op for an unknown workspace id", async () => {
@@ -2163,7 +2166,13 @@ describe("createPage", () => {
 
     await createPage("ws-1", ([x]) => leaf([x]), 1, "backend", { cwd: "/repos/gavin-backend" });
 
-    expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin-backend");
+    // An explicit cwd moves where the session RUNS and nothing else: the
+    // workspace it belongs to is still ws-1, and the daemon is told so.
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/repos/gavin-backend",
+      undefined,
+      "/repos/gavin"
+    );
   });
 
   // The "New page" dropdown's checkbox. A page of bare shells is still
@@ -2176,8 +2185,8 @@ describe("createPage", () => {
     await createPage("ws-1", ([x, y]) => ({ type: "split", direction: "row", children: [leaf([x]), leaf([y])], sizes: [0.5, 0.5] }), 2, "Page 1", { withAgent: true });
 
     expect(vi.mocked(backend.createSession).mock.calls).toEqual([
-      ["/repos/gavin", "claude --model opus"],
-      ["/repos/gavin", "claude --model opus"],
+      ["/repos/gavin", "claude --model opus", "/repos/gavin"],
+      ["/repos/gavin", "claude --model opus", "/repos/gavin"],
     ]);
   });
 
@@ -2205,7 +2214,8 @@ describe("createPage", () => {
 
     await createPage("ws-1", ([x]) => leaf([x]), 1, "Page 1", { withAgent: false });
 
-    expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin");
+    expect(backend.createSession).toHaveBeenCalledWith("/repos/gavin", undefined, "/repos/gavin");
+
     expect(backend.setFailurePatterns).not.toHaveBeenCalled();
   });
 
@@ -2244,7 +2254,9 @@ describe("createSessionOnNewPage", () => {
     // ONE session, carrying the caller's own cwd and command -- not the
     // workspace root, and not a bare shell.
     expect(backend.createSession).toHaveBeenCalledTimes(1);
-    expect(backend.createSession).toHaveBeenCalledWith("/repos/wt", "claude");
+    // The caller's cwd is a worktree; the workspace root rides alongside
+    // it, which is what lets the agent there write this workspace's cards.
+    expect(backend.createSession).toHaveBeenCalledWith("/repos/wt", "claude", "/repos/gavin");
     const state = get(layoutState);
     expect(state.workspaces[0].pages).toHaveLength(2);
     expect(state.workspaces[0].pages[1].layout).toEqual(leaf(["agent"]));
@@ -2261,7 +2273,7 @@ describe("createSessionOnNewPage", () => {
 
     await createSessionOnNewPage("ws-1", "backend", "", null);
 
-    expect(backend.createSession).toHaveBeenCalledWith(undefined, undefined);
+    expect(backend.createSession).toHaveBeenCalledWith(undefined, undefined, undefined);
   });
 
   it("is null for an unknown workspace, and starts nothing", async () => {
@@ -2303,7 +2315,7 @@ describe("createSessionForCard", () => {
 
     await createSessionForCard("ws-1", "/tmp/project", "npm test");
 
-    expect(backend.createSession).toHaveBeenCalledWith("/tmp/project", "npm test");
+    expect(backend.createSession).toHaveBeenCalledWith("/tmp/project", "npm test", undefined);
   });
 
   it("converts a blank cwd and a null command to undefined for backend.createSession", async () => {
@@ -2312,7 +2324,7 @@ describe("createSessionForCard", () => {
 
     await createSessionForCard("ws-1", "", null);
 
-    expect(backend.createSession).toHaveBeenCalledWith(undefined, undefined);
+    expect(backend.createSession).toHaveBeenCalledWith(undefined, undefined, undefined);
   });
 
   it("returns null and surfaces an error when session creation fails", async () => {
@@ -3710,7 +3722,7 @@ describe("main agent session", () => {
 
     await startMainAgent("ws-1");
 
-    expect(backend.createSession).toHaveBeenCalledWith("/tmp/ws", "claude --model opus");
+    expect(backend.createSession).toHaveBeenCalledWith("/tmp/ws", "claude --model opus", "/tmp/ws");
     expect(get(layoutState).workspaces[0].mainSessionId).toBe("agent-1");
     expect(backend.setWorkspacesState).toHaveBeenCalled();
   });
@@ -3719,7 +3731,7 @@ describe("main agent session", () => {
     setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
     vi.mocked(backend.createSession).mockResolvedValue("agent-1");
     await startMainAgent("ws-1");
-    expect(backend.createSession).toHaveBeenCalledWith("/tmp/ws", "claude");
+    expect(backend.createSession).toHaveBeenCalledWith("/tmp/ws", "claude", "/tmp/ws");
 
     // Already running: no second spawn.
     await startMainAgent("ws-1");
@@ -3750,8 +3762,10 @@ describe("main agent session", () => {
 
     expect(backend.createSession).toHaveBeenCalledWith(
       "/tmp/ws",
-      "claude 'Use the gavin-write-prd skill.'"
+      "claude 'Use the gavin-write-prd skill.'",
+      "/tmp/ws"
     );
+
     expect(get(layoutState).workspaces[0].mainSessionId).toBe("agent-1");
   });
 

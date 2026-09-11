@@ -2633,7 +2633,12 @@ async function launchOrchestrationAgent(
   if (command === null) return noPromptReason(agent.label);
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(root, command);
+    // Twice, and not because they drift: `root` is the workspace root by
+    // the guard above, and saying so explicitly is what keeps this launch
+    // scoped if that ever stops being true.
+    sessionId = await backend.createSession(root, command, root);
+
+
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
