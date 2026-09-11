@@ -55,6 +55,8 @@
     facets: BoardFacets;
     contexts: ContextFacet[];
     rails: RailIndex;
+    /// Board label vocabulary for the shared label facet.
+    labels?: { name: string }[];
     linked: boolean;
     onSelect: (path: string) => void;
     onQuery: (next: string) => void;
@@ -83,6 +85,7 @@
     facets,
     contexts,
     rails,
+    labels = [],
     linked,
     onSelect,
     onQuery,
@@ -192,7 +195,7 @@
     </div>
 
     <div class="facets">
-      <FacetFilters {facets} {contexts} {rails} {linked} onChange={onFacets} {onToggleLink} />
+      <FacetFilters {facets} {contexts} {rails} {labels} {linked} onChange={onFacets} {onToggleLink} />
       {#if filtering}
         <button type="button" class="reset" use:tooltip={"Clear the search and every filter"} onclick={onResetFilters}
           >Reset</button

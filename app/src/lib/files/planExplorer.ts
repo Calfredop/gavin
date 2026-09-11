@@ -127,6 +127,9 @@ export interface ExplorerFile {
   // frontmatter contract. Optional so a fixture built before this field
   // existed stays valid; absent reads the same as null.
   kind?: PlanFileInfo["kind"] | null;
+  /// The card's labels, for the label facet. Empty / absent for docs
+  /// and specs, which have no frontmatter contract.
+  labels?: string[];
 }
 
 export interface ExplorerGroupNode {
@@ -242,6 +245,7 @@ export function buildExplorerTree(tree: GavinTree | undefined): ExplorerContextN
       priority: p.priority,
       parseWarning: p.parseWarning,
       kind: p.kind,
+      labels: p.labels,
     });
     const archiveCards = ctx.plans.filter((p) => isArchivedCard(p.path));
     const boardCards = ctx.plans.filter((p) => !isArchivedCard(p.path));

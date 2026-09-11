@@ -1,6 +1,6 @@
 // The Plans tab's filter: free text over every file in the navigator,
-// plus four facets. STATUS is exclusive to this tab; CONTEXT, KIND and
-// RAIL are the trio the Kanban and Review tabs answer the same way
+// plus five facets. STATUS is exclusive to this tab; CONTEXT, KIND, RAIL
+// and LABEL are the set the Kanban and Review tabs answer the same way
 // (boardFilters.ts's BoardFacets, shared across tabs by hubFacets.ts) --
 // two surfaces asking "which rail?" must not answer it two ways, and
 // nor should a third.
@@ -18,7 +18,9 @@ import { isCardGroup } from "$lib/files/planExplorer";
 import type { ExplorerContextNode, ExplorerFile, ExplorerGroupNode } from "$lib/files/planExplorer";
 import type { Orchestration } from "$lib/orchestration/orchestration";
 
-/// The "no facet set" sentinel for both dropdowns.
+/// The "no facet set" sentinel for the search box (and the empty
+/// spelling a stored string used to mean). Facet dropdowns now store a
+/// list: empty is unset.
 export const ANY = "";
 /// The rail facet's "on no rail at all" option.
 export const NO_RAIL = "__unplaced__";
@@ -75,15 +77,17 @@ export function statusFacets(columnNames: string[], contexts: ExplorerContextNod
 
 export interface PlanFilterState {
   query: string;
-  /// A status name, or ANY. Compared by slug.
-  status: string;
-  /// A rail id, NO_RAIL, or ANY.
-  rail: string;
-  /// A context's folder path, or ANY for every context -- same meaning
-  /// as BoardFacets.context.
-  context: string;
-  /// A card kind ("plan" | "task" | "note"), or ANY.
-  kind: string;
+  /// Status names. Empty is every status. Compared by slug.
+  status: string[];
+  /// Rail ids and/or NO_RAIL. Empty is every rail.
+  rail: string[];
+  /// Context folder paths. Empty is every context -- same meaning as
+  /// BoardFacets.context.
+  context: string[];
+  /// Card kinds ("plan" | "task" | "note"). Empty is every kind.
+  kind: string[];
+  /// Label names. Empty is every card, labeled or not.
+  label: string[];
 }
 
 export interface FilteredExplorer {
@@ -100,11 +104,17 @@ function countFiles(contexts: ExplorerContextNode[]): number {
   );
 }
 
+function fileHasLabel(file: ExplorerFile, name: string): boolean {
+  const want = slugStatus(name);
+  return (file.labels ?? []).some((l) => slugStatus(l) === want);
+}
+
 function fileKeeper(state: PlanFilterState, rails: RailIndex): (file: ExplorerFile) => boolean {
   const tokens = queryTokens(state.query);
-  const wantStatus = state.status === ANY ? null : slugStatus(state.status);
-  const wantRail = state.rail === ANY ? null : state.rail;
-  const wantKind = state.kind === ANY ? null : state.kind;
+  const wantStatus = state.status;
+  const wantRail = state.rail;
+  const wantKind = state.kind;
+  const wantLabel = state.label;
 
   return (file) => {
     if (!matchesFields(tokens, [file.label, file.path, file.status])) return false;
@@ -112,18 +122,24 @@ function fileKeeper(state: PlanFilterState, rails: RailIndex): (file: ExplorerFi
     // plan files that happen to be filed away, and they keep the status
     // they were archived with. Only docs and specs are taken out of the
     // tree.
-    if (wantStatus !== null) {
+    if (wantStatus.length > 0) {
       if (!isCardGroup(file.group)) return false;
-      if (slugStatus(file.status ?? "") !== wantStatus) return false;
+      const have = slugStatus(file.status ?? "");
+      if (!wantStatus.some((s) => slugStatus(s) === have)) return false;
     }
-    if (wantRail !== null) {
+    if (wantRail.length > 0) {
       if (!isCardGroup(file.group)) return false;
       const on = rails.byCard.get(file.path);
-      if (wantRail === NO_RAIL ? on !== undefined : on !== wantRail) return false;
+      const hit = wantRail.some((r) => (r === NO_RAIL ? on === undefined : on === r));
+      if (!hit) return false;
     }
-    if (wantKind !== null) {
+    if (wantKind.length > 0) {
       if (!isCardGroup(file.group)) return false;
-      if ((file.kind ?? null) !== wantKind) return false;
+      if (file.kind == null || !wantKind.includes(file.kind)) return false;
+    }
+    if (wantLabel.length > 0) {
+      if (!isCardGroup(file.group)) return false;
+      if (!wantLabel.some((name) => fileHasLabel(file, name))) return false;
     }
     return true;
   };
@@ -137,10 +153,11 @@ export function filterExplorer(
   const total = countFiles(contexts);
   const filtering =
     queryTokens(state.query).length > 0 ||
-    state.status !== ANY ||
-    state.rail !== ANY ||
-    state.context !== ANY ||
-    state.kind !== ANY;
+    state.status.length > 0 ||
+    state.rail.length > 0 ||
+    state.context.length > 0 ||
+    state.kind.length > 0 ||
+    state.label.length > 0;
   if (!filtering) return { contexts, filtering: false, shown: total, total };
 
   const keep = fileKeeper(state, rails);
@@ -151,7 +168,12 @@ export function filterExplorer(
     // drops whole, docs and specs included -- unlike the card-only
     // facets below, which narrow a context's contents rather than the
     // set of contexts.
-    if (state.context !== ANY && !underContext(ctx.folderPath, state.context)) continue;
+    if (
+      state.context.length > 0 &&
+      !state.context.some((folder) => underContext(ctx.folderPath, folder))
+    ) {
+      continue;
+    }
     const groups: ExplorerGroupNode[] = [];
     for (const group of ctx.groups) {
       // Archived cards are searched too, and a hit is promoted into the

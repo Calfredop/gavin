@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { railIndex, statusFacets, filterExplorer, underContext, NO_RAIL, ANY } from "$lib/board/planFilter";
+import { railIndex, statusFacets, filterExplorer, underContext, NO_RAIL } from "$lib/board/planFilter";
 import type { ExplorerContextNode } from "$lib/files/planExplorer";
 import type { Orchestration, Rail } from "$lib/orchestration/orchestration";
 
@@ -92,7 +92,7 @@ const withArchive: ExplorerContextNode[] = [
 ];
 
 describe("filterExplorer with archived plans", () => {
-  const base = { query: "", status: ANY, rail: ANY, context: ANY, kind: ANY };
+  const base = { query: "", status: [] as string[], rail: [] as string[], context: [] as string[], kind: [] as string[], label: [] as string[] };
 
   it("counts archived cards in the total", () => {
     const out = filterExplorer(withArchive, base, railIndex(orch));
@@ -113,7 +113,7 @@ describe("filterExplorer with archived plans", () => {
 });
 
 describe("filterExplorer", () => {
-  const base = { query: "", status: ANY, rail: ANY, context: ANY, kind: ANY };
+  const base = { query: "", status: [] as string[], rail: [] as string[], context: [] as string[], kind: [] as string[], label: [] as string[] };
 
   it("passes the tree straight through when nothing is set", () => {
     const out = filterExplorer(contexts, base, railIndex(orch));
@@ -131,28 +131,28 @@ describe("filterExplorer", () => {
   });
 
   it("filters plans by status, and drops docs and specs entirely", () => {
-    const out = filterExplorer(contexts, { ...base, status: "Done" }, railIndex(orch));
+    const out = filterExplorer(contexts, { ...base, status: ["Done"] }, railIndex(orch));
     expect(out.contexts[0].groups).toHaveLength(1);
     expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Kanban search"]);
   });
 
   it("matches a status by slug, so spelling never hides a card", () => {
-    const out = filterExplorer(contexts, { ...base, status: "to-do" }, railIndex(orch));
+    const out = filterExplorer(contexts, { ...base, status: ["to-do"] }, railIndex(orch));
     expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Git tab"]);
   });
 
   it("filters by the rail a plan sits on", () => {
-    const out = filterExplorer(contexts, { ...base, rail: "r1" }, railIndex(orch));
+    const out = filterExplorer(contexts, { ...base, rail: ["r1"] }, railIndex(orch));
     expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Git tab"]);
   });
 
   it("offers the cards on no rail at all", () => {
-    const out = filterExplorer(contexts, { ...base, rail: NO_RAIL }, railIndex(orch));
+    const out = filterExplorer(contexts, { ...base, rail: [NO_RAIL] }, railIndex(orch));
     expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Kanban search"]);
   });
 
   it("ands the facets together", () => {
-    const out = filterExplorer(contexts, { ...base, query: "git", status: "Done" }, railIndex(orch));
+    const out = filterExplorer(contexts, { ...base, query: "git", status: ["Done"] }, railIndex(orch));
     expect(out.shown).toBe(0);
     expect(out.contexts).toEqual([]);
   });
@@ -180,7 +180,7 @@ describe("filterExplorer", () => {
     ];
 
     it("answers the status facet", () => {
-      const out = filterExplorer(withArchive, { ...base, status: "Done" }, railIndex(orch));
+      const out = filterExplorer(withArchive, { ...base, status: ["Done"] }, railIndex(orch));
       expect(out.contexts[0].groups.map((g) => g.group)).toEqual(["archive"]);
       expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Old work"]);
     });
@@ -192,7 +192,7 @@ describe("filterExplorer", () => {
         railRuns: [],
         stepRuns: [],
       });
-      const out = filterExplorer(withArchive, { ...base, rail: "r9" }, onRail);
+      const out = filterExplorer(withArchive, { ...base, rail: ["r9"] }, onRail);
       expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Old work"]);
     });
 
@@ -201,7 +201,7 @@ describe("filterExplorer", () => {
     // on its own merits and hide the thing this asserts -- that the facet
     // takes out docs and specs, and only those.
     it("still lets docs and specs fall out when a facet is set", () => {
-      const out = filterExplorer(withArchive, { ...base, status: ANY, rail: NO_RAIL }, railIndex(null));
+      const out = filterExplorer(withArchive, { ...base, status: [], rail: [NO_RAIL] }, railIndex(null));
       expect(out.contexts[0].groups.map((g) => g.group)).toEqual(["plans", "archive"]);
     });
 
@@ -232,7 +232,7 @@ describe("filterExplorer", () => {
     const two = [...contexts, auth];
 
     it("drops a context outside the chosen folder, docs and specs included", () => {
-      const out = filterExplorer(two, { ...base, context: "/ws/auth" }, railIndex(orch));
+      const out = filterExplorer(two, { ...base, context: ["/ws/auth"] }, railIndex(orch));
       expect(out.contexts.map((c) => c.name)).toEqual(["auth"]);
       expect(out.contexts[0].groups.map((g) => g.group)).toEqual(["plans"]);
     });
@@ -244,13 +244,13 @@ describe("filterExplorer", () => {
         kind: "context",
         groups: [{ group: "plans", label: "Plans", files: [file("/ws/auth/oauth/.gavin/plans/x.md", "X", "To Do")], archived: [] }],
       });
-      const out = filterExplorer([...two, nested], { ...base, context: "/ws/auth" }, railIndex(orch));
+      const out = filterExplorer([...two, nested], { ...base, context: ["/ws/auth"] }, railIndex(orch));
       expect(out.contexts.map((c) => c.name)).toEqual(["auth", "oauth"]);
     });
 
     it("does not treat a sibling with a shared prefix as under the folder", () => {
       const authTwo = context({ folderPath: "/ws/auth2", name: "auth2", kind: "context", groups: [] });
-      const out = filterExplorer([...two, authTwo], { ...base, context: "/ws/auth" }, railIndex(orch));
+      const out = filterExplorer([...two, authTwo], { ...base, context: ["/ws/auth"] }, railIndex(orch));
       expect(out.contexts.map((c) => c.name)).toEqual(["auth"]);
     });
   });
@@ -262,16 +262,45 @@ describe("filterExplorer", () => {
     ];
 
     it("keeps only cards of the chosen kind", () => {
-      const out = filterExplorer(withKinds, { ...base, kind: "note" }, railIndex(orch));
+      const out = filterExplorer(withKinds, { ...base, kind: ["note"] }, railIndex(orch));
       expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Reminder"]);
     });
 
     it("drops docs and specs entirely, like status and rail", () => {
       const out = filterExplorer(
         [context({ groups: [{ group: "plans", label: "Plans", files: [gitTab], archived: [] }, { group: "docs", label: "Docs", files: [readme], archived: [] }] })],
-        { ...base, kind: "plan" },
+        { ...base, kind: ["plan"] },
         railIndex(orch)
       );
+      expect(out.contexts[0].groups.map((g) => g.group)).toEqual(["plans"]);
+    });
+  });
+
+  describe("the label facet", () => {
+    const tagged = { ...gitTab, labels: ["windows"] };
+    const other = { ...kanban, labels: ["memory"] };
+    const bare = { ...file("/ws/.gavin-root/plans/plain.md", "Plain", "To Do"), labels: [] as string[] };
+    const withLabels: ExplorerContextNode[] = [
+      context({
+        groups: [
+          { group: "plans", label: "Plans", files: [tagged, other, bare], archived: [] },
+          { group: "docs", label: "Docs", files: [readme], archived: [] },
+        ],
+      }),
+    ];
+
+    it("keeps only cards that carry the label", () => {
+      const out = filterExplorer(withLabels, { ...base, label: ["windows"] }, railIndex(orch));
+      expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Git tab"]);
+    });
+
+    it("ORs several labels — a card carrying any of them passes", () => {
+      const out = filterExplorer(withLabels, { ...base, label: ["windows", "memory"] }, railIndex(orch));
+      expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Git tab", "Kanban search"]);
+    });
+
+    it("drops docs and specs entirely, like kind", () => {
+      const out = filterExplorer(withLabels, { ...base, label: ["windows"] }, railIndex(orch));
       expect(out.contexts[0].groups.map((g) => g.group)).toEqual(["plans"]);
     });
   });

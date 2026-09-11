@@ -56,6 +56,7 @@
   import {
     contextFacets,
     facetsActive,
+    facetsEqual,
     filterBoardByFacets,
     filterCards,
     pruneFacets,
@@ -138,9 +139,12 @@
     const next = pruneFacets(
       facets,
       tree && !tree.rootMissing ? contexts : null,
-      orch === undefined ? null : rails
+      orch === undefined ? null : rails,
+      board ? board.labels : null
     );
-    if (next.context !== facets.context || next.rail !== facets.rail) setTabFacets(workspaceId, "kanban", next);
+    if (!facetsEqual(next, facets)) {
+      setTabFacets(workspaceId, "kanban", next);
+    }
   });
 
   // The search lens, over what the facets left standing.
@@ -502,17 +506,19 @@
           : null}
       hint={showingArchive ? null : "filtered: clear to drag cards"}
     />
-    <!-- The three facets, in the order a human narrows: WHERE the card
-         lives, WHAT it is, WHICH rail runs it -- shared with Review and
-         Plans (hubFacets.ts) unless the Link button says otherwise.
-         Every one is always rendered, the way the Plans tab renders its
-         own two -- a control that comes and goes with the workspace's
-         shape is a control the human has to go looking for. -->
+    <!-- The four facets, in the order a human narrows: WHERE the card
+         lives, WHAT it is, WHICH rail runs it, WHICH label it carries --
+         shared with Review and Plans (hubFacets.ts) unless the Link
+         button says otherwise. Every one is always rendered, the way
+         the Plans tab renders its own two -- a control that comes and
+         goes with the workspace's shape is a control the human has to
+         go looking for. -->
     <div class="facets">
       <FacetFilters
         {facets}
         {contexts}
         {rails}
+        labels={board.labels}
         linked={facetsLinked}
         onChange={(next) => setTabFacets(workspaceId, "kanban", next)}
         onToggleLink={() => setTabLinked(workspaceId, "kanban", !facetsLinked)}

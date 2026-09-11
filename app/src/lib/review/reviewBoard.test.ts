@@ -25,7 +25,7 @@ import {
 } from "$lib/review/reviewBoard";
 import type { CardView, MergedProjection } from "$lib/core/planBoard";
 import type { Column } from "$lib/board/kanban";
-import { ANY, NO_FACETS, type BoardFacets } from "$lib/board/boardFilters";
+import { NO_FACETS, type BoardFacets } from "$lib/board/boardFilters";
 import { railIndex } from "$lib/board/planFilter";
 import type { Orchestration, Rail } from "$lib/orchestration/orchestration";
 
@@ -190,7 +190,7 @@ describe("reviewCards", () => {
       const got = reviewCards(
         projection,
         [done],
-        opts({ includeArchived: false, query: "", facets: { context: "/ws/auth", kind: ANY, rail: ANY } })
+        opts({ includeArchived: false, query: "", facets: { ...NO_FACETS, context: ["/ws/auth"] } })
       );
       expect(got.map((c) => c.title)).toEqual(["Auth work"]);
     });
@@ -202,14 +202,14 @@ describe("reviewCards", () => {
       const tasksOnly = reviewCards(
         projection,
         [done],
-        opts({ includeArchived: false, query: "", facets: { context: ANY, kind: "task", rail: ANY } })
+        opts({ includeArchived: false, query: "", facets: { ...NO_FACETS, kind: ["task"] } })
       );
       expect(tasksOnly.map((c) => c.title)).toEqual(["A task"]);
 
       const notesOnly = reviewCards(
         projection,
         [done],
-        opts({ includeArchived: false, query: "", facets: { context: ANY, kind: "note", rail: ANY } })
+        opts({ includeArchived: false, query: "", facets: { ...NO_FACETS, kind: ["note"] } })
       );
       expect(notesOnly).toEqual([]);
     });
@@ -241,7 +241,7 @@ describe("reviewCards", () => {
         opts({
           includeArchived: false,
           query: "",
-          facets: { context: ANY, kind: ANY, rail: "r1" },
+          facets: { ...NO_FACETS, rail: ["r1"] },
           rails: railIndex(orch),
         })
       );

@@ -14,7 +14,7 @@
 // unmounted tabs simply read the current store when they are next shown.
 
 import { writable } from "svelte/store";
-import { NO_FACETS, type BoardFacets } from "$lib/board/boardFilters";
+import { emptyFacets, type BoardFacets } from "$lib/board/boardFilters";
 
 /// The three tabs that answer context/kind/rail the same way.
 export const HUB_FACET_TABS = ["kanban", "review", "plans"] as const;
@@ -36,7 +36,7 @@ export interface WorkspaceHubFacets {
 
 function emptyWorkspace(): WorkspaceHubFacets {
   return {
-    shared: { ...NO_FACETS },
+    shared: emptyFacets(),
     linked: { kanban: true, review: true, plans: true },
     own: {},
   };
@@ -92,5 +92,5 @@ export function setTabLinked(workspaceId: string, tab: HubFacetTab, linked: bool
 /// the facets clear through the same linked/unlinked routing as any
 /// other edit, rather than being special-cased to always touch `shared`.
 export function resetTabFacets(workspaceId: string, tab: HubFacetTab): void {
-  setTabFacets(workspaceId, tab, { ...NO_FACETS });
+  setTabFacets(workspaceId, tab, emptyFacets());
 }

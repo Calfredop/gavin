@@ -51,7 +51,7 @@
   import { runBaseline, type RunBaseline } from "$lib/cards/runChanges";
   import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
   import { railIndex } from "$lib/board/planFilter";
-  import { contextFacets, pruneFacets } from "$lib/board/boardFilters";
+  import { contextFacets, facetsEqual, pruneFacets } from "$lib/board/boardFilters";
   import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/board/hubFacets";
 
   interface Props {
@@ -108,8 +108,15 @@
   // folder renamed) filters on a value the dropdown no longer offers --
   // reset it instead, the same rule the Kanban and Plans tabs follow.
   $effect(() => {
-    const next = pruneFacets(facets, tree && !tree.rootMissing ? contexts : null, orch === undefined ? null : rails);
-    if (next.context !== facets.context || next.rail !== facets.rail) setTabFacets(workspaceId, "review", next);
+    const next = pruneFacets(
+      facets,
+      tree && !tree.rootMissing ? contexts : null,
+      orch === undefined ? null : rails,
+      board ? board.labels : null
+    );
+    if (!facetsEqual(next, facets)) {
+      setTabFacets(workspaceId, "review", next);
+    }
   });
 
   // Every card in the projection, for the detail panel the first column
@@ -310,6 +317,7 @@
     {facets}
     {contexts}
     {rails}
+    labels={board?.labels ?? []}
     linked={facetsLinked}
     onSelect={select}
     onQuery={(next) => setReviewPrefs(workspaceId, { query: next })}

@@ -33,8 +33,8 @@
   import FormatHelpModal from "$lib/files/FormatHelpModal.svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
-  import { ANY, filterExplorer, railIndex, statusFacets } from "$lib/board/planFilter";
-  import { contextFacets, pruneFacets } from "$lib/board/boardFilters";
+  import { ANY_STATUS_LABEL, contextFacets, facetsEqual, pruneFacets } from "$lib/board/boardFilters";
+  import FacetDropdown from "$lib/board/FacetDropdown.svelte";
   import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/board/hubFacets";
   import FacetFilters from "$lib/board/FacetFilters.svelte";
   import * as backend from "$lib/core/backend";
@@ -174,7 +174,14 @@
   const filtered = $derived(
     filterExplorer(
       allContexts,
-      { query, status: statusFacet, rail: sharedFacets.rail, context: sharedFacets.context, kind: sharedFacets.kind },
+      {
+        query,
+        status: statusFacet,
+        rail: sharedFacets.rail,
+        context: sharedFacets.context,
+        kind: sharedFacets.kind,
+        label: sharedFacets.label,
+      },
       rails
     )
   );
@@ -192,9 +199,14 @@
     const next = pruneFacets(
       sharedFacets,
       tree && !tree.rootMissing ? contextOptions : null,
-      orch === undefined ? null : rails
+      orch === undefined ? null : rails,
+      $kanbanState[workspaceId] ? $kanbanState[workspaceId].labels : null
     );
-    if (next.context !== sharedFacets.context || next.rail !== sharedFacets.rail) {
+    if (
+      next.context !== sharedFacets.context ||
+      next.rail !== sharedFacets.rail ||
+      (next.label ?? "") !== (sharedFacets.label ?? "")
+    ) {
       setTabFacets(workspaceId, "plans", next);
     }
   });
@@ -453,6 +465,7 @@
             facets={sharedFacets}
             contexts={contextOptions}
             {rails}
+            labels={$kanbanState[workspaceId]?.labels ?? []}
             linked={facetsLinked}
             onChange={(next) => setTabFacets(workspaceId, "plans", next)}
             onToggleLink={() => setTabLinked(workspaceId, "plans", !facetsLinked)}

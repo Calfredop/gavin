@@ -1,6 +1,8 @@
 // The kanban board's FACET lens: the same merged projection the board
-// always renders, narrowed by three dropdowns -- the card's context, its
-// kind, and the orchestration rail carrying it.
+// always renders, narrowed by four checkbox dropdowns -- the card's
+// context, its kind, the orchestration rail carrying it, and its labels.
+// Each dropdown is a set: empty means "any", more than one means OR
+// inside that facet, and the four facets AND together.
 //
 // Shaped exactly like pageBoard.ts's page lens and boardSearch.ts's
 // search lens, and for the same reason: it never mutates the projection
@@ -9,51 +11,117 @@
 // then search, so a column's "hidden" count keeps meaning "hidden by
 // your query" rather than "filtered out".
 //
-// The facet vocabulary is the Plans tab's (planFilter.ts): ANY for an
-// unset dropdown, NO_RAIL for "on no rail at all", and the same
-// card-path -> rail index behind the rail facet. Two surfaces asking the
-// same question must not answer it two ways.
+// The facet vocabulary is the Plans tab's (planFilter.ts): NO_RAIL for
+// "on no rail at all", and the same card-path -> rail index behind the
+// rail facet. Two surfaces asking the same question must not answer it
+// two ways.
 
 import { ANY, NO_RAIL, underContext, type RailIndex } from "$lib/board/planFilter";
+import type { ContextMenuEntry } from "$lib/core/contextMenu";
 import type { GavinTree } from "$lib/core/gavin";
-import type { CardView } from "$lib/core/planBoard";
+import { slugStatus, type CardView } from "$lib/core/planBoard";
 import { AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
 import type { MergedBoard } from "$lib/board/boardSearch";
 
 export { ANY, NO_RAIL, underContext };
 
-export interface BoardFacets {
-  /// A context's folder path, or ANY for every context. The ROOT
-  /// context is offered AS ANY rather than as its own path: every
-  /// context in the workspace is a subfolder of the root, so "the root"
-  /// and "all cards" are the same answer, and giving it a second
-  /// spelling would only let the two drift.
-  context: string;
-  /// A card kind ("plan" | "task" | "note"), or ANY.
-  kind: string;
-  /// A rail id, NO_RAIL, or ANY.
-  rail: string;
+/// One facet's selected values. Empty is unset -- every card still
+/// answers. Several values OR: a card that matches any of them passes
+/// that facet.
+export type FacetSelection = string[];
+
+export interface FacetOption {
+  value: string;
+  label: string;
 }
 
-export const NO_FACETS: BoardFacets = { context: ANY, kind: ANY, rail: ANY };
+export interface BoardFacets {
+  /// Context folder paths. Empty is every context. The ROOT context is
+  /// never offered as a path: every context in the workspace is a
+  /// subfolder of the root, so "the root" and "all cards" are the same
+  /// answer, and giving it a second spelling would only let the two
+  /// drift.
+  context: FacetSelection;
+  /// Card kinds ("plan" | "task" | "note"). Empty is every kind.
+  kind: FacetSelection;
+  /// Rail ids and/or NO_RAIL. Empty is every rail (and the unplaced).
+  rail: FacetSelection;
+  /// Label names. Empty is every card, labeled or not.
+  label: FacetSelection;
+}
+
+export function emptyFacets(): BoardFacets {
+  return { context: [], kind: [], rail: [], label: [] };
+}
+
+export const NO_FACETS: BoardFacets = emptyFacets();
+
+export const ALL_CONTEXTS_LABEL = "All contexts";
+export const ANY_KIND_LABEL = "Any kind";
+export const ANY_RAIL_LABEL = "Any rail";
+export const ANY_LABEL_LABEL = "Any label";
+export const ANY_STATUS_LABEL = "Any status";
+
+function sameSelection(a: FacetSelection, b: FacetSelection): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+export function facetsEqual(a: BoardFacets, b: BoardFacets): boolean {
+  return (
+    sameSelection(a.context, b.context) &&
+    sameSelection(a.kind, b.kind) &&
+    sameSelection(a.rail, b.rail) &&
+    sameSelection(a.label, b.label)
+  );
+}
 
 export function facetsActive(facets: BoardFacets): boolean {
-  return facets.context !== ANY || facets.kind !== ANY || facets.rail !== ANY;
+  return (
+    facets.context.length > 0 ||
+    facets.kind.length > 0 ||
+    facets.rail.length > 0 ||
+    facets.label.length > 0
+  );
+}
+
+/// Add `value` if it is missing, drop it if it is already selected.
+export function toggleFacet(selected: FacetSelection, value: string): FacetSelection {
+  return selected.includes(value) ? selected.filter((v) => v !== value) : [...selected, value];
+}
+
+/// What the dropdown button reads. Empty is the unset label; otherwise
+/// the selected options in option order, so "Plans, Tasks" does not
+/// reshuffle when the human ticks them the other way round.
+export function facetSummary(selected: FacetSelection, options: FacetOption[], empty: string): string {
+  if (selected.length === 0) return empty;
+  const labels = options.filter((o) => selected.includes(o.value)).map((o) => o.label);
+  return labels.length > 0 ? labels.join(", ") : empty;
+}
+
+/// Checkbox rows for one facet. Each pick keeps the menu open so a
+/// second tick is one click away, not a reopen.
+export function facetMenuEntries(
+  options: FacetOption[],
+  selected: FacetSelection,
+  onToggle: (value: string) => void
+): ContextMenuEntry[] {
+  return options.map((o) => ({
+    label: o.label,
+    checked: selected.includes(o.value),
+    keepOpen: true,
+    onPick: () => onToggle(o.value),
+  }));
 }
 
 /// The kind dropdown's options, in the order the card model introduces
 /// them: the multi-step plan, the unit of agent work, the reminder.
-export const KIND_FACETS: { value: CardView["kind"]; label: string }[] = [
+export const KIND_FACETS: FacetOption[] = [
   { value: "plan", label: "Plans" },
   { value: "task", label: "Tasks" },
   { value: "note", label: "Notes" },
 ];
 
-export interface ContextFacet {
-  /// What the <option> carries: ANY for the root, the folder path
-  /// otherwise.
-  value: string;
-  label: string;
+export interface ContextFacet extends FacetOption {
   /// The folder path, for the option's title attribute -- a label is a
   /// relative path and two contexts named the same way in different
   /// trees would otherwise be indistinguishable.
@@ -65,22 +133,22 @@ function relativeTo(root: string, folder: string): string | null {
   return folder.startsWith(base) ? folder.slice(base.length) : null;
 }
 
-/// The context dropdown's options: the root first (as ANY -- "every
-/// card"), then the workspace's own contexts by path, then the ones
-/// outside it. Same ordering the Plans tab's navigator uses, so the two
-/// lists read as the same tree.
+/// The context dropdown's options: the workspace's own contexts by
+/// path, then the ones outside it. The root is not listed -- empty
+/// selection already means every card, and offering the root as a path
+/// would give "all cards" a second spelling.
 ///
 /// A context OUTSIDE the workspace root is labelled by name: its folder
 /// shares no prefix with the root, and a bare absolute path in a
 /// dropdown is unreadable.
 export function contextFacets(tree: GavinTree | undefined): ContextFacet[] {
-  const all: ContextFacet[] = [{ value: ANY, label: "All contexts", folderPath: tree?.rootPath ?? "" }];
-  if (!tree || tree.rootMissing) return all;
+  if (!tree || tree.rootMissing) return [];
 
   const rest = tree.contexts.filter((c) => c.kind !== "root");
   const inside = rest.filter((c) => c.outside !== true).sort((a, b) => a.folderPath.localeCompare(b.folderPath));
   const outside = rest.filter((c) => c.outside === true).sort((a, b) => a.folderPath.localeCompare(b.folderPath));
 
+  const all: ContextFacet[] = [];
   for (const ctx of inside) {
     all.push({
       value: ctx.folderPath,
@@ -94,14 +162,48 @@ export function contextFacets(tree: GavinTree | undefined): ContextFacet[] {
   return all;
 }
 
+export interface LabelFacet extends FacetOption {}
+
+/// The label dropdown: each vocabulary name, nothing else. Empty
+/// selection is "any label" (unlabeled cards included); there is no Not.
+export function labelFacets(labels: { name: string }[]): LabelFacet[] {
+  return labels.map((l) => ({ value: l.name, label: l.name }));
+}
+
+/// The rail dropdown: unplaced first, then each rail in orchestration
+/// order. Empty selection is every card; ticking both a rail and "on no
+/// rail" is the OR of those two answers.
+export function railFacets(rails: RailIndex): FacetOption[] {
+  return [{ value: NO_RAIL, label: "On no rail" }, ...rails.rails.map((r) => ({ value: r.id, label: r.name }))];
+}
+
+function cardHasLabel(card: CardView, name: string): boolean {
+  const want = slugStatus(name);
+  return card.labels.some((l) => slugStatus(l) === want);
+}
+
+function matchesSelection(selected: FacetSelection, value: string): boolean {
+  return selected.length === 0 || selected.includes(value);
+}
+
 /// One card's verdict, so the board and the archive grid ask the same
 /// question of the same card.
 export function cardPasses(card: CardView, facets: BoardFacets, rails: RailIndex): boolean {
-  if (facets.context !== ANY && !underContext(card.contextFolder, facets.context)) return false;
-  if (facets.kind !== ANY && card.kind !== facets.kind) return false;
-  if (facets.rail !== ANY) {
+  if (
+    facets.context.length > 0 &&
+    !facets.context.some((folder) => underContext(card.contextFolder, folder))
+  ) {
+    return false;
+  }
+  if (!matchesSelection(facets.kind, card.kind)) return false;
+  if (facets.rail.length > 0) {
     const on = rails.byCard.get(card.id);
-    if (facets.rail === NO_RAIL ? on !== undefined : on !== facets.rail) return false;
+    const hit = facets.rail.some((r) => (r === NO_RAIL ? on === undefined : on === r));
+    if (!hit) return false;
+  }
+  if (facets.label.length > 0) {
+    const hit = facets.label.some((name) => cardHasLabel(card, name));
+    if (!hit) return false;
   }
   return true;
 }
@@ -168,10 +270,16 @@ export function filterBoardByFacets(
   return { columns, autoColumns, shown, total, hiddenIn: (key) => hidden.get(key) ?? 0 };
 }
 
+function pruneSelected(selected: FacetSelection, keep: (value: string) => boolean): FacetSelection {
+  const next = selected.filter(keep);
+  return sameSelection(next, selected) ? selected : next;
+}
+
 /// Reset a facet whose option is gone -- the rail was deleted, the
 /// context folder renamed. Without this the board silently shows nothing
 /// and the dropdown reads as its first option while filtering on a value
-/// no longer in the list.
+/// no longer in the list. A multi-select drops only the dead values and
+/// keeps the live ones.
 ///
 /// UNKNOWN IS NOT ABSENT: a null vocabulary means that half has not
 /// loaded yet, and the facet is left exactly alone. The tree and the
@@ -181,18 +289,20 @@ export function filterBoardByFacets(
 export function pruneFacets(
   facets: BoardFacets,
   contexts: ContextFacet[] | null,
-  rails: RailIndex | null
+  rails: RailIndex | null,
+  labels: { name: string }[] | null = null
 ): BoardFacets {
   const context =
-    contexts !== null && facets.context !== ANY && !contexts.some((c) => c.value === facets.context)
-      ? ANY
-      : facets.context;
+    contexts !== null ? pruneSelected(facets.context, (v) => contexts.some((c) => c.value === v)) : facets.context;
   const rail =
-    rails !== null &&
-    facets.rail !== ANY &&
-    facets.rail !== NO_RAIL &&
-    !rails.rails.some((r) => r.id === facets.rail)
-      ? ANY
+    rails !== null
+      ? pruneSelected(facets.rail, (v) => v === NO_RAIL || rails.rails.some((r) => r.id === v))
       : facets.rail;
-  return context === facets.context && rail === facets.rail ? facets : { ...facets, context, rail };
+  const label =
+    labels !== null
+      ? pruneSelected(facets.label, (v) => labels.some((l) => slugStatus(l.name) === slugStatus(v)))
+      : facets.label;
+  return context === facets.context && rail === facets.rail && label === facets.label
+    ? facets
+    : { ...facets, context, rail, label };
 }
