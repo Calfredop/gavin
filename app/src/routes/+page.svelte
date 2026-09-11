@@ -749,6 +749,9 @@
     padding: var(--header-pad-top) 10px 0;
     flex: 0 0 auto;
     background: var(--surface-base);
+    /* Continues the Scratchpad hairline the sidebar header starts:
+       this row is the top edge when there are no tabs to carry it. */
+    border-bottom: 1px solid var(--border);
   }
   /* One of the app's three header rows (see theme.css): this one, a
      pane's tab row, and the strip over the sidebar are the same height
@@ -766,6 +769,10 @@
        colour it must match, and a row that only inherits gives it
        nothing to match against. */
     background: var(--surface-base);
+    /* Continues the Scratchpad hairline the sidebar header starts,
+       under the tabs and the actions together -- one rule for the
+       whole row, not a rule per cluster. */
+    border-bottom: 1px solid var(--border);
   }
   /* Grows only as far as its tabs: the leftover belongs to the drag
      spacer, so an empty stretch of this row moves the window instead of

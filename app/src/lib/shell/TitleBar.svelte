@@ -81,6 +81,11 @@
     /* The sidebar's surface, at both widths: this strip is the column's
        header, and the column is what everything in it acts on. */
     background: var(--surface-raised);
+    /* Same hairline the Scratchpad draws under its row: this is the
+       column's header, and the view's tab row draws the rest of the
+       line. Inside the 36px (border-box), so the spacer under this
+       corner stays the height the view starts on. */
+    border-bottom: 1px solid var(--border);
     color: var(--text);
     font-family: sans-serif;
     font-size: 0.8em;

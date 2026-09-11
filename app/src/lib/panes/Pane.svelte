@@ -846,6 +846,10 @@
        flat black; this is that row. What separates the tabs now is the
        hairline below, not a change of surface. */
     background: var(--surface-base);
+    /* Continues the Scratchpad hairline the sidebar header starts:
+       this row is the window's top edge on a terminal page, and the
+       same rule under a split pane's own tabs. */
+    border-bottom: 1px solid var(--border);
     flex: 0 0 auto;
     min-width: 0;
   }

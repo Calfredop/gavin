@@ -133,6 +133,30 @@ describe("the app's three header rows", () => {
     expect(rule(TITLE_BAR, ".rail-top").background).toBe("var(--surface-raised)");
   });
 
+  // One hairline under the whole top edge: the sidebar's header and
+  // whichever main-view row is on screen (hub tabs, a pane's tabs, or
+  // the chrome stand-in). Same declaration the Scratchpad uses to
+  // separate its row from the list under it -- a second vocabulary here
+  // would be a second weight of rule across one window.
+  it("draws the scratchpad's divider under every header row", () => {
+    const scratchpad = rule(source("Sidebar.svelte"), ".workspace-row.scratchpad")[
+      "border-bottom"
+    ];
+    expect(scratchpad).toBe("1px solid var(--border)");
+    for (const bar of [
+      rule(TITLE_BAR, ".corner"),
+      rule(PAGE, ".tabs"),
+      rule(PAGE, ".chrome-row"),
+      rule(PANE, ".tab-bar"),
+    ]) {
+      expect(bar["border-bottom"]).toBe(scratchpad);
+    }
+    // The rail's spacer sits under the corner and must stay 36px: a
+    // border on it without border-box would drop the sidebar a pixel
+    // below the view beside it.
+    expect(rule(TITLE_BAR, ".rail-top")["border-bottom"]).toBeUndefined();
+  });
+
   // What a flat row costs: the active tab can no longer be a differently
   // coloured box, so nothing but this hairline says where one tab ends.
   // Short of the row's height on purpose -- a full-height rule reads as a
