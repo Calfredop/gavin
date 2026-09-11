@@ -1,5 +1,6 @@
 ---
 title: Merge windows-dev-setup onto main
+labels: windows
 status: Done
 priority: high
 ---

@@ -1,6 +1,7 @@
 ---
 order: 5120
 title: [feat] windows port
+labels: windows
 status: Done
 ---
 Gavin does not compile for Windows. Every process talks over Unix domain sockets imported from `std::os::unix` with no cfg gate (daemon server.rs / gavin.rs / main.rs, gavin-mcp main.rs, host daemon.rs / session.rs), the daemon chmods its socket through `PermissionsExt`, `proc.rs` calls `libc::kill`, and the PTY spawns `/bin/sh -c` for every command session. The 2026-07-30 terminal-core refinements spec made the project macOS-first on purpose; this card is the decision to add Windows. The Linux card (`feat-linux-port.md`) lands first: it delivers the per-OS data-directory seam and the CI workflow this card extends.

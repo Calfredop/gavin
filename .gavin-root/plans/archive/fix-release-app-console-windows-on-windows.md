@@ -1,6 +1,7 @@
 ---
 order: 15360
 title: [fix] on Windows the release app opens a console window for every command it runs
+labels: windows
 status: Done
 priority: urgent
 complexity: moderate

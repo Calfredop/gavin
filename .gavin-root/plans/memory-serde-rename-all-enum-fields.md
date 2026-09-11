@@ -1,5 +1,5 @@
 ---
-order: 5120
+order: 4096
 kind: note
 labels: memory
 title: An enum's rename_all never reaches its fields

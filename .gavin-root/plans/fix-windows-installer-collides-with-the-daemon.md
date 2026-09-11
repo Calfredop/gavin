@@ -1,5 +1,7 @@
 ---
+order: 9216
 title: [fix] The Windows installer installs into the daemon's state directory, and never stops the daemon
+labels: windows
 status: To Do
 priority: high
 complexity: medium

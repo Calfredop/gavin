@@ -2,6 +2,7 @@
 order: 9216
 kind: task
 title: [issue] windows terminal
+labels: windows
 status: Done
 ---
 terminal's sessions shows in black and white (windows only, mac is fine, Linux untested)

@@ -2,6 +2,7 @@
 order: 11264
 kind: task
 title: [ui] windows system button
+labels: windows
 status: Done
 complexity: moderate
 ---

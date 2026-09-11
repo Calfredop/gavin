@@ -1,5 +1,7 @@
 ---
+order: 10240
 title: [fix] On Windows a session that exits is never reported as exited
+labels: windows
 status: To Do
 priority: high
 complexity: complex

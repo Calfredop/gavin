@@ -1,5 +1,7 @@
 ---
+order: 6144
 title: [fix] cargo test -p app is nine red on Windows, in six unrelated ways
+labels: windows
 status: To Do
 priority: medium
 complexity: medium

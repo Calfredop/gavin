@@ -1,6 +1,7 @@
 ---
 kind: task
 title: [feat] windows process probe
+labels: windows
 parent: feat-windows-port.md
 ---
 Implement the Windows side of `crates/daemon/src/proc.rs`, keeping its contract that every probe fails toward "gone".

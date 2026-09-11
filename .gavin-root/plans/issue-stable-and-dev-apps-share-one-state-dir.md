@@ -2,6 +2,7 @@
 order: 13312
 kind: task
 title: [issue] the stable and dev apps share one daemon and one config.json
+labels: windows
 status: In Progress
 ---
 Every Gavin on this machine resolves the same state: the pipe name is hashed

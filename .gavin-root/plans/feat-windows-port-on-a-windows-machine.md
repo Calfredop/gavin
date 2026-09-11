@@ -2,6 +2,7 @@
 model: opus[1m]
 order: 9216
 title: [feat] windows port — the half that needs a Windows machine
+labels: windows
 status: In Progress
 ---
 Everything in [feat-windows-port.md](./feat-windows-port.md) that could be done

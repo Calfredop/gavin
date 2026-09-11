@@ -1,5 +1,5 @@
 ---
-order: 17408
+order: 5120
 kind: note
 title: cargo test -p app kills the running daemon
 labels: memory

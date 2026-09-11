@@ -2,6 +2,7 @@
 order: 11264
 kind: task
 title: [ui] windows corner radius
+labels: windows
 status: Done
 ---
 Windows's window corner radius is diffrent from macOS, so the Win app is showing a white gap at corners. Same gap when going full screen

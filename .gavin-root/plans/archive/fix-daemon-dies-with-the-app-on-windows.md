@@ -1,6 +1,7 @@
 ---
 order: 9216
 title: [fix] on Windows the daemon dies with the app, taking every session with it
+labels: windows
 status: Done
 priority: high
 complexity: moderate

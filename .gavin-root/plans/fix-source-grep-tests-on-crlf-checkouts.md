@@ -1,5 +1,7 @@
 ---
+order: 8192
 title: [fix] Source-grep tests fail on a CRLF checkout
+labels: windows
 status: To Do
 priority: medium
 complexity: simple

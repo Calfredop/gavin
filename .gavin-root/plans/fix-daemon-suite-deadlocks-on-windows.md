@@ -1,5 +1,7 @@
 ---
+order: 7168
 title: [fix] 22 server::tests fail on Windows, behind a hang that has its own card
+labels: windows
 status: To Do
 priority: medium
 complexity: medium

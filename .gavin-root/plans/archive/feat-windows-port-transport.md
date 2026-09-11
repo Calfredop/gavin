@@ -1,6 +1,7 @@
 ---
 kind: task
 title: [feat] IPC transport abstraction (unix socket / named pipe)
+labels: windows
 parent: feat-windows-port.md
 ---
 Replace gavin's direct use of `std::os::unix::net` with one transport module so the workspace compiles on Windows.
