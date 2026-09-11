@@ -162,7 +162,7 @@ export function contextFacets(tree: GavinTree | undefined): ContextFacet[] {
   return all;
 }
 
-export interface LabelFacet extends FacetOption {}
+export type LabelFacet = FacetOption;
 
 /// The label dropdown: each vocabulary name, nothing else. Empty
 /// selection is "any label" (unlabeled cards included); there is no Not.
