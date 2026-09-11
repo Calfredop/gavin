@@ -18,8 +18,12 @@
     /// passes the PENDING profile's command so Superpowers is checked
     /// for the agent being switched to.
     agentCommand?: string;
+    /// Arm THIS profile rather than the workspace's active agent.
+    /// Fallback arming sets it so Superpowers does not rewrite the
+    /// workspace CLI's plugin.
+    profileId?: string;
   }
-  let { workspaceId, status, mark, onChanged, onDone, agentCommand: agentCommandOverride }: Props =
+  let { workspaceId, status, mark, onChanged, onDone, agentCommand: agentCommandOverride, profileId }: Props =
     $props();
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
@@ -61,7 +65,7 @@
 </p>
 
 {#if status}
-  <SuperpowersControls rootPath={ws?.rootPath ?? null} {agentCommand} {status} {mark} {onChanged} />
+  <SuperpowersControls rootPath={ws?.rootPath ?? null} {agentCommand} {profileId} {status} {mark} {onChanged} />
   {#if error}
     <p class="warn">{error}</p>
   {/if}

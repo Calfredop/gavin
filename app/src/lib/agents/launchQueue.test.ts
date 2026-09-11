@@ -63,6 +63,12 @@ vi.mock("$lib/agents/memoryState", () => ({
 vi.mock("$lib/core/layoutState", () => ({
   layoutState: probe.layoutState,
   resolvedAgentFor: () => ({ profileId: "claude-code" }),
+  agentDefaultsStore: writable({
+    customCommand: "",
+    customModelFlag: "",
+    complexity: {},
+    agentFallback: [],
+  }),
 }));
 
 vi.mock("$lib/shell/appWindowState", () => ({ currentWindowLabel: () => "main" }));
@@ -75,6 +81,7 @@ vi.mock("$lib/agents/agentPauseState", () => ({
   agentPauseStore: writable(null),
   agentUsageStore: writable({}),
   pauseFor: () => ({ paused: false, reason: null, why: null, until: null }),
+  launchPauseHold: () => ({ paused: false, why: null }),
 }));
 vi.mock("$lib/core/backend", () => ({
   getLaunchConfig: vi.fn().mockResolvedValue(null),

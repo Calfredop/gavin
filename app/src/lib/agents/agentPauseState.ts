@@ -22,8 +22,8 @@ import {
   DEFAULT_CYCLE,
   type PauseCycle,
   type PauseVerdict,
-  pauseBlockedReason,
   pauseVerdict,
+  cyclePhase,
 } from "$lib/agents/agentPause";
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import {
@@ -35,7 +35,13 @@ import {
   type UsageHistory,
   type UsageProjection,
 } from "$lib/agents/usageProjection";
-import { layoutState, resolvedAgentFor } from "$lib/core/layoutState";
+import { layoutState, resolvedAgentFor, agentDefaultsStore } from "$lib/core/layoutState";
+import {
+  decideLaunch,
+  effectiveFallbackChain,
+  fallbackBlockedReason,
+  type FallbackDecision,
+} from "$lib/agents/agentFallback";
 
 /// The app-wide cycle, or null for no cycle at all -- the shipped
 /// default, so nothing pauses until somebody turns it on.
@@ -162,9 +168,13 @@ function recordSample(profileId: string, report: AgentUsageReport): void {
 /// a call and a row that mean nothing.
 export function profilesInUse(): string[] {
   const ids = new Set<string>();
+  const appChain = get(agentDefaultsStore).agentFallback ?? [];
   for (const workspace of get(layoutState).workspaces) {
     const agent = resolvedAgentFor(workspace.id);
     if (agent.profileId) ids.add(agent.profileId);
+    for (const id of effectiveFallbackChain(workspace.agentFallback, appChain)) {
+      ids.add(id);
+    }
   }
   return [...ids];
 }
@@ -244,11 +254,11 @@ export interface PausedWorkspace {
 /// Same inputs as `activePause`, so it moves on the same clock tick and
 /// cannot lag behind the strip.
 export const pausedWorkspaces: Readable<PausedWorkspace[]> = derived(
-  [nowStore, agentPauseStore, agentUsageStore, layoutState],
+  [nowStore, agentPauseStore, agentUsageStore, layoutState, agentDefaultsStore],
   ([now, , , state]) =>
     state.workspaces
       .map((w) => ({ id: w.id, name: w.name, verdict: pauseFor(w.id, now) }))
-      .filter((w) => w.verdict.paused)
+      .filter((w) => launchPauseHold(w.id, now).paused)
 );
 
 /// WHICH workspaces are paused, as one comparable key, emitting ONLY
@@ -288,10 +298,80 @@ export const pausedWorkspaceKey: Readable<string> = readable("", (set) => {
   });
 });
 
+/// Which agent a launch should use right now, or why it must wait.
+///
+/// Cycle pause is a hard hold. Usage-limit pause walks the fallback
+/// chain. The workspace's own profile counts as armed; other profiles
+/// need a completed setup-only arming.
+export function launchDecision(
+  workspaceId: string,
+  resolvedProfileId: string,
+  resume: boolean,
+  nowMs: number = get(nowStore)
+): FallbackDecision {
+  const cycle = effectiveCycle(workspaceId);
+  const cyclePaused = cycle ? cyclePhase(cycle, nowMs).paused : false;
+  const workspace = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  const chain = effectiveFallbackChain(
+    workspace?.agentFallback,
+    get(agentDefaultsStore).agentFallback
+  );
+  const workspaceProfile = resolvedAgentFor(workspaceId).profileId;
+  const armed = new Set<string>([
+    ...(workspaceProfile ? [workspaceProfile] : []),
+    ...(workspace?.armedAgents ?? []),
+  ]);
+  // No cycle at all means limits are off — the same early return
+  // `pauseFor` takes. Inventing DEFAULT_CYCLE.limitEnabled here would
+  // start pausing installs that never configured a pause.
+  return decideLaunch({
+    resolvedProfileId: resolvedProfileId ?? "",
+    chain,
+    usageByProfile: get(agentUsageStore),
+    armed,
+    limitEnabled: cycle?.limitEnabled ?? false,
+    limitPercent: cycle?.limitPercent ?? DEFAULT_CYCLE.limitPercent,
+    fallbackThresholds: get(agentDefaultsStore).fallbackThresholds,
+    cyclePaused,
+    resume,
+  });
+}
+
+/// Pause-shaped hold for the launch wall's `startVerdict`: cycle and a
+/// spent chain still hold; a ready fallback does not.
+export function launchPauseHold(
+  workspaceId: string | null,
+  nowMs: number
+): { paused: boolean; why: string | null } {
+  if (!workspaceId) return { paused: false, why: null };
+  const decision = launchDecision(
+    workspaceId,
+    resolvedAgentFor(workspaceId).profileId,
+    false,
+    nowMs
+  );
+  if (decision.kind === "use") return { paused: false, why: null };
+  if (decision.kind === "arm") {
+    return { paused: true, why: fallbackBlockedReason(decision) };
+  }
+  const pause = pauseFor(workspaceId, nowMs);
+  if (decision.why === "cycle" || pause.reason?.kind === "usage-limit") {
+    return { paused: pause.paused, why: pause.why };
+  }
+  return { paused: true, why: fallbackBlockedReason(decision) };
+}
+
 /// Whether gavin may start work in this workspace right now. The one
 /// question the scheduler and the auto-resume gate ask.
+///
+/// True only when a launch of the workspace's own agent (or its
+/// fallback) may go. An unarmed chain entry holds automated starts so a
+/// rail does not spin opening the wizard every tick — a board Run asks
+/// `launchDecision` itself and forces the wizard.
 export function mayStartWork(workspaceId: string): boolean {
-  return !pauseFor(workspaceId, get(nowStore)).paused;
+  return (
+    launchDecision(workspaceId, resolvedAgentFor(workspaceId).profileId, false).kind === "use"
+  );
 }
 
 /// The reason it may not, phrased for an audit trail. Null while running.
@@ -308,8 +388,10 @@ export function mayStartWork(workspaceId: string): boolean {
 /// `layoutState`, which starts THIS module -- so a static import the
 /// other way would close a cycle for one string.
 export function startBlockedReason(workspaceId: string): string | null {
-  const paused = pauseBlockedReason(pauseFor(workspaceId, get(nowStore)));
-  if (paused) return paused;
+  const hold = launchPauseHold(workspaceId, get(nowStore));
+  if (hold.paused && hold.why) {
+    return hold.why.startsWith("work is ") ? hold.why : `work is paused: ${hold.why}`;
+  }
   return gateReason();
 }
 

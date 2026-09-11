@@ -19,8 +19,12 @@
     /// passes the PENDING profile's file so MCP/skills land for the
     /// agent being switched to, even before the tree watcher catches up.
     instructionsFile?: string;
+    /// Arm THIS profile's MCP config rather than the workspace's active
+    /// agent. Fallback arming sets it so Integration cannot rewrite the
+    /// workspace profile.
+    profileId?: string;
   }
-  let { workspaceId, onDone, instructionsFile }: Props = $props();
+  let { workspaceId, onDone, instructionsFile, profileId }: Props = $props();
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   // The file gavin's marker block goes into. Through the same resolution
@@ -46,7 +50,7 @@
     error = null;
     pendingForeign = null;
     try {
-      const r = await runIntegration(ws.rootPath, agentFile, ws.mcpForeignServersChoice);
+      const r = await runIntegration(ws.rootPath, agentFile, ws.mcpForeignServersChoice, profileId);
       if (r.mcpForeign) {
         pendingForeign = r.mcpForeign;
       } else {
@@ -66,7 +70,7 @@
         hash: foreignMcpServersHash(pendingForeign.servers),
         action,
       });
-      result = await backend.setupAgentIntegration(ws.rootPath, agentFile, action);
+      result = await backend.setupAgentIntegration(ws.rootPath, agentFile, action, profileId);
       pendingForeign = null;
     } catch (e) {
       error = String(e);

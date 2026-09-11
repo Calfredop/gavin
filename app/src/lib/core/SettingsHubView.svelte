@@ -5,6 +5,7 @@
     setWorkspaceColor,
     setWorkspaceFlag,
     setWorkspacePause,
+    setWorkspaceFallback,
     setAgentField,
     setPrdPath,
     agentProfilesStore,
@@ -18,6 +19,7 @@
     requireReviewDefault,
     setWorkspaceRequireReview,
     agentDefaultsStore,
+    setAgentDefaults,
     setWorkspaceComplexityTable,
     markGitTrackingAsked,
     trustedAgentConfigs,
@@ -73,10 +75,17 @@
   import Modal from "$lib/core/Modal.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import AgentChangeWizard from "$lib/workspace/AgentChangeWizard.svelte";
+  import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
   import WorkspaceDeleteWizard from "$lib/workspace/WorkspaceDeleteWizard.svelte";
   import { tooltip } from "$lib/core/tooltip";
   import { MIN_PERIOD_MINUTES, validateCycle } from "$lib/agents/agentPause";
   import { agentPauseStore, editableCycle, nowStore, pauseFor } from "$lib/agents/agentPauseState";
+  import { armNewlyAdded } from "$lib/agents/agentFallbackState";
+  import {
+    effectiveFallbackChain,
+    fallbackThresholdFor,
+    sanitizeFallbackThreshold,
+  } from "$lib/agents/agentFallback";
   import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
   import { UNFILED_WORKSPACE_ID } from "$lib/core/workspace";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
@@ -199,6 +208,10 @@
     },
     { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
     { id: "agent-pause", keywords: ["Agent pause", "pause", "cycle", "limit", "usage"] },
+    {
+      id: "fallback-agent",
+      keywords: ["Fallback agent", "fallback chain", "usage limit", "arm"],
+    },
     {
       id: "unattended-recovery",
       keywords: ["Unattended recovery", "Resume", "auto resume", "broken card run"],
@@ -756,6 +769,32 @@
           </button>
           — re-run MCP, skills and Superpowers for this agent without changing the profile.
         </p>
+        {#if profileInfo?.usageProbe}
+          <label class="row">
+            <span>Walk at</span>
+            <span class="pct-row">
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={fallbackThresholdFor(agent.profileId, $agentDefaultsStore.fallbackThresholds)}
+                onchange={(e) =>
+                  void setAgentDefaults({
+                    ...$agentDefaultsStore,
+                    fallbackThresholds: {
+                      ...($agentDefaultsStore.fallbackThresholds ?? {}),
+                      [agent.profileId]: sanitizeFallbackThreshold(Number(e.currentTarget.value)),
+                    },
+                  })}
+              />
+              <span>%</span>
+            </span>
+          </label>
+          <p class="hint">
+            New launches walk the fallback chain at this percent, so a tenth of the window stays
+            free. Resume of a conversation already on this agent still uses the pause threshold.
+          </p>
+        {/if}
         <label class="row">
           <span>Command</span>
           <input
@@ -1096,6 +1135,39 @@
       </p>
     </section>
 
+    <section hidden={!settingsFilter.visible("fallback-agent")}>
+      <h3>Fallback agent</h3>
+      <p class="hint">
+        When this workspace's agent is over its usage threshold, new launches walk this chain
+        instead of pausing. The workspace agent is not rewritten. An agent that is not set up yet
+        opens a setup wizard rather than launching degraded.
+      </p>
+      <FallbackChainEditor
+        profiles={$agentProfilesStore}
+        value={ws.agentFallback ?? []}
+        inherited={$agentDefaultsStore.agentFallback ?? []}
+        inheriting={ws.agentFallback == null}
+        thresholds={$agentDefaultsStore.fallbackThresholds}
+        onChange={(chain) => {
+          const before = effectiveFallbackChain(
+            ws.agentFallback,
+            $agentDefaultsStore.agentFallback
+          );
+          void setWorkspaceFallback(workspaceId, chain).then(() => {
+            if (chain) armNewlyAdded(workspaceId, before, chain);
+          });
+        }}
+        onThresholdChange={(profileId, percent) =>
+          void setAgentDefaults({
+            ...$agentDefaultsStore,
+            fallbackThresholds: {
+              ...($agentDefaultsStore.fallbackThresholds ?? {}),
+              [profileId]: sanitizeFallbackThreshold(percent),
+            },
+          })}
+      />
+    </section>
+
     <section hidden={!settingsFilter.visible("unattended-recovery")}>
       <h3>Unattended recovery</h3>
       <!-- Off by default, and the only setting on this screen that is.
@@ -1283,6 +1355,15 @@
     font-size: 1em;
     padding: 3px 8px;
     min-width: 240px;
+  }
+  .pct-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .pct-row input {
+    min-width: 0;
+    width: 4.5em;
   }
   /* The only row with two controls side by side, so the shared 240px
      floor becomes a CAP here instead: below it, because two of them

@@ -1321,6 +1321,8 @@ export async function bootstrap(): Promise<void> {
   // mounted is the bug that made rails tick only on their own tab.
   const { startPauseClock } = await import("$lib/agents/agentPauseState");
   unlisteners.push(startPauseClock());
+  const { startArmOnFocus } = await import("$lib/agents/agentFallbackState");
+  unlisteners.push(startArmOnFocus());
   // The memory probe, on the same terms and for a sharper version of the
   // same reason: the launch gate reads its sample at the moment somebody
   // presses Run, with no panel open and possibly in a window showing a
@@ -2104,6 +2106,22 @@ export function agentForCard(
   );
 }
 
+/// Resolve a specific profile in this workspace without changing the
+/// stored agent. Fallback launches use this so the chain can run Codex
+/// while `[agent] profile` still names Claude.
+export function agentForProfile(workspaceId: string, profileId: string) {
+  return resolveAgentConfig(
+    agentConfigWithAttribution(workspaceAgentConfig(workspaceId), {
+      profile: profileId,
+      model: "",
+    }),
+    get(agentProfilesStore),
+    get(agentModelDefaultsStore),
+    customAgentDefault(get(agentDefaultsStore)),
+    customResumeArgsFor(workspaceId)
+  );
+}
+
 /// The workspace's own `[agent]` block, unresolved. What a per-run
 /// override is laid over (`candidateAgentConfig`), and the one thing
 /// `resolvedAgentFor` cannot hand back: resolution has already folded
@@ -2530,6 +2548,12 @@ export async function setAgentDefaults(defaults: AgentDefaults): Promise<void> {
   try {
     await backend.setAgentDefaults(defaults);
     agentDefaultsStore.set(defaults);
+    const active = get(layoutState).activeWorkspaceId;
+    if (active) {
+      const { owedArming, requestArm } = await import("$lib/agents/agentFallbackState");
+      const next = owedArming(active)[0];
+      if (next) requestArm(active, next);
+    }
   } catch (e) {
     setError(String(e));
   }
@@ -2717,6 +2741,43 @@ export async function setWorkspacePause(
       return rest;
     }
     return { ...w, agentPause: cycle };
+  });
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// This workspace's own fallback chain. `null` REMOVES the override
+/// (inherit the app-wide chain). An empty array is an explicit "no
+/// fallback" override — the same inherit-vs-off split `setWorkspacePause`
+/// uses.
+export async function setWorkspaceFallback(
+  workspaceId: string,
+  chain: string[] | null
+): Promise<void> {
+  const state = get(layoutState);
+  const workspaces = state.workspaces.map((w) => {
+    if (w.id !== workspaceId) return w;
+    if (chain === null) {
+      const { agentFallback: _dropped, ...rest } = w;
+      return rest;
+    }
+    return { ...w, agentFallback: chain };
+  });
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// Record that this profile's setup-only arming finished in this
+/// workspace. Idempotent: a second arm of the same id is a no-op.
+export async function markAgentArmed(workspaceId: string, profileId: string): Promise<void> {
+  const id = profileId.trim();
+  if (!id) return;
+  const state = get(layoutState);
+  const workspaces = state.workspaces.map((w) => {
+    if (w.id !== workspaceId) return w;
+    const have = new Set(w.armedAgents ?? []);
+    if (have.has(id)) return w;
+    return { ...w, armedAgents: [...have, id] };
   });
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);

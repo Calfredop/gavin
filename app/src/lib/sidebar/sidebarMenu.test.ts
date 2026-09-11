@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { writable } from "svelte/store";
 
 // The tab row's menu delegates to the REAL buildTabMenuEntries, so this
 // file has to stand in for everything that builder reaches for too.
@@ -10,6 +11,14 @@ vi.mock("$lib/core/backend", () => ({
   revealPathExternally: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("$lib/core/layoutState", () => ({
+  layoutState: writable({ workspaces: [] as unknown[], activeWorkspaceId: null as string | null }),
+  agentDefaultsStore: writable({
+    customCommand: "",
+    customModelFlag: "",
+    complexity: {},
+    agentFallback: [] as string[],
+  }),
+  resolvedAgentFor: vi.fn(() => ({ profileId: "claude-code" })),
   closeWorkspace: vi.fn().mockResolvedValue(undefined),
   closePage: vi.fn().mockResolvedValue(undefined),
   movePageAction: vi.fn().mockResolvedValue(undefined),

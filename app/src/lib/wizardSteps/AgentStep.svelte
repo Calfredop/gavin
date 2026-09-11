@@ -5,11 +5,18 @@
     layoutState,
     agentProfilesStore,
     agentModelDefaultsStore,
+    agentDefaultsStore,
+    setAgentDefaults,
     setAgentField,
     trustedAgentConfigs,
   } from "$lib/core/layoutState";
   import { resolveAgentConfig, agentFileFromPick } from "$lib/core/settings";
   import ConfigTrustNotice from "$lib/workspace/ConfigTrustNotice.svelte";
+  import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
+  import {
+    fallbackThresholdFor,
+    sanitizeFallbackThreshold,
+  } from "$lib/agents/agentFallback";
 
   interface Props {
     workspaceId: string;
@@ -120,6 +127,32 @@
     {/each}
   </select>
 </label>
+{#if probedHere}
+  <label class="row">
+    <span>Walk at</span>
+    <span class="pct-row">
+      <input
+        type="number"
+        min="1"
+        max="100"
+        value={fallbackThresholdFor(agentCfg.profileId, $agentDefaultsStore.fallbackThresholds)}
+        onchange={(e) =>
+          void setAgentDefaults({
+            ...$agentDefaultsStore,
+            fallbackThresholds: {
+              ...($agentDefaultsStore.fallbackThresholds ?? {}),
+              [agentCfg.profileId]: sanitizeFallbackThreshold(Number(e.currentTarget.value)),
+            },
+          })}
+      />
+      <span>%</span>
+    </span>
+  </label>
+  <p class="hint indent">
+    New launches walk the fallback chain at this percent, leaving a margin on this agent. Resume
+    still uses the pause threshold.
+  </p>
+{/if}
 
 <label class="row">
   <span>Command</span>
@@ -165,6 +198,34 @@
   Nothing already running is interrupted — only new starts wait. Settings can change the
   numbers later{probedHere ? ", and gavin will also hold when this agent reports a full window" : ""}.
 </p>
+
+<label class="row top">
+  <span>Fallback</span>
+  <div>
+    <FallbackChainEditor
+      profiles={$agentProfilesStore}
+      value={$agentDefaultsStore.agentFallback ?? []}
+      thresholds={$agentDefaultsStore.fallbackThresholds}
+      onChange={(chain) =>
+        void setAgentDefaults({
+          ...$agentDefaultsStore,
+          agentFallback: chain ?? [],
+        })}
+      onThresholdChange={(profileId, percent) =>
+        void setAgentDefaults({
+          ...$agentDefaultsStore,
+          fallbackThresholds: {
+            ...($agentDefaultsStore.fallbackThresholds ?? {}),
+            [profileId]: sanitizeFallbackThreshold(percent),
+          },
+        })}
+    />
+    <p class="hint">
+      If this agent's usage is spent, new launches walk the chain instead of pausing. Setup for each
+      fallback runs after this wizard, on workspace focus.
+    </p>
+  </div>
+</label>
 
 <div class="actions">
   <button type="button" onclick={() => void continueStep()}>Continue →</button>
@@ -237,6 +298,9 @@
     font-size: 0.85em;
     color: #ccc;
   }
+  .row.top {
+    align-items: flex-start;
+  }
   .row > span:first-child {
     width: 80px;
     flex: 0 0 auto;
@@ -255,6 +319,16 @@
        the modal ends up with, and a 260px floor beside an 80px label is
        what pushed the wizard past its panel. */
     flex: 0 1 260px;
+    min-width: 0;
+  }
+  .pct-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .row .pct-row input {
+    flex: 0 0 4.5em;
+    width: 4.5em;
     min-width: 0;
   }
   .actions {

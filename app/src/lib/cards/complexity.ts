@@ -96,12 +96,20 @@ export interface AgentDefaults {
   /// for `custom` stays hidden rather than guessing a flag.
   customModelFlag: string;
   complexity: ComplexityTable;
+  /// App-wide fallback chain. Empty means pause-only when a launch's
+  /// resolved agent is over its usage-probe threshold.
+  agentFallback: string[];
+  /// Per-profile percent at which a new launch walks away. Missing key
+  /// means 90. Resume still uses the pause cycle's limitPercent.
+  fallbackThresholds: Record<string, number>;
 }
 
 export const EMPTY_AGENT_DEFAULTS: AgentDefaults = {
   customCommand: "",
   customModelFlag: "",
   complexity: {},
+  agentFallback: [],
+  fallbackThresholds: {},
 };
 
 /// Whether an entry says anything at all. A row with neither half filled

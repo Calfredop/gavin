@@ -17,6 +17,13 @@ vi.mock("$lib/core/layoutState", async () => {
       activeWorkspaceId: null as string | null,
     }),
     resolvedAgentFor: vi.fn(() => ({ profileId: "claude-code" })),
+    agentDefaultsStore: writable({
+      customCommand: "",
+      customModelFlag: "",
+      complexity: {},
+      agentFallback: [] as string[],
+      fallbackThresholds: {} as Record<string, number>,
+    }),
   };
 });
 
@@ -36,9 +43,11 @@ import {
   profilesInUse,
   refreshUsage,
   saveAgentPause,
+  launchDecision,
+  launchPauseHold,
   startBlockedReason,
 } from "$lib/agents/agentPauseState";
-import { layoutState } from "$lib/core/layoutState";
+import { layoutState, agentDefaultsStore } from "$lib/core/layoutState";
 
 const ANCHOR = 1_700_000_000_000;
 const MIN = 60_000;
@@ -52,6 +61,13 @@ beforeEach(() => {
   agentPauseStore.set(null);
   agentUsageStore.set({});
   layoutState.set({ workspaces: [], activeWorkspaceId: null } as never);
+  agentDefaultsStore.set({
+    customCommand: "",
+    customModelFlag: "",
+    complexity: {},
+    agentFallback: [],
+    fallbackThresholds: {},
+  });
 });
 
 describe("effectiveCycle", () => {
@@ -169,6 +185,14 @@ describe("profilesInUse", () => {
     } as never);
     expect(profilesInUse()).toEqual(["claude-code"]);
   });
+
+  it("includes fallback-chain ids so their usage is polled", () => {
+    layoutState.set({
+      workspaces: [{ id: "w1", agentFallback: ["codex"] }],
+      activeWorkspaceId: "w1",
+    } as never);
+    expect(profilesInUse()).toEqual(["claude-code", "codex"]);
+  });
 });
 
 describe("the gate", () => {
@@ -202,6 +226,110 @@ describe("the gate", () => {
     expect(startBlockedReason("w1")).toBe(
       "work is paused: the Weekly limit is 97% used, and it has not said when that clears"
     );
+  });
+
+  it("walks an armed fallback instead of holding when the primary is spent", () => {
+    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    layoutState.set({
+      workspaces: [{ id: "w1", agentFallback: ["codex"], armedAgents: ["codex"] }],
+      activeWorkspaceId: "w1",
+    } as never);
+    agentUsageStore.set({
+      "claude-code": {
+        state: "ready",
+        windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: null }],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+    });
+    expect(launchDecision("w1", "claude-code", false)).toEqual({
+      kind: "use",
+      profileId: "codex",
+      viaFallback: true,
+    });
+    expect(mayStartWork("w1")).toBe(true);
+    expect(launchPauseHold("w1", ANCHOR).paused).toBe(false);
+    expect(startBlockedReason("w1")).toBeNull();
+  });
+
+  it("walks a new launch at the profile fallback threshold while pause is still higher", () => {
+    agentPauseStore.set(cycle({ enabled: false, limitPercent: 95 }));
+    agentDefaultsStore.set({
+      customCommand: "",
+      customModelFlag: "",
+      complexity: {},
+      agentFallback: [],
+      fallbackThresholds: { "claude-code": 80 },
+    });
+    layoutState.set({
+      workspaces: [{ id: "w1", agentFallback: ["codex"], armedAgents: ["codex"] }],
+      activeWorkspaceId: "w1",
+    } as never);
+    agentUsageStore.set({
+      "claude-code": {
+        state: "ready",
+        windows: [{ id: "seven_day", label: "Weekly", usedPercent: 85, resetsAt: null }],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+    });
+    expect(launchDecision("w1", "claude-code", false)).toEqual({
+      kind: "use",
+      profileId: "codex",
+      viaFallback: true,
+    });
+    expect(launchDecision("w1", "claude-code", true)).toEqual({
+      kind: "use",
+      profileId: "claude-code",
+      viaFallback: false,
+    });
+  });
+
+  it("blocks and names the unarmed next chain agent rather than skipping it", () => {
+    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    layoutState.set({
+      workspaces: [{ id: "w1", agentFallback: ["codex"] }],
+      activeWorkspaceId: "w1",
+    } as never);
+    agentUsageStore.set({
+      "claude-code": {
+        state: "ready",
+        windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: null }],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+    });
+    expect(launchDecision("w1", "claude-code", false)).toEqual({
+      kind: "arm",
+      profileId: "codex",
+    });
+    expect(mayStartWork("w1")).toBe(false);
+    expect(launchPauseHold("w1", ANCHOR).why).toMatch(/not set up/);
+  });
+
+  it("does not invent a usage pause when no cycle is configured at all", () => {
+    layoutState.set({
+      workspaces: [{ id: "w1", agentFallback: ["codex"], armedAgents: ["codex"] }],
+      activeWorkspaceId: "w1",
+    } as never);
+    agentUsageStore.set({
+      "claude-code": {
+        state: "ready",
+        windows: [{ id: "seven_day", label: "Weekly", usedPercent: 97, resetsAt: null }],
+        plan: null,
+        observedAt: 1,
+        cached: false,
+      },
+    });
+    expect(launchDecision("w1", "claude-code", false)).toEqual({
+      kind: "use",
+      profileId: "claude-code",
+      viaFallback: false,
+    });
+    expect(mayStartWork("w1")).toBe(true);
   });
 });
 
@@ -238,6 +366,19 @@ describe("pausedWorkspaces", () => {
     agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
     agentUsageStore.set({ "claude-code": atLimit(12) });
     layoutState.set({ workspaces: [{ id: "w1", name: "One" }], activeWorkspaceId: "w1" } as never);
+    nowStore.set(ANCHOR);
+    expect(get(pausedWorkspaces)).toEqual([]);
+  });
+
+  it("is empty when the primary is spent but an armed fallback can launch", () => {
+    agentPauseStore.set(cycle({ enabled: false, limitPercent: 90 }));
+    agentUsageStore.set({ "claude-code": atLimit(97) });
+    layoutState.set({
+      workspaces: [
+        { id: "w1", name: "One", agentFallback: ["codex"], armedAgents: ["codex"] },
+      ],
+      activeWorkspaceId: "w1",
+    } as never);
     nowStore.set(ANCHOR);
     expect(get(pausedWorkspaces)).toEqual([]);
   });
@@ -286,16 +427,17 @@ describe("pausedWorkspaces", () => {
 
       const seen: string[] = [];
       const stop = pausedWorkspaceKey.subscribe((k) => seen.push(k));
-      // w2 sets a tighter limit of its own, so it stays held by the very
-      // reading that frees w1.
+      // w1 can walk an armed fallback; w2 has none, so it stays held on
+      // the same spent primary. New launches key off the profile's
+      // fallback threshold, not a per-workspace pause percent, so this
+      // is the remaining way one workspace frees while another does not.
       layoutState.set({
         workspaces: [
-          { id: "w1", name: "One" },
-          { id: "w2", name: "Two", agentPause: cycle({ enabled: false, limitPercent: 10 }) },
+          { id: "w1", name: "One", agentFallback: ["codex"], armedAgents: ["codex"] },
+          { id: "w2", name: "Two" },
         ],
         activeWorkspaceId: "w1",
       } as never);
-      agentUsageStore.set({ "claude-code": atLimit(12) });
       stop();
       expect(seen.at(0)).toBe("w1 w2");
       expect(seen.at(-1)).toBe("w2");

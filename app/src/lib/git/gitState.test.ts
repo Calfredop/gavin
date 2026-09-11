@@ -103,6 +103,12 @@ vi.mock("$lib/core/layoutState", async () => {
     // agent it hosts is scoped to the workspace and not only to the
     // directory git happens to be looking at.
     workspaceRootPath: vi.fn(() => "/repos/gavin"),
+    agentDefaultsStore: writable({
+      customCommand: "",
+      customModelFlag: "",
+      complexity: {},
+      agentFallback: [],
+    }),
   };
 });
 

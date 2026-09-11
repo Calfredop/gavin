@@ -18,6 +18,12 @@ vi.mock("$lib/core/layoutState", () => ({
   handleAgentSessionSpawned: vi.fn(),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   workspaceRootPath: vi.fn(() => "/repo" as string | null),
+  agentDefaultsStore: writable({
+    customCommand: "",
+    customModelFlag: "",
+    complexity: {},
+    agentFallback: [] as string[],
+  }),
 }));
 vi.mock("$lib/cards/cardRunActions", () => ({ revealSession: vi.fn().mockResolvedValue(true) }));
 

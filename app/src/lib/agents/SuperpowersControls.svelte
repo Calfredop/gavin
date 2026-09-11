@@ -31,6 +31,9 @@
     /// (`workspaceTrust.ts`). Both callers pass what `resolveAgentConfig`
     /// gave them, which is already gated.
     agentCommand: string;
+    /// Overlay the workspace's active agent. Fallback arming names the
+    /// chain profile so Install writes that CLI's plugin, not Claude's.
+    profileId?: string;
     status: SuperpowersStatus;
     mark: SuperpowersMark | undefined;
     /// Re-reads status and marker in whoever owns them. Both surfaces
@@ -42,7 +45,7 @@
     /// button would crowd a step that is meant to be answered once.
     allowClear?: boolean;
   }
-  let { rootPath, agentCommand, status, mark, onChanged, allowClear = false }: Props = $props();
+  let { rootPath, agentCommand, profileId, status, mark, onChanged, allowClear = false }: Props = $props();
 
   let running = $state(false);
   let error = $state<string | null>(null);
@@ -62,7 +65,7 @@
     running = true;
     error = null;
     try {
-      const next = await backend.superpowersInstall(rootPath, agentCommand);
+      const next = await backend.superpowersInstall(rootPath, agentCommand, profileId);
       runOutput = next.output;
       // A failed install leaves something worth reading. Open the drawer
       // rather than making them hunt for it.

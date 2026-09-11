@@ -50,13 +50,13 @@ import {
 import { fleetStrip, usedBytes as usedBytesOf, type FleetStrip } from "$lib/agents/memory";
 import { launchEstimate, type LaunchEstimate } from "$lib/agents/launchEstimate";
 import { agentSessions, fleetMemory, memoryPressure, storedMeans, systemMemory } from "$lib/agents/memoryState";
-import { layoutState, resolvedAgentFor } from "$lib/core/layoutState";
+import { layoutState, resolvedAgentFor, agentDefaultsStore } from "$lib/core/layoutState";
 import { currentWindowLabel } from "$lib/shell/appWindowState";
 import {
   agentPauseStore,
   agentUsageStore,
   nowStore,
-  pauseFor,
+  launchPauseHold,
   setGateReasonHook,
 } from "$lib/agents/agentPauseState";
 import type { ReviewedCard } from "$lib/review/codeReview";
@@ -188,10 +188,10 @@ export const startHoldFor: Readable<(workspaceId: string | null) => LaunchVerdic
   // `agentUsageStore` are its inputs -- the same four `activePause`
   // rides, so a badge and the sidebar strip cannot disagree about
   // whether the workspace is paused.
-  [launchGateVerdict, nowStore, agentPauseStore, agentUsageStore],
+  [launchGateVerdict, nowStore, agentPauseStore, agentUsageStore, layoutState, agentDefaultsStore],
   ([gate, now]) =>
     (workspaceId: string | null) =>
-      startVerdict(pauseFor(workspaceId, now), gate)
+      startVerdict(launchPauseHold(workspaceId, now), gate)
 );
 
 /// Why it may not, in one sentence. Null while starts are allowed.

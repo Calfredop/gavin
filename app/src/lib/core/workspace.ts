@@ -160,6 +160,13 @@ export interface Workspace {
   /// app-wide one, which is not the same as off: a workspace that wants
   /// no pause while the app has one stores a cycle with `enabled: false`.
   agentPause?: PauseCycle;
+  /// This workspace's own fallback chain. Absent means INHERIT the
+  /// app-wide one; an empty array is an explicit "no fallback" override.
+  agentFallback?: string[];
+  /// Profile ids this workspace has armed for fallback launch without
+  /// switching the active agent. The workspace's own profile is not
+  /// listed here — init and agent-change cover that.
+  armedAgents?: string[];
   /// When this workspace was pinned to the top of the sidebar, epoch
   /// milliseconds; absent means not pinned. Same rule and same reason as
   /// `Page.pinnedAt`, one level up.

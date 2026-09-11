@@ -102,6 +102,7 @@ import { isGavinOwnPath } from "$lib/git/gitTracking";
 import {
   layoutState,
   agentForCard,
+  agentForProfile,
   resolvedAgentFor,
   armFailureDetection,
   baseShaForLaunch,
@@ -151,7 +152,9 @@ import {
   resolveAttachmentsForRun,
   revealSession,
 } from "$lib/cards/cardRunActions";
-import { mayStartWork, nowStore, pausedWorkspaceKey } from "$lib/agents/agentPauseState";
+import { mayStartWork, nowStore, pausedWorkspaceKey, launchDecision } from "$lib/agents/agentPauseState";
+import { fallbackBlockedReason } from "$lib/agents/agentFallback";
+import { requestArm } from "$lib/agents/agentFallbackState";
 import {
   holdOrQueue,
   launchHolding,
@@ -1360,6 +1363,23 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // reach the composer, and the same resolution below (unchanged) would
   // otherwise shadow this one rather than reuse it.
   const agent = agentForCard(workspaceId, entry.plan);
+  const decision = launchDecision(workspaceId, agent.profileId, false);
+  if (decision.kind === "arm") {
+    requestArm(workspaceId, decision.profileId);
+    await setStepRunAction(
+      workspaceId,
+      stepId,
+      "stalled",
+      null,
+      fallbackBlockedReason(decision) ?? "fallback agent is not set up"
+    );
+    return false;
+  }
+  if (decision.kind === "pause") {
+    return false;
+  }
+  const launchAgent =
+    decision.viaFallback ? agentForProfile(workspaceId, decision.profileId) : agent;
   let prompt: string;
   if (entry.plan.kind === "task") {
     prompt = composeTaskPrompt(
@@ -1369,26 +1389,26 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
       resolved.paths,
       cwd,
       resolved.withheld,
-      agent.sessionIdDiscovery
+      launchAgent.sessionIdDiscovery
     );
   } else {
-    prompt = composePlanPrompt(step.cardPath, resolved.paths, cwd, resolved.withheld, agent.sessionIdDiscovery);
+    prompt = composePlanPrompt(step.cardPath, resolved.paths, cwd, resolved.withheld, launchAgent.sessionIdDiscovery);
   }
   // A card step re-run by a loop opens with what failed. Null except on
   // a retry, and then this is the whole difference between "do the card"
   // and "the check you have to pass says this".
   prompt = withRetryPrefix(prompt, await retryNoteFor(workspaceId, rail, stepId));
 
-  const conversationId = conversationIdForLaunch(agent);
+  const conversationId = conversationIdForLaunch(launchAgent);
   const command = buildRunCommand(
-    agent.launchCommand,
-    agent.promptArgs,
+    launchAgent.launchCommand,
+    launchAgent.promptArgs,
     prompt,
-    agent.sessionIdArgs,
+    launchAgent.sessionIdArgs,
     conversationId
   );
   if (command === null) {
-    await setStepRunAction(workspaceId, stepId, "stalled", null, noPromptReason(agent.label));
+    await setStepRunAction(workspaceId, stepId, "stalled", null, noPromptReason(launchAgent.label));
     return false;
   }
   const baseSha = await baseShaForLaunch(cwd);
@@ -1397,7 +1417,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     await setStepRunAction(workspaceId, stepId, "stalled", null, "could not start the agent");
     return false;
   }
-  void armFailureDetection(sessionId, agent.failurePatterns);
+  void armFailureDetection(sessionId, launchAgent.failurePatterns);
 
   // Named before the agent has drawn a frame, same as a board Run and the
   // tool step above: the agent's own gavin_name_session refines this, but
