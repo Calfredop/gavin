@@ -147,7 +147,45 @@ else {
     $log = Join-Path $state 'daemon.log'
     $exe = Join-Path $Root 'target\debug\gavin-daemon.exe'
     Say "starting gavin-daemon detached from the app (output -> $log)"
-    Start-Process -FilePath $exe -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err" | Out-Null
+    if (-not (Test-Path $exe)) { Die "cargo build reported success but $exe is missing." }
+
+    # APPENDED, never overwritten. The app opens this same file with
+    # `.append(true)` (`daemon_log_file` in app/src-tauri/src/daemon.rs), and
+    # the case that motivates it is a daemon that died and was replaced:
+    # truncating on start is precisely the moment the line explaining the
+    # death is lost, leaving a log that can only ever describe the daemon
+    # still running -- the one nobody needs explained.
+    #
+    # Which is why this no longer goes through `Start-Process`.
+    # `-RedirectStandardOutput` is the only file redirection it offers and it
+    # always opens for overwrite, and the .NET layer underneath redirects to
+    # a PIPE rather than to a file, so whoever drains that pipe has to
+    # outlive the daemon -- while this script exits when `tauri dev` does.
+    # `cmd`'s `>>` is the redirection that opens with FILE_APPEND_DATA, and
+    # the handle it hands the daemon keeps working long after the cmd that
+    # made it has gone.
+    #
+    # The command line is built here and passed as `Arguments`, which
+    # ProcessStartInfo forwards verbatim, because PowerShell's own native
+    # argument quoting rewrites an embedded `"` as `\"` -- cmd reads that
+    # backslash literally, so a checkout or profile path with a space in it
+    # would come apart. `/s` makes cmd strip exactly the outer quotes and
+    # nothing else, `start ""` supplies the empty window title `start` would
+    # otherwise take the exe path for, and `/b` means no window.
+    #
+    # `CreateNoWindow` puts the daemon on an invisible console of its own,
+    # for the reason `DETACHED_FLAGS` in daemon.rs carries `CREATE_NO_WINDOW`:
+    # a daemon sharing this terminal's console dies when the terminal closes,
+    # which is the "outlives the app" promise broken a second way.
+    #
+    # Both streams go to the one file (`2>&1`), as the app sends them. The
+    # separate `.err` went with the truncation that used to write it.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'
+    $psi.Arguments = '/s /c "start "" /b "' + $exe + '" >> "' + $log + '" 2>&1"'
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    [System.Diagnostics.Process]::Start($psi) | Out-Null
 }
 
 # --- run -------------------------------------------------------------------
