@@ -439,12 +439,14 @@
        puts two rules across the window at two heights. Measured in
        WKWebView (root font-size 13px): the heads came to 20px, 20px,
        26px with the diff/edit group in them, and 23px, so the rules
-       landed at three different y. 28px is what the 19px switch needs
-       to sit in with 4px above and below it -- and `padding-top: 0`,
-       which every head had, is what glued that switch to the top
-       border. reviewTabStyles.test.ts holds all four to these. */
+       landed at three different y. The first row now reads
+       --hub-bar-height, the same band as the Scratchpad and Kanban.
+       28px is still what the 19px switch needs in the column heads,
+       with 4px above and below it -- and `padding-top: 0`, which every
+       head had, is what glued that switch to the top border.
+       reviewTabStyles.test.ts holds all four to these. */
     color: var(--text);
-    --review-strip-height: 28px;
+    --review-strip-height: var(--hub-bar-height);
     --review-head-height: 28px;
   }
   /* The rail is as narrow as the one button it holds. A collapsed list

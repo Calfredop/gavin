@@ -584,14 +584,22 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 6px 8px;
+    /* Locked to the same band as Files' tree-head and Kanban's bar.
+       `flex: 0 0 auto` plus a height still grows when the + context
+       button's min-height exceeds it. */
+    flex: 0 0 var(--hub-bar-height);
+    height: var(--hub-bar-height);
+    min-height: 0;
+    max-height: var(--hub-bar-height);
+    box-sizing: border-box;
+    padding: 0 8px;
+    overflow: hidden;
     border-bottom: 1px solid var(--border);
     color: var(--text-muted);
     font-family: monospace;
     font-size: 0.75em;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    flex: 0 0 auto;
   }
   .head-actions {
     display: flex;

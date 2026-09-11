@@ -139,9 +139,7 @@ describe("the app's three header rows", () => {
   // separate its row from the list under it -- a second vocabulary here
   // would be a second weight of rule across one window.
   it("draws the scratchpad's divider under every header row", () => {
-    const scratchpad = rule(source("Sidebar.svelte"), ".workspace-row.scratchpad")[
-      "border-bottom"
-    ];
+    const scratchpad = rule(source("Sidebar.svelte"), ".workspace-row")["border-top"];
     expect(scratchpad).toBe("1px solid var(--border)");
     for (const bar of [
       rule(TITLE_BAR, ".corner"),
@@ -364,16 +362,27 @@ describe("what the bars carry", () => {
   });
 
   // What acts on the WINDOW and what acts on the COLUMN share the
-  // corner over that column: the platform's controls, then collapse,
-  // search and Open workspace. They could not while the corner was in
-  // the column's flow -- everything in it was a floor under how narrow
-  // the column could collapse -- and out of that flow they are free
-  // again, in the 124px the lights leave of an open column's top row.
+  // corner over that column: the platform's controls at the left,
+  // Open workspace / search / collapse at the right. They could not
+  // while the corner was in the column's flow -- everything in it was
+  // a floor under how narrow the column could collapse -- and out of
+  // that flow they are free again, in the 124px the lights leave of
+  // an open column's top row.
   it("gives the sidebar's chrome the corner over the sidebar", () => {
     expect(TITLE_BAR).toContain("<SidebarActions />");
     expect(TITLE_BAR).toContain("<WindowControls {macOS} />");
     expect(ACTIONS).toContain("Collapse sidebar");
     expect(ACTIONS).toContain("Open workspace");
+    expect(ACTIONS.indexOf("Open workspace")).toBeLessThan(ACTIONS.indexOf("Search workspaces"));
+    expect(ACTIONS.indexOf("Search workspaces")).toBeLessThan(ACTIONS.indexOf("Collapse sidebar"));
+    // Against the column's right edge, not against the lights: the
+    // leftover between the two groups is the drag handle.
+    expect(TITLE_BAR.indexOf("<WindowControls")).toBeLessThan(
+      TITLE_BAR.indexOf('class="drag-spacer"')
+    );
+    expect(TITLE_BAR.indexOf('class="drag-spacer"')).toBeLessThan(
+      TITLE_BAR.indexOf("<SidebarActions")
+    );
   });
 
   // One instance per window, at the window's top-left corner: the hub

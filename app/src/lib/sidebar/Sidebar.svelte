@@ -2028,6 +2028,10 @@
        sit exactly where they did before the group carried a stripe. */
     padding: 4px 8px 4px 5px;
     cursor: pointer;
+    /* Above the name, not under it: a rule under the row sat between
+       a workspace and its own pages. This is the line BETWEEN
+       workspaces, so it belongs on the top edge. */
+    border-top: 1px solid var(--border);
   }
   .workspace-row.active {
     background: var(--surface-raised);
@@ -2052,8 +2056,14 @@
   .workspace-row.scratchpad {
     font-style: italic;
     color: var(--text-muted);
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 2px;
+    /* Same band as the hub tab's first row (Kanban's bar is the
+       measure). Without a fixed height the Scratchpad sat short of
+       that bar, and the header divider made the step obvious. The
+       header already draws the line above this row, so a top border
+       here would be a second rule on the same seam. */
+    height: var(--hub-bar-height);
+    box-sizing: border-box;
+    border-top: none;
   }
   .workspace-row.scratchpad.active {
     color: var(--text);

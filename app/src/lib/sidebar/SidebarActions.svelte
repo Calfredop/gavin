@@ -1,7 +1,9 @@
 <script lang="ts">
-  // The sidebar's own chrome: collapse the column, search it, open a
-  // folder into it. Drawn in the window's corner (TitleBar.svelte),
-  // after the platform's controls and over the column all three act on.
+  // The sidebar's own chrome: open a folder into the column, search it,
+  // collapse it. Drawn in the window's corner (TitleBar.svelte),
+  // at the right of the strip -- the leftover between the platform's
+  // controls and this group is the drag handle -- over the column all
+  // three act on.
   //
   // They spent a while in the header row beside that corner, because the
   // corner was inside the sidebar's column and everything in it was a
@@ -38,13 +40,13 @@
 
 {#if !collapsed}
   <div class="sidebar-actions">
-    <IconButton
-      icon={PanelLeftClose}
-      label="Collapse sidebar"
-      size={14}
-      onclick={toggleSidebarCollapsed}
-    />
     {#if ready}
+      <IconButton
+        icon={FolderOpen}
+        label="Open workspace…"
+        size={14}
+        onclick={() => void openWorkspaceFolder()}
+      />
       <IconButton
         icon={Search}
         label="Search workspaces, pages and sessions"
@@ -52,13 +54,13 @@
         active={$sidebarSearchOpen}
         onclick={toggleSidebarSearch}
       />
-      <IconButton
-        icon={FolderOpen}
-        label="Open workspace…"
-        size={14}
-        onclick={() => void openWorkspaceFolder()}
-      />
     {/if}
+    <IconButton
+      icon={PanelLeftClose}
+      label="Collapse sidebar"
+      size={14}
+      onclick={toggleSidebarCollapsed}
+    />
   </div>
 {/if}
 
@@ -68,9 +70,9 @@
     align-items: center;
     gap: 2px;
     flex: 0 0 auto;
-    /* Off the traffic lights, which end at their own 12px pad: the two
-       groups act on different things and should not read as one row of
-       six. */
+    /* Off the drag spacer, so a grab that ends at this group does not
+       land on the first button. The two groups already sit at opposite
+       ends of the strip; this is only a hit-target gap. */
     padding-left: 4px;
   }
 </style>

@@ -266,7 +266,9 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 12px;
+    height: var(--hub-bar-height);
+    box-sizing: border-box;
+    padding: 0 12px;
     border-bottom: 1px solid var(--border);
   }
   .spacer {

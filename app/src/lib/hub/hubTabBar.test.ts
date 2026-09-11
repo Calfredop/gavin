@@ -53,6 +53,21 @@ describe("the hub tabs' first row", () => {
   const kanbanSearch = rule(source("KanbanBoard.svelte"), ".board-bar :global(.board-search)");
   const orchSearch = rule(source("OrchestrationHubView.svelte"), ".bar :global(.bar-search)");
 
+  // Every first row under the header, plus the Scratchpad that sits
+  // beside them. One height, one hairline: a literal in any of these
+  // is how the band steps again the moment the header divider made
+  // that step visible.
+  const FIRST_ROWS: [string, string][] = [
+    ["Sidebar.svelte", ".workspace-row.scratchpad"],
+    ["KanbanBoard.svelte", ".board-bar"],
+    ["OrchestrationHubView.svelte", ".bar"],
+    ["WorkspaceToolsHubView.svelte", ".bar"],
+    ["GitToolbar.svelte", ".toolbar"],
+    ["FilesHubView.svelte", ".tree-head"],
+    ["PlanExplorerHubView.svelte", ".sidebar-head"],
+    ["FileEditor.svelte", ".modes"],
+  ];
+
   it("draws a rule under both bars", () => {
     // Without it the lens reads as controls floating over the board rather
     // than as a bar the surface below belongs to.
@@ -73,5 +88,53 @@ describe("the hub tabs' first row", () => {
     // so a heading inside it only repeated itself and cost the row width.
     expect(source("OrchestrationHubView.svelte")).not.toMatch(/<h2[\s>]/);
     expect(source("KanbanBoard.svelte")).not.toMatch(/<h2[\s>]/);
+  });
+
+  it("sizes every first row from the shared hub-bar height", () => {
+    for (const [file, selector] of FIRST_ROWS) {
+      const bar = rule(source(file), selector);
+      expect(`${file} ${selector}: ${bar.height}`).toBe(
+        `${file} ${selector}: var(--hub-bar-height)`
+      );
+      expect(`${file} ${selector}: ${bar["box-sizing"]}`).toBe(
+        `${file} ${selector}: border-box`
+      );
+    }
+    expect(rule(source("ReviewHubView.svelte"), ".review")["--review-strip-height"]).toBe(
+      "var(--hub-bar-height)"
+    );
+    // Files and Plans sidebars are flex children: without a zero
+    // min-height the search / + context button grows the row past the
+    // band even when height is set.
+    for (const [file, selector] of [
+      ["FilesHubView.svelte", ".tree-head"],
+      ["PlanExplorerHubView.svelte", ".sidebar-head"],
+    ] as const) {
+      const bar = rule(source(file), selector);
+      expect(`${file}: ${bar["min-height"]}`).toBe(`${file}: 0`);
+      expect(`${file}: ${bar["max-height"]}`).toBe(`${file}: var(--hub-bar-height)`);
+    }
+  });
+
+  it("puts the PRD and agent pick row under the editor toolbar", () => {
+    const editor = source("FileEditor.svelte");
+    expect(editor.indexOf('class="modes"')).toBeLessThan(editor.indexOf("{@render afterToolbar()}"));
+    for (const file of ["PrdHubView.svelte", "AgentFileHubView.svelte"]) {
+      const text = source(file);
+      expect(text).toContain("{#snippet afterToolbar()}");
+      expect(text).toContain("<HubFilePicker");
+      expect(text.indexOf("<FileEditor")).toBeLessThan(text.indexOf("<HubFilePicker"));
+    }
+  });
+
+  it("draws the workspace hairline on the top of each row", () => {
+    expect(rule(source("Sidebar.svelte"), ".workspace-row")["border-top"]).toBe(
+      "1px solid var(--border)"
+    );
+    // The Scratchpad is the first row: the header already owns that
+    // seam, and a second rule there would be a double line.
+    expect(rule(source("Sidebar.svelte"), ".workspace-row.scratchpad")["border-top"]).toBe(
+      "none"
+    );
   });
 });

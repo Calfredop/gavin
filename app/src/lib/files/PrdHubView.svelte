@@ -31,18 +31,23 @@
 
 {#if path && root}
   <div class="pane">
-    <HubFilePicker
-      current={relative}
-      {root}
-      title="Choose the PRD file"
-      blockedReason={blocked}
-      onPick={pick}
-    />
     <!-- Keyed: switching workspaces, or repointing at another file, must
          rebuild the editor against the new file rather than leave the
-         previous buffer mounted. -->
+         previous buffer mounted. The pick row rides inside the editor,
+         under its toolbar, so this tab's first row is the same band as
+         every other hub tab. -->
     {#key path}
-      <FileEditor {path} initialMode="edit" layout="document" />
+      <FileEditor {path} initialMode="edit" layout="document">
+        {#snippet afterToolbar()}
+          <HubFilePicker
+            current={relative}
+            {root}
+            title="Choose the PRD file"
+            blockedReason={blocked}
+            onPick={pick}
+          />
+        {/snippet}
+      </FileEditor>
     {/key}
   </div>
 {:else}

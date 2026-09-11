@@ -1,7 +1,8 @@
 <script lang="ts">
   // The window's corner: everything that acts on the WINDOW and on the
   // COLUMN, in one strip over the sidebar -- the platform's controls,
-  // then the sidebar's own three buttons, then somewhere to grab it.
+  // then somewhere to grab it, then the sidebar's own three buttons
+  // against the column's right edge.
   //
   // This used to be a strip spanning the whole sidebar column, carrying
   // the pane controls and the "New page" button as well. Both of those
@@ -48,13 +49,13 @@
 
 <div class="corner">
   <WindowControls {macOS} />
-  <SidebarActions />
   <!-- No data-tauri-drag-region: Tauri's injected script would fire its
-       own maximize on top of the one windowDrag decides on. Whatever the
-       chrome leaves of an open column's top row is a handle; collapsed
-       there is nothing left over, and the header row's own spacer is
-       where the window is grabbed instead. -->
+       own maximize on top of the one windowDrag decides on. The run
+       between the lights and the column's own buttons is the handle;
+       collapsed those buttons stand down and this spacer is the rest of
+       the corner. -->
   <div class="drag-spacer" use:windowDrag></div>
+  <SidebarActions />
 </div>
 <div class="rail-top"></div>
 

@@ -108,7 +108,7 @@ describe("the Review tab's text colour", () => {
 describe("the Review tab's header rows", () => {
   it("defines both metrics once, on the tab's own root", () => {
     const review = rule(HUB, ".review");
-    expect(review["--review-strip-height"]).toBe("28px");
+    expect(review["--review-strip-height"]).toBe("var(--hub-bar-height)");
     expect(review["--review-head-height"]).toBe("28px");
   });
 

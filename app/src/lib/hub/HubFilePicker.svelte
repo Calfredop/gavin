@@ -64,6 +64,9 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    /* Under the editor toolbar, not the tab's first row: that band is
+       the mode strip's. Compact, so it reads as a path caption. */
+    flex: 0 0 auto;
     padding: 4px 10px;
     border-bottom: 1px solid var(--border);
     background: var(--surface-raised);

@@ -266,7 +266,9 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 6px 10px;
+    height: var(--hub-bar-height);
+    box-sizing: border-box;
+    padding: 0 10px;
     border-bottom: 1px solid var(--border);
     font-size: 0.8em;
     font-family: monospace;

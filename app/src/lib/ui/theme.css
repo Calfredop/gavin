@@ -372,6 +372,12 @@ select {
      the boxed look the flat bar just got rid of. */
   --tab-gap: 6px;
   --tab-divider: 14px;
+  /* The first content band under the header: the Scratchpad row and
+     every hub tab's own first row. They start on the same line (the
+     header's bottom hairline) and must end on the same line, or that
+     hairline makes the two heights a step. Kanban's bar is the
+     measure -- ~8px pad around a search -- and the others read it. */
+  --hub-bar-height: 40px;
   /* How wide the window's own column is when the sidebar is open. Here
      rather than in +page.svelte because the peeking sidebar -- the
      overlay a click on the collapsed rail floats over the content --

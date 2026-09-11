@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, type Snippet } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import DOMPurify from "dompurify";
   import { renderMarkdown } from "$lib/files/markdown";
@@ -33,8 +33,12 @@
     /// and editor lines alike -- sits in a centred A4-ish column, the
     /// way a Google Doc sits on its canvas, and the prose is set smaller.
     layout?: "fill" | "document";
+    /// Drawn under the mode/format strip, above the buffer -- the PRD
+    /// and agent-file tabs put their "pick this file" row here so the
+    /// toolbar stays the tab's first row.
+    afterToolbar?: Snippet;
   }
-  let { path, initialMode, onModeChange, layout = "fill" }: Props = $props();
+  let { path, initialMode, onModeChange, layout = "fill", afterToolbar }: Props = $props();
 
   const AUTOSAVE_MS = 1000;
 
@@ -333,6 +337,9 @@
       {/if}
     </div>
   </div>
+  {#if afterToolbar}
+    {@render afterToolbar()}
+  {/if}
 
   {#if conflict !== null}
     <div class="notice error">
@@ -399,16 +406,22 @@
     flex-direction: column;
   }
   /* One strip: the formatting bar (markdown in Edit only) at the left,
-     the mode switch at the right. Wrapping, so a narrow split pane puts
-     the switch on a second row rather than clipping the bar. */
+     the mode switch at the right. Fixed to the hub first-row height so
+     it lines up with the Plans tree head and the Scratchpad; wrapping
+     would grow a second row and break that band. */
   .modes {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 2px 8px;
-    padding: 4px 8px;
+    flex: 0 0 var(--hub-bar-height);
+    height: var(--hub-bar-height);
+    min-height: 0;
+    max-height: var(--hub-bar-height);
+    box-sizing: border-box;
+    padding: 0 8px;
+    overflow: hidden;
     justify-content: flex-end;
-    flex: 0 0 auto;
     border-bottom: 1px solid var(--border);
   }
   .segments {

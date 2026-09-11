@@ -518,9 +518,16 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 6px;
+    /* Locked, not auto: SearchInput's min-height would otherwise grow
+       this past the hub first-row band the Scratchpad and Kanban share. */
+    flex: 0 0 var(--hub-bar-height);
+    height: var(--hub-bar-height);
+    min-height: 0;
+    max-height: var(--hub-bar-height);
+    box-sizing: border-box;
+    padding: 0 6px;
+    overflow: hidden;
     border-bottom: 1px solid var(--border);
-    flex: 0 0 auto;
   }
   /* The grab area is the whole track; only the hairline down its middle
      ever paints, so an idle tab shows no furniture. */
