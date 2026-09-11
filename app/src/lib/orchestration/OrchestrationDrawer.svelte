@@ -11,7 +11,8 @@
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { orchDragState } from "$lib/orchestration/orchestrationDrag";
   import { searchDrawer } from "$lib/orchestration/orchestrationSearch";
-  import { toolKindLabel } from "$lib/orchestration/orchestrationTools";
+  import { toolKindLabel, toolPlatformBlockedReason } from "$lib/orchestration/orchestrationTools";
+  import { currentPlatform } from "$lib/core/platform";
   import type { Tool } from "$lib/orchestration/orchestrationTools";
   import type { UnplacedGroup } from "$lib/orchestration/orchestration";
   import type { GroupTemplate } from "$lib/orchestration/orchestrationGroups";
@@ -256,13 +257,22 @@
       <ul>
         {#each view.tools as tool (tool.id)}
           {@const Icon = iconFor(tool)}
+          <!-- A tool this machine cannot run at all (builtin:send-email
+               off macOS) is drawn the way `toolsBlocked` already draws
+               one: listed, inert, with the reason on it. Hiding it would
+               take Duplicate away from the built-in a Linux human most
+               wants to re-point at their own mailer, and the Tools tab
+               refuses to filter rows for the same reason. The reason
+               beats the kind label in the tooltip -- the label is what
+               the row is, the reason is why it will not move. -->
+          {@const blocked = toolsBlocked ?? toolPlatformBlockedReason(tool, currentPlatform())}
           <li>
             <button
               type="button"
-              data-orch-tool={toolsBlocked || !targetRailId ? undefined : tool.id}
+              data-orch-tool={blocked || !targetRailId ? undefined : tool.id}
               class:dragging={$orchDragState?.id === tool.id}
-              disabled={Boolean(toolsBlocked) || !targetRailId}
-              title={toolsBlocked ??
+              disabled={Boolean(blocked) || !targetRailId}
+              title={blocked ??
                 `${toolKindLabel(tool.kind)}${tool.description ? ` — ${tool.description}` : ""}`}
               onclick={() => onAddTool(tool.id)}
             >

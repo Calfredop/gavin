@@ -49,7 +49,13 @@ import {
   startToolRunWatcher,
   toolRunsStore,
 } from "$lib/orchestration/toolRunsState";
-import { resolveToolBody, resolveToolCwd, type Tool } from "$lib/orchestration/orchestrationTools";
+import {
+  resolveToolBody,
+  resolveToolCwd,
+  toolPlatformBlockedReason,
+  type Tool,
+} from "$lib/orchestration/orchestrationTools";
+import { currentPlatform } from "$lib/core/platform";
 import { holdOrQueue, type ToolIntent } from "$lib/agents/launchQueue";
 import { renderLibraryFor, toolRecords } from "$lib/orchestration/toolsState";
 import { cannotRunAloneReason, isRunnableStandalone, runBlockedReason } from "$lib/workspace/workspaceTools";
@@ -94,6 +100,7 @@ export async function requestToolRun(workspaceId: string, tool: Tool): Promise<s
     rootPath,
     tool,
     lastRun: undefined,
+    platform: currentPlatform(),
   });
   if (blocked) return blocked;
   const cwd = resolveToolCwd(tool, rootPath);
@@ -141,6 +148,13 @@ async function launch(
     // button, and two wordings for one fact is two things to keep true.
     return cannotRunAloneReason(tool.kind) ?? `A ${tool.kind} tool only means something as a step.`;
   }
+  // Same posture, one line down: a tool that cannot run on this OS at
+  // all. The dark Run button already carries this exact sentence
+  // (`runBlockedReason`), so this is the backstop for the paths that do
+  // not go through the button -- a queued run draining after the machine
+  // it was queued on, most of all.
+  const unsupported = toolPlatformBlockedReason(tool, currentPlatform());
+  if (unsupported) return unsupported;
   // The launch wall. Every tool kind, not only `agent`: a script tool
   // that runs the test suite is a build, and a build under memory
   // pressure is exactly what the hold exists for. Before the command is

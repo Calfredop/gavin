@@ -2982,7 +2982,7 @@ describe("railCardsToMove", () => {
 
 const TOOLS: ToolSummary[] = [
   { id: "builtin:push", name: "Push branch", kind: "command" },
-  { id: "builtin:notify", name: "Send a notification", kind: "command" },
+  { id: "builtin:notify", name: "Send a notification", kind: "script" },
   { id: "builtin:commit", name: "Commit changes", kind: "agent" },
 ];
 

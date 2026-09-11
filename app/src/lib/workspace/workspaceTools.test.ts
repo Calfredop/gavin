@@ -290,7 +290,13 @@ describe("toolCwdLabel", () => {
 });
 
 describe("runBlockedReason", () => {
-  const base = { compat: V30, rootPath: "/r", tool: tool(), lastRun: undefined };
+  const base = {
+    compat: V30,
+    rootPath: "/r",
+    tool: tool(),
+    lastRun: undefined,
+    platform: "macos" as const,
+  };
 
   it("lets a runnable tool in a rooted workspace run", () => {
     expect(runBlockedReason(base)).toBeNull();
@@ -315,6 +321,24 @@ describe("runBlockedReason", () => {
     const reason = runBlockedReason({ ...base, compat: V29, tool: tool({ kind: "pr" }) });
     expect(reason).toMatch(/step/);
     expect(reason).not.toMatch(/v30/);
+  });
+
+  // Beside the kind and ahead of the daemon: no upgrade and no edit
+  // moves a tool onto an operating system it does not run on, so a
+  // version number here would send the human to fix the wrong thing.
+  it("refuses a tool that cannot run on this platform, before the daemon gate", () => {
+    const mailer = tool({ name: "Send an email (Mail.app)", platforms: ["macos"] });
+    expect(runBlockedReason({ ...base, tool: mailer })).toBeNull();
+    const reason = runBlockedReason({ ...base, compat: V29, tool: mailer, platform: "linux" });
+    expect(reason).toBe("\u201cSend an email (Mail.app)\u201d runs only on macOS.");
+    expect(reason).not.toMatch(/v30/);
+  });
+
+  // Outside a Tauri window there is no platform to ask, and a gate that
+  // read that as "unsupported" would dark every Run button in a preview.
+  it("lets a restricted tool run when the platform could not be told", () => {
+    const mailer = tool({ name: "Send an email (Mail.app)", platforms: ["macos"] });
+    expect(runBlockedReason({ ...base, tool: mailer, platform: null })).toBeNull();
   });
 
   it("refuses when the workspace has no root to run in", () => {

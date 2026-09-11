@@ -70,7 +70,14 @@ import type {
   ToolSummary,
 } from "$lib/orchestration/orchestration";
 import { composeOrganizePrompt, composeRailPrompt } from "$lib/orchestration/orchestrationPrompts";
-import { findTool, gavinActionOf, resolveToolBody, resolveToolParam } from "$lib/orchestration/orchestrationTools";
+import {
+  findTool,
+  gavinActionOf,
+  resolveToolBody,
+  resolveToolParam,
+  toolPlatformBlockedReason,
+} from "$lib/orchestration/orchestrationTools";
+import { currentPlatform } from "$lib/core/platform";
 import type { Tool } from "$lib/orchestration/orchestrationTools";
 import {
   buildUntilScript,
@@ -1052,6 +1059,22 @@ async function executeToolLaunch(
   const tool = findTool(library, step.toolId as string);
   if (!tool) {
     await setStepRunAction(workspaceId, step.id, "stalled", null, "tool is no longer in the library");
+    return false;
+  }
+
+  // A tool that cannot run on this operating system at all. The drawer
+  // will not place one here, so what this catches is a plan authored
+  // somewhere else -- a rail written on a mac, opened on Linux, with
+  // `builtin:send-email` on it. Stalling with the sentence the drawer
+  // row already carries beats launching a session whose whole output is
+  // `osascript: command not found`, which reads as a broken step rather
+  // than as a step that was never going to work here.
+  //
+  // Before the kind branches below, because this is a fact about the
+  // tool and not about what running it would involve.
+  const unsupported = toolPlatformBlockedReason(tool, currentPlatform());
+  if (unsupported) {
+    await setStepRunAction(workspaceId, step.id, "stalled", null, unsupported);
     return false;
   }
 

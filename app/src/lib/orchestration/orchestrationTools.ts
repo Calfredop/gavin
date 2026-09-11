@@ -15,6 +15,11 @@
 // per workspace or global to the machine.
 
 import { isAbsolutePath } from "$lib/core/paths";
+// Type-only, and that is what keeps the header's promise: an `import
+// type` is erased, so this module still pulls in no Tauri plugin. The
+// platform itself is always an ARGUMENT here -- reading it is the
+// caller's I/O, never this module's.
+import type { AppPlatform } from "$lib/core/platform";
 import { composeReviewPrompt, REVIEW_RULES_LABEL } from "$lib/review/codeReview";
 
 /// `gavin` is the odd one out: an action the APP performs, with no
@@ -105,6 +110,23 @@ export interface Tool {
   /// Optional for the reason `cwd` is: the built-ins below wear their
   /// kinds' glyphs, and none of them should have to say so.
   icon?: string | null;
+  /// The platforms this tool can run on at all. Absent -- which is every
+  /// tool but one -- means every platform, so nothing has to declare the
+  /// ordinary case.
+  ///
+  /// BUILT-INS ONLY, and not a field on the wire: `toRecord` names the
+  /// record's fields one by one, so a stored tool can never carry this,
+  /// and `duplicateTool` drops it because a copy is the human's to
+  /// re-point at whatever their machine does have.
+  ///
+  /// It exists for `builtin:send-email`, which drives Mail.app and has
+  /// no equivalent anywhere else: `xdg-email` opens a composer and does
+  /// not send, and sending for real needs an SMTP account gavin has no
+  /// way to hold. A tool that CANNOT work here is a different fact from
+  /// one that merely needs something installed -- `builtin:notify` is
+  /// the latter and declares nothing, because naming the missing package
+  /// is more use than hiding the tool.
+  platforms?: readonly AppPlatform[];
 }
 
 /// One tool as the daemon stores it. `workspaceId` IS the scope.
@@ -175,6 +197,41 @@ export function toolKindLabel(kind: ToolKind): string {
             : kind === "review"
               ? "Wait for a manual review"
               : "Bash script";
+}
+
+const PLATFORM_LABELS: Record<AppPlatform, string> = {
+  macos: "macOS",
+  linux: "Linux",
+  windows: "Windows",
+};
+
+/// Why this tool cannot run on this machine at all, or null.
+///
+/// One sentence, and every surface uses this one: the drawer row's
+/// tooltip, the Tools tab's dark Run button, and the stall a rail writes
+/// when a step authored on another machine reaches it. A rail carried
+/// from a mac should explain itself rather than die on
+/// `osascript: command not found`, and two wordings for one fact is two
+/// things to keep true (the same rule `cannotRunAloneReason` follows).
+///
+/// A null `platform` -- outside a Tauri window, or an OS gavin does not
+/// ship for -- blocks NOTHING. Refusing on a platform we could not name
+/// would refuse in every unit test and every browser preview, where the
+/// wrong answer is invisible.
+///
+/// The tool's NAME is in the sentence because two of the three callers
+/// have no row beside it to say which tool is meant.
+export function toolPlatformBlockedReason(
+  tool: Pick<Tool, "name" | "platforms">,
+  platform: AppPlatform | null
+): string | null {
+  const allowed = tool.platforms;
+  if (!allowed || allowed.length === 0) return null;
+  if (platform === null || allowed.includes(platform)) return null;
+  const names = allowed.map((p) => PLATFORM_LABELS[p]);
+  const list =
+    names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+  return `“${tool.name}” runs only on ${list}.`;
 }
 
 /// The actions a `gavin` tool can name. The body is the selector rather
@@ -626,14 +683,43 @@ export const BUILTIN_TOOLS: Tool[] = [
   {
     id: "builtin:notify",
     name: "Send a notification",
-    description: "A macOS notification via osascript. A quote in the text will break it.",
-    kind: "command",
+    description:
+      "A desktop notification — osascript on macOS, notify-send on Linux. Says so loudly if " +
+      "neither is there. A quote in the text will break it.",
+    // `script`, not `command`, only because a branch needs more than one
+    // line. It stays a SHELL tool rather than becoming a `gavin` action
+    // over the app's own notifier: that would change what a shipped tool
+    // does on the platform where it already works, take the body out of
+    // the human's hands, and darken the Tools tab's Run button, since a
+    // `gavin` tool means nothing outside a rail.
+    kind: "script",
     scope: "builtin",
     params: [
       { name: "title", label: "Title", default: "gavin" },
       { name: "message", label: "Message", default: "The rail reached this step." },
     ],
-    body: `osascript -e 'display notification "{{message}}" with title "{{title}}"'`,
+    // osascript FIRST, so a mac notifies exactly the way it did before
+    // this body grew a second branch -- including a mac that happens to
+    // have Homebrew's notify-send on it. `command -v` rather than
+    // `|| next`, so a real osascript failure is a failure and not a
+    // silent fall-through to a notifier the human did not choose.
+    //
+    // No notifier at all EXITS NON-ZERO, which is the whole point of the
+    // tool: one whose only job is to tell you something must not end
+    // quietly when it could not. The message goes to the step's terminal
+    // on the way out, so the thing it was trying to say is at least
+    // readable there.
+    body: [
+      'if command -v osascript >/dev/null 2>&1; then',
+      `  osascript -e 'display notification "{{message}}" with title "{{title}}"'`,
+      "elif command -v notify-send >/dev/null 2>&1; then",
+      '  notify-send -- "{{title}}" "{{message}}"',
+      "else",
+      '  echo "[gavin] {{title}}: {{message}}" >&2',
+      '  echo "[gavin] no desktop notifier found — install libnotify-bin for notify-send." >&2',
+      "  exit 1",
+      "fi",
+    ].join("\n"),
   },
   {
     id: "builtin:send-email",
@@ -641,6 +727,14 @@ export const BUILTIN_TOOLS: Tool[] = [
     description: "Sends through macOS Mail.app via osascript. A quote in the text will break it.",
     kind: "script",
     scope: "builtin",
+    // The one tool in the set that cannot be made portable rather than
+    // merely needing something installed. There is no Mail.app to drive
+    // elsewhere: `xdg-email` opens a composer and never sends, and
+    // sending for real wants an SMTP account gavin does not have and
+    // should not start keeping. So it says where it runs, and every
+    // surface asks -- rather than offering a step that ends in
+    // `osascript: command not found`.
+    platforms: ["macos"],
     params: [
       { name: "to", label: "To", default: "" },
       { name: "subject", label: "Subject", default: "gavin: the rail finished" },
@@ -893,8 +987,17 @@ export function emptyTool(id: string): Tool {
 /// A built-in copied into an editable tool. The name is suffixed so the
 /// duplicate is distinguishable in a list beside its original.
 export function duplicateTool(tool: Tool, id: string): Tool {
+  // `platforms` is dropped rather than copied, and that is the reason a
+  // copy is worth making at all: duplicating the macOS-only mailer is
+  // exactly how a Linux human re-points its body at `msmtp` or their own
+  // script, and a copy that inherited the refusal would be a tool they
+  // could edit but never run. It could not survive a save either --
+  // `toRecord` names the record's fields one by one and this is not
+  // among them -- so keeping it would only make the draft lie until the
+  // first refetch.
+  const { platforms: _restriction, ...rest } = tool;
   return {
-    ...tool,
+    ...rest,
     id,
     name: `${tool.name} (copy)`,
     params: tool.params.map((p) => ({ ...p })),
