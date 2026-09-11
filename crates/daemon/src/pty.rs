@@ -99,6 +99,21 @@ impl PtySession {
         if let Some(token) = session_token {
             cmd.env("GAVIN_SESSION_TOKEN", token);
         }
+        // Which daemon opened this tab. `resolve_mcp_binary_path` puts the
+        // gavin-mcp that sits beside the running APP into the workspace's
+        // MCP config -- one entry, one binary, whichever app integrated
+        // last -- so the gavin-mcp an agent launches in here is not
+        // reliably this build's. Left to resolve its own `socket_path()`
+        // it would ask a daemon that is not the one hosting this session,
+        // or none at all.
+        //
+        // Skipped rather than fatal when the path cannot be resolved (a
+        // missing HOME): gavin-mcp falls back to its own default, which is
+        // exactly as good as what it had before, and refusing to open a
+        // terminal over it would be much worse.
+        if let Ok(socket) = protocol::socket_path() {
+            cmd.env("GAVIN_SESSION_SOCKET", socket.as_os_str());
+        }
         cmd.env("TERM_PROGRAM", "ghostty");
         // An inherited version string from some *other* terminal would
         // contradict the pin above; drop it rather than invent one.
@@ -166,8 +181,9 @@ impl PtySession {
         // terminal session should keep, and CLAUDE_CODE_EXECPATH names an
         // *install* -- two sessions of the same install share it -- so
         // none of those are this bug. Deliberately still passed in above:
-        // GAVIN_SESSION_ID and GAVIN_SESSION_TOKEN, which name THIS
-        // session and are the entire point of setting them.
+        // GAVIN_SESSION_ID, GAVIN_SESSION_TOKEN and GAVIN_SESSION_SOCKET,
+        // which name THIS session and the daemon serving it, and are the
+        // entire point of setting them.
         for key in [
             // "you are running under Claude Code", and by which entrypoint.
             "CLAUDECODE",
@@ -629,6 +645,39 @@ mod tests {
             std::env::remove_var(key);
         }
         assert!(output.contains("GITMARK=[][][][]"), "got: {output}");
+    }
+
+    /// Which daemon opened this tab, so gavin-mcp reaches the one that
+    /// owns it rather than the one its own build would resolve.
+    /// `resolve_mcp_binary_path` puts the gavin-mcp sitting beside the
+    /// running APP into the workspace's MCP config -- one entry, one
+    /// binary, whichever app integrated last -- so a debug gavin-mcp can
+    /// land in a release tab and a release one in a debug tab.
+    ///
+    /// It must also SURVIVE both scrub loops below. Under the rule
+    /// `issue-launcher-env-leaks-into-sessions.md` drew -- a variable goes
+    /// only if it names the LAUNCHER's session rather than this one --
+    /// this names the daemon serving this very PTY, so it stays, like
+    /// GAVIN_SESSION_ID and GAVIN_SESSION_TOKEN beside it.
+    ///
+    /// Asserted on the file name rather than the whole path: the value
+    /// crosses into sh, which on Windows is MSYS and may respell a
+    /// `C:\...` path, and what this test is about is that the variable
+    /// arrives and is this build's endpoint.
+    #[test]
+    fn spawn_exports_this_daemons_endpoint_into_the_pty() {
+        let _guard = lock_env();
+        let name =
+            protocol::profile_file_name("daemon", "sock", protocol::BuildProfile::current());
+        let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "sid-44", None).unwrap();
+        let mut reader = session.reader().unwrap();
+        session
+            .write_input(b"printf 'SOCK%s=[%s]\\n' MARK \"$GAVIN_SESSION_SOCKET\"\n")
+            .unwrap();
+
+        let output = read_until_contains(&mut *reader, "SOCKMARK=[", Duration::from_secs(3));
+        session.kill().unwrap();
+        assert!(output.contains(&format!("{name}]")), "got: {output}");
     }
 
     #[test]
