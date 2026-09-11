@@ -2,21 +2,9 @@
 ## Gavin workspace
 
 This repo is a gavin workspace. Read `.gavin-root/PRD.md` first — it leads all
-development.
-
-- Plans are markdown files in `.gavin-root/plans/` (and any `.gavin/plans/`).
-Their frontmatter drives a kanban board the human watches: `status:` is the
-column, `priority:` the dot, `kind:` one of note/task/plan.
-- Plan before coding. Create a plan file, keep its `status:` current as you
-work, and never mark work done that you have not verified. Write In
-Progress when you START: that column claims the card for your tab, so the
-board stops offering to run a second agent on it.
-- Use the `gavin_*` MCP tools rather than editing frontmatter by hand:
-`gavin_read_prd`, `gavin_get_tree`, `gavin_create_plan`,
-`gavin_set_plan_field`, `gavin_promote_task`.
-- The files are the truth. Edit them directly; the board follows.
+development. Follow the gavin workflow skill in `.claude/skills/gavin/SKILL.md`
+(plan before coding, keep plan statuses current, use the gavin_* MCP tools).
 <!-- gavin:end -->
-
 ## What this repo is
 
 Gavin itself — the app the PRD describes. A Rust workspace plus a Tauri/Svelte app:
