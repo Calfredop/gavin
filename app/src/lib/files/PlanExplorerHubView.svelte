@@ -33,6 +33,7 @@
   import FormatHelpModal from "$lib/files/FormatHelpModal.svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
+  import { filterExplorer, railIndex, statusFacets } from "$lib/board/planFilter";
   import { ANY_STATUS_LABEL, contextFacets, facetsEqual, pruneFacets } from "$lib/board/boardFilters";
   import FacetDropdown from "$lib/board/FacetDropdown.svelte";
   import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/board/hubFacets";
@@ -163,7 +164,7 @@
   // remembered outside the component: this view is destroyed on every
   // tab switch, and "shared with Kanban and Review" cannot mean that.
   let query = $state("");
-  let statusFacet = $state(ANY);
+  let statusFacet = $state<string[]>([]);
   const hub = $derived($hubFacetState[workspaceId]);
   const sharedFacets = $derived(facetsFor(hub, "plans"));
   const facetsLinked = $derived(isTabLinked(hub, "plans"));
@@ -193,7 +194,10 @@
   // Kanban prunes them (boardFilters.ts's pruneFacets), so the two tabs
   // agree on when a vanished option gets cleared.
   $effect(() => {
-    if (statusFacet !== ANY && !statuses.includes(statusFacet)) statusFacet = ANY;
+    if (statusFacet.length > 0) {
+      const next = statusFacet.filter((s) => statuses.includes(s));
+      if (next.length !== statusFacet.length) statusFacet = next;
+    }
   });
   $effect(() => {
     const next = pruneFacets(
@@ -202,11 +206,7 @@
       orch === undefined ? null : rails,
       $kanbanState[workspaceId] ? $kanbanState[workspaceId].labels : null
     );
-    if (
-      next.context !== sharedFacets.context ||
-      next.rail !== sharedFacets.rail ||
-      (next.label ?? "") !== (sharedFacets.label ?? "")
-    ) {
+    if (!facetsEqual(next, sharedFacets)) {
       setTabFacets(workspaceId, "plans", next);
     }
   });
@@ -455,12 +455,14 @@
           matches={filtered.filtering ? { shown: filtered.shown, total: filtered.total } : null}
         />
         <div class="facets">
-          <select bind:value={statusFacet} aria-label="Filter by status" title="Filter plans by status">
-            <option value={ANY}>Any status</option>
-            {#each statuses as name (name)}
-              <option value={name}>{name}</option>
-            {/each}
-          </select>
+          <FacetDropdown
+            ariaLabel="Filter by status"
+            tip="Show only plans in the chosen statuses"
+            emptyLabel={ANY_STATUS_LABEL}
+            options={statuses.map((name) => ({ value: name, label: name }))}
+            selected={statusFacet}
+            onChange={(next) => (statusFacet = next)}
+          />
           <FacetFilters
             facets={sharedFacets}
             contexts={contextOptions}
@@ -477,7 +479,7 @@
               title="Clear the search and every filter"
               onclick={() => {
                 query = "";
-                statusFacet = ANY;
+                statusFacet = [];
                 resetTabFacets(workspaceId, "plans");
               }}
             >Reset</button>
@@ -609,17 +611,6 @@
   }
   .facets :global(.facet-link) {
     flex: 0 0 auto;
-  }
-  .facets select {
-    flex: 1 1 0;
-    min-width: 0;
-    background: var(--surface-raised);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    color: var(--text);
-    font-family: monospace;
-    font-size: 0.72em;
-    padding: 2px 4px;
   }
   .reset {
     flex: 0 0 auto;
