@@ -2,7 +2,7 @@
 order: 14336
 kind: task
 title: [fix] start-dev-win.ps1 truncates daemon.log on every start
-status: To Do
+status: Done
 complexity: trivial
 ---
 `scripts/start-dev-win.ps1` starts the daemon with

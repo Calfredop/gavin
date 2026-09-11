@@ -30,6 +30,43 @@ toolLibraryLayout.test.ts     > lets its text controls shrink with the form
 The rest of the suite (5229 tests) is green on the same checkout, so the
 source-grep tests are the only thing the line ending reaches.
 
+## It reaches the Rust crate too, and it ships (found 2026-09-11)
+
+Re-confirmed on 2026-09-11 from
+[feat-windows-port-on-a-windows-machine](./feat-windows-port-on-a-windows-machine.md):
+the same ten, unchanged. But `cd app && npm test` is not the only suite
+this costs, and the second one **decides between the two options below**.
+
+`cargo test -p app` fails `agent_setup::tests::{an_opencode_root_gets_its_skills_agent_file_and_mcp_entry,
+the_opencode_agent_file_carries_the_git_only_grant}` with
+`must open with frontmatter`. That was read as a path-separator problem
+on the windows-port card; it is not. The cause:
+
+```
+app/src-tauri/src/opencode_commit_agent.md: 23 of 23 lines CRLF
+app/src-tauri/src/gavin_skill.md:          134 of 134 lines CRLF
+head -c 12 opencode_commit_agent.md  ->  -   -   -  \r  \n   d   e   s   c
+```
+
+These are `include_str!`'d (agent_setup.rs:791, 626…), so the bytes
+`core.autocrlf` put on disk are compiled into the binary verbatim and
+written straight back out. The test asserts `starts_with("---\n")` and
+gets `---\r\n`. Note the `.rs` files themselves are LF here, so this is
+not the Rust string literals — it is the **markdown they embed**.
+
+Two consequences:
+
+- **Option 1 cannot fix these.** Normalising inside each `source()`
+  helper reaches the ten TS tests and nothing else; `include_str!`
+  happens at compile time, in another crate, with no helper in the path.
+  Only a `.gitattributes` pinning `eol=lf` fixes both suites at once.
+- **This is not test-only.** The skills and agent files gavin writes into
+  a user's repo carry whatever line endings the BUILD machine's checkout
+  had — a Windows build ships CRLF skills, a mac build ships LF ones.
+  The embedded content of a release should not depend on the builder's
+  `core.autocrlf`, which is an argument for pinning it in the repo rather
+  than in the tests regardless of what the suites want.
+
 ## Fix
 
 - [ ] Decide where the normalisation belongs. Either every `source()`

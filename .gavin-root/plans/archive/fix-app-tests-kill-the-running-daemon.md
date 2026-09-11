@@ -1,7 +1,7 @@
 ---
 order: 16384
 title: [fix] the app crate's tests kill whatever gavin-daemon is running
-status: To Do
+status: Done
 priority: high
 complexity: moderate
 ---
@@ -30,20 +30,20 @@ take the other app's daemon
 
 ## Fix
 
-- [ ] Address the daemon by the process that owns the endpoint, not by
+- [x] Address the daemon by the process that owns the endpoint, not by
       name. Windows: `GetNamedPipeServerProcessId` on a connected pipe
       handle. Unix: the peer pid of a connected stream (`SO_PEERCRED` on
       Linux, `LOCAL_PEERPID` on macOS), or the pid the daemon writes
       beside its socket. Then `TerminateProcess` / `kill(pid)` that one
       process. A daemon on another socket is never touched, which is also
       what a stable and a dev daemon side by side need.
-- [ ] When the endpoint has no owner (nothing listening, no pid), there is
+- [x] When the endpoint has no owner (nothing listening, no pid), there is
       nothing to kill: return Ok without the by-name sweep. That is what
       `stop_is_content_when_nothing_is_listening` should be asserting.
-- [ ] A test that proves the fallback cannot reach a daemon it did not
+- [x] A test that proves the fallback cannot reach a daemon it did not
       connect to: bind a listener on a tempdir socket in-process, call
       `stop_running_daemon` on a DIFFERENT tempdir socket, and check the
       listener is still there.
-- [ ] Until this lands: do not run `cargo test -p app` (or `--workspace`)
+- [x] Until this lands: do not run `cargo test -p app` (or `--workspace`)
       on a machine whose daemon holds sessions you want. Agents developing
       gavin inside gavin will hit this on every full run.
