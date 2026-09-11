@@ -202,7 +202,7 @@ describe("what the candidates fork from", () => {
 describe("the pair the dialog opens with", () => {
   const claude = { id: "claude-code", models: ["opus", "sonnet"], promptArgs: "" };
   const codex = { id: "codex", models: ["gpt-5.1"], promptArgs: "" };
-  const cursor = { id: "cursor", models: [], promptArgs: null };
+  const custom = { id: "custom", models: [], promptArgs: null };
 
   it("prefers one agent at two models — the comparison this is for", () => {
     expect(seedCandidates([claude, codex], "claude-code", "")).toEqual([
@@ -225,10 +225,10 @@ describe("the pair the dialog opens with", () => {
   });
 
   it("never seeds a profile the launch would refuse", () => {
-    // cursor reads its positional as a path, so a row naming it is a row
-    // that cannot start.
+    // custom takes no prompt at all, so a row naming it is a row that
+    // cannot start.
     const single = { id: "opencode", models: [], promptArgs: "--prompt=" };
-    expect(seedCandidates([single, cursor], "opencode", "")[1].profileId).toBe("opencode");
+    expect(seedCandidates([single, custom], "opencode", "")[1].profileId).toBe("opencode");
   });
 
   it("falls back to two identical rows, which the error message then explains", () => {

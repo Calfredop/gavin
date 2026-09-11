@@ -230,28 +230,30 @@ pub struct AgentProfile {
     /// is the whole builder, for every row.
     pub prompt_args: Option<&'static str>,
     /// The argv that makes this agent run ONE prompt with no TUI and
-    /// then exit: `<command> <headless_args> "<prompt>"`. Empty where
-    /// the convention is unverified, which hides every background run --
-    /// a hidden session that never exits is a spinner with no end, so
-    /// this is a harder requirement than `prompt_args` alone.
+    /// then exit. Empty where the convention is unverified, which hides
+    /// every background run -- a hidden session that never exits is a
+    /// spinner with no end, so this is a harder requirement than
+    /// `prompt_args` alone.
     ///
-    /// The tool allow-list is part of it: a headless agent cannot be
-    /// asked to approve anything, so a run with no grant is a run that
-    /// can only report it was refused. Scoped to git deliberately --
-    /// gavin's background runs are git work, and a blanket bypass is
-    /// not gavin's to hand out.
+    /// Two verified shapes (mirrors `buildHeadlessCommand`):
+    /// - ends in ` --`: positional prompt after a double-dash
+    ///   (`<command> <headless_args> "<prompt>"`) -- claude, codex,
+    ///   cursor, opencode. The separator keeps a prompt that starts
+    ///   with `-` from being read as a flag, and stops a variadic
+    ///   allow-list flag from swallowing the prompt.
+    /// - ends in `=`: flag-attached prompt with no space
+    ///   (`<command> <headless_args>"<prompt>"`) -- gemini's
+    ///   `--prompt=`, because a bare positional stays interactive.
     ///
-    /// Must end in `--`. Verified the hard way: claude's allow-list flag
-    /// takes a VARIADIC value, so without the separator it swallows the
-    /// prompt that follows and the run dies with "input must be provided
-    /// either through stdin or as a prompt argument". The separator also
-    /// keeps a prompt that starts with `-` from being read as a flag.
+    /// The tool allow-list / auto-approve flags are part of it: a
+    /// headless agent cannot be asked to approve anything, so a run
+    /// with no grant is a run that can only report it was refused.
     pub headless_args: &'static str,
     /// The flag that selects a model, e.g. `--model`. Empty where the
-    /// command takes none -- `cursor` is the IDE launcher, and `custom`
-    /// is the user's own argv. An empty flag hides every model control
-    /// for the profile rather than guessing one, which is the same
-    /// posture `headless_args` takes above.
+    /// command takes none -- `custom` is the user's own argv. An empty
+    /// flag hides every model control for the profile rather than
+    /// guessing one, which is the same posture `headless_args` takes
+    /// above.
     pub model_flag: &'static str,
     /// Model names offered as picks, and only ever the ones the CLI
     /// itself documents as STABLE aliases -- a name that points at
@@ -276,7 +278,9 @@ pub struct AgentProfile {
     /// - codex and opencode -- no stable alias exists. Both ship empty
     ///   here and are enumerated at runtime instead; see
     ///   `model_catalog` below.
-    /// - cursor -- no `model_flag`, so no picker at all.
+    /// - cursor -- Cursor Agent CLI (`agent`): `--model` takes dated ids
+    ///   from `agent --list-models`, enumerated at runtime like
+    ///   opencode rather than shipped as presets here.
     pub models: &'static [&'static str],
     /// How this agent's CURRENT model list is read back at runtime, for
     /// the CLIs whose names are dated ids rather than aliases.
@@ -591,6 +595,10 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         command: "claude",
         // `claude "<prompt>"`: the bare positional starts the session.
         prompt_args: Some(""),
+        // `claude -p`: print/non-interactive mode (code.claude.com/docs/en/headless,
+        // re-checked 2026-09-11). `--allowedTools "Bash(git *)"` auto-
+        // approves git for commit-via-agent without opening the whole
+        // shell; trailing `--` so a prompt starting with `-` is not eaten.
         headless_args: "-p --allowedTools \"Bash(git *)\" --",
         // Measured under a PTY against a fake API (2026-09-02, Claude
         // Code v2.1.258): a connection reset, a stream killed mid-flight,
@@ -680,8 +688,16 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         command: "codex",
         // `codex "<prompt>"`: the TUI's clap parser takes an optional
         // positional PROMPT that starts the session.
+        // Verified against developers.openai.com/codex/cli/reference
+        // (2026-09-11).
         prompt_args: Some(""),
-        headless_args: "",
+        // `codex exec` is the non-interactive subcommand. Default sandbox
+        // is read-only, so a commit run needs `workspace-write`;
+        // `--ask-for-approval never` stops a hidden session stalling on
+        // a prompt nobody can answer. Trailing `--` so a prompt starting
+        // with `-` is not read as a flag. Docs 2026-09-11; no local
+        // binary available to re-check --help against.
+        headless_args: "exec --sandbox workspace-write --ask-for-approval never --",
         failure_patterns: &[],
         failure_causes: &[],
         session_id_args: "",
@@ -719,9 +735,17 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         command: "gemini",
         // `gemini [query..]`: the positional is the initial prompt and
         // stays interactive, which is what a launched session wants.
-        // (-p would run it headless and exit.)
+        // (-p / --prompt would run it headless and exit.)
+        // Verified against `gemini --help` 2026-09-11 and
+        // geminicli.com/docs/cli/headless.
         prompt_args: Some(""),
-        headless_args: "",
+        // Headless is `--prompt=<value>`, not a bare positional: a
+        // positional without `-p` stays interactive. `--yolo` auto-
+        // accepts tool calls so a hidden commit does not stall.
+        // Attach-form (`=`) so buildHeadlessCommand concatenates the
+        // quoted prompt with no space. Verified 2026-09-11 against
+        // local `gemini --help`.
+        headless_args: "--yolo --prompt=",
         failure_patterns: &[],
         failure_causes: &[],
         session_id_args: "",
@@ -748,23 +772,36 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
     },
     AgentProfile {
         id: "cursor",
-        model_flag: "",
+        // Verified 2026-09-11 against Cursor Agent CLI 2026.09.10
+        // (`agent --help`): `--model <name>` selects the model;
+        // `agent --list-models` prints dated ids that rot, so the
+        // picker is Custom… until a catalog route lands.
+        model_flag: "--model",
         models: &[],
         model_catalog: None,
         label: "Cursor",
         instructions_file: "AGENTS.md",
-        command: "cursor",
-        // Verified absent, not merely unverified: `cursor` is the IDE
-        // launcher and its positionals are paths, so a prompt would be
-        // read as a file to open. Cursor's terminal agent is a separate
-        // binary; a user who wants it points `command` at it in Settings.
-        prompt_args: None,
-        headless_args: "",
+        // The terminal agent binary (`agent`), not the IDE launcher
+        // (`cursor`). The IDE's positionals are paths; this CLI takes a
+        // prompt. Workspaces that still name `cursor` as command need
+        // to switch to `agent` (Settings / the agent-change wizard).
+        command: "agent",
+        // `agent "<prompt>"`: bare positional starts the interactive
+        // session (`Usage: agent [options] [command] [prompt...]`).
+        prompt_args: Some(""),
+        // Print mode for scripts; `--force` so a hidden run can write
+        // and run tools (without it, `-p` proposes and applies nothing);
+        // `--trust` skips the workspace-trust prompt that would stall a
+        // headless commit. Trailing `--` so a prompt starting with `-`
+        // is not read as a flag. Verified against `agent --help`
+        // 2026-09-11 and cursor.com/docs/cli/headless.
+        headless_args: "-p --force --trust --",
         failure_patterns: &[],
         failure_causes: &[],
         session_id_args: "",
-        // Out of scope, not merely unverified: `cursor` never enters
-        // the headless resume path at all (see `prompt_args` above).
+        // `--resume [chatId]` exists, but gavin does not yet mint or
+        // discover Cursor chat ids the way it does for claude-code /
+        // opencode, so resume stays off rather than opening a picker.
         session_id_discovery: "",
         resume_args: "",
         usage_probe: None,
@@ -800,16 +837,17 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // daemon runs every session.
         prompt_args: Some("--prompt="),
         // `run` is the non-interactive subcommand; `--agent` names the
-        // gavin-owned definition below, which carries the git-only grant
-        // (1.3.13 has no `--auto`, whatever the docs say). The trailing
-        // `--` is load-bearing here too: without it a prompt starting
+        // gavin-owned definition below, which carries the git-only grant.
+        // `--auto` (verified on current `opencode run --help` 2026-09-11)
+        // auto-approves permissions the agent file has not denied, so a
+        // hidden commit does not stall on an ask nobody can answer. The
+        // trailing `--` is load-bearing: without it a prompt starting
         // with `-` is read as a flag and the run prints usage.
         //
         // A denied tool comes back as a tool error the agent can read
-        // ("The user has specified a rule which prevents you…") and an
-        // `ask`-level permission auto-rejects, so a hidden run cannot
-        // stall on an approval nobody can give.
-        headless_args: "run --agent gavin-commit --",
+        // ("The user has specified a rule which prevents you…"), so the
+        // grant in gavin-commit.md stays the real fence.
+        headless_args: "run --agent gavin-commit --auto --",
         failure_patterns: &[],
         failure_causes: &[],
         session_id_args: "",
@@ -1959,7 +1997,7 @@ mod tests {
     }
 
     #[test]
-    fn only_alias_cli_s_ship_model_presets_and_cursor_has_no_flag() {
+    fn only_alias_cli_s_ship_model_presets() {
         let by = |id: &str| AGENT_PROFILES.iter().find(|p| p.id == id).unwrap();
         // Aliases named by `claude --model`'s own help and by the model
         // config docs: each points at the latest model of a tier, or at
@@ -1980,8 +2018,10 @@ mod tests {
         assert!(by("codex").models.is_empty());
         assert_eq!(by("opencode").model_flag, "--model");
         assert!(by("opencode").models.is_empty());
-        // `cursor` is the IDE launcher -- no model control at all.
-        assert_eq!(by("cursor").model_flag, "");
+        // Cursor Agent CLI (`agent`): flag verified from `--help`;
+        // models are dated ids from `--list-models`, so none ship here.
+        assert_eq!(by("cursor").model_flag, "--model");
+        assert!(by("cursor").models.is_empty());
         assert_eq!(by("custom").model_flag, "");
     }
 
@@ -2122,23 +2162,29 @@ mod tests {
     }
 
     /// A headless row must be promptable at all: the caller builds
-    /// `<command> <headless_args> '<prompt>'`, so an agent that can be
-    /// handed no prompt has nowhere to put one. And it must end in `--`,
-    /// or a flag ahead of the prompt eats it -- claude's allow-list flag
-    /// is variadic, and opencode's yargs reads a leading `-` as a flag.
+    /// either `<command> <headless_args> '<prompt>'` (args end in ` --`)
+    /// or `<command> <headless_args>'<prompt>'` (args end in `=`, the
+    /// attach form gemini's `--prompt=` needs). And a positional form
+    /// must end in `--`, or a flag ahead of the prompt eats it --
+    /// claude's allow-list flag is variadic, and opencode's yargs reads
+    /// a leading `-` as a flag.
     #[test]
     fn headless_rows_are_the_verified_set_and_well_formed() {
         let headless: Vec<&str> =
             AGENT_PROFILES.iter().filter(|p| !p.headless_args.is_empty()).map(|p| p.id).collect();
-        assert_eq!(headless, ["claude-code", "opencode"]);
+        assert_eq!(
+            headless,
+            ["claude-code", "codex", "gemini", "cursor", "opencode"]
+        );
         for p in AGENT_PROFILES {
             if p.headless_args.is_empty() {
                 continue;
             }
             assert!(p.prompt_args.is_some(), "{} runs headless but takes no prompt", p.id);
+            let args = p.headless_args;
             assert!(
-                p.headless_args.ends_with(" --"),
-                "{} must end its headless argv with `--`",
+                args.ends_with(" --") || args.ends_with('='),
+                "{} headless argv must end in ` --` (positional) or `=` (attached)",
                 p.id
             );
         }
@@ -2839,9 +2885,9 @@ mod tests {
     /// and `Some("--prompt=")` is a third shape that only exists because
     /// the separated form was tried and refused. Verified 2026-08-23
     /// against each CLI's own argument parser, opencode re-verified
-    /// 2026-09-02 against 1.3.13 (see the card's `## Verified` block).
-    /// The absence is verified too: `cursor` opens paths, so a prompt
-    /// would be swallowed as a filename.
+    /// 2026-09-02 against 1.3.13 (see the card's `## Verified` block),
+    /// Cursor Agent CLI (`agent`) re-verified 2026-09-11 against
+    /// 2026.09.10 — bare positional prompt, same shape as claude-code.
     #[test]
     fn prompt_args_is_set_only_where_the_convention_is_verified() {
         let column: Vec<(&str, Option<&str>)> =
@@ -2852,7 +2898,7 @@ mod tests {
                 ("claude-code", Some("")),
                 ("codex", Some("")),
                 ("gemini", Some("")),
-                ("cursor", None),
+                ("cursor", Some("")),
                 ("opencode", Some("--prompt=")),
                 ("custom", None),
             ]

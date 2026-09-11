@@ -21,7 +21,7 @@ import {
 
 const PROFILES: AgentProfileInfo[] = [
   { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArgs: "", headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", sessionIdDiscovery: "", resumeArgs: "--resume", usageProbe: "anthropic-oauth" },
-  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArgs: "", headlessArgs: "", modelFlag: "--model", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", sessionIdDiscovery: "", resumeArgs: "", usageProbe: "codex-rollout" },
+  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArgs: "", headlessArgs: "exec --sandbox workspace-write --ask-for-approval never --", modelFlag: "--model", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", sessionIdDiscovery: "", resumeArgs: "", usageProbe: "codex-rollout" },
   { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArgs: null, headlessArgs: "", modelFlag: "", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", sessionIdDiscovery: "", resumeArgs: "", usageProbe: null },
 ];
 
@@ -207,7 +207,7 @@ describe("resolveAgentConfig", () => {
       command: "codex --x",
       mcpSupported: true,
       mcpConfigFile: ".codex/config.toml",
-      headlessArgs: "",
+      headlessArgs: "exec --sandbox workspace-write --ask-for-approval never --",
       promptArgs: "",
       model: "",
       modelFlag: "--model",
@@ -443,7 +443,9 @@ describe("resolveAgentConfig", () => {
   // headless run at all.
   it("takes the headless argv from the effective profile only, with no fallback", () => {
     expect(resolveAgentConfig(null, PROFILES, {}).headlessArgs).toBe('-p --allowedTools "Bash(git *)" --');
-    expect(resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, {}).headlessArgs).toBe("");
+    expect(resolveAgentConfig({ profile: "codex", file: null, command: null }, PROFILES, {}).headlessArgs).toBe(
+      "exec --sandbox workspace-write --ask-for-approval never --"
+    );
     const bare = resolveAgentConfig({ profile: "custom", file: null, command: null }, PROFILES, {});
     expect(bare.command).toBe("claude");
     expect(bare.headlessArgs).toBe("");

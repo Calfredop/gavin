@@ -342,23 +342,31 @@ export function agentPromptBlocker(
 export const COMMIT_PROMPT =
   "Commit pending and unversioned changes, in logical chunks. Do not push.";
 
-// `<command> <headlessArgs> '<prompt>'`: one prompt, no TUI, then exit.
+// `<command> <headlessArgs><prompt>`: one prompt, no TUI, then exit.
 // What a HIDDEN session needs -- an interactive agent sits at its prompt
 // forever, and a session nobody can see never coming back is a spinner
 // with no end, so a profile with no verified headless argv is refused
 // here rather than launched and hoped for (agent_setup.rs's
 // headless_args carries the argv, and only for verified rows).
 //
-// The prompt goes LAST and the argv ends in `--`, which is the profile
-// table's job to guarantee: an allow-list flag that takes a variadic
-// value would otherwise swallow the prompt whole.
+// Two shapes, matching `buildRunCommand`'s promptArgs rule:
+// - args ending in ` --`: positional prompt after a double-dash so a
+//   leading `-` in the prompt is not eaten as a flag (claude, codex,
+//   cursor, opencode).
+// - args ending in `=`: flag-attached prompt with NO intervening space
+//   (gemini's `--prompt=`), the same concatenation interactive
+//   `--prompt=` rows already use.
 export function buildHeadlessCommand(
   agentCommand: string,
   headlessArgs: string,
   prompt: string
 ): string | null {
   if (!headlessArgs.trim()) return null;
-  return `${agentCommand} ${headlessArgs.trim()} ${shellQuote(prompt)}`;
+  const args = headlessArgs.trim();
+  if (args.endsWith("=")) {
+    return `${agentCommand} ${args}${shellQuote(prompt)}`;
+  }
+  return `${agentCommand} ${args} ${shellQuote(prompt)}`;
 }
 
 // The daemon runs a session's command as `sh -c <line>` (pty.rs), so a

@@ -477,6 +477,15 @@ describe("buildHeadlessCommand", () => {
     expect(buildHeadlessCommand("claude", "-p", "a'b")).toBe("claude -p 'a'\\''b'");
   });
 
+  // Gemini's headless prompt rides `--prompt=<value>`, the same attach
+  // shape interactive `--prompt=` rows use -- a space before the quote
+  // would make `-p` / `--prompt` eat the next flag instead.
+  it("attaches the prompt with no space when the argv ends in =", () => {
+    expect(buildHeadlessCommand("gemini", "--yolo --prompt=", "do it")).toBe(
+      "gemini --yolo --prompt='do it'"
+    );
+  });
+
   // A profile with no verified headless argv would launch a TUI that
   // never exits -- invisibly, since the whole point is a hidden session.
   // Refused, so the caller has to disable the action instead.

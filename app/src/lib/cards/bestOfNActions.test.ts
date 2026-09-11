@@ -34,11 +34,11 @@ vi.mock("$lib/core/layoutState", () => ({
   createTiledPage: (...args: Parameters<typeof createTiledPage>) => createTiledPage(...args),
   candidateAgentFor: vi.fn((_ws: string, c: { profileId: string; model: string }) => ({
     profileId: c.profileId,
-    label: c.profileId === "cursor" ? "Cursor" : "Claude Code",
+    label: c.profileId === "custom" ? "Custom" : "Claude Code",
     launchCommand: c.model ? `claude --model ${c.model}` : "claude",
-    // cursor is the stock profile that takes no prompt at all, which is
+    // custom is the stock profile that takes no prompt at all, which is
     // the one agent gate a run has to fail on.
-    promptArgs: c.profileId === "cursor" ? null : "",
+    promptArgs: c.profileId === "custom" ? null : "",
     sessionIdArgs: "",
     resumeArgs: "",
     failurePatterns: ["API Error:"],
@@ -233,8 +233,8 @@ describe("starting a run", () => {
   it("refuses when a candidate's agent takes no prompt, before the status write", async () => {
     // Finding this out after two worktrees exist would leave the human to
     // clean them up for a run that never started.
-    const withCursor = [PLANS[0], plan("cursor", "", "auth-cursor")];
-    expect(await startBestOfN("ws-1", CARD, withCursor, "main")).toMatch(/takes no prompt/);
+    const withCustom = [PLANS[0], plan("custom", "", "auth-custom")];
+    expect(await startBestOfN("ws-1", CARD, withCustom, "main")).toMatch(/takes no prompt/);
     expect(trace).toEqual([]);
   });
 
