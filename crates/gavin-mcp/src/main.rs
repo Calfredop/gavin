@@ -8,6 +8,19 @@ use std::path::{Path, PathBuf};
 
 pub trait DaemonTransport {
     fn request(&mut self, req: &Request) -> anyhow::Result<Response>;
+
+    /// Workspace root the daemon named in the last `HelloAck`, if any.
+    /// Default `None` so mocks and older daemons keep the cwd walk.
+    fn workspace_root_from_hello(&self) -> Option<&Path> {
+        None
+    }
+
+    /// Ensure the transport has completed its Hello (so
+    /// `workspace_root_from_hello` is populated) before root-scoped tools
+    /// resolve paths. Default is a no-op for mocks.
+    fn prepare(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// A daemon too old to parse the version probe answers nothing and closes
@@ -46,6 +59,9 @@ struct SocketTransport {
     /// which names nothing.
     socket_path: Result<PathBuf, String>,
     conn: Option<Connection>,
+    /// From the most recent `HelloAck`. Cleared on reconnect so a
+    /// replaced daemon cannot leave a stale root behind.
+    hello_workspace_root: Option<PathBuf>,
 }
 
 impl SocketTransport {
@@ -53,6 +69,7 @@ impl SocketTransport {
         Self {
             socket_path: protocol::socket_path().map_err(|e| e.to_string()),
             conn: None,
+            hello_workspace_root: None,
         }
     }
 
@@ -63,18 +80,19 @@ impl SocketTransport {
     /// `protocol::socket_path()`, would be racing every other test in the
     /// process for one global.
     fn at(socket_path: PathBuf) -> Self {
-        Self { socket_path: Ok(socket_path), conn: None }
+        Self { socket_path: Ok(socket_path), conn: None, hello_workspace_root: None }
     }
 
     fn connect(&mut self) -> anyhow::Result<()> {
         // Dropped before the probe, not after it: a failed connect must
         // not leave the previous daemon's version behind for the gate.
         self.conn = None;
+        self.hello_workspace_root = None;
         let socket_path = match &self.socket_path {
-            Ok(path) => path,
+            Ok(path) => path.clone(),
             Err(why) => anyhow::bail!("{why}"),
         };
-        let stream = Stream::connect(socket_path)
+        let stream = Stream::connect(&socket_path)
             .map_err(|_| anyhow::anyhow!("gavin daemon isn't running — open the gavin app"))?;
         let mut reader = BufReader::new(stream);
         write_message(reader.get_mut(), &Request::GetProtocolVersion)
@@ -108,9 +126,11 @@ impl SocketTransport {
                 // Gated like every other request: a daemon older than 35
                 // cannot parse `Hello`, so we never put it on the wire
                 // and carry on untokened exactly as before (compat §7).
-                // The HelloAck is read to keep the connection aligned but
-                // otherwise ignored -- the role is enforced daemon-side,
-                // and only the app verifies a server_proof.
+                // The HelloAck's `workspace_root` is the one thing we keep
+                // from it: an agent Hello names the owning workspace so
+                // we do not walk into a worktree's decoy `.gavin-root`.
+                // The role is still enforced daemon-side; only the app
+                // verifies a server_proof.
                 let hello = Request::Hello {
                     client: "mcp".to_string(),
                     protocol_version: PROTOCOL_VERSION,
@@ -123,7 +143,11 @@ impl SocketTransport {
                 if protocol::gate_request(&hello, version).is_ok()
                     && write_message(reader.get_mut(), &hello).is_ok()
                 {
-                    let _ = read_message::<_, Response>(&mut reader);
+                    if let Ok(Some(Response::HelloAck { workspace_root, .. })) =
+                        read_message::<_, Response>(&mut reader)
+                    {
+                        self.hello_workspace_root = workspace_root.map(PathBuf::from);
+                    }
                 }
                 self.conn = Some(Connection { reader, daemon_version: version });
                 Ok(())
@@ -166,6 +190,17 @@ impl DaemonTransport for SocketTransport {
             }
         }
     }
+
+    fn workspace_root_from_hello(&self) -> Option<&Path> {
+        self.hello_workspace_root.as_deref()
+    }
+
+    fn prepare(&mut self) -> anyhow::Result<()> {
+        if self.conn.is_none() {
+            self.connect()?;
+        }
+        Ok(())
+    }
 }
 
 use std::collections::{HashMap, HashSet};
@@ -186,6 +221,19 @@ fn find_gavin_root(start: &Path) -> Option<PathBuf> {
         current = dir.parent();
     }
     None
+}
+
+/// Prefer the workspace the daemon named in `HelloAck` over walking up
+/// from cwd. A rail worktree carries a tracked decoy `.gavin-root`; the
+/// walk finds that copy, and every `*ByRoot` read then fails with
+/// "workspace not open in gavin" because no watcher owns it.
+///
+/// `from_hello` is absent against an older daemon (or a `local`/`app`
+/// Hello) — fall back to the walk so those keep working.
+fn resolve_workspace_root(from_hello: Option<&Path>, cwd: &Path) -> Option<PathBuf> {
+    from_hello
+        .map(Path::to_path_buf)
+        .or_else(|| find_gavin_root(cwd))
 }
 
 /// Absolute as-is; relative resolved against the gavin root (spec §2).
@@ -280,7 +328,7 @@ fn require_arg(args: &Value, key: &str) -> anyhow::Result<String> {
 fn dispatch_tool(
     name: &str,
     args: &Value,
-    root: Option<&Path>,
+    cwd_root: Option<&Path>,
     transport: &mut dyn DaemonTransport,
 ) -> anyhow::Result<String> {
     // Naming a tab needs no root at all, only the session id the PTY
@@ -318,7 +366,16 @@ fn dispatch_tool(
         };
     }
 
-    let root = root.ok_or_else(|| anyhow::anyhow!(NOT_IN_WORKSPACE))?;
+    // Connect before resolving the root so an agent HelloAck can name
+    // the owning workspace ahead of the cwd walk's decoy `.gavin-root`.
+    // A prepare failure is left for `request` to surface; we still try
+    // the walked root so an older daemon with no Hello keeps working.
+    let _ = transport.prepare();
+    let hello_owned = transport.workspace_root_from_hello().map(Path::to_path_buf);
+    let root = hello_owned
+        .as_deref()
+        .or(cwd_root)
+        .ok_or_else(|| anyhow::anyhow!(NOT_IN_WORKSPACE))?;
     let root_str = root.to_string_lossy().to_string();
 
     if name == "gavin_get_orchestration" {
@@ -1447,15 +1504,36 @@ mod tests {
     /// fails" -- a bare `Err` proves nothing about the wire -- it is that a
     /// request the daemon predates produces zero bytes, and only the
     /// receiving end can testify to that.
+    ///
+    /// `Hello` is answered inline (never drawn from `replies`) so a v35+
+    /// daemon under test does not steal the first real reply for the
+    /// handshake. Override the ack with `hello_ack` when the test needs a
+    /// specific `workspace_root`.
     fn fake_daemon(
         version: u32,
         replies: Vec<Response>,
+    ) -> (PathBuf, Arc<Mutex<Vec<Request>>>, tempfile::TempDir) {
+        fake_daemon_with_hello(version, replies, None)
+    }
+
+    fn fake_daemon_with_hello(
+        version: u32,
+        replies: Vec<Response>,
+        hello_ack: Option<Response>,
     ) -> (PathBuf, Arc<Mutex<Vec<Request>>>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fake.sock");
         let listener = protocol::transport::Listener::bind(&path).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorder = Arc::clone(&seen);
+        let default_hello = Response::HelloAck {
+            role: "local".into(),
+            daemon_version: version,
+            session_id: None,
+            server_proof: None,
+            workspace_root: None,
+        };
+        let hello_ack = hello_ack.unwrap_or(default_hello);
 
         std::thread::spawn(move || {
             let mut replies = replies.into_iter();
@@ -1468,6 +1546,7 @@ mod tests {
                     recorder.lock().unwrap().push(req.clone());
                     let resp = match req {
                         Request::GetProtocolVersion => Response::ProtocolVersion { version },
+                        Request::Hello { .. } => hello_ack.clone(),
                         _ => match replies.next() {
                             Some(r) => r,
                             None => break,
@@ -2607,6 +2686,79 @@ mod tests {
         assert_eq!(find_gavin_root(&nested), None);
         std::fs::create_dir_all(dir.path().join(".gavin-root")).unwrap();
         assert_eq!(find_gavin_root(&nested).unwrap(), dir.path());
+    }
+
+    /// The failure this card fixes: a rail worktree's own `.gavin-root`
+    /// is a decoy the walk would pick, while HelloAck names the real
+    /// workspace. Relative card paths and every `*ByRoot` read have to
+    /// land on the workspace, not the decoy.
+    #[test]
+    fn resolve_workspace_root_prefers_hello_over_a_decoy_cwd() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join(".gavin-root")).unwrap();
+        let worktree = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(worktree.path().join(".gavin-root")).unwrap();
+
+        let resolved =
+            resolve_workspace_root(Some(workspace.path()), worktree.path()).unwrap();
+        assert_eq!(
+            resolved, workspace.path(),
+            "HelloAck's workspace must win over the worktree decoy"
+        );
+
+        // Absolute card paths stay absolute; relative ones join the
+        // workspace, never the decoy.
+        let card = resolve_against_root(&resolved, ".gavin-root/plans/a.md");
+        assert_eq!(card, workspace.path().join(".gavin-root/plans/a.md"));
+
+        // An older daemon (or local Hello) sends nothing: keep walking.
+        let walked = resolve_workspace_root(None, worktree.path()).unwrap();
+        assert_eq!(walked, worktree.path());
+    }
+
+    /// End-to-end through SocketTransport: HelloAck names the workspace,
+    /// the cwd walk would find the worktree decoy, and `gavin_get_board`
+    /// must ask the daemon about the workspace.
+    #[test]
+    fn a_worktree_agent_reads_the_workspace_named_in_hello_not_its_decoy() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join(".gavin-root")).unwrap();
+        let worktree = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(worktree.path().join(".gavin-root")).unwrap();
+        let ws = workspace.path().to_string_lossy().to_string();
+
+        let (path, seen, _dir) = fake_daemon_with_hello(
+            PROTOCOL_VERSION,
+            vec![Response::Board {
+                columns: vec![],
+                labels: vec![],
+                card_sessions: vec![],
+            }],
+            Some(Response::HelloAck {
+                role: "agent".into(),
+                daemon_version: PROTOCOL_VERSION,
+                session_id: Some("sess-1".into()),
+                server_proof: None,
+                workspace_root: Some(ws.clone()),
+            }),
+        );
+        let mut t = SocketTransport::at(path);
+        // cwd_root is the decoy the walk would have found.
+        let reply = handle_line(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gavin_get_board","arguments":{}}}"#,
+            Some(worktree.path()),
+            &mut t,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v.pointer("/result/isError").unwrap(), false, "{reply}");
+
+        let seen = seen.lock().unwrap();
+        let board = seen.iter().find_map(|r| match r {
+            Request::GetBoardByRoot { root_path } => Some(root_path.as_str()),
+            _ => None,
+        });
+        assert_eq!(board, Some(ws.as_str()), "board read must target the HelloAck workspace, not the decoy; saw {seen:?}");
     }
 
     #[test]

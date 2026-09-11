@@ -1464,11 +1464,21 @@ pub enum Response {
     /// present only when the connection proved knowledge of the daemon
     /// token is worth checking (`app`): the app verifies it to know it
     /// reached the real daemon rather than a squatter (DP-06).
+    ///
+    /// `workspace_root` is the session's owning workspace for an `agent`
+    /// (the path `CreateSession` recorded as `workspace_path`). gavin-mcp
+    /// prefers it over walking up from cwd, because a rail worktree
+    /// carries a tracked decoy `.gavin-root`. `serde(default)`: an older
+    /// daemon sends nothing, and that means "fall back to the walk" --
+    /// the field must never become one a tool requires, because a response
+    /// field is invisible to `min_version_for`.
     HelloAck {
         role: String,
         daemon_version: u32,
         session_id: Option<String>,
         server_proof: Option<String>,
+        #[serde(default)]
+        workspace_root: Option<String>,
     },
     /// A request refused by `authorize` because the connection's role may
     /// not make it. Only ever sent to a connection that sent a `Hello` or
@@ -2807,6 +2817,22 @@ mod tests {
         assert_eq!(v, serde_json::json!({"kind": "session-token", "token": "x"}));
         let n = serde_json::to_value(HelloAuth::None).unwrap();
         assert_eq!(n, serde_json::json!({"kind": "none"}));
+    }
+
+    /// An older daemon's HelloAck has no `workspace_root`; a newer client
+    /// must still parse it and treat the absence as "fall back to the
+    /// cwd walk". The field must never become one a tool requires.
+    #[test]
+    fn hello_ack_without_workspace_root_still_deserializes() {
+        let line = r#"{"type":"HelloAck","role":"agent","daemon_version":35,"session_id":"s1","server_proof":null}"#;
+        let parsed: Response = serde_json::from_str(line).unwrap();
+        match parsed {
+            Response::HelloAck { workspace_root, session_id, .. } => {
+                assert_eq!(workspace_root, None);
+                assert_eq!(session_id.as_deref(), Some("s1"));
+            }
+            other => panic!("expected HelloAck, got {other:?}"),
+        }
     }
 
     #[test]

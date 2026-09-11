@@ -1315,6 +1315,7 @@ impl SessionManager {
                     daemon_version: protocol::PROTOCOL_VERSION,
                     session_id: None,
                     server_proof: None,
+                    workspace_root: None,
                 },
             )
         };
@@ -1334,6 +1335,7 @@ impl SessionManager {
                         daemon_version: protocol::PROTOCOL_VERSION,
                         session_id: None,
                         server_proof: Some(protocol::server_proof(self.daemon_token(), nonce)),
+                        workspace_root: None,
                     },
                 )
             }
@@ -1359,6 +1361,11 @@ impl SessionManager {
                             daemon_version: protocol::PROTOCOL_VERSION,
                             session_id: Some(rec.id),
                             server_proof: None,
+                            // The owning workspace, not the PTY cwd: a rail
+                            // agent runs in a worktree whose tracked
+                            // `.gavin-root` is a decoy, and gavin-mcp needs
+                            // this path so its reads hit the real board.
+                            workspace_root: Some(rec.workspace_path),
                         },
                     ),
                     None => local(),
@@ -5057,10 +5064,11 @@ mod tests {
             },
         );
         match resp {
-            Response::HelloAck { role, session_id, server_proof, daemon_version } => {
+            Response::HelloAck { role, session_id, server_proof, daemon_version, workspace_root } => {
                 assert_eq!(role, "app");
                 assert_eq!(daemon_version, protocol::PROTOCOL_VERSION);
                 assert_eq!(session_id, None);
+                assert_eq!(workspace_root, None);
                 // The proof the app checks to know it reached the real daemon.
                 assert_eq!(
                     server_proof.as_deref(),
@@ -5147,6 +5155,65 @@ mod tests {
             Response::HelloAck { role, session_id, .. } => {
                 assert_eq!(role, "local");
                 assert_eq!(session_id, None);
+            }
+            other => panic!("expected HelloAck, got {other:?}"),
+        }
+    }
+
+    /// The read half of the worktree-agent contract: HelloAck must name
+    /// the owning workspace (not the PTY cwd), so gavin-mcp can prefer
+    /// it over walking into the worktree's decoy `.gavin-root`.
+    #[test]
+    fn an_agent_hello_ack_carries_the_sessions_workspace_root_not_its_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let workspace = "/tmp/real-workspace";
+        let worktree = "/tmp/rail-worktree";
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .insert(&SessionRecord {
+                id: "sess-rail".into(),
+                workspace_path: workspace.into(),
+                cwd: worktree.into(),
+                command: None,
+                status: SessionStatus::Idle,
+                restored: false,
+                generation: 0,
+                interrupted: false,
+                process: None,
+                orphan: None,
+                failure_reason: None,
+            })
+            .unwrap();
+        let token = "agent-token-for-hello";
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .set_token_hash("sess-rail", &protocol::hash_token_hex(token))
+            .unwrap();
+
+        let (id, ack) = manager.resolve_hello(
+            &protocol::HelloAuth::SessionToken { token: token.into() },
+            "n",
+        );
+        assert_eq!(id.role, Role::Agent);
+        assert_eq!(id.workspace_root.as_deref(), Some(std::path::Path::new(workspace)));
+        assert_eq!(id.cwd.as_deref(), Some(std::path::Path::new(worktree)));
+        match ack {
+            Response::HelloAck {
+                role,
+                session_id,
+                workspace_root,
+                server_proof,
+                ..
+            } => {
+                assert_eq!(role, "agent");
+                assert_eq!(session_id.as_deref(), Some("sess-rail"));
+                assert_eq!(workspace_root.as_deref(), Some(workspace));
+                assert!(server_proof.is_none());
             }
             other => panic!("expected HelloAck, got {other:?}"),
         }
