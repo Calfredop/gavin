@@ -105,6 +105,10 @@
   .facet-dropdown:hover:not(:disabled) {
     border-color: var(--border-strong);
   }
+  .facet-dropdown:focus-visible {
+    outline: 1px solid var(--border-focus);
+    outline-offset: -1px;
+  }
   .facet-dropdown.active {
     border-color: var(--border-strong);
   }

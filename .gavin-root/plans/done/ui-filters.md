@@ -2,7 +2,7 @@
 order: 11264
 kind: task
 title: [ui] filters
-status: In Progress
+status: Done
 ---
 Filters must be multiple select (checkbox dropdown); the “Not” label filter needs to be ditched
 
