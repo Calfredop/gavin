@@ -157,11 +157,11 @@
 
   const columnNames = $derived(($kanbanState[workspaceId]?.columns ?? []).map((c) => c.name));
 
-  // Search, a facet only a plan can answer (status), and the trio Kanban
-  // and Review answer the same way -- context, kind, rail (planFilter.ts,
-  // boardFilters.ts). The trio lives in hubFacets.ts rather than
-  // component `$state`, the same reason the selection above is
-  // remembered outside the component: this view is destroyed on every
+  // Search, a facet only a plan can answer (status), and the four Kanban
+  // and Review answer the same way -- context, kind, rail, label
+  // (planFilter.ts, boardFilters.ts). Those four live in hubFacets.ts
+  // rather than component `$state`, the same reason the selection above
+  // is remembered outside the component: this view is destroyed on every
   // tab switch, and "shared with Kanban and Review" cannot mean that.
   let query = $state("");
   let statusFacet = $state<string[]>([]);
