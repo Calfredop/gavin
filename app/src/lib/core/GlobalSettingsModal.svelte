@@ -14,6 +14,8 @@
     setRequireReviewDefault,
     gitTrackingDefault,
     setGitTrackingDefault,
+    restartDaemonInPlace,
+    daemonCompat,
   } from "$lib/core/layoutState";
   import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
   import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
@@ -41,7 +43,30 @@
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { searchSettings, type SettingsSection } from "$lib/core/settingsSearch";
   import Modal from "$lib/core/Modal.svelte";
+  import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, type PauseCycle, validateCycle } from "$lib/agents/agentPause";
+  import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "$lib/core/confirmGate";
+  import { featureBlockedReason, restartOutcome, restartConfirmLines } from "$lib/core/daemonCompat";
+  import * as backend from "$lib/core/backend";
+  import { tooltip } from "$lib/core/tooltip";
+  import {
+    availableUpdate,
+    checkingForUpdate,
+    lastCheckError,
+    lastCheckedAt,
+    refreshUpdateChannel,
+    runUpdateCheck,
+    updateChannel,
+  } from "$lib/shell/updatesState";
+  import { installConfirmPrompt, runInstall, saveEndpoint } from "$lib/shell/updateActions";
+  import {
+    availableLine,
+    endpointToSave,
+    updateBlockedReason,
+    upToDateLine,
+    type UpdatePrompt,
+  } from "$lib/shell/updates";
+  import { onMount } from "svelte";
   import { agentPauseStore, profilesInUse, saveAgentPause } from "$lib/agents/agentPauseState";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
   import type { LaunchConfig } from "$lib/agents/launchGate";
@@ -177,9 +202,132 @@
     void setAgentDefaults({ ...$agentDefaultsStore, complexity });
   }
 
+  // --- updates ---------------------------------------------------------
+  //
+  // Above the daemon section because the two are one story: installing an
+  // update replaces `gavin-daemon` inside the bundle, and the daemon that
+  // is RUNNING was exec'd from the old copy, so the restart below is what
+  // finishes the update -- at the cost of every session it holds. App-wide
+  // rather than per-workspace: one install, one daemon.
+  let endpointDraft = $state("");
+  let endpointFocused = $state(false);
+  let endpointError = $state<string | null>(null);
+  let savingEndpoint = $state(false);
+  let installPrompt = $state<UpdatePrompt | null>(null);
+  let installing = $state(false);
+  let installError = $state<string | null>(null);
+
+  const updateBlocked = $derived($updateChannel ? updateBlockedReason($updateChannel) : null);
+
+  onMount(() => {
+    void refreshUpdateChannel();
+  });
+
+  $effect(() => {
+    const endpoint = $updateChannel?.endpoint ?? "";
+    if (!endpointFocused) endpointDraft = endpoint;
+  });
+
+  async function applyEndpoint(): Promise<void> {
+    const settings = $updateChannel;
+    if (!settings) return;
+    endpointError = null;
+    savingEndpoint = true;
+    try {
+      await saveEndpoint(endpointToSave(endpointDraft, settings));
+      await refreshUpdateChannel();
+      availableUpdate.set(null);
+      lastCheckedAt.set(null);
+      lastCheckError.set(null);
+    } catch (e) {
+      endpointError = String(e instanceof Error ? e.message : e);
+    } finally {
+      savingEndpoint = false;
+    }
+  }
+
+  async function openInstallPrompt(): Promise<void> {
+    const update = $availableUpdate;
+    if (!update) return;
+    installError = null;
+    installPrompt = await installConfirmPrompt(update);
+  }
+
+  async function doInstall(): Promise<void> {
+    const update = $availableUpdate;
+    installPrompt = null;
+    if (!update) return;
+    installing = true;
+    installError = null;
+    try {
+      await runInstall(update);
+    } catch (e) {
+      installError = String(e instanceof Error ? e.message : e);
+    } finally {
+      installing = false;
+    }
+  }
+
+  // --- daemon ----------------------------------------------------------
+  let confirmingRestart = $state(false);
+  let restarting = $state(false);
+  let restartError = $state<string | null>(null);
+  let restartedAt = $state<string | null>(null);
+  let restartNote = $state<string | null>(null);
+
+  async function restartDaemon(): Promise<void> {
+    confirmingRestart = false;
+    restarting = true;
+    restartError = null;
+    restartedAt = null;
+    restartNote = null;
+    const before = $daemonCompat?.daemonVersion ?? null;
+    try {
+      const token = await grantForAnsweredPrompt("restart_daemon", [DAEMON_SUBJECT]);
+      restartNote = restartOutcome(before, await restartDaemonInPlace(token));
+      restartedAt = new Date().toLocaleTimeString();
+    } catch (e) {
+      restartError = String(e instanceof Error ? e.message : e);
+    } finally {
+      restarting = false;
+    }
+  }
+
+  // --- remote access ---------------------------------------------------
+  /// `Request::Hello` is a new request TYPE, so an older daemon simply has
+  /// no identity to offer; the surface below reads this and greys itself
+  /// with the version it needs rather than writing a setting the daemon
+  /// would not honour.
+  const clientIdentityBlocked = $derived(featureBlockedReason($daemonCompat, "clientIdentity"));
+  /// `require_local_token` is a daemon-GLOBAL setting -- a marker file the
+  /// daemon reads per request -- not a per-workspace one.
+  let requireLocalToken = $state(false);
+  let requireLocalTokenLoaded = false;
+  $effect(() => {
+    if (requireLocalTokenLoaded) return;
+    requireLocalTokenLoaded = true;
+    void backend
+      .getRequireLocalToken()
+      .then((v) => (requireLocalToken = v))
+      .catch(() => undefined);
+  });
+  async function toggleRequireLocalToken(enabled: boolean): Promise<void> {
+    requireLocalToken = enabled; // optimistic
+    try {
+      await backend.setRequireLocalToken(enabled);
+    } catch {
+      requireLocalToken = !enabled; // roll back a failed write
+    }
+  }
+
   // --- search ---------------------------------------------------------
   /// One entry per section below, in the same order -- see
   /// SettingsHubView's own SECTIONS for why whole sections, not rows.
+  ///
+  /// Agent defaults and Custom agent sit above Complexity (the table
+  /// names which agent runs each level). Updates / Daemon / Remote
+  /// access are app-wide infrastructure that used to live on each
+  /// workspace's Settings tab by mistake.
   const SECTIONS: SettingsSection[] = [
     { id: "appearance", keywords: ["Appearance", "Theme", "Light", "Dark", "system"] },
     { id: "sidebar", keywords: ["Sidebar", "Scratchpad"] },
@@ -190,14 +338,20 @@
       id: "git",
       keywords: ["Git", "Track gavin's files", "tracking", "gitignore", "initialize"],
     },
+    { id: "agent-defaults", keywords: ["Agent defaults", "model", "Claude Code", "Codex"] },
+    { id: "custom-agent", keywords: ["Custom agent", "Command", "Model flag"] },
+    { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
     { id: "agent-pause", keywords: ["Agent pause", "pause", "cycle", "limit", "schedule", "usage"] },
     {
       id: "memory-wall",
       keywords: ["Memory wall", "memory", "RAM", "pressure", "ceiling", "agents running at once"],
     },
-    { id: "agent-defaults", keywords: ["Agent defaults", "model", "Claude Code", "Codex"] },
-    { id: "custom-agent", keywords: ["Custom agent", "Command", "Model flag"] },
-    { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
+    {
+      id: "updates",
+      keywords: ["Updates", "Check for updates", "Install", "Endpoint", "update channel", "version"],
+    },
+    { id: "daemon", keywords: ["Daemon", "Restart daemon", "gavin-daemon"] },
+    { id: "remote-access", keywords: ["Remote access", "token", "local access", "pairing"] },
   ];
   let settingsQuery = $state("");
   const settingsFilter = $derived(searchSettings(SECTIONS, settingsQuery));
@@ -352,127 +506,6 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("agent-pause")}>
-      <h3>Agent pause</h3>
-      <p class="hint">
-        Sit out part of every window so a rail does not spend a subscription limit
-        while nobody is watching. Nothing already running is interrupted — only
-        new starts wait.
-      </p>
-      <div class="row">
-        <span>Scheduled</span>
-        <label class="check">
-          <input
-            type="checkbox"
-            checked={cycle.enabled}
-            onchange={(e) => edit({ enabled: e.currentTarget.checked })}
-          />
-          <span>Pause on a cycle</span>
-        </label>
-      </div>
-      <div class="row">
-        <span>Pause for</span>
-        <input
-          class="num"
-          type="number"
-          min="1"
-          disabled={!cycle.enabled}
-          value={cycle.pauseMinutes}
-          onchange={(e) => edit({ pauseMinutes: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">minutes every</span>
-        <input
-          class="num"
-          type="number"
-          min={MIN_PERIOD_MINUTES}
-          disabled={!cycle.enabled}
-          value={cycle.periodMinutes}
-          onchange={(e) => edit({ periodMinutes: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">minutes</span>
-      </div>
-      <div class="row">
-        <span>At the limit</span>
-        <label class="check">
-          <input
-            type="checkbox"
-            checked={cycle.limitEnabled}
-            onchange={(e) => edit({ limitEnabled: e.currentTarget.checked })}
-          />
-          <span>Hold when a window is</span>
-        </label>
-        <input
-          class="num"
-          type="number"
-          min="1"
-          max="100"
-          disabled={!cycle.limitEnabled}
-          value={cycle.limitPercent}
-          onchange={(e) => edit({ limitPercent: Number(e.currentTarget.value) })}
-        />
-        <span class="unit">% used</span>
-      </div>
-      {#if cycleError}
-        <p class="hint error">{cycleError}</p>
-      {:else if !probed}
-        <p class="hint">
-          Holding at a limit needs an agent whose limits gavin can read — today
-          Claude Code and Codex. No workspace here runs one, so only the schedule
-          applies.
-        </p>
-      {/if}
-    </section>
-
-    <!-- The memory wall, beside the pause and deliberately after it: the
-         pause is about a subscription and this is about the machine, and
-         a human hunting for "why did nothing start" reads down. -->
-    <section hidden={!settingsFilter.visible("memory-wall")}>
-      <h3>Memory wall</h3>
-      <p class="hint">
-        A ceiling on how many agents may be taking a turn at once, and a hold while the
-        machine is under memory pressure. Nothing mid-turn is ever stopped — new starts
-        wait, and they start by themselves when a slot frees. The one thing gavin may
-        close is an idle agent whose card is already done, when memory runs short.
-      </p>
-      <div class="row">
-        <span>Agents running at once</span>
-        <input
-          class="num"
-          type="number"
-          min="1"
-          placeholder="none"
-          value={launch.maxInFlight ?? ""}
-          onchange={(e) => editLaunch({ maxInFlight: ceilingFrom(e.currentTarget.value) })}
-        />
-        <span class="unit">blank for no ceiling</span>
-      </div>
-      <div class="row">
-        <span>Under pressure</span>
-        <label class="check">
-          <input
-            type="checkbox"
-            checked={launch.holdOnPressure}
-            onchange={(e) => editLaunch({ holdOnPressure: e.currentTarget.checked })}
-          />
-          <span>Hold new agents when memory is under pressure</span>
-        </label>
-      </div>
-      <!-- Its own switch rather than a mode of the hold above: holding a
-           start costs nothing, closing a finished agent costs its
-           transcript, and a human may want one without the other. -->
-      <div class="row">
-        <span>Finished cards</span>
-        <label class="check">
-          <input
-            type="checkbox"
-            checked={launch.reclaimDoneSessions}
-            onchange={(e) => editLaunch({ reclaimDoneSessions: e.currentTarget.checked })}
-          />
-          <span>Close idle agents of done cards when memory runs short</span>
-        </label>
-      </div>
-    </section>
-
     <section hidden={!settingsFilter.visible("agent-defaults")}>
       <h3>Agent defaults</h3>
       {#if profiles.length === 0}
@@ -563,6 +596,248 @@
       />
     </section>
 
+    <section hidden={!settingsFilter.visible("agent-pause")}>
+      <h3>Agent pause</h3>
+      <p class="hint">
+        Sit out part of every window so a rail does not spend a subscription limit
+        while nobody is watching. Nothing already running is interrupted — only
+        new starts wait.
+      </p>
+      <div class="row">
+        <span>Scheduled</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={cycle.enabled}
+            onchange={(e) => edit({ enabled: e.currentTarget.checked })}
+          />
+          <span>Pause on a cycle</span>
+        </label>
+      </div>
+      <div class="row">
+        <span>Pause for</span>
+        <input
+          class="num"
+          type="number"
+          min="1"
+          disabled={!cycle.enabled}
+          value={cycle.pauseMinutes}
+          onchange={(e) => edit({ pauseMinutes: Number(e.currentTarget.value) })}
+        />
+        <span class="unit">minutes every</span>
+        <input
+          class="num"
+          type="number"
+          min={MIN_PERIOD_MINUTES}
+          disabled={!cycle.enabled}
+          value={cycle.periodMinutes}
+          onchange={(e) => edit({ periodMinutes: Number(e.currentTarget.value) })}
+        />
+        <span class="unit">minutes</span>
+      </div>
+      <div class="row">
+        <span>At the limit</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={cycle.limitEnabled}
+            onchange={(e) => edit({ limitEnabled: e.currentTarget.checked })}
+          />
+          <span>Hold when a window is</span>
+        </label>
+        <input
+          class="num"
+          type="number"
+          min="1"
+          max="100"
+          disabled={!cycle.limitEnabled}
+          value={cycle.limitPercent}
+          onchange={(e) => edit({ limitPercent: Number(e.currentTarget.value) })}
+        />
+        <span class="unit">% used</span>
+      </div>
+      {#if cycleError}
+        <p class="hint error">{cycleError}</p>
+      {:else if !probed}
+        <p class="hint">
+          Holding at a limit needs an agent whose limits gavin can read — today
+          Claude Code and Codex. No workspace here runs one, so only the schedule
+          applies.
+        </p>
+      {/if}
+    </section>
+
+    <section hidden={!settingsFilter.visible("memory-wall")}>
+      <h3>Memory wall</h3>
+      <p class="hint">
+        A ceiling on how many agents may be taking a turn at once, and a hold while the
+        machine is under memory pressure. Nothing mid-turn is ever stopped — new starts
+        wait, and they start by themselves when a slot frees. The one thing gavin may
+        close is an idle agent whose card is already done, when memory runs short.
+      </p>
+      <div class="row">
+        <span>Agents running at once</span>
+        <input
+          class="num"
+          type="number"
+          min="1"
+          placeholder="none"
+          value={launch.maxInFlight ?? ""}
+          onchange={(e) => editLaunch({ maxInFlight: ceilingFrom(e.currentTarget.value) })}
+        />
+        <span class="unit">blank for no ceiling</span>
+      </div>
+      <div class="row">
+        <span>Under pressure</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={launch.holdOnPressure}
+            onchange={(e) => editLaunch({ holdOnPressure: e.currentTarget.checked })}
+          />
+          <span>Hold new agents when memory is under pressure</span>
+        </label>
+      </div>
+      <!-- Its own switch rather than a mode of the hold above: holding a
+           start costs nothing, closing a finished agent costs its
+           transcript, and a human may want one without the other. -->
+      <div class="row">
+        <span>Finished cards</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={launch.reclaimDoneSessions}
+            onchange={(e) => editLaunch({ reclaimDoneSessions: e.currentTarget.checked })}
+          />
+          <span>Close idle agents of done cards when memory runs short</span>
+        </label>
+      </div>
+    </section>
+
+    <section hidden={!settingsFilter.visible("updates")}>
+      <h3>Updates</h3>
+      <p class="hint">
+        gavin checks once when it starts, and installs nothing on its own. A download is
+        verified against the key this build was signed with before any of it is installed.
+      </p>
+      {#if $availableUpdate}
+        <p class="hint">{availableLine($availableUpdate)}</p>
+        {#if $availableUpdate.notes}
+          <p class="hint detail">{$availableUpdate.notes}</p>
+        {/if}
+      {:else if $updateChannel}
+        <p class="hint">{upToDateLine($updateChannel, $lastCheckedAt)}</p>
+      {/if}
+      <div class="row">
+        <!-- The reason hangs on the wrapping span, not the button: a
+             disabled element fires no mouseenter, so a tooltip on it can
+             never open. -->
+        <span use:tooltip={updateBlocked ?? ""}>
+          <button
+            type="button"
+            class="manage"
+            disabled={$checkingForUpdate || updateBlocked !== null}
+            onclick={() => void runUpdateCheck("manual")}
+          >
+            {$checkingForUpdate ? "Checking…" : "Check for updates"}
+          </button>
+        </span>
+        {#if $availableUpdate}
+          <button type="button" class="manage" disabled={installing} onclick={() => void openInstallPrompt()}>
+            {installing ? "Installing…" : `Install ${$availableUpdate.version}…`}
+          </button>
+        {/if}
+      </div>
+      {#if updateBlocked}
+        <p class="hint warn">{updateBlocked}</p>
+      {/if}
+      {#if $lastCheckError}
+        <p class="hint warn">Couldn't check for updates: {$lastCheckError}</p>
+      {/if}
+      {#if installError}
+        <p class="hint warn">Couldn't install the update: {installError}</p>
+      {/if}
+      <div class="row endpoint-row">
+        <label for="update-endpoint">Endpoint</label>
+        <input
+          id="update-endpoint"
+          type="text"
+          spellcheck="false"
+          placeholder="https://…/latest.json"
+          bind:value={endpointDraft}
+          onfocus={() => (endpointFocused = true)}
+          onblur={() => (endpointFocused = false)}
+        />
+        <button type="button" class="manage" disabled={savingEndpoint} onclick={() => void applyEndpoint()}>
+          {savingEndpoint ? "Saving…" : "Save"}
+        </button>
+      </div>
+      <p class="hint">
+        The manifest this install polls. Changing it is safe: an update is only ever accepted if
+        it was signed with the key pinned in this build, so an endpoint can offer gavin anything
+        and gavin will refuse all of it. Empty means nothing is checked.
+        {#if $updateChannel?.overridden}
+          <span class="detail">Clear the field to go back to the URL this build shipped with.</span>
+        {/if}
+      </p>
+      {#if endpointError}
+        <p class="hint warn">Couldn't save the endpoint: {endpointError}</p>
+      {/if}
+    </section>
+
+    <section hidden={!settingsFilter.visible("daemon")}>
+      <h3>Daemon</h3>
+      <p class="hint">
+        gavin-daemon owns every terminal session and watches your plan files. Restart it after
+        rebuilding it, or if sessions and file watching have stopped responding.
+      </p>
+      <div class="row">
+        <button type="button" class="manage" disabled={restarting} onclick={() => (confirmingRestart = true)}>
+          {restarting ? "Restarting…" : "Restart daemon"}
+        </button>
+        {#if restartedAt}
+          <span class="hint">Restarted at {restartedAt}.</span>
+        {/if}
+      </div>
+      {#if restartError}
+        <p class="hint warn">Couldn't restart the daemon: {restartError}</p>
+      {:else if restartNote}
+        <p class="hint warn">{restartNote}</p>
+      {/if}
+    </section>
+
+    <section hidden={!settingsFilter.visible("remote-access")}>
+      <h3>Remote access</h3>
+      <p class="hint">
+        Every connection to the daemon carries an identity now: the app holds a token the daemon
+        minted, and an agent gavin launches is scoped to the workspace and card it was started
+        for. Pairing a phone to reach the daemon from away builds on this; those controls will
+        appear here.
+      </p>
+      <!-- The reason hangs on the wrapping span, not the input: a disabled
+           element fires no mouseenter, so a tooltip on it never opens. -->
+      <span use:tooltip={clientIdentityBlocked ?? ""}>
+        <label class="check">
+          <input
+            type="checkbox"
+            disabled={clientIdentityBlocked !== null}
+            checked={requireLocalToken}
+            onchange={(e) => void toggleRequireLocalToken(e.currentTarget.checked)}
+          />
+          Require a token for full local access
+        </label>
+      </span>
+      <p class="hint">
+        Off by default, so nothing changes today. On, a same-user program that connects without
+        the app's token can still read the board and your sessions, but cannot start a shell,
+        spawn an agent, stop the daemon, or rewrite the launch command. Turn it on only if you run
+        tools you do not trust as your own user.
+        {#if clientIdentityBlocked}
+          <span class="warn">{clientIdentityBlocked}</span>
+        {/if}
+      </p>
+    </section>
+
     <div class="actions">
       <button type="button" onclick={onClose}>Done</button>
     </div>
@@ -574,6 +849,25 @@
      on top, the same rule +page.svelte follows for its alert layer. -->
 {#if hubTabsOpen}
   <HubTabsModal onClose={() => (hubTabsOpen = false)} />
+{/if}
+
+{#if installPrompt}
+  {@const prompt = installPrompt}
+  <ConfirmPrompt
+    title={prompt.title}
+    lines={prompt.lines}
+    choices={[{ label: prompt.confirmLabel, danger: true, onPick: () => void doInstall() }]}
+    onCancel={() => (installPrompt = null)}
+  />
+{/if}
+
+{#if confirmingRestart}
+  <ConfirmPrompt
+    title="Restart gavin-daemon?"
+    lines={restartConfirmLines($daemonCompat)}
+    choices={[{ label: "Restart daemon", danger: true, onPick: () => void restartDaemon() }]}
+    onCancel={() => (confirmingRestart = false)}
+  />
 {/if}
 
 <style>
@@ -610,7 +904,8 @@
     gap: 10px;
     margin-bottom: 8px;
   }
-  .row > span:first-child {
+  .row > span:first-child,
+  .row > label:first-child {
     width: 110px;
     flex: 0 0 auto;
     color: var(--text-muted);
@@ -679,6 +974,26 @@
     cursor: pointer;
     font-family: monospace;
     font-size: 1em;
+  }
+  .row button.manage:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  /* A URL outruns the shared select cap, so it takes the room the row
+     has rather than forcing the modal to scroll. */
+  .endpoint-row input {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .hint.warn {
+    color: var(--warning-text);
+  }
+  .detail {
+    opacity: 0.75;
+    font-size: 0.9em;
+  }
+  .warn {
+    color: var(--warning-text);
   }
   .actions button {
     background: var(--surface-overlay);

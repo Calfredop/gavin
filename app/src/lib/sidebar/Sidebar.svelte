@@ -1697,9 +1697,9 @@
       <!-- The whole of the "quiet check" the update channel makes: one
            check at startup, and if it found something, this. It is a
            label rather than a call to action because nothing here
-           installs -- the Updates section of a workspace's Settings tab
-           is where the version, the endpoint and the install live, and
-           this row is the only thing that says to go and look. -->
+           installs -- the Updates section of Settings (the sidebar
+           footer) is where the version, the endpoint and the install
+           live, and this row is the only thing that says to go and look. -->
       {#if $availableUpdate}
         <span
           class="footer-badge"

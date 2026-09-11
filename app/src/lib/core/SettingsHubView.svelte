@@ -9,7 +9,6 @@
     setPrdPath,
     agentProfilesStore,
     agentModelDefaultsStore,
-    restartDaemonInPlace,
     mcpFormatsStore,
     daemonCompat,
     terminalFontSizeDefault,
@@ -23,7 +22,6 @@
     markGitTrackingAsked,
     trustedAgentConfigs,
   } from "$lib/core/layoutState";
-  import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "$lib/core/confirmGate";
   import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
   import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
   import { fontSizeOptions, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
@@ -48,7 +46,7 @@
     type GavinTracking,
   } from "$lib/git/gitTracking";
   import { gavinTrees } from "$lib/core/gavinState";
-  import { featureBlockedReason, restartOutcome, restartConfirmLines } from "$lib/core/daemonCompat";
+  import { featureBlockedReason } from "$lib/core/daemonCompat";
   import { modelIsCustom as modelIsCustomFor, modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
   import {
     resolveAgentConfig,
@@ -87,24 +85,6 @@
     hubTabsHiddenByWorkspace,
     hubTabsHiddenDefault,
   } from "$lib/hub/hubTabPrefs";
-  import {
-    availableUpdate,
-    checkingForUpdate,
-    lastCheckError,
-    lastCheckedAt,
-    refreshUpdateChannel,
-    runUpdateCheck,
-    updateChannel,
-  } from "$lib/shell/updatesState";
-  import { installConfirmPrompt, runInstall, saveEndpoint } from "$lib/shell/updateActions";
-  import {
-    availableLine,
-    endpointToSave,
-    updateBlockedReason,
-    upToDateLine,
-    type UpdatePrompt,
-  } from "$lib/shell/updates";
-  import { onMount } from "svelte";
 
   interface Props {
     workspaceId: string;
@@ -191,20 +171,17 @@
   /// section's `hidden` attribute reads back, and the keywords are the
   /// words a human would type for it: the title, its row labels, and a
   /// few of its own nouns, not the connecting prose around them.
+  ///
+  /// Agent before Complexity: the table names which agent runs each
+  /// level, so the profile/command that feed it have to sit above it.
+  /// App-wide controls (Updates, Daemon, Remote access) live in the
+  /// sidebar Settings modal — this panel is per-workspace only.
   const SECTIONS: SettingsSection[] = [
     { id: "workspace", keywords: ["Workspace", "Name", "rename", "Colour", "Color", "accent", "Root", "folder"] },
     { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
     { id: "terminal", keywords: ["Terminal", "Font size", "font"] },
     { id: "cards", keywords: ["Cards", "Auto commit", "commit", "Require review", "review"] },
     { id: "git", keywords: ["Git", "Track", "tracking", "gitignore", "repository"] },
-    { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
-    { id: "notifications", keywords: ["Notifications", "notify", "needs my input", "session finishes"] },
-    { id: "confirmations", keywords: ["Confirmations", "Close confirm", "tab close"] },
-    {
-      id: "unattended-recovery",
-      keywords: ["Unattended recovery", "Resume", "auto resume", "broken card run"],
-    },
-    { id: "agent-pause", keywords: ["Agent pause", "pause", "cycle", "limit", "usage"] },
     {
       id: "agent",
       keywords: [
@@ -220,12 +197,14 @@
         "Superpowers",
       ],
     },
-    { id: "remote-access", keywords: ["Remote access", "token", "local access", "pairing"] },
+    { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
+    { id: "agent-pause", keywords: ["Agent pause", "pause", "cycle", "limit", "usage"] },
     {
-      id: "updates",
-      keywords: ["Updates", "Check for updates", "Install", "Endpoint", "update channel", "version"],
+      id: "unattended-recovery",
+      keywords: ["Unattended recovery", "Resume", "auto resume", "broken card run"],
     },
-    { id: "daemon", keywords: ["Daemon", "Restart daemon", "gavin-daemon"] },
+    { id: "notifications", keywords: ["Notifications", "notify", "needs my input", "session finishes"] },
+    { id: "confirmations", keywords: ["Confirmations", "Close confirm", "tab close"] },
     { id: "danger-zone", keywords: ["Danger zone", "Delete workspace", "delete"] },
   ];
   let settingsQuery = $state("");
@@ -340,117 +319,6 @@
     deleteBlockedReasonFor(workspaceId === UNFILED_WORKSPACE_ID, hasRoot)
   );
 
-  // --- updates ---------------------------------------------------------
-  //
-  // Above the daemon section because the two are one story: installing an
-  // update replaces `gavin-daemon` inside the bundle, and the daemon that
-  // is RUNNING was exec'd from the old copy, so the restart below is what
-  // finishes the update -- at the cost of every session it holds. The
-  // install prompt says so; this is where somebody acts on it.
-  let endpointDraft = $state("");
-  let endpointFocused = $state(false);
-  let endpointError = $state<string | null>(null);
-  let savingEndpoint = $state(false);
-  let installPrompt = $state<UpdatePrompt | null>(null);
-  let installing = $state(false);
-  let installError = $state<string | null>(null);
-
-  const updateBlocked = $derived($updateChannel ? updateBlockedReason($updateChannel) : null);
-
-  // Read on every visit rather than once: this view is destroyed on each
-  // tab switch, and the endpoint may have been changed from another
-  // window since. onMount rather than an $effect because a host with no
-  // such command answers null, and an effect that re-ran on that null
-  // would spin.
-  onMount(() => {
-    void refreshUpdateChannel();
-  });
-
-  // The draft follows the host's answer except while somebody is typing
-  // into it -- the same shape the workspace-name field uses.
-  $effect(() => {
-    const endpoint = $updateChannel?.endpoint ?? "";
-    if (!endpointFocused) endpointDraft = endpoint;
-  });
-
-  async function applyEndpoint(): Promise<void> {
-    const settings = $updateChannel;
-    if (!settings) return;
-    endpointError = null;
-    savingEndpoint = true;
-    try {
-      await saveEndpoint(endpointToSave(endpointDraft, settings));
-      await refreshUpdateChannel();
-      // A different manifest makes the previous answer meaningless, so
-      // it goes rather than sitting there attributed to the new URL.
-      availableUpdate.set(null);
-      lastCheckedAt.set(null);
-      lastCheckError.set(null);
-    } catch (e) {
-      endpointError = String(e instanceof Error ? e.message : e);
-    } finally {
-      savingEndpoint = false;
-    }
-  }
-
-  async function openInstallPrompt(): Promise<void> {
-    const update = $availableUpdate;
-    if (!update) return;
-    installError = null;
-    // Composed before the prompt is drawn, because the live-session count
-    // is part of what the human is agreeing to.
-    installPrompt = await installConfirmPrompt(update);
-  }
-
-  async function doInstall(): Promise<void> {
-    const update = $availableUpdate;
-    installPrompt = null;
-    if (!update) return;
-    installing = true;
-    installError = null;
-    try {
-      // Does not return when it works: the app is replaced and relaunched.
-      await runInstall(update);
-    } catch (e) {
-      installError = String(e instanceof Error ? e.message : e);
-    } finally {
-      installing = false;
-    }
-  }
-
-  // --- daemon ----------------------------------------------------------
-  let confirmingRestart = $state(false);
-  let restarting = $state(false);
-  let restartError = $state<string | null>(null);
-  let restartedAt = $state<string | null>(null);
-  // "Restarted at 12:21" is true and useless when the daemon came back at
-  // the version it left at: the human reads a success line while every
-  // gated feature stays gated. This carries the same verdict the compat
-  // banner's note does, so both surfaces that offer the restart report
-  // what it actually achieved.
-  let restartNote = $state<string | null>(null);
-
-  async function restartDaemon(): Promise<void> {
-    confirmingRestart = false;
-    restarting = true;
-    restartError = null;
-    restartedAt = null;
-    restartNote = null;
-    const before = $daemonCompat?.daemonVersion ?? null;
-    try {
-      // This panel draws its own ConfirmPrompt (a named danger choice
-      // rather than askConfirm's pair), so the grant is taken here, in
-      // the handler that choice fires.
-      const token = await grantForAnsweredPrompt("restart_daemon", [DAEMON_SUBJECT]);
-      restartNote = restartOutcome(before, await restartDaemonInPlace(token));
-      restartedAt = new Date().toLocaleTimeString();
-    } catch (e) {
-      restartError = String(e instanceof Error ? e.message : e);
-    } finally {
-      restarting = false;
-    }
-  }
-
   $effect(() => {
     const name = ws?.name ?? "";
     if (focused !== "name") nameDraft = name;
@@ -529,34 +397,6 @@
     const prd = prdPath;
     if (focused !== "prd") prdDraft = prd;
   });
-
-  // --- client identity / remote access ---------------------------------
-  /// `Request::Hello` is a new request TYPE, so an older daemon simply has
-  /// no identity to offer; the surface below reads this and greys itself
-  /// with the version it needs rather than writing a setting the daemon
-  /// would not honour.
-  const clientIdentityBlocked = $derived(featureBlockedReason($daemonCompat, "clientIdentity"));
-  /// `require_local_token` is a daemon-GLOBAL setting -- a marker file the
-  /// daemon reads per request -- not a per-workspace one, so it is read
-  /// once and written straight back, independent of `ws`.
-  let requireLocalToken = $state(false);
-  let requireLocalTokenLoaded = false;
-  $effect(() => {
-    if (requireLocalTokenLoaded) return;
-    requireLocalTokenLoaded = true;
-    void backend
-      .getRequireLocalToken()
-      .then((v) => (requireLocalToken = v))
-      .catch(() => undefined);
-  });
-  async function toggleRequireLocalToken(enabled: boolean): Promise<void> {
-    requireLocalToken = enabled; // optimistic
-    try {
-      await backend.setRequireLocalToken(enabled);
-    } catch {
-      requireLocalToken = !enabled; // roll back a failed write
-    }
-  }
 
   /// The one field where shown and stored differ: the box displays the
   /// RESOLVED path, so typing the scaffolded default back is a no-op,
@@ -876,197 +716,6 @@
       {/if}
     </section>
 
-    <section hidden={!settingsFilter.visible("complexity")}>
-      <h3>Complexity</h3>
-      <p class="hint">
-        Which agent runs a card of each difficulty, in this workspace only. A level left on its
-        default follows the app-wide table in Settings, so leaving one alone is how this workspace
-        tracks that; naming an agent or a model here overrides that level and nothing else.
-      </p>
-      <ComplexityTable
-        profiles={$agentProfilesStore}
-        table={complexityTable}
-        inherited={$agentDefaultsStore.complexity}
-        onChange={setComplexity}
-      />
-    </section>
-
-    <section hidden={!settingsFilter.visible("notifications")}>
-      <h3>Notifications</h3>
-      <label class="check">
-        <input
-          type="checkbox"
-          checked={ws.notifyNeedsInput ?? true}
-          onchange={(e) => void setWorkspaceFlag(workspaceId, "notifyNeedsInput", e.currentTarget.checked)}
-        />
-        When a session needs my input
-      </label>
-      <label class="check">
-        <input
-          type="checkbox"
-          checked={ws.notifyFinished ?? true}
-          onchange={(e) => void setWorkspaceFlag(workspaceId, "notifyFinished", e.currentTarget.checked)}
-        />
-        When a session finishes working
-      </label>
-      <p class="hint">
-        Not shown while the gavin window is focused — except a commit agent's verdict, which stays quiet only while its
-        Git tab is the one on screen.
-      </p>
-    </section>
-
-    <section hidden={!settingsFilter.visible("confirmations")}>
-      <h3>Confirmations</h3>
-      <label class="check">
-        <input
-          type="checkbox"
-          checked={ws.confirmTabClose ?? true}
-          onchange={(e) => void setWorkspaceFlag(workspaceId, "confirmTabClose", e.currentTarget.checked)}
-        />
-        Close confirm
-      </label>
-      <p class="hint">
-        Ask before closing a tab. Off closes tabs straight away — including the last tab in a pane,
-        which takes the pane with it.
-      </p>
-    </section>
-
-    <section hidden={!settingsFilter.visible("unattended-recovery")}>
-      <h3>Unattended recovery</h3>
-      <!-- Off by default, and the only setting on this screen that is.
-           The others are habits; this one is consent -- a run that
-           restarts itself hours after you walked away made a decision
-           that was yours unless you made it in advance. -->
-      <span use:tooltip={autoResumeBlocked ?? ""}>
-        <label class="check">
-          <input
-            type="checkbox"
-            disabled={autoResumeBlocked !== null}
-            checked={ws.autoResumeRuns ?? false}
-            onchange={(e) => void setWorkspaceFlag(workspaceId, "autoResumeRuns", e.currentTarget.checked)}
-          />
-          Resume a broken card run by itself
-        </label>
-      </span>
-      <p class="hint">
-        When an agent you started from a card stops because its connection died, the machine slept or the
-        API was down, gavin reopens that same conversation once — never after a login prompt, a usage
-        limit or a crash, and never for a run it did not launch. A rail has its own switch, on the rail.
-      </p>
-    </section>
-
-    <section hidden={!settingsFilter.visible("agent-pause")}>
-      <h3>Agent pause</h3>
-      <!-- Absent means INHERIT, which is not the same as off: a
-           workspace that wants no pause while the app has one stores a
-           cycle with enabled:false, so clearing and disabling are two
-           different controls. -->
-      <label class="check">
-        <input
-          type="checkbox"
-          checked={ws.agentPause != null}
-          onchange={(e) =>
-            void setWorkspacePause(
-              workspaceId,
-              e.currentTarget.checked ? { ...inheritedCycle } : null
-            )}
-        />
-        Give this workspace its own pause settings
-      </label>
-      {#if ws.agentPause == null}
-        <p class="hint">
-          {#if appCycle?.enabled}
-            Following the app-wide cycle: {appCycle.pauseMinutes} minutes every
-            {appCycle.periodMinutes} minutes.
-          {:else}
-            Following the app-wide setting, which is off. Settings → Agent pause
-            changes it for every workspace.
-          {/if}
-        </p>
-      {:else}
-        {@const own = ws.agentPause}
-        <div class="pause-row">
-          <label class="check">
-            <input
-              type="checkbox"
-              checked={own.enabled}
-              onchange={(e) =>
-                void setWorkspacePause(workspaceId, { ...own, enabled: e.currentTarget.checked })}
-            />
-            Pause on a cycle
-          </label>
-        </div>
-        <div class="pause-row">
-          <span>Pause for</span>
-          <input
-            class="num"
-            type="number"
-            min="1"
-            disabled={!own.enabled}
-            value={own.pauseMinutes}
-            onchange={(e) =>
-              void setWorkspacePause(workspaceId, {
-                ...own,
-                pauseMinutes: Number(e.currentTarget.value),
-              })}
-          />
-          <span>minutes every</span>
-          <input
-            class="num"
-            type="number"
-            min={MIN_PERIOD_MINUTES}
-            disabled={!own.enabled}
-            value={own.periodMinutes}
-            onchange={(e) =>
-              void setWorkspacePause(workspaceId, {
-                ...own,
-                periodMinutes: Number(e.currentTarget.value),
-              })}
-          />
-          <span>minutes</span>
-        </div>
-        <div class="pause-row">
-          <label class="check">
-            <input
-              type="checkbox"
-              checked={own.limitEnabled}
-              onchange={(e) =>
-                void setWorkspacePause(workspaceId, {
-                  ...own,
-                  limitEnabled: e.currentTarget.checked,
-                })}
-            />
-            Hold when a window is
-          </label>
-          <input
-            class="num"
-            type="number"
-            min="1"
-            max="100"
-            disabled={!own.limitEnabled}
-            value={own.limitPercent}
-            onchange={(e) =>
-              void setWorkspacePause(workspaceId, {
-                ...own,
-                limitPercent: Number(e.currentTarget.value),
-              })}
-          />
-          <span>% used</span>
-        </div>
-        {#if own.enabled && validateCycle(own)}
-          <p class="hint error">{validateCycle(own)}</p>
-        {/if}
-      {/if}
-      <p class="hint">
-        A pause stops gavin STARTING work — a rail's next step, a card run, an
-        automatic resume. An agent already mid-turn finishes, and your own Run
-        button always works.
-        {#if pauseNow.paused}
-          Right now: {pauseNow.why}.
-        {/if}
-      </p>
-    </section>
-
     <section hidden={!settingsFilter.visible("agent")}>
       <h3>Agent</h3>
       <!-- Above the Command field it gates: the field shows the RESOLVED
@@ -1320,127 +969,195 @@
       {/if}
     </section>
 
-    <section hidden={!settingsFilter.visible("remote-access")}>
-      <h3>Remote access</h3>
+    <section hidden={!settingsFilter.visible("complexity")}>
+      <h3>Complexity</h3>
       <p class="hint">
-        Every connection to the daemon carries an identity now: the app holds a token the daemon
-        minted, and an agent gavin launches is scoped to the workspace and card it was started
-        for. Pairing a phone to reach the daemon from away builds on this; those controls will
-        appear here.
+        Which agent runs a card of each difficulty, in this workspace only. A level left on its
+        default follows the app-wide table in Settings, so leaving one alone is how this workspace
+        tracks that; naming an agent or a model here overrides that level and nothing else.
       </p>
-      <!-- The reason hangs on the wrapping span, not the input: a disabled
-           element fires no mouseenter, so a tooltip on it never opens. -->
-      <span use:tooltip={clientIdentityBlocked ?? ""}>
+      <ComplexityTable
+        profiles={$agentProfilesStore}
+        table={complexityTable}
+        inherited={$agentDefaultsStore.complexity}
+        onChange={setComplexity}
+      />
+    </section>
+
+    <section hidden={!settingsFilter.visible("agent-pause")}>
+      <h3>Agent pause</h3>
+      <!-- Absent means INHERIT, which is not the same as off: a
+           workspace that wants no pause while the app has one stores a
+           cycle with enabled:false, so clearing and disabling are two
+           different controls. -->
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={ws.agentPause != null}
+          onchange={(e) =>
+            void setWorkspacePause(
+              workspaceId,
+              e.currentTarget.checked ? { ...inheritedCycle } : null
+            )}
+        />
+        Give this workspace its own pause settings
+      </label>
+      {#if ws.agentPause == null}
+        <p class="hint">
+          {#if appCycle?.enabled}
+            Following the app-wide cycle: {appCycle.pauseMinutes} minutes every
+            {appCycle.periodMinutes} minutes.
+          {:else}
+            Following the app-wide setting, which is off. Settings → Agent pause
+            changes it for every workspace.
+          {/if}
+        </p>
+      {:else}
+        {@const own = ws.agentPause}
+        <div class="pause-row">
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={own.enabled}
+              onchange={(e) =>
+                void setWorkspacePause(workspaceId, { ...own, enabled: e.currentTarget.checked })}
+            />
+            Pause on a cycle
+          </label>
+        </div>
+        <div class="pause-row">
+          <span>Pause for</span>
+          <input
+            class="num"
+            type="number"
+            min="1"
+            disabled={!own.enabled}
+            value={own.pauseMinutes}
+            onchange={(e) =>
+              void setWorkspacePause(workspaceId, {
+                ...own,
+                pauseMinutes: Number(e.currentTarget.value),
+              })}
+          />
+          <span>minutes every</span>
+          <input
+            class="num"
+            type="number"
+            min={MIN_PERIOD_MINUTES}
+            disabled={!own.enabled}
+            value={own.periodMinutes}
+            onchange={(e) =>
+              void setWorkspacePause(workspaceId, {
+                ...own,
+                periodMinutes: Number(e.currentTarget.value),
+              })}
+          />
+          <span>minutes</span>
+        </div>
+        <div class="pause-row">
+          <label class="check">
+            <input
+              type="checkbox"
+              checked={own.limitEnabled}
+              onchange={(e) =>
+                void setWorkspacePause(workspaceId, {
+                  ...own,
+                  limitEnabled: e.currentTarget.checked,
+                })}
+            />
+            Hold when a window is
+          </label>
+          <input
+            class="num"
+            type="number"
+            min="1"
+            max="100"
+            disabled={!own.limitEnabled}
+            value={own.limitPercent}
+            onchange={(e) =>
+              void setWorkspacePause(workspaceId, {
+                ...own,
+                limitPercent: Number(e.currentTarget.value),
+              })}
+          />
+          <span>% used</span>
+        </div>
+        {#if own.enabled && validateCycle(own)}
+          <p class="hint error">{validateCycle(own)}</p>
+        {/if}
+      {/if}
+      <p class="hint">
+        A pause stops gavin STARTING work — a rail's next step, a card run, an
+        automatic resume. An agent already mid-turn finishes, and your own Run
+        button always works.
+        {#if pauseNow.paused}
+          Right now: {pauseNow.why}.
+        {/if}
+      </p>
+    </section>
+
+    <section hidden={!settingsFilter.visible("unattended-recovery")}>
+      <h3>Unattended recovery</h3>
+      <!-- Off by default, and the only setting on this screen that is.
+           The others are habits; this one is consent -- a run that
+           restarts itself hours after you walked away made a decision
+           that was yours unless you made it in advance. -->
+      <span use:tooltip={autoResumeBlocked ?? ""}>
         <label class="check">
           <input
             type="checkbox"
-            disabled={clientIdentityBlocked !== null}
-            checked={requireLocalToken}
-            onchange={(e) => void toggleRequireLocalToken(e.currentTarget.checked)}
+            disabled={autoResumeBlocked !== null}
+            checked={ws.autoResumeRuns ?? false}
+            onchange={(e) => void setWorkspaceFlag(workspaceId, "autoResumeRuns", e.currentTarget.checked)}
           />
-          Require a token for full local access
+          Resume a broken card run by itself
         </label>
       </span>
       <p class="hint">
-        Off by default, so nothing changes today. On, a same-user program that connects without
-        the app's token can still read the board and your sessions, but cannot start a shell,
-        spawn an agent, stop the daemon, or rewrite the launch command. Turn it on only if you run
-        tools you do not trust as your own user.
-        {#if clientIdentityBlocked}
-          <span class="warn">{clientIdentityBlocked}</span>
-        {/if}
+        When an agent you started from a card stops because its connection died, the machine slept or the
+        API was down, gavin reopens that same conversation once — never after a login prompt, a usage
+        limit or a crash, and never for a run it did not launch. A rail has its own switch, on the rail.
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("updates")}>
-      <h3>Updates</h3>
-      <p class="hint">
-        gavin checks once when it starts, and installs nothing on its own. A download is
-        verified against the key this build was signed with before any of it is installed.
-      </p>
-      {#if $availableUpdate}
-        <p class="hint">{availableLine($availableUpdate)}</p>
-        {#if $availableUpdate.notes}
-          <p class="hint detail">{$availableUpdate.notes}</p>
-        {/if}
-      {:else if $updateChannel}
-        <p class="hint">{upToDateLine($updateChannel, $lastCheckedAt)}</p>
-      {/if}
-      <div class="row">
-        <!-- The reason hangs on the wrapping span, not the button: a
-             disabled element fires no mouseenter, so a tooltip on it can
-             never open. -->
-        <span use:tooltip={updateBlocked ?? ""}>
-          <button
-            type="button"
-            disabled={$checkingForUpdate || updateBlocked !== null}
-            onclick={() => void runUpdateCheck("manual")}
-          >
-            {$checkingForUpdate ? "Checking…" : "Check for updates"}
-          </button>
-        </span>
-        {#if $availableUpdate}
-          <button type="button" disabled={installing} onclick={() => void openInstallPrompt()}>
-            {installing ? "Installing…" : `Install ${$availableUpdate.version}…`}
-          </button>
-        {/if}
-      </div>
-      {#if updateBlocked}
-        <p class="hint warn">{updateBlocked}</p>
-      {/if}
-      {#if $lastCheckError}
-        <p class="hint warn">Couldn't check for updates: {$lastCheckError}</p>
-      {/if}
-      {#if installError}
-        <p class="hint warn">Couldn't install the update: {installError}</p>
-      {/if}
-      <div class="row endpoint-row">
-        <label for="update-endpoint">Endpoint</label>
+    <section hidden={!settingsFilter.visible("notifications")}>
+      <h3>Notifications</h3>
+      <label class="check">
         <input
-          id="update-endpoint"
-          type="text"
-          spellcheck="false"
-          placeholder="https://…/latest.json"
-          bind:value={endpointDraft}
-          onfocus={() => (endpointFocused = true)}
-          onblur={() => (endpointFocused = false)}
+          type="checkbox"
+          checked={ws.notifyNeedsInput ?? true}
+          onchange={(e) => void setWorkspaceFlag(workspaceId, "notifyNeedsInput", e.currentTarget.checked)}
         />
-        <button type="button" disabled={savingEndpoint} onclick={() => void applyEndpoint()}>
-          {savingEndpoint ? "Saving…" : "Save"}
-        </button>
-      </div>
+        When a session needs my input
+      </label>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={ws.notifyFinished ?? true}
+          onchange={(e) => void setWorkspaceFlag(workspaceId, "notifyFinished", e.currentTarget.checked)}
+        />
+        When a session finishes working
+      </label>
       <p class="hint">
-        The manifest this install polls. Changing it is safe: an update is only ever accepted if
-        it was signed with the key pinned in this build, so an endpoint can offer gavin anything
-        and gavin will refuse all of it. Empty means nothing is checked.
-        {#if $updateChannel?.overridden}
-          <span class="detail">Clear the field to go back to the URL this build shipped with.</span>
-        {/if}
+        Not shown while the gavin window is focused — except a commit agent's verdict, which stays quiet only while its
+        Git tab is the one on screen.
       </p>
-      {#if endpointError}
-        <p class="hint warn">Couldn't save the endpoint: {endpointError}</p>
-      {/if}
     </section>
 
-    <section hidden={!settingsFilter.visible("daemon")}>
-      <h3>Daemon</h3>
+    <section hidden={!settingsFilter.visible("confirmations")}>
+      <h3>Confirmations</h3>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={ws.confirmTabClose ?? true}
+          onchange={(e) => void setWorkspaceFlag(workspaceId, "confirmTabClose", e.currentTarget.checked)}
+        />
+        Close confirm
+      </label>
       <p class="hint">
-        gavin-daemon owns every terminal session and watches your plan files. Restart it after
-        rebuilding it, or if sessions and file watching have stopped responding.
+        Ask before closing a tab. Off closes tabs straight away — including the last tab in a pane,
+        which takes the pane with it.
       </p>
-      <div class="row">
-        <button type="button" disabled={restarting} onclick={() => (confirmingRestart = true)}>
-          {restarting ? "Restarting…" : "Restart daemon"}
-        </button>
-        {#if restartedAt}
-          <span class="hint">Restarted at {restartedAt}.</span>
-        {/if}
-      </div>
-      {#if restartError}
-        <p class="hint warn">Couldn't restart the daemon: {restartError}</p>
-      {:else if restartNote}
-        <p class="hint warn">{restartNote}</p>
-      {/if}
     </section>
 
     <section hidden={!settingsFilter.visible("danger-zone")}>
@@ -1483,29 +1200,6 @@
       fromProfileId={agent.profileId}
       toProfileId={pendingProfileChange}
       onClose={() => (pendingProfileChange = null)}
-    />
-  {/if}
-
-  <!-- Drawn here rather than through askConfirm because the choice is
-       named ("Install 0.2.0") and that name is what the host binds its
-       confirmation token to -- see updateActions.runInstall. `danger`
-       keeps focus on the dismissing button, so Enter cannot install. -->
-  {#if installPrompt}
-    {@const prompt = installPrompt}
-    <ConfirmPrompt
-      title={prompt.title}
-      lines={prompt.lines}
-      choices={[{ label: prompt.confirmLabel, danger: true, onPick: () => void doInstall() }]}
-      onCancel={() => (installPrompt = null)}
-    />
-  {/if}
-
-  {#if confirmingRestart}
-    <ConfirmPrompt
-      title="Restart gavin-daemon?"
-      lines={restartConfirmLines($daemonCompat)}
-      choices={[{ label: "Restart daemon", danger: true, onPick: () => void restartDaemon() }]}
-      onCancel={() => (confirmingRestart = false)}
     />
   {/if}
 
@@ -1609,12 +1303,6 @@
     min-width: 0;
     flex: 1 1 auto;
     max-width: 240px;
-  }
-  /* A URL outruns the shared 240px floor, so it takes the room the row
-     has rather than forcing the pane to scroll. */
-  .endpoint-row input {
-    min-width: 0;
-    flex: 1 1 auto;
   }
   .check {
     display: flex;
