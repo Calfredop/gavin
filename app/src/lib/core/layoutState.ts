@@ -23,7 +23,7 @@ import { buildRunCommand, mintConversationId, noPromptReason } from "$lib/cards/
 import { workspaceIdForSession } from "$lib/core/workspace";
 import { maybeNotifyStatusChange, parseSessionStatus, type SessionStatus } from "$lib/core/notifications";
 import { initGavinListeners, watchRootedWorkspaces, gavinTrees, worktreeSetups } from "$lib/core/gavinState";
-import { followRenamedContext } from "$lib/files/planExplorer";
+import { followMovedCardPath, followRenamedContext } from "$lib/files/planExplorer";
 import { retargetPath } from "$lib/files/fileTree";
 import {
   normalizeColor,
@@ -780,6 +780,32 @@ function repairBoardTabs(
   void backend.setBoardTabs(boardTabsById).catch(() => {});
 }
 
+// Card tabs are pinned to a card by FILE PATH. An agent writing status
+// (or archiving) moves the file on disk without going through the UI's
+// onPathChange, and the pane would then render "No card at …" for a card
+// that is merely under plans/done/. Follow by file name within the
+// card's plans root -- the same identity the daemon uses when it re-keys
+// rail steps -- and re-persist so a restart does not revive the stale
+// path. Basename match needs only the current tree, so a restart that
+// finds the card already filed still repairs (unlike board tabs, which
+// need a before/after pair).
+function repairCardTabs(workspaceId: string, tree: GavinTree | undefined): void {
+  const current = get(layoutState).cardTabsById;
+  const cardTabsById: Record<string, CardTab> = {};
+  let moved = false;
+  for (const [id, tab] of Object.entries(current)) {
+    const to =
+      tab.workspaceId === workspaceId && tab.path
+        ? followMovedCardPath(tree, tab.path)
+        : null;
+    cardTabsById[id] = to === null ? tab : { ...tab, path: to };
+    moved ||= to !== null;
+  }
+  if (!moved) return;
+  layoutState.update((s) => ({ ...s, cardTabsById }));
+  void backend.setCardTabs(cardTabsById).catch(() => {});
+}
+
 const unlisteners: UnlistenFn[] = [];
 
 /// Resolves once `fileTabsById`/`boardTabsById`/`cardTabsById` hold what
@@ -1240,8 +1266,10 @@ export async function bootstrap(): Promise<void> {
   // not buffered.
   unlisteners.push(await initGavinListeners());
   // Rides the tree store rather than the raw event so it sees every
-  // update, pushes and on-demand refreshes alike. The first call carries
-  // no previous tree, so nothing is ever "repaired" on startup.
+  // update, pushes and on-demand refreshes alike. Board-tab repair needs
+  // a before/after pair, so the first call skips it; card-tab repair
+  // matches by basename against the live tree and runs on first load
+  // too (a restart after an agent filed the card under plans/done/).
   const previousTrees: Record<string, GavinTree> = {};
   unlisteners.push(
     gavinTrees.subscribe((trees) => {
@@ -1250,6 +1278,9 @@ export async function bootstrap(): Promise<void> {
         previousTrees[workspaceId] = tree;
         if (previous !== undefined && previous !== tree) {
           repairBoardTabs(workspaceId, previous, tree);
+        }
+        if (previous === undefined || previous !== tree) {
+          repairCardTabs(workspaceId, tree);
         }
       }
     })

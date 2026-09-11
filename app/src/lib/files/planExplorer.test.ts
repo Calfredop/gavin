@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   buildExplorerTree,
+  followMovedCardPath,
   followRenamedContext,
   followRenamedPath,
+  owningPlansRoot,
   slugFileName,
   isUnderRoot,
   statusOptions,
@@ -468,6 +470,109 @@ describe("followRenamedContext", () => {
     // disconnected workspace, not a folder that moved.
     const gone: GavinTree = { rootPath: "/ws", rootMissing: true, contexts: [] };
     expect(followRenamedContext(before, gone, "/ws/api")).toBeNull();
+  });
+});
+
+describe("owningPlansRoot", () => {
+  it("names the plans directory above done/ and archive/", () => {
+    expect(owningPlansRoot("/ws/.gavin-root/plans/auth.md")).toBe("/ws/.gavin-root/plans");
+    expect(owningPlansRoot("/ws/.gavin-root/plans/done/auth.md")).toBe("/ws/.gavin-root/plans");
+    expect(owningPlansRoot("/ws/.gavin-root/plans/archive/auth.md")).toBe("/ws/.gavin-root/plans");
+    expect(owningPlansRoot("/ws/api/.gavin/plans/done/x.md")).toBe("/ws/api/.gavin/plans");
+  });
+
+  it("returns null for a path with no plans segment", () => {
+    expect(owningPlansRoot("/ws/.gavin-root/docs/setup.md")).toBeNull();
+  });
+});
+
+describe("followMovedCardPath", () => {
+  it("follows a card filed under plans/done/", () => {
+    const after = tree([
+      ctx("/ws", "ws", {
+        kind: "root",
+        plans: [plan("auth.md", { path: "/ws/.gavin-root/plans/done/auth.md", status: "Done" })],
+      }),
+    ]);
+    expect(followMovedCardPath(after, "/ws/.gavin-root/plans/auth.md")).toBe(
+      "/ws/.gavin-root/plans/done/auth.md"
+    );
+  });
+
+  it("follows each card when a Done filing dragged nested children too", () => {
+    // The rename inference needs exactly one gone / one arrived; a parent
+    // that takes its nested tasks into done/ fails that test. Basename
+    // match still finds each card.
+    const after = tree([
+      ctx("/ws", "ws", {
+        kind: "root",
+        plans: [
+          plan("parent.md", { path: "/ws/.gavin-root/plans/done/parent.md", status: "Done" }),
+          plan("child.md", {
+            path: "/ws/.gavin-root/plans/done/child.md",
+            kind: "task",
+            status: null,
+            parent: "parent.md",
+          }),
+        ],
+      }),
+    ]);
+    expect(followMovedCardPath(after, "/ws/.gavin-root/plans/parent.md")).toBe(
+      "/ws/.gavin-root/plans/done/parent.md"
+    );
+    expect(followMovedCardPath(after, "/ws/.gavin-root/plans/child.md")).toBe(
+      "/ws/.gavin-root/plans/done/child.md"
+    );
+  });
+
+  it("returns null when the path is still live", () => {
+    const after = tree([ctx("/ws", "ws", { kind: "root", plans: [plan("auth.md")] })]);
+    expect(followMovedCardPath(after, "/ws/.gavin-root/plans/auth.md")).toBeNull();
+  });
+
+  it("returns null for a plain delete -- nothing arrived to follow", () => {
+    const after = tree([ctx("/ws", "ws", { kind: "root", plans: [plan("git.md")] })]);
+    expect(followMovedCardPath(after, "/ws/.gavin-root/plans/auth.md")).toBeNull();
+  });
+
+  it("does not follow a card that moved into a different context's plans/", () => {
+    // Same file name, different plans root: parent: resolution is
+    // per-context, and guessing across contexts would be wrong.
+    const after = tree([
+      ctx("/ws", "ws", { kind: "root", plans: [] }),
+      ctx("/ws/api", "api", {
+        plans: [plan("auth.md", { path: "/ws/api/.gavin/plans/auth.md" })],
+      }),
+    ]);
+    expect(followMovedCardPath(after, "/ws/.gavin-root/plans/auth.md")).toBeNull();
+  });
+
+  it("refuses to guess when two live files share the name", () => {
+    const after = tree([
+      ctx("/ws", "ws", {
+        kind: "root",
+        plans: [
+          plan("auth.md"),
+          plan("auth.md", { path: "/ws/.gavin-root/plans/done/auth.md", status: "Done" }),
+        ],
+      }),
+    ]);
+    expect(followMovedCardPath(after, "/ws/.gavin-root/plans/archive/auth.md")).toBeNull();
+  });
+
+  it("does not treat a longer name ending in the same suffix as a match", () => {
+    const after = tree([
+      ctx("/ws", "ws", {
+        kind: "root",
+        plans: [plan("not-auth.md", { path: "/ws/.gavin-root/plans/done/not-auth.md", status: "Done" })],
+      }),
+    ]);
+    expect(followMovedCardPath(after, "/ws/.gavin-root/plans/auth.md")).toBeNull();
+  });
+
+  it("returns null with no tree or an empty path", () => {
+    expect(followMovedCardPath(undefined, "/ws/.gavin-root/plans/auth.md")).toBeNull();
+    expect(followMovedCardPath(tree([]), "")).toBeNull();
   });
 });
 

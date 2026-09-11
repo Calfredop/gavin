@@ -127,6 +127,18 @@ describe("the plan panel in a pane", () => {
     expect(text).toContain("onOpenCard={(next) => void setCardTabPath(tabId, next)}");
     expect(text).toContain("onPathChange={(next) => void retargetCardTabs(path, next)}");
   });
+
+  it("follows a card an agent moved on disk, not only one the UI moved", () => {
+    // onPathChange covers a status write the pane itself made. An agent
+    // (or archive, or hand edit) moves the file without that callback,
+    // and the pane would then render "No card at …" for a card that is
+    // merely under plans/done/. The tree subscribe repairs it the same
+    // way board tabs follow a renamed context folder.
+    const text = source("layoutState.ts");
+    expect(text).toContain("followMovedCardPath");
+    expect(text).toContain("repairCardTabs(workspaceId, tree)");
+    expect(text).toContain("function repairCardTabs(workspaceId: string, tree: GavinTree | undefined)");
+  });
 });
 
 describe("a card tab is a tab like the other two", () => {

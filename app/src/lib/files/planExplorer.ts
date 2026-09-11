@@ -381,3 +381,51 @@ export function followRenamedContext(
   if (vanished.length !== 1 || appeared.length !== 1) return null;
   return vanished[0] === contextFolder ? appeared[0] : null;
 }
+
+/// The `plans/` directory a card path belongs to. `plans/done/` and
+/// `plans/archive/` sit under it; walking parents until that name is how
+/// the daemon's `owning_plans_root` (and `parent:` resolution) decide
+/// two spellings are the same card.
+export function owningPlansRoot(path: string): string | null {
+  const parts = path.split("/");
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i] === "plans") {
+      return parts.slice(0, i + 1).join("/");
+    }
+  }
+  return null;
+}
+
+/// Where a card whose path went stale actually lives now, or null.
+///
+/// Match by file name within the card's own `plans/` root -- the same
+/// identity `parent:` and the daemon's `recover_moved_card_paths` use.
+/// That is what a status write does: the file keeps its name and moves
+/// between `plans/`, `plans/done/` and `plans/archive/`, often with its
+/// nested children in the same watcher push. The rename inference above
+/// needs exactly one file gone and one arrived, so it cannot follow a
+/// Done filing that dragged children; this can.
+///
+/// Ambiguity (zero or two-plus files answering to the name) is left
+/// alone: a broken path, not a guess worth making. A path whose file is
+/// still where it says yields nothing.
+export function followMovedCardPath(
+  tree: GavinTree | undefined,
+  stalePath: string
+): string | null {
+  if (!tree || tree.rootMissing || !stalePath) return null;
+  const live = tree.contexts.flatMap((c) => c.plans.map((p) => p.path));
+  if (live.includes(stalePath)) return null;
+
+  const plansRoot = owningPlansRoot(stalePath);
+  const slash = stalePath.lastIndexOf("/");
+  const name = slash >= 0 ? stalePath.slice(slash + 1) : stalePath;
+  if (!plansRoot || !name) return null;
+
+  const matches = live.filter((p) => {
+    if (owningPlansRoot(p) !== plansRoot) return false;
+    const at = p.lastIndexOf("/");
+    return (at >= 0 ? p.slice(at + 1) : p) === name;
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
