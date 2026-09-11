@@ -139,7 +139,7 @@ describe("the app's three header rows", () => {
   // separate its row from the list under it -- a second vocabulary here
   // would be a second weight of rule across one window.
   it("draws the scratchpad's divider under every header row", () => {
-    const scratchpad = rule(source("Sidebar.svelte"), ".workspace-row")["border-top"];
+    const scratchpad = rule(source("Sidebar.svelte"), ".workspace-row.scratchpad")["border-bottom"];
     expect(scratchpad).toBe("1px solid var(--border)");
     for (const bar of [
       rule(TITLE_BAR, ".corner"),

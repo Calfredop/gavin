@@ -1466,7 +1466,6 @@
       >
         <span class="collapsed-initial"><PanelLeftOpen size={13} /></span>
       </button>
-      <div class="footer-divider"></div>
     </div>
     {@render collapsedList()}
   {:else if searchHits}
@@ -1961,10 +1960,21 @@
   .rail-chrome {
     flex: 0 0 auto;
   }
-  /* Tighter than the footer's rule, which is inset for a 200px column:
-     the same 10px each side of a 36px one leaves a stub. */
-  .rail-chrome .footer-divider {
-    margin: 4px 6px;
+  /* Full width of the rail: an inset rule on a 36px column is a stub.
+     The same hairline the expanded list draws between workspaces. */
+  .sidebar.collapsed .footer-divider {
+    margin: 0;
+  }
+  /* Same band as the hub tab's first row -- and as the Scratchpad when
+     the column is open. The hairline is the last pixel of the 40px, so
+     it meets the tab bar rather than sitting a step under a shorter
+     expand button. */
+  .rail-chrome .collapsed-row {
+    flex: 0 0 var(--hub-bar-height);
+    height: var(--hub-bar-height);
+    min-height: 0;
+    max-height: var(--hub-bar-height);
+    border-bottom: 1px solid var(--border);
   }
   /* The collapsed rail's rows. Centred rather than left-aligned: with no
      names to line up, a left edge would only make the initials look
@@ -1994,6 +2004,13 @@
   .collapsed-row.active {
     background: var(--surface-raised);
     color: var(--text);
+  }
+  /* Between workspaces, edge to edge. The expand button is the same
+     class and sits under the header, so only rows in the list carry
+     the rule -- that button's own bottom border already owns the
+     first-row seam. */
+  .collapsed-list .collapsed-row + .collapsed-row {
+    border-top: 1px solid var(--border);
   }
   /* A chip rather than a bare letter: on a column this narrow the row IS
      an icon, and a letter with nothing around it reads as text that lost
@@ -2060,6 +2077,20 @@
        workspaces, so it belongs on the top edge. */
     border-top: 1px solid var(--border);
   }
+  /* The first name in the list sits under the header, which already
+     drew that seam. A top border here would be a second rule on it. */
+  .workspace-list > .workspace-row-group:first-child > .workspace-row {
+    border-top: none;
+  }
+  /* Collapsed Scratchpad already drew the hub-bar hairline on its own
+     bottom. The workspace against it must not draw that seam again, or
+     the two 1px rules stack and the tab's first-row border looks a
+     step high. */
+  .workspace-row-group:has(> .workspace-row.scratchpad:last-child)
+    + .workspace-row-group
+    > .workspace-row {
+    border-top: none;
+  }
   .workspace-row.active {
     background: var(--surface-raised);
   }
@@ -2084,13 +2115,13 @@
     font-style: italic;
     color: var(--text-muted);
     /* Same band as the hub tab's first row (Kanban's bar is the
-       measure). Without a fixed height the Scratchpad sat short of
-       that bar, and the header divider made the step obvious. The
-       header already draws the line above this row, so a top border
-       here would be a second rule on the same seam. */
+       measure), including the hairline: that bar's border is the last
+       pixel of its 40px, so this one has to be too. A rule on the
+       NEXT workspace's top sat one pixel lower and read as a step. */
     height: var(--hub-bar-height);
     box-sizing: border-box;
     border-top: none;
+    border-bottom: 1px solid var(--border);
   }
   .workspace-row.scratchpad.active {
     color: var(--text);
