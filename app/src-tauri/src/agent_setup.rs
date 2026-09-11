@@ -70,9 +70,11 @@ impl McpFormat {
 }
 
 /// Where a profile's agent reads MCP config, and what it installs beside
-/// it. `skills` is empty for every profile but Claude Code: the others
-/// have no skill mechanism gavin writes to, so their guidance rides
-/// inline in the instructions block instead (see instructions_block_for).
+/// it. `skills` is empty only for unconfigured `custom` (gavin knows no
+/// skill convention for an agent it has never heard of); those workspaces
+/// carry the same guidance inline in the instructions block instead (see
+/// instructions_block_for). Every stock profile gets the four gavin skills
+/// under its own verified root.
 pub struct McpLayout {
     pub config_file: &'static str,
     pub server_key: &'static str,
@@ -98,8 +100,7 @@ impl ResolvedMcp {
     /// use. Taken from the first entry because that is the shape an
     /// agent's own skill loader imposes -- one directory per skill under
     /// a single root, each holding the same filename -- so every entry
-    /// answers identically. None when the profile installs no skills,
-    /// which is every profile but Claude Code.
+    /// answers identically. None when the profile installs no skills.
     fn skill_slot(&self) -> Option<(&'static Path, &'static str)> {
         let first = self.skills.first()?;
         Some((Path::new(first.dir).parent()?, first.file))
@@ -111,7 +112,7 @@ impl ResolvedMcp {
     /// name exactly that one. Read from the layout rather than written
     /// as a literal, because two profiles now install skills to two
     /// different roots -- a hardcoded `.claude/…` would send an opencode
-    /// workspace to a file gavin never wrote there.
+    /// or Cursor workspace to a file gavin never wrote there.
     fn workflow_skill_path(&self) -> Option<String> {
         let first = self.skills.first()?;
         Some(format!("{}/{}", first.dir, first.file))
@@ -714,7 +715,34 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
             config_file: ".codex/config.toml",
             server_key: "gavin",
             format: McpFormat::TomlServers,
-            skills: &[],
+            // Verified 2026-09-11 against developers.openai.com/codex/skills:
+            // Codex scans `.agents/skills/<name>/SKILL.md` from CWD up to
+            // the repo root (user scope is `~/.agents/skills/`). That is
+            // the documented REPO path — not `.codex/skills/`, which some
+            // third-party writeups still name. Same Agent Skills
+            // frontmatter as the other skill-capable rows.
+            skills: &[
+                ManagedFile {
+                    dir: ".agents/skills/gavin",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".agents/skills/gavin-orchestrate",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_orchestrate_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".agents/skills/gavin-resume",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_resume_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".agents/skills/gavin-develop",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_develop_skill.md"),
+                },
+            ],
         }),
     },
     AgentProfile {
@@ -767,7 +795,34 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
             config_file: ".gemini/settings.json",
             server_key: "gavin",
             format: McpFormat::JsonServers,
-            skills: &[],
+            // Verified 2026-09-11 against gemini-cli docs/cli/skills.md and
+            // local `gemini skills` (0.35.3): workspace skills live under
+            // `.gemini/skills/<name>/SKILL.md` (`.agents/skills/` is an
+            // alias that would also be discovered by Codex, so install
+            // under Gemini's own root). Same four skills / frontmatter as
+            // the other skill-capable rows.
+            skills: &[
+                ManagedFile {
+                    dir: ".gemini/skills/gavin",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".gemini/skills/gavin-orchestrate",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_orchestrate_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".gemini/skills/gavin-resume",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_resume_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".gemini/skills/gavin-develop",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_develop_skill.md"),
+                },
+            ],
         }),
     },
     AgentProfile {
@@ -811,7 +866,36 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
             config_file: ".cursor/mcp.json",
             server_key: "gavin",
             format: McpFormat::JsonServersStdio,
-            skills: &[],
+            // Verified 2026-09-11 against cursor.com/docs/skills: Cursor
+            // loads project skills from `.cursor/skills/<name>/SKILL.md`
+            // (and also discovers `.claude/skills/` / `.codex/skills/`
+            // for compatibility). Install under Cursor's own root so a
+            // workspace that never chose Claude Code does not grow a
+            // `.claude/` directory. Same four skills as the other skill-
+            // capable rows; Cursor's frontmatter (`name` + `description`)
+            // matches what gavin already authors.
+            skills: &[
+                ManagedFile {
+                    dir: ".cursor/skills/gavin",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".cursor/skills/gavin-orchestrate",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_orchestrate_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".cursor/skills/gavin-resume",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_resume_skill.md"),
+                },
+                ManagedFile {
+                    dir: ".cursor/skills/gavin-develop",
+                    file: "SKILL.md",
+                    contents: include_str!("gavin_develop_skill.md"),
+                },
+            ],
         }),
     },
     AgentProfile {
@@ -1522,8 +1606,8 @@ fn run_integration(
     );
 
     // The two capabilities are reported separately: after sub-project B
-    // every stock profile gets its MCP config, and only the skill file is
-    // still skipped for the four with no skill mechanism to write to.
+    // every stock profile gets MCP config and skills; only unconfigured
+    // custom (no verified skill root) skips the skill file.
     let no_skill_file = || {
         (
             "skill file".to_string(),
@@ -1831,8 +1915,8 @@ pub fn compose_agent_prompt(root_path: String, flow: String) -> Result<String, S
     let document = with_prd_path(skill.document, &prd);
 
     // Keyed on the skill slot, not on MCP: a profile can have an MCP
-    // config and still have nowhere to put a skill file, which is true of
-    // every profile but Claude Code.
+    // config and still have nowhere to put a skill file (unconfigured
+    // custom, or custom with mcp_file but no known skill root).
     match resolved_mcp(root, profile).as_ref().and_then(ResolvedMcp::skill_slot) {
         Some((parent, file)) => {
             // The step skill sits beside the gavin-managed ones: same
@@ -2121,6 +2205,9 @@ mod tests {
             with_skills,
             [
                 ("claude-code", ".claude/skills/SKILL.md".to_string()),
+                ("codex", ".agents/skills/SKILL.md".to_string()),
+                ("gemini", ".gemini/skills/SKILL.md".to_string()),
+                ("cursor", ".cursor/skills/SKILL.md".to_string()),
                 ("opencode", ".opencode/skills/SKILL.md".to_string()),
             ]
         );
@@ -2133,9 +2220,11 @@ mod tests {
             .filter(|m| !m.skills.is_empty())
             .map(|m| m.skills.iter().map(|s| s.dir.rsplit('/').next().unwrap()).collect())
             .collect();
-        assert_eq!(names.len(), 2);
+        assert_eq!(names.len(), 5);
         assert_eq!(names[0], ["gavin", "gavin-orchestrate", "gavin-resume", "gavin-develop"]);
-        assert_eq!(names[0], names[1]);
+        for other in &names[1..] {
+            assert_eq!(&names[0], other);
+        }
     }
 
     /// The block points at a REAL path for whichever profile is
@@ -2146,6 +2235,9 @@ mod tests {
     fn the_instructions_block_names_the_profiles_own_skill_file() {
         for (id, expected) in [
             ("claude-code", ".claude/skills/gavin/SKILL.md"),
+            ("codex", ".agents/skills/gavin/SKILL.md"),
+            ("gemini", ".gemini/skills/gavin/SKILL.md"),
+            ("cursor", ".cursor/skills/gavin/SKILL.md"),
             ("opencode", ".opencode/skills/gavin/SKILL.md"),
         ] {
             let layout: ResolvedMcp = profile_by_id(id).mcp.as_ref().unwrap().into();
@@ -2153,12 +2245,17 @@ mod tests {
             assert!(block.contains(expected), "{id} block does not name {expected}: {block}");
             assert!(!block.contains("{skill}"), "{id} block left the placeholder in");
         }
-        // A profile with no skill slot gets the inline variant, which has
-        // no placeholder to leak.
-        let layout: ResolvedMcp = profile_by_id("codex").mcp.as_ref().unwrap().into();
-        let block = instructions_block_for(Some(&layout), "docs/PRD.md");
+        // A layout with MCP but no skill slot (custom) gets the
+        // inline-with-MCP variant, which has no placeholder to leak.
+        let custom_mcp = ResolvedMcp {
+            config_file: "agent.json".into(),
+            server_key: "gavin",
+            format: McpFormat::JsonServers,
+            skills: &[],
+        };
+        let block = instructions_block_for(Some(&custom_mcp), "docs/PRD.md");
         assert!(!block.contains("{skill}"));
-        assert!(block.contains("gavin_set_plan_field"), "codex gets the inline-with-MCP block");
+        assert!(block.contains("gavin_set_plan_field"), "custom-with-MCP gets tools named inline");
     }
 
     /// A headless row must be promptable at all: the caller builds
@@ -2424,25 +2521,26 @@ mod tests {
         || Ok(PathBuf::from("/apps/gavin-mcp"))
     }
 
-    /// The shrink sub-project B is for: Codex gets its MCP config, so only
-    /// the skill file is still named as skipped.
+    /// The shrink sub-project B is for: custom can name an MCP config
+    /// without a skill root, so only the skill file is still skipped.
     #[test]
     fn integration_writes_mcp_for_a_profile_with_no_skill_mechanism() {
         let dir = tempfile::tempdir().unwrap();
-        rooted_with_profile(dir.path(), "codex");
+        custom_rooted(
+            dir.path(),
+            "mcp_file = \"agent.json\"\nmcp_format = \"json-servers\"\n",
+        );
 
         let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
 
-        // The agent file IS written, which was the whole point of W4.
-        assert!(dir.path().join("AGENTS.md").is_file());
-        assert!(result.written.iter().any(|w| w.ends_with("AGENTS.md")));
-        // ...and now so is the MCP config.
-        assert!(dir.path().join(".codex/config.toml").is_file());
-        assert!(result.written.iter().any(|w| w.ends_with(".codex/config.toml")));
+        assert!(dir.path().join("RULES.md").is_file());
+        assert!(result.written.iter().any(|w| w.ends_with("RULES.md")));
+        assert!(dir.path().join("agent.json").is_file());
+        assert!(result.written.iter().any(|w| w.ends_with("agent.json")));
 
         let skipped: Vec<&str> = result.skipped.iter().map(|(what, _)| what.as_str()).collect();
         assert_eq!(skipped, ["skill file"], "MCP config is no longer skipped");
-        assert!(result.skipped[0].1.contains("Codex CLI"), "the reason names the profile");
+        assert!(result.skipped[0].1.contains("Custom"), "the reason names the profile");
     }
 
     /// AG-07, the "no existing file" case: nothing to disclose about a
@@ -2618,11 +2716,14 @@ mod tests {
     #[test]
     fn a_profile_with_mcp_but_no_skill_mechanism_gets_the_guidance_inline() {
         let dir = tempfile::tempdir().unwrap();
-        rooted_with_profile(dir.path(), "codex");
+        custom_rooted(
+            dir.path(),
+            "mcp_file = \"agent.json\"\nmcp_format = \"json-servers\"\n",
+        );
 
         run_integration(dir.path(), fake_binary(), None, None).unwrap();
 
-        let body = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        let body = std::fs::read_to_string(dir.path().join("RULES.md")).unwrap();
         assert!(body.contains(MARKER_START) && body.contains(MARKER_END));
         assert!(!body.contains("SKILL.md"), "no skill file exists to point at");
         assert!(body.contains("`.gavin-root/plans/`"), "the guidance is inline instead");
@@ -2742,13 +2843,19 @@ mod tests {
     }
 
     /// Without an MCP config there are no tools to name, so the plain
-    /// inline block must not promise any.
+    /// inline block must not promise any. A custom layout with MCP but
+    /// no skill root is the remaining inline-with-MCP case.
     #[test]
     fn the_inline_block_names_the_tools_only_when_a_config_was_written() {
-        let codex = ResolvedMcp::from(profile_by_id("codex").mcp.as_ref().unwrap());
-        let with_mcp = instructions_block_for(Some(&codex), protocol::DEFAULT_PRD_PATH);
+        let with_mcp = ResolvedMcp {
+            config_file: "agent.json".into(),
+            server_key: "gavin",
+            format: McpFormat::JsonServers,
+            skills: &[],
+        };
+        let with = instructions_block_for(Some(&with_mcp), protocol::DEFAULT_PRD_PATH);
         let without = instructions_block_for(None, protocol::DEFAULT_PRD_PATH);
-        assert!(with_mcp.contains("gavin_set_plan_field"));
+        assert!(with.contains("gavin_set_plan_field"));
         assert!(!without.contains("gavin_"), "custom has no MCP config yet: {without}");
         assert!(without.contains("`.gavin-root/plans/`"), "the rest of the guidance is the same");
     }
@@ -2799,17 +2906,21 @@ mod tests {
     #[test]
     fn compose_prompt_targets_the_configured_prd_when_the_document_is_inlined() {
         let dir = tempfile::tempdir().unwrap();
-        let root = rooted_with_profile(dir.path(), "codex");
+        custom_rooted(dir.path(), "");
         std::fs::write(
             dir.path().join(".gavin-root/config.toml"),
-            "prd = \"PRD.md\"\n\n[agent]\nprofile = \"codex\"\n",
+            "prd = \"PRD.md\"\n\n[agent]\nprofile = \"custom\"\nfile = \"RULES.md\"\n",
         )
         .unwrap();
 
-        // Codex has no skill slot, so the target and the document both
+        // Custom has no skill slot, so the target and the document both
         // arrive in the prompt text -- the one place a stale path would
         // send the agent to write a second PRD beside the real one.
-        let prompt = compose_agent_prompt(root, "prd".to_string()).unwrap();
+        let prompt = compose_agent_prompt(
+            dir.path().to_string_lossy().to_string(),
+            "prd".to_string(),
+        )
+        .unwrap();
         assert!(prompt.contains("Write PRD.md for this repo"), "{prompt}");
         assert!(!prompt.contains(".gavin-root/PRD.md"), "{prompt}");
         assert!(!prompt.contains("{prd}"), "{prompt}");
@@ -2845,11 +2956,16 @@ mod tests {
     #[test]
     fn compose_prompt_inlines_the_document_when_there_is_no_skill_mechanism() {
         let dir = tempfile::tempdir().unwrap();
-        let root = rooted_with_profile(dir.path(), "codex");
+        custom_rooted(dir.path(), "");
 
-        let prompt = compose_agent_prompt(root, "prd".to_string()).unwrap();
+        let prompt = compose_agent_prompt(
+            dir.path().to_string_lossy().to_string(),
+            "prd".to_string(),
+        )
+        .unwrap();
 
         assert!(prompt.contains("## Vision"), "the guidance itself is in the prompt");
+        assert!(!dir.path().join(".agents").exists(), "no skill dir for a profile without one");
         assert!(!dir.path().join(".claude").exists(), "no skill dir for a profile without one");
     }
 
@@ -2948,6 +3064,115 @@ mod tests {
         // And nothing was written into a Claude Code workspace's shape.
         assert!(!dir.path().join(".claude").exists(), "opencode must not grow a .claude/");
         assert!(!dir.path().join(".mcp.json").exists());
+    }
+
+    /// Cursor's skill root is `.cursor/skills/`, not Claude's. Same four
+    /// skills, own MCP path, no `.claude/` side effect.
+    #[test]
+    fn a_cursor_root_gets_its_skills_and_mcp_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "cursor");
+
+        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+
+        let rel: Vec<String> = result
+            .written
+            .iter()
+            .map(|p| {
+                Path::new(p).strip_prefix(dir.path()).unwrap().to_string_lossy().to_string()
+            })
+            .collect();
+        assert_eq!(
+            rel,
+            [
+                "AGENTS.md",
+                ".cursor/skills/gavin/SKILL.md",
+                ".cursor/skills/gavin-orchestrate/SKILL.md",
+                ".cursor/skills/gavin-resume/SKILL.md",
+                ".cursor/skills/gavin-develop/SKILL.md",
+                ".cursor/mcp.json",
+            ]
+        );
+        assert!(result.skipped.is_empty(), "{:?}", result.skipped);
+        assert!(!dir.path().join(".claude").exists(), "cursor must not grow a .claude/");
+        let block = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(
+            block.contains(".cursor/skills/gavin/SKILL.md"),
+            "instructions block must point at Cursor's skill, not inline: {block}"
+        );
+    }
+
+    /// Codex's documented REPO skill root is `.agents/skills/`, not
+    /// `.codex/skills/`. Same four skills, own MCP path under `.codex/`.
+    #[test]
+    fn a_codex_root_gets_its_skills_and_mcp_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "codex");
+
+        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+
+        let rel: Vec<String> = result
+            .written
+            .iter()
+            .map(|p| {
+                Path::new(p).strip_prefix(dir.path()).unwrap().to_string_lossy().to_string()
+            })
+            .collect();
+        assert_eq!(
+            rel,
+            [
+                "AGENTS.md",
+                ".agents/skills/gavin/SKILL.md",
+                ".agents/skills/gavin-orchestrate/SKILL.md",
+                ".agents/skills/gavin-resume/SKILL.md",
+                ".agents/skills/gavin-develop/SKILL.md",
+                ".codex/config.toml",
+            ]
+        );
+        assert!(result.skipped.is_empty(), "{:?}", result.skipped);
+        assert!(!dir.path().join(".claude").exists(), "codex must not grow a .claude/");
+        assert!(!dir.path().join(".codex/skills").exists(), "not the undocumented path");
+        let block = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        assert!(
+            block.contains(".agents/skills/gavin/SKILL.md"),
+            "instructions block must point at Codex's skill, not inline: {block}"
+        );
+    }
+
+    /// Gemini's skill root is `.gemini/skills/`, kept separate from the
+    /// `.agents/skills/` alias Codex also reads.
+    #[test]
+    fn a_gemini_root_gets_its_skills_and_mcp_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "gemini");
+
+        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+
+        let rel: Vec<String> = result
+            .written
+            .iter()
+            .map(|p| {
+                Path::new(p).strip_prefix(dir.path()).unwrap().to_string_lossy().to_string()
+            })
+            .collect();
+        assert_eq!(
+            rel,
+            [
+                "GEMINI.md",
+                ".gemini/skills/gavin/SKILL.md",
+                ".gemini/skills/gavin-orchestrate/SKILL.md",
+                ".gemini/skills/gavin-resume/SKILL.md",
+                ".gemini/skills/gavin-develop/SKILL.md",
+                ".gemini/settings.json",
+            ]
+        );
+        assert!(result.skipped.is_empty(), "{:?}", result.skipped);
+        assert!(!dir.path().join(".agents").exists(), "gemini must not grow a shared .agents/");
+        let block = std::fs::read_to_string(dir.path().join("GEMINI.md")).unwrap();
+        assert!(
+            block.contains(".gemini/skills/gavin/SKILL.md"),
+            "instructions block must point at Gemini's skill, not inline: {block}"
+        );
     }
 
     /// The agent file is the one gavin writes AND the one the headless
