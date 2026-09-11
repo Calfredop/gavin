@@ -1423,8 +1423,8 @@ export function teardown(): void {
 // "connecting", so without this the retry would succeed invisibly.
 export async function retryConnect(): Promise<void> {
   // Asks first, like the other three routes to a restart. Both branches
-  // of the Rust command run `pkill -x gavin-daemon`, and that daemon is
-  // shared with every other gavin window -- so even from an error
+  // of the Rust command stop the daemon on this socket, and it is shared
+  // with every other gavin window pointed at it -- so even from an error
   // overlay this is somebody else's sessions, and the host now requires
   // the grant a prompt mints (AS-05/R5).
   const token = await confirmDestructive("restart_daemon", [DAEMON_SUBJECT], {

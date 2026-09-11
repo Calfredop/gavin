@@ -2141,12 +2141,15 @@ pub fn get_bootstrap_error(state: State<BootstrapError>) -> Option<String> {
 /// two agents editing one checkout.
 ///
 /// `token` is the grant `confirm_gate` minted when the human answered
-/// the restart prompt. BOTH branches below run `kill_running_daemons`
-/// (`pkill -x gavin-daemon`), and that daemon is shared with every other
-/// gavin window: an in-page script calling this used to be a one-line
+/// the restart prompt. BOTH branches below run `stop_running_daemon`,
+/// and the daemon on this socket is shared with every other gavin window
+/// pointed at it: an in-page script calling this used to be a one-line
 /// denial of service on somebody else's sessions (AS-05/R5). All four
 /// routes to it -- Settings, the sessions manager, the compat banner and
-/// the connection-error overlay -- now ask first.
+/// the connection-error overlay -- now ask first. What it can no longer
+/// be is a denial of service on a daemon this app never connected to:
+/// the forceful half is aimed at the pid serving THIS socket, not at
+/// everything named gavin-daemon.
 #[tauri::command]
 pub fn restart_daemon(
     app_handle: AppHandle,

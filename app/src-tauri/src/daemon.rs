@@ -216,16 +216,39 @@ const DAEMON_EXIT_GRACE: Duration = Duration::from_millis(300);
 /// old to talk to" is precisely the failure this function is reached
 /// from. A wedged daemon that never replies is the same case.
 ///
-/// So the fallback stays, per platform, and it is by NAME because there
-/// is nothing else left to address it by. The socket file a killed
-/// daemon leaves behind is removed by the next one when it binds (see
-/// `run_server`); the Windows pipe has no such debris.
+/// So the fallback stays, per platform -- but it is aimed at ONE
+/// process: the pid the kernel says is serving this endpoint
+/// (`Stream::server_pid`), read off the same connection the polite
+/// request goes down. By NAME is what it used to be, and a name is not
+/// an address: `taskkill /IM gavin-daemon.exe` and `pkill -x
+/// gavin-daemon` reach every daemon on the machine. That is how `cargo
+/// test -p app` took down the daemon holding a human's sessions, and how
+/// Restart daemon in the dev app took the stable app's with it. A daemon
+/// on another socket is now never touched.
+///
+/// Nothing listening means nothing to stop -- not a reason to go looking
+/// more widely -- so that case returns `Ok` having done nothing at all.
+/// Same for a connection the kernel will not name an owner for: `None`
+/// is "no process to act on", never "kill something else instead".
+///
+/// The socket file a killed daemon leaves behind is removed by the next
+/// one when it binds (see `run_server`); the Windows pipe has no such
+/// debris.
 pub fn stop_running_daemon(socket_path: &Path) -> anyhow::Result<()> {
-    if ask_daemon_to_stop(socket_path).is_ok() && wait_until_gone(socket_path) {
+    let Ok(stream) = Stream::connect(socket_path) else {
+        return Ok(());
+    };
+    // Read before the request goes down it: a daemon that obeys is gone
+    // by the time the reply is handled, and a closed connection has no
+    // owner left to name.
+    let owner = stream.server_pid();
+    if ask_daemon_to_stop(stream).is_ok() && wait_until_gone(socket_path) {
         return Ok(());
     }
-    kill_running_daemons()?;
-    wait_until_gone(socket_path);
+    if let Some(pid) = owner {
+        kill_daemon_process(pid)?;
+        wait_until_gone(socket_path);
+    }
     Ok(())
 }
 
@@ -236,8 +259,11 @@ pub fn stop_running_daemon(socket_path: &Path) -> anyhow::Result<()> {
 /// a daemon wedged inside a request handler would otherwise hold the
 /// restart open forever -- and the caller's answer to that case is the
 /// forceful one below, which it cannot reach while blocked here.
-fn ask_daemon_to_stop(socket_path: &Path) -> anyhow::Result<()> {
-    let mut stream = Stream::connect(socket_path)?;
+///
+/// Takes the connection rather than opening its own, because the caller
+/// has already asked it who it belongs to and the answer is only good
+/// for THAT connection.
+fn ask_daemon_to_stop(mut stream: Stream) -> anyhow::Result<()> {
     stream.set_read_timeout(Some(DAEMON_EXIT_GRACE))?;
     write_message(&mut stream, &Request::Shutdown)?;
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -267,33 +293,77 @@ fn wait_until_gone(socket_path: &Path) -> bool {
     }
 }
 
-/// Kills every running gavin-daemon by process name.
+/// Kills the ONE process that was serving the endpoint.
 ///
-/// The fallback half of `stop_running_daemon`, and only ever that.
-/// `/F` on Windows is not optional: without it `taskkill` posts WM_CLOSE
-/// to top-level windows, and a console process that owns none of those
-/// is answered with "can only be terminated forcefully" rather than
-/// terminated.
-fn kill_running_daemons() -> anyhow::Result<()> {
-    #[cfg(windows)]
-    {
-        let status =
-            crate::program::command("taskkill").args(["/F", "/IM", "gavin-daemon.exe"]).status()?;
-        return match status.code() {
-            // 128 == "no tasks matching", the normal already-gone case.
-            Some(0) | Some(128) => Ok(()),
-            other => anyhow::bail!("taskkill exited with {other:?}"),
-        };
+/// The fallback half of `stop_running_daemon`, and only ever that. The
+/// pid comes from the connection itself, so a daemon this app never
+/// connected to -- another workspace's, another install's, the one a
+/// human is working in while the suite runs -- is out of reach by
+/// construction.
+///
+/// A pid that is already gone is not an error: the polite request may
+/// well have worked and only lost the race in `wait_until_gone`.
+fn kill_daemon_process(pid: u32) -> anyhow::Result<()> {
+    // The endpoint is served from inside this very process. The app
+    // never serves its own socket, so in production this cannot happen;
+    // in a test that stands a fake listener in for the daemon it always
+    // does, and terminating the test runner is not a fallback. Either
+    // way there is no daemon here to kill.
+    if pid == std::process::id() {
+        return Ok(());
     }
-    #[cfg(not(windows))]
-    {
-        let status = crate::program::command("pkill").arg("-x").arg("gavin-daemon").status()?;
-        match status.code() {
-            // 1 == "no processes matched", which is a normal already-gone case.
-            Some(0) | Some(1) => Ok(()),
-            other => anyhow::bail!("pkill exited with {other:?}"),
-        }
+    kill_process(pid)
+}
+
+/// `TerminateProcess`, for the same reason `taskkill` needed `/F`:
+/// WM_CLOSE reaches top-level windows and the daemon owns none, so the
+/// polite Win32 routes answer "can only be terminated forcefully". The
+/// exit code is the one Windows itself uses for a process killed from
+/// Task Manager, matching `proc::terminate`.
+#[cfg(windows)]
+fn kill_process(pid: u32) -> anyhow::Result<()> {
+    use windows::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
+    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+    // SAFETY: no pointer arguments; the handle returned is this
+    // function's and is closed on the way out.
+    let handle = match unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) } {
+        Ok(handle) => handle,
+        // What Windows answers for a pid that names nothing: the daemon
+        // did take the polite request and only lost the race in
+        // `wait_until_gone`. Already stopped is the outcome asked for.
+        Err(e) if e.code() == ERROR_INVALID_PARAMETER.to_hresult() => return Ok(()),
+        // Anything else -- access denied against a daemon running at a
+        // different integrity level, most plausibly -- is a restart that
+        // did not happen, and saying so beats leaving the caller to
+        // reconnect to the daemon it believes it just stopped.
+        Err(e) => return Err(e.into()),
+    };
+    // SAFETY: `handle` is live and owned here.
+    let killed = unsafe { TerminateProcess(handle, 1) };
+    // SAFETY: closing a handle this function opened, exactly once.
+    unsafe {
+        let _ = CloseHandle(handle);
     }
+    Ok(killed?)
+}
+
+/// SIGTERM, which is what `pkill -x gavin-daemon` sent and all this
+/// needs to be: the daemon installs no handler for it, so the default
+/// action applies and it stops. Nothing escalates to SIGKILL behind it,
+/// the same restraint `proc::terminate` states for agents.
+#[cfg(not(windows))]
+fn kill_process(pid: u32) -> anyhow::Result<()> {
+    // SAFETY: `kill` takes a pid and a signal number, no pointers.
+    if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    // Already gone between the connection and here.
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(err.into())
 }
 
 #[cfg(test)]
@@ -316,6 +386,15 @@ mod tests {
 
     /// The whole point of asking before killing: a daemon that can hear
     /// the request gets to close its stores.
+    ///
+    /// The listener is dropped the moment the connection is accepted,
+    /// before the reply rather than after. A real daemon's `Shutdown`
+    /// handler replies and then calls `std::process::exit`, which closes
+    /// both at one instant; doing it in this order in a test closes the
+    /// window in which `wait_until_gone` can still find the endpoint
+    /// answering, and that window is the whole difference between this
+    /// test asserting what it says and falling through to the forceful
+    /// half it is meant to avoid.
     #[test]
     fn stop_asks_over_the_wire_and_returns_once_nothing_answers() {
         let dir = tempfile::tempdir().unwrap();
@@ -324,26 +403,108 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut stream = listener.accept().unwrap();
+            // Standing in for `std::process::exit`: the endpoint stops
+            // answering, which is the only thing the caller can observe.
+            drop(listener);
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let req: Option<Request> = read_message(&mut reader).unwrap();
             tx.send(matches!(req, Some(Request::Shutdown))).unwrap();
             write_message(&mut stream, &Response::Ok).unwrap();
-            // Standing in for `std::process::exit`: the endpoint stops
-            // answering, which is the only thing the caller can observe.
             drop(reader);
             drop(stream);
-            drop(listener);
         });
         stop_running_daemon(&socket_path).unwrap();
         assert!(rx.recv().unwrap(), "the daemon was asked, not killed");
     }
 
     /// Nothing there at all -- the case every restart hits when the
-    /// daemon has already gone -- must not become an error.
+    /// daemon has already gone -- must not become an error, and must not
+    /// become a search either.
+    ///
+    /// This test used to be the bug. An absent socket fails the polite
+    /// half by design, so it fell straight through to the by-name sweep
+    /// and ran `taskkill /IM gavin-daemon.exe` against the real machine:
+    /// `cargo test -p app` took down whatever daemon the human had
+    /// running, every session with it. There is no sweep left to reach --
+    /// an endpoint nobody answers names no process, and no process is
+    /// nothing to kill.
     #[test]
     fn stop_is_content_when_nothing_is_listening() {
         let dir = tempfile::tempdir().unwrap();
         stop_running_daemon(&dir.path().join("absent.sock")).unwrap();
+    }
+
+    /// The property the sweep could never have: stopping one daemon
+    /// cannot reach another.
+    ///
+    /// The listener stands in for a daemon on a DIFFERENT socket -- the
+    /// stable app's while the dev app restarts, or the human's while the
+    /// suite runs. `stop_running_daemon` is pointed somewhere else
+    /// entirely, and the only thing that ever connected the two was the
+    /// process name they share.
+    #[test]
+    fn stopping_one_endpoint_leaves_a_daemon_on_another_alone() {
+        let theirs = tempfile::tempdir().unwrap();
+        let their_socket = theirs.path().join("theirs.sock");
+        let _listener = Listener::bind(&their_socket).unwrap();
+
+        let ours = tempfile::tempdir().unwrap();
+        stop_running_daemon(&ours.path().join("ours.sock")).unwrap();
+
+        assert!(
+            protocol::transport::is_listening(&protocol::transport::Endpoint::new(their_socket)),
+            "a daemon on a socket this call never touched must still be there"
+        );
+    }
+
+    /// The forceful half, reached and declining to fire.
+    ///
+    /// Any test that stands a fake listener in for the daemon makes the
+    /// endpoint's owner the TEST RUNNER, so a fallback that fires on the
+    /// pid it was handed would end the suite where it stands. That is
+    /// the guard, called with the pid it actually has to refuse. The
+    /// assertion is that this line is reached at all.
+    #[test]
+    fn the_forceful_half_will_not_terminate_this_process() {
+        let me = std::process::id();
+        kill_daemon_process(me).unwrap();
+        assert_eq!(std::process::id(), me, "reached only by a process that was not terminated");
+    }
+
+    /// The forceful half, reached in anger.
+    ///
+    /// A daemon too old to parse `Request::Shutdown` is precisely what
+    /// this function is called about -- the compat banner's Restart
+    /// button -- and it cannot answer `Ok`. `ask_daemon_to_stop` fails,
+    /// and the fallback runs against the pid serving the endpoint.
+    ///
+    /// This is the shape that used to take the machine's daemon down:
+    /// the polite half fails, and the sweep that followed it did not
+    /// care which socket anything was on. It now goes to one pid, and
+    /// that pid is this process, which `kill_daemon_process` refuses.
+    #[test]
+    fn stop_falls_back_when_the_daemon_cannot_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("too-old.sock");
+        let listener = Listener::bind(&socket_path).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            // Before the request is even read, so the endpoint is gone
+            // by the time the caller looks again -- the same reason as
+            // in the polite test above.
+            drop(listener);
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let req: Option<Request> = read_message(&mut reader).unwrap();
+            tx.send(matches!(req, Some(Request::Shutdown))).unwrap();
+            // No reply: an old daemon has no handler to answer with.
+            drop(reader);
+            drop(stream);
+        });
+
+        stop_running_daemon(&socket_path).unwrap();
+
+        assert!(rx.recv().unwrap(), "the request went down the wire before the fallback ran");
     }
 
     #[test]

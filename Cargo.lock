@@ -89,6 +89,7 @@ dependencies = [
  "toml_edit 0.22.27",
  "trash",
  "url",
+ "windows 0.61.3",
 ]
 
 [[package]]
