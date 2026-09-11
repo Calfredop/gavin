@@ -14,7 +14,9 @@
 
 /// One limit window. Mirrors `UsageWindow` in `agent_usage.rs`.
 export interface UsageWindow {
-  /// "five_hour" | "seven_day" | "spend_limit" | "primary" | "secondary".
+  /// "five_hour" | "seven_day" | "spend_limit" | "primary" | "secondary"
+  /// | "total" | "auto" | "api" | "on_demand" | "pro" | "flash" |
+  /// "flash-lite" | "rolling" | "weekly" | "monthly".
   id: string;
   label: string;
   /// 0-100, and can exceed 100 for a spend limit. Never clamped upstream,

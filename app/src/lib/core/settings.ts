@@ -58,9 +58,10 @@ export interface AgentProfileInfo {
   sessionIdDiscovery: string;
   resumeArgs: string;
   /// How gavin reads this agent's subscription limits ("anthropic-oauth",
-  /// "codex-rollout"), or null where it cannot -- which is three of the
-  /// five profiles and is a sentence the usage panel prints, not a bar it
-  /// leaves empty. See agent_setup.rs's usage_probe for what was checked.
+  /// "codex-rollout", "cursor-session", "gemini-code-assist",
+  /// "opencode-go"), or null where it cannot -- which is `custom`, and is
+  /// a sentence the usage panel prints, not a bar it leaves empty. See
+  /// agent_setup.rs's usage_probe for what was checked.
   usageProbe: string | null;
 }
 

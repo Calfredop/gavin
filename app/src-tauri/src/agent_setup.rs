@@ -380,20 +380,28 @@ pub struct AgentProfile {
     /// the account is spending against, not the tokens one conversation
     /// happened to burn.
     ///
-    /// `None` is the honest default and the common case: three of the
-    /// five profiles expose nothing an outside process can read, and the
+    /// `None` is the honest default: a profile gavin cannot ask, and the
     /// usage panel says so in those words rather than showing a bar it
     /// invented. The same posture as `failure_patterns` -- an empty row
     /// means "gavin cannot see this", never "there is no limit".
     ///
-    /// What was checked, 2026-09-02:
+    /// What was checked, 2026-09-11:
     ///
-    /// - `gemini` -- `/stats` renders through Ink and prints nothing when
-    ///   piped; `~/.gemini/tmp/*/chats/session-*.json` carries per-session
-    ///   token totals, which is a burn estimate and not a quota. No row.
-    /// - `cursor` -- usage lives in the web dashboard. No row.
-    /// - `opencode` -- provider keys are the user's own, so there is no
-    ///   single limit to report. No row.
+    /// - `claude-code` -- Anthropic OAuth usage endpoint.
+    /// - `codex` -- newest rollout `token_count` with rate_limits.
+    /// - `cursor` -- `GET https://cursor.com/api/usage-summary` with the
+    ///   CLI's session JWT (Keychain `cursor-access-token`, else the
+    ///   Cursor app's `state.vscdb`). Live Pro body verified: Auto / API
+    ///   / Total percents plus a billing-cycle reset.
+    /// - `gemini` -- Cloud Code Assist `retrieveUserQuota`. Consumer
+    ///   Google accounts return 403 `SUBSCRIPTION_REQUIRED` after the
+    ///   2026-06-18 OAuth shutdown; Workspace / Code Assist still
+    ///   answer. `/stats` still prints nothing when piped.
+    /// - `opencode` -- `GET https://opencode.ai/zen/go/v1/usage` with the
+    ///   `opencode-go` key from `auth.json`. BYO provider keys (and Zen
+    ///   without Go) have no account-wide limit; the probe then reports
+    ///   Unavailable rather than inventing a bar.
+    /// - `custom` -- no route.
     pub usage_probe: Option<UsageProbe>,
     /// Where this agent writes the per-CONVERSATION transcript gavin
     /// reads token totals out of -- the sibling `usage_probe` explicitly
@@ -475,6 +483,39 @@ pub enum UsageProbe {
     /// written, so resolving it against `now` would under-report the
     /// remaining wait by however long codex has been idle.
     CodexRollout,
+    /// Cursor Agent / dashboard. `GET https://cursor.com/api/usage-summary`
+    /// with cookie `WorkosCursorSessionToken=<jwt.sub>%3A%3A<jwt>`.
+    ///
+    /// The JWT is the same session the CLI stores after `agent login`
+    /// (Keychain `cursor-access-token` on macOS; `state.vscdb`
+    /// `cursorAuth/accessToken` everywhere the IDE has run). Chosen over
+    /// the Admin API, which needs a team key a personal account does not
+    /// have, and over `/usage` in the TUI, which is Ink and prints
+    /// nothing when piped -- the same reason Gemini's `/stats` is not a
+    /// route. The dashboard endpoint is account truth, including other
+    /// machines, which is the whole reason it is worth a credential.
+    CursorSession,
+    /// Gemini CLI. `POST https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`
+    /// with the CLI's OAuth access token from `~/.gemini/oauth_creds.json`,
+    /// refreshed through Google's token endpoint with Gemini CLI's public
+    /// installed-app client when `expiry_date` has passed.
+    ///
+    /// Chosen over piping `/stats` (Ink, empty) and over summing
+    /// `~/.gemini/tmp/*/chats/session-*.json` (a burn estimate, not a
+    /// quota). Buckets are remainingFraction per model; gavin collapses
+    /// them to Pro / Flash / Lite at the worst remaining in each tier.
+    /// Consumer accounts after 2026-06-18 answer 403; that is Unavailable,
+    /// not a zero bar.
+    GeminiCodeAssist,
+    /// OpenCode Go. `GET https://opencode.ai/zen/go/v1/usage` with the
+    /// `opencode-go` API key from `~/.local/share/opencode/auth.json`.
+    /// Returns rolling / weekly / monthly percents with `resetsAt`.
+    ///
+    /// Zen-only and BYO-provider logins have no such endpoint (Zen
+    /// balance is console-cookie scraping, which this will not do). The
+    /// probe then reports Unavailable naming Go, rather than Unsupported
+    /// -- the route exists, this account is not on it.
+    OpencodeGo,
 }
 
 impl UsageProbe {
@@ -485,6 +526,9 @@ impl UsageProbe {
         match self {
             UsageProbe::AnthropicOauth => "anthropic-oauth",
             UsageProbe::CodexRollout => "codex-rollout",
+            UsageProbe::CursorSession => "cursor-session",
+            UsageProbe::GeminiCodeAssist => "gemini-code-assist",
+            UsageProbe::OpencodeGo => "opencode-go",
         }
     }
 }
@@ -788,7 +832,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // flag that resumes the wrong session (or none).
         session_id_discovery: "",
         resume_args: "",
-        usage_probe: None,
+        usage_probe: Some(UsageProbe::GeminiCodeAssist),
         token_log: None,
         agent_file: None,
         mcp: Some(McpLayout {
@@ -859,7 +903,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // opencode, so resume stays off rather than opening a picker.
         session_id_discovery: "",
         resume_args: "",
-        usage_probe: None,
+        usage_probe: Some(UsageProbe::CursorSession),
         token_log: None,
         agent_file: None,
         mcp: Some(McpLayout {
@@ -960,7 +1004,7 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // rejected: `run` is the ONE-SHOT headless subcommand
         // (`headless_args` above), not what a live launched session is.
         resume_args: "--session",
-        usage_probe: None,
+        usage_probe: Some(UsageProbe::OpencodeGo),
         token_log: None,
         // opencode reads `.claude/skills/` too, but a workspace that
         // never chose Claude Code should not grow a `.claude/`
@@ -2334,10 +2378,10 @@ mod tests {
     /// Which profiles claim they can be asked about their limits, pinned
     /// so adding a probe is a deliberate act with a route behind it.
     ///
-    /// The three `None` rows are the point of the test as much as the two
-    /// `Some` ones: Gemini's `/stats` prints nothing when piped, Cursor's
-    /// usage lives in a web dashboard and opencode runs on the user's own
-    /// provider keys, so a bar for any of them could only be invented.
+    /// Custom is the only `None`: every stock CLI has a verified route,
+    /// even when that route often answers Unavailable (consumer Gemini,
+    /// OpenCode without Go). Adding a probe is still a deliberate act
+    /// with a route behind it -- this list is what pins that.
     #[test]
     fn only_profiles_with_a_route_carry_a_usage_probe() {
         let probed: Vec<(&str, &str)> = AGENT_PROFILES
@@ -2346,7 +2390,13 @@ mod tests {
             .collect();
         assert_eq!(
             probed,
-            [("claude-code", "anthropic-oauth"), ("codex", "codex-rollout")]
+            [
+                ("claude-code", "anthropic-oauth"),
+                ("codex", "codex-rollout"),
+                ("gemini", "gemini-code-assist"),
+                ("cursor", "cursor-session"),
+                ("opencode", "opencode-go"),
+            ]
         );
     }
 
@@ -2358,6 +2408,9 @@ mod tests {
     fn usage_probe_ids_are_stable_wire_names() {
         assert_eq!(UsageProbe::AnthropicOauth.id(), "anthropic-oauth");
         assert_eq!(UsageProbe::CodexRollout.id(), "codex-rollout");
+        assert_eq!(UsageProbe::CursorSession.id(), "cursor-session");
+        assert_eq!(UsageProbe::GeminiCodeAssist.id(), "gemini-code-assist");
+        assert_eq!(UsageProbe::OpencodeGo.id(), "opencode-go");
     }
 
     /// The empty pattern list is a real answer -- "nobody has verified

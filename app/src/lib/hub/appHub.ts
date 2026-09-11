@@ -589,8 +589,8 @@ export interface UsageRecapInput {
 ///
 /// Only profiles some workspace launches, exactly as the usage panel
 /// filters: a bar for an agent nobody here uses means nothing, and for
-/// the profiles with no probe it would be a paragraph of apology on the
-/// home screen.
+/// a profile whose probe has nothing to show it would be a paragraph of
+/// apology on the home screen.
 ///
 /// In the PROFILE TABLE's order rather than worst-first. The two
 /// surfaces are one modal apart, and a hub that ranked by percentage

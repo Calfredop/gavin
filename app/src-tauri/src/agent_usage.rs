@@ -3,8 +3,10 @@
 //!
 //! Which agents can be asked at all, and by what route, is the profile
 //! table's answer (`agent_setup::UsageProbe`); this module only carries
-//! the two routes out. Three of the five profiles expose nothing, and
-//! the honest report for those is `Unsupported`, never an invented bar.
+//! the routes out. Custom is the only profile with no route, and the
+//! honest report there is `Unsupported`, never an invented bar. A stock
+//! CLI whose route could not answer (no login, no Go subscription, a
+//! consumer Gemini account) is `Unavailable` -- a different sentence.
 //!
 //! Two constraints shape everything below.
 //!
@@ -107,8 +109,8 @@ pub enum UsageReport {
         /// Whether this came from the cache rather than a fresh call.
         cached: bool,
     },
-    /// The profile has no route at all (gemini, cursor, opencode,
-    /// custom). Terminal: nothing about retrying changes it.
+    /// The profile has no route at all (`custom`). Terminal: nothing
+    /// about retrying changes it.
     Unsupported,
     /// There is a route and it did not answer. `retryAfter` is set when
     /// gavin has parked itself, so the panel can say when it will look
@@ -187,6 +189,9 @@ pub fn agent_usage(
         UsageProbe::CodexRollout => {
             (codex_usage(&codex_sessions_dir().unwrap_or_default()), None)
         }
+        UsageProbe::CursorSession => cursor_usage(now),
+        UsageProbe::GeminiCodeAssist => gemini_usage(now),
+        UsageProbe::OpencodeGo => opencode_go_usage(now),
     };
 
     let mut map = cache.0.lock().unwrap();
@@ -624,6 +629,835 @@ pub fn newest_codex_limits(text: &str) -> Option<UsageReport> {
     None
 }
 
+fn window(id: &str, label: &str, used_percent: f64, resets_at: Option<i64>) -> UsageWindow {
+    UsageWindow {
+        id: id.to_string(),
+        label: label.to_string(),
+        used_percent,
+        resets_at,
+    }
+}
+
+fn nonempty(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
+fn percent_from_ratio(used: f64, limit: f64) -> Option<f64> {
+    if !used.is_finite() || !limit.is_finite() || limit <= 0.0 || used < 0.0 {
+        return None;
+    }
+    Some(100.0 * used / limit)
+}
+
+fn number_field(obj: &serde_json::Value, key: &str) -> Option<f64> {
+    obj.get(key).and_then(as_percent)
+}
+
+/// JWT-style base64url, no padding. Decode is how `sub` comes out of
+/// Cursor's session token; encode exists so tests can mint a payload.
+#[cfg(test)]
+fn b64url_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b0 = bytes[i];
+        let b1 = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+        let b2 = if i + 2 < bytes.len() { bytes[i + 2] } else { 0 };
+        let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        if i + 1 < bytes.len() {
+            out.push(TABLE[((n >> 6) & 63) as usize] as char);
+        }
+        if i + 2 < bytes.len() {
+            out.push(TABLE[(n & 63) as usize] as char);
+        }
+        i += 3;
+    }
+    out
+}
+
+fn b64url_decode(input: &str) -> Option<Vec<u8>> {
+    let mut acc = 0u32;
+    let mut bits = 0;
+    let mut out = Vec::new();
+    for c in input.bytes() {
+        if c == b'=' {
+            break;
+        }
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' | b'+' => 62,
+            b'_' | b'/' => 63,
+            _ => return None,
+        } as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+fn jwt_sub(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let json = String::from_utf8(b64url_decode(payload)?).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&json).ok()?;
+    nonempty(parsed.get("sub")?.as_str()?)
+}
+
+fn cursor_cookie(token: &str) -> Option<String> {
+    let sub = jwt_sub(token)?;
+    Some(format!("{sub}%3A%3A{token}"))
+}
+
+fn decode_vscdb_value(raw: &str) -> String {
+    if raw.contains('\0') {
+        raw.chars().filter(|c| *c != '\0').collect::<String>().trim().to_string()
+    } else {
+        raw.trim().to_string()
+    }
+}
+
+// ---- Cursor -----------------------------------------------------------------
+
+const CURSOR_USAGE_URL: &str = "https://cursor.com/api/usage-summary";
+
+/// Cursor Agent writes the same JWT the dashboard cookie is made from
+/// into the macOS Keychain under `cursor-access-token` (verified
+/// 2026-09-11). Off macOS, and when the Keychain is empty, the Cursor
+/// app's `state.vscdb` holds the same value at
+/// `cursorAuth/accessToken`.
+fn cursor_token() -> Option<String> {
+    nonempty(&keychain_secret("cursor-access-token").unwrap_or_default())
+        .or_else(cursor_token_from_vscdb)
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_secret(service: &str) -> Option<String> {
+    Command::new("security")
+        .args(["find-generic-password", "-s", service, "-w"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keychain_secret(_service: &str) -> Option<String> {
+    None
+}
+
+fn cursor_token_from_vscdb() -> Option<String> {
+    let path = cursor_state_vscdb()?;
+    if !path.exists() {
+        return None;
+    }
+    let path_str = path.to_str()?;
+    let output = Command::new(crate::program::resolve_or_name("sqlite3"))
+        .args([
+            "-readonly",
+            "-batch",
+            path_str,
+            "SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken' LIMIT 1;",
+        ])
+        .output()
+        .ok()
+        .or_else(|| {
+            Command::new(crate::program::resolve_or_name("sqlite3"))
+                .args([
+                    "-batch",
+                    path_str,
+                    "SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken' LIMIT 1;",
+                ])
+                .output()
+                .ok()
+        })?;
+    if !output.status.success() {
+        return None;
+    }
+    nonempty(&decode_vscdb_value(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn cursor_state_vscdb() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        return Some(
+            home_dir()?
+                .join("Library")
+                .join("Application Support")
+                .join("Cursor")
+                .join("User")
+                .join("globalStorage")
+                .join("state.vscdb"),
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var_os("APPDATA")?;
+        return Some(
+            PathBuf::from(appdata)
+                .join("Cursor")
+                .join("User")
+                .join("globalStorage")
+                .join("state.vscdb"),
+        );
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Some(
+            home_dir()?
+                .join(".config")
+                .join("Cursor")
+                .join("User")
+                .join("globalStorage")
+                .join("state.vscdb"),
+        )
+    }
+}
+
+fn cursor_usage(now: i64) -> (UsageReport, Option<i64>) {
+    let token = match cursor_token() {
+        Some(t) => t,
+        None => {
+            return (
+                UsageReport::Unavailable {
+                    reason: "gavin could not find Cursor's login — run `agent` and sign in"
+                        .to_string(),
+                    retry_after: None,
+                },
+                None,
+            )
+        }
+    };
+    let cookie = match cursor_cookie(&token) {
+        Some(c) => c,
+        None => {
+            return (
+                UsageReport::Unavailable {
+                    reason: "Cursor's login is not a session gavin can read — run `agent` and sign in"
+                        .to_string(),
+                    retry_after: None,
+                },
+                None,
+            )
+        }
+    };
+    if cookie.contains('"') || cookie.contains('\n') {
+        return (
+            UsageReport::Unavailable {
+                reason: "Cursor's login is not a session gavin can read — run `agent` and sign in"
+                    .to_string(),
+                retry_after: None,
+            },
+            None,
+        );
+    }
+    let config = format!(
+        "url = \"{CURSOR_USAGE_URL}\"\n\
+         header = \"Cookie: WorkosCursorSessionToken={cookie}\"\n\
+         header = \"Accept: application/json\"\n\
+         silent\n\
+         show-error\n\
+         max-time = \"{TIMEOUT_SECS}\"\n\
+         write-out = \"\\n%{{http_code}}\"\n"
+    );
+    http_probe_result(run_curl(&config), now, parse_cursor, "Cursor's login is not valid any more — run `agent` and sign in", "the Cursor usage endpoint")
+}
+
+/// `GET https://cursor.com/api/usage-summary` (verified 2026-09-11
+/// against a live Pro session). Auto / API / Total percents live on
+/// `individualUsage.plan`; a billing-cycle end is the shared reset;
+/// uncapped on-demand is not a window.
+fn parse_cursor(body: &str, now: i64) -> Option<UsageReport> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let resets_at = parsed.get("billingCycleEnd").and_then(as_epoch_secs);
+    if resets_at.is_some_and(|t| t <= now) {
+        return None;
+    }
+    let individual = parsed.get("individualUsage");
+    let plan = individual.and_then(|u| u.get("plan"));
+    let mut windows = Vec::new();
+
+    let mut total = plan.and_then(|p| p.get("totalPercentUsed").and_then(as_percent));
+    if total.is_none() {
+        if let Some(p) = plan {
+            total = match (number_field(p, "used"), number_field(p, "limit")) {
+                (Some(used), Some(limit)) => percent_from_ratio(used, limit),
+                _ => None,
+            };
+        }
+    }
+    if total.is_none() {
+        if let Some(overall) = individual.and_then(|u| u.get("overall")) {
+            total = match (number_field(overall, "used"), number_field(overall, "limit")) {
+                (Some(used), Some(limit)) => percent_from_ratio(used, limit),
+                _ => None,
+            };
+        }
+    }
+    if total.is_none() {
+        if let Some(pooled) = parsed.get("teamUsage").and_then(|u| u.get("pooled")) {
+            total = match (number_field(pooled, "used"), number_field(pooled, "limit")) {
+                (Some(used), Some(limit)) => percent_from_ratio(used, limit),
+                _ => None,
+            };
+        }
+    }
+    if let Some(pct) = total {
+        windows.push(window("total", "Total", pct, resets_at));
+    }
+    if let Some(pct) = plan.and_then(|p| p.get("autoPercentUsed").and_then(as_percent)) {
+        windows.push(window("auto", "Auto", pct, resets_at));
+    }
+    if let Some(pct) = plan.and_then(|p| p.get("apiPercentUsed").and_then(as_percent)) {
+        windows.push(window("api", "API", pct, resets_at));
+    }
+    if let Some(od) = individual.and_then(|u| u.get("onDemand")) {
+        if od.get("enabled").and_then(|v| v.as_bool()) == Some(true) {
+            if let Some(pct) = match (number_field(od, "used"), number_field(od, "limit")) {
+                (Some(used), Some(limit)) => percent_from_ratio(used, limit),
+                _ => None,
+            } {
+                windows.push(window("on_demand", "On-demand", pct, resets_at));
+            }
+        }
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    let plan_name = parsed
+        .get("membershipType")
+        .and_then(|v| v.as_str())
+        .and_then(nonempty);
+    Some(UsageReport::Ready { windows, plan: plan_name, observed_at: now, cached: false })
+}
+
+fn http_probe_result(
+    output: Result<String, String>,
+    now: i64,
+    parse: fn(&str, i64) -> Option<UsageReport>,
+    auth_reason: &str,
+    endpoint: &str,
+) -> (UsageReport, Option<i64>) {
+    let output = match output {
+        Ok(o) => o,
+        Err(e) => return (UsageReport::Unavailable { reason: e, retry_after: None }, None),
+    };
+    let (body, status) = split_status(&output);
+    match status {
+        200 => match parse(body, now) {
+            Some(report) => (report, None),
+            None => (
+                UsageReport::Unavailable {
+                    reason: format!("{endpoint} answered in a shape gavin does not recognise"),
+                    retry_after: None,
+                },
+                None,
+            ),
+        },
+        401 | 403 => {
+            (UsageReport::Unavailable { reason: auth_reason.to_string(), retry_after: None }, None)
+        }
+        429 => {
+            let until = now + BACKOFF_SECS;
+            (
+                UsageReport::Unavailable {
+                    reason: "the usage endpoint rate-limited gavin".to_string(),
+                    retry_after: Some(until),
+                },
+                Some(until),
+            )
+        }
+        other => (
+            UsageReport::Unavailable {
+                reason: format!("{endpoint} answered {other}"),
+                retry_after: None,
+            },
+            None,
+        ),
+    }
+}
+
+// ---- Gemini CLI -------------------------------------------------------------
+
+/// Gemini CLI's installed-app OAuth client. Public on purpose: Google
+/// documents that an installed application's client secret is not a
+/// secret (the same constants live in gemini-cli's oauth2.ts).
+const GEMINI_OAUTH_CLIENT_ID: &str =
+    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
+const GEMINI_OAUTH_CLIENT_SECRET: &str = "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";
+const GEMINI_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+const GEMINI_QUOTA_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
+const GEMINI_ASSIST_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
+
+#[derive(Debug, PartialEq)]
+struct GeminiCreds {
+    access: String,
+    refresh: Option<String>,
+    expiry_ms: Option<i64>,
+}
+
+fn gemini_creds(raw: &str) -> Option<GeminiCreds> {
+    let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let access = nonempty(parsed.get("access_token")?.as_str()?)?;
+    let refresh = parsed.get("refresh_token").and_then(|v| v.as_str()).and_then(nonempty);
+    let expiry_ms = parsed.get("expiry_date").and_then(|v| v.as_i64());
+    Some(GeminiCreds { access, refresh, expiry_ms })
+}
+
+fn gemini_creds_path() -> Option<PathBuf> {
+    Some(home_dir()?.join(".gemini").join("oauth_creds.json"))
+}
+
+fn gemini_tier_index(model: &str) -> Option<usize> {
+    let m = model.to_ascii_lowercase();
+    if m.contains("flash-lite") || m.contains("flash_lite") {
+        Some(2)
+    } else if m.contains("flash") {
+        Some(1)
+    } else if m.contains("pro") {
+        Some(0)
+    } else {
+        None
+    }
+}
+
+/// Remaining fraction is how much quota is LEFT (0-1). The panel draws
+/// used percent, so invert. One bar per tier, the worst model in it --
+/// the same collapse Gemini's own `/model` display does.
+fn parse_gemini(body: &str, now: i64) -> Option<UsageReport> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let buckets = parsed.get("buckets")?.as_array()?;
+    const TIERS: [(&str, &str); 3] = [("pro", "Pro"), ("flash", "Flash"), ("flash-lite", "Lite")];
+    let mut best: [Option<(f64, Option<i64>)>; 3] = [None, None, None];
+    for bucket in buckets {
+        let model = bucket.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(idx) = gemini_tier_index(model) else { continue };
+        let remaining = bucket.get("remainingFraction").and_then(as_percent)?;
+        if remaining > 1.0 {
+            continue;
+        }
+        let used = ((1.0 - remaining) * 100.0).max(0.0);
+        let resets_at = bucket.get("resetTime").and_then(as_epoch_secs);
+        if resets_at.is_some_and(|t| t <= now) {
+            continue;
+        }
+        match best[idx] {
+            Some((prev, _)) if prev >= used => {}
+            _ => best[idx] = Some((used, resets_at)),
+        }
+    }
+    let mut windows = Vec::new();
+    for (i, (id, label)) in TIERS.iter().enumerate() {
+        if let Some((pct, resets_at)) = best[i] {
+            windows.push(window(id, label, pct, resets_at));
+        }
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    Some(UsageReport::Ready { windows, plan: None, observed_at: now, cached: false })
+}
+
+fn gemini_usage(now: i64) -> (UsageReport, Option<i64>) {
+    let path = match gemini_creds_path() {
+        Some(p) if p.exists() => p,
+        _ => {
+            return (
+                UsageReport::Unavailable {
+                    reason: "gavin could not find Gemini CLI's login — run `gemini` and sign in"
+                        .to_string(),
+                    retry_after: None,
+                },
+                None,
+            )
+        }
+    };
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                UsageReport::Unavailable {
+                    reason: "gavin could not read Gemini CLI's login — run `gemini` and sign in"
+                        .to_string(),
+                    retry_after: None,
+                },
+                None,
+            )
+        }
+    };
+    let creds = match gemini_creds(&raw) {
+        Some(c) => c,
+        None => {
+            return (
+                UsageReport::Unavailable {
+                    reason: "Gemini CLI's login is not a session gavin can read — run `gemini` and sign in"
+                        .to_string(),
+                    retry_after: None,
+                },
+                None,
+            )
+        }
+    };
+    let expired = creds.expiry_ms.is_some_and(|ms| ms <= now * 1000);
+    let access = if expired {
+        match gemini_refresh(creds.refresh.as_deref()) {
+            Some(t) => t,
+            None => {
+                return (
+                    UsageReport::Unavailable {
+                        reason: "Gemini CLI's login is not valid any more — run `gemini` and sign in"
+                            .to_string(),
+                        retry_after: None,
+                    },
+                    None,
+                )
+            }
+        }
+    } else {
+        creds.access.clone()
+    };
+
+    let (body, status, park) = match gemini_post(GEMINI_QUOTA_URL, &access, "{}") {
+        Ok(v) => v,
+        Err(e) => return (UsageReport::Unavailable { reason: e, retry_after: None }, None),
+    };
+    match status {
+        200 => match parse_gemini(&body, now) {
+            Some(report) => (report, None),
+            None => (
+                UsageReport::Unavailable {
+                    reason: "the Gemini usage endpoint answered in a shape gavin does not recognise"
+                        .to_string(),
+                    retry_after: None,
+                },
+                None,
+            ),
+        },
+        401 if !expired => {
+            // Access token looked current and was rejected; one refresh
+            // then retry, rather than telling the user to sign in for a
+            // clock skew.
+            let Some(token) = gemini_refresh(creds.refresh.as_deref()) else {
+                return (
+                    UsageReport::Unavailable {
+                        reason: "Gemini CLI's login is not valid any more — run `gemini` and sign in"
+                            .to_string(),
+                        retry_after: None,
+                    },
+                    None,
+                );
+            };
+            match gemini_post(GEMINI_QUOTA_URL, &token, "{}") {
+                Ok((body, 200, _)) => match parse_gemini(&body, now) {
+                    Some(report) => (report, None),
+                    None => (
+                        UsageReport::Unavailable {
+                            reason: "the Gemini usage endpoint answered in a shape gavin does not recognise"
+                                .to_string(),
+                            retry_after: None,
+                        },
+                        None,
+                    ),
+                },
+                Ok((_, 429, park)) => gemini_rate_limited(now, park),
+                Ok(_) | Err(_) => (
+                    UsageReport::Unavailable {
+                        reason: "Gemini CLI's login is not valid any more — run `gemini` and sign in"
+                            .to_string(),
+                        retry_after: None,
+                    },
+                    None,
+                ),
+            }
+        }
+        401 | 403 => (
+            UsageReport::Unavailable {
+                reason: gemini_denied_reason(&access, &body),
+                retry_after: None,
+            },
+            None,
+        ),
+        429 => gemini_rate_limited(now, park),
+        other => (
+            UsageReport::Unavailable {
+                reason: format!("the Gemini usage endpoint answered {other}"),
+                retry_after: None,
+            },
+            None,
+        ),
+    }
+}
+
+fn gemini_rate_limited(now: i64, park: Option<i64>) -> (UsageReport, Option<i64>) {
+    let until = park.unwrap_or(now + BACKOFF_SECS);
+    (
+        UsageReport::Unavailable {
+            reason: "the usage endpoint rate-limited gavin".to_string(),
+            retry_after: Some(until),
+        },
+        Some(until),
+    )
+}
+
+/// 403 on retrieveUserQuota is the common case for consumer Google
+/// accounts after Google shut down Code Assist OAuth for them
+/// (2026-06-18). loadCodeAssist then names UNSUPPORTED_CLIENT; saying
+/// "sign in" would send the user around a loop that cannot work.
+fn gemini_denied_reason(access: &str, quota_body: &str) -> String {
+    let subscription = quota_body.contains("SUBSCRIPTION_REQUIRED")
+        || quota_body.contains("You do not have a valid license");
+    let assist = gemini_post(
+        GEMINI_ASSIST_URL,
+        access,
+        r#"{"metadata":{"ideType":"IDE_UNSPECIFIED","pluginType":"GEMINI"}}"#,
+    )
+    .ok();
+    let unsupported = assist
+        .as_ref()
+        .map(|(body, _, _)| body.contains("UNSUPPORTED_CLIENT"))
+        .unwrap_or(false);
+    if unsupported || subscription {
+        "this Gemini login has no Code Assist quota gavin can read — Google no longer publishes it for consumer accounts"
+            .to_string()
+    } else {
+        "Gemini CLI's login is not valid any more — run `gemini` and sign in".to_string()
+    }
+}
+
+fn gemini_refresh(refresh: Option<&str>) -> Option<String> {
+    let refresh = refresh?;
+    let form = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("client_id", GEMINI_OAUTH_CLIENT_ID)
+        .append_pair("client_secret", GEMINI_OAUTH_CLIENT_SECRET)
+        .append_pair("refresh_token", refresh)
+        .append_pair("grant_type", "refresh_token")
+        .finish();
+    let config = format!(
+        "url = \"{GEMINI_TOKEN_URL}\"\n\
+         request = \"POST\"\n\
+         header = \"Content-Type: application/x-www-form-urlencoded\"\n\
+         data = \"{form}\"\n\
+         silent\n\
+         show-error\n\
+         max-time = \"{TIMEOUT_SECS}\"\n\
+         write-out = \"\\n%{{http_code}}\"\n"
+    );
+    let output = run_curl(&config).ok()?;
+    let (body, status) = split_status(&output);
+    if status != 200 {
+        return None;
+    }
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    nonempty(parsed.get("access_token")?.as_str()?)
+}
+
+fn gemini_post(url: &str, access: &str, json: &str) -> Result<(String, u16, Option<i64>), String> {
+    if access.contains('"') || access.contains('\n') {
+        return Err("Gemini CLI's login is not a session gavin can read".to_string());
+    }
+    let escaped = json.replace('\\', "\\\\").replace('"', "\\\"");
+    let config = format!(
+        "url = \"{url}\"\n\
+         request = \"POST\"\n\
+         header = \"Authorization: Bearer {access}\"\n\
+         header = \"Content-Type: application/json\"\n\
+         data = \"{escaped}\"\n\
+         silent\n\
+         show-error\n\
+         max-time = \"{TIMEOUT_SECS}\"\n\
+         write-out = \"\\n%{{http_code}}\"\n"
+    );
+    let output = run_curl(&config)?;
+    let (body, status) = split_status(&output);
+    let park = if status == 429 { Some(now_secs() + BACKOFF_SECS) } else { None };
+    Ok((body.to_string(), status, park))
+}
+
+// ---- OpenCode Go ------------------------------------------------------------
+
+const OPENCODE_GO_USAGE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
+
+fn opencode_auth_path() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("OPENCODE_DATA_DIR") {
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir).join("auth.json"));
+        }
+    }
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+        if !xdg.is_empty() {
+            return Some(PathBuf::from(xdg).join("opencode").join("auth.json"));
+        }
+    }
+    Some(home_dir()?.join(".local").join("share").join("opencode").join("auth.json"))
+}
+
+fn opencode_go_key(raw: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
+    if let Some(key) = parsed.pointer("/opencode-go/key").and_then(|v| v.as_str()) {
+        return nonempty(key);
+    }
+    let accounts = parsed.get("accounts")?.as_array()?;
+    for account in accounts {
+        if account.get("id").and_then(|v| v.as_str()) == Some("opencode-go") {
+            if let Some(key) = account.get("key").and_then(|v| v.as_str()) {
+                return nonempty(key);
+            }
+        }
+    }
+    None
+}
+
+fn parse_opencode_go(body: &str, now: i64) -> Option<UsageReport> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let usage = parsed.get("usage")?;
+    let mut windows = Vec::new();
+    for (key, label) in [("rolling", "5-hour"), ("weekly", "Weekly"), ("monthly", "Monthly")] {
+        let Some(obj) = usage.get(key) else { continue };
+        let Some(pct) = obj.get("percent").and_then(as_percent) else { continue };
+        let resets_at = obj
+            .get("resetsAt")
+            .or_else(|| obj.get("resets_at"))
+            .and_then(as_epoch_secs);
+        if resets_at.is_some_and(|t| t <= now) {
+            continue;
+        }
+        windows.push(window(key, label, pct, resets_at));
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    Some(UsageReport::Ready {
+        windows,
+        plan: Some("go".to_string()),
+        observed_at: now,
+        cached: false,
+    })
+}
+
+fn opencode_go_usage(now: i64) -> (UsageReport, Option<i64>) {
+    let path = match opencode_auth_path() {
+        Some(p) if p.exists() => p,
+        _ => {
+            return (
+                UsageReport::Unavailable {
+                    reason: "gavin could not find an OpenCode Go login — OpenCode's own limits only exist on the Go plan"
+                        .to_string(),
+                    retry_after: None,
+                },
+                None,
+            )
+        }
+    };
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                UsageReport::Unavailable {
+                    reason: "gavin could not read OpenCode's login".to_string(),
+                    retry_after: None,
+                },
+                None,
+            )
+        }
+    };
+    let key = match opencode_go_key(&raw) {
+        Some(k) => k,
+        None => {
+            return (
+                UsageReport::Unavailable {
+                    reason: "gavin could not find an OpenCode Go login — OpenCode's own limits only exist on the Go plan; BYO keys have none gavin can read"
+                        .to_string(),
+                    retry_after: None,
+                },
+                None,
+            )
+        }
+    };
+    if key.contains('"') || key.contains('\n') {
+        return (
+            UsageReport::Unavailable {
+                reason: "OpenCode's Go login is not a key gavin can send".to_string(),
+                retry_after: None,
+            },
+            None,
+        );
+    }
+    let config = format!(
+        "url = \"{OPENCODE_GO_USAGE_URL}\"\n\
+         header = \"Authorization: Bearer {key}\"\n\
+         header = \"Accept: application/json\"\n\
+         silent\n\
+         show-error\n\
+         max-time = \"{TIMEOUT_SECS}\"\n\
+         write-out = \"\\n%{{http_code}}\"\n"
+    );
+    let output = match run_curl(&config) {
+        Ok(o) => o,
+        Err(e) => return (UsageReport::Unavailable { reason: e, retry_after: None }, None),
+    };
+    let (body, status) = split_status(&output);
+    match status {
+        200 => match parse_opencode_go(body, now) {
+            Some(report) => (report, None),
+            None => (
+                UsageReport::Unavailable {
+                    reason: "the OpenCode usage endpoint answered in a shape gavin does not recognise"
+                        .to_string(),
+                    retry_after: None,
+                },
+                None,
+            ),
+        },
+        401 => (
+            UsageReport::Unavailable {
+                reason: "OpenCode's Go login is not valid any more — run `/connect` in opencode and sign in to OpenCode Go"
+                    .to_string(),
+                retry_after: None,
+            },
+            None,
+        ),
+        403 => (
+            UsageReport::Unavailable {
+                reason: "this OpenCode account has no Go subscription — OpenCode's own limits only exist on the Go plan"
+                    .to_string(),
+                retry_after: None,
+            },
+            None,
+        ),
+        429 => {
+            let until = now + BACKOFF_SECS;
+            (
+                UsageReport::Unavailable {
+                    reason: "the usage endpoint rate-limited gavin".to_string(),
+                    retry_after: Some(until),
+                },
+                Some(until),
+            )
+        }
+        other => (
+            UsageReport::Unavailable {
+                reason: format!("the OpenCode usage endpoint answered {other}"),
+                retry_after: None,
+            },
+            None,
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -843,10 +1677,207 @@ mod tests {
 
     /// The profile table decides who can be asked; a profile with no
     /// route must answer `Unsupported` without any probe running.
+    /// Custom is the only remaining `None`: every stock CLI now has a
+    /// verified route, even if that route often answers Unavailable
+    /// (Gemini consumer OAuth, OpenCode without Go).
     #[test]
     fn profiles_without_a_route_are_unsupported() {
-        for id in ["gemini", "cursor", "opencode", "custom"] {
-            assert!(profile_by_id(id).usage_probe.is_none(), "{id} claims a probe");
+        assert!(profile_by_id("custom").usage_probe.is_none());
+        for id in ["claude-code", "codex", "gemini", "cursor", "opencode"] {
+            assert!(profile_by_id(id).usage_probe.is_some(), "{id} has no probe");
         }
+    }
+
+    /// The cookie is `sub%3A%3Ajwt`, not the JWT alone. A request that
+    /// sends only the token gets 204 from /api/auth/me and an empty
+    /// usage-summary -- which would look like "no usage" rather than
+    /// "not signed in".
+    #[test]
+    fn cursor_cookie_is_sub_then_the_jwt() {
+        let token = fake_jwt(r#"{"sub":"user_01ABC","type":"session"}"#);
+        assert_eq!(cursor_cookie(&token), Some(format!("user_01ABC%3A%3A{token}")));
+        assert_eq!(jwt_sub("not-a-jwt"), None);
+        assert_eq!(jwt_sub("a.%%%notbase64%%%.c"), None);
+    }
+
+    /// Live shape, 2026-09-11: Auto/API/Total percents on
+    /// `individualUsage.plan`, billing cycle end as the shared reset,
+    /// membershipType as the plan name. Percents are already 0-100
+    /// (including values below 1.0, which mean 0.x percent, not
+    /// fractions).
+    #[test]
+    fn cursor_windows_come_from_usage_summary_plan() {
+        let now = 1_000_000;
+        let body = r#"{
+            "billingCycleEnd": "2026-10-02T14:11:55.000Z",
+            "membershipType": "pro",
+            "individualUsage": {
+                "plan": {
+                    "autoPercentUsed": 23.5,
+                    "apiPercentUsed": 0,
+                    "totalPercentUsed": 41.2
+                },
+                "onDemand": { "enabled": true, "used": 12, "limit": null }
+            }
+        }"#;
+        let report = parse_cursor(body, now).expect("parses");
+        let w = windows(&report);
+        assert_eq!(w.len(), 3);
+        assert_eq!(w[0].id, "total");
+        assert_eq!(w[0].label, "Total");
+        assert_eq!(w[0].used_percent, 41.2);
+        assert_eq!(w[1].id, "auto");
+        assert_eq!(w[1].used_percent, 23.5);
+        assert_eq!(w[2].id, "api");
+        assert_eq!(w[2].used_percent, 0.0);
+        let end = parse_rfc3339("2026-10-02T14:11:55.000Z");
+        assert_eq!(w[0].resets_at, end);
+        assert!(matches!(&report, UsageReport::Ready { plan, .. } if plan.as_deref() == Some("pro")));
+    }
+
+    /// On-demand with no cap is not a window: drawing 0% would claim
+    /// unlimited spend is empty quota. A capped on-demand row is a
+    /// real limit and must show.
+    #[test]
+    fn cursor_on_demand_is_a_window_only_when_capped() {
+        let now = 1_000_000;
+        let capped = r#"{
+            "billingCycleEnd": "2026-10-02T14:11:55.000Z",
+            "individualUsage": {
+                "plan": { "totalPercentUsed": 10.0 },
+                "onDemand": { "enabled": true, "used": 250, "limit": 1000 }
+            }
+        }"#;
+        let report = parse_cursor(capped, now).expect("parses");
+        let w = windows(&report);
+        let od = w.iter().find(|x| x.id == "on_demand").expect("capped on-demand");
+        assert_eq!(od.label, "On-demand");
+        assert_eq!(od.used_percent, 25.0);
+    }
+
+    /// Enterprise/team accounts report a personal cap under
+    /// `individualUsage.overall` and no `plan` percents. A parser that
+    /// only knows `plan` would show empty quota, which is how CodexBar
+    /// used to read 100% remaining on those accounts.
+    #[test]
+    fn cursor_enterprise_overall_is_the_total_window() {
+        let now = 1_000_000;
+        let body = r#"{
+            "billingCycleEnd": "2026-10-02T14:11:55.000Z",
+            "membershipType": "enterprise",
+            "individualUsage": {
+                "overall": { "enabled": true, "used": 7384, "limit": 10000 }
+            }
+        }"#;
+        let report = parse_cursor(body, now).expect("parses");
+        let w = windows(&report);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].id, "total");
+        assert!((w[0].used_percent - 73.84).abs() < 0.001);
+    }
+
+    #[test]
+    fn a_cursor_cycle_that_has_already_reset_is_not_a_ready_report() {
+        let now = parse_rfc3339("2026-09-11T00:00:00Z").unwrap();
+        let body = r#"{
+            "billingCycleEnd": "2020-01-01T00:00:00Z",
+            "individualUsage": { "plan": { "totalPercentUsed": 96.0 } }
+        }"#;
+        assert!(parse_cursor(body, now).is_none());
+        assert!(parse_cursor("{}", now).is_none());
+    }
+
+    /// Cursor.app stores the JWT as UTF-16LE in state.vscdb on some
+    /// builds. Leaving the NULs in would make jwt_sub miss `sub` and
+    /// every probe fail closed as "not signed in".
+    #[test]
+    fn vscdb_utf16_nuls_are_stripped() {
+        let raw: String = "eyJ".chars().flat_map(|c| [c, '\0']).collect();
+        assert_eq!(decode_vscdb_value(&raw), "eyJ");
+        assert_eq!(decode_vscdb_value("eyJhbGciOi"), "eyJhbGciOi");
+    }
+
+    /// Cloud Code Assist buckets carry remainingFraction (left, 0-1)
+    /// per model. The panel wants used percent, and one bar per tier
+    /// (the worst model in that tier), matching what /model shows.
+    #[test]
+    fn gemini_buckets_collapse_to_pro_flash_and_lite() {
+        let now = 1_000_000;
+        let body = r#"{
+            "buckets": [
+                { "modelId": "gemini-3.1-pro-preview", "remainingFraction": 0.25, "resetTime": "2026-09-12T02:00:00Z", "tokenType": "REQUESTS" },
+                { "modelId": "gemini-3-pro", "remainingFraction": 0.40, "resetTime": "2026-09-12T02:00:00Z" },
+                { "modelId": "gemini-3-flash", "remainingFraction": 0.5, "resetTime": "2026-09-12T03:00:00Z" },
+                { "modelId": "gemini-3-flash-lite", "remainingFraction": 1.0, "resetTime": "2026-09-12T03:00:00Z" }
+            ]
+        }"#;
+        let report = parse_gemini(body, now).expect("parses");
+        let w = windows(&report);
+        assert_eq!(w.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(), ["pro", "flash", "flash-lite"]);
+        assert_eq!(w[0].used_percent, 75.0);
+        assert_eq!(w[1].used_percent, 50.0);
+        assert_eq!(w[2].used_percent, 0.0);
+        assert_eq!(w[0].resets_at, parse_rfc3339("2026-09-12T02:00:00Z"));
+    }
+
+    #[test]
+    fn gemini_omits_buckets_with_no_remaining_fraction() {
+        let body = r#"{"buckets":[{"modelId":"gemini-3-pro"}]}"#;
+        assert!(parse_gemini(body, 1_000_000).is_none());
+        assert!(parse_gemini("{}", 1_000_000).is_none());
+    }
+
+    #[test]
+    fn gemini_creds_yield_the_tokens_and_expiry() {
+        let raw = r#"{"access_token":"ya29.a","refresh_token":"1//r","expiry_date":1700000000000}"#;
+        let creds = gemini_creds(raw).expect("parses");
+        assert_eq!(creds.access, "ya29.a");
+        assert_eq!(creds.refresh.as_deref(), Some("1//r"));
+        assert_eq!(creds.expiry_ms, Some(1_700_000_000_000));
+        assert_eq!(gemini_creds(r#"{"other":1}"#), None);
+        assert_eq!(gemini_creds(r#"{"access_token":"  "}"#), None);
+    }
+
+    /// OpenCode Go's official usage API: rolling / weekly / monthly
+    /// percents with resetsAt. Same window labels as Claude and Codex
+    /// for the 5-hour and weekly rows.
+    #[test]
+    fn opencode_go_windows_come_from_the_usage_object() {
+        let now = 1_000_000;
+        let body = r#"{
+            "usage": {
+                "rolling": { "percent": 12.5, "resetsAt": "2026-09-11T22:00:00Z" },
+                "weekly": { "percent": 40.0, "resetsAt": "2026-09-15T00:00:00Z" },
+                "monthly": { "percent": 55.0, "resetsAt": "2026-10-01T00:00:00Z" }
+            }
+        }"#;
+        let report = parse_opencode_go(body, now).expect("parses");
+        let w = windows(&report);
+        assert_eq!(w.len(), 3);
+        assert_eq!(w[0].id, "rolling");
+        assert_eq!(w[0].label, "5-hour");
+        assert_eq!(w[0].used_percent, 12.5);
+        assert_eq!(w[1].id, "weekly");
+        assert_eq!(w[2].id, "monthly");
+        assert_eq!(w[0].resets_at, parse_rfc3339("2026-09-11T22:00:00Z"));
+        assert!(matches!(&report, UsageReport::Ready { plan, .. } if plan.as_deref() == Some("go")));
+    }
+
+    #[test]
+    fn opencode_go_key_reads_both_auth_json_shapes() {
+        assert_eq!(
+            opencode_go_key(r#"{"opencode-go":{"type":"api","key":"sk-go"}}"#).as_deref(),
+            Some("sk-go")
+        );
+        assert_eq!(
+            opencode_go_key(r#"{"accounts":[{"id":"opencode-go","key":"sk-list"}]}"#).as_deref(),
+            Some("sk-list")
+        );
+        assert_eq!(opencode_go_key(r#"{"openrouter":{"key":"sk-or"}}"#), None);
+        assert_eq!(opencode_go_key("not json"), None);
+    }
+
+    fn fake_jwt(payload: &str) -> String {
+        format!("eyJhbGciOiJub25l.{}.sig", super::b64url_encode(payload.as_bytes()))
     }
 }

@@ -29,8 +29,8 @@
   let { onClose }: Props = $props();
 
   /// Only the profiles some workspace actually runs. A row for an agent
-  /// nobody here uses is a bar that means nothing, and for the three
-  /// profiles with no probe it would be a paragraph of apology.
+  /// nobody here uses is a bar that means nothing, and for a profile
+  /// whose probe has nothing to show it would be a paragraph of apology.
   const inUse = $derived(new Set(profilesInUse()));
   const profiles = $derived($agentProfilesStore.filter((p) => inUse.has(p.id)));
 
@@ -223,7 +223,7 @@
     margin-bottom: 5px;
   }
   .label {
-    width: 62px;
+    width: 76px;
     flex: 0 0 auto;
     color: var(--text-muted);
   }
@@ -296,7 +296,7 @@
        broken words. */
     flex-wrap: wrap;
     gap: 5px;
-    margin: -1px 0 7px 70px;
+    margin: -1px 0 7px 84px;
     color: var(--text-muted);
     font-size: 0.85em;
   }
