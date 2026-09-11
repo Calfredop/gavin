@@ -7,7 +7,8 @@
 // answers "which page is that?" without spending a click on collapsing
 // and another on collapsing back, and it must never be what a window
 // reopens in. So it lives only in memory, and every route out of the
-// collapsed rail -- expanding it for real, the pointer leaving, a click
+// collapsed rail -- expanding it for real, the pointer leaving (except
+// onto the shared context menu, which mounts under the cursor), a click
 // landing anywhere else -- ends it.
 //
 // It OVERLAYS rather than widening the column in flow. The whole reason
@@ -58,6 +59,11 @@ export type PeekHoverEnter = {
 export type PeekHoverLeave = {
   enabled: boolean;
   peeking: boolean;
+  /// An overlay that opened under the cursor (the shared context menu)
+  /// is a mouseleave of the column without the pointer having left the
+  /// gesture. The peek stays; the caller decides again when the overlay
+  /// dismisses.
+  hold?: boolean;
 };
 
 /// The dwell / leave-delay pair the collapsed rail uses when hover-to-
@@ -96,8 +102,12 @@ export function createPeekHoverController(timers: PeekHoverTimers = globalThis) 
       }, PEEK_HOVER_OPEN_MS);
     },
 
-    leave({ enabled, peeking }: PeekHoverLeave): void {
+    leave({ enabled, peeking, hold }: PeekHoverLeave): void {
       clearOpen();
+      if (hold) {
+        clearClose();
+        return;
+      }
       if (!peeking) return;
       if (!enabled) {
         clearClose();
