@@ -2,7 +2,7 @@
   "mcpServers": {
     "gavin": {
       "args": [],
-      "command": "C:\\Users\\calfr\\coding\\gavin\\target\\debug\\gavin-mcp.exe"
+      "command": "/Users/coalpila/CloudStation/Coding/gavin/target/debug/gavin-mcp"
     }
   }
 }
