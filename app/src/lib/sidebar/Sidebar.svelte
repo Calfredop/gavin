@@ -158,7 +158,8 @@
   import { hintDigitFor } from "$lib/core/shortcuts";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import { showAlert } from "$lib/core/dialog";
-  import { openContextMenuFromEvent } from "$lib/core/contextMenu";
+  import { get } from "svelte/store";
+  import { contextMenu, isInsideContextMenu, openContextMenuFromEvent } from "$lib/core/contextMenu";
   import {
     buildWorkspaceMenuEntries,
     buildPageMenuEntries,
@@ -338,13 +339,13 @@
       peekHover.enter({ enabled, collapsed, peeking: peekingNow });
     };
     const onLeave = (): void => {
-      peekHover.leave({ enabled, peeking: peekingNow });
+      peekHover.leave({ enabled, peeking: peekingNow, hold: !!get(contextMenu) });
     };
     const onDown = (event: MouseEvent): void => {
-      if (!el.contains(event.target as Node)) {
-        peekHover.cancel();
-        endSidebarPeek();
-      }
+      const target = event.target as Node;
+      if (el.contains(target) || isInsideContextMenu(target)) return;
+      peekHover.cancel();
+      endSidebarPeek();
     };
     if (collapsed) {
       el.addEventListener("mouseenter", onEnter);
@@ -361,6 +362,22 @@
       el.removeEventListener("mouseenter", onEnter);
       el.removeEventListener("mouseleave", onLeave);
       window.removeEventListener("mousedown", onDown, true);
+    };
+  });
+
+  /// The shared menu mounts at the app root, under the cursor, so
+  /// opening it is a mouseleave of this column. The leave handler holds
+  /// the peek while the menu is up; this is the deferred decision once
+  /// it dismisses -- stay if the pointer is still on the column.
+  $effect(() => {
+    if (!$contextMenu) return;
+    return () => {
+      queueMicrotask(() => {
+        const el = sidebarEl;
+        if (!el || !get(sidebarPeek)) return;
+        if (el.matches(":hover")) return;
+        peekHover.leave({ enabled: get(sidebarPeekOnHover), peeking: true });
+      });
     };
   });
 
@@ -1342,10 +1359,13 @@
      expanded row's own, so a collapsed rail is the same list wearing
      less, not a second design.
 
-     The waiting badge survives the collapse. It is the one fact on a
+     The waiting mark survives the collapse. It is the one fact on a
      workspace row that is about to cost the human time, and a rail that
      dropped it would make collapsing the sidebar a way to stop being
-     told. -->
+     told. Collapsed, the icon-and-count badge does not fit a 36px
+     chip -- a corner pip in the same warning tone the badge wears,
+     the way a tab already marks "this wants you". The count lives in
+     the tooltip and the aria-label. -->
 {#snippet collapsedList()}
   <div class="workspace-list collapsed-list">
     {#each visibleWorkspaces as ws (ws.id)}
@@ -1358,23 +1378,21 @@
         use:tooltip={waiting > 0
           ? `${ws.name} — ${waiting} ${waiting === 1 ? "agent is" : "agents are"} waiting for you`
           : ws.name}
-        aria-label={ws.name}
+        aria-label={waiting > 0
+          ? `${ws.name} — ${waiting} ${waiting === 1 ? "agent is" : "agents are"} waiting for you`
+          : ws.name}
         onclick={() => {
           void switchWorkspace(ws.id);
           pressedRail();
         }}
         oncontextmenu={(e) => openWorkspaceMenu(e, ws)}
       >
-        <span class="collapsed-initial">{workspaceInitial(ws)}</span>
-        {#if waiting > 0}
-          <StatusBadge
-            indicator={agentIndicatorByState("waiting_for_input")}
-            size={9}
-            text={waiting}
-            tip={null}
-            class="waiting-badge"
-          />
-        {/if}
+        <span class="collapsed-initial">
+          {workspaceInitial(ws)}
+          {#if waiting > 0}
+            <span class="collapsed-waiting" aria-hidden="true"></span>
+          {/if}
+        </span>
       </button>
     {/each}
     <!-- Below the last icon is empty rail, not dead space: the same
@@ -2017,6 +2035,9 @@
      its line. Sized to the footer rows under it, so the rail is one
      column of marks rather than letters above pictures. */
   .collapsed-initial {
+    /* Anchors the waiting pip, which sits on the chip's corner rather
+       than beside it -- a 36px row has no room for an icon-and-count. */
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2026,6 +2047,19 @@
     background: var(--surface-sunken);
     font-weight: bold;
     letter-spacing: 0;
+  }
+  /* Same pip a hub tab wears for "a rail is waiting on you": amber,
+     the warning tone waiting_for_input uses (StatusBadge / theme).
+     Colour alone is not the message -- the row's label and tooltip
+     name the wait. */
+  .collapsed-waiting {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--warning-text);
   }
   .collapsed-row:hover .collapsed-initial,
   .collapsed-row.active .collapsed-initial {
@@ -2139,7 +2173,6 @@
      doing the work the fill used to: making a count read as a count. The
      glyph and the tone are the badge's; only the ring is ours. */
   .page-row :global(.waiting-badge),
-  .collapsed-row :global(.waiting-badge),
   .workspace-row :global(.waiting-badge) {
     border: 1px solid var(--border-warning);
     border-radius: 8px;

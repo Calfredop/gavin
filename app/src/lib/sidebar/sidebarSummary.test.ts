@@ -813,6 +813,21 @@ describe("Sidebar attention badge wiring", () => {
     expect(sidebar).toContain('indicator={agentIndicatorByState("waiting_for_input")}');
   });
 
+  it("marks a collapsed wait with the same warning pip a tab uses", () => {
+    const start = sidebar.indexOf("{#snippet collapsedList()}");
+    const end = sidebar.indexOf("{#snippet searchResults");
+    const rail = sidebar.slice(start, end);
+    expect(rail).toContain('class="collapsed-waiting"');
+    expect(rail).not.toContain("<StatusBadge");
+    expect(rail).toContain("<span class=\"collapsed-initial\">");
+    expect(rail.indexOf("<span class=\"collapsed-initial\">")).toBeLessThan(
+      rail.indexOf('class="collapsed-waiting"')
+    );
+    expect(sidebar).toMatch(
+      /\.collapsed-waiting\s*\{[^}]*background:\s*var\(--warning-text\)/
+    );
+  });
+
   it("keeps no second walk of the layouts for the count", () => {
     expect(sidebar).not.toContain('=== "waiting_for_input"');
   });
