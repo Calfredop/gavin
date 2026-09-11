@@ -172,6 +172,74 @@ mod imp {
         pub fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
             std::os::unix::io::AsRawFd::as_raw_fd(&self.0)
         }
+
+        /// The peer's pid, read out of the kernel's record of the
+        /// connection. See the cross-platform `server_pid` for what it is
+        /// for and why only the connecting side may ask.
+        ///
+        /// Two spellings because the two unixes never agreed on one:
+        /// Linux answers a whole `struct ucred` to `SO_PEERCRED`, macOS
+        /// answers a bare pid to `LOCAL_PEERPID` at the `SOL_LOCAL`
+        /// level. Both are read at CONNECT time by the kernel, so the
+        /// answer names the process that owned the listening socket then
+        /// -- not whatever holds the pid now.
+        pub(super) fn peer_pid(&self) -> Option<u32> {
+            use std::os::unix::io::AsRawFd;
+            let fd = self.0.as_raw_fd();
+            #[cfg(target_os = "linux")]
+            {
+                let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+                let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+                // SAFETY: `fd` is a live connected socket for the duration
+                // of the call; the pointers are to locals whose sizes are
+                // the `len` handed alongside them.
+                let rc = unsafe {
+                    libc::getsockopt(
+                        fd,
+                        libc::SOL_SOCKET,
+                        libc::SO_PEERCRED,
+                        (&mut cred as *mut libc::ucred).cast(),
+                        &mut len,
+                    )
+                };
+                if rc != 0 || cred.pid <= 0 {
+                    return None;
+                }
+                Some(cred.pid as u32)
+            }
+            #[cfg(target_vendor = "apple")]
+            {
+                // Spelled out rather than taken from `libc` so this arm
+                // does not ride on which release first exported them:
+                // `SOL_LOCAL` is 0 (sys/socket.h) and `LOCAL_PEERPID` is
+                // 0x002 (sys/un.h).
+                const SOL_LOCAL: libc::c_int = 0;
+                const LOCAL_PEERPID: libc::c_int = 0x002;
+                let mut pid: libc::pid_t = 0;
+                let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+                // SAFETY: as above.
+                let rc = unsafe {
+                    libc::getsockopt(
+                        fd,
+                        SOL_LOCAL,
+                        LOCAL_PEERPID,
+                        (&mut pid as *mut libc::pid_t).cast(),
+                        &mut len,
+                    )
+                };
+                if rc != 0 || pid <= 0 {
+                    return None;
+                }
+                Some(pid as u32)
+            }
+            // A unix that is neither: no portable spelling, and the
+            // caller's contract is already "None means nothing to act on".
+            #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+            {
+                let _ = fd;
+                None
+            }
+        }
     }
 
     impl Stream {
@@ -230,8 +298,9 @@ mod imp {
         PIPE_ACCESS_DUPLEX,
     };
     use windows::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, PeekNamedPipe, WaitNamedPipeW, PIPE_READMODE_BYTE,
-        PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerProcessId, PeekNamedPipe,
+        WaitNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
+        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
     use windows::Win32::System::Threading::{
         CreateEventW, GetCurrentProcess, OpenProcessToken, WaitForSingleObject, INFINITE,
@@ -581,6 +650,20 @@ mod imp {
         pub fn peer_path(&self) -> Option<PathBuf> {
             self.0.peer.clone()
         }
+
+        /// The pid of the process serving this pipe. See the
+        /// cross-platform `server_pid` for what it is for.
+        ///
+        /// `GetNamedPipeServerProcessId` answers for the SERVER end
+        /// whichever end asks, so on an accepted handle it names this
+        /// process -- which is why the wrapper refuses to ask there.
+        pub(super) fn peer_pid(&self) -> Option<u32> {
+            let mut pid = 0u32;
+            // SAFETY: the handle is a live pipe owned by this `Inner`,
+            // and the only pointer is to a local `u32` the call writes.
+            unsafe { GetNamedPipeServerProcessId(self.0.handle, &mut pid) }.ok()?;
+            (pid != 0).then_some(pid)
+        }
     }
 
     impl Stream {
@@ -897,6 +980,31 @@ impl Stream {
     pub fn connect(endpoint: impl Into<Endpoint>) -> io::Result<Stream> {
         Stream::connect_at(&endpoint.into())
     }
+
+    /// Which process is serving the endpoint this stream was connected
+    /// to -- the daemon's pid, asked of the kernel rather than of a
+    /// process list.
+    ///
+    /// This is the only honest way to address "the daemon on THIS
+    /// socket". A name is not one: `taskkill /IM gavin-daemon.exe` and
+    /// `pkill -x gavin-daemon` reach every daemon on the machine, which
+    /// is how `cargo test -p app` used to take down the one holding a
+    /// human's sessions, and how Restart daemon in the dev app used to
+    /// take the stable app's with it.
+    ///
+    /// Only the CONNECTING side may ask. An accepted stream and a
+    /// `pair()` are unnamed -- they have no endpoint they reached for --
+    /// and the platform primitives answer something different or
+    /// something useless for them, so both get `None`. `peer_path` is
+    /// already exactly that distinction, so it is the gate.
+    ///
+    /// `None` also covers "the kernel would not say", and every caller
+    /// must treat it as "no process to act on" rather than falling back
+    /// to a broader guess -- a broader guess is the bug this replaces.
+    pub fn server_pid(&self) -> Option<u32> {
+        self.peer_path()?;
+        self.peer_pid()
+    }
 }
 
 impl Listener {
@@ -1038,6 +1146,40 @@ mod tests {
         client.read_exact(&mut back).unwrap();
         assert_eq!(&back, b"ok\n");
         server.join().unwrap();
+        drop(client);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The whole point of `server_pid`: the connection itself names the
+    /// process serving it, so a caller that wants to stop THAT daemon
+    /// never has to ask the machine for everything called gavin-daemon.
+    ///
+    /// The listener here is bound in-process, so the pid the kernel
+    /// reports back is one the test already knows.
+    #[test]
+    fn a_connection_names_the_process_serving_the_endpoint() {
+        let dir = std::env::temp_dir().join(format!("gavin-transport-pid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let endpoint = Endpoint::new(dir.join("owner.sock"));
+        let listener = Listener::bind(&endpoint).unwrap();
+        let accepted = std::thread::spawn(move || listener.accept().unwrap());
+
+        let client = Stream::connect(&endpoint).unwrap();
+        assert_eq!(
+            client.server_pid(),
+            Some(std::process::id()),
+            "this process bound the endpoint, so this process is what stopping it would reach"
+        );
+
+        // The other side has no endpoint it reached for, and the platform
+        // primitives answer something else entirely there -- the peer's
+        // pid on unix, this process's own on Windows. Neither is "who
+        // serves this socket", so the answer is that there is none.
+        let server = accepted.join().unwrap();
+        assert_eq!(server.server_pid(), None, "an accepted connection names no server");
+        let (a, _b) = Stream::pair().unwrap();
+        assert_eq!(a.server_pid(), None, "nor does a pair");
+
         drop(client);
         let _ = std::fs::remove_dir_all(&dir);
     }
