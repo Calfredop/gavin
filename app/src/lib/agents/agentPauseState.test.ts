@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { get } from "svelte/store";
 
 const backendMock = vi.hoisted(() => ({
@@ -33,11 +33,13 @@ vi.mock("$lib/core/layoutState", async () => {
 
 import { DEFAULT_CYCLE, type PauseCycle } from "$lib/agents/agentPause";
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
+import { USAGE_CACHE_KEY, saveUsageCache } from "$lib/agents/agentUsage";
 import {
   agentPauseStore,
   agentUsageStore,
   editableCycle,
   effectiveCycle,
+  hydrateUsageCache,
   loadAgentPause,
   mayStartWork,
   nowStore,
@@ -50,6 +52,8 @@ import {
   launchDecision,
   launchPauseHold,
   startBlockedReason,
+  stopPauseClock,
+  usageRefreshingStore,
 } from "$lib/agents/agentPauseState";
 import { layoutState, agentDefaultsStore } from "$lib/core/layoutState";
 
@@ -65,6 +69,7 @@ beforeEach(() => {
   resolvedAgentForMock.mockReturnValue({ profileId: "claude-code" });
   agentPauseStore.set(null);
   agentUsageStore.set({});
+  usageRefreshingStore.set({});
   layoutState.set({ workspaces: [], activeWorkspaceId: null } as never);
   agentDefaultsStore.set({
     customCommand: "",
@@ -73,6 +78,11 @@ beforeEach(() => {
     agentFallback: [],
     fallbackThresholds: {},
   });
+});
+
+afterEach(() => {
+  stopPauseClock();
+  vi.useRealTimers();
 });
 
 describe("effectiveCycle", () => {
@@ -151,34 +161,123 @@ describe("loadAgentPause", () => {
 });
 
 describe("refreshUsage", () => {
+  const readyReport: AgentUsageReport = {
+    state: "ready",
+    windows: [{ id: "five_hour", label: "5-hour", usedPercent: 12, resetsAt: null }],
+    plan: "max",
+    observedAt: 1,
+    cached: false,
+  };
+
   it("stores what the host reported", async () => {
-    const report: AgentUsageReport = {
-      state: "ready",
-      windows: [{ id: "five_hour", label: "5-hour", usedPercent: 12, resetsAt: null }],
-      plan: "max",
-      observedAt: 1,
-      cached: false,
-    };
-    backendMock.agentUsage.mockResolvedValueOnce(report);
+    backendMock.agentUsage.mockResolvedValueOnce(readyReport);
     await refreshUsage("claude-code");
-    expect(get(agentUsageStore)["claude-code"]).toEqual(report);
+    expect(get(agentUsageStore)["claude-code"]).toEqual(readyReport);
   });
 
-  /// A stale `ready` left in place after a failed read is a bar frozen at
-  /// yesterday's number, which is worse than an honest gap.
-  it("replaces a stale reading when the read fails", async () => {
-    agentUsageStore.set({
-      "claude-code": {
-        state: "ready",
-        windows: [{ id: "five_hour", label: "5-hour", usedPercent: 99, resetsAt: null }],
-        plan: null,
-        observedAt: 1,
-        cached: false,
-      },
+  it("marks the profile as refreshing for the life of the probe", async () => {
+    let sawRefreshing = false;
+    backendMock.agentUsage.mockImplementation(async () => {
+      sawRefreshing = get(usageRefreshingStore)["claude-code"] === true;
+      return readyReport;
     });
+    await refreshUsage("claude-code");
+    expect(sawRefreshing).toBe(true);
+    expect(get(usageRefreshingStore)["claude-code"]).toBeUndefined();
+  });
+
+  /// Last known numbers stay on screen when the probe cannot answer.
+  /// Replacing them with a gap would flash yesterday's bars away on
+  /// every restart whose first call failed.
+  it("keeps a still-open reading when the read fails", async () => {
+    agentUsageStore.set({ "claude-code": readyReport });
+    backendMock.agentUsage.mockRejectedValueOnce(new Error("ipc down"));
+    await refreshUsage("claude-code");
+    expect(get(agentUsageStore)["claude-code"]).toEqual(readyReport);
+  });
+
+  it("reports unavailability when there is nothing still-open to keep", async () => {
     backendMock.agentUsage.mockRejectedValueOnce(new Error("ipc down"));
     await refreshUsage("claude-code");
     expect(get(agentUsageStore)["claude-code"].state).toBe("unavailable");
+  });
+});
+
+describe("hydrateUsageCache", () => {
+  function fakeStorage() {
+    const map = new Map<string, string>();
+    return {
+      map,
+      getItem: (k: string) => map.get(k) ?? null,
+      setItem: (k: string, v: string) => void map.set(k, v),
+      removeItem: (k: string) => void map.delete(k),
+    };
+  }
+
+  it("shows last cached readings before any probe returns", () => {
+    const storage = fakeStorage();
+    const report: AgentUsageReport = {
+      state: "ready",
+      windows: [{ id: "five_hour", label: "5-hour", usedPercent: 44, resetsAt: 2_000_000_000 }],
+      plan: "max",
+      observedAt: 1_700_000_000,
+      cached: false,
+    };
+    saveUsageCache({ "claude-code": report }, storage, 1_700_000_000_000);
+    hydrateUsageCache(1_700_000_000_000, storage);
+    expect(get(agentUsageStore)["claude-code"]).toEqual({ ...report, cached: true });
+  });
+
+  it("does not resurrect a window whose reset has already passed", () => {
+    const storage = fakeStorage();
+    const nowMs = 1_700_000_000_000;
+    const nowS = Math.floor(nowMs / 1000);
+    storage.setItem(
+      USAGE_CACHE_KEY,
+      JSON.stringify({
+        "claude-code": {
+          state: "ready",
+          windows: [{ id: "five_hour", label: "5-hour", usedPercent: 96, resetsAt: nowS - 10 }],
+          plan: null,
+          observedAt: nowS - 100,
+          cached: true,
+        },
+      })
+    );
+    hydrateUsageCache(nowMs, storage);
+    expect(get(agentUsageStore)["claude-code"]).toBeUndefined();
+  });
+
+  it("drops a cached window the moment its reset arrives", () => {
+    vi.useFakeTimers();
+    const nowMs = 1_700_000_000_000;
+    vi.setSystemTime(nowMs);
+    const nowS = Math.floor(nowMs / 1000);
+    const storage = fakeStorage();
+    saveUsageCache(
+      {
+        "claude-code": {
+          state: "ready",
+          windows: [
+            { id: "five_hour", label: "5-hour", usedPercent: 80, resetsAt: nowS + 2 },
+            { id: "seven_day", label: "Weekly", usedPercent: 10, resetsAt: nowS + 3600 },
+          ],
+          plan: null,
+          observedAt: nowS,
+          cached: false,
+        },
+      },
+      storage,
+      nowMs
+    );
+    hydrateUsageCache(nowMs, storage);
+    vi.advanceTimersByTime(2_100);
+    const report = get(agentUsageStore)["claude-code"];
+    expect(report?.state).toBe("ready");
+    if (report?.state === "ready") {
+      expect(report.windows.map((w) => w.id)).toEqual(["seven_day"]);
+    }
+    vi.useRealTimers();
   });
 });
 

@@ -4,7 +4,7 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import { agentProfilesStore } from "$lib/core/layoutState";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
-  import { usageProjectionIndicator } from "$lib/ui/indicators";
+  import { usageProjectionIndicator, usageRefreshingIndicator } from "$lib/ui/indicators";
   import { forecastSpan, projectWindow, projectionSentence } from "$lib/agents/usageProjection";
   import {
     agentUsageStore,
@@ -12,6 +12,7 @@
     profilesInUse,
     refreshUsage,
     usageHistoryStore,
+    usageRefreshingStore,
   } from "$lib/agents/agentPauseState";
   import {
     barPercent,
@@ -34,15 +35,8 @@
   const inUse = $derived(new Set(profilesInUse()));
   const profiles = $derived($agentProfilesStore.filter((p) => inUse.has(p.id)));
 
-  let refreshing = $state<Record<string, boolean>>({});
-
   async function refresh(profileId: string): Promise<void> {
-    refreshing = { ...refreshing, [profileId]: true };
-    try {
-      await refreshUsage(profileId, true);
-    } finally {
-      refreshing = { ...refreshing, [profileId]: false };
-    }
+    await refreshUsage(profileId, true);
   }
 
   /// Absent is NOT `unsupported`: the first read has not landed yet, and
@@ -80,12 +74,15 @@
           {#if report?.state === "ready" && report.plan}
             <span class="plan">{report.plan}</span>
           {/if}
+          {#if $usageRefreshingStore[profile.id]}
+            <StatusBadge indicator={usageRefreshingIndicator()} size={11} />
+          {/if}
           {#if profile.usageProbe}
             <IconButton
               icon={RefreshCw}
               label="Check again"
               size={11}
-              disabled={refreshing[profile.id]}
+              disabled={!!$usageRefreshingStore[profile.id]}
               onclick={() => void refresh(profile.id)}
             />
           {/if}

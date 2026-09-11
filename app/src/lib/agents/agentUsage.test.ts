@@ -2,12 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   type AgentUsageReport,
   type UsageWindow,
+  USAGE_CACHE_KEY,
   barPercent,
   displayPercent,
+  dropExpiredWindows,
   formatDuration,
   formatObservedAge,
   formatResetsIn,
+  loadUsageCache,
+  parseUsageCache,
+  pruneUsageCache,
   reportSeverity,
+  saveUsageCache,
   usageBlock,
   usageForLaunchGate,
   usageSeverity,
@@ -228,5 +234,142 @@ describe("usageBlock", () => {
     expect(
       usageBlock({ state: "unavailable", reason: "offline", retryAfter: null }, 1).blocked
     ).toBe(false);
+  });
+});
+
+describe("the persisted usage cache", () => {
+  function fakeStorage() {
+    const map = new Map<string, string>();
+    return {
+      map,
+      getItem: (k: string) => map.get(k) ?? null,
+      setItem: (k: string, v: string) => void map.set(k, v),
+      removeItem: (k: string) => void map.delete(k),
+    };
+  }
+
+  /// A window whose reset has passed is the last value of a closed
+  /// epoch, not a live reading. Showing 96% after the window reopened
+  /// is the one lie this cache must not tell on restart.
+  it("drops a window once its reset has passed", () => {
+    const report = ready([
+      window({ id: "five_hour", usedPercent: 96, resetsAt: NOW_S - 10 }),
+      window({ id: "seven_day", label: "Weekly", usedPercent: 41, resetsAt: NOW_S + 3600 }),
+    ]);
+    const kept = dropExpiredWindows(report, NOW_MS);
+    expect(kept?.state).toBe("ready");
+    if (kept?.state !== "ready") return;
+    expect(kept.windows).toHaveLength(1);
+    expect(kept.windows[0].id).toBe("seven_day");
+  });
+
+  it("returns the same object when every window is still open", () => {
+    const report = ready([window()]);
+    expect(dropExpiredWindows(report, NOW_MS)).toBe(report);
+  });
+
+  /// Every window expired means there is nothing true to show. An empty
+  /// ready report would render as "0%" and that is worse than absence.
+  it("drops a report whose every window has reset", () => {
+    const report = ready([window({ resetsAt: NOW_S - 1 })]);
+    expect(dropExpiredWindows(report, NOW_MS)).toBeNull();
+  });
+
+  it("keeps a window that never said when it resets", () => {
+    const report = ready([window({ resetsAt: null })]);
+    expect(dropExpiredWindows(report, NOW_MS)).toBe(report);
+  });
+
+  it("leaves non-ready reports alone", () => {
+    const unavailable: AgentUsageReport = {
+      state: "unavailable",
+      reason: "offline",
+      retryAfter: null,
+    };
+    expect(dropExpiredWindows(unavailable, NOW_MS)).toBe(unavailable);
+  });
+
+  it("omits expired profiles and keeps the object when nothing changed", () => {
+    const live = ready([window()]);
+    const all = {
+      "claude-code": live,
+      codex: ready([window({ resetsAt: NOW_S - 1 })]),
+    };
+    const pruned = pruneUsageCache(all, NOW_MS);
+    expect(pruned).not.toBe(all);
+    expect(pruned["claude-code"]).toBe(live);
+    expect(pruned.codex).toBeUndefined();
+    const one = { "claude-code": live };
+    expect(pruneUsageCache(one, NOW_MS)).toBe(one);
+  });
+
+  it("round-trips last known ready readings and marks them cached", () => {
+    const storage = fakeStorage();
+    const report = ready(
+      [window({ usedPercent: 23.5, resetsAt: NOW_S + 3600 })],
+      { plan: "max", observedAt: NOW_S - 120 }
+    );
+    saveUsageCache({ "claude-code": report }, storage, NOW_MS);
+    const loaded = loadUsageCache(NOW_MS, storage);
+    expect(loaded["claude-code"]).toEqual({ ...report, cached: true });
+  });
+
+  it("does not persist a reading that has already reset", () => {
+    const storage = fakeStorage();
+    saveUsageCache(
+      { "claude-code": ready([window({ resetsAt: NOW_S - 1 })]) },
+      storage,
+      NOW_MS
+    );
+    expect(storage.map.has(USAGE_CACHE_KEY)).toBe(false);
+  });
+
+  it("clears the key rather than storing an empty object", () => {
+    const storage = fakeStorage();
+    storage.setItem(USAGE_CACHE_KEY, "{}");
+    saveUsageCache({}, storage, NOW_MS);
+    expect(storage.map.has(USAGE_CACHE_KEY)).toBe(false);
+  });
+
+  it("remembers nothing when there is no storage at all", () => {
+    expect(loadUsageCache(NOW_MS, undefined)).toEqual({});
+    expect(() => saveUsageCache({ a: ready([window()]) }, undefined, NOW_MS)).not.toThrow();
+  });
+
+  it("does not persist unsupported or unavailable answers", () => {
+    const storage = fakeStorage();
+    saveUsageCache(
+      {
+        custom: { state: "unsupported" },
+        gemini: { state: "unavailable", reason: "offline", retryAfter: null },
+      },
+      storage,
+      NOW_MS
+    );
+    expect(storage.map.has(USAGE_CACHE_KEY)).toBe(false);
+  });
+
+  /// Hand-edited or half-written cache must read as nothing rather than
+  /// crash the sidebar or invent a 0% bar.
+  it("drops anything it cannot trust", () => {
+    expect(parseUsageCache(null, NOW_MS)).toEqual({});
+    expect(parseUsageCache("not json", NOW_MS)).toEqual({});
+    expect(parseUsageCache("[]", NOW_MS)).toEqual({});
+    expect(parseUsageCache(JSON.stringify({ "claude-code": { state: "ready" } }), NOW_MS)).toEqual(
+      {}
+    );
+    expect(
+      parseUsageCache(
+        JSON.stringify({
+          "claude-code": {
+            state: "ready",
+            windows: [{ id: "five_hour", label: "5-hour", usedPercent: "full", resetsAt: null }],
+            observedAt: NOW_S,
+            cached: false,
+          },
+        }),
+        NOW_MS
+      )
+    ).toEqual({});
   });
 });

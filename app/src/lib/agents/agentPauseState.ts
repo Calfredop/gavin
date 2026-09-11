@@ -27,6 +27,12 @@ import {
 } from "$lib/agents/agentPause";
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import {
+  dropExpiredWindows,
+  loadUsageCache,
+  pruneUsageCache,
+  saveUsageCache,
+} from "$lib/agents/agentUsage";
+import {
   loadUsageHistory,
   projectUsage,
   recordUsage,
@@ -50,7 +56,18 @@ export const agentPauseStore = writable<PauseCycle | null>(null);
 /// The newest reading per profile id. Absent means "not asked yet",
 /// which is deliberately NOT the same as `unsupported`: a surface must be
 /// able to say "checking…" instead of "this agent has no limits".
+///
+/// Hydrated from last-known ready readings at startup so a restart
+/// draws yesterday's bars while the probes run, then replaced as each
+/// live answer lands.
 export const agentUsageStore = writable<Record<string, AgentUsageReport>>({});
+
+/// Profiles whose probe is in flight. Surfaces that already have a
+/// reading draw the refreshing badge; surfaces with nothing yet keep
+/// saying "Checking…".
+export const usageRefreshingStore = writable<Record<string, boolean>>({});
+
+type MaybeStorage = Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined;
 
 /// Every reading kept, per profile and window, so the projection can
 /// measure a burn rate off something other than a single number.
@@ -77,6 +94,7 @@ export const nowStore = writable<number>(Date.now());
 
 let clockTimer: ReturnType<typeof setInterval> | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let staleTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ---- Loading and saving -----------------------------------------------------
 
@@ -130,21 +148,87 @@ export function editableCycle(workspaceId: string | null): PauseCycle {
 
 /// Reads one profile's limits into the store. `force` is a human pressing
 /// refresh; the host still refuses inside its 429 backoff.
+///
+/// A probe that throws keeps a still-open last reading: the bars on
+/// screen at restart must not vanish because the first curl of the
+/// session failed. Only when there is nothing still-open to keep does
+/// the failure become `unavailable`.
 export async function refreshUsage(profileId: string, force = false): Promise<void> {
   if (!profileId) return;
+  usageRefreshingStore.update((all) => ({ ...all, [profileId]: true }));
   try {
     const report = await backend.agentUsage(profileId, force);
     agentUsageStore.update((all) => ({ ...all, [profileId]: report }));
     recordSample(profileId, report);
+    persistUsageCache();
+    armStaleTimer();
   } catch (e) {
-    // A failed IPC is an unavailability like any other. It must never
-    // leave a stale `ready` in the store reading as current -- a bar
-    // frozen at yesterday's number is worse than an honest gap.
-    agentUsageStore.update((all) => ({
-      ...all,
-      [profileId]: { state: "unavailable", reason: String(e), retryAfter: null },
-    }));
+    agentUsageStore.update((all) => {
+      const existing = all[profileId];
+      const kept = existing ? dropExpiredWindows(existing, Date.now()) : null;
+      if (kept) return all;
+      return {
+        ...all,
+        [profileId]: { state: "unavailable", reason: String(e), retryAfter: null },
+      };
+    });
+  } finally {
+    usageRefreshingStore.update((all) => {
+      const next = { ...all };
+      delete next[profileId];
+      return next;
+    });
   }
+}
+
+function persistUsageCache(nowMs: number = Date.now(), storage?: MaybeStorage): void {
+  saveUsageCache(get(agentUsageStore), storage, nowMs);
+}
+
+/// Last known ready readings, so the panel is not blank while the
+/// first probes of the session run. Expired windows are already gone
+/// from what load returns.
+export function hydrateUsageCache(nowMs: number = Date.now(), storage?: MaybeStorage): void {
+  agentUsageStore.set(loadUsageCache(nowMs, storage));
+  armStaleTimer(nowMs, storage);
+}
+
+/// The cache's TTL is each window's own reset, not a fixed age. Arm
+/// a timer for the soonest one so a 5-hour window that closed a
+/// second ago does not sit at 96% until the next poll.
+function armStaleTimer(nowMs: number = Date.now(), storage?: MaybeStorage): void {
+  if (staleTimer) {
+    clearTimeout(staleTimer);
+    staleTimer = null;
+  }
+  const nextAt = earliestResetMs(get(agentUsageStore));
+  if (nextAt == null) return;
+  const delay = Math.max(0, Math.min(nextAt - nowMs + 50, 2_147_483_647));
+  staleTimer = setTimeout(() => {
+    pruneCachedUsage(Date.now(), storage);
+    armStaleTimer(Date.now(), storage);
+  }, delay);
+}
+
+function earliestResetMs(reports: Record<string, AgentUsageReport>): number | null {
+  let earliest: number | null = null;
+  for (const report of Object.values(reports)) {
+    if (report.state !== "ready") continue;
+    for (const window of report.windows) {
+      if (window.resetsAt == null) continue;
+      const at = window.resetsAt * 1000;
+      if (earliest == null || at < earliest) earliest = at;
+    }
+  }
+  return earliest;
+}
+
+function pruneCachedUsage(nowMs: number, storage?: MaybeStorage): void {
+  const before = get(agentUsageStore);
+  const after = pruneUsageCache(before, nowMs);
+  if (after === before) return;
+  agentUsageStore.set(after);
+  saveUsageCache(after, storage, nowMs);
 }
 
 /// Folds one reading into the history, and persists only when it
@@ -424,6 +508,9 @@ export function startPauseClock(): () => void {
   // Before the first poll, so the reading that lands has yesterday's
   // samples to continue rather than starting an epoch of its own.
   usageHistoryStore.set(loadUsageHistory());
+  // ...and last known bars, so a restart is not a blank "Checking…"
+  // for the length of the probes.
+  hydrateUsageCache();
   void pollAll();
   return stopPauseClock;
 }
@@ -431,6 +518,8 @@ export function startPauseClock(): () => void {
 export function stopPauseClock(): void {
   if (clockTimer) clearInterval(clockTimer);
   if (pollTimer) clearInterval(pollTimer);
+  if (staleTimer) clearTimeout(staleTimer);
   clockTimer = null;
   pollTimer = null;
+  staleTimer = null;
 }

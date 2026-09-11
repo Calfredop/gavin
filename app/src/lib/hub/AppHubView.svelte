@@ -42,6 +42,7 @@
     agentInterruptedIndicator,
     attentionIndicator,
     gitIndicator,
+    usageRefreshingIndicator,
     type Indicator,
   } from "$lib/ui/indicators";
   import {
@@ -69,7 +70,7 @@
     type SessionRow,
   } from "$lib/sessions/sessionsManager";
   import { barPercent, displayPercent, formatResetsIn } from "$lib/agents/agentUsage";
-  import { agentUsageStore, nowStore, pausedWorkspaces } from "$lib/agents/agentPauseState";
+  import { agentUsageStore, nowStore, pausedWorkspaces, usageRefreshingStore } from "$lib/agents/agentPauseState";
   import { openAppPanel, showAppPanel } from "$lib/panes/appPanels";
   import {
     newWorkspaceFlow,
@@ -747,6 +748,9 @@
                 use:tooltip={plural(row.workspaces, "workspace", "workspaces") +
                   " running this agent"}>{row.label}</span
               >
+              {#if $usageRefreshingStore[row.profileId]}
+                <StatusBadge indicator={usageRefreshingIndicator()} size={11} />
+              {/if}
               {#if worst && !note}
                 <span class="usage-window">{worst.label}</span>
                 <div class="track">

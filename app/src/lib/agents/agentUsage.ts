@@ -228,3 +228,156 @@ export function usageBlock(
   const until = resets.length === blocking.length ? Math.max(...resets) : null;
   return { blocked: true, window, until };
 }
+
+// ---- Persistence -------------------------------------------------------------
+//
+// Last known READY readings, so a restart can draw yesterday's bars
+// instead of "Checking…" while the probes (curl, Keychain, a 10s
+// timeout) run. The in-process cache in `agent_usage.rs` dies with the
+// host; this one lives next to the usage history, in localStorage, for
+// the same reason: no daemon request, no protocol bump.
+//
+// Stale is not a fixed TTL. A window whose `resetsAt` has passed is the
+// last value of a closed epoch, and showing it is the one lie this
+// cache must not tell -- the same drop the host already does at parse
+// time. A window that never named a reset stays until a live read
+// replaces it.
+
+export const USAGE_CACHE_KEY = "gavin.usageReports";
+
+type MaybeStorage = Pick<Storage, "getItem" | "setItem" | "removeItem"> | undefined;
+
+function defaultStorage(): MaybeStorage {
+  return typeof localStorage === "undefined" ? undefined : localStorage;
+}
+
+function nowSecs(nowMs: number): number {
+  return Math.floor(nowMs / 1000);
+}
+
+/// Drop windows whose reset has passed. Same object when nothing
+/// expired, so a clock tick that finds the cache still open does not
+/// rewrite the store. Null when a ready report has nothing left to
+/// show -- absence, never an empty bar.
+export function dropExpiredWindows(
+  report: AgentUsageReport,
+  nowMs: number
+): AgentUsageReport | null {
+  if (report.state !== "ready") return report;
+  const nowS = nowSecs(nowMs);
+  const windows = report.windows.filter((w) => w.resetsAt == null || w.resetsAt > nowS);
+  if (windows.length === 0) return null;
+  if (windows.length === report.windows.length) return report;
+  return { ...report, windows };
+}
+
+/// Prune every profile. Same object when nothing expired.
+export function pruneUsageCache(
+  reports: Record<string, AgentUsageReport>,
+  nowMs: number
+): Record<string, AgentUsageReport> {
+  let changed = false;
+  const next: Record<string, AgentUsageReport> = {};
+  for (const [id, report] of Object.entries(reports)) {
+    const kept = dropExpiredWindows(report, nowMs);
+    if (kept == null) {
+      changed = true;
+      continue;
+    }
+    if (kept !== report) changed = true;
+    next[id] = kept;
+  }
+  if (!changed && Object.keys(next).length === Object.keys(reports).length) return reports;
+  return next;
+}
+
+function parseWindow(value: unknown): UsageWindow | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const w = value as Record<string, unknown>;
+  if (typeof w.id !== "string" || w.id === "") return null;
+  if (typeof w.label !== "string") return null;
+  if (typeof w.usedPercent !== "number" || !Number.isFinite(w.usedPercent)) return null;
+  const resetsAt =
+    w.resetsAt == null
+      ? null
+      : typeof w.resetsAt === "number" && Number.isFinite(w.resetsAt)
+        ? w.resetsAt
+        : null;
+  return { id: w.id, label: w.label, usedPercent: w.usedPercent, resetsAt };
+}
+
+function parseReadyReport(value: unknown): AgentUsageReport | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const r = value as Record<string, unknown>;
+  if (r.state !== "ready") return null;
+  if (!Array.isArray(r.windows)) return null;
+  const windows: UsageWindow[] = [];
+  for (const row of r.windows) {
+    const window = parseWindow(row);
+    if (window) windows.push(window);
+  }
+  if (windows.length === 0) return null;
+  const observedAt =
+    typeof r.observedAt === "number" && Number.isFinite(r.observedAt) ? r.observedAt : 0;
+  const plan = typeof r.plan === "string" ? r.plan : null;
+  return { state: "ready", windows, plan, observedAt, cached: true };
+}
+
+/// A stored blob, with every field checked. Hand-edited or half-written
+/// cache must read as "no cache" rather than crash a surface or invent
+/// a 0% bar. Only `ready` reports survive: last known numbers, not last
+/// known apologies.
+export function parseUsageCache(
+  raw: string | null,
+  nowMs: number
+): Record<string, AgentUsageReport> {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: Record<string, AgentUsageReport> = {};
+  for (const [profileId, value] of Object.entries(parsed as Record<string, unknown>)) {
+    const report = parseReadyReport(value);
+    if (!report) continue;
+    const kept = dropExpiredWindows(report, nowMs);
+    if (kept) out[profileId] = kept;
+  }
+  return out;
+}
+
+export function loadUsageCache(
+  nowMs: number,
+  storage: MaybeStorage = defaultStorage()
+): Record<string, AgentUsageReport> {
+  try {
+    return parseUsageCache(storage?.getItem(USAGE_CACHE_KEY) ?? null, nowMs);
+  } catch {
+    return {};
+  }
+}
+
+/// Persist only still-open ready readings. An empty set clears the key
+/// rather than storing `{}`, the same as the usage history.
+export function saveUsageCache(
+  reports: Record<string, AgentUsageReport>,
+  storage: MaybeStorage = defaultStorage(),
+  nowMs: number = Date.now()
+): void {
+  try {
+    const ready: Record<string, AgentUsageReport> = {};
+    for (const [id, report] of Object.entries(reports)) {
+      if (report.state !== "ready") continue;
+      const kept = dropExpiredWindows(report, nowMs);
+      if (kept) ready[id] = kept;
+    }
+    if (Object.keys(ready).length === 0) storage?.removeItem(USAGE_CACHE_KEY);
+    else storage?.setItem(USAGE_CACHE_KEY, JSON.stringify(ready));
+  } catch {
+    // A full or disabled store costs the panel its memory across a
+    // reload and nothing else.
+  }
+}
