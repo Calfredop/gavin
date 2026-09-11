@@ -46,7 +46,14 @@
 
 import { relativeTime } from "$lib/hub/appHub";
 import { featureBlockedReason, type DaemonCompat } from "$lib/core/daemonCompat";
-import { duplicateTool, resolveToolCwd, type Tool, type ToolKind } from "$lib/orchestration/orchestrationTools";
+import {
+  duplicateTool,
+  resolveToolCwd,
+  toolPlatformBlockedReason,
+  type Tool,
+  type ToolKind,
+} from "$lib/orchestration/orchestrationTools";
+import type { AppPlatform } from "$lib/core/platform";
 
 /// One standalone run of a tool. Mirrors `ToolRun` in the protocol crate.
 export interface ToolRun {
@@ -289,9 +296,20 @@ export function runBlockedReason(input: {
   rootPath: string | null;
   tool: Tool;
   lastRun: ToolRun | undefined;
+  /// This machine, or null when it could not be told -- which blocks
+  /// nothing. Passed in rather than read here for the reason every other
+  /// input is: this module is pure, and the Tauri global is the view's
+  /// to read.
+  platform: AppPlatform | null;
 }): string | null {
   const alone = cannotRunAloneReason(input.tool.kind);
   if (alone) return alone;
+  // Beside the kind, and ahead of the daemon, for the same reason: no
+  // upgrade and no edit moves a tool onto an operating system it does
+  // not run on, so a version number here would send the human to fix
+  // something that is not the problem.
+  const platform = toolPlatformBlockedReason(input.tool, input.platform);
+  if (platform) return platform;
   const gated = featureBlockedReason(input.compat, "toolRuns");
   if (gated) return gated;
   if (resolveToolCwd(input.tool, input.rootPath) === null) {

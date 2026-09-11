@@ -77,7 +77,7 @@ describe("the unplaced drawer stands even with no rails", () => {
     // look, not a lock: the attribute itself has to go, the way a
     // blocked tool row already loses its handle.
     expect(drawer).toMatch(/data-orch-card=\{targetRailId \? entry\.plan\.path : undefined\}/);
-    expect(drawer).toMatch(/data-orch-tool=\{toolsBlocked \|\| !targetRailId \? undefined : tool\.id\}/);
+    expect(drawer).toMatch(/data-orch-tool=\{blocked \|\| !targetRailId \? undefined : tool\.id\}/);
     expect(drawer).toMatch(/data-orch-template=\{groupsBlocked \|\| !targetRailId \? undefined : t\.id\}/);
   });
 });

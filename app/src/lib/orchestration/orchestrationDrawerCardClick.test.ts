@@ -60,7 +60,9 @@ describe("pressing an unplaced card row opens its detail modal", () => {
     const row = drawer.slice(rowAt, drawer.indexOf("</button>", rowAt));
     expect(row).not.toContain("disabled");
     // The rows that DO need a rail keep saying so.
-    expect(drawer).toMatch(/disabled=\{Boolean\(toolsBlocked\) \|\| !targetRailId\}/);
+    // `blocked`, not `toolsBlocked`: the tool row folds the daemon gate
+    // and a tool this machine cannot run at all into one reason.
+    expect(drawer).toMatch(/disabled=\{Boolean\(blocked\) \|\| !targetRailId\}/);
     expect(drawer).toMatch(/disabled=\{Boolean\(groupsBlocked\) \|\| !targetRailId\}/);
   });
 

@@ -71,6 +71,8 @@ vi.mock("$lib/core/backend", () => ({
     .mockResolvedValue({ customCommand: "", customModelFlag: "", complexity: {} }),
   setAgentDefaults: vi.fn().mockResolvedValue(undefined),
   getTerminalFontSize: vi.fn().mockResolvedValue(null),
+  getCustomResumeArgs: vi.fn().mockResolvedValue(null),
+  setCustomResumeArgs: vi.fn().mockResolvedValue(undefined),
   getAutoCommit: vi.fn().mockResolvedValue(null),
   getGitTrackingDefault: vi.fn().mockResolvedValue(null),
   getRequireReview: vi.fn().mockResolvedValue(null),
@@ -216,6 +218,9 @@ import {
   setWorkspaceFontSize,
   setTerminalFontSizeDefault,
   terminalFontSizeDefault,
+  setWorkspaceCustomResumeArgs,
+  setCustomResumeArgsDefault,
+  customResumeArgsDefault,
   terminalFontSize,
   setWorkspaceAutoCommit,
   setAutoCommitDefault,
@@ -3360,6 +3365,7 @@ function agentProfile(id: string, failurePatterns: string[]) {
     failurePatterns,
     failureCauses: [],
     sessionIdArgs: "",
+    sessionIdDiscovery: "",
     resumeArgs: "",
     usageProbe: null,
   };
@@ -3459,6 +3465,25 @@ describe("workspace settings", () => {
 
     await setTerminalFontSizeDefault(null);
     expect(get(terminalFontSizeDefault)).toBeNull();
+  });
+
+  it("setWorkspaceCustomResumeArgs stores a flag, trimmed, and null clears it back to inheriting", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    await setWorkspaceCustomResumeArgs("ws-1", "  --resume  ");
+    expect(get(layoutState).workspaces[0].customResumeArgs).toBe("--resume");
+    expect(backend.setWorkspacesState).toHaveBeenCalled();
+
+    await setWorkspaceCustomResumeArgs("ws-1", null);
+    expect(get(layoutState).workspaces[0].customResumeArgs).toBeUndefined();
+  });
+
+  it("setCustomResumeArgsDefault goes to config.json, never to the daemon", async () => {
+    await setCustomResumeArgsDefault("--resume");
+    expect(backend.setCustomResumeArgs).toHaveBeenCalledWith("--resume");
+    expect(get(customResumeArgsDefault)).toBe("--resume");
+
+    await setCustomResumeArgsDefault(null);
+    expect(get(customResumeArgsDefault)).toBeNull();
   });
 
   it("setAutoCommitDefault goes to config.json, never to the daemon", async () => {

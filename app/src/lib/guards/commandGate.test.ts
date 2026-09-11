@@ -214,6 +214,11 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // between doing a thing and consenting to it.
   get_launch_config: ["ordinary"],
   set_launch_config: ["ordinary"],
+  // A resume flag, the same shape as the launch wall above: a
+  // preference read and write, ordinary because nothing of the human's
+  // is lost or run by setting it.
+  get_custom_resume_args: ["ordinary"],
+  set_custom_resume_args: ["ordinary"],
   // Two reads -- a memory sample from the OS, and whether a watchman is
   // running. `watchman_forget` is the odd one and still ordinary: it is
   // `watch-del` on one root, and watchman re-establishes the watch the

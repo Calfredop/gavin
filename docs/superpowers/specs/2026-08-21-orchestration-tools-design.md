@@ -37,6 +37,7 @@ one that WRITES it, and still nothing that reads it.*
 | T14 | **Added 2026-09-07:** a tool carries its own **icon** — a NAME from the app's curated library (`ui/iconLibrary.ts`), never an image — drawn wherever tools are listed, in place of the glyph its KIND imposes. Absent means "wear the kind's", which is what every tool authored before v33 means. A name this build cannot resolve falls back to the kind and is **kept** on the next save. See §12. |
 | T13 | **Added 2026-09-04:** a human can author **every** kind, and the Tools tab **edits** as well as runs. What kept `gavin`, `until` and `pr` built-in-only was never the scheduler — every rule about them branches on the KIND — it was an edit form with one body field. The form now has three (source / an action select / none), so all six are authorable and every built-in offers Duplicate. The Tools tab lists the whole library, with Run dark and a reason on the three that only mean something as a step. See §11. |
 | T15 | **Added 2026-09-10:** an agent authors **this workspace's** tools over MCP — read, save, delete. Built-in and global tools are refused, and the guard is **deterministic and daemon-side**: the `agent` role loses `SaveTool`/`DeleteTool` (whose scope comes from the payload) and gets `SaveToolByRoot`/`DeleteToolByRoot`, which stamp the watched workspace's id over what arrives. See §13. |
+| T16 | **Added 2026-09-11:** a tool can declare the **platforms** it runs on (`platforms`, built-in only, absent = everywhere, never on the wire). One tool declares one: `builtin:send-email` drives Mail.app, and there is nothing to drive elsewhere. It is **not** hidden — the drawer draws it inert with the reason, the Tools tab darkens Run with it, and a rail step **stalls** with it, all off one sentence. "Needs something installed" is a different fact and declares nothing: `builtin:notify` tries `osascript`, then `notify-send`, then fails loudly naming the package. See §7.2. |
 
 ---
 
@@ -69,6 +70,10 @@ export interface Tool {
   /// The glyph this tool draws everywhere it is listed (T14, v33): a
   /// name from `ui/iconLibrary.ts`. Absent = wear the kind's.
   icon?: string | null;
+  /// Where this tool can run at all (T16). Built-in only, absent =
+  /// everywhere, and never on the wire — `toRecord` names the record's
+  /// fields one by one and this is not among them.
+  platforms?: readonly AppPlatform[];
 }
 ```
 
@@ -78,6 +83,11 @@ daemon at all.
 
 `gavin` was added by §8. `TOOL_KINDS` — what the library dialog's chips
 offer — stays the three **authorable** kinds; the fourth is built-in only.
+
+`platforms` was added by §7.2, and unlike `cwd` and `icon` it is **not** a
+wire field at all — no protocol version, no compat gate, nothing for a
+daemon to drop. It describes a shipped body, and a stored tool's body is
+the human's, so a duplicate drops it.
 
 `cwd` was added by §10. It is `Option<String>` on the wire, which widens
 an **existing** request (`SaveTool`) and is therefore invisible to
@@ -360,7 +370,7 @@ three kinds. `{{param}}` defaults in brackets.
 | `builtin:unity-tests` | Run Unity tests | command | `unity`, `project` [.], `platform` [EditMode], `results` [TestResults.xml] |
 | `builtin:browser-test` | Browser test (Chrome) | agent | `url` [http://localhost:5173], `checks` |
 | `builtin:code-review` | Review this branch | agent | `base` [main] |
-| `builtin:notify` | Send a notification | command | `title` [gavin], `message` |
+| `builtin:notify` | Send a notification | script | `title` [gavin], `message` |
 | `builtin:send-email` | Send an email (Mail.app) | script | `to`, `subject`, `body` |
 
 `Merge` is an agent, not `git merge --no-edit`: a conflict left in a live
@@ -369,9 +379,10 @@ resolve it or abort cleanly. `Commit` is an agent for the message quality.
 `Push`, `Open PR` and the two test runners are commands because their
 success is exactly their exit code. `Send an email` is the script example.
 
-`Send a notification` and `Send an email` are macOS-only (`osascript`), and
-say so in their description — literal substitution (T3) means a `"` in a
-message breaks them, which the dialog's help text states.
+`Send a notification` and `Send an email` were both macOS-only
+(`osascript`) and said so in their descriptions — literal substitution (T3)
+means a `"` in a message breaks them, which the dialog's help text states.
+§7.2 amends that: they turned out to be two different facts.
 
 ### 7.1 Merge ships in both directions (amended 2026-08-25)
 
@@ -407,6 +418,58 @@ Renaming rather than flipping was deliberate: pulling `main` into a
 long-running rail is a real operation the human already used, and flipping
 `builtin:merge` would have changed the direction of every existing step
 silently, under an unchanged name.
+
+### 7.2 One of the two notifiers is portable (amended 2026-09-11)
+
+On Linux both failed at the step with `osascript: command not found`. The
+fix is not the same for both, because "needs something installed" and "has
+nowhere to run" are different problems and only one of them is the
+picker's business.
+
+**`Send a notification` is portable, so it was made portable.** Its kind
+moves `command` → `script` (a branch needs more than one line) and its body
+tries `osascript`, then `notify-send`, then exits non-zero having echoed
+the message and named `libnotify-bin`. osascript is tried FIRST for the
+reason §7.1 renamed rather than flipped `builtin:merge`: a mac with
+Homebrew's `notify-send` on it must keep notifying the way it did
+yesterday. The loud exit is the point of the tool — one whose only job is
+to tell you something must not end quietly when it could not.
+
+Rejected: a fifth `gavin` action over the app's own notification plugin,
+which `core/notifications.ts` already drives on every platform Tauri
+supports with no external binary at all. It would have removed the
+missing-notifier question outright, and it loses on three counts: it
+changes what a shipped tool does on the platform where it already works,
+it takes the body out of the human's hands (T7 — a `gavin` body names an
+action, it is not source), and a `gavin` tool is not runnable standalone,
+so the Tools tab's Run button on "Send a notification" would go dark.
+Windows is left in the loud-exit branch on purpose: the routes that work
+there are a tray balloon that blocks the step for five seconds or a WinRT
+toast that shows nothing without a registered AppUserModelID — a silent
+failure, which is the one outcome this tool may not have.
+
+**`Send an email` cannot be, so it declares where it runs.** There is no
+Mail.app elsewhere: `xdg-email` opens a composer and never sends, and
+sending for real needs an SMTP account gavin does not hold and should not
+start holding. `Tool` gains an optional `platforms` field — built-ins
+only, absent meaning everywhere, and never on the wire, since `toRecord`
+names the record's fields one by one. `duplicateTool` drops it, which is
+what lets a Linux human duplicate the mailer and re-point the copy at
+`msmtp`.
+
+**The pickers do not hide it.** `toolPlatformBlockedReason` returns one
+sentence and three surfaces ask for it: the drawer row (listed, inert,
+reason in the tooltip — the posture `toolsBlocked` already established),
+the Tools tab's Run button (through `runBlockedReason`, beside the kind
+and ahead of the daemon gate, since no upgrade moves a tool onto another
+operating system), and `executeToolLaunch`, which stalls a step with that
+sentence rather than launching a session whose whole output is
+`osascript: command not found`. Hiding was rejected for the reason the
+Tools tab already refuses to filter rows by kind: the human loses the row
+they are standing in, and here that row is the one they most want to
+duplicate. A null platform — outside a Tauri window — blocks nothing, so
+no guard can fire in a unit test or a preview where a wrong refusal would
+be invisible.
 
 ---
 

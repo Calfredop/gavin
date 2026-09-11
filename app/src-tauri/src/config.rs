@@ -389,6 +389,20 @@ pub struct Workspace {
     /// indistinguishable on disk from nobody having decided yet.
     #[serde(default)]
     pub require_review_asked: bool,
+    /// This workspace's own resume flag for the `custom` agent profile
+    /// (v38), e.g. `--resume`. Absent means inherit
+    /// `AppConfig::custom_resume_args`, and failing that no resume at all
+    /// for `custom` -- the same "absence is a real state" shape as
+    /// `terminal_font_size`. Deliberately this config.json layer and not
+    /// `.gavin-root/config.toml`'s `[agent]` table (`file`/`mcp_file`/
+    /// `mcp_format`'s layer): those travel with the repo, but a resume
+    /// flag is a fact about the BINARY on this machine, exactly like
+    /// `command`/`model_flag` already are for every OTHER profile via
+    /// the verified table -- `custom` has no table row to carry one, and
+    /// config.toml has no app-wide layer to inherit from. Machine-local
+    /// (D35) like `auto_commit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_resume_args: Option<String>,
 }
 
 /// One recorded decision on `Workspace::mcp_foreign_servers_choice`.
@@ -792,6 +806,17 @@ pub struct AppConfig {
     /// never touched it.
     #[serde(default)]
     pub launch: Option<LaunchConfig>,
+    /// The app-wide resume flag for the `custom` agent profile (v38),
+    /// e.g. `--resume`. Absent means nobody has set one and `custom`
+    /// resumes not at all, the same "absence is real" convention as
+    /// `terminal_font_size`/`auto_commit`. The TWELFTH carry-through
+    /// field: like session_names/file_tabs/board_tabs/theme/
+    /// agent_models/removed_workspaces/agent_pause/superpowers/
+    /// agent_defaults/git_tracking/require_review/launch it must be
+    /// carried through `persist_workspaces`, or it silently resets on
+    /// the next save.
+    #[serde(default)]
+    pub custom_resume_args: Option<String>,
 }
 
 /// The app-wide require-review default, wrapped in a type of its own for
@@ -919,6 +944,7 @@ mod tests {
             reviewed_cards: None,
             require_review: None,
             require_review_asked: false,
+            custom_resume_args: None,
         }
     }
 
@@ -1001,6 +1027,35 @@ mod tests {
         assert_eq!(old.workspaces[0].terminal_font_size, None);
     }
 
+    /// v38: the `custom` agent profile's resume flag, exactly the same
+    /// workspace-overrides-app-default-overrides-absent shape as
+    /// `terminal_font_size` above -- a config.json-layer setting, not
+    /// `.gavin-root/config.toml`'s `[agent]` table.
+    #[test]
+    fn custom_resume_args_roundtrip_override_wins_and_default_to_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.custom_resume_args = Some("--resume-ws".to_string());
+        let config = AppConfig {
+            workspaces: vec![ws],
+            custom_resume_args: Some("--resume-app".to_string()),
+            ..Default::default()
+        };
+        save(dir.path(), &config).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.custom_resume_args, Some("--resume-app".to_string()));
+        assert_eq!(loaded.workspaces[0].custom_resume_args, Some("--resume-ws".to_string()));
+
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces":[{"id":"w","name":"W","pages":[],"activePageId":null,"activeView":null}]}"#,
+        )
+        .unwrap();
+        let old = load(dir.path()).unwrap();
+        assert_eq!(old.custom_resume_args, None);
+        assert_eq!(old.workspaces[0].custom_resume_args, None);
+    }
+
     #[test]
     fn save_then_load_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
@@ -1022,6 +1077,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -1052,6 +1108,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -1096,6 +1153,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -1217,6 +1275,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1266,6 +1325,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1301,6 +1361,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1339,6 +1400,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1391,6 +1453,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1418,6 +1481,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(&nested, &config).unwrap();
 
@@ -1453,6 +1517,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -1599,6 +1664,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1644,6 +1710,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1684,6 +1751,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1749,6 +1817,7 @@ mod tests {
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
             launch: None,
+            custom_resume_args: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);

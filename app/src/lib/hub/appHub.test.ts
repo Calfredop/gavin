@@ -661,6 +661,7 @@ function profile(id: string, over: Partial<AgentProfileInfo> = {}): AgentProfile
     failurePatterns: [],
     failureCauses: [],
     sessionIdArgs: "",
+    sessionIdDiscovery: "",
     resumeArgs: "",
     usageProbe: null,
     ...over,

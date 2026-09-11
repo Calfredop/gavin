@@ -15,6 +15,29 @@ export const NAME_TAB_FIRST =
   "First, before anything else: call gavin_name_session to name this tab — " +
   "two to four words for the work itself, not for you.";
 
+// v38: an agent whose CLI mints its OWN conversation id -- opencode
+// today, per agent_setup.rs's `session_id_discovery` -- gets a second
+// instruction appended: run that discovery command once an id exists,
+// and self-report it as gavin_name_session's second argument, so gavin
+// can reopen this exact conversation later instead of writing a fresh
+// one from an account of it.
+//
+// A profile that mints its id up front (Claude Code) or has no verified
+// convention (codex, gemini, cursor, custom) has an empty
+// sessionIdDiscovery and gets NAME_TAB_FIRST completely unchanged --
+// the same no-fallback-BETWEEN-rows rule sessionIdArgs/resumeArgs
+// already take: a discovery command that fits nobody's CLI is worse
+// than admitting there is none.
+export function nameTabFirst(sessionIdDiscovery: string | null | undefined): string {
+  const command = sessionIdDiscovery?.trim();
+  if (!command) return NAME_TAB_FIRST;
+  return (
+    `${NAME_TAB_FIRST} Your CLI mints its own conversation id, which gavin has no way to ` +
+    `fix at launch -- so once one exists, run \`${command}\` and pass what it prints as ` +
+    `gavin_name_session's second argument.`
+  );
+}
+
 // The provisional tab name the app writes the moment it launches a card,
 // before the agent has said anything. The agent's own gavin_name_session
 // then overwrites it with something sharper -- but until it does (and if
@@ -93,10 +116,11 @@ export function composeTaskPrompt(
   body: string,
   attachments: string[] = [],
   cwd: string | null = null,
-  withheld: string[] = []
+  withheld: string[] = [],
+  sessionIdDiscovery: string | null | undefined = null
 ): string {
   return (
-    `${NAME_TAB_FIRST}\n\n` +
+    `${nameTabFirst(sessionIdDiscovery)}\n\n` +
     `You are executing the task card at ${path} ("${title}").` +
     `${attachmentPromptBlock(attachments, withheld)}\n\n` +
     `${body}\n\n` +
@@ -110,10 +134,11 @@ export function composePlanPrompt(
   path: string,
   attachments: string[] = [],
   cwd: string | null = null,
-  withheld: string[] = []
+  withheld: string[] = [],
+  sessionIdDiscovery: string | null | undefined = null
 ): string {
   return (
-    `${NAME_TAB_FIRST}\n\n` +
+    `${nameTabFirst(sessionIdDiscovery)}\n\n` +
     `Read ${path} and execute that plan. Work its checklist top to bottom: ` +
     `tick items (- [x]) as you complete them, promote items that need their own agent ` +
     `with gavin_promote_task, and keep the plan's status current with gavin_set_plan_field.` +
@@ -145,9 +170,13 @@ export function composePlanPrompt(
 //
 // Nothing here mentions the done column: the run ends when the card is
 // developed, and the card stays where it is. Developing is not starting.
-export function composeDevelopPrompt(path: string, title: string): string {
+export function composeDevelopPrompt(
+  path: string,
+  title: string,
+  sessionIdDiscovery: string | null | undefined = null
+): string {
   return (
-    `${NAME_TAB_FIRST}\n\n` +
+    `${nameTabFirst(sessionIdDiscovery)}\n\n` +
     `Use the gavin-develop skill on the card at ${path} ("${title}"): develop it into ` +
     `work an agent can execute \u2014 a checklist, nested task cards, both, or, when it is ` +
     `really one sitting, a sharper prompt \u2014 and set the card's kind and complexity to ` +
@@ -394,10 +423,11 @@ export function composeResumeTaskPrompt(
   title: string,
   body: string,
   attachments: string[] = [],
-  withheld: string[] = []
+  withheld: string[] = [],
+  sessionIdDiscovery: string | null | undefined = null
 ): string {
   return (
-    `${NAME_TAB_FIRST}\n\n` +
+    `${nameTabFirst(sessionIdDiscovery)}\n\n` +
     `Use the gavin-resume skill to resume the task card at ${path} ("${title}"). ` +
     `Work on it already started and stopped.` +
     `${attachmentPromptBlock(attachments, withheld)}\n\n` +
@@ -411,10 +441,11 @@ export function composeResumeTaskPrompt(
 export function composeResumePlanPrompt(
   path: string,
   attachments: string[] = [],
-  withheld: string[] = []
+  withheld: string[] = [],
+  sessionIdDiscovery: string | null | undefined = null
 ): string {
   return (
-    `${NAME_TAB_FIRST}\n\n` +
+    `${nameTabFirst(sessionIdDiscovery)}\n\n` +
     `Use the gavin-resume skill to resume the plan at ${path}. Work on it already started ` +
     `and stopped: find what is already done before you write anything — the checklist's ` +
     `ticks are the record, but not the whole of it. Then work it top to bottom from there, ` +
@@ -447,7 +478,8 @@ export function composeReviewLaunchPrompt(
   kind: "task" | "plan",
   body: string,
   attachments: string[] = [],
-  withheld: string[] = []
+  withheld: string[] = [],
+  sessionIdDiscovery: string | null | undefined = null
 ): string {
   const subject = kind === "task" ? "task card" : "plan";
   // The body is quoted when there is one and skipped when there is not,
@@ -457,7 +489,7 @@ export function composeReviewLaunchPrompt(
   // to load.
   const quoted = body.trim() ? `\n\n${body.trim()}` : "";
   return (
-    `${NAME_TAB_FIRST}\n\n` +
+    `${nameTabFirst(sessionIdDiscovery)}\n\n` +
     `The work for the ${subject} at ${path} ("${title}") is finished and is being reviewed. ` +
     `Read the card and find what the work actually did — the checklist, the files it ` +
     `touched, and the commits on this checkout — before you answer anything.` +

@@ -51,6 +51,7 @@
   import ToolLibraryDialog from "$lib/orchestration/ToolLibraryDialog.svelte";
   import ToolRunDialog from "$lib/orchestration/ToolRunDialog.svelte";
   import { tooltip } from "$lib/core/tooltip";
+  import { currentPlatform } from "$lib/core/platform";
   import { toolIcon } from "$lib/ui/toolKindIcon";
 
   interface Props {
@@ -109,6 +110,7 @@
       rootPath: rootPath ?? workspaceRootPath(workspaceId),
       tool,
       lastRun: lastRuns.get(tool.id),
+      platform: currentPlatform(),
     });
   }
 

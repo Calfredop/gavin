@@ -70,7 +70,14 @@ import type {
   ToolSummary,
 } from "$lib/orchestration/orchestration";
 import { composeOrganizePrompt, composeRailPrompt } from "$lib/orchestration/orchestrationPrompts";
-import { findTool, gavinActionOf, resolveToolBody, resolveToolParam } from "$lib/orchestration/orchestrationTools";
+import {
+  findTool,
+  gavinActionOf,
+  resolveToolBody,
+  resolveToolParam,
+  toolPlatformBlockedReason,
+} from "$lib/orchestration/orchestrationTools";
+import { currentPlatform } from "$lib/core/platform";
 import type { Tool } from "$lib/orchestration/orchestrationTools";
 import {
   buildUntilScript,
@@ -1055,6 +1062,22 @@ async function executeToolLaunch(
     return false;
   }
 
+  // A tool that cannot run on this operating system at all. The drawer
+  // will not place one here, so what this catches is a plan authored
+  // somewhere else -- a rail written on a mac, opened on Linux, with
+  // `builtin:send-email` on it. Stalling with the sentence the drawer
+  // row already carries beats launching a session whose whole output is
+  // `osascript: command not found`, which reads as a broken step rather
+  // than as a step that was never going to work here.
+  //
+  // Before the kind branches below, because this is a fact about the
+  // tool and not about what running it would involve.
+  const unsupported = toolPlatformBlockedReason(tool, currentPlatform());
+  if (unsupported) {
+    await setStepRunAction(workspaceId, step.id, "stalled", null, unsupported);
+    return false;
+  }
+
   // Before the checkout: a gavin action needs neither, and stalling one
   // on an unbound rail with no root would be a refusal about something
   // it was never going to touch.
@@ -1310,6 +1333,17 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     );
     return false;
   }
+  // The card picks its own agent, exactly as it does for a board Run: a
+  // rail is a different way to schedule the same card, not a different
+  // kind of work. Its `agent:`/`model:` win where it names either, its
+  // complexity level answers otherwise, and a card that says neither
+  // falls back to the workspace's agent -- so a rail of plain cards
+  // behaves as it always has.
+  //
+  // Resolved here, ahead of the prompt: `sessionIdDiscovery` has to
+  // reach the composer, and the same resolution below (unchanged) would
+  // otherwise shadow this one rather than reuse it.
+  const agent = agentForCard(workspaceId, entry.plan);
   let prompt: string;
   if (entry.plan.kind === "task") {
     prompt = composeTaskPrompt(
@@ -1318,23 +1352,17 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
       body,
       resolved.paths,
       cwd,
-      resolved.withheld
+      resolved.withheld,
+      agent.sessionIdDiscovery
     );
   } else {
-    prompt = composePlanPrompt(step.cardPath, resolved.paths, cwd, resolved.withheld);
+    prompt = composePlanPrompt(step.cardPath, resolved.paths, cwd, resolved.withheld, agent.sessionIdDiscovery);
   }
   // A card step re-run by a loop opens with what failed. Null except on
   // a retry, and then this is the whole difference between "do the card"
   // and "the check you have to pass says this".
   prompt = withRetryPrefix(prompt, await retryNoteFor(workspaceId, rail, stepId));
 
-  // The card picks its own agent, exactly as it does for a board Run: a
-  // rail is a different way to schedule the same card, not a different
-  // kind of work. Its `agent:`/`model:` win where it names either, its
-  // complexity level answers otherwise, and a card that says neither
-  // falls back to the workspace's agent -- so a rail of plain cards
-  // behaves as it always has.
-  const agent = agentForCard(workspaceId, entry.plan);
   const conversationId = conversationIdForLaunch(agent);
   const command = buildRunCommand(
     agent.launchCommand,

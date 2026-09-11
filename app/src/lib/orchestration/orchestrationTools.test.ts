@@ -19,6 +19,7 @@ import {
   isBuiltinId,
   toolKindLabel,
   gavinActionOf,
+  toolPlatformBlockedReason,
   resolveToolParam,
   resolveToolCwd,
   startRailWorkspaceChoices,
@@ -202,6 +203,42 @@ describe("the built-in set", () => {
     }
   });
 
+  // Both notifiers, and a third branch for neither. The two that matter
+  // are the ORDER -- osascript is tried first so a mac with Homebrew's
+  // notify-send on it keeps notifying the way it always did -- and the
+  // non-zero exit, which is the only thing separating "could not tell
+  // you" from "told you".
+  it("notifies through whichever notifier this machine has, and fails loudly with neither", () => {
+    const tool = builtin("builtin:notify");
+    // A branch cannot be one command line. `script` and not `gavin`:
+    // the Tools tab's Run button is live for a script and dark for an
+    // action, and testing a notification on its own is the whole reason
+    // to press it.
+    expect(tool.kind).toBe("script");
+    const body = tool.body;
+    expect(body.indexOf("osascript")).toBeLessThan(body.indexOf("notify-send"));
+    expect(body).toContain("command -v osascript");
+    expect(body).toContain("command -v notify-send");
+    expect(body).toContain("exit 1");
+    // The package, not just the binary: "notify-send: not found" sends
+    // the human to a search engine, "install libnotify-bin" does not.
+    expect(body).toContain("libnotify-bin");
+    // It declares no `platforms`, deliberately. Needing something
+    // installed is not the same fact as having nowhere to run, and
+    // naming the missing package beats hiding the tool.
+    expect(tool.platforms).toBeUndefined();
+    expect(tool.description).toContain("notify-send");
+  });
+
+  // The one tool with nothing to fall back to: no Mail.app elsewhere,
+  // `xdg-email` only opens a composer, and real sending wants an SMTP
+  // account gavin does not hold.
+  it("marks the Mail.app tool macOS-only, and nothing else", () => {
+    expect(builtin("builtin:send-email").platforms).toEqual(["macos"]);
+    const restricted = BUILTIN_TOOLS.filter((t) => t.platforms);
+    expect(restricted.map((t) => t.id)).toEqual(["builtin:send-email"]);
+  });
+
   it("names each kind for the dialog", () => {
     expect(toolKindLabel("agent")).toBe("Agent prompt");
     expect(toolKindLabel("command")).toBe("Bash command");
@@ -358,6 +395,45 @@ describe("overrides", () => {
   });
 });
 
+describe("toolPlatformBlockedReason", () => {
+  const mailer = { name: "Send an email (Mail.app)", platforms: ["macos"] as const };
+
+  it("says nothing about a tool that declares no platforms", () => {
+    expect(toolPlatformBlockedReason({ name: "Push branch" }, "linux")).toBeNull();
+    expect(toolPlatformBlockedReason({ name: "Push branch", platforms: [] }, "linux")).toBeNull();
+  });
+
+  it("says nothing on a platform the tool declares", () => {
+    expect(toolPlatformBlockedReason(mailer, "macos")).toBeNull();
+  });
+
+  // Names the TOOL, because two of the three callers -- the stall on a
+  // rail step and the refusal in `launch()` -- have no row beside them
+  // saying which tool is meant.
+  it("names the tool and where it runs, everywhere else", () => {
+    expect(toolPlatformBlockedReason(mailer, "linux")).toBe(
+      "“Send an email (Mail.app)” runs only on macOS."
+    );
+    expect(toolPlatformBlockedReason(mailer, "windows")).toBe(
+      "“Send an email (Mail.app)” runs only on macOS."
+    );
+  });
+
+  it("lists several platforms readably", () => {
+    expect(
+      toolPlatformBlockedReason({ name: "X", platforms: ["macos", "linux"] }, "windows")
+    ).toBe("“X” runs only on macOS or Linux.");
+  });
+
+  // The null is the whole reason the platform type has one. A gate that
+  // read "could not tell" as "not supported" would refuse in every unit
+  // test and every browser preview -- the one place a wrong refusal is
+  // invisible until it ships.
+  it("blocks nothing when the platform could not be told", () => {
+    expect(toolPlatformBlockedReason(mailer, null)).toBeNull();
+  });
+});
+
 describe("editing", () => {
   it("starts a new tool workspace-scoped — the narrower scope", () => {
     expect(emptyTool("u9").scope).toBe("workspace");
@@ -375,6 +451,19 @@ describe("editing", () => {
     const copy = duplicateTool(BUILTIN_TOOLS[1], "u9");
     copy.params[0].default = "upstream";
     expect(BUILTIN_TOOLS[1].params[0].default).toBe("origin");
+  });
+
+  // Duplicating the macOS-only mailer is exactly how a Linux human
+  // re-points it at msmtp or a script of their own, so the copy must not
+  // inherit the refusal -- and could not keep it anyway, since toRecord
+  // names the record's fields one by one and this is not among them.
+  it("drops a built-in's platform restriction, so the copy runs where the human is", () => {
+    const mailer = BUILTIN_TOOLS.find((t) => t.id === "builtin:send-email") as Tool;
+    expect(mailer.platforms).toEqual(["macos"]);
+    const copy = duplicateTool(mailer, "u9");
+    expect(copy.platforms).toBeUndefined();
+    expect(toolPlatformBlockedReason(copy, "linux")).toBeNull();
+    expect("platforms" in toRecord(copy, "ws-1", 0)).toBe(false);
   });
 
   it("maps a global tool to a null workspaceId on the wire", () => {

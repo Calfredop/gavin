@@ -18,6 +18,20 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v38 widens `NameSession` with `agent_conversation_id`: an agent whose
+/// CLI mints its OWN conversation id (codex, gemini, opencode -- unlike
+/// Claude Code, which gavin mints one for at launch) self-reports it once
+/// it exists, and the daemon stores it in the reporting session's
+/// `card_sessions.conversation_id`, exactly where a minted id already
+/// lives, so resume treats the two sources alike. `serde(default)` on an
+/// EXISTING request, which `min_version_for` gates by TYPE and therefore
+/// cannot see -- but no `FEATURE_MIN_VERSION` / `featureBlockedReason` UI
+/// gate is owed here the way `railTrigger` needed one at v36: this field
+/// is only ever produced by `gavin-mcp`, which already fails closed on
+/// ANY protocol mismatch (stricter than the app's own compat window), so
+/// there is no daemon/gavin-mcp version pairing where it gets silently
+/// dropped rather than the whole tool refusing outright.
+///
 /// v37 lets an AGENT author this workspace's tools: `SaveToolByRoot`,
 /// `DeleteToolByRoot` and the `ToolsChanged` push. Two new request
 /// TYPES, so `min_version_for` is the whole wire gate and no
@@ -337,7 +351,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 37;
+pub const PROTOCOL_VERSION: u32 = 38;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -864,6 +878,17 @@ pub enum Request {
     NameSession {
         session_id: String,
         name: String,
+        /// The agent CLI's OWN native session/conversation id (v38),
+        /// self-reported once the agent knows it -- codex, gemini and
+        /// opencode each mint their own and cannot be handed one at
+        /// launch the way Claude Code is (`session_id_args`). NEVER the
+        /// same thing as `session_id` above, which is *gavin's* tab/PTY
+        /// session from `GAVIN_SESSION_ID`; keep the two spelled
+        /// differently everywhere (MCP param, this field, code comments)
+        /// so they are never confused. `serde(default)`: only ever
+        /// produced by `gavin-mcp`, see `PROTOCOL_VERSION`'s v38 note.
+        #[serde(default)]
+        agent_conversation_id: Option<String>,
     },
     /// The first request on a Unix-socket connection, establishing the
     /// client's identity for the connection's whole life
@@ -3375,6 +3400,13 @@ mod tests {
 
     #[test]
     fn protocol_version_is_twelve_until_a_breaking_change_bumps_it() {
+        // v38: NameSession.agent_conversation_id -- an agent self-
+        // reporting its CLI's own conversation id once it exists (codex,
+        // gemini, opencode). serde(default) and no new variant, so
+        // min_version_for cannot see it, but no daemonCompat.ts entry is
+        // owed either: gavin-mcp is the only producer and it already
+        // fails closed on any protocol mismatch, stricter than the app's
+        // own compat window.
         // v37: SaveToolByRoot + DeleteToolByRoot + the ToolsChanged
         // push -- an agent authoring its OWN workspace's tools. Two new
         // request TYPES, so min_version_for really is the whole gate and
@@ -3510,7 +3542,7 @@ mod tests {
         // daemon answers Unsupported and every client reads "no identity
         // yet"; nothing is silently dropped. The same version also widened
         // Rail with `trigger`, which is a field and so invisible here.
-        assert_eq!(PROTOCOL_VERSION, 37);
+        assert_eq!(PROTOCOL_VERSION, 38);
     }
 
     #[test]
@@ -3688,7 +3720,7 @@ mod tests {
         }), 4);
         assert_eq!(min_version_for(&Request::DeleteCardFile { path: "/p.md".into() }), 6);
         assert_eq!(min_version_for(&Request::NameSession {
-            session_id: "s-1".into(), name: "login flow".into(),
+            session_id: "s-1".into(), name: "login flow".into(), agent_conversation_id: None,
         }), 10);
     }
 
@@ -3698,6 +3730,7 @@ mod tests {
         assert!(min_version_for(&Request::NameSession {
             session_id: "s-1".into(),
             name: "login flow".into(),
+            agent_conversation_id: None,
         }) <= PROTOCOL_VERSION);
     }
 
@@ -3795,7 +3828,7 @@ mod tests {
                 current_stage_id: None,
             },
             Request::GitDirtyPaths { cwd: "c".into(), limit: 10 },
-            Request::NameSession { session_id: "s".into(), name: "n".into() },
+            Request::NameSession { session_id: "s".into(), name: "n".into(), agent_conversation_id: None },
             Request::GetProtocolVersion,
             // v11's tool requests, added when the orchestration merge
             // landed. Note what happened at that merge: min_version_for's
@@ -4264,14 +4297,60 @@ mod tests {
             &Request::NameSession {
                 session_id: "s-1".to_string(),
                 name: "login flow".to_string(),
+                agent_conversation_id: None,
             },
         )
         .unwrap();
         let mut cursor = Cursor::new(buf);
         match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
-            Request::NameSession { session_id, name } => {
+            Request::NameSession { session_id, name, agent_conversation_id } => {
                 assert_eq!(session_id, "s-1");
                 assert_eq!(name, "login flow");
+                assert_eq!(agent_conversation_id, None);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// v38: an agent whose CLI mints its own conversation id (codex,
+    /// gemini, opencode) self-reports it as this field, kept spelled
+    /// apart from `session_id` -- gavin's own tab/PTY session -- so the
+    /// two are never confused on the wire or in daemon code.
+    #[test]
+    fn name_session_request_roundtrips_its_agent_conversation_id() {
+        let mut buf = Vec::new();
+        write_message(
+            &mut buf,
+            &Request::NameSession {
+                session_id: "s-1".to_string(),
+                name: "login flow".to_string(),
+                agent_conversation_id: Some("rollout-abc123".to_string()),
+            },
+        )
+        .unwrap();
+        let mut cursor = Cursor::new(buf);
+        match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
+            Request::NameSession { agent_conversation_id, .. } => {
+                assert_eq!(agent_conversation_id, Some("rollout-abc123".to_string()));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// `serde(default)`: a `NameSession` line with no `agent_conversation_id`
+    /// key at all (not just `null`) still parses, so a wire message from
+    /// before v38 -- or any producer that omits the field -- never fails
+    /// to deserialize.
+    #[test]
+    fn name_session_request_parses_with_agent_conversation_id_key_absent() {
+        let line = r#"{"type":"NameSession","session_id":"s-1","name":"login flow"}
+"#;
+        let mut cursor = Cursor::new(line.as_bytes().to_vec());
+        match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
+            Request::NameSession { session_id, name, agent_conversation_id } => {
+                assert_eq!(session_id, "s-1");
+                assert_eq!(name, "login flow");
+                assert_eq!(agent_conversation_id, None);
             }
             other => panic!("wrong variant: {other:?}"),
         }
