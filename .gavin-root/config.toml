@@ -3,4 +3,4 @@ version = 1
 [agent]
 profile = "claude-code"
 command = "claude"
-model = "opus"
+model = "opus[1m]"
