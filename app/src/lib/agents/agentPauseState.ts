@@ -51,9 +51,10 @@ export const agentUsageStore = writable<Record<string, AgentUsageReport>>({});
 ///
 /// Loaded from localStorage at startup and written back whenever a
 /// sample is actually stored. Persisting matters more here than for any
-/// other view preference: a weekly window's first rate costs three hours
-/// of samples, so a history that started again on every reload would
-/// never once produce a weekly projection.
+/// other view preference: a weekly window's first rate costs half an hour
+/// of samples on a heavy burn and up to three on a quiet one, so a
+/// history that started again on every reload would rarely produce a
+/// weekly projection at all.
 export const usageHistoryStore = writable<UsageHistory>({});
 
 /// Ticks so countdowns move and the gate re-reads. Thirty seconds: a

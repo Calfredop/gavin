@@ -24,15 +24,36 @@
 //   real, readable step. Sampling it hourly would mean one usable
 //   reading per window and no projection until it was too late to act.
 // - A 7-day window moves ~0.6%/h at a full burn. Over five minutes that
-//   is 0.05% -- entirely inside the endpoint's own rounding, so a rate
-//   read off two 5-minute-apart samples is quantization noise amplified
-//   by 12. Sampled every three hours and measured over a DAY, the same
-//   window reports the rate that actually matters, and a day-long
-//   baseline is what lets a quiet weekend count as quiet instead of
-//   reading the Friday afternoon burst as the week's pace.
+//   is 0.05% -- entirely inside the endpoint's own rounding (Anthropic's
+//   weekly utilization comes back whole), so a rate read off two
+//   5-minute-apart samples is quantization noise amplified by 12.
 //
 // Hence two classes, each with its own sample interval and its own rate
-// baseline. Both numbers came off the card that asked for this.
+// baseline, measured over as much as a DAY for the weekly one -- which is
+// also what lets a quiet weekend count as quiet instead of reading the
+// Friday afternoon burst as the week's pace.
+//
+// ## Why the weekly rate is gated on movement and not only on time
+//
+// The noise is a function of how far the COUNTER has moved, not of how
+// long gavin watched it. One rounded tick is one tick whether it arrived
+// in half an hour or three, and a rate read off it is wrong by up to the
+// whole tick either way.
+//
+// So the weekly window is sampled every half hour and publishes a rate as
+// soon as EITHER the measurement spans three hours or the counter has
+// moved two points. Waiting three hours unconditionally was the original
+// rule and it is the wrong trade in the case that matters: a burn heavy
+// enough to move a weekly counter two points inside the half hour is
+// spending the whole week in a day, which is precisely when somebody
+// needs to be told inside the half hour. Two points rather than one
+// bounds the rounding error at half the rate instead of all of it -- and
+// an error that size cannot turn a window landing at 40% into a red
+// light, only sharpen one that is already near its ceiling, where the
+// level band is talking anyway.
+//
+// A quiet week therefore still waits out the three hours, which is the
+// right way round: nothing is at risk on a week that is barely moving.
 //
 // ## Why a gap in sampling is not a gap in knowledge
 //
@@ -67,6 +88,16 @@ import {
 export interface WindowClass {
   /// Shortest gap between two stored samples.
   sampleIntervalMs: number;
+  /// How long a measurement must span before its rate is published --
+  /// unless `minRateDelta` has already fired. Equal to the sampling
+  /// interval for a window whose single step is big enough to trust on
+  /// its own.
+  minRateSpanMs: number;
+  /// How far the counter must have moved for a measurement shorter than
+  /// `minRateSpanMs` to be trusted anyway, in percentage points. The
+  /// escape hatch for a heavy burn, and dead weight for a class whose
+  /// `minRateSpanMs` is already one sampling interval.
+  minRateDelta: number;
   /// How far back the rate reaches. Older samples are pruned, except the
   /// single anchor that keeps a rate computable across a long gap.
   rateBaselineMs: number;
@@ -80,12 +111,19 @@ const HOUR = 60 * MINUTE;
 
 export const SHORT_WINDOW: WindowClass = {
   sampleIntervalMs: 5 * MINUTE,
+  // One five-minute step of a 5-hour window is a percentage point or
+  // more at any burn worth reporting, so time alone is enough here and
+  // the delta never decides anything.
+  minRateSpanMs: 5 * MINUTE,
+  minRateDelta: 1,
   rateBaselineMs: HOUR,
   spanMs: 5 * HOUR,
 };
 
 export const LONG_WINDOW: WindowClass = {
-  sampleIntervalMs: 3 * HOUR,
+  sampleIntervalMs: 30 * MINUTE,
+  minRateSpanMs: 3 * HOUR,
+  minRateDelta: 2,
   rateBaselineMs: 24 * HOUR,
   spanMs: 7 * 24 * HOUR,
 };
@@ -244,13 +282,21 @@ export interface BurnRate {
 }
 
 /// The burn between the oldest retained sample and the newest, or null
-/// when there is not yet a full sampling interval between them.
+/// when the measurement is not yet worth reading a rate off.
 ///
 /// First-to-last rather than a fit or a last-pair difference. The last
 /// pair is what quantization ruins -- a weekly window that ticks one
 /// whole point between two samples reads as a rate 12x the truth -- and a
 /// regression buys nothing over the endpoints when the underlying series
 /// is monotone and evenly spaced.
+///
+/// Two gates, and they are different questions. Never measure over less
+/// than one sampling interval: the samples cannot be closer than that by
+/// construction, so a pair that IS closer came from a hand-edited or
+/// older history and its span is a rounding artefact. Then publish only
+/// once the measurement has earned it -- enough elapsed time, or enough
+/// movement to swamp the endpoint's rounding. See the header for why the
+/// weekly window needs the second clause.
 export function burnRate(history: WindowHistory | undefined, cls: WindowClass): BurnRate | null {
   const samples = history?.samples ?? [];
   if (samples.length < 2) return null;
@@ -259,6 +305,7 @@ export function burnRate(history: WindowHistory | undefined, cls: WindowClass): 
   const spanMs = last.atMs - first.atMs;
   if (spanMs < cls.sampleIntervalMs) return null;
   const delta = Math.max(0, last.usedPercent - first.usedPercent);
+  if (spanMs < cls.minRateSpanMs && delta < cls.minRateDelta) return null;
   return { perHour: (delta / spanMs) * HOUR, spanMs, samples: samples.length };
 }
 
@@ -627,11 +674,18 @@ export function projectionSentence(p: UsageProjection, nowMs: number): string {
     case "exhausted":
       return "already at its ceiling — nothing more will run against it until it resets";
     case "measuring":
-      return p.samples === 0
-        ? "no reading yet — the projection needs two samples"
-        : `measuring — the next sample is due within ${formatDuration(
-            cls.sampleIntervalMs / 1000
-          )}`;
+      if (p.samples === 0) return "no reading yet — the projection needs two samples";
+      // Two samples and still no rate is not a sampling wait, it is a
+      // window that has barely moved -- which the half-hourly weekly
+      // cadence now reaches within the hour. Saying "the next sample is
+      // due" there would promise a forecast that the next sample cannot
+      // deliver either.
+      if (p.samples >= 2) {
+        return "measuring — the window has barely moved, and a pace read off that would be rounding noise";
+      }
+      return `measuring — the next sample is due within ${formatDuration(
+        cls.sampleIntervalMs / 1000
+      )}`;
     case "flat":
       return `nothing is spending this window (measured over ${formatDuration(
         p.spanMs / 1000
@@ -694,8 +748,9 @@ export function projectionTooltip(
 // no compat gate -- and nothing outside this window needs the samples.
 //
 // Persisting at all is not a nicety here: a weekly window's first rate
-// costs three hours of uptime, and a feature that starts that clock again
-// on every reload would never once show a weekly projection.
+// costs half an hour of uptime at best and three at worst, and a feature
+// that starts that clock again on every reload would rarely show a weekly
+// projection at all.
 
 export const USAGE_HISTORY_KEY = "gavin.usageHistory";
 

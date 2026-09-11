@@ -71,12 +71,17 @@ describe("window classes", () => {
     expect(windowClass("secondary")).toBe(LONG_WINDOW);
     expect(windowClass("spend_limit")).toBe(LONG_WINDOW);
     expect(SHORT_WINDOW.sampleIntervalMs).toBe(5 * MINUTE);
-    expect(LONG_WINDOW.sampleIntervalMs).toBe(3 * HOUR);
+    expect(LONG_WINDOW.sampleIntervalMs).toBe(30 * MINUTE);
+    // A short window's single step is worth trusting on its own; a weekly
+    // one's is a rounded tick, so it needs time or movement behind it.
+    expect(SHORT_WINDOW.minRateSpanMs).toBe(SHORT_WINDOW.sampleIntervalMs);
+    expect(LONG_WINDOW.minRateSpanMs).toBe(3 * HOUR);
+    expect(LONG_WINDOW.minRateDelta).toBe(2);
   });
 
-  // The asymmetry is deliberate: a 3-hour cadence inside a 5-hour window
-  // yields at most one sample per epoch, so an unknown short window
-  // treated as long would never project at all.
+  // The asymmetry is deliberate: a long cadence inside a 5-hour window
+  // yields too few samples per epoch, so an unknown short window treated
+  // as long would project late or not at all.
   it("treats an unrecognised window as short", () => {
     expect(windowClass("weekly_opus")).toBe(SHORT_WINDOW);
   });
@@ -280,6 +285,33 @@ describe("the burn rate", () => {
 
   it("never reports a negative burn", () => {
     expect(burnRate(history(30, 29.9, HOUR, null), SHORT_WINDOW)?.perHour).toBe(0);
+  });
+
+  // The case the half-hourly weekly cadence exists for: a burn spending
+  // the whole week in a day is reported inside the hour instead of after
+  // three, because two points of movement is evidence whenever it lands.
+  it("publishes a weekly rate early once the counter has really moved", () => {
+    const moved = burnRate(history(80, 82, 30 * MINUTE, null), LONG_WINDOW);
+    expect(moved?.perHour).toBeCloseTo(4, 6);
+    expect(moved?.spanMs).toBe(30 * MINUTE);
+  });
+
+  // And the case it must NOT break: one rounded tick is one tick whether
+  // it took half an hour or two, so a barely-moving week waits out the
+  // three hours rather than reporting a rate 6x the truth.
+  it("holds a weekly rate back while the counter has barely moved", () => {
+    expect(burnRate(history(80, 81, 30 * MINUTE, null), LONG_WINDOW)).toBeNull();
+    expect(burnRate(history(80, 81, 2 * HOUR, null), LONG_WINDOW)).toBeNull();
+    // Three hours is evidence in itself: a point over three hours is a
+    // slow week, and saying so is better than saying nothing.
+    expect(burnRate(history(80, 81, 3 * HOUR, null), LONG_WINDOW)?.perHour).toBeCloseTo(
+      1 / 3,
+      6
+    );
+  });
+
+  it("still needs a full sampling interval whatever the movement", () => {
+    expect(burnRate(history(80, 90, 10 * MINUTE, null), LONG_WINDOW)).toBeNull();
   });
 });
 
@@ -606,6 +638,29 @@ describe("the words", () => {
     expect(projectionSentence(p, T0)).not.toContain("runs dry");
   });
 
+  // A second sample that changes nothing is not a sampling wait, and
+  // promising "the next sample is due" there promises a forecast the next
+  // sample cannot deliver either.
+  it("says a quiet window has barely moved rather than promising a sample", () => {
+    const weekly = projectWindow(
+      window({ id: "seven_day", label: "Weekly", usedPercent: 81 }),
+      {
+        samples: [
+          { atMs: T0 - 30 * MINUTE, usedPercent: 80 },
+          { atMs: T0, usedPercent: 81 },
+        ],
+        resetsAt: null,
+      },
+      "claude-code",
+      T0
+    );
+    expect(weekly.status).toBe("measuring");
+    expect(projectionSentence(weekly, T0)).toContain("barely moved");
+  });
+
+  // One sample IS a sampling wait, and the cadence it names is the
+  // window's own -- half an hour for a weekly one, not the poller's three
+  // minutes and not the three hours a weekly rate may still have to span.
   it("names the cadence a window is still waiting on", () => {
     const weekly = projectWindow(
       window({ id: "seven_day", label: "Weekly", usedPercent: 20 }),
@@ -613,7 +668,7 @@ describe("the words", () => {
       "claude-code",
       T0
     );
-    expect(projectionSentence(weekly, T0)).toContain("3h");
+    expect(projectionSentence(weekly, T0)).toContain("30m");
   });
 });
 

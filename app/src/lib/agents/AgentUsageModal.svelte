@@ -168,9 +168,11 @@
          reads as a bug. -->
     {#if profiles.length > 0}
       <p class="hint footnote">
-        Short windows are sampled every 5 minutes, weekly ones every 3 hours and
-        measured over a day — a week's burn read off five minutes is rounding
-        noise, and a quiet weekend has to count as quiet.
+        Short windows are sampled every 5 minutes, weekly ones every 30. A weekly
+        pace waits for the measurement to span 3 hours or for the counter to move
+        2 points, whichever comes first, and reaches back as far as a day — one
+        rounded tick of a week is noise whenever it arrives, and a quiet weekend
+        has to count as quiet.
       </p>
     {/if}
 
