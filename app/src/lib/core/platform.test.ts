@@ -46,6 +46,46 @@ describe("isMacSync", () => {
   });
 });
 
+describe("currentPlatform", () => {
+  it("answers with the one it is on", async () => {
+    platformMock.mockReturnValue("linux");
+    expect((await freshPlatform()).currentPlatform()).toBe("linux");
+
+    platformMock.mockReturnValue("windows");
+    expect((await freshPlatform()).currentPlatform()).toBe("windows");
+  });
+
+  // The whole reason the return type has a null in it. A platform gate
+  // that treated "I could not tell" as "not supported" would refuse in
+  // every unit test and every browser preview.
+  it("answers null for a platform it does not know, and outside a Tauri window", async () => {
+    platformMock.mockReturnValue("ios");
+    expect((await freshPlatform()).currentPlatform()).toBeNull();
+
+    platformMock.mockImplementation(() => {
+      throw new TypeError("__TAURI_OS_PLUGIN_INTERNALS__ is undefined");
+    });
+    const outside = await freshPlatform();
+    expect(outside.currentPlatform()).toBeNull();
+
+    // Same retry rule isMacSync has: a throw is not an answer, so it is
+    // not cached as one.
+    platformMock.mockReturnValue("linux");
+    expect(outside.currentPlatform()).toBe("linux");
+  });
+
+  // A known-but-unsupported platform IS an answer, unlike a throw, so
+  // asking again must not re-enter the plugin.
+  it("caches an unknown platform, and shares one read with isMacSync", async () => {
+    platformMock.mockReturnValue("ios");
+    const { currentPlatform, isMacSync } = await freshPlatform();
+    currentPlatform();
+    currentPlatform();
+    isMacSync();
+    expect(platformMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("cmdHeld", () => {
   it("follows metaKey on macOS and ctrlKey elsewhere", async () => {
     platformMock.mockReturnValue("macos");
