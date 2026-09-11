@@ -1024,10 +1024,23 @@
     font-size: 1em;
     padding: 0 2px;
   }
+  /* Hidden until the tab is hovered or focused: a close box always
+     painted is chrome the label has to share every idle moment. Layout
+     stays reserved so hover never reflows the strip. pointer-events
+     follow visibility so an invisible X cannot steal a click meant
+     for the tab. Same contract as BoardCard's run-pills. */
   .close {
-    opacity: 0.6;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms;
   }
-  .close:hover {
+  .tab:hover .close,
+  .tab:focus-within .close {
+    opacity: 0.6;
+    pointer-events: auto;
+  }
+  .tab:hover .close:hover,
+  .tab:focus-within .close:hover {
     opacity: 1;
   }
   .content {
