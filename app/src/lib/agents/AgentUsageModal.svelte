@@ -5,7 +5,7 @@
   import { agentProfilesStore } from "$lib/core/layoutState";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { usageProjectionIndicator } from "$lib/ui/indicators";
-  import { projectWindow, projectionSentence } from "$lib/agents/usageProjection";
+  import { forecastSpan, projectWindow, projectionSentence } from "$lib/agents/usageProjection";
   import {
     agentUsageStore,
     nowStore,
@@ -106,6 +106,7 @@
               $nowStore
             )}
             {@const indicator = usageProjectionIndicator(projection.band)}
+            {@const forecast = forecastSpan(projection)}
             <div class="window">
               <span class="label">{window.label}</span>
               <div class="track">
@@ -113,6 +114,19 @@
                   class="fill {usageSeverity(window.usedPercent)}"
                   style="width: {barPercent(window.usedPercent)}%"
                 ></div>
+                <!-- Where this burn takes the window by the time it
+                     resets, striped so it cannot be read as spent: the
+                     solid fill is measured, this part is a forecast.
+                     Toned by the level it LANDS at rather than by the
+                     projection's band, because that is what it draws --
+                     a weekly window heading for 97% earns a red band
+                     even while the bar beside it is still amber. -->
+                {#if forecast}
+                  <div
+                    class="forecast {usageSeverity(projection.endPercent ?? 0)}"
+                    style="left: {forecast.startPercent}%; width: {forecast.widthPercent}%"
+                  ></div>
+                {/if}
               </div>
               <span class="pct">{displayPercent(window.usedPercent)}%</span>
               <span class="resets">{formatResetsIn(window.resetsAt, $nowStore) ?? ""}</span>
@@ -212,6 +226,7 @@
     color: var(--text-muted);
   }
   .track {
+    position: relative;
     flex: 1 1 auto;
     height: 6px;
     min-width: 60px;
@@ -229,6 +244,27 @@
   }
   .fill.critical {
     background: var(--danger);
+  }
+  /* The forecast, in the same three colours as the fill but never solid:
+     stripes are the one treatment that cannot be mistaken for quota
+     already spent, and they stay legible at 6px where a tint alone does
+     not. Absolute so it starts at the level the fill ends on. */
+  .forecast {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    opacity: 0.55;
+    background: repeating-linear-gradient(
+      115deg,
+      var(--accent) 0 2px,
+      transparent 2px 5px
+    );
+  }
+  .forecast.warn {
+    background: repeating-linear-gradient(115deg, var(--warning) 0 2px, transparent 2px 5px);
+  }
+  .forecast.critical {
+    background: repeating-linear-gradient(115deg, var(--danger) 0 2px, transparent 2px 5px);
   }
   .pct {
     width: 38px;
@@ -252,6 +288,11 @@
   .projection {
     display: flex;
     align-items: baseline;
+    /* The sentence is longer now that it names an instant and a landing
+       level, and the panel caps at 480px: wrapping drops the measurement
+       onto its own line instead of squeezing both into narrow columns of
+       broken words. */
+    flex-wrap: wrap;
     gap: 5px;
     margin: -1px 0 7px 70px;
     color: var(--text-muted);

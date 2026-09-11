@@ -323,6 +323,16 @@ export interface UsageProjection {
   /// Epoch ms this window is projected to reach 100%, or null when it is
   /// not projected to (a flat burn) or cannot be (no rate yet).
   exhaustAtMs: number | null;
+  /// The level this window is projected to be AT when it resets, on the
+  /// measured burn. Null without both a rate and a reset, and deliberately
+  /// NOT clamped: a window heading for 140% has overrun its week by a
+  /// third, and that is the number worth saying out loud.
+  ///
+  /// The other half of the same forecast as `exhaustAtMs`, along the other
+  /// axis -- when the window ends, against where the level ends. Which one
+  /// a human needs depends on which side of 100% the line crosses, so the
+  /// projection carries both and the sentence picks.
+  endPercent: number | null;
   /// `(exhaustAt - resetsAt) / (resetsAt - now)`: how much of the time
   /// left in the window is slack. Negative means the window runs dry
   /// first. Null without both a projection and a reset.
@@ -382,6 +392,9 @@ export function projectWindow(
       ...base,
       ratePerHour: rate?.perHour ?? null,
       exhaustAtMs: nowMs,
+      // A window at its ceiling has no landing level left to forecast:
+      // it ends where it already is.
+      endPercent: null,
       marginRatio: null,
       band: "over",
       status: "exhausted",
@@ -393,6 +406,7 @@ export function projectWindow(
       ...base,
       ratePerHour: null,
       exhaustAtMs: null,
+      endPercent: null,
       marginRatio: null,
       band: level,
       status: "measuring",
@@ -406,6 +420,10 @@ export function projectWindow(
       ...base,
       ratePerHour: 0,
       exhaustAtMs: null,
+      // Nothing is spending it, so it ends the window exactly where it
+      // stands. Said as a level rather than as null so the forecast on
+      // the bar does not blink out the moment a burn stops.
+      endPercent: window.resetsAt == null ? null : window.usedPercent,
       marginRatio: null,
       band: worseBand("clear", level),
       status: "flat",
@@ -418,6 +436,9 @@ export function projectWindow(
       ...base,
       ratePerHour: rate.perHour,
       exhaustAtMs,
+      // No reset is no end of window, so there is no landing level --
+      // only a runway, which `exhaustAtMs` already carries.
+      endPercent: null,
       marginRatio: null,
       band: level,
       status: "no-reset",
@@ -434,6 +455,9 @@ export function projectWindow(
       ...base,
       ratePerHour: rate.perHour,
       exhaustAtMs,
+      // No reset is no end of window, so there is no landing level --
+      // only a runway, which `exhaustAtMs` already carries.
+      endPercent: null,
       marginRatio: null,
       band: level,
       status: "no-reset",
@@ -446,6 +470,7 @@ export function projectWindow(
     ...base,
     ratePerHour: rate.perHour,
     exhaustAtMs,
+    endPercent: window.usedPercent + (rate.perHour * leftMs) / HOUR,
     marginRatio,
     band: worseBand(projected, level),
     status: "projected",
@@ -505,6 +530,34 @@ export function worstProjection(projections: UsageProjection[]): UsageProjection
   return worst;
 }
 
+// ---- The bar -----------------------------------------------------------------
+
+/// Where a forecast sits on a 0-100 bar: a band starting at the level the
+/// window is at now and ending at the level it is heading for.
+export interface ForecastSpan {
+  startPercent: number;
+  widthPercent: number;
+}
+
+/// The stretch of bar between "now" and "at the reset", or null when there
+/// is nothing to draw.
+///
+/// Clamped at 100 where the projection is not: the track has no room past
+/// its own end, and a band drawn to 140% would just be a full bar saying
+/// less than the sentence beside it already does.
+///
+/// Half a point is the floor because a hairline of stripes beside a solid
+/// fill reads as a rendering artefact rather than as a forecast -- and at
+/// that width the forecast and the reading are the same answer anyway.
+export function forecastSpan(p: UsageProjection): ForecastSpan | null {
+  if (p.endPercent == null || !Number.isFinite(p.endPercent)) return null;
+  const start = Math.max(0, Math.min(100, p.usedPercent));
+  const end = Math.max(0, Math.min(100, p.endPercent));
+  const widthPercent = end - start;
+  if (widthPercent < 0.5) return null;
+  return { startPercent: start, widthPercent };
+}
+
 // ---- The words ---------------------------------------------------------------
 
 /// A rate a human can read. One decimal under 10%/h, none above: the
@@ -514,6 +567,56 @@ export function worstProjection(projections: UsageProjection[]): UsageProjection
 export function formatRate(perHour: number): string {
   if (!Number.isFinite(perHour) || perHour <= 0) return "0%/h";
   return perHour < 10 ? `${perHour.toFixed(1)}%/h` : `${Math.round(perHour)}%/h`;
+}
+
+// Weekday and month names in the app's own English rather than the
+// locale's, because the prefixes around them ("tomorrow", "runs dry
+// around") are English too and half-translating a sentence reads worse
+// than not translating it. The CLOCK is the locale's, since 14:05 and
+// 2:05 PM are the same instant read by different people.
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// Local midnight, for counting CALENDAR days rather than 24-hour
+/// blocks: at 23:50 a forecast forty minutes out is tomorrow, and that
+/// is the word a human wants for it.
+function startOfDay(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/// When, as a clock a human can act on: "14:05", "tomorrow 09:40",
+/// "Sat 18:20", "16 Sep 18:20".
+///
+/// The whole point of the prevision, and the reason it is an instant and
+/// not the duration the rest of this module speaks in: "about 2h 40m
+/// before it resets" asks somebody to add it to a reset time they also
+/// have to work out, in their head, to answer "can I start this now".
+/// The date is added only once it is needed -- a weekly window's wall is
+/// days out, and "18:20" alone would read as tonight.
+export function formatInstant(atMs: number, nowMs: number): string {
+  if (!Number.isFinite(atMs)) return "an unknown time";
+  const at = new Date(atMs);
+  const clock = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const days = Math.round((startOfDay(atMs) - startOfDay(nowMs)) / (24 * HOUR));
+  // A forecast in the past is only reachable with the panel open across
+  // the instant itself, and "today" is the honest word for it.
+  if (days <= 0) return clock;
+  if (days === 1) return `tomorrow ${clock}`;
+  if (days < 7) return `${WEEKDAYS[at.getDay()]} ${clock}`;
+  return `${at.getDate()} ${MONTHS[at.getMonth()]} ${clock}`;
+}
+
+/// A projected level for the sentence. Floored, like every other
+/// percentage gavin prints (`displayPercent`), so the panel never rounds
+/// a window UP to its ceiling and claims a wall that the projection
+/// itself puts after the reset.
+function formatEndPercent(endPercent: number): string {
+  return `${Math.floor(endPercent)}%`;
 }
 
 /// The one sentence every surface prints about a projection, so the
@@ -535,24 +638,37 @@ export function projectionSentence(p: UsageProjection, nowMs: number): string {
       )})`;
     case "no-reset": {
       const runway = p.exhaustAtMs == null ? null : (p.exhaustAtMs - nowMs) / 1000;
-      const head = `${formatRate(p.ratePerHour ?? 0)} — about ${formatDuration(
-        runway ?? 0
-      )} of room left`;
+      const head = `${formatRate(p.ratePerHour ?? 0)} — runs dry around ${formatInstant(
+        p.exhaustAtMs ?? nowMs,
+        nowMs
+      )}, about ${formatDuration(runway ?? 0)} from now`;
       return `${head}, but this route never says when the window resets`;
     }
     default: {
-      const resetsAtMs = (p.resetsAt ?? 0) * 1000;
-      const gap = Math.abs((p.exhaustAtMs ?? 0) - resetsAtMs) / 1000;
       const rate = formatRate(p.ratePerHour ?? 0);
-      if (p.band === "over" || (p.marginRatio ?? 0) < 0) {
-        return `${rate} — projected to run out about ${formatDuration(gap)} before it resets`;
+      // Keyed on the TRAJECTORY, never on the band. The band can be red
+      // off the level alone -- a window at 96% with a gentle burn that
+      // still lands under its ceiling -- and reading the band here is
+      // what made that case announce a wall it was not heading for.
+      if ((p.marginRatio ?? 0) < 0) {
+        const gap = Math.abs((p.exhaustAtMs ?? 0) - (p.resetsAt ?? 0) * 1000) / 1000;
+        return `${rate} — runs dry around ${formatInstant(
+          p.exhaustAtMs ?? nowMs,
+          nowMs
+        )}, about ${formatDuration(gap)} before it resets`;
       }
-      if ((p.marginRatio ?? 0) < CLEAR_MARGIN) {
-        return `${rate} — projected to last only about ${formatDuration(
-          gap
-        )} past its reset`;
-      }
-      return `${rate} — projected to last about ${formatDuration(gap)} past its reset`;
+      // It lands inside the window, so the forecast worth printing is the
+      // LEVEL it lands at: how close to the ceiling this burn takes it by
+      // the time the window ends. "Lasts 20m past its reset" said the same
+      // thing in a unit nobody budgets in.
+      //
+      // `endPercent` is set for every projected window by construction --
+      // a rate and a reset are what "projected" MEANS -- so the level is
+      // the whole answer here and the `??` is a type guard, not a
+      // fallback with a second opinion in it.
+      return `${rate} — on track to finish this window at about ${formatEndPercent(
+        p.endPercent ?? p.usedPercent
+      )}`;
     }
   }
 }

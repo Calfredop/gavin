@@ -78,7 +78,11 @@ pub struct PrCheck {
 /// sentences to put in front of somebody, and a step must not treat the
 /// last one the way it treats the first.
 #[derive(Clone, serde::Serialize)]
-#[serde(tag = "state", rename_all = "camelCase")]
+// `rename_all_fields` too -- see `UsageReport`: an enum's `rename_all`
+// never reaches the fields of its struct variants, and `prState` /
+// `reviewDecision` / `observedAt` are exactly the names `pullRequest.ts`
+// reads.
+#[serde(tag = "state", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum PrReport {
     /// A pull request exists and this is it.
     Ready {
@@ -525,6 +529,36 @@ mod tests {
         match report {
             PrReport::Ready { checks, review_decision, .. } => (checks, review_decision),
             _ => panic!("expected Ready"),
+        }
+    }
+
+    /// Every field the PR chips and the rail steps read, spelled the way
+    /// they read it.
+    ///
+    /// An enum's `rename_all` renames its VARIANTS, not the fields of its
+    /// struct variants, so this report once crossed to `pullRequest.ts`
+    /// with `pr_state` and `review_decision` -- where `report.prState`
+    /// is `undefined`, a MERGED pull request never reads as merged and a
+    /// wait-for-merge step waits forever. Nothing in the Rust tests
+    /// could see it, because the parse was right and only the wire names
+    /// were wrong.
+    #[test]
+    fn a_report_serialises_the_field_names_the_frontend_reads() {
+        let raw = r#"{
+          "number": 7, "url": "https://example.test/pr/7", "title": "A thing",
+          "state": "MERGED", "isDraft": true, "reviewDecision": "APPROVED",
+          "mergeable": "MERGEABLE", "createdAt": "2026-09-02T11:00:00Z",
+          "statusCheckRollup": []
+        }"#;
+        let json = serde_json::to_value(parse_pr_json(raw, 1_789_100_000)).expect("serialises");
+        assert_eq!(json["state"], "ready");
+        assert_eq!(json["prState"], "MERGED");
+        assert_eq!(json["isDraft"], true);
+        assert_eq!(json["reviewDecision"], "APPROVED");
+        assert_eq!(json["observedAt"], 1_789_100_000);
+        assert!(json["createdAt"].as_i64().is_some_and(|t| t > 0));
+        for snake in ["pr_state", "is_draft", "review_decision", "created_at", "observed_at"] {
+            assert!(json.get(snake).is_none(), "{snake} must not cross the wire");
         }
     }
 

@@ -90,7 +90,11 @@ pub struct UsageWindow {
 /// could not be reached" are different sentences to put in front of
 /// somebody, and only one of them is worth retrying.
 #[derive(Clone, serde::Serialize)]
-#[serde(tag = "state", rename_all = "camelCase")]
+// `rename_all_fields` as well as `rename_all`: on an enum the latter
+// renames the VARIANTS and leaves every struct-variant field in
+// snake_case, so `observed_at` reached `agentUsage.ts` as `undefined`
+// and every projection read NaN for its sample time.
+#[serde(tag = "state", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum UsageReport {
     /// Real numbers. `observedAt` is when the DATA was true, which for a
     /// file-backed route is the event's own timestamp and not the moment
@@ -629,6 +633,45 @@ mod tests {
             UsageReport::Ready { windows, .. } => windows,
             _ => panic!("expected a ready report"),
         }
+    }
+
+    /// The frontend reads `observedAt` and `retryAfter`, so the report has
+    /// to spell them that way.
+    ///
+    /// Not a style guard: serde's container-level `rename_all` renames an
+    /// enum's VARIANTS, never the fields of its struct variants, so a
+    /// tagged report is the one shape where `rename_all = "camelCase"`
+    /// looks applied and is not. A snake_case `observed_at` reaching
+    /// `agentUsage.ts` is `undefined` there, which becomes a NaN sample
+    /// timestamp, which makes every poll look like a new limit window --
+    /// the projection then says "measuring" for the life of the app and
+    /// never once draws a burn rate.
+    #[test]
+    fn a_report_serialises_the_field_names_the_frontend_reads() {
+        let ready = UsageReport::Ready {
+            windows: vec![UsageWindow {
+                id: "five_hour".to_string(),
+                label: "5-hour".to_string(),
+                used_percent: 35.0,
+                resets_at: Some(1_789_125_600),
+            }],
+            plan: Some("max".to_string()),
+            observed_at: 1_789_100_000,
+            cached: false,
+        };
+        let json = serde_json::to_value(&ready).expect("serialises");
+        assert_eq!(json["state"], "ready");
+        assert_eq!(json["observedAt"], 1_789_100_000);
+        assert!(json.get("observed_at").is_none());
+        assert_eq!(json["windows"][0]["usedPercent"], 35.0);
+
+        let parked = UsageReport::Unavailable {
+            reason: "the usage endpoint rate-limited gavin".to_string(),
+            retry_after: Some(1_789_101_000),
+        };
+        let json = serde_json::to_value(&parked).expect("serialises");
+        assert_eq!(json["retryAfter"], 1_789_101_000);
+        assert!(json.get("retry_after").is_none());
     }
 
     #[test]

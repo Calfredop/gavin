@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import type { AgentUsageReport, UsageWindow } from "$lib/agents/agentUsage";
 import {
   CLEAR_MARGIN,
+  forecastSpan,
+  formatInstant,
   LONG_WINDOW,
   SHORT_WINDOW,
   USAGE_HISTORY_KEY,
@@ -384,6 +386,58 @@ describe("the projection", () => {
 
   // A runway with no finish line to race it against. The rate is real and
   // worth printing; the band cannot come from it.
+  // The other half of the prevision: not when the wall arrives, but how
+  // close to it this burn leaves the window by the time it ends.
+  it("says what level the window lands at when it resets", () => {
+    const p = projectWindow(
+      window({ usedPercent: 40, resetsAt: resetsIn3h }),
+      history(34, 40, HOUR, resetsIn3h),
+      "claude-code",
+      T0
+    );
+    // 6 points an hour with 3h to run: 40 + 18.
+    expect(p.endPercent).toBeCloseTo(58, 6);
+    expect(projectionSentence(p, T0)).toContain("finish this window at about 58%");
+  });
+
+  // Floored like every other percentage the app prints, so a window the
+  // projection puts UNDER its ceiling is never announced as full.
+  it("never rounds a landing level up to the ceiling", () => {
+    const p = projectWindow(
+      window({ usedPercent: 99, resetsAt: Math.floor((T0 + HOUR) / 1000) }),
+      history(98.2, 99, HOUR, Math.floor((T0 + HOUR) / 1000)),
+      "claude-code",
+      T0
+    );
+    expect(p.endPercent).toBeGreaterThan(99);
+    expect(p.endPercent).toBeLessThan(100);
+    expect(projectionSentence(p, T0)).toContain("at about 99%");
+  });
+
+  it("forecasts no landing level without a reset to land on", () => {
+    const p = projectWindow(
+      window({ usedPercent: 40, resetsAt: null }),
+      history(10, 40, HOUR, null),
+      "claude-code",
+      T0
+    );
+    expect(p.endPercent).toBeNull();
+  });
+
+  // A window that is not being spent still ends the window somewhere, and
+  // that somewhere is where it stands. Null here would blink the forecast
+  // off the bar every time a burn stopped.
+  it("lands a flat window exactly where it stands", () => {
+    const p = projectWindow(
+      window({ usedPercent: 40, resetsAt: resetsIn3h }),
+      history(40, 40, 2 * HOUR, resetsIn3h),
+      "claude-code",
+      T0
+    );
+    expect(p.endPercent).toBe(40);
+    expect(forecastSpan(p)).toBeNull();
+  });
+
   it("reports a runway but no verdict when the route gives no reset", () => {
     const p = projectWindow(
       window({ usedPercent: 40, resetsAt: null }),
@@ -400,7 +454,7 @@ describe("the projection", () => {
 
 describe("choosing what one semaphore shows", () => {
   it("prefers the worse band, then the tighter margin", () => {
-    const base = { profileId: "p", spanMs: HOUR, samples: 2, status: "projected" as const };
+    const base = { profileId: "p", spanMs: HOUR, samples: 2, status: "projected" as const, endPercent: 50 };
     const clear = { ...base, windowId: "a", label: "A", usedPercent: 10, resetsAt: 1, ratePerHour: 1, exhaustAtMs: 1, marginRatio: 2, band: "clear" as const };
     const tightA = { ...clear, windowId: "b", label: "B", marginRatio: 0.2, band: "tight" as const };
     const tightB = { ...clear, windowId: "c", label: "C", marginRatio: 0.05, band: "tight" as const };
@@ -435,6 +489,49 @@ describe("choosing what one semaphore shows", () => {
   });
 });
 
+describe("the forecast on the bar", () => {
+  const resetsIn3h = Math.floor((T0 + 3 * HOUR) / 1000);
+
+  it("spans from where the window stands to where it is heading", () => {
+    const p = projectWindow(
+      window({ usedPercent: 40, resetsAt: resetsIn3h }),
+      history(34, 40, HOUR, resetsIn3h),
+      "claude-code",
+      T0
+    );
+    expect(forecastSpan(p)).toEqual({ startPercent: 40, widthPercent: 18 });
+  });
+
+  // The track ends at 100 and the projection does not. The overrun is the
+  // sentence's to report, not the bar's.
+  it("clamps a window heading past its ceiling to the end of the track", () => {
+    const p = projectWindow(
+      window({ usedPercent: 90, resetsAt: resetsIn3h }),
+      history(60, 90, HOUR, resetsIn3h),
+      "claude-code",
+      T0
+    );
+    expect(p.endPercent).toBeGreaterThan(100);
+    expect(forecastSpan(p)).toEqual({ startPercent: 90, widthPercent: 10 });
+  });
+
+  it("draws nothing while there is nothing forecast", () => {
+    expect(
+      forecastSpan(projectWindow(window({ usedPercent: 40 }), undefined, "claude-code", T0))
+    ).toBeNull();
+    expect(
+      forecastSpan(
+        projectWindow(
+          window({ usedPercent: 100, resetsAt: resetsIn3h }),
+          history(80, 100, HOUR, resetsIn3h),
+          "claude-code",
+          T0
+        )
+      )
+    ).toBeNull();
+  });
+});
+
 describe("the words", () => {
   it("keeps a decimal only where it decides something", () => {
     expect(formatRate(0)).toBe("0%/h");
@@ -450,6 +547,63 @@ describe("the words", () => {
       T0
     );
     expect(projectionTooltip(p, "Claude Code", T0)).toMatch(/^Claude Code · 5-hour 40% — /);
+  });
+
+  // A clock, because the decision ("start the big rail now?") is made
+  // against a clock. The date only appears once it has to.
+  it("says an instant as a clock, and adds the day only when it matters", () => {
+    const at = new Date(T0);
+    const clock = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    expect(formatInstant(T0, T0)).toBe(clock);
+    expect(formatInstant(T0 + 2 * HOUR, T0)).toMatch(/^\d{1,2}[:.]\d{2}/);
+
+    // Tomorrow is a CALENDAR day away, not 24 hours: at 23:50 a forecast
+    // forty minutes out is tomorrow, which is the word for it.
+    const lateTonight = new Date(T0);
+    lateTonight.setHours(23, 50, 0, 0);
+    expect(formatInstant(lateTonight.getTime() + 40 * MINUTE, lateTonight.getTime())).toMatch(
+      /^tomorrow /
+    );
+
+    const inThreeDays = T0 + 3 * 24 * HOUR;
+    expect(formatInstant(inThreeDays, T0)).toMatch(
+      new RegExp(`^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) `)
+    );
+    // Past a week a weekday is ambiguous, so the date carries it.
+    const inTenDays = new Date(T0 + 10 * 24 * HOUR);
+    expect(formatInstant(inTenDays.getTime(), T0)).toContain(`${inTenDays.getDate()} `);
+    expect(formatInstant(Number.NaN, T0)).toBe("an unknown time");
+  });
+
+  it("names the instant the window runs dry", () => {
+    const resetsIn3h = Math.floor((T0 + 3 * HOUR) / 1000);
+    const p = projectWindow(
+      window({ usedPercent: 40, resetsAt: resetsIn3h }),
+      history(10, 40, HOUR, resetsIn3h),
+      "claude-code",
+      T0
+    );
+    // Gone in two hours, an hour before the window resets.
+    const sentence = projectionSentence(p, T0);
+    expect(sentence).toContain(`runs dry around ${formatInstant(T0 + 2 * HOUR, T0)}`);
+    expect(sentence).toContain("about 1h before it resets");
+  });
+
+  // The band can be red off the LEVEL while the trajectory lands inside
+  // the window. Reading the band to pick the phrasing announced a wall
+  // this burn is not heading for.
+  it("does not claim a wall for a loud window that still lands inside it", () => {
+    const resetsIn3h = Math.floor((T0 + 3 * HOUR) / 1000);
+    const p = projectWindow(
+      window({ usedPercent: 96, resetsAt: resetsIn3h }),
+      history(95.7, 96, 2 * HOUR, resetsIn3h),
+      "claude-code",
+      T0
+    );
+    expect(p.band).toBe("over");
+    expect(p.marginRatio).toBeGreaterThan(0);
+    expect(projectionSentence(p, T0)).toContain("finish this window at about 96%");
+    expect(projectionSentence(p, T0)).not.toContain("runs dry");
   });
 
   it("names the cadence a window is still waiting on", () => {
