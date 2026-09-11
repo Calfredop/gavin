@@ -74,6 +74,7 @@
   import { searchSettings, type SettingsSection } from "$lib/core/settingsSearch";
   import Modal from "$lib/core/Modal.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
+  import AgentChangeWizard from "$lib/workspace/AgentChangeWizard.svelte";
   import WorkspaceDeleteWizard from "$lib/workspace/WorkspaceDeleteWizard.svelte";
   import { tooltip } from "$lib/core/tooltip";
   import { MIN_PERIOD_MINUTES, validateCycle } from "$lib/agents/agentPause";
@@ -179,6 +180,11 @@
   let mcpFileError = $state<string | null>(null);
   let prdError = $state<string | null>(null);
   let pendingMove = $state<{ from: string; to: string } | null>(null);
+  /// Profile the human picked in the Agent select; opens the confirm
+  /// mini-wizard instead of writing immediately. Null while no switch is
+  /// in flight. The select keeps showing the current profile until the
+  /// wizard commits (or cancels).
+  let pendingProfileChange = $state<string | null>(null);
 
   // --- search -------------------------------------------------------------
   /// One entry per section below, in the same order -- the id is what a
@@ -1078,7 +1084,13 @@
           <span>Profile</span>
           <select
             value={agent.profileId}
-            onchange={(e) => void setAgentField(workspaceId, "profile", e.currentTarget.value)}
+            onchange={(e) => {
+              const next = e.currentTarget.value;
+              // Revert the select until the wizard commits: otherwise a
+              // Cancel would leave the dropdown lying about config.toml.
+              e.currentTarget.value = agent.profileId;
+              if (next && next !== agent.profileId) pendingProfileChange = next;
+            }}
           >
             {#each $agentProfilesStore as profile (profile.id)}
               <option value={profile.id}>{profile.label}</option>
@@ -1453,6 +1465,15 @@
 
   {#if deleting}
     <WorkspaceDeleteWizard {workspaceId} onClose={() => (deleting = false)} />
+  {/if}
+
+  {#if pendingProfileChange}
+    <AgentChangeWizard
+      {workspaceId}
+      fromProfileId={agent.profileId}
+      toProfileId={pendingProfileChange}
+      onClose={() => (pendingProfileChange = null)}
+    />
   {/if}
 
   <!-- Drawn here rather than through askConfirm because the choice is

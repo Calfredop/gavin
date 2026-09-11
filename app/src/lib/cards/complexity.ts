@@ -190,3 +190,52 @@ export function complexitySummary(
   if (agent) return `${name} — runs ${agent}.`;
   return `${name} — runs this workspace's agent on ${model}.`;
 }
+
+/// What the agent-change confirm wizard does to the workspace complexity
+/// table before the new profile is written.
+export type ComplexityRealignAction = "keep" | "remap" | "clear";
+
+/// Apply one realign choice. Never mutates `table`.
+///
+/// - `keep` — leave every override alone (app pins still fall through
+///   for unset levels).
+/// - `remap` — rows whose profile names `oldProfile` are retargeted to
+///   `newProfile`; models and other rows stay.
+/// - `clear` — drop every workspace override so unset levels mean the
+///   new workspace agent (still falling through to app pins).
+export function realignComplexityTable(
+  table: ComplexityTable,
+  action: ComplexityRealignAction,
+  oldProfile: string,
+  newProfile: string
+): ComplexityTable {
+  if (action === "keep") return { ...table };
+  if (action === "clear") return {};
+  const old = oldProfile.trim();
+  const next: ComplexityTable = {};
+  for (const level of COMPLEXITY_LEVELS) {
+    const entry = table[level];
+    if (!entry) continue;
+    if (entry.profile.trim() === old) {
+      next[level] = { ...entry, profile: newProfile };
+    } else {
+      next[level] = { ...entry };
+    }
+  }
+  return next;
+}
+
+/// Default choice for the wizard: remap when any workspace row already
+/// names the profile being left, otherwise clear so "this workspace's
+/// agent" stops lying after the switch.
+export function recommendedComplexityAction(
+  table: ComplexityTable,
+  oldProfile: string
+): ComplexityRealignAction {
+  const old = oldProfile.trim();
+  for (const level of COMPLEXITY_LEVELS) {
+    const entry = table[level];
+    if (entry && entry.profile.trim() === old) return "remap";
+  }
+  return "clear";
+}

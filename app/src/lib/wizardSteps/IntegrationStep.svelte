@@ -14,16 +14,22 @@
   interface Props {
     workspaceId: string;
     onDone: () => void;
+    /// When set, integration writes this instructions file instead of
+    /// the workspace's currently resolved one. The agent-change wizard
+    /// passes the PENDING profile's file so MCP/skills land for the
+    /// agent being switched to, even before the tree watcher catches up.
+    instructionsFile?: string;
   }
-  let { workspaceId, onDone }: Props = $props();
+  let { workspaceId, onDone, instructionsFile }: Props = $props();
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   // The file gavin's marker block goes into. Through the same resolution
   // every other panel uses, so an unapproved `[agent] file` cannot make
   // this step write somewhere the Settings panel does not name.
   const agentFile = $derived(
-    resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
-      .file
+    instructionsFile ??
+      resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
+        .file
   );
 
   let result = $state<backend.IntegrationResult | null>(null);

@@ -13,13 +13,20 @@
     mark: SuperpowersMark | undefined;
     onChanged: () => void;
     onDone: () => void;
+    /// When set, the install/status probe uses this command instead of
+    /// the workspace's currently resolved one. The agent-change wizard
+    /// passes the PENDING profile's command so Superpowers is checked
+    /// for the agent being switched to.
+    agentCommand?: string;
   }
-  let { workspaceId, status, mark, onChanged, onDone }: Props = $props();
+  let { workspaceId, status, mark, onChanged, onDone, agentCommand: agentCommandOverride }: Props =
+    $props();
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
   const agentCommand = $derived(
-    resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
-      .command
+    agentCommandOverride ??
+      resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore)
+        .command
   );
 
   let error = $state<string | null>(null);

@@ -8,6 +8,8 @@ import {
   complexitySummary,
   isAttributed,
   parseComplexity,
+  realignComplexityTable,
+  recommendedComplexityAction,
   type ComplexityTable,
 } from "$lib/cards/complexity";
 
@@ -150,5 +152,57 @@ describe("complexitySummary", () => {
       "Moderate — runs this workspace's agent."
     );
     expect(complexitySummary(null, null, label)).toBeNull();
+  });
+});
+
+describe("realignComplexityTable", () => {
+  const table: ComplexityTable = {
+    trivial: { profile: "claude-code", model: "haiku" },
+    simple: { profile: "", model: "sonnet" },
+    intricate: { profile: "codex", model: "gpt-5.1" },
+  };
+
+  it("keep leaves every row alone", () => {
+    expect(realignComplexityTable(table, "keep", "claude-code", "cursor")).toEqual(table);
+  });
+
+  it("remap retargets rows that named the old profile and leaves the rest", () => {
+    expect(realignComplexityTable(table, "remap", "claude-code", "cursor")).toEqual({
+      trivial: { profile: "cursor", model: "haiku" },
+      simple: { profile: "", model: "sonnet" },
+      intricate: { profile: "codex", model: "gpt-5.1" },
+    });
+  });
+
+  it("clear drops every workspace override", () => {
+    expect(realignComplexityTable(table, "clear", "claude-code", "cursor")).toEqual({});
+  });
+
+  it("does not mutate the table it was handed", () => {
+    const copy = structuredClone(table);
+    realignComplexityTable(table, "remap", "claude-code", "cursor");
+    realignComplexityTable(table, "clear", "claude-code", "cursor");
+    expect(table).toEqual(copy);
+  });
+});
+
+describe("recommendedComplexityAction", () => {
+  it("recommends remap when any row names the old profile", () => {
+    expect(
+      recommendedComplexityAction(
+        { trivial: { profile: "claude-code", model: "" } },
+        "claude-code"
+      )
+    ).toBe("remap");
+  });
+
+  it("recommends clear when nothing names the old profile", () => {
+    expect(recommendedComplexityAction({}, "claude-code")).toBe("clear");
+    expect(
+      recommendedComplexityAction(
+        { simple: { profile: "", model: "sonnet" }, intricate: { profile: "codex", model: "" } },
+        "claude-code"
+      )
+    ).toBe("clear");
   });
 });
