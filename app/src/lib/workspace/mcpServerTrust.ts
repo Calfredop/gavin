@@ -81,10 +81,13 @@ export function mcpForeignNotice(servers: readonly ForeignMcpServer[]): string {
 export async function runIntegration(
   rootPath: string,
   instructionsFile: string,
-  storedChoice: McpForeignChoice | null | undefined
+  storedChoice: McpForeignChoice | null | undefined,
+  profileId?: string
 ): Promise<IntegrationResult> {
-  const first = await backend.setupAgentIntegration(rootPath, instructionsFile);
+  const first = await backend.setupAgentIntegration(rootPath, instructionsFile, undefined, profileId);
   if (!first.mcpForeign) return first;
   const decided = mcpForeignDecision(first.mcpForeign.servers, storedChoice);
-  return decided ? backend.setupAgentIntegration(rootPath, instructionsFile, decided) : first;
+  return decided
+    ? backend.setupAgentIntegration(rootPath, instructionsFile, decided, profileId)
+    : first;
 }

@@ -18,6 +18,7 @@
     daemonCompat,
   } from "$lib/core/layoutState";
   import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
+  import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
   import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
   import { modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
   import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "$lib/terminal/terminalFont";
@@ -341,6 +342,10 @@
     { id: "agent-defaults", keywords: ["Agent defaults", "model", "Claude Code", "Codex"] },
     { id: "custom-agent", keywords: ["Custom agent", "Command", "Model flag"] },
     { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
+    {
+      id: "fallback-agent",
+      keywords: ["Fallback agent", "fallback chain", "usage limit", "arm"],
+    },
     { id: "agent-pause", keywords: ["Agent pause", "pause", "cycle", "limit", "schedule", "usage"] },
     {
       id: "memory-wall",
@@ -593,6 +598,24 @@
         profiles={$agentProfilesStore}
         table={$agentDefaultsStore.complexity}
         onChange={setComplexity}
+      />
+    </section>
+
+    <section hidden={!settingsFilter.visible("fallback-agent")}>
+      <h3>Fallback agent</h3>
+      <p class="hint">
+        When a launch's agent is over its usage threshold, walk this chain instead of pausing. A
+        workspace can override the chain; workspaces that inherit it are asked to set each agent up
+        on focus. Does not rewrite the workspace's active agent.
+      </p>
+      <FallbackChainEditor
+        profiles={$agentProfilesStore}
+        value={$agentDefaultsStore.agentFallback ?? []}
+        onChange={(chain) =>
+          void setAgentDefaults({
+            ...$agentDefaultsStore,
+            agentFallback: chain ?? [],
+          })}
       />
     </section>
 

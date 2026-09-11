@@ -411,11 +411,14 @@ export function setAgentDefaults(agentDefaults: AgentDefaults): Promise<void> {
 /// otherwise have that script executed by merely opening the workspace.
 /// Pass what `trustedAgentConfigs` resolved -- the repo's command only
 /// once the human approved this config, the profile's until then.
+/// `profileId` overlays the workspace's active agent so setup-only
+/// arming can probe Codex while `[agent] profile` still names Claude.
 export function superpowersStatus(
   rootPath: string,
-  agentCommand: string
+  agentCommand: string,
+  profileId?: string
 ): Promise<SuperpowersStatus> {
-  return invoke("superpowers_status", { rootPath, agentCommand });
+  return invoke("superpowers_status", { rootPath, agentCommand, profileId });
 }
 
 /// Runs the install and returns the status that follows it. A failed
@@ -424,11 +427,14 @@ export function superpowersStatus(
 /// says afterwards. Rejects only when no install was attempted: a profile
 /// gavin must not install into, or a binary it could not spawn.
 /// `agentCommand`: as `superpowersStatus` above.
+/// `profileId`: as `superpowersStatus` — fallback arming names the chain
+/// agent so Install does not write the workspace's active CLI.
 export function superpowersInstall(
   rootPath: string,
-  agentCommand: string
+  agentCommand: string,
+  profileId?: string
 ): Promise<SuperpowersStatus> {
-  return invoke("superpowers_install", { rootPath, agentCommand });
+  return invoke("superpowers_install", { rootPath, agentCommand, profileId });
 }
 
 /// What the human has told gavin, keyed by workspace root path.
@@ -749,9 +755,15 @@ export interface IntegrationResult {
 export function setupAgentIntegration(
   rootPath: string,
   instructionsFile: string,
-  mcpForeignChoice?: "keep" | "isolate"
+  mcpForeignChoice?: "keep" | "isolate",
+  profileId?: string
 ): Promise<IntegrationResult> {
-  return invoke("setup_agent_integration", { rootPath, instructionsFile, mcpForeignChoice });
+  return invoke("setup_agent_integration", {
+    rootPath,
+    instructionsFile,
+    mcpForeignChoice,
+    profileId,
+  });
 }
 
 export function createPlan(

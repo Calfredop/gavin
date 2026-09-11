@@ -798,6 +798,7 @@ mod workspaces_data_tests {
             custom_command: "my-agent --yolo".to_string(),
             custom_model_flag: "--llm".to_string(),
             complexity,
+            agent_fallback: vec!["codex".to_string()],
         };
         persist_workspaces(
             dir.path(),
@@ -1019,6 +1020,8 @@ mod workspaces_data_tests {
             require_review: None,
             require_review_asked: false,
             custom_resume_args: None,
+            agent_fallback: None,
+            armed_agents: Vec::new(),
         };
         ws.complexity_agents.insert(
             "trivial".to_string(),
@@ -1256,6 +1259,8 @@ mod workspace_migration_tests {
             require_review: None,
             require_review_asked: false,
             custom_resume_args: None,
+            agent_fallback: None,
+            armed_agents: Vec::new(),
         }
     }
 
@@ -3420,6 +3425,8 @@ mod resolve_workspaces_tests {
             require_review: None,
             require_review_asked: false,
             custom_resume_args: None,
+            agent_fallback: None,
+            armed_agents: Vec::new(),
         }
     }
 
@@ -4123,6 +4130,8 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 require_review: None,
                 require_review_asked: false,
                 custom_resume_args: None,
+            agent_fallback: None,
+            armed_agents: Vec::new(),
             },
         );
     }
@@ -5462,6 +5471,8 @@ mod main_session_tests {
             require_review: None,
             require_review_asked: false,
             custom_resume_args: None,
+            agent_fallback: None,
+            armed_agents: Vec::new(),
         }
     }
 
@@ -6028,6 +6039,8 @@ mod attach_target_tests {
             require_review: None,
             require_review_asked: false,
             custom_resume_args: None,
+            agent_fallback: None,
+            armed_agents: Vec::new(),
         }
     }
 

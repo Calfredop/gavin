@@ -1473,12 +1473,14 @@ pub fn setup_agent_integration(
     root_path: String,
     instructions_file: Option<String>,
     mcp_foreign_choice: Option<String>,
+    profile_id: Option<String>,
 ) -> Result<IntegrationResult, String> {
     run_integration(
         Path::new(&root_path),
         resolve_mcp_binary_path,
         instructions_file.as_deref(),
         McpForeignChoice::from_str(mcp_foreign_choice.as_deref()),
+        profile_id.as_deref(),
     )
 }
 
@@ -1492,11 +1494,17 @@ fn run_integration(
     resolve_binary: impl Fn() -> anyhow::Result<PathBuf>,
     instructions_file: Option<&str>,
     mcp_choice: Option<McpForeignChoice>,
+    profile_id: Option<&str>,
 ) -> Result<IntegrationResult, String> {
     if !root.is_dir() {
         return Err(format!("root does not exist: {}", root.display()));
     }
-    let profile = profile_by_id(&read_profile_id(root));
+    let profile_id = profile_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| read_profile_id(root));
+    let profile = profile_by_id(&profile_id);
     let instructions_file = instructions_file
         .map(str::trim)
         .filter(|f| !f.is_empty())
@@ -2406,7 +2414,7 @@ mod tests {
     #[test]
     fn setup_refuses_a_root_that_does_not_exist() {
         let err =
-            setup_agent_integration("/no/such/root".to_string(), None, None).unwrap_err();
+            setup_agent_integration("/no/such/root".to_string(), None, None, None).unwrap_err();
         assert!(err.contains("root does not exist"), "got: {err}");
     }
 
@@ -2431,7 +2439,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "codex");
 
-        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
 
         // The agent file IS written, which was the whole point of W4.
         assert!(dir.path().join("AGENTS.md").is_file());
@@ -2445,6 +2453,26 @@ mod tests {
         assert!(result.skipped[0].1.contains("Codex CLI"), "the reason names the profile");
     }
 
+    /// Fallback arming: a profile_id overlay writes THAT agent's files
+    /// and leaves the workspace's active profile (and its files) alone.
+    #[test]
+    fn integration_can_arm_a_profile_other_than_the_workspace_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+
+        let result = run_integration(dir.path(), fake_binary(), None, None, Some("codex")).unwrap();
+
+        assert!(dir.path().join("AGENTS.md").is_file());
+        assert!(dir.path().join(".codex/config.toml").is_file());
+        assert!(!dir.path().join("CLAUDE.md").is_file());
+        assert!(!dir.path().join(".mcp.json").is_file());
+        assert!(result.written.iter().any(|w| w.ends_with("AGENTS.md")));
+        assert!(result.written.iter().any(|w| w.ends_with(".codex/config.toml")));
+        let cfg = std::fs::read_to_string(dir.path().join(".gavin-root/config.toml")).unwrap();
+        assert!(cfg.contains("profile = \"claude-code\""));
+        assert!(!cfg.contains("profile = \"codex\""));
+    }
+
     /// AG-07, the "no existing file" case: nothing to disclose about a
     /// file gavin is about to create, so the write proceeds exactly as
     /// it did before this fix and no decision is asked for.
@@ -2453,7 +2481,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "claude-code");
 
-        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
 
         assert!(dir.path().join(".mcp.json").is_file());
         assert!(result.written.iter().any(|w| w.ends_with(".mcp.json")));
@@ -2475,7 +2503,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
@@ -2503,7 +2531,7 @@ mod tests {
 
         // No decision yet -> the write is held back and the foreign
         // entry is reported, verbatim.
-        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
         assert!(!result.written.iter().any(|w| w.ends_with(".mcp.json")));
         let foreign = result.mcp_foreign.expect("a foreign server was present");
         assert!(foreign.file.ends_with(".mcp.json"));
@@ -2528,7 +2556,7 @@ mod tests {
 
         // "keep": merges beside it, same as every run before this fix.
         let result =
-            run_integration(dir.path(), fake_binary(), None, Some(McpForeignChoice::Keep)).unwrap();
+            run_integration(dir.path(), fake_binary(), None, Some(McpForeignChoice::Keep), None).unwrap();
         assert!(result.written.iter().any(|w| w.ends_with(".mcp.json")));
         assert!(result.mcp_foreign.is_none());
         let v: serde_json::Value =
@@ -2544,7 +2572,7 @@ mod tests {
             r#"{ "mcpServers": { "evil": { "command": "/bin/sh" } } }"#,
         )
         .unwrap();
-        let result = run_integration(dir.path(), fake_binary(), None, Some(McpForeignChoice::Isolate))
+        let result = run_integration(dir.path(), fake_binary(), None, Some(McpForeignChoice::Isolate), None)
             .unwrap();
         assert!(!result.written.iter().any(|w| w.ends_with(".mcp.json")));
         let reason = result
@@ -2578,7 +2606,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = run_integration(dir.path(), fake_binary(), Some("CLAUDE.md"), None).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), Some("CLAUDE.md"), None, None).unwrap();
 
         assert!(dir.path().join("CLAUDE.md").is_file());
         assert!(!dir.path().join("REPO_CHOSE_THIS.md").exists());
@@ -2593,7 +2621,7 @@ mod tests {
             "[agent]\nprofile = \"claude-code\"\nfile = \"REPO_CHOSE_THIS.md\"\n",
         )
         .unwrap();
-        run_integration(other.path(), fake_binary(), None, None).unwrap();
+        run_integration(other.path(), fake_binary(), None, None, None).unwrap();
         assert!(other.path().join("REPO_CHOSE_THIS.md").is_file());
     }
 
@@ -2608,7 +2636,7 @@ mod tests {
         let base = "[agent]\nprofile = \"custom\"\nfile = \"RULES.md\"\n";
         std::fs::write(g.join("config.toml"), base).unwrap();
 
-        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
 
         assert!(dir.path().join("RULES.md").is_file());
         let skipped: Vec<&str> = result.skipped.iter().map(|(what, _)| what.as_str()).collect();
@@ -2620,7 +2648,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "codex");
 
-        run_integration(dir.path(), fake_binary(), None, None).unwrap();
+        run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
 
         let body = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
         assert!(body.contains(MARKER_START) && body.contains(MARKER_END));
@@ -2655,7 +2683,7 @@ mod tests {
                 &format!("mcp_file = \"{config_file}\"\nmcp_format = \"{format}\"\n"),
             );
 
-            let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+            let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
 
             let written = dir.path().join(config_file);
             assert!(written.is_file(), "{format} did not write {config_file}");
@@ -2674,7 +2702,7 @@ mod tests {
             dir.path(),
             "mcp_file = \".myagent/config.toml\"\nmcp_format = \"toml-servers\"\n",
         );
-        run_integration(dir.path(), fake_binary(), None, None).unwrap();
+        run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
         let text = std::fs::read_to_string(dir.path().join(".myagent/config.toml")).unwrap();
         let parsed = text.parse::<toml::Table>().unwrap();
         assert_eq!(parsed["mcp_servers"]["gavin"]["command"].as_str().unwrap(), "/apps/gavin-mcp");
@@ -2689,7 +2717,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             custom_rooted(dir.path(), extra);
-            run_integration(dir.path(), fake_binary(), None, None).unwrap();
+            run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
             let written = std::fs::read_to_string(dir.path().join("agent.json")).unwrap();
             let v: serde_json::Value = serde_json::from_str(&written).unwrap();
             assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
@@ -2708,7 +2736,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         custom_rooted(dir.path(), "mcp_file = \"../escaped.json\"\n");
-        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
         let skipped: Vec<&str> = result.skipped.iter().map(|(w, _)| w.as_str()).collect();
         assert_eq!(skipped, ["skill file", "MCP config"]);
         assert!(!dir.path().parent().unwrap().join("escaped.json").exists());
@@ -2731,7 +2759,7 @@ mod tests {
             )
             .unwrap();
 
-            let err = run_integration(dir.path(), fake_binary(), None, None).unwrap_err();
+            let err = run_integration(dir.path(), fake_binary(), None, None, None).unwrap_err();
 
             assert!(err.contains(escape), "error should name the value {escape}: {err}");
             assert!(
@@ -2922,7 +2950,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "opencode");
 
-        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -2958,7 +2986,7 @@ mod tests {
     fn the_opencode_agent_file_carries_the_git_only_grant() {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "opencode");
-        run_integration(dir.path(), fake_binary(), None, None).unwrap();
+        run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
 
         let body =
             std::fs::read_to_string(dir.path().join(".opencode/agent/gavin-commit.md")).unwrap();

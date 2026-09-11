@@ -403,6 +403,22 @@ pub struct Workspace {
     /// (D35) like `auto_commit`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_resume_args: Option<String>,
+    /// This workspace's own fallback chain. Absent means INHERIT the
+    /// app-wide `AgentDefaultsConfig::agent_fallback`, which is not the
+    /// same as off — a workspace that wants no fallback while the app
+    /// has one stores an empty vec, and `skip_serializing_if` keeps the
+    /// key out of config.json for the ordinary inheriting case.
+    ///
+    /// Machine-local like `agent_pause`: which CLI this human spends
+    /// when a subscription window is full is a fact about this machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_fallback: Option<Vec<String>>,
+    /// Profile ids this workspace has completed setup-only arming for
+    /// (Integration / Superpowers / skills) without switching the active
+    /// agent. The workspace's own profile is armed by init / agent-change,
+    /// not this list. Empty is the ordinary case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub armed_agents: Vec<String>,
 }
 
 /// One recorded decision on `Workspace::mcp_foreign_servers_choice`.
@@ -647,6 +663,18 @@ pub struct AgentDefaultsConfig {
     /// the field existed.
     #[serde(default)]
     pub complexity: HashMap<String, ComplexityAgent>,
+    /// Ordered fallback profile ids when a launch's resolved agent is
+    /// over its usage-probe threshold. Empty — the shipped default — is
+    /// pause-only, the behaviour every install had before this field.
+    ///
+    /// Lives here rather than as a thirteenth `persist_workspaces`
+    /// positional because it is the same machine-local "which agent"
+    /// question this struct already answers, and a new argument on that
+    /// list is how a save site silently drops a setting. A workspace
+    /// override lives on `Workspace::agent_fallback`; absence there
+    /// inherits this chain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_fallback: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -945,6 +973,8 @@ mod tests {
             require_review: None,
             require_review_asked: false,
             custom_resume_args: None,
+            agent_fallback: None,
+            armed_agents: Vec::new(),
         }
     }
 
@@ -996,6 +1026,43 @@ mod tests {
         let old = load(dir.path()).unwrap();
         assert_eq!(old.workspaces[0].pinned_at, None);
         assert_eq!(old.workspaces[0].pages[0].pinned_at, None);
+    }
+
+    /// Workspace fallback inherit vs override, and the armed set, have to
+    /// survive a round trip: a save site that dropped them would forget
+    /// which CLIs this machine already set up, and reopen the wizard.
+    #[test]
+    fn fallback_chain_and_armed_agents_roundtrip_and_default_to_inherit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.agent_fallback = Some(vec!["codex".to_string(), "gemini".to_string()]);
+        ws.armed_agents = vec!["codex".to_string()];
+        save(dir.path(), &AppConfig { workspaces: vec![ws], ..Default::default() }).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(
+            loaded.workspaces[0].agent_fallback.as_deref(),
+            Some(["codex".to_string(), "gemini".to_string()].as_slice())
+        );
+        assert_eq!(loaded.workspaces[0].armed_agents, vec!["codex".to_string()]);
+
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces":[{"id":"w","name":"W","pages":[{"id":"p","name":"P","layout":{"type":"leaf","tabs":[],"activeTabIndex":0},"focusedSessionId":null}],"activePageId":null,"activeView":null}]}"#,
+        )
+        .unwrap();
+        let old = load(dir.path()).unwrap();
+        assert_eq!(old.workspaces[0].agent_fallback, None);
+        assert!(old.workspaces[0].armed_agents.is_empty());
+        assert!(old.agent_defaults.agent_fallback.is_empty());
+    }
+
+    #[test]
+    fn agent_defaults_fallback_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.agent_defaults.agent_fallback = vec!["codex".to_string()];
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap().agent_defaults.agent_fallback, vec!["codex".to_string()]);
     }
 
     /// Both halves of the setting round-trip, and both read as absent from

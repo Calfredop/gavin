@@ -64,6 +64,12 @@ vi.mock("$lib/core/layoutState", () => ({
     interruptedSessionIds: new Set<string>(),
     failureReasonById: {} as Record<string, string>,
   }),
+  agentDefaultsStore: writable({
+    customCommand: "",
+    customModelFlag: "",
+    complexity: {},
+    agentFallback: [] as string[],
+  }),
   // The three the follow-up queue reads through queuedInputActions.
   // `daemonCompat` null means "not connected yet", which
   // featureBlockedReason treats as ungated -- so the default here is a
@@ -99,6 +105,7 @@ vi.mock("$lib/core/layoutState", () => ({
   // one fixture that IS rated drives them apart on the second argument,
   // which is the only thing that tells the two calls apart.
   agentForCard: agentMock,
+  agentForProfile: agentMock,
 }));
 // The interactive half of the same gate. A real `ensureCardReviewed`
 // would raise the app's dialog and wait for an answer that never comes;

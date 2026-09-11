@@ -104,7 +104,7 @@ describe("every start goes through the gate", () => {
   // One sentence per surface: the pause's reason first, then the gate's.
   it("answers startBlockedReason with the pause first and the gate second", () => {
     const pause = source("agentPauseState.ts");
-    expect(pause).toContain("if (paused) return paused;");
+    expect(pause).toContain("launchPauseHold(workspaceId, get(nowStore))");
     expect(pause).toContain("return gateReason();");
     expect(source("launchQueue.ts")).toContain("setGateReasonHook(launchBlockedReason);");
   });

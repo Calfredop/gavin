@@ -57,12 +57,19 @@ vi.mock("$lib/core/layoutState", () => ({
     // the scheduler reads its silence as a finished turn.
     failureReasonById: {} as Record<string, string>,
   }),
+  agentDefaultsStore: writable({
+    customCommand: "",
+    customModelFlag: "",
+    complexity: {},
+    agentFallback: [] as string[],
+  }),
   resolvedAgentFor: agentMock,
   // The SAME mock function, deliberately: no card fixture here carries a
   // complexity, so `agentForCard` really does resolve to the workspace's
   // agent -- and a test that moves one has to move both, or a rail's
   // card steps and its tool steps would launch with different agents.
   agentForCard: agentMock,
+  agentForProfile: agentMock,
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   // Null by default: no conversation id unless a test asks for one, which
   // is what an unverified profile OR a pre-v21 daemon looks like.

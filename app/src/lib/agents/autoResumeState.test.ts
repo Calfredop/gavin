@@ -29,6 +29,12 @@ vi.mock("$lib/core/layoutState", async () => {
         { pattern: "Connection dropped", cause: "network" },
       ],
     })),
+    agentDefaultsStore: w({
+      customCommand: "",
+      customModelFlag: "",
+      complexity: {},
+      agentFallback: [] as string[],
+    }),
     setSessionFailureHook: vi.fn((hook) => {
       captured.hook = hook;
     }),

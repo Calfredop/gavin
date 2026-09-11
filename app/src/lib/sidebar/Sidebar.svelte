@@ -1,10 +1,12 @@
 <script lang="ts">
   import { accentVar } from "$lib/core/settings";
   import GlobalSettingsModal from "$lib/core/GlobalSettingsModal.svelte";
+  import AgentArmWizard from "$lib/workspace/AgentArmWizard.svelte";
   import SessionsManagerModal from "$lib/sessions/SessionsManagerModal.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import AgentUsageModal from "$lib/agents/AgentUsageModal.svelte";
   import { activePause, nowStore, worstUsageProjection } from "$lib/agents/agentPauseState";
+  import { armRequest, completeArmRequest, dismissArmRequest } from "$lib/agents/agentFallbackState";
   import { pauseLabel } from "$lib/agents/agentPause";
   import { fleetStripLine, launchGateVerdict } from "$lib/agents/launchQueue";
   import { projectionTooltip } from "$lib/agents/usageProjection";
@@ -1766,6 +1768,15 @@
 
 {#if showGlobalSettings}
   <GlobalSettingsModal onClose={() => (showGlobalSettings = false)} />
+{/if}
+
+{#if $armRequest}
+  <AgentArmWizard
+    workspaceId={$armRequest.workspaceId}
+    profileId={$armRequest.profileId}
+    onClose={dismissArmRequest}
+    onArmed={() => void completeArmRequest()}
+  />
 {/if}
 
 <style>

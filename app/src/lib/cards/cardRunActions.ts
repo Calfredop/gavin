@@ -6,7 +6,7 @@
 
 import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
-import { agentForCard, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, resolvedAgentFor, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, resolvedAgentFor, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { findSessionLocation } from "$lib/core/workspace";
 import { cardSessionState } from "$lib/board/columnRunAction";
@@ -44,6 +44,31 @@ import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "$lib/agents/queuedI
 import { queueFollowUp, queueTargetFor } from "$lib/agents/queuedInputActions";
 import { cardViewForPath, type CardView } from "$lib/core/planBoard";
 import { holdOrQueue, type CardIntent } from "$lib/agents/launchQueue";
+import { launchDecision } from "$lib/agents/agentPauseState";
+import { fallbackBlockedReason } from "$lib/agents/agentFallback";
+import { requestArm } from "$lib/agents/agentFallbackState";
+
+function agentForNewLaunch(
+  workspaceId: string,
+  card: Parameters<typeof agentForCard>[1],
+  resume: boolean
+) {
+  const primary = agentForCard(workspaceId, card);
+  const decision = launchDecision(workspaceId, primary.profileId, resume);
+  if (decision.kind === "use" && decision.viaFallback) {
+    return { decision, agent: agentForProfile(workspaceId, decision.profileId) };
+  }
+  return { decision, agent: primary };
+}
+
+function holdLaunch(workspaceId: string, decision: ReturnType<typeof launchDecision>): string | null {
+  if (decision.kind === "use") return null;
+  if (decision.kind === "arm") {
+    requestArm(workspaceId, decision.profileId);
+    return fallbackBlockedReason(decision);
+  }
+  return fallbackBlockedReason(decision);
+}
 
 /// The run gate for a card's attachments: the absolute paths to hand the
 /// agent (and the ones it named but gavin is withholding), or the reason
@@ -298,7 +323,9 @@ export async function developCard(
   // is not a level: develop overwhelmingly targets a card that names
   // neither field, and `agentForCard` resolves that to EXACTLY
   // `resolvedAgentFor` -- the behaviour this route had before.
-  const agent = agentForCard(workspaceId, card);
+  const { decision, agent } = agentForNewLaunch(workspaceId, card, false);
+  const held = holdLaunch(workspaceId, decision);
+  if (held) return held;
   const command = buildRunCommand(
     agent.launchCommand,
     agent.promptArgs,
@@ -381,7 +408,9 @@ async function launchCard(
   // attributed) resolves to exactly the workspace's agent -- so this
   // reads the same as `resolvedAgentFor` did for every card that
   // predates the fields.
-  const agent = agentForCard(workspaceId, card);
+  const { decision, agent } = agentForNewLaunch(workspaceId, card, mode === "resume" || mode === "review");
+  const fallbackHold = holdLaunch(workspaceId, decision);
+  if (fallbackHold) return fallbackHold;
   if (agent.promptArgs === null) return noPromptReason(agent.label);
 
   // The launch wall, last of the gates and the only one that does not

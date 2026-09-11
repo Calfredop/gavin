@@ -68,7 +68,7 @@ vi.mock("$lib/core/backend", () => ({
   getAgentModelDefaults: vi.fn().mockResolvedValue({}),
   getAgentDefaults: vi
     .fn()
-    .mockResolvedValue({ customCommand: "", customModelFlag: "", complexity: {} }),
+    .mockResolvedValue({ customCommand: "", customModelFlag: "", complexity: {}, agentFallback: [] }),
   setAgentDefaults: vi.fn().mockResolvedValue(undefined),
   getTerminalFontSize: vi.fn().mockResolvedValue(null),
   getCustomResumeArgs: vi.fn().mockResolvedValue(null),

@@ -494,6 +494,17 @@ fn profile_id_for(root: &Path) -> String {
     crate::agent_setup::read_profile_id(root)
 }
 
+/// Fallback arming names a profile other than the workspace's active
+/// agent. Blank/absent overlay reads the root, which is what every
+/// existing caller (Settings, Home, agent-change after commit) does.
+fn overlay_profile_id(root: &Path, overlay: Option<&str>) -> String {
+    overlay
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| profile_id_for(root))
+}
+
 /// `agent_command` is the workspace's RESOLVED launch command -- the
 /// repo's `[agent] command` only where the human has approved this
 /// workspace's config, and the profile table's own everywhere else. It is
@@ -503,6 +514,7 @@ fn profile_id_for(root: &Path) -> String {
 pub fn superpowers_status(
     root_path: String,
     agent_command: Option<String>,
+    profile_id: Option<String>,
     marks: tauri::State<crate::session::SuperpowersMarks>,
 ) -> Status {
     let root = PathBuf::from(&root_path);
@@ -510,7 +522,12 @@ pub fn superpowers_status(
         marks.0.lock().unwrap().get(&root_path),
         Some(crate::config::SuperpowersMark::Installed)
     );
-    status_for(&root, &profile_id_for(&root), asserted, agent_command.as_deref())
+    status_for(
+        &root,
+        &overlay_profile_id(&root, profile_id.as_deref()),
+        asserted,
+        agent_command.as_deref(),
+    )
 }
 
 /// Runs the install and reports the status that follows it. A non-zero
@@ -522,10 +539,11 @@ pub fn superpowers_status(
 pub fn superpowers_install(
     root_path: String,
     agent_command: Option<String>,
+    profile_id: Option<String>,
     marks: tauri::State<crate::session::SuperpowersMarks>,
 ) -> Result<Status, String> {
     let root = PathBuf::from(&root_path);
-    let profile_id = profile_id_for(&root);
+    let profile_id = overlay_profile_id(&root, profile_id.as_deref());
     if !matches!(mechanism(&profile_id), Mechanism::ClaudeCli) {
         let label = crate::agent_setup::profile_by_id(&profile_id).label;
         return Err(format!("gavin cannot install Superpowers for {label}."));
@@ -700,6 +718,21 @@ mod tests {
             let installable = matches!(mechanism(id), Mechanism::ClaudeCli);
             assert_eq!(installable, id == "claude-code", "{id}");
         }
+    }
+
+    /// Fallback arming must not read the workspace's active profile when
+    /// the caller named a different one — otherwise Superpowers would
+    /// install Claude's plugin while arming Codex.
+    #[test]
+    fn overlay_profile_id_uses_the_named_profile_not_the_workspace_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(overlay_profile_id(dir.path(), Some("codex")), "codex");
+        assert_eq!(overlay_profile_id(dir.path(), Some("  gemini  ")), "gemini");
+        assert_eq!(overlay_profile_id(dir.path(), Some("")), "claude-code");
+        assert_eq!(overlay_profile_id(dir.path(), None), "claude-code");
+        let status = status_for(dir.path(), "codex", false, None);
+        assert!(!status.installable, "Codex Superpowers is in-TUI, not a button");
+        assert!(status.command.contains("/plugins"), "{}", status.command);
     }
 
     /// The binary is whatever the CALLER named, never what a repo's

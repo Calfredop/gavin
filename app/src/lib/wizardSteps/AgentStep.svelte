@@ -5,11 +5,14 @@
     layoutState,
     agentProfilesStore,
     agentModelDefaultsStore,
+    agentDefaultsStore,
+    setAgentDefaults,
     setAgentField,
     trustedAgentConfigs,
   } from "$lib/core/layoutState";
   import { resolveAgentConfig, agentFileFromPick } from "$lib/core/settings";
   import ConfigTrustNotice from "$lib/workspace/ConfigTrustNotice.svelte";
+  import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
 
   interface Props {
     workspaceId: string;
@@ -166,6 +169,25 @@
   numbers later{probedHere ? ", and gavin will also hold when this agent reports a full window" : ""}.
 </p>
 
+<label class="row top">
+  <span>Fallback</span>
+  <div>
+    <FallbackChainEditor
+      profiles={$agentProfilesStore}
+      value={$agentDefaultsStore.agentFallback ?? []}
+      onChange={(chain) =>
+        void setAgentDefaults({
+          ...$agentDefaultsStore,
+          agentFallback: chain ?? [],
+        })}
+    />
+    <p class="hint">
+      If this agent's usage is spent, new launches walk the chain instead of pausing. Setup for each
+      fallback runs after this wizard, on workspace focus.
+    </p>
+  </div>
+</label>
+
 <div class="actions">
   <button type="button" onclick={() => void continueStep()}>Continue →</button>
 </div>
@@ -236,6 +258,9 @@
     font-family: monospace;
     font-size: 0.85em;
     color: #ccc;
+  }
+  .row.top {
+    align-items: flex-start;
   }
   .row > span:first-child {
     width: 80px;

@@ -5,6 +5,7 @@
     setWorkspaceColor,
     setWorkspaceFlag,
     setWorkspacePause,
+    setWorkspaceFallback,
     setAgentField,
     setPrdPath,
     agentProfilesStore,
@@ -73,10 +74,13 @@
   import Modal from "$lib/core/Modal.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import AgentChangeWizard from "$lib/workspace/AgentChangeWizard.svelte";
+  import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
   import WorkspaceDeleteWizard from "$lib/workspace/WorkspaceDeleteWizard.svelte";
   import { tooltip } from "$lib/core/tooltip";
   import { MIN_PERIOD_MINUTES, validateCycle } from "$lib/agents/agentPause";
   import { agentPauseStore, editableCycle, nowStore, pauseFor } from "$lib/agents/agentPauseState";
+  import { armNewlyAdded } from "$lib/agents/agentFallbackState";
+  import { effectiveFallbackChain } from "$lib/agents/agentFallback";
   import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
   import { UNFILED_WORKSPACE_ID } from "$lib/core/workspace";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
@@ -199,6 +203,10 @@
     },
     { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
     { id: "agent-pause", keywords: ["Agent pause", "pause", "cycle", "limit", "usage"] },
+    {
+      id: "fallback-agent",
+      keywords: ["Fallback agent", "fallback chain", "usage limit", "arm"],
+    },
     {
       id: "unattended-recovery",
       keywords: ["Unattended recovery", "Resume", "auto resume", "broken card run"],
@@ -1094,6 +1102,30 @@
           Right now: {pauseNow.why}.
         {/if}
       </p>
+    </section>
+
+    <section hidden={!settingsFilter.visible("fallback-agent")}>
+      <h3>Fallback agent</h3>
+      <p class="hint">
+        When this workspace's agent is over its usage threshold, new launches walk this chain
+        instead of pausing. The workspace agent is not rewritten. An agent that is not set up yet
+        opens a setup wizard rather than launching degraded.
+      </p>
+      <FallbackChainEditor
+        profiles={$agentProfilesStore}
+        value={ws.agentFallback ?? []}
+        inherited={$agentDefaultsStore.agentFallback ?? []}
+        inheriting={ws.agentFallback == null}
+        onChange={(chain) => {
+          const before = effectiveFallbackChain(
+            ws.agentFallback,
+            $agentDefaultsStore.agentFallback
+          );
+          void setWorkspaceFallback(workspaceId, chain).then(() => {
+            if (chain) armNewlyAdded(workspaceId, before, chain);
+          });
+        }}
+      />
     </section>
 
     <section hidden={!settingsFilter.visible("unattended-recovery")}>

@@ -59,6 +59,13 @@ vi.mock("$lib/core/layoutState", () => ({
   handleAgentSessionSpawned: vi.fn(),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   resolvedAgentFor: agentMock,
+  agentForProfile: agentMock,
+  agentDefaultsStore: writable({
+    customCommand: "",
+    customModelFlag: "",
+    complexity: {},
+    agentFallback: [] as string[],
+  }),
   // The SAME function object, deliberately: no fixture in here carries a
   // level or an `agent:`/`model:` line, so the card's own resolver lands
   // on the workspace's agent exactly as the workspace resolver does.
