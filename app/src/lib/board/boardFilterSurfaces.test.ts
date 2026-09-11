@@ -10,12 +10,32 @@ function source(name: string): string {
   return text;
 }
 
-describe("label facet surfaces", () => {
-  it("offers Any label and a Not pair in the shared filter row", () => {
+describe("facet filter surfaces", () => {
+  it("opens checkbox dropdowns over the shared menu, not a native select", () => {
+    const filters = source("FacetFilters.svelte");
+    expect(filters).toContain("FacetDropdown");
+    expect(filters).not.toContain("<select");
+    expect(source("FacetDropdown.svelte")).toContain("openMenuUnder");
+    expect(source("FacetDropdown.svelte")).toContain("facetMenuEntries");
+    expect(source("boardFilters.ts")).toContain("keepOpen: true");
+  });
+
+  it("offers Any-empty labels and no Not pair", () => {
     const filters = source("FacetFilters.svelte");
     expect(filters).toContain("Filter by label");
-    expect(filters).toContain("labelFacets");
+    expect(filters).toContain("ANY_LABEL_LABEL");
     expect(source("boardFilters.ts")).toContain("Any label");
-    expect(source("boardFilters.ts")).toContain("Not ${l.name}");
+    expect(source("boardFilters.ts")).not.toContain("Not ${");
+    expect(source("boardFilters.ts")).not.toContain("not:");
+    expect(filters).not.toContain("Not ");
+  });
+
+  it("reaches Kanban, Review and Plans, including Plans' own status facet", () => {
+    expect(source("KanbanBoard.svelte")).toContain("<FacetFilters");
+    expect(source("ReviewCardList.svelte")).toContain("<FacetFilters");
+    expect(source("PlanExplorerHubView.svelte")).toContain("<FacetFilters");
+    expect(source("PlanExplorerHubView.svelte")).toContain("<FacetDropdown");
+    expect(source("PlanExplorerHubView.svelte")).toContain("Filter by status");
+    expect(source("PlanExplorerHubView.svelte")).not.toMatch(/<select[^>]*Filter by status/);
   });
 });

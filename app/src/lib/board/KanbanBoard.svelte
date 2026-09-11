@@ -110,11 +110,12 @@
   const merged = $derived(board ? mergePlanCards(board, tree) : null);
 
   // --- the facet lens (boardFilters.ts) --------------------------------
-  // Three dropdowns over the whole workspace's cards: which context, which
-  // kind, which rail. `merged` stays UNFILTERED -- the delete cascade, the
-  // detail modal and the drop path all commit against the whole board --
-  // and the lenses compose facets first, then search, so a column's
-  // "hidden" count keeps meaning "hidden by your query".
+  // Four checkbox dropdowns over the whole workspace's cards: which
+  // contexts, which kinds, which rails, which labels. `merged` stays
+  // UNFILTERED -- the delete cascade, the detail modal and the drop path
+  // all commit against the whole board -- and the lenses compose facets
+  // first, then search, so a column's "hidden" count keeps meaning
+  // "hidden by your query".
   //
   // The facets themselves live in hubFacets.ts, not component `$state`:
   // Kanban, Review and Plans share one answer by default (a module-level
