@@ -73,6 +73,10 @@ import type { RailState, StepAttention, StepState } from "$lib/orchestration/orc
 // Same reason: usageProjection.ts owns the three bands and the rule that
 // produces them, so this file names them rather than defining a second set.
 import type { ProjectionBand } from "$lib/agents/usageProjection";
+// ...and launchGate owns the hold vocabulary itself, plus the two words
+// each reason is allowed to be called. A badge that spelled them here
+// would be free to say "Queued" where the queue row says "Paused".
+import { holdLabel, type HoldReason } from "$lib/agents/launchGate";
 
 /// The five meanings colour is allowed to carry. Matches IconButton's own
 /// tone scale one for one, so a badge and a button beside it never
@@ -164,7 +168,8 @@ const AGENT: Record<
   | "idle"
   | "exited"
   | "queued"
-  | "held",
+  | "held"
+  | "paused",
   Indicator
 > = {
   working: make("agent", "working", LoaderCircle, "accent", "working", true),
@@ -249,6 +254,13 @@ const AGENT: Record<
   // shape means same question, tone carries the answer.
   queued: make("agent", "queued", Clock, "neutral", "queued — waiting for a slot"),
   held: make("agent", "held", Clock, "warning", "held — memory pressure"),
+  // The third hold, and the only one nobody chose to be in by accident:
+  // the workspace's own pause cycle, or its agent's usage limit. A Pause
+  // rather than the Clock the other two share, because this one is not a
+  // queue -- nothing frees up, the schedule simply comes round -- and
+  // neutral for the same reason `queued` is: a pause working as
+  // instructed is not a fault.
+  paused: make("agent", "paused", Pause, "neutral", "paused — agents are paused"),
 };
 
 /// The badge for a live agent session. Null / undefined means the
@@ -306,30 +318,29 @@ export function agentIndicatorByState(state: (typeof AGENT_STATES)[number]): Ind
   return AGENT[state];
 }
 
-/// The badge for a launch the wall is holding.
+/// The badge for a launch something is holding.
 ///
-/// One vocabulary for both halves of the hold, so the board card, the
-/// detail modal, the rail header and the step chip cannot describe it
-/// three ways: "Queued · waiting for a slot" when a slot is what it
-/// wants, "Held · memory pressure" when the machine is.
+/// One vocabulary for all three halves of the hold, so the board card,
+/// the detail modal, the rail header and the step chip cannot describe
+/// it three ways: "Queued · waiting for a slot" when a slot is what it
+/// wants, "Held · memory pressure" when the machine is, "Paused" when
+/// the workspace's own cycle or its agent's usage limit is.
 ///
 /// `why` is the gate's own sentence and goes in the BUBBLE, not beside
 /// the glyph -- it names counts and gigabytes, and no badge has room for
 /// that. Hang it on a non-disabled element: `tooltip.ts` binds
 /// mouseenter, which a disabled control never fires.
-export function agentQueuedIndicator(
-  reason: "ceiling" | "pressure",
-  why?: string | null
-): Indicator {
-  const base = reason === "ceiling" ? AGENT.queued : AGENT.held;
+export function agentQueuedIndicator(reason: HoldReason, why?: string | null): Indicator {
+  const base = reason === "ceiling" ? AGENT.queued : reason === "pause" ? AGENT.paused : AGENT.held;
   if (!why) return base;
   return { ...base, tip: `${AXIS_LABEL.agent} · ${why}`, label: `${AXIS_LABEL.agent} · ${why}` };
 }
 
 /// What the badge says beside the glyph. Two words at most, because it
-/// sits next to a card title.
-export function queuedBadgeText(reason: "ceiling" | "pressure"): string {
-  return reason === "ceiling" ? "Queued" : "Held";
+/// sits next to a card title. `holdLabel`'s answer, so the badge and the
+/// queue row cannot drift.
+export function queuedBadgeText(reason: HoldReason): string {
+  return holdLabel(reason);
 }
 
 // ---- priority ----------------------------------------------------------

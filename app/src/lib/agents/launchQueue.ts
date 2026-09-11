@@ -43,6 +43,7 @@ import {
   gateBlockedReason,
   launchVerdict,
   mayDrain,
+  startVerdict,
   type LaunchConfig,
   type LaunchVerdict,
 } from "$lib/agents/launchGate";
@@ -51,7 +52,13 @@ import { launchEstimate, type LaunchEstimate } from "$lib/agents/launchEstimate"
 import { agentSessions, fleetMemory, memoryPressure, storedMeans, systemMemory } from "$lib/agents/memoryState";
 import { layoutState, resolvedAgentFor } from "$lib/core/layoutState";
 import { currentWindowLabel } from "$lib/shell/appWindowState";
-import { setGateReasonHook } from "$lib/agents/agentPauseState";
+import {
+  agentPauseStore,
+  agentUsageStore,
+  nowStore,
+  pauseFor,
+  setGateReasonHook,
+} from "$lib/agents/agentPauseState";
 import type { ReviewedCard } from "$lib/review/codeReview";
 
 // ---- The config -------------------------------------------------------------
@@ -155,6 +162,37 @@ export const launchHolding: Readable<boolean> = readable(false, (set) => {
 export function mayLaunch(): boolean {
   return get(launchGateVerdict).allowed;
 }
+
+/// The hold in force for ONE workspace -- its pause first, then the
+/// app-wide wall -- as a function a template can call per rail, per step
+/// or per card.
+///
+/// A store OF a function rather than a store per workspace, the shape
+/// `reorganizeFor` already takes in the hub view: the surfaces that read
+/// this draw many rows at once, and each row's answer differs only by
+/// which workspace it belongs to.
+///
+/// It exists because half the answer was missing everywhere it was
+/// asked. `executeActions` skips a rail's launch when EITHER
+/// `mayStartWork` or `mayLaunch` refuses, but every badge that explains
+/// a held launch read `launchGateVerdict` alone -- so a rail armed
+/// inside a pause window armed, started nothing, and said nothing. The
+/// pause is the commoner of the two holds on a quiet machine, and it was
+/// the one no surface could name.
+///
+/// Lives here rather than in `agentPauseState` because that module must
+/// stay out of this one's import graph (see `setGateReasonHook`), and
+/// because this is where the wall's own verdict already is.
+export const startHoldFor: Readable<(workspaceId: string | null) => LaunchVerdict> = derived(
+  // `nowStore` is the pause's clock and `agentPauseStore` /
+  // `agentUsageStore` are its inputs -- the same four `activePause`
+  // rides, so a badge and the sidebar strip cannot disagree about
+  // whether the workspace is paused.
+  [launchGateVerdict, nowStore, agentPauseStore, agentUsageStore],
+  ([gate, now]) =>
+    (workspaceId: string | null) =>
+      startVerdict(pauseFor(workspaceId, now), gate)
+);
 
 /// Why it may not, in one sentence. Null while starts are allowed.
 export function launchBlockedReason(): string | null {

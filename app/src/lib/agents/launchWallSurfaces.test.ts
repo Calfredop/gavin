@@ -144,9 +144,54 @@ describe("the queued marks", () => {
   // offers to cancel anything.
   it("marks a held rail and its current stage's pending steps", () => {
     const rail = source("OrchestrationRail.svelte");
-    expect(rail).toContain('railState === "running" && !$launchGateVerdict.allowed');
+    expect(rail).toContain('railState === "running" && !hold.allowed');
     expect(rail).toContain("runningStageId(orch, rail.id) === stageId");
     expect(source("OrchestrationStepChip.svelte")).toContain("agentQueuedIndicator(");
+  });
+
+  // The bug this section did not cover until a rail sat armed and silent
+  // for ten minutes: `executeActions` skips a launch when EITHER
+  // `mayStartWork` (the workspace's pause cycle and its agent's usage
+  // limits) or `mayLaunch` (this wall) refuses, and every badge here read
+  // the wall ALONE. A workspace inside its own pause window therefore
+  // armed its rail, started nothing, and showed no badge at all --
+  // pressing Start looked like pressing nothing.
+  //
+  // So the rule is: a surface that explains a held launch reads
+  // `startHoldFor`, which is both walls in one verdict. Reading
+  // `launchGateVerdict` directly is what re-opens the hole, which is why
+  // the second half of each assertion is a `not`.
+  const HOLD_SURFACES: Array<[string, string]> = [
+    ["OrchestrationRail.svelte", "the rail header badge and its step chips"],
+    ["BoardCard.svelte", "a queued card on the board"],
+    ["CardDetailModal.svelte", "the panel somebody opens to ask why nothing started"],
+  ];
+
+  for (const [file, what] of HOLD_SURFACES) {
+    it(`explains ${what} with BOTH walls, not the memory wall alone`, () => {
+      const text = source(file);
+      expect(text).toContain("$startHoldFor(workspaceId)");
+      expect(text).not.toContain("$launchGateVerdict");
+    });
+  }
+
+  // The half the badge cannot cover, because the badge only appears once
+  // the rail is armed: the press itself. Start stays enabled -- arming a
+  // held rail is right, the scheduler launches it when the hold lifts --
+  // so the tooltip is the only place the button can say so beforehand.
+  it("says on the Start button itself that a hold is in force", () => {
+    const rail = source("OrchestrationRail.svelte");
+    expect(rail).toContain("it will begin when the hold lifts: ${hold.why}");
+  });
+
+  // ...and the chip is handed that verdict rather than reaching for a
+  // store of its own: the pause half is per WORKSPACE, and a chip does
+  // not know which workspace it is drawn in.
+  it("hands the step chip the rail's verdict instead of a store", () => {
+    expect(source("OrchestrationRail.svelte")).toContain("{hold}");
+    const chip = source("OrchestrationStepChip.svelte");
+    expect(chip).toContain("hold?.reason ?? \"ceiling\"");
+    expect(chip).not.toContain("launchQueue");
   });
 
   // A derivation that called queuedForCard without touching the store

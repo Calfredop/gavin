@@ -15,7 +15,7 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { agentQueuedIndicator, attentionIndicator, stepIndicator } from "$lib/ui/indicators";
-  import { launchGateVerdict } from "$lib/agents/launchQueue";
+  import type { LaunchVerdict } from "$lib/agents/launchGate";
   import { describeOverrides, toolKindLabel } from "$lib/orchestration/orchestrationTools";
   import type { Tool } from "$lib/orchestration/orchestrationTools";
   import { attentionTip } from "$lib/orchestration/orchestration";
@@ -51,11 +51,17 @@
     /// nothing can complete.
     doneColumnName: string | null;
     /// True when this step is one the rail WOULD have launched by now
-    /// and the launch wall is holding it (launchGate.ts). Passed rather
-    /// than read from the store, because the answer needs the stage:
-    /// only the beat the rail is actually on is being held -- a pending
-    /// step three stages away is waiting on the rail, not on memory.
+    /// and a wall is holding it. Passed rather than read from the store,
+    /// because the answer needs the stage: only the beat the rail is
+    /// actually on is being held -- a pending step three stages away is
+    /// waiting on the rail, not on memory.
     held?: boolean;
+    /// WHICH wall, and its sentence -- the rail's own `startHoldFor`
+    /// verdict, which covers the workspace's pause as well as the
+    /// app-wide memory wall. Passed for the same reason `held` is: the
+    /// pause half is per WORKSPACE, and a chip does not know which
+    /// workspace it is drawn in. Null while nothing is holding.
+    hold?: LaunchVerdict | null;
     /// Badge numbers this step belongs to, and the highest severity
     /// among them. Empty/null when the step is in no conflict.
     badges: number[];
@@ -95,6 +101,7 @@
     attention,
     doneColumnName,
     held = false,
+    hold = null,
     badges,
     severity,
     onRetry,
@@ -187,7 +194,7 @@
        queued, the scheduler is its queue. -->
   {#if held}
     <StatusBadge
-      indicator={agentQueuedIndicator($launchGateVerdict.reason ?? "ceiling", $launchGateVerdict.why)}
+      indicator={agentQueuedIndicator(hold?.reason ?? "ceiling", hold?.why)}
       size={13}
     />
   {/if}

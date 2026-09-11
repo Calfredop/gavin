@@ -19,7 +19,7 @@
   } from "$lib/ui/indicators";
   import { dragState, dropHold, buildNestedSlots } from "$lib/board/kanbanDrag";
   import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
-  import { cancelLaunch, launchGateVerdict, launchQueue, queuedForCard } from "$lib/agents/launchQueue";
+  import { cancelLaunch, launchQueue, queuedForCard, startHoldFor } from "$lib/agents/launchQueue";
   import { orchestrations } from "$lib/orchestration/orchestrationState";
   import { cardRailBadge } from "$lib/orchestration/orchestration";
   import { cardSessionState } from "$lib/board/columnRunAction";
@@ -147,7 +147,13 @@
     void $launchQueue;
     return workspaceId !== null ? queuedForCard(workspaceId, card.id) : null;
   });
-  const queuedHold = $derived($launchGateVerdict.reason ?? "ceiling");
+  // BOTH walls, in the order `startVerdict` states -- the workspace's
+  // own pause before the app-wide memory wall. A card queued while the
+  // workspace is paused used to say "Queued · waiting for a slot",
+  // which sends the human to the launch settings for a hold their own
+  // pause cycle is applying.
+  const hold = $derived($startHoldFor(workspaceId));
+  const queuedHold = $derived(hold.reason ?? "ceiling");
 
   // The card is being REWRITTEN by a develop agent (developingCards.ts).
   // Read from the store like the session dot and the rail glyph: a
@@ -364,10 +370,10 @@
         }}
       >
         <StatusBadge
-          indicator={agentQueuedIndicator(queuedHold, $launchGateVerdict.why)}
+          indicator={agentQueuedIndicator(queuedHold, hold.why)}
           size={12}
           text={queuedBadgeText(queuedHold)}
-          tip={`${agentQueuedIndicator(queuedHold, $launchGateVerdict.why).tip} — click to cancel`}
+          tip={`${agentQueuedIndicator(queuedHold, hold.why).tip} — click to cancel`}
         />
       </button>
     {/if}

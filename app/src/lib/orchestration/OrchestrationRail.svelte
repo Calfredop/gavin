@@ -28,7 +28,7 @@
     railIndicator,
     railRetryIndicator,
   } from "$lib/ui/indicators";
-  import { launchGateVerdict } from "$lib/agents/launchQueue";
+  import { startHoldFor } from "$lib/agents/launchQueue";
   import OrchestrationStepChip from "$lib/orchestration/OrchestrationStepChip.svelte";
   import OrchestrationStepCard from "$lib/orchestration/OrchestrationStepCard.svelte";
   import type { Label } from "$lib/board/kanban";
@@ -229,18 +229,25 @@
 
   const railState = $derived(railStateOf(orch, rail.id));
 
-  /// Whether this step is one the rail would have launched by now and
-  /// the launch wall is holding.
+  /// What is holding this rail's next launch, or null. BOTH walls, in the
+  /// order `startVerdict` states: the workspace's own pause cycle and its
+  /// agent's usage limits first, then the app-wide memory wall.
+  ///
+  /// It used to be the memory wall alone, and the missing half is the
+  /// whole of a bug the human hit: a rail armed inside a pause window
+  /// went `running`, `executeActions` skipped every launch on
+  /// `mayStartWork`, and this header -- the one surface watching -- had
+  /// no badge for it. Pressing Start looked like pressing nothing.
+  const hold = $derived($startHoldFor(workspaceId));
+
+  /// Whether this step is one the rail would have launched by now and a
+  /// wall is holding.
   ///
   /// The STAGE matters: only the beat the rail is actually on is being
   /// held. A pending step three stages away is waiting on the rail, and
   /// marking it "held" would blame memory for the rail's own order.
   function heldStep(stageId: string, state: StepState): boolean {
-    return (
-      state === "pending" &&
-      !$launchGateVerdict.allowed &&
-      runningStageId(orch, rail.id) === stageId
-    );
+    return state === "pending" && !hold.allowed && runningStageId(orch, rail.id) === stageId;
   }
   // The rail's most urgent step mark, so a hub full of rails says which
   // one needs you without the human reading every stage.
@@ -490,15 +497,16 @@
           tip={attentionTitle}
         />
       {/if}
-      <!-- The launch wall, beside the state and never instead of it: a
-           held rail is still running, it simply has no slot for its next
-           step. A rail is NOT queued -- the scheduler is its queue -- so
+      <!-- The walls, beside the state and never instead of it: a held
+           rail is still running, it simply may not start its next step
+           yet -- because the workspace is paused, or because there is no
+           slot. A rail is NOT queued -- the scheduler is its queue -- so
            this is a readout, not a cancellable intent, and the badge
            carries the gate's own sentence in its bubble. -->
-      {#if railState === "running" && !$launchGateVerdict.allowed}
+      {#if railState === "running" && !hold.allowed}
         <StatusBadge
-          indicator={agentQueuedIndicator($launchGateVerdict.reason ?? "ceiling", $launchGateVerdict.why)}
-          text={queuedBadgeText($launchGateVerdict.reason ?? "ceiling")}
+          indicator={agentQueuedIndicator(hold.reason ?? "ceiling", hold.why)}
+          text={queuedBadgeText(hold.reason ?? "ceiling")}
         />
       {/if}
       <!-- Beside the state, not instead of it, for the same reason the
@@ -516,9 +524,19 @@
       {#if railState === "running"}
         <IconButton icon={Pause} label="Pause" onclick={onPause} />
       {:else}
+        <!-- Never disabled, and the tooltip is why: arming a rail that
+             cannot start yet is the RIGHT thing to press -- the pause or
+             the wall lifts and the scheduler launches on its own, with
+             nothing further to do. But a press whose only visible effect
+             is the word "running" reads as a press that did nothing, so
+             the hold says itself here, before the press, and again as a
+             badge beside the state after it. -->
         <IconButton
           icon={Play}
           label={railState === "paused" ? "Resume" : "Start"}
+          tip={hold.allowed
+            ? undefined
+            : `${railState === "paused" ? "Resume" : "Start"} this rail — it will begin when the hold lifts: ${hold.why}`}
           tone="accent"
           onclick={onStart}
         />
@@ -748,6 +766,7 @@
               toolParams={stepParams(step)}
               state={stepStateOf(orch, step.id)}
               held={heldStep(stage.id, stepStateOf(orch, step.id))}
+              {hold}
               reason={runOf(step.id)?.reason ?? null}
               resumeNote={resumeNoteOf(step)}
               attention={attentions.get(step.id) ?? null}

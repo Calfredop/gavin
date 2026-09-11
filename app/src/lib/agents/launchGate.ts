@@ -54,11 +54,19 @@ export const DEFAULT_LAUNCH: LaunchConfig = {
 
 /// Why a launch is being held. `null` on an allowed verdict.
 ///
-/// Two reasons rather than one string because they resolve differently:
-/// a slot frees when an agent goes idle, and pressure clears when the
-/// machine does. A surface that lumped them would have to say "try
-/// again later" where it can say which of the two to wait for.
-export type HoldReason = "ceiling" | "pressure";
+/// Three reasons rather than one string because they resolve
+/// differently: a slot frees when an agent goes idle, pressure clears
+/// when the machine does, and a `pause` lifts on the human's own clock.
+/// A surface that lumped them would have to say "try again later" where
+/// it can say which of the three to wait for.
+///
+/// `pause` is not this module's own verdict -- the cycle and the usage
+/// limits live in `agentPause.ts` -- but it shares this vocabulary
+/// because it shares every SURFACE: a card, a step chip and a rail
+/// header each have one badge for "started nothing yet, and here is
+/// why", and the executor gates on both walls at the same seam. See
+/// `startVerdict`.
+export type HoldReason = "ceiling" | "pressure" | "pause";
 
 export interface LaunchVerdict {
   allowed: boolean;
@@ -165,18 +173,53 @@ export function gateBlockedReason(verdict: LaunchVerdict): string | null {
   return verdict.allowed ? null : verdict.why;
 }
 
+/// The whole answer to "may this workspace start an agent right now",
+/// which is NOT the wall alone: every launch seam in the app asks two
+/// questions -- `mayStartWork` (the workspace's pause cycle and its
+/// agent's usage limits) and `mayLaunch` (this module's wall) -- and
+/// skips the launch if either says no.
+///
+/// Stated here because the surfaces were only ever told half of it. A
+/// rail armed inside a pause window sat `running` with nothing started
+/// and no badge at all, because the only hold any orchestration surface
+/// could name was the wall; the human pressed Start, saw the rail arm,
+/// saw nothing launch, and had nothing on screen to read. The executor's
+/// two gates and the badge's one sentence have to come from the same
+/// rule, or the silent half stays silent.
+///
+/// The PAUSE first when both hold, the order `startBlockedReason`
+/// already chose for the same reason: the pause is the human's own
+/// instruction, and telling them they are waiting for a slot when they
+/// are actually waiting for their own schedule sends them to the wrong
+/// setting.
+///
+/// `pause` is taken structurally rather than as a `PauseVerdict` so this
+/// module keeps knowing nothing about usage windows -- it is the caller
+/// that holds both halves.
+export function startVerdict(
+  pause: { paused: boolean; why: string | null },
+  gate: LaunchVerdict
+): LaunchVerdict {
+  if (pause.paused) {
+    return { allowed: false, reason: "pause", why: pause.why ?? "Agents are paused" };
+  }
+  return gate;
+}
+
 /// The shortest thing a badge can say. The full sentence goes in the
 /// tooltip; this is what fits beside a card title.
 export function holdLabel(reason: HoldReason): string {
-  return reason === "ceiling" ? "Queued" : "Held";
+  if (reason === "ceiling") return "Queued";
+  return reason === "pause" ? "Paused" : "Held";
 }
 
 /// The badge's second half: "Queued · waiting for a slot", "Held ·
-/// memory pressure". One vocabulary, so the board card, the modal, the
-/// rail header and the step chip cannot describe the same hold three
-/// ways.
+/// memory pressure", "Paused · agents are paused". One vocabulary, so
+/// the board card, the modal, the rail header and the step chip cannot
+/// describe the same hold three ways.
 export function holdDetail(reason: HoldReason): string {
-  return reason === "ceiling" ? "waiting for a slot" : "memory pressure";
+  if (reason === "ceiling") return "waiting for a slot";
+  return reason === "pause" ? "agents are paused" : "memory pressure";
 }
 
 // ---- Draining ----------------------------------------------------------------

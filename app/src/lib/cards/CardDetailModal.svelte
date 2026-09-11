@@ -58,7 +58,7 @@
   import { bestOfNRequest, bestOfNRuns, candidateLiveness, runForCard, runSummary } from "$lib/cards/bestOfNState";
   import { pickCandidate, abandonRun } from "$lib/cards/bestOfNActions";
   import { kanbanState, cardSessionFor, unlinkCardSessionAction } from "$lib/board/kanbanState";
-  import { cancelLaunch, launchGateVerdict, launchQueue, queuedForCard } from "$lib/agents/launchQueue";
+  import { cancelLaunch, launchQueue, queuedForCard, startHoldFor } from "$lib/agents/launchQueue";
   import {
     runCard,
     resumeCard,
@@ -660,7 +660,12 @@
     void $launchQueue;
     return queuedForCard(workspaceId, card.id);
   });
-  const queuedHold = $derived($launchGateVerdict.reason ?? "ceiling");
+  // BOTH walls, pause first -- the same verdict `executeActions` and
+  // the queue's drain gate on. This panel is the surface somebody
+  // opens to find out why nothing has started, so naming only the
+  // memory wall was the one place the answer had to be complete.
+  const hold = $derived($startHoldFor(workspaceId));
+  const queuedHold = $derived(hold.reason ?? "ceiling");
 
   async function handleRun(): Promise<void> {
     errorMessage = null;
@@ -1198,11 +1203,11 @@
       {#if queued}
         <div class="queued-row">
           <StatusBadge
-            indicator={agentQueuedIndicator(queuedHold, $launchGateVerdict.why)}
+            indicator={agentQueuedIndicator(queuedHold, hold.why)}
             size={12}
             text={queuedBadgeText(queuedHold)}
           />
-          <span class="queued-why">{$launchGateVerdict.why ?? "waiting to start"}</span>
+          <span class="queued-why">{hold.why ?? "waiting to start"}</span>
           <button type="button" class="queued-cancel" onclick={() => cancelLaunch(queued.id)}>
             Cancel
           </button>

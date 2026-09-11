@@ -9,6 +9,7 @@ import {
   holdLabel,
   launchVerdict,
   mayDrain,
+  startVerdict,
   type GateInput,
 } from "$lib/agents/launchGate";
 
@@ -155,6 +156,41 @@ describe("badge wording", () => {
     expect(holdDetail("ceiling")).toBe("waiting for a slot");
     expect(holdLabel("pressure")).toBe("Held");
     expect(holdDetail("pressure")).toBe("memory pressure");
+    expect(holdLabel("pause")).toBe("Paused");
+    expect(holdDetail("pause")).toBe("agents are paused");
+  });
+});
+
+// The half the surfaces were missing. `executeActions` skips a launch
+// when EITHER mayStartWork or mayLaunch refuses, and until this existed
+// every badge in the app could only name the second one -- so a rail
+// armed inside a pause window armed, launched nothing, and had nothing
+// to say about it.
+describe("startVerdict", () => {
+  const running = launchVerdict(input());
+  const full = launchVerdict(input({ inFlight: 4 }));
+  const NOT_PAUSED = { paused: false, why: null };
+
+  it("passes the wall's own answer through while nothing is paused", () => {
+    expect(startVerdict(NOT_PAUSED, running)).toBe(running);
+    expect(startVerdict(NOT_PAUSED, full)).toBe(full);
+  });
+
+  it("holds on the pause even when the wall would allow the launch", () => {
+    const verdict = startVerdict({ paused: true, why: "Paused until 14:20" }, running);
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.reason).toBe("pause");
+    expect(verdict.why).toBe("Paused until 14:20");
+  });
+
+  it("names the PAUSE when both hold, because that is the one the human set", () => {
+    const verdict = startVerdict({ paused: true, why: "Paused until 14:20" }, full);
+    expect(verdict.reason).toBe("pause");
+    expect(verdict.why).toBe("Paused until 14:20");
+  });
+
+  it("still says something when the pause has no sentence of its own", () => {
+    expect(startVerdict({ paused: true, why: null }, running).why).toBe("Agents are paused");
   });
 });
 

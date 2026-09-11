@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { get } from "svelte/store";
+import { get, writable } from "svelte/store";
 
 // The probe, replaced by three stores a test can drive. The real module
 // polls the daemon on a timer and reads `layoutState`; what this file is
@@ -66,7 +66,16 @@ vi.mock("$lib/core/layoutState", () => ({
 }));
 
 vi.mock("$lib/shell/appWindowState", () => ({ currentWindowLabel: () => "main" }));
-vi.mock("$lib/agents/agentPauseState", () => ({ setGateReasonHook: vi.fn() }));
+// `startHoldFor` reads the pause's own clock and inputs as well, so the
+// stub has to carry them: a workspace that is never paused, which leaves
+// every verdict here the wall's own and keeps these tests about the wall.
+vi.mock("$lib/agents/agentPauseState", () => ({
+  setGateReasonHook: vi.fn(),
+  nowStore: writable(0),
+  agentPauseStore: writable(null),
+  agentUsageStore: writable({}),
+  pauseFor: () => ({ paused: false, reason: null, why: null, until: null }),
+}));
 vi.mock("$lib/core/backend", () => ({
   getLaunchConfig: vi.fn().mockResolvedValue(null),
   setLaunchConfig: vi.fn().mockResolvedValue(undefined),
