@@ -135,6 +135,27 @@ export function closeContextMenu(): void {
   contextMenu.set(null);
 }
 
+/// The one attribute on ContextMenu.svelte's root. Surfaces that must
+/// treat a click on the menu as still "inside" their own gesture (the
+/// sidebar peek, anything else that dismisses on an outside press) ask
+/// this rather than reaching into the layer's markup.
+export const CONTEXT_MENU_ATTR = "data-context-menu";
+export const CONTEXT_MENU_SELECTOR = `[${CONTEXT_MENU_ATTR}]`;
+
+/// Duck-typed: the suite has no DOM, and a mousedown target is often a
+/// text node whose parent is the one that can answer `closest`.
+export function isInsideContextMenu(target: EventTarget | null | undefined): boolean {
+  let node = target as
+    | { closest?: (s: string) => unknown; parentElement?: unknown }
+    | null
+    | undefined;
+  if (!node || typeof node !== "object") return false;
+  if (typeof node.closest !== "function") {
+    node = node.parentElement as typeof node;
+  }
+  return node?.closest?.(CONTEXT_MENU_SELECTOR) != null;
+}
+
 export function isSeparator(entry: ContextMenuEntry): entry is { separator: true } {
   return "separator" in entry;
 }

@@ -64,7 +64,7 @@
 />
 
 {#if $contextMenu}
-  <div class="menu" bind:this={menuEl} style:left="{clamped.x}px" style:top="{clamped.y}px" role="menu">
+  <div class="menu" data-context-menu bind:this={menuEl} style:left="{clamped.x}px" style:top="{clamped.y}px" role="menu">
     {#each $contextMenu.entries as entry, i (i)}
       {#if isSeparator(entry)}
         <div class="separator"></div>

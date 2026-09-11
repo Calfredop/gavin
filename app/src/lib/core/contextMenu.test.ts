@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { get } from "svelte/store";
+import { source } from "$lib/sources";
 import {
   contextMenu,
   closeContextMenu,
@@ -8,6 +9,9 @@ import {
   openMenuUnder,
   setContextMenuEntries,
   suppressesNativeMenu,
+  isInsideContextMenu,
+  CONTEXT_MENU_ATTR,
+  CONTEXT_MENU_SELECTOR,
   type NativeMenuEvent,
 } from "$lib/core/contextMenu";
 
@@ -93,6 +97,26 @@ function on(el: Record<string, unknown>): NativeMenuEvent["target"] {
 function rightClick(target: NativeMenuEvent["target"], extra: Partial<NativeMenuEvent> = {}): NativeMenuEvent {
   return { target, altKey: false, defaultPrevented: false, ...extra };
 }
+
+describe("isInsideContextMenu", () => {
+  it("is false for nothing, and for a node that cannot answer", () => {
+    expect(isInsideContextMenu(null)).toBe(false);
+    expect(isInsideContextMenu({})).toBe(false);
+  });
+
+  it("asks closest for the shared menu layer", () => {
+    expect(
+      isInsideContextMenu({
+        closest: (s: string) => (s === CONTEXT_MENU_SELECTOR ? {} : null),
+      })
+    ).toBe(true);
+    expect(isInsideContextMenu({ closest: () => null })).toBe(false);
+  });
+
+  it("the layer marks itself with the same attribute the helper looks for", () => {
+    expect(source("ContextMenu.svelte")).toContain(CONTEXT_MENU_ATTR);
+  });
+});
 
 describe("suppressesNativeMenu", () => {
   it("takes the native menu off a plain surface", () => {
