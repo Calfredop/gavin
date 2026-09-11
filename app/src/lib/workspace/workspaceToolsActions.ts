@@ -25,8 +25,9 @@
 //    interactive agent sits at its prompt forever -- so nothing the
 //    daemon watches would ever close the row. `startToolVerdictWatch`
 //    below is the other half: it files `passed` when the session goes
-//    idle and `failed` when failure detection fires, which is exactly
-//    the rule a rail's agent tool step already runs on (agentTurnEnded).
+//    idle after actually working, and `failed` when failure detection
+//    fires, which is exactly the rule a rail's agent tool step already
+//    runs on (agentTurnEnded).
 
 import { get, writable, type Readable } from "svelte/store";
 import * as backend from "$lib/core/backend";
@@ -274,9 +275,18 @@ export function startToolVerdictWatch(): () => void {
         const tool = library.find((t) => t.id === run.toolId);
         if (tool?.kind !== "agent") continue;
         const status = state.sessionStatusById[run.sessionId];
-        if (status !== "idle" && status !== "failed") continue;
+        if (status === "failed") {
+          filed.add(run.sessionId);
+          void fileVerdict(workspaceId, run.sessionId, "failed");
+          continue;
+        }
+        // Idle at the first prompt is not a finished turn — the same
+        // rule a rail's agent-prompt step runs on (agentTurnEnded).
+        if (status !== "idle") continue;
+        const seenWorking = state.sessionsSeenWorking ?? new Set<string>();
+        if (!seenWorking.has(run.sessionId)) continue;
         filed.add(run.sessionId);
-        void fileVerdict(workspaceId, run.sessionId, status === "failed" ? "failed" : "passed");
+        void fileVerdict(workspaceId, run.sessionId, "passed");
       }
     }
   });

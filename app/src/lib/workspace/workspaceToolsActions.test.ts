@@ -272,7 +272,10 @@ describe("an agent tool's verdict", () => {
   // watches would ever close the row. Its turn ending IS its completion
   // -- the same rule a rail's agent tool step runs on.
   it("passes when the session's turn ends", async () => {
-    layoutState.set({ sessionStatusById: { "sess-1": "idle" } } as never);
+    layoutState.set({
+      sessionStatusById: { "sess-1": "idle" },
+      sessionsSeenWorking: new Set(["sess-1"]),
+    } as never);
     await Promise.resolve();
     expect(backend.setToolRunOutcome).toHaveBeenCalledWith("sess-1", "passed");
   });
@@ -293,12 +296,30 @@ describe("an agent tool's verdict", () => {
 
   // A status that flickers idle → working → idle must not file twice.
   it("files one verdict per session", async () => {
-    layoutState.set({ sessionStatusById: { "sess-1": "idle" } } as never);
+    layoutState.set({
+      sessionStatusById: { "sess-1": "idle" },
+      sessionsSeenWorking: new Set(["sess-1"]),
+    } as never);
     await Promise.resolve();
-    layoutState.set({ sessionStatusById: { "sess-1": "working" } } as never);
-    layoutState.set({ sessionStatusById: { "sess-1": "idle" } } as never);
+    layoutState.set({
+      sessionStatusById: { "sess-1": "working" },
+      sessionsSeenWorking: new Set(["sess-1"]),
+    } as never);
+    layoutState.set({
+      sessionStatusById: { "sess-1": "idle" },
+      sessionsSeenWorking: new Set(["sess-1"]),
+    } as never);
     await Promise.resolve();
     expect(vi.mocked(backend.setToolRunOutcome).mock.calls).toHaveLength(1);
+  });
+
+  it("leaves the first idle alone, before the agent has worked", async () => {
+    layoutState.set({
+      sessionStatusById: { "sess-1": "idle" },
+      sessionsSeenWorking: new Set(),
+    } as never);
+    await Promise.resolve();
+    expect(backend.setToolRunOutcome).not.toHaveBeenCalled();
   });
 
   // A SHELL tool's verdict is its exit code, and the daemon writes it

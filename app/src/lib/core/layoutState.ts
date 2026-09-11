@@ -161,6 +161,15 @@ export interface LayoutState {
   ///
   /// Never cleared on exit, like the sibling maps above.
   statusSinceById: Record<string, StatusSince>;
+  /// Sessions that have been `working` or `waiting_for_input` this app
+  /// lifetime — or that already existed when the frontend attached.
+  ///
+  /// The rail scheduler completes an agent-prompt tool when its session
+  /// goes idle, but a brand-new session is idle at its prompt before the
+  /// agent has done any work. Membership here is how "the turn ended"
+  /// is told from "the shell just appeared". Never cleared on exit, like
+  /// the sibling maps above.
+  sessionsSeenWorking: Set<string>;
   /// The sessions whose CURRENT wait the human has acknowledged -- the
   /// "Mark as Read" tab action. Membership hides the wait from every
   /// surface that nags about it and from nothing else; see
@@ -192,6 +201,7 @@ const initialState: LayoutState = {
   orphanBySessionId: {},
   failureReasonById: {},
   statusSinceById: {},
+  sessionsSeenWorking: new Set(),
   readSessionIds: new Set(),
   fileTabsById: {},
   boardTabsById: {},
@@ -232,6 +242,8 @@ export const layoutState = hotState("layoutState", () => writable<LayoutState>(i
 /// throwing on each of them.
 const NO_READ_MARKS: ReadSessions = new Set();
 const readMarks = (s: LayoutState): ReadSessions => s.readSessionIds ?? NO_READ_MARKS;
+const NO_SEEN_WORKING: Set<string> = new Set();
+const seenWorkingOf = (s: LayoutState): Set<string> => s.sessionsSeenWorking ?? NO_SEEN_WORKING;
 
 // The compat verdict Rust negotiated with the daemon at connect time.
 // null until the first successful probe -- DaemonCompatBanner
@@ -1026,7 +1038,13 @@ async function seedSessionBaselines(): Promise<void> {
     const interruptedSessionIds = new Set(s.interruptedSessionIds);
     const orphanBySessionId = { ...s.orphanBySessionId };
     const failureReasonById = { ...s.failureReasonById };
+    const sessionsSeenWorking = new Set(seenWorkingOf(s));
     for (const b of baselines) {
+      // Already existed when this frontend attached: its idle is not
+      // the launch-time prompt of a session we just created. Without
+      // this, a reload would forget the agent had worked and leave a
+      // finished agent-prompt step `running` forever.
+      sessionsSeenWorking.add(b.id);
       if (sessionStatusById[b.id] === undefined) {
         sessionStatusById[b.id] = parseSessionStatus(b.status);
         // `watched: false`: this status was already in place when the
@@ -1059,6 +1077,7 @@ async function seedSessionBaselines(): Promise<void> {
       interruptedSessionIds,
       orphanBySessionId,
       failureReasonById,
+      sessionsSeenWorking,
     };
   });
   // Last, and awaited separately: this one shells out to git once per
@@ -3154,11 +3173,24 @@ export function handleSessionStatusChanged(sessionId: string, rawStatus: string)
       previousStatus === status
         ? s.statusSinceById
         : { ...s.statusSinceById, [sessionId]: { at: Date.now(), watched: true } };
+    // `working` and `waiting_for_input` are the only statuses that mean
+    // the agent has actually started. Idle at the first prompt must not
+    // join this set, or an agent-prompt rail step completes before it
+    // runs (see agentTurnEnded).
+    let sessionsSeenWorking = seenWorkingOf(s);
+    if (
+      (status === "working" || status === "waiting_for_input") &&
+      !sessionsSeenWorking.has(sessionId)
+    ) {
+      sessionsSeenWorking = new Set(sessionsSeenWorking);
+      sessionsSeenWorking.add(sessionId);
+    }
     return {
       ...s,
       sessionStatusById: { ...s.sessionStatusById, [sessionId]: status },
       statusSinceById,
       failureReasonById,
+      sessionsSeenWorking,
       // A read mark acknowledges ONE wait, so anything the daemon says
       // about this session afterwards ends it -- including a repeat of
       // `waiting_for_input`, which the notification path re-emits per

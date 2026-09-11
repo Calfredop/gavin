@@ -1842,7 +1842,8 @@ async function runTick(workspaceId: string): Promise<boolean> {
       interrupted,
       failureReasons,
       currentPrReports(),
-      Math.floor(Date.now() / 1000)
+      Math.floor(Date.now() / 1000),
+      get(layoutState).sessionsSeenWorking ?? new Set()
     )
   );
 }

@@ -278,6 +278,7 @@ function setState(workspaces: Workspace[], activeWorkspaceId: string | null, foc
     interruptedSessionIds: new Set(),
     orphanBySessionId: {},
     failureReasonById: {},
+    sessionsSeenWorking: new Set(),
     fileTabsById: {},
     boardTabsById: {},
     cardTabsById: {},
@@ -320,6 +321,7 @@ beforeEach(() => {
     interruptedSessionIds: new Set(),
     orphanBySessionId: {},
     failureReasonById: {},
+    sessionsSeenWorking: new Set(),
     fileTabsById: {},
     boardTabsById: {},
     cardTabsById: {},
@@ -1283,9 +1285,25 @@ describe("handleCwdChanged", () => {
 });
 
 describe("handleSessionStatusChanged", () => {
-  it("stores the new status under the session's id", () => {
+  it("records working and waiting as a session that has actually started", () => {
     handleSessionStatusChanged("a", "working");
-    expect(get(layoutState).sessionStatusById["a"]).toBe("working");
+    expect(get(layoutState).sessionsSeenWorking.has("a")).toBe(true);
+    handleSessionStatusChanged("b", "waiting_for_input");
+    expect(get(layoutState).sessionsSeenWorking.has("b")).toBe(true);
+  });
+
+  // The first idle is the shell at its prompt, before the agent has
+  // done any work. Remembering it would complete an agent-prompt rail
+  // step the instant it launched.
+  it("does not treat the first idle as a session that has worked", () => {
+    handleSessionStatusChanged("a", "idle");
+    expect(get(layoutState).sessionsSeenWorking.has("a")).toBe(false);
+  });
+
+  it("keeps the mark after the session goes idle", () => {
+    handleSessionStatusChanged("a", "working");
+    handleSessionStatusChanged("a", "idle");
+    expect(get(layoutState).sessionsSeenWorking.has("a")).toBe(true);
   });
 
   it("overwrites a previous status for the same session", () => {
@@ -3061,6 +3079,11 @@ describe("bootstrap seeds the push-fed session maps", () => {
     expect(state.sessionStatusById["s-1"]).toBe("working");
     expect(state.restoredSessionIds.has("s-1")).toBe(true);
     expect(state.restoredSessionIds.has("s-2")).toBe(false);
+    // A session that already existed when we attached: its idle is not
+    // a launch-time prompt. The rail scheduler needs this so a reload
+    // still completes an agent-prompt step whose turn had ended.
+    expect(state.sessionsSeenWorking.has("s-1")).toBe(true);
+    expect(state.sessionsSeenWorking.has("s-2")).toBe(true);
     // Straight into the map, never through handleSessionStatusChanged:
     // re-reading a status the human has already seen is not a transition.
     expect(notifications.maybeNotifyStatusChange).not.toHaveBeenCalled();
@@ -3912,6 +3935,7 @@ describe("runningSessionCount", () => {
       interruptedSessionIds: new Set(),
       orphanBySessionId: {},
       failureReasonById: {},
+      sessionsSeenWorking: new Set(),
       fileTabsById: {},
       boardTabsById: {},
       cardTabsById: {},

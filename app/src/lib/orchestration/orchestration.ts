@@ -909,7 +909,12 @@ function toolStepOutcome(
 /// The signal instead is the daemon's own status for that session, which
 /// is exactly the one behind the "<label> finished" notification:
 ///
-/// - `idle` -- the turn ended. Done.
+/// - `idle`, and the session has been `working` or `waiting_for_input`
+///   -- the turn ended. Done. Idle ALONE is not enough: a new session
+///   sits idle at its prompt (OSC 133, or the quiet timer) before the
+///   agent has done any work, and completing on that marked every
+///   agent-prompt tool done the instant the rail reached it -- the
+///   opposite of a card step, which waits for the done column.
 /// - `working` -- still going.
 /// - `failed` -- the agent stopped because something BROKE. Not
 ///   finished, and not even reached here: rule 3d stalls the step
@@ -939,14 +944,18 @@ function agentTurnEnded(
   step: Step,
   sessionId: string | null,
   toolKinds: Map<string, ToolSummary["kind"]>,
-  sessionStatuses: Map<string, SessionStatus>
+  sessionStatuses: Map<string, SessionStatus>,
+  sessionsSeenWorking: ReadonlySet<string>
 ): boolean {
   if (!sessionId || !isToolStep(step)) return false;
   // An unknown tool cannot be known to be an agent -- a deleted one, or
   // a library still loading. The step keeps running until its session
   // ends rather than completing on a guess.
   if (toolKinds.get(step.toolId as string) !== "agent") return false;
-  return sessionStatuses.get(sessionId) === "idle";
+  if (sessionStatuses.get(sessionId) !== "idle") return false;
+  // The shell's first prompt is idle too. Without this, a rail that
+  // reached an agent-prompt tool marked it done before the agent ran.
+  return sessionsSeenWorking.has(sessionId);
 }
 
 /// The stall reason for a step whose session was interrupted. A distinct
@@ -1404,7 +1413,18 @@ export function nextActions(
   /// (EMPTY_ROLLUP_GRACE_SECS). Passed rather than read from the clock
   /// so this function stays pure and total: a test that fixes it gets
   /// the same list every time.
-  now: number = Math.floor(Date.now() / 1000)
+  now: number = Math.floor(Date.now() / 1000),
+  /// Sessions that have been `working` or `waiting_for_input`. An `idle`
+  /// agent-tool step without this is the shell's first prompt, not a
+  /// finished turn — the same trap absent status already guards, arrived
+  /// at from the other side: the daemon DOES push that first idle
+  /// (OSC 133 / the quiet timer), and completing on it marked every
+  /// agent-prompt tool done the instant the rail reached it.
+  ///
+  /// Empty by default so a caller that does not know (every test that
+  /// is not about this) reads as "nobody has worked", which is the
+  /// honest production default: do not complete a step on a prompt.
+  sessionsSeenWorking: ReadonlySet<string> = new Set()
 ): Action[] {
   const actions: Action[] = [];
   const cards = cardIndex(tree);
@@ -1501,7 +1521,7 @@ export function nextActions(
             // finished (agentTurnEnded). That is the same stale
             // `running` row this pass exists for, and leaving it would
             // keep the rail uneditable and undeletable.
-            if (agentTurnEnded(step, sessionId, toolKind, sessionStatuses)) {
+            if (agentTurnEnded(step, sessionId, toolKind, sessionStatuses, sessionsSeenWorking)) {
               actions.push({ kind: "markDone", stepId: step.id });
             }
             continue;
@@ -1829,7 +1849,7 @@ export function nextActions(
           // Rule 3b -- an agent tool step whose session is still LIVE but
           // whose turn is over. Checked first: its session will never
           // die, so the dead-session branch below can never speak for it.
-          if (agentTurnEnded(step, sessionId, toolKind, sessionStatuses)) {
+          if (agentTurnEnded(step, sessionId, toolKind, sessionStatuses, sessionsSeenWorking)) {
             actions.push({ kind: "markDone", stepId: step.id });
             simulated.set(step.id, "done");
             break stepBody;

@@ -588,7 +588,12 @@ describe("fail, then pass", () => {
         new Set(["s3"]),
         TOOLS,
         new Map(),
-        new Map([["s3", "idle" as const]])
+        new Map([["s3", "idle" as const]]),
+        new Set(),
+        new Map(),
+        {},
+        0,
+        new Set(["s3"])
       )
     ).toEqual([
       { kind: "markDone", stepId: "work" },

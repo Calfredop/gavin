@@ -61,6 +61,7 @@ function setActivePage(workspaces: Workspace[], activeWorkspaceId: string | null
     interruptedSessionIds: new Set(),
     orphanBySessionId: {},
     failureReasonById: {},
+    sessionsSeenWorking: new Set(),
     fileTabsById: {},
     boardTabsById: {},
     cardTabsById: {},

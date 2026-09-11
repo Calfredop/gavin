@@ -1417,11 +1417,12 @@ describe("nextActions", () => {
     const r = toolRail("r1", [[["t1", "builtin:commit"]]]);
     const orch = running(r, "r1-s0", [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
     const idle = new Map([["s1", "idle" as SessionStatus]]);
+    const worked = new Set(["s1"]);
     expect(
-      nextActions(orch, BOARD, tree([]), [], new Set(["s1"]), TOOLS, new Map(), idle, new Set(), new Map())
+      nextActions(orch, BOARD, tree([]), [], new Set(["s1"]), TOOLS, new Map(), idle, new Set(), new Map(), {}, 0, worked)
     ).toEqual([{ kind: "markDone", stepId: "t1" }, { kind: "complete", railId: "r1" }]);
     expect(
-      nextActions(orch, BOARD, tree([]), [], new Set(["s1"]), TOOLS, new Map(), idle, new Set(), failed("someone-else"))
+      nextActions(orch, BOARD, tree([]), [], new Set(["s1"]), TOOLS, new Map(), idle, new Set(), failed("someone-else"), {}, 0, worked)
     ).toEqual([{ kind: "markDone", stepId: "t1" }, { kind: "complete", railId: "r1" }]);
   });
 
@@ -3143,7 +3144,8 @@ describe("nextActions — an agent tool step's turn", () => {
 
   it("marks it done when its live session goes idle", () => {
     const actions = nextActions(
-      armed(runs), BOARD, CARDS, [], live, TOOLS, new Map(), new Map([["s1", "idle" as const]])
+      armed(runs), BOARD, CARDS, [], live, TOOLS, new Map(), new Map([["s1", "idle" as const]]),
+      new Set(), new Map(), {}, 0, new Set(["s1"])
     );
     expect(actions).toEqual([{ kind: "markDone", stepId: "t1" }, { kind: "complete", railId: "r1" }]);
   });
@@ -3169,6 +3171,32 @@ describe("nextActions — an agent tool step's turn", () => {
   // status would mark a step done the instant it launched.
   it("leaves it running while its session has reported no status at all", () => {
     expect(nextActions(armed(runs), BOARD, CARDS, [], live, TOOLS, new Map(), new Map())).toEqual([]);
+  });
+
+  // The daemon DOES push that first idle — OSC 133 at the prompt, or
+  // the quiet timer before the agent has printed anything. Completing
+  // on it is what marked every agent-prompt tool done the instant the
+  // rail reached it, instead of waiting for the turn that actually
+  // ends the work (the same reason a card step waits for the done
+  // column rather than for idle).
+  it("leaves it running through the shell's first idle, before the agent has worked", () => {
+    expect(
+      nextActions(
+        armed(runs),
+        BOARD,
+        CARDS,
+        [],
+        live,
+        TOOLS,
+        new Map(),
+        new Map([["s1", "idle" as const]]),
+        new Set(),
+        new Map(),
+        {},
+        0,
+        new Set()
+      )
+    ).toEqual([]);
   });
 
   // A command tool's verdict is its exit code (T5) and nothing else: a
@@ -3200,7 +3228,8 @@ describe("nextActions — an agent tool step's turn", () => {
   it("marks it done on a rail that is not running", () => {
     const orch = paused(toolRail("r1", [[["t1", "builtin:commit"]]]));
     expect(
-      nextActions(orch, BOARD, CARDS, [], live, TOOLS, new Map(), new Map([["s1", "idle" as const]]))
+      nextActions(orch, BOARD, CARDS, [], live, TOOLS, new Map(), new Map([["s1", "idle" as const]]),
+        new Set(), new Map(), {}, 0, new Set(["s1"]))
     ).toEqual([{ kind: "markDone", stepId: "t1" }]);
   });
 
@@ -3789,7 +3818,8 @@ describe("every built-in tool can finish", () => {
       it(`${tool.id} finishes when its turn ends, with its session still live`, () => {
         const actions = nextActions(
           armed(tool.id), BOARD, CARDS, [], new Set(["s1"]), summary,
-          new Map(), new Map([["s1", "idle" as const]])
+          new Map(), new Map([["s1", "idle" as const]]),
+          new Set(), new Map(), {}, 0, new Set(["s1"])
         );
         expect(actions).toContainEqual({ kind: "markDone", stepId: "t1" });
       });

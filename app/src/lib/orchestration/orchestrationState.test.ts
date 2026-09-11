@@ -323,6 +323,7 @@ const layoutStore = layoutStateModule.layoutState as unknown as Writable<{
   workspaces: unknown[];
   sessionStatusById: Record<string, string>;
   failureReasonById: Record<string, string>;
+  sessionsSeenWorking?: Set<string>;
   activeWorkspaceId?: string | null;
 }>;
 
@@ -3199,9 +3200,16 @@ describe("an agent tool step whose turn has ended", () => {
   });
 
   const status = (v: Record<string, string>) =>
-    layoutStore.update((s) => ({ ...s, sessionStatusById: v }));
+    layoutStore.update((s) => {
+      const sessionsSeenWorking = new Set(s.sessionsSeenWorking ?? []);
+      for (const [id, st] of Object.entries(v)) {
+        if (st === "working" || st === "waiting_for_input") sessionsSeenWorking.add(id);
+      }
+      return { ...s, sessionStatusById: v, sessionsSeenWorking };
+    });
 
   it("is filed done and lets the rail move on, though its session is still live", async () => {
+    status({ "sess-1": "working" });
     status({ "sess-1": "idle" });
     await tick("ws-1");
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null, null);
@@ -3234,6 +3242,12 @@ describe("an agent tool step whose turn has ended", () => {
   // is "nothing reported yet" -- believing it would file a step done the
   // instant it launched.
   it("keeps running while its session has reported nothing", async () => {
+    await tick("ws-1");
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps running through the shell's first idle, before the agent has worked", async () => {
+    status({ "sess-1": "idle" });
     await tick("ws-1");
     expect(backend.setStepRun).not.toHaveBeenCalled();
   });
@@ -3276,7 +3290,7 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
   });
 
   it("advances the rail when the running agent goes idle", async () => {
-    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
+    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" }, sessionsSeenWorking: new Set(["sess-1"]) }));
     await vi.waitFor(() =>
       expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null, null)
     );
@@ -3304,7 +3318,7 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
     layoutStore.update((s) => ({
       ...s,
       activeWorkspaceId: "ws-2",
-      sessionStatusById: { "sess-1": "idle" },
+      sessionStatusById: { "sess-1": "idle" }, sessionsSeenWorking: new Set(["sess-1"]),
     }));
     await vi.waitFor(() =>
       expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null, null)
@@ -3339,6 +3353,7 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
     layoutStore.update((s) => ({
       ...s,
       sessionStatusById: { "sess-1": "idle", "sess-2": "idle" },
+      sessionsSeenWorking: new Set(["sess-1", "sess-2"]),
     }));
     await vi.waitFor(() => {
       expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null, null);
@@ -3354,7 +3369,7 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
   it("picks up a rail whose plan lands last", async () => {
     __resetForTesting();
     stop = startScheduler();
-    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
+    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" }, sessionsSeenWorking: new Set(["sess-1"]) }));
     await settle();
     expect(backend.setStepRun).not.toHaveBeenCalled();
 
@@ -3371,7 +3386,7 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
     __resetForTesting();
     const unlisten = await initOrchestrationListeners();
     stop = unlisten;
-    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
+    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" }, sessionsSeenWorking: new Set(["sess-1"]) }));
     await settle();
     expect(backend.setStepRun).not.toHaveBeenCalled();
 
@@ -3387,7 +3402,7 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
   it("stops when the app tears it down", async () => {
     stop?.();
     stop = null;
-    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
+    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" }, sessionsSeenWorking: new Set(["sess-1"]) }));
     await settle();
     expect(backend.setStepRun).not.toHaveBeenCalled();
   });
@@ -3404,7 +3419,7 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
   it("skips a launch the wall refuses and emits it again when a slot frees", async () => {
     gateMock.allowed.value = false;
     try {
-      layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" } }));
+      layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" }, sessionsSeenWorking: new Set(["sess-1"]) }));
       await vi.waitFor(() =>
         expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null, null)
       );
