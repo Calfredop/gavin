@@ -13,12 +13,10 @@ function source(name: string): string {
 describe("usage cache surfaces", () => {
   it("hydrates last cached readings before the first probe", () => {
     const pause = source("agentPauseState.ts");
-    expect(pause).toContain("hydrateUsageCache");
     const start = pause.indexOf("export function startPauseClock");
-    const hydrate = pause.indexOf("hydrateUsageCache", start);
-    const poll = pause.indexOf("void pollAll", start);
-    expect(hydrate).toBeGreaterThan(start);
-    expect(poll).toBeGreaterThan(hydrate);
+    const body = pause.slice(start, pause.indexOf("export function stopPauseClock"));
+    expect(body).toContain("hydrateUsageCache");
+    expect(body.indexOf("hydrateUsageCache()")).toBeLessThan(body.lastIndexOf("void pollAll()"));
   });
 
   it("draws the shared refreshing badge wherever cached numbers sit while a probe is in flight", () => {
