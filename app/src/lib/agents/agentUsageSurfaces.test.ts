@@ -32,4 +32,11 @@ describe("usage cache surfaces", () => {
     expect(source("AppHubView.svelte")).not.toContain("usageRefreshingIndicator");
     expect(source("Sidebar.svelte")).not.toContain("usageRefreshingIndicator");
   });
+
+  it("spins the collapsed Usage glyph from the same probe store as Check again", () => {
+    const sidebar = source("Sidebar.svelte");
+    expect(sidebar).toContain("usageRefreshingStore");
+    expect(sidebar).toContain("class:usage-updating=");
+    expect(sidebar).toContain(".sidebar.collapsed .footer-row.usage-updating");
+  });
 });

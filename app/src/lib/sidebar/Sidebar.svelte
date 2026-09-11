@@ -5,7 +5,7 @@
   import SessionsManagerModal from "$lib/sessions/SessionsManagerModal.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import AgentUsageModal from "$lib/agents/AgentUsageModal.svelte";
-  import { activePause, nowStore, worstUsageProjection } from "$lib/agents/agentPauseState";
+  import { activePause, nowStore, usageRefreshingStore, worstUsageProjection } from "$lib/agents/agentPauseState";
   import { armRequest, completeArmRequest, dismissArmRequest } from "$lib/agents/agentFallbackState";
   import { pauseLabel } from "$lib/agents/agentPause";
   import { fleetStripLine, launchGateVerdict } from "$lib/agents/launchQueue";
@@ -393,6 +393,11 @@
   function pressedRail(): void {
     if (showsRail) peekSidebar();
   }
+
+  /// Any profile's probe is in flight. The collapsed Usage glyph spins
+  /// off this; the expanded row keeps the semaphore, and Check again
+  /// spins per agent inside the panel.
+  const usageUpdating = $derived(Object.values($usageRefreshingStore).some(Boolean));
 
   /// The usage semaphore: whether the limits gavin can see will survive
   /// to their own reset at the burn it has measured. Null until there is
@@ -1711,7 +1716,12 @@
         >
       {/if}
     </button>
-    <button class="footer-row" onclick={() => showAppPanel("usage")}>
+    <button
+      class="footer-row"
+      class:usage-updating={showsRail && usageUpdating}
+      aria-busy={showsRail && usageUpdating}
+      onclick={() => showAppPanel("usage")}
+    >
       <Gauge size={12} />
       <span>Usage</span>
       <!-- The semaphore, and the one thing on this row that is about the
@@ -2074,6 +2084,18 @@
   }
   .sidebar.collapsed .footer-row span {
     display: none;
+  }
+  /* Collapsed, this row is the Gauge alone -- the label and the
+     semaphore are spans, and those hide. Spin that glyph from the same
+     store Check again reads, so a probe in flight is visible without
+     opening the column. */
+  .sidebar.collapsed .footer-row.usage-updating :global(> svg) {
+    animation: recap-spin 0.8s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar.collapsed .footer-row.usage-updating :global(> svg) {
+      animation: none;
+    }
   }
   .workspace-name-input,
   .page-name-input {
