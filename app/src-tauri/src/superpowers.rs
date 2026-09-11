@@ -24,7 +24,7 @@
 use serde::Serialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// The package name, marketplace-agnostic. Upstream documents a second
@@ -244,7 +244,7 @@ fn run(bin: &str, args: &[&str], cwd: &Path, timeout: Duration) -> Result<Run, S
     }
     // `bin` is an agent CLI name (`claude`, `gemini`), which on Windows
     // is an npm shim CreateProcess cannot start unresolved.
-    let mut child = Command::new(crate::program::resolve_or_name(bin))
+    let mut child = crate::program::command(crate::program::resolve_or_name(bin))
         .args(args)
         .current_dir(cwd)
         // Nothing here is interactive, and a child that decides to ask

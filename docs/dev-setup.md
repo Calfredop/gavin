@@ -6,7 +6,7 @@ Current scope: **daemon + minimal client** (Milestones A and B).
 - `crates/daemon` — the `gavin-daemon` binary: owns terminal PTY sessions,
   persists them in SQLite, exposes them over a Unix domain socket.
 - `crates/protocol` — the wire protocol shared by the daemon and any client.
-- `app/` — a Tauri + Svelte + xterm.js desktop app (package name `app`).
+- `app/` — a Tauri + Svelte + xterm.js desktop app (npm package `gavin-app`).
   Auto-spawns `gavin-daemon` if it isn't already running, creates or
   reattaches to a single terminal session (persisted across app restarts),
   and renders it full-window.

@@ -319,6 +319,27 @@ describe("a standalone card run", () => {
     await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
     expect(resumeCard).toHaveBeenCalledTimes(2);
   });
+
+  // A binding whose conversation was never written -- the agent died at
+  // launch -- is refused by resumeCard with a sentence rather than
+  // launched (cardRunActions). What matters HERE is that the refusal is
+  // terminal: nothing was spawned, so no new session can fail and wake
+  // this module again, and the refusal itself arms nothing. A doomed
+  // command is not retried on a timer, and no agent launch is spent
+  // finding out.
+  it("stops, and says why, when the conversation was never written", async () => {
+    vi.mocked(resumeCard).mockResolvedValueOnce(
+      "This agent stopped before it wrote a line of its conversation, so there is nothing to resume."
+    );
+    cardRun();
+    fail("sess-1");
+    await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
+    expect(resumeCard).toHaveBeenCalledTimes(1);
+    expect(sendAutoResumeNotice).toHaveBeenCalledWith(expect.stringContaining("before it wrote a line"));
+    // An hour on: still the one call. The refusal re-armed nothing.
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(resumeCard).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("a rail step", () => {

@@ -103,6 +103,85 @@ impl TokenCache {
     }
 }
 
+/// Whether the conversation a run recorded is still on this machine to
+/// be reopened.
+///
+/// Three values rather than a bool, because `Unknown` is a different
+/// sentence from `Missing` and only one of the two may stop a resume.
+/// Gavin can answer this only for a profile whose transcript layout it
+/// knows (`TokenLog`) and whose log ROOT it can actually see; anywhere
+/// else it does not know where that CLI keeps its conversations, and a
+/// guess would refuse a resume that would have worked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConversationLog {
+    /// The transcript is there, so a resume reopens it.
+    Present,
+    /// The log root exists and does not hold this conversation. The
+    /// agent died before it wrote a line, so `<resume argv> <uuid>` has
+    /// nothing to open and never will.
+    Missing,
+    /// Gavin cannot tell: no conversation id, no `TokenLog` for this
+    /// profile, or a log root it cannot read. Today's behaviour --
+    /// resume is offered and the CLI is the one that answers.
+    Unknown,
+}
+
+/// Is this binding resumable? One call, answered where the resolver
+/// already lives.
+///
+/// The SAME resolver `card_run_tokens` uses below, deliberately: it
+/// scans every project directory for `<conversation_id>.jsonl` rather
+/// than reproducing Claude Code's slug rule, which is undocumented, has
+/// changed, and is wrong for any agent that moved into a worktree. An
+/// existence check that reproduced the slug would report `Missing` for
+/// every run that did.
+///
+/// Nothing here reaches the network and nothing needs a credential:
+/// these are files the CLI wrote on this machine.
+#[tauri::command]
+pub fn conversation_log(profile_id: String, conversation_id: Option<String>) -> ConversationLog {
+    let Some(conversation_id) = conversation_id.filter(|id| !id.trim().is_empty()) else {
+        return ConversationLog::Unknown;
+    };
+    let Some(log) = profile_by_id(&profile_id).token_log else {
+        return ConversationLog::Unknown;
+    };
+    conversation_log_under(log, log_root(log).as_deref(), conversation_id.trim())
+}
+
+/// The verdict, given the layout and the root gavin resolved for it.
+/// Split from the command so the boundary that matters -- where
+/// `Unknown` ends and `Missing` begins -- can be pinned by a test that
+/// owns its own directory instead of reading this machine's home.
+///
+/// An ABSENT root reads as `Unknown`, not `Missing`. A CLI pointed
+/// somewhere else (`CLAUDE_CONFIG_DIR`) keeps its conversations outside
+/// the directory gavin knows about, and reading "nothing under
+/// ~/.claude" as "this conversation never existed" would refuse every
+/// resume on such a machine. Only a root gavin can see, which does not
+/// hold the file, is evidence the conversation is gone.
+fn conversation_log_under(log: TokenLog, root: Option<&Path>, conversation_id: &str) -> ConversationLog {
+    let Some(root) = root.filter(|dir| dir.is_dir()) else {
+        return ConversationLog::Unknown;
+    };
+    match transcript_path(log, root, conversation_id) {
+        Some(_) => ConversationLog::Present,
+        None => ConversationLog::Missing,
+    }
+}
+
+/// The transcript for one conversation under an already-resolved log
+/// root, per profile layout. Shared by the existence check above and the
+/// token read below, so the two can never disagree about where a
+/// conversation lives.
+fn transcript_path(log: TokenLog, root: &Path, conversation_id: &str) -> Option<PathBuf> {
+    match log {
+        TokenLog::ClaudeSessionJsonl => claude_transcript(root, conversation_id),
+        TokenLog::CodexRollout => codex_rollout(root, conversation_id),
+    }
+}
+
 /// Read one run's token cost.
 ///
 /// `conversation_id` is the id gavin minted for the run, off
@@ -126,14 +205,10 @@ pub fn card_run_tokens(
         };
     };
 
-    let path = match log {
-        TokenLog::ClaudeSessionJsonl => {
-            claude_projects_dir().and_then(|dir| claude_transcript(&dir, &conversation_id))
-        }
-        TokenLog::CodexRollout => {
-            codex_sessions_dir().and_then(|dir| codex_rollout(&dir, &conversation_id))
-        }
-    };
+    // Through the SAME root and resolver the existence check uses, so a
+    // conversation `conversation_log` reports present is one this can
+    // read, and one it reports missing is one this cannot.
+    let path = log_root(log).and_then(|root| transcript_path(log, &root, &conversation_id));
     let Some(path) = path else {
         return TokenReport::Unavailable {
             reason: "the agent's transcript for this run is no longer on this machine".to_string(),
@@ -168,6 +243,18 @@ fn claude_projects_dir() -> Option<PathBuf> {
 
 fn codex_sessions_dir() -> Option<PathBuf> {
     Some(home_dir()?.join(".codex").join("sessions"))
+}
+
+/// Where this profile's CLI keeps its conversations on this machine.
+/// None only when gavin cannot find a home directory at all. A root that
+/// resolves but is not on disk is the caller's to read -- `Unknown` for
+/// the existence check, `Unavailable` for the token read -- so the one
+/// place that names each layout's directory stays here.
+fn log_root(log: TokenLog) -> Option<PathBuf> {
+    match log {
+        TokenLog::ClaudeSessionJsonl => claude_projects_dir(),
+        TokenLog::CodexRollout => codex_sessions_dir(),
+    }
 }
 
 /// `<projects>/<slugged cwd>/<session id>.jsonl`, found by looking in
@@ -499,6 +586,45 @@ mod tests {
             Some(projects.join("-Users-someone-b").join("conv-1.jsonl"))
         );
         assert_eq!(claude_transcript(projects, "conv-2"), None);
+    }
+
+    /// The verdict a resume turns on, and the boundary that decides it.
+    /// A root gavin cannot see says nothing about the conversation; a
+    /// root it CAN see that does not hold the file says the agent never
+    /// wrote one -- which is what a run that died at launch leaves behind
+    /// (`~/.claude/session-env/<id>/` exists, `<id>.jsonl` does not).
+    #[test]
+    fn a_conversation_is_missing_only_under_a_root_gavin_can_see() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects = dir.path().join("projects");
+        let log = TokenLog::ClaudeSessionJsonl;
+
+        // No root: never run here, or pointed at another config dir.
+        assert_eq!(conversation_log_under(log, None, "conv-1"), ConversationLog::Unknown);
+        assert_eq!(conversation_log_under(log, Some(&projects), "conv-1"), ConversationLog::Unknown);
+
+        // The root is there and holds OTHER conversations, not this one.
+        let project = projects.join("-Users-someone-a");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("conv-0.jsonl"), "{}").unwrap();
+        assert_eq!(conversation_log_under(log, Some(&projects), "conv-1"), ConversationLog::Missing);
+
+        // Written since -- in a project directory the id is found by
+        // name, whichever slug it landed under.
+        let other = projects.join("-Users-someone-b");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("conv-1.jsonl"), "{}").unwrap();
+        assert_eq!(conversation_log_under(log, Some(&projects), "conv-1"), ConversationLog::Present);
+    }
+
+    /// The frontend switches on these exact names (`ConversationLog` in
+    /// `cardRun.ts`); a variant renamed here would read as `unknown`
+    /// there and silently switch the guard off.
+    #[test]
+    fn the_verdict_serializes_to_the_names_the_frontend_switches_on() {
+        assert_eq!(serde_json::to_value(ConversationLog::Present).unwrap(), serde_json::json!("present"));
+        assert_eq!(serde_json::to_value(ConversationLog::Missing).unwrap(), serde_json::json!("missing"));
+        assert_eq!(serde_json::to_value(ConversationLog::Unknown).unwrap(), serde_json::json!("unknown"));
     }
 
     /// Matched as a SUFFIX of the stem after a dash, so the timestamp

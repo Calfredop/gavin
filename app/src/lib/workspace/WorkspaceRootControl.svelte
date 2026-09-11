@@ -13,7 +13,7 @@
   import { agentProfilesStore, agentModelDefaultsStore, trustedAgentConfigs } from "$lib/core/layoutState";
   import { resolveAgentConfig } from "$lib/core/settings";
   import * as backend from "$lib/core/backend";
-  import { foreignMcpServersHash, runIntegration } from "$lib/workspace/mcpServerTrust";
+  import { foreignMcpServersHash, integrationNote, runIntegration } from "$lib/workspace/mcpServerTrust";
   import { UNFILED_WORKSPACE_ID, type Workspace } from "$lib/core/workspace";
   import Modal from "$lib/core/Modal.svelte";
   import McpForeignChooser from "$lib/workspace/McpForeignChooser.svelte";
@@ -103,11 +103,7 @@
   let mcpBusy = $state(false);
 
   function noteFrom(result: backend.IntegrationResult): string {
-    const wrote = result.written.map((f) => f.replace(workspace.rootPath + "/", "")).join(", ");
-    const missed = result.skipped.map(([what]) => what).join(", ");
-    return missed
-      ? `Wrote: ${wrote}. Skipped: ${missed} — re-run any time to update.`
-      : `Wrote: ${wrote} — re-run any time to update.`;
+    return integrationNote(result, workspace.rootPath);
   }
 
   async function setupIntegration(): Promise<void> {

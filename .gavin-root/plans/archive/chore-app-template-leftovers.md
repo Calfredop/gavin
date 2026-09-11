@@ -1,4 +1,5 @@
 ---
+order: 4096
 title: Clear the Tauri template leftovers out of app/
 status: Done
 priority: medium

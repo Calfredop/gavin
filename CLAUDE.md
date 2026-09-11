@@ -16,6 +16,7 @@ board stops offering to run a second agent on it.
 `gavin_set_plan_field`, `gavin_promote_task`.
 - The files are the truth. Edit them directly; the board follows.
 <!-- gavin:end -->
+
 ## What this repo is
 
 Gavin itself — the app the PRD describes. A Rust workspace plus a Tauri/Svelte app:
@@ -55,7 +56,16 @@ once, and `main` usually carries a large dirty tree spanning all of them.
   detached worktree.
 - Commits and merges happen when the human asks for them.
 
-**The daemon is shared and long-lived.** Never `pkill gavin-daemon`. A protocol
+**The daemon is shared and long-lived.** Never `pkill gavin-daemon`: a name
+reaches every daemon on the machine, and a release install and the dev tree now
+run one each. They no longer collide — a debug build binds `daemon-dev.sock`
+(pipe tag `gavin-daemon-dev-sock`) and keeps its own `daemon-dev.token`,
+`daemon-dev.log` and `registry-dev.sqlite`, while a release build keeps the
+unsuffixed names; Restart daemon in either app kills only the pid owning the
+endpoint it connected to. What they still SHARE, deliberately, is the work: one
+`kanban.sqlite`, one `orchestration.sqlite`, one `config.json`, so the board,
+the rails, the workspace list and the settings are the same in both — and a
+build that widens `config.json` writes a shape the other then reads. A protocol
 bump only takes effect after a rebuild and restart, which is the human's call.
 To verify daemon or MCP behaviour meanwhile, run an isolated daemon under a temp
 `$HOME` — it gets its own socket and databases.

@@ -1240,14 +1240,37 @@ pub fn gate_request(req: &Request, daemon_version: u32) -> Result<(), GatedReque
 /// token from the environment. One home means the HMAC construction and
 /// the hashing can never drift between minting and checking.
 ///
-/// A 32-byte value, hex-encoded, read from the OS CSPRNG. `/dev/urandom`
-/// rather than a crate so this stays dependency-light and identical on
-/// every platform gavin runs on; a failure to read it is fatal to the
-/// caller, because a predictable token is worse than none.
+/// A 32-byte value, hex-encoded, read from the OS CSPRNG. A failure to
+/// read it is fatal to the caller, because a predictable token is worse
+/// than none -- which is why neither arm below carries a fallback.
+///
+/// Unix reads `/dev/urandom` directly rather than through a crate, which
+/// is what keeps this dependency-light. Windows has no such file, and
+/// opening it is where a daemon on that OS died: `mint_daemon_token` is
+/// the first thing `run_server` does, so the whole daemon failed to
+/// start with `os error 3` before it ever reached the pipe.
+#[cfg(not(windows))]
 pub fn random_hex(n_bytes: usize) -> std::io::Result<String> {
     let mut buf = vec![0u8; n_bytes];
     let mut f = std::fs::File::open("/dev/urandom")?;
     f.read_exact(&mut buf)?;
+    Ok(hex_encode(&buf))
+}
+
+/// `ProcessPrng` rather than `BCryptGenRandom`: it is the documented
+/// user-mode entry point to the same system CSPRNG, and it needs neither
+/// an algorithm handle nor the open/close dance around one. It is
+/// documented to always return TRUE; the check is here regardless,
+/// because the failure it would hide is a token of zeroes.
+#[cfg(windows)]
+pub fn random_hex(n_bytes: usize) -> std::io::Result<String> {
+    use windows::Win32::Security::Cryptography::ProcessPrng;
+    let mut buf = vec![0u8; n_bytes];
+    // SAFETY: ProcessPrng only writes into the slice it is handed, and
+    // the slice outlives the call.
+    if !unsafe { ProcessPrng(&mut buf) }.as_bool() {
+        return Err(std::io::Error::last_os_error());
+    }
     Ok(hex_encode(&buf))
 }
 
@@ -1308,7 +1331,7 @@ pub fn server_proof(daemon_token: &str, nonce: &str) -> String {
 
 /// Where the daemon writes its per-start token, `0600`, beside the socket.
 pub fn daemon_token_path() -> anyhow::Result<PathBuf> {
-    Ok(app_support_dir()?.join("daemon.token"))
+    Ok(app_support_dir()?.join(profile_file_name("daemon", "token", BuildProfile::current())))
 }
 
 /// The marker the daemon reads to decide whether an untokened local
@@ -2526,6 +2549,67 @@ impl HostOs {
     }
 }
 
+/// Which build of gavin a process belongs to.
+///
+/// A compile-time fact, and deliberately not an environment variable. An
+/// override would be inherited by every PTY the daemon opens, so every
+/// `gavin-mcp` in those tabs and any app launched from one would land
+/// back on the wrong daemon unless the launcher stripped it -- the catch
+/// `.gavin-root/plans/issue-stable-and-dev-apps-share-one-state-dir.md`
+/// raised against that route. Nothing here can be inherited, so nothing
+/// has to be stripped.
+///
+/// It is also self-consistent for free: the dev tree is built debug by
+/// `tauri dev`, a release install and the stable worktree's
+/// `target/release` are built release, and the app, the daemon and
+/// gavin-mcp are each resolved as siblings of one another
+/// (`resolve_daemon_binary_path`, `resolve_mcp_binary_path`) -- so a
+/// build's three binaries agree on this answer by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildProfile {
+    Dev,
+    Release,
+}
+
+impl BuildProfile {
+    /// What this build is.
+    pub const fn current() -> BuildProfile {
+        if cfg!(debug_assertions) {
+            BuildProfile::Dev
+        } else {
+            BuildProfile::Release
+        }
+    }
+
+    /// What a per-daemon file name carries. EMPTY for `Release`, and that
+    /// is load-bearing: it is what keeps an installed gavin's paths
+    /// byte-identical to the ones it has been using, so this change needs
+    /// no migration and the installed app does not notice it landed.
+    pub const fn suffix(self) -> &'static str {
+        match self {
+            BuildProfile::Dev => "-dev",
+            BuildProfile::Release => "",
+        }
+    }
+}
+
+/// The name of a file that belongs to ONE RUNNING DAEMON.
+///
+/// The state DIRECTORY is shared and stays shared -- one board, one set
+/// of rails, one workspace list, one `config.json`, because those are the
+/// work and both builds have to find all of it. What cannot be shared is
+/// anything naming a live daemon: the endpoint, the token that
+/// authenticates to it, its log, and the registry of the PTYs it owns.
+/// See
+/// `docs/superpowers/specs/2026-09-11-per-build-daemon-isolation-design.md`.
+///
+/// The suffix goes before the extension so the last path segment still
+/// ends in `.sock` / `.sqlite`, which is what `pipe_name_for_path` turns
+/// into a readable tag and what anyone reading the directory expects.
+pub fn profile_file_name(stem: &str, extension: &str, profile: BuildProfile) -> String {
+    format!("{stem}{}.{extension}", profile.suffix())
+}
+
 /// Where gavin keeps its socket and its three SQLite stores.
 ///
 /// Per-OS on purpose, and macOS deliberately does NOT consult XDG:
@@ -2688,7 +2772,8 @@ pub fn strip_verbatim_prefix(path: &str) -> String {
 }
 
 pub fn socket_path() -> anyhow::Result<PathBuf> {
-    let path = app_support_dir()?.join("daemon.sock");
+    let path =
+        app_support_dir()?.join(profile_file_name("daemon", "sock", BuildProfile::current()));
     // The name outlives the mechanism on purpose: on Windows this path
     // is never bound, it is hashed into a pipe name
     // (`transport::pipe_name_for_path`), so keeping one spelling of "the
@@ -4711,6 +4796,71 @@ mod tests {
         // A systemd user unit sets XDG_DATA_HOME and may not set HOME.
         let dir = resolve_app_support_dir(None, os("/run/user/1000/gavin-data"), None, None, HostOs::Xdg).unwrap();
         assert_eq!(dir, PathBuf::from("/run/user/1000/gavin-data/gavin"));
+    }
+
+    /// The release spelling of every per-daemon name is the one an
+    /// installed gavin is already using. This design ships no migration:
+    /// a changed literal here is a daemon that silently starts a new,
+    /// empty registry and an app that cannot authenticate to it.
+    #[test]
+    fn the_release_names_are_the_ones_already_on_disk() {
+        assert_eq!(profile_file_name("daemon", "sock", BuildProfile::Release), "daemon.sock");
+        assert_eq!(profile_file_name("daemon", "token", BuildProfile::Release), "daemon.token");
+        assert_eq!(profile_file_name("daemon", "log", BuildProfile::Release), "daemon.log");
+        assert_eq!(profile_file_name("registry", "sqlite", BuildProfile::Release), "registry.sqlite");
+    }
+
+    /// Every per-daemon file splits, and the suffix goes before the
+    /// extension -- `daemon-dev.sock`, not `daemon.sock-dev`, so the pipe
+    /// tag and anything reading by extension still work.
+    #[test]
+    fn a_dev_build_names_every_per_daemon_file_apart() {
+        for (stem, ext) in
+            [("daemon", "sock"), ("daemon", "token"), ("daemon", "log"), ("registry", "sqlite")]
+        {
+            assert_ne!(
+                profile_file_name(stem, ext, BuildProfile::Dev),
+                profile_file_name(stem, ext, BuildProfile::Release),
+                "{stem}.{ext} did not split"
+            );
+        }
+        assert_eq!(profile_file_name("daemon", "sock", BuildProfile::Dev), "daemon-dev.sock");
+        assert_eq!(profile_file_name("registry", "sqlite", BuildProfile::Dev), "registry-dev.sqlite");
+    }
+
+    /// The property the whole design rests on: two builds, two endpoints,
+    /// so neither app can adopt the other's daemon and neither Restart can
+    /// reach it. Asserted against the pipe NAME because that is the
+    /// endpoint on the platform this matters on, and `pipe_name_for_path`
+    /// is compiled everywhere for exactly this reason -- the rule has to
+    /// be provable in the suite that runs on a mac and on the Windows
+    /// machine that uses it.
+    #[test]
+    fn the_two_builds_hash_to_different_pipes() {
+        let dir = Path::new("/x/gavin");
+        let release = transport::pipe_name_for_path(
+            &dir.join(profile_file_name("daemon", "sock", BuildProfile::Release)),
+        );
+        let dev = transport::pipe_name_for_path(
+            &dir.join(profile_file_name("daemon", "sock", BuildProfile::Dev)),
+        );
+        assert_ne!(release, dev);
+        // The tag `pipe_name_for_path` keeps in front of the hash, so the
+        // two are told apart in Process Explorer as well as by the kernel.
+        assert!(dev.contains("daemon-dev-sock"), "{dev}");
+        assert!(!release.contains("daemon-dev-sock"), "{release}");
+    }
+
+    /// The shared half of the design, pinned so it cannot be widened by
+    /// accident: the state DIRECTORY does not split. Both builds find one
+    /// board, one set of rails, one workspace list, because those are the
+    /// same files.
+    #[test]
+    fn the_state_directory_itself_never_splits() {
+        let dir =
+            resolve_app_support_dir(None, None, os(r"C:\Users\x\AppData\Local"), None, HostOs::Windows)
+                .unwrap();
+        assert_eq!(dir, PathBuf::from(r"C:\Users\x\AppData\Local").join("gavin"));
     }
 
     #[test]

@@ -143,10 +143,17 @@ jobs:
       - name: cargo check — the daemon, the MCP server and the protocol
         run: cargo check -p protocol -p gavin-daemon -p gavin-mcp --locked
 
-      # Everything below reports. A red step here is a piece of the port
-      # that is not finished; promote it to a gate when it goes green.
+      # The rest of this job was written to report rather than gate, so
+      # that an unfinished port could not block a push; each step becomes
+      # a gate as it goes green. Two `npm` steps and this one have, on
+      # 2026-09-11.
+      #
+      # A GATE now: the whole workspace, tests included, compiles for
+      # this target. Proved by more than `check` -- the full suite was
+      # built and RUN on Windows 11 that day, so the tauri-build and
+      # WebView2 chain this pulls in is known to link here and not only
+      # to parse.
       - name: cargo check --workspace --tests
-        continue-on-error: true
         run: cargo check --workspace --tests --locked
 
       # Same carve-out as the Linux job: the fs-watcher module is flaky
@@ -155,28 +162,48 @@ jobs:
       # instead of gating, so it doesn't need the Linux job's retry loop.
       - name: cargo test — the fs-watcher module, alone
         continue-on-error: true
+        timeout-minutes: 20
         # Quoted: "gavin:: --locked" contains a colon-space, which a plain
         # YAML scalar can't carry without being mistaken for a mapping key.
         run: "cargo test -p gavin-daemon gavin:: --locked -- --test-threads=1"
 
+      # `timeout-minutes` on both, and it is not belt-and-braces:
+      # `server::tests` DEADLOCKS on Windows -- observed twice on
+      # 2026-09-11, stalling at ~22 failures with 200+ threads and zero
+      # CPU, once with `--skip git_status --skip repo` so the slow
+      # fs-watcher tests are not the explanation. `continue-on-error`
+      # does not help with a hang: without a cap the step would sit here
+      # until the job's six-hour default, on every push, and still report
+      # nothing. A killed step reports the same "not finished yet" this
+      # job was built to report, in twenty minutes instead of six hours.
       - name: cargo test --workspace --locked
         continue-on-error: true
+        timeout-minutes: 20
         # Quoted for the same reason as the Linux job's equivalent step: a
         # plain scalar can't end in a bare colon, and this one does.
         run: "cargo test --workspace --locked -- --skip gavin::"
 
+      # Still reporting: ten source-grep tests assert against a bare `\n`
+      # and fail on a CRLF checkout, which is what `core.autocrlf` gives
+      # this runner. Not a port defect and not this job's to fix --
+      # `fix-source-grep-tests-on-crlf-checkouts` owns it, and promoting
+      # this to a gate before it lands would block every push on a line
+      # ending. 5229 of 5239 pass.
       - name: npm test
         continue-on-error: true
         working-directory: app
         run: npm test
 
+      # GATES from here: both measured green on Windows 11 on 2026-09-11
+      # (`feat-windows-port-on-a-windows-machine` §1) -- `check` at 0
+      # errors, `build` writing its static output -- and neither reads a
+      # source file as bytes, so neither is exposed to the CRLF problem
+      # above. A red here is a real regression in the port.
       - name: npm run check
-        continue-on-error: true
         working-directory: app
         run: npm run check
 
       - name: npm run build
-        continue-on-error: true
         working-directory: app
         run: npm run build
 

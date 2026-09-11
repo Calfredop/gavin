@@ -26,7 +26,8 @@ fn shutdown_replies_over_the_socket_then_the_daemon_process_exits() {
     // Built directly under /tmp on unix rather than tempfile::tempdir()'s
     // default (macOS's $TMPDIR, something like
     // /var/folders/xx/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/T/): appended to
-    // "/Library/Application Support/gavin/daemon.sock" (46 chars), that
+    // "/Library/Application Support/gavin/daemon.sock" (46 chars, and 50
+    // for a debug build's daemon-dev.sock), that
     // default overflows sockaddr_un's ~103-byte sun_path limit and bind()
     // fails outright. /tmp keeps the prefix short enough to leave room.
     // Windows has no such budget -- the endpoint there is a pipe name
@@ -50,7 +51,7 @@ fn shutdown_replies_over_the_socket_then_the_daemon_process_exits() {
         protocol::HostOs::current(),
     )
     .unwrap()
-    .join("daemon.sock");
+    .join(protocol::profile_file_name("daemon", "sock", protocol::BuildProfile::current()));
     let endpoint = protocol::transport::Endpoint::new(socket_path.clone());
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_gavin-daemon"))

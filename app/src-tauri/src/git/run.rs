@@ -4,7 +4,7 @@
 //! crates/daemon/src/git_status.rs documents), optional stdin.
 
 use std::io::{Read, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -40,7 +40,7 @@ pub fn run_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>) -> Result<GitOutp
     if !std::path::Path::new(cwd).is_dir() {
         return Err(format!("directory not found: {cwd}"));
     }
-    let mut child = Command::new("git")
+    let mut child = crate::program::command("git")
         .args(args)
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -128,7 +128,7 @@ pub fn run_git_env(cwd: &str, args: &[&str], env: &[(&str, &str)]) -> Result<Git
     if !std::path::Path::new(cwd).is_dir() {
         return Err(format!("directory not found: {cwd}"));
     }
-    let out = Command::new("git")
+    let out = crate::program::command("git")
         .args(args)
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -152,7 +152,7 @@ pub fn run_git_streaming(
     if !std::path::Path::new(cwd).is_dir() {
         return Err(format!("directory not found: {cwd}"));
     }
-    let mut child = Command::new("git")
+    let mut child = crate::program::command("git")
         .args(args)
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")

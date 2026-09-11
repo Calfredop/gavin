@@ -52,8 +52,19 @@ impl PtySession {
         // Windows answer, is `shell`'s decision.
         let mut cmd = match command {
             Some(c) => {
-                let mut cmd = CommandBuilder::new(crate::shell::posix_shell().as_os_str());
+                let shell = crate::shell::posix_shell();
+                let mut cmd = CommandBuilder::new(shell.as_os_str());
                 cmd.args(["-c", c]);
+                // `sh -c` reads no profile, and on Windows the PATH it
+                // would otherwise inherit is the one a default Git for
+                // Windows install leaves behind: `<git>\cmd` and nothing
+                // else, so the shell running an emitted POSIX line has no
+                // `bash`, `ls`, `sed` or `grep`. `path_with_posix_tools`
+                // puts back what `/etc/profile` would have, and answers
+                // None everywhere else.
+                if let Some(path) = crate::shell::path_with_posix_tools(&shell) {
+                    cmd.env("PATH", path);
+                }
                 cmd
             }
             None => CommandBuilder::new(crate::shell::interactive_shell().as_os_str()),
@@ -99,10 +110,150 @@ impl PtySession {
         if let Some(token) = session_token {
             cmd.env("GAVIN_SESSION_TOKEN", token);
         }
+        // Which daemon opened this tab. `resolve_mcp_binary_path` puts the
+        // gavin-mcp that sits beside the running APP into the workspace's
+        // MCP config -- one entry, one binary, whichever app integrated
+        // last -- so the gavin-mcp an agent launches in here is not
+        // reliably this build's. Left to resolve its own `socket_path()`
+        // it would ask a daemon that is not the one hosting this session,
+        // or none at all.
+        //
+        // Skipped rather than fatal when the path cannot be resolved (a
+        // missing HOME): gavin-mcp falls back to its own default, which is
+        // exactly as good as what it had before, and refusing to open a
+        // terminal over it would be much worse.
+        if let Ok(socket) = protocol::socket_path() {
+            cmd.env("GAVIN_SESSION_SOCKET", socket.as_os_str());
+        }
         cmd.env("TERM_PROGRAM", "ghostty");
         // An inherited version string from some *other* terminal would
         // contradict the pin above; drop it rather than invent one.
         cmd.env_remove("TERM_PROGRAM_VERSION");
+
+        // The last inherited thing that can contradict the pins above: a
+        // blanket "emit no colour" left in the environment by whatever
+        // started the GUI. Every session in the app drew in black and
+        // white on a machine whose daemon had been launched from a shell
+        // that exports NO_COLOR=1 -- nothing in the pipeline strips
+        // colour, so the tools inside were simply being told not to emit
+        // any, and obeyed. Node reported a colour depth of 1 for a PTY
+        // that is in fact a full sixteen-slot xterm theme
+        // (app/src/lib/ui/terminalTheme.ts).
+        //
+        // The terminal a session gets is one this app draws itself, so
+        // whether it can show colour is not a question the daemon's
+        // launcher gets to answer -- the same reason TERM and TERM_PROGRAM
+        // are pinned rather than inherited. Removed rather than
+        // overridden: absent is what "detect normally" looks like, and
+        // detection against a real PTY reaches the right answer on its
+        // own. A user who genuinely wants monochrome still has the shell
+        // profile a terminal session reads.
+        //
+        // Only the two pure suppressors. CLICOLOR and FORCE_COLOR are not
+        // touched: their positive forms are what makes `ls` colour on
+        // macOS and what forces colour through a pipe, so dropping them
+        // would take colour away rather than give it back.
+        cmd.env_remove("NO_COLOR");
+        cmd.env_remove("NODE_DISABLE_COLORS");
+
+        // Same leak, one layer up: NO_COLOR was a launcher answering a
+        // question about the terminal, and these are a launcher answering
+        // questions about *which session this is*. When the GUI is started
+        // from inside a coding agent -- the normal dev loop on this
+        // project, `scripts/start-dev-win.ps1` run from an agent's shell
+        // tool -- that agent has already stamped its own session identity
+        // into the environment for its children, and the whole chain
+        // (npm -> node -> cargo -> Gavin.exe -> gavin-daemon) carries it
+        // down into every PTY this function opens.
+        //
+        // Not inert. Claude Code reads CLAUDE_CODE_CHILD_SESSION as "you
+        // are a nested child, not a top-level session" and responds by
+        // turning transcript persistence off, so `--resume` and
+        // `--continue` cannot find the session afterwards, and prompt
+        // history is dropped. It says so on screen, and this repo already
+        // holds the receipt: tests/fixtures/claude-code-tui.raw, captured
+        // from an agent running in a gavin tab, contains the banner
+        // "Transcript saving is off - inherited CLAUDE_CODE_CHILD_SESSION
+        // marker". An app whose purpose is hosting agent sessions in tabs
+        // must not be the reason those sessions cannot be resumed.
+        //
+        // That marker has an escape hatch for exactly this shape of
+        // mistake, but it only covers tmux: an inherited marker is
+        // forgiven when it came from tmux's global environment, on the
+        // grounds that it is ambient rather than a real parent-child
+        // link. A PTY opened here is the same ambient case and gets no
+        // such reprieve, so the daemon has to answer it by not passing
+        // the marker on.
+        //
+        // The test applied below is whether a variable names the
+        // LAUNCHER'S SESSION rather than this one. That is why this is a
+        // list and not a CLAUDE_*/GIT_* sweep: ANTHROPIC_API_KEY,
+        // CLAUDE_CODE_USE_BEDROCK and friends are user configuration a
+        // terminal session should keep, and CLAUDE_CODE_EXECPATH names an
+        // *install* -- two sessions of the same install share it -- so
+        // none of those are this bug. Deliberately still passed in above:
+        // GAVIN_SESSION_ID, GAVIN_SESSION_TOKEN and GAVIN_SESSION_SOCKET,
+        // which name THIS session and the daemon serving it, and are the
+        // entire point of setting them.
+        for key in [
+            // "you are running under Claude Code", and by which entrypoint.
+            "CLAUDECODE",
+            "CLAUDE_CODE_ENTRYPOINT",
+            // The nested-child marker, and the session ids it refers to.
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_BRIDGE_SESSION_ID",
+            // The launcher's process id. Claude Code builds a `pkill`
+            // guard around it; inherited, that guard is aimed at a
+            // process in a different tree entirely.
+            "CLAUDE_PID",
+            // The launcher's cross-session messaging channel and the
+            // bearer token for it. Left in place, an agent in a tab joins
+            // the launching agent's message bus instead of being
+            // reachable as itself -- the sharpest of these, because it is
+            // a live credential for somebody else's session.
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+            // "your parent is an agent, and here is which one, and how
+            // hard it was told to think".
+            "AI_AGENT",
+            "CLAUDE_EFFORT",
+        ] {
+            cmd.env_remove(key);
+        }
+
+        // The other half of the same inheritance, and the closest relative
+        // of NO_COLOR: a launcher that had no terminal, telling everything
+        // downstream not to ask the user anything. A session in this app
+        // DOES have a terminal -- the app draws it -- so the premise is
+        // simply false in here.
+        //
+        // GIT_TERMINAL_PROMPT=0 and GCM_INTERACTIVE=never are set as a
+        // pair, the second being the one that bites on Windows: Git
+        // Credential Manager is the helper this platform ships, and
+        // "never" tells it to refuse its own UI. Inherited, a `git push`
+        // in a tab fails with an auth error instead of asking, and the
+        // failure reads as a broken credential store rather than a stray
+        // variable. GIT_EDITOR=true is worse than a refusal: it makes
+        // `git commit` with no -m succeed with an empty message and
+        // `git rebase -i` skip its todo list, which is lost work rather
+        // than a visible failure.
+        //
+        // Removed unconditionally, for the reason the NO_COLOR block
+        // gives: absent is what "decide normally" looks like, and a user
+        // who genuinely wants any of these still has the shell profile an
+        // interactive session reads. This is only the INHERITED
+        // environment -- where gavin itself wants non-interactive git it
+        // says so explicitly per invocation, in
+        // app/src-tauri/src/git/run.rs, and nothing here changes that.
+        for key in [
+            "GIT_TERMINAL_PROMPT",
+            "GIT_ASKPASS",
+            "GCM_INTERACTIVE",
+            "GIT_EDITOR",
+        ] {
+            cmd.env_remove(key);
+        }
 
         let child = pair.slave.spawn_command(cmd)?;
         let writer = pair.master.take_writer()?;
@@ -280,6 +431,16 @@ mod tests {
     // other project's typical tolerance for this well-known Rust hazard.
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
+    /// Take ENV_MUTEX, recovering from a poisoned lock rather than
+    /// panicking on it. It guards `()` -- there is no invariant a panic
+    /// could have left half-written -- so poison here carries no
+    /// information except "an earlier env test failed", and propagating it
+    /// turns one real failure into a cascade of misleading ones in every
+    /// other test that touches process env.
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn spawn_pins_term_program_regardless_of_what_the_daemon_inherited() {
         // The daemon inherits its environment from whatever launched the
@@ -290,7 +451,7 @@ mod tests {
         // NOTHING AT ALL when it is unset -- so leaving it inherited makes
         // waiting-for-input detection silently depend on how the app was
         // launched. See status.rs for the detection side.
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = lock_env();
         std::env::set_var("TERM_PROGRAM", "some-other-terminal");
 
         let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "test-session", None).unwrap();
@@ -316,7 +477,7 @@ mod tests {
         // replaced with a fake version because the only thing that reads it
         // (color-depth detection) consults it solely for iTerm2 and
         // Apple_Terminal, neither of which we claim to be.
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = lock_env();
         std::env::set_var("TERM_PROGRAM_VERSION", "9.9.9-inherited");
 
         let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "test-session", None).unwrap();
@@ -329,6 +490,205 @@ mod tests {
         session.kill().unwrap();
         std::env::remove_var("TERM_PROGRAM_VERSION");
         assert!(output.contains("TPVMARK=[]"), "got: {output}");
+    }
+
+    #[test]
+    fn spawn_clears_an_inherited_no_color() {
+        // The bug this exists for: every session in the app drew in black
+        // and white, on a machine whose daemon had been started from a
+        // shell that exports NO_COLOR=1. Nothing in the pipeline strips
+        // colour -- ConPTY forwards SGR, the screen model round-trips it,
+        // the app relays it verbatim into a full sixteen-slot xterm theme
+        // -- so the tools inside the sessions were simply being told not
+        // to emit any, and they obeyed.
+        //
+        // The cwd and command are written portably, unlike the tests
+        // above: this is the one that has to run on the OS the report
+        // came from. `printf` is a shell builtin everywhere, so it needs
+        // nothing on PATH.
+        let _guard = lock_env();
+        std::env::set_var("NO_COLOR", "1");
+
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(r#"printf 'NC%s=[%s]\n' MARK "$NO_COLOR""#),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "NCMARK=[", Duration::from_secs(5));
+        session.kill().unwrap();
+        std::env::remove_var("NO_COLOR");
+        assert!(output.contains("NCMARK=[]"), "got: {output}");
+    }
+
+    #[test]
+    fn spawn_clears_the_launchers_claude_session_identity() {
+        // The bug: start the GUI from inside a coding agent -- which is
+        // how this project is developed -- and that agent's session
+        // identity rides the whole npm/cargo/Tauri chain down into every
+        // tab. The hosted agent then reads itself as a nested child of
+        // whoever launched the app rather than the top-level session it
+        // actually is.
+        //
+        // Not cosmetic: an inherited CLAUDE_CODE_CHILD_SESSION turns
+        // transcript persistence off, so the session cannot be resumed
+        // afterwards. tests/fixtures/claude-code-tui.raw is a capture of
+        // that happening in a real gavin tab.
+        let _guard = lock_env();
+        let leaked = [
+            ("CLAUDECODE", "1"),
+            ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+            ("CLAUDE_CODE_CHILD_SESSION", "1"),
+            ("CLAUDE_CODE_SESSION_ID", "launcher-session-uuid"),
+            ("CLAUDE_CODE_BRIDGE_SESSION_ID", "session_launcher"),
+            ("CLAUDE_PID", "4242"),
+            ("CLAUDE_CODE_MESSAGING_SOCKET", r"\\.\pipe\LOCAL\cc-msg-x"),
+            ("CLAUDE_CODE_MESSAGING_TOKEN", "launcher-secret"),
+            ("AI_AGENT", "claude-code_0-0-0_agent"),
+            ("CLAUDE_EFFORT", "xhigh"),
+        ];
+        for (key, value) in leaked {
+            std::env::set_var(key, value);
+        }
+
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(concat!(
+                r#"printf 'ID%s=[%s][%s][%s][%s][%s][%s][%s][%s][%s][%s]\n' MARK "#,
+                r#""$CLAUDECODE" "$CLAUDE_CODE_ENTRYPOINT" "#,
+                r#""$CLAUDE_CODE_CHILD_SESSION" "$CLAUDE_CODE_SESSION_ID" "#,
+                r#""$CLAUDE_CODE_BRIDGE_SESSION_ID" "$CLAUDE_PID" "#,
+                r#""$CLAUDE_CODE_MESSAGING_SOCKET" "$CLAUDE_CODE_MESSAGING_TOKEN" "#,
+                r#""$AI_AGENT" "$CLAUDE_EFFORT""#,
+            )),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "IDMARK=[", Duration::from_secs(5));
+        session.kill().unwrap();
+        for (key, _) in leaked {
+            std::env::remove_var(key);
+        }
+        assert!(
+            output.contains("IDMARK=[][][][][][][][][][]"),
+            "got: {output}"
+        );
+    }
+
+    #[test]
+    fn spawn_keeps_inherited_claude_config_that_is_not_session_identity() {
+        // The guard against fixing the above with a CLAUDE_* sweep, which
+        // would be a different bug. CLAUDE_CODE_EXECPATH names an
+        // *install*, not a session -- every session of that install has
+        // the same value -- and ANTHROPIC_API_KEY is user configuration a
+        // terminal session is entitled to inherit. Neither one answers
+        // "which session is this", so neither is stripped.
+        let _guard = lock_env();
+        std::env::set_var("CLAUDE_CODE_EXECPATH", "/opt/claude/claude");
+        std::env::set_var("ANTHROPIC_API_KEY", "user-configured-key");
+
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(r#"printf 'KEPT%s=[%s][%s]\n' MARK "$CLAUDE_CODE_EXECPATH" "$ANTHROPIC_API_KEY""#),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "KEPTMARK=[", Duration::from_secs(5));
+        session.kill().unwrap();
+        std::env::remove_var("CLAUDE_CODE_EXECPATH");
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        assert!(
+            output.contains("KEPTMARK=[/opt/claude/claude][user-configured-key]"),
+            "got: {output}"
+        );
+    }
+
+    #[test]
+    fn spawn_clears_the_launchers_non_interactive_git_pins() {
+        // Same shape as NO_COLOR: a launcher with no terminal telling
+        // everything downstream not to ask the user anything. A tab has a
+        // terminal, so git in it should be able to prompt.
+        //
+        // GCM_INTERACTIVE is the one that bites on Windows -- Git
+        // Credential Manager is the helper here and "never" forbids its
+        // UI -- and GIT_EDITOR=true is the one that loses work, by making
+        // a bare `git commit` succeed with an empty message.
+        let _guard = lock_env();
+        let leaked = [
+            ("GIT_TERMINAL_PROMPT", "0"),
+            ("GIT_ASKPASS", ""),
+            ("GCM_INTERACTIVE", "never"),
+            ("GIT_EDITOR", "true"),
+        ];
+        for (key, value) in leaked {
+            std::env::set_var(key, value);
+        }
+
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(concat!(
+                r#"printf 'GIT%s=[%s][%s][%s][%s]\n' MARK "#,
+                r#""$GIT_TERMINAL_PROMPT" "$GIT_ASKPASS" "#,
+                r#""$GCM_INTERACTIVE" "$GIT_EDITOR""#,
+            )),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "GITMARK=[", Duration::from_secs(5));
+        session.kill().unwrap();
+        for (key, _) in leaked {
+            std::env::remove_var(key);
+        }
+        assert!(output.contains("GITMARK=[][][][]"), "got: {output}");
+    }
+
+    /// Which daemon opened this tab, so gavin-mcp reaches the one that
+    /// owns it rather than the one its own build would resolve.
+    /// `resolve_mcp_binary_path` puts the gavin-mcp sitting beside the
+    /// running APP into the workspace's MCP config -- one entry, one
+    /// binary, whichever app integrated last -- so a debug gavin-mcp can
+    /// land in a release tab and a release one in a debug tab.
+    ///
+    /// It must also SURVIVE both scrub loops below. Under the rule
+    /// `issue-launcher-env-leaks-into-sessions.md` drew -- a variable goes
+    /// only if it names the LAUNCHER's session rather than this one --
+    /// this names the daemon serving this very PTY, so it stays, like
+    /// GAVIN_SESSION_ID and GAVIN_SESSION_TOKEN beside it.
+    ///
+    /// Asserted on the file name rather than the whole path: the value
+    /// crosses into sh, which on Windows is MSYS and may respell a
+    /// `C:\...` path, and what this test is about is that the variable
+    /// arrives and is this build's endpoint.
+    #[test]
+    fn spawn_exports_this_daemons_endpoint_into_the_pty() {
+        let _guard = lock_env();
+        let name =
+            protocol::profile_file_name("daemon", "sock", protocol::BuildProfile::current());
+        let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "sid-44", None).unwrap();
+        let mut reader = session.reader().unwrap();
+        session
+            .write_input(b"printf 'SOCK%s=[%s]\\n' MARK \"$GAVIN_SESSION_SOCKET\"\n")
+            .unwrap();
+
+        let output = read_until_contains(&mut *reader, "SOCKMARK=[", Duration::from_secs(3));
+        session.kill().unwrap();
+        assert!(output.contains(&format!("{name}]")), "got: {output}");
     }
 
     #[test]
@@ -391,6 +751,301 @@ mod tests {
         let output = read_until_contains(&mut *reader, "QMARK=[", Duration::from_secs(3));
         session.kill().unwrap();
         assert!(output.contains("QMARK=[the plan's]"), "got: {output}");
+    }
+
+    /// The load-bearing assumption of the whole Windows port, asserted
+    /// instead of assumed: a session carrying a COMMAND runs under
+    /// `posix_shell()`, and that shell has to be ON A TERMINAL or every
+    /// full-screen agent TUI this app exists to host draws nothing.
+    ///
+    /// Trivially true on unix. On Windows it is ConPTY handing a tty to
+    /// Git for Windows' `sh.exe` -- MSYS reads a Windows console as one,
+    /// which is why Git Bash works in Windows Terminal, but portable-pty's
+    /// ConPTY path had never been run here, only compiled for.
+    ///
+    /// Both ends, because an agent reads keystrokes from stdin and draws
+    /// on stdout, and a pipe on either one is enough to make a TUI fall
+    /// back to line mode -- the failure this is meant to catch looks like
+    /// a working session until someone tries to answer a prompt in it.
+    #[test]
+    fn a_command_session_runs_on_a_tty_at_both_ends() {
+        // Both tests run OUTSIDE the printf's arguments. `$(…)` is a
+        // command substitution, which replaces stdout with a pipe for as
+        // long as it runs, so `[ -t 1 ]` inside one reports "not a
+        // terminal" on every platform there has ever been -- a test
+        // written that way fails identically on a working ConPTY and on
+        // a broken one, which is worse than not having it.
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(concat!(
+                "tin=; tout=; ",
+                "[ -t 0 ] && tin=in; ",
+                "[ -t 1 ] && tout=out; ",
+                r#"printf 'TTY%s=[%s][%s]\n' MARK "$tin" "$tout""#,
+            )),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "TTYMARK=[", Duration::from_secs(10));
+        session.kill().unwrap();
+        assert!(output.contains("TTYMARK=[in][out]"), "got: {output}");
+    }
+
+    /// The POSIX tools an emitted command line assumes it has.
+    ///
+    /// On Windows this is the whole of `path_with_posix_tools`: `sh -c`
+    /// reads no profile, and a default Git for Windows install puts only
+    /// `<git>\cmd` on the machine PATH, so without the daemon putting
+    /// them back a session gets a POSIX shell with no POSIX tools. The
+    /// first run of this test on a real Windows box failed with
+    /// `sh: line 1: ls: command not found` -- which is also what a
+    /// `script` tool's `bash -c` would have said.
+    ///
+    /// `bash` is named explicitly because `buildToolCommand` emits
+    /// `bash -c <body>` for every `script`-kind tool, and `sed` because
+    /// it stands for the rest of the MSYS set a tool body reaches for.
+    /// Not asserted on unix beyond "these exist", which they do.
+    #[test]
+    fn a_command_session_can_find_the_posix_tools_it_is_written_against() {
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(concat!(
+                r#"printf 'TOOLS%s=[%s][%s][%s]\n' MARK "#,
+                r#""$(command -v bash >/dev/null && echo bash)" "#,
+                r#""$(command -v ls >/dev/null && echo ls)" "#,
+                r#""$(command -v sed >/dev/null && echo sed)""#,
+            )),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "TOOLSMARK=[", Duration::from_secs(10));
+        session.kill().unwrap();
+        assert!(output.contains("TOOLSMARK=[bash][ls][sed]"), "got: {output}");
+    }
+
+    /// `buildToolCommand`'s failure epilogue (app/src/lib/cardRun.ts), run
+    /// by the interpreter that will actually run it.
+    ///
+    /// Two claims in one, and a rail step's verdict rests on both: the
+    /// `[gavin] <tool> exited with code N` line reaches the screen at all
+    /// -- a PTY closes its tab the moment the command exits, so without
+    /// it a tool that failed in half a second leaves nothing to read --
+    /// and the code is RE-RAISED, because it is the step's verdict (tools
+    /// spec T5) and a swallowed one reads as success.
+    ///
+    /// Spelled as the app emits it, real newlines and all, because the
+    /// point is that this exact text parses as POSIX under whichever
+    /// shell the OS resolved: `/bin/sh` on unix, Git for Windows' `sh.exe`
+    /// on Windows. `false` is the failure: it needs nothing installed and
+    /// its code is 1 on every POSIX shell. (`ls` of a missing path is 2
+    /// on GNU/MSYS and 1 on BSD, so it is the wrong pin for a cross-
+    /// platform merge.)
+    #[test]
+    fn the_tool_failure_epilogue_prints_and_re_raises_the_code() {
+        let command = [
+            "false",
+            "__gavin_code=$?",
+            r#"[ "$__gavin_code" -ne 0 ] && printf '\n[gavin] %s exited with code %s\n' 'my tool' "$__gavin_code""#,
+            r#"exit "$__gavin_code""#,
+        ]
+        .join("\n");
+
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session =
+            PtySession::spawn(&cwd, Some(&command), "test-session", None).unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(
+            &mut *reader,
+            "[gavin] my tool exited with code",
+            Duration::from_secs(10),
+        );
+        assert!(
+            output.contains("[gavin] my tool exited with code 1"),
+            "got: {output}"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let code = loop {
+            if let Some(code) = session.try_wait().unwrap() {
+                break code;
+            }
+            assert!(Instant::now() < deadline, "command did not exit; got: {output}");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(code, 1, "the epilogue swallowed the tool's exit code");
+    }
+
+    /// A `[worktree] setup` chain: several commands joined with `&&`, run
+    /// in a directory that did not exist when the session was created.
+    /// The `&&` has to short-circuit, or a setup whose first step failed
+    /// reports the last step's success.
+    #[test]
+    fn an_and_joined_setup_chain_short_circuits_on_the_first_failure() {
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some("echo FIRSTMARK && false && echo SHOULD-NOT-RUN"),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "FIRSTMARK", Duration::from_secs(10));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let code = loop {
+            if let Some(code) = session.try_wait().unwrap() {
+                break code;
+            }
+            assert!(Instant::now() < deadline, "chain did not exit; got: {output}");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_ne!(code, 0, "a chain whose middle step failed exited 0");
+        assert!(!output.contains("SHOULD-NOT-RUN"), "got: {output}");
+    }
+
+    /// OSC 7 all the way through: a prompt emits it, the terminal carries
+    /// it, and `OscCwdScanner` reads a cwd out of the far end.
+    ///
+    /// `osc::tests` already proves the parse, including the `/C:/…` →
+    /// `C:/…` fix a file URI's leading slash needs. What only a real PTY
+    /// can answer is whether the BYTES survive the trip, and on Windows
+    /// that is a live question rather than a formality: ConPTY is a
+    /// terminal emulator in its own right, re-rendering the screen rather
+    /// than piping output through, and an OSC it does not itself act on
+    /// is a plausible thing for it to drop.
+    ///
+    /// Git Bash emits nothing by default -- `git-prompt.sh` has no OSC 7
+    /// in it -- so the sequence is written by hand, exactly as a prompt
+    /// configured to emit one would. Nothing here is allowed to regress
+    /// idle detection either way: that is OSC 133 plus a quiet timer, and
+    /// a shell that reports no cwd is a supported shell.
+    #[test]
+    fn an_osc7_cwd_report_survives_the_terminal() {
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        // What a prompt that reports a cwd actually emits, and the reason
+        // `pwd -W` rather than `$PWD`: inside MSYS the shell's own idea of
+        // where it is is an MSYS path (`/c/Users/ada`, or `/tmp` for this
+        // directory), which no Windows API can open. `pwd -W` is the MSYS
+        // builtin that answers in the Windows spelling, `C:/Users/ada`,
+        // and a file URI's path component has to start with `/`, so a
+        // drive letter gets one put in front of it -- which is exactly
+        // the slash `strip_uri_drive_slash` exists to take back off.
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(concat!(
+                r#"p=$(pwd -W 2>/dev/null || pwd); "#,
+                r#"case "$p" in /*) ;; *) p="/$p";; esac; "#,
+                r#"printf '\033]7;file://%s%s\007' "$HOSTNAME" "$p"; "#,
+                r#"printf 'OSC%s-done\n' MARK"#,
+            )),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let mut scanner = crate::osc::OscCwdScanner::new();
+        let mut found: Vec<String> = Vec::new();
+        let mut collected = String::new();
+        let mut buf = [0u8; 4096];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    found.extend(scanner.feed(&buf[..n]));
+                    collected.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if !found.is_empty() && collected.contains("OSCMARK-done") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        session.kill().unwrap();
+
+        let reported = found
+            .last()
+            .unwrap_or_else(|| panic!("no OSC 7 reached the scanner; raw: {collected:?}"));
+        // A path, not a URI. On Windows that means the drive letter
+        // leads -- `C:/Users/…`, never `/C:/Users/…`, which is what the
+        // file-URI slash would otherwise leave behind and what nothing
+        // downstream can open. `resolve_path_under_cursor` and the file
+        // viewer both take this value as a path.
+        assert!(!reported.is_empty(), "empty cwd; raw: {collected:?}");
+        if cfg!(windows) {
+            let b = reported.as_bytes();
+            assert!(
+                b[0].is_ascii_alphabetic() && b.get(1) == Some(&b':'),
+                "expected a drive-letter path, got {reported:?}"
+            );
+        } else {
+            assert!(reported.starts_with('/'), "got {reported:?}");
+        }
+    }
+
+    /// A reader reaches END OF STREAM once the command in the PTY is
+    /// gone. Not a formality, and not the same claim as `try_wait`
+    /// returning a code.
+    ///
+    /// `retire`'s comment is the reason: "the pty closing is what gives
+    /// the pump its EOF -- which is the `session-exited` push a rail
+    /// step's completion is read from". Exit detection and EOF are two
+    /// different signals, and only the second one ends a step.
+    ///
+    /// On Windows that is a live question. ConPTY's output pipe is held
+    /// by conhost as well as by the child, so a pseudo-console that
+    /// keeps it open after the child exits would leave a reader blocked
+    /// forever — every finished rail step still looking like a running
+    /// one, and a pump thread per session that never returns.
+    ///
+    /// Read on a worker thread with a timeout on the receiving end, so a
+    /// PTY that never closes FAILS this test rather than hanging the
+    /// suite — which is the failure mode being guarded against, and a
+    /// test that hangs is one nobody can read the result of.
+    #[test]
+    fn a_readers_stream_ends_when_the_command_does() {
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(r#"printf 'EOF%s-probe\n' MARK"#),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut sink = Vec::new();
+            let outcome = reader.read_to_end(&mut sink);
+            let _ = tx.send(outcome.map(|_| String::from_utf8_lossy(&sink).into_owned()));
+        });
+
+        let arrived = rx.recv_timeout(Duration::from_secs(20));
+        session.kill().unwrap();
+        let text = arrived
+            .expect(
+                "the reader never reached end of stream after the command exited. \
+                 On Windows this is a KNOWN, FILED bug, not a flake and not your \
+                 change: a ConPTY's output pipe is held by conhost as well as by \
+                 the child, the pump breaks on Ok(0) and nothing else, and so a \
+                 session that ends by itself is never reported as exited. See \
+                 fix-windows-sessions-never-report-exit.md -- this test is that \
+                 card's gate and is expected to be red until it lands.",
+            )
+            .expect("reading the pty to the end failed");
+        assert!(text.contains("EOFMARK-probe"), "got: {text}");
     }
 
     #[test]

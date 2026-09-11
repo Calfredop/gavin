@@ -156,6 +156,34 @@ pub fn resolve_or_name(name: &str) -> PathBuf {
     resolve(name).unwrap_or_else(|| PathBuf::from(name))
 }
 
+/// `CREATE_NO_WINDOW`: the child gets a console of its own with no
+/// window on it. The one process-creation flag that matters to a GUI
+/// app on Windows.
+///
+/// A console program inherits its parent's console, and when the parent
+/// has none it allocates one -- and a new console is a window. The
+/// release `Gavin.exe` is `windows_subsystem = "windows"`, no console,
+/// so without this flag every `git`, `gh` and `claude` it ran flashed a
+/// terminal on screen; the debug build never showed it because debug
+/// binaries keep a console. `DETACHED_PROCESS` is not the answer: it
+/// gives the child NO console, which only moves the same flash down to
+/// the child's own children.
+#[cfg(windows)]
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// A `Command` for a program gavin runs itself, built so that on Windows
+/// it opens no console window. The way this crate builds one;
+/// `Command::new` is left to the daemon spawn, which sets its own flags.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +276,102 @@ mod tests {
         assert_eq!(
             resolve_with("/opt/gh/bin/gh", os("/usr/bin"), None, false, present(&["/usr/bin/gh"])),
             None
+        );
+    }
+
+    /// The bug `command` exists for: the release app is a GUI process
+    /// with no console, so a child started plainly allocates a console of
+    /// its own, and a new console is a window -- one terminal flash per
+    /// `git`, `gh` or `claude` the app ran. A `command` child gets a
+    /// console that is not this process's and has no window.
+    ///
+    /// Observed through `GetConsoleProcessList`, which names the
+    /// processes attached to the CALLER's console. A plainly spawned
+    /// child appears there -- the positive control, proving the probe
+    /// sees children at all -- and one spawned through `command` must
+    /// not, because it was given a console of its own. A runner with no
+    /// console (the list comes back empty) cannot tell the two apart and
+    /// says so rather than passing vacuously.
+    #[cfg(windows)]
+    #[test]
+    fn a_command_child_does_not_share_this_console() {
+        use std::process::Stdio;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        }
+        fn our_console() -> Vec<u32> {
+            let mut list = vec![0u32; 512];
+            let n = unsafe { GetConsoleProcessList(list.as_mut_ptr(), list.len() as u32) } as usize;
+            list.truncate(n.min(512));
+            list
+        }
+        if our_console().is_empty() {
+            eprintln!("skipped: this test runner has no console to compare against");
+            return;
+        }
+
+        // `ping` holds for a couple of seconds, long enough to be looked
+        // at; `sleep` and `timeout` are not usable here (see
+        // `a_child_that_binds_nothing` in daemon.rs).
+        let hold = ["-n", "3", "127.0.0.1"];
+        let mut plain = std::process::Command::new("ping").args(hold).stdout(Stdio::null()).spawn().unwrap();
+        let mut quiet = command("ping").args(hold).stdout(Stdio::null()).spawn().unwrap();
+        let attached = our_console();
+        let plain_attached = attached.contains(&plain.id());
+        let quiet_attached = attached.contains(&quiet.id());
+        for child in [&mut plain, &mut quiet] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(plain_attached, "the probe: a plain child inherits this console and is listed on it");
+        assert!(!quiet_attached, "a `command` child must have a hidden console of its own, not this one");
+    }
+
+    /// Every program this crate starts goes through `command`, so that no
+    /// spawn site can bring the console flash back. Read off the sources
+    /// rather than trusted to review: the first pass at this fix routed
+    /// every site a flat listing of `src/*.rs` showed and missed the git
+    /// tab's runner in `src/git/`, which was then the one still opening a
+    /// terminal per call. Allowed: this file (the constructor, and the
+    /// plain control child in the test above) and the daemon spawn in
+    /// `daemon.rs`, which sets its own flags.
+    #[test]
+    fn every_spawn_in_this_crate_goes_through_command() {
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        let mut offenders = Vec::new();
+        for file in files {
+            let rel = file.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+            if rel == "program.rs" {
+                continue;
+            }
+            for (i, line) in std::fs::read_to_string(&file).unwrap().lines().enumerate() {
+                if !line.contains("Command::new(") || line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if rel == "daemon.rs" && line.contains("Command::new(binary)") {
+                    continue;
+                }
+                offenders.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "spawn sites not going through program::command:\n{}",
+            offenders.join("\n")
         );
     }
 
