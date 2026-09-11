@@ -820,8 +820,15 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // whose `session` table has a `directory` column holding the
         // exact launch cwd (not a hash of it) -- read with real gavin
         // spike data still in that table from `/private/tmp/gavin-oc-*`.
-        // macOS/Linux XDG path only; not checked on Windows.
-        session_id_discovery: "sqlite3 \"$HOME/.local/share/opencode/opencode.db\" \"SELECT id FROM session WHERE directory = '$(pwd)' ORDER BY time_updated DESC LIMIT 1;\"",
+        //
+        // `pwd -P`, not bare `pwd`: opencode records the PHYSICAL path
+        // (`/private/tmp/...`), and bash's `pwd` returns the LOGICAL one
+        // by default -- a bare `pwd` from inside `/tmp/...` (a symlink to
+        // `/private/tmp` on macOS) matches nothing, confirmed live
+        // 2026-09-11 with a real `opencode run` under `/tmp` that stored
+        // `/private/tmp` and a bare-`pwd` discovery query that came back
+        // empty. macOS/Linux XDG path only; not checked on Windows.
+        session_id_discovery: "sqlite3 \"$HOME/.local/share/opencode/opencode.db\" \"SELECT id FROM session WHERE directory = '$(pwd -P)' ORDER BY time_updated DESC LIMIT 1;\"",
         // Top-level `-s/--session <id>` (`opencode --help`, not the
         // `run` subcommand's own copy of the same flag): the interactive
         // TUI command this profile already launches with via
