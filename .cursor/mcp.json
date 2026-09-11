@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "gavin": {
+      "args": [],
+      "command": "/Users/coalpila/CloudStation/Coding/gavin/target/debug/gavin-mcp",
+      "type": "stdio"
+    }
+  }
+}
