@@ -18,7 +18,8 @@
 
     It does NOT start the daemon. The packaged app spawns it detached --
     DETACHED_PROCESS, its own process group, and out of any job that permits
-    breakaway -- appending to %LOCALAPPDATA%\gavin\daemon.log. Starting it
+    breakaway -- appending to %LOCALAPPDATA%\gavin\daemon.log (a debug build
+    binds its own pipe and writes daemon-dev.log beside it). Starting it
     here would make it this script's child instead, and a PowerShell
     redirect would truncate that log on every run.
 
@@ -103,25 +104,29 @@ foreach ($side in @('gavin-daemon.exe', 'gavin-mcp.exe')) {
 
 # --- who is listening already ----------------------------------------------
 
-# The app adopts whatever daemon is up. That is right for the stable one
-# and wrong for a dev one: target\debug\gavin-daemon.exe belongs to tauri
-# dev's job and takes every session with it when that job is torn down.
-$daemons = @(Get-Process -Name gavin-daemon -ErrorAction SilentlyContinue)
-if ($daemons.Count -eq 0) {
-    Say 'no daemon is running; the app will spawn its own from beside itself'
+# The app adopts whatever daemon is listening on ITS endpoint, and after
+# per-build isolation that can only ever be a release daemon: a debug build
+# binds daemon-dev.sock and is tagged `gavin-daemon-dev-sock`, a different
+# pipe this app never looks at. So the question is asked of the PIPE rather
+# than of `Get-Process -Name gavin-daemon`, which answers for every daemon on
+# the machine and cannot tell which endpoint any of them is serving.
+#
+# The release tag is a prefix of the dev one, hence the second clause.
+$pipes = [System.IO.Directory]::GetFiles('\\.\pipe\')
+$stable = @($pipes | Where-Object { $_ -like '*gavin-daemon-sock*' -and $_ -notlike '*gavin-daemon-dev-sock*' })
+$dev = @($pipes | Where-Object { $_ -like '*gavin-daemon-dev-sock*' })
+if ($stable.Count -eq 0) {
+    Say 'no release daemon is listening; the app will spawn its own from beside itself'
 }
-foreach ($d in $daemons) {
-    $from = $null
-    try { $from = $d.Path } catch { }
-    if ($from -and ((Split-Path -Parent $from) -ieq $dir)) {
-        Say "the stable daemon is already running (pid $($d.Id)); the app will adopt it"
-    }
-    elseif ($from -and ($from -like (Join-Path $Root 'target\*'))) {
-        Warn "a DEV daemon is listening (pid $($d.Id), $from). The stable app will adopt it, and it dies with tauri dev. Stop it first if you want sessions that outlive the dev tree."
-    }
-    else {
-        Say "a daemon is already running (pid $($d.Id), $from); the app will adopt it"
-    }
+else {
+    Say 'a release daemon is already listening; the app will adopt it'
+}
+# No longer a warning. A dev daemon used to be a hazard here because the
+# stable app would adopt it and then lose every session when tauri dev tore
+# its job down. It cannot be adopted now, and Restart daemon in either app
+# kills only the pid owning the endpoint it connected to.
+if ($dev.Count -gt 0) {
+    Say 'a dev daemon is listening too, on its own pipe. It will not be adopted, and this app cannot stop it.'
 }
 
 if ($env:CLAUDECODE) {

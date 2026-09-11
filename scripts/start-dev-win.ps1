@@ -137,14 +137,24 @@ finally { Pop-Location }
 # Only when nothing is listening. A daemon that outlived the last dev session
 # is exactly the one worth keeping -- that is the whole point of it outliving
 # the app.
-$listening = @([System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -like '*gavin-daemon-sock*' })
+# The DEV pipe specifically. A debug build binds daemon-dev.sock, which
+# `pipe_name_for_path` tags `gavin-daemon-dev-sock`; a release install binds
+# daemon.sock and is tagged `gavin-daemon-sock`. Matching the release tag here
+# would see the STABLE daemon, decide one is already listening, and start the
+# dev app with no dev daemon at all -- and since the release tag is a prefix of
+# the dev one, it has to be the specific pattern rather than the general one.
+$listening = @([System.IO.Directory]::GetFiles('\\.\pipe\') | Where-Object { $_ -like '*gavin-daemon-dev-sock*' })
 if ($listening.Count -gt 0) {
     Say 'a daemon is already listening -- leaving it alone'
 }
 else {
     $state = Join-Path $env:LOCALAPPDATA 'gavin'
     New-Item -ItemType Directory -Force $state | Out-Null
-    $log = Join-Path $state 'daemon.log'
+    # Per build, like the pipe above: the release daemon appends to
+    # daemon.log, and two daemons interleaving into one file is a log nobody
+    # can read. `daemon_log_path` in app/src-tauri/src/daemon.rs picks the
+    # same name when the APP spawns the daemon instead of this script.
+    $log = Join-Path $state 'daemon-dev.log'
     $exe = Join-Path $Root 'target\debug\gavin-daemon.exe'
     Say "starting gavin-daemon detached from the app (output -> $log)"
     if (-not (Test-Path $exe)) { Die "cargo build reported success but $exe is missing." }
