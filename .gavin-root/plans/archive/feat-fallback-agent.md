@@ -3,7 +3,7 @@ complexity: intricate
 order: 7168
 kind: plan
 title: "[feat] fallback agent"
-status: In Progress
+status: Done
 ---
 When a launch's resolved agent is over the usage-probe threshold, do not
 permanently change the workspace agent. Walk an ordered fallback chain and
@@ -37,21 +37,21 @@ Assumptions: workspace override replaces the whole chain; "armed" means
 that profile's MCP/skills/Superpowers setup is already satisfied for the
 workspace (reuse existing setup detection); machine-local like `agent_pause`.
 
-- [ ] Config + pure resolution: store app/workspace fallback chain; resolve
+- [x] Config + pure resolution: store app/workspace fallback chain; resolve
       launch agent = walk chain when resolved agent is over limit threshold;
       cycle pause still blocks; unit tests for inherit/override, walk order,
       unarmed-needed, empty chain = pause-only
-- [ ] Setup-only arming path: wizard/flow that arms a profile without
+- [x] Setup-only arming path: wizard/flow that arms a profile without
       changing active agent or complexity; reuse Integration/Superpowers;
       unit + surface tests; distinct from switch wizard commit behaviour
-- [ ] Settings + init: app Global Settings chain editor; workspace override
+- [x] Settings + init: app Global Settings chain editor; workspace override
       with inherit affordance; init wizard agent step; saving workspace chain
       opens arming for new entries
-- [ ] Focus + launch triggers: on focus, arm agents owed by app-level
+- [x] Focus + launch triggers: on focus, arm agents owed by app-level
       default agent and/or inherited chain; at launch, if next chain agent
       is unarmed, block and force arming wizard; wire card runs and rail
       starts through the same resolution
-- [ ] Verify: targeted tests for the modules above; `cargo test` /
+- [x] Verify: targeted tests for the modules above; `cargo test` /
       `npm test` / `check` / `build` as touched; static pre-flight of new
       Settings/wizard copy — owner confirms in the running app
 
