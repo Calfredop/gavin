@@ -28,3 +28,11 @@ export function nextAgentChangeStep(step: AgentChangeStep): AgentChangeStep | nu
   if (i < 0 || i >= AGENT_CHANGE_STEPS.length - 1) return null;
   return AGENT_CHANGE_STEPS[i + 1].id;
 }
+
+/// Opening the wizard on the profile already written is a re-run of
+/// Integration / Superpowers (and an optional complexity realign), not a
+/// switch. A real switch also has to replace leftover `command` / `file`
+/// overrides so the new profile's defaults actually launch.
+export function agentChangeIsRerun(fromProfileId: string, toProfileId: string): boolean {
+  return fromProfileId.trim() === toProfileId.trim();
+}

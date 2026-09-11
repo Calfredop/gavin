@@ -13,6 +13,7 @@
     agentProfilesStore,
     layoutState,
     setWorkspaceComplexityTable,
+    switchWorkspaceAgentProfile,
     trustedAgentConfigs,
     workspaceComplexityTable,
   } from "$lib/core/layoutState";
@@ -32,6 +33,7 @@
   import {
     AGENT_CHANGE_STEPS,
     agentChangeCommitsOnAdvance,
+    agentChangeIsRerun,
     nextAgentChangeStep,
     type AgentChangeStep,
   } from "$lib/workspace/agentChange";
@@ -40,20 +42,26 @@
     workspaceId: string;
     /// Profile id currently written for this workspace.
     fromProfileId: string;
-    /// Profile id the human just picked.
+    /// Profile id the human just picked — same as `fromProfileId` when
+    /// re-running setup for the agent already selected.
     toProfileId: string;
     onClose: () => void;
   }
   let { workspaceId, fromProfileId, toProfileId, onClose }: Props = $props();
 
+  const rerun = $derived(agentChangeIsRerun(fromProfileId, toProfileId));
   const fromLabel = $derived(
     $agentProfilesStore.find((p) => p.id === fromProfileId)?.label ?? fromProfileId
   );
   const toLabel = $derived(
     $agentProfilesStore.find((p) => p.id === toProfileId)?.label ?? toProfileId
   );
+  const toProfile = $derived($agentProfilesStore.find((p) => p.id === toProfileId) ?? null);
   const complexityTable = $derived(workspaceComplexityTable(workspaceId));
-  const defaultAction = $derived(recommendedComplexityAction(complexityTable, fromProfileId));
+  /// Re-run keeps pins by default; a real switch remaps or clears.
+  const defaultAction = $derived(
+    rerun ? "keep" : recommendedComplexityAction(complexityTable, fromProfileId)
+  );
 
   let current = $state<AgentChangeStep>("complexity");
   let action = $state<ComplexityRealignAction | null>(null);
@@ -120,12 +128,21 @@
         fromProfileId,
         toProfileId
       );
-      // Through the backend directly so a refused write surfaces here
-      // rather than only on the global error banner — setAgentField
-      // swallows the error. Profile is not a trust-gated key, so skipping
-      // its stamp is fine.
-      await backend.setRootConfigField(root, "profile", toProfileId);
-      await setWorkspaceComplexityTable(workspaceId, nextTable);
+      if (rerun) {
+        // Same profile: leave command/file alone and only realign
+        // complexity if the human asked to. Setup steps follow.
+        await setWorkspaceComplexityTable(workspaceId, nextTable);
+      } else {
+        // A real switch must replace leftover command/file or the new
+        // profile id is cosmetic — resolveAgentConfig keeps launching
+        // the previous CLI's command.
+        if (!toProfile) throw new Error(`Unknown agent profile: ${toProfileId}`);
+        await switchWorkspaceAgentProfile(workspaceId, toProfileId, {
+          command: toProfile.command,
+          file: toProfile.instructionsFile,
+        });
+        await setWorkspaceComplexityTable(workspaceId, nextTable);
+      }
       committed = true;
       return true;
     } catch (e) {
@@ -161,11 +178,20 @@
 <Modal wide onClose={cancel}>
   <div class="wizard">
     <header>
-      <h2>Switch agent to {toLabel}</h2>
-      <p class="hint">
-        From {fromLabel}. Complexity is realigned first; then gavin checks MCP, skills and
-        Superpowers for the new agent.
-      </p>
+      {#if rerun}
+        <h2>Set up {toLabel} again</h2>
+        <p class="hint">
+          Re-check MCP, skills and Superpowers for this workspace's agent. Complexity is optional —
+          leave it on Keep unless you mean to change the table.
+        </p>
+      {:else}
+        <h2>Switch agent to {toLabel}</h2>
+        <p class="hint">
+          From {fromLabel}. Complexity is realigned first; the new profile's default command and
+          agent file replace leftovers so the switch actually launches; then gavin checks MCP,
+          skills and Superpowers.
+        </p>
+      {/if}
     </header>
 
     <ol class="steps">
@@ -185,8 +211,13 @@
       {#if current === "complexity"}
         <h3>Complexity</h3>
         <p class="hint">
-          App-level pins still fall through for levels this workspace leaves alone. Choose what to
-          do with this workspace's own complexity rows before the profile is written.
+          {#if rerun}
+            Optional on a re-run. App-level pins still fall through for levels this workspace leaves
+            alone.
+          {:else}
+            App-level pins still fall through for levels this workspace leaves alone. Choose what to
+            do with this workspace's own complexity rows before the profile is written.
+          {/if}
         </p>
         <fieldset class="choices">
           <label class="choice">
@@ -237,7 +268,11 @@
         <div class="actions">
           <button type="button" class="ghost" onclick={cancel}>Cancel</button>
           <button type="button" disabled={committing} onclick={() => void advance()}>
-            {committing ? "Switching…" : "Switch agent →"}
+            {#if committing}
+              {rerun ? "Continuing…" : "Switching…"}
+            {:else}
+              {rerun ? "Continue →" : "Switch agent →"}
+            {/if}
           </button>
         </div>
       {:else if current === "integration"}

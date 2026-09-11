@@ -180,10 +180,10 @@
   let mcpFileError = $state<string | null>(null);
   let prdError = $state<string | null>(null);
   let pendingMove = $state<{ from: string; to: string } | null>(null);
-  /// Profile the human picked in the Agent select; opens the confirm
-  /// mini-wizard instead of writing immediately. Null while no switch is
-  /// in flight. The select keeps showing the current profile until the
-  /// wizard commits (or cancels).
+  /// Opens the agent-change confirm wizard. When equal to the current
+  /// profile it is a re-run of setup for that agent; otherwise it is a
+  /// switch. Null while no wizard is open. The Profile select keeps
+  /// showing the current profile until a switch commits (or cancels).
   let pendingProfileChange = $state<string | null>(null);
 
   // --- search -------------------------------------------------------------
@@ -1097,6 +1097,16 @@
             {/each}
           </select>
         </label>
+        <p class="hint row-actions">
+          <button
+            type="button"
+            class="linkish"
+            onclick={() => (pendingProfileChange = agent.profileId)}
+          >
+            Set up {profileLabel} again…
+          </button>
+          — re-run MCP, skills and Superpowers for this agent without changing the profile.
+        </p>
         <label class="row">
           <span>Command</span>
           <input
@@ -1615,6 +1625,22 @@
   .hint {
     color: var(--text-subtle);
     margin: 6px 0 0;
+  }
+  .hint.row-actions {
+    margin-top: 0;
+    margin-bottom: 10px;
+  }
+  button.linkish {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent, #8ab4f8);
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+  button.linkish:hover {
+    color: var(--text);
   }
   /* Set off from the fields above it: the rows above are all "edit this
      value", and this one is "gavin checked something". */
