@@ -52,8 +52,19 @@ impl PtySession {
         // Windows answer, is `shell`'s decision.
         let mut cmd = match command {
             Some(c) => {
-                let mut cmd = CommandBuilder::new(crate::shell::posix_shell().as_os_str());
+                let shell = crate::shell::posix_shell();
+                let mut cmd = CommandBuilder::new(shell.as_os_str());
                 cmd.args(["-c", c]);
+                // `sh -c` reads no profile, and on Windows the PATH it
+                // would otherwise inherit is the one a default Git for
+                // Windows install leaves behind: `<git>\cmd` and nothing
+                // else, so the shell running an emitted POSIX line has no
+                // `bash`, `ls`, `sed` or `grep`. `path_with_posix_tools`
+                // puts back what `/etc/profile` would have, and answers
+                // None everywhere else.
+                if let Some(path) = crate::shell::path_with_posix_tools(&shell) {
+                    cmd.env("PATH", path);
+                }
                 cmd
             }
             None => CommandBuilder::new(crate::shell::interactive_shell().as_os_str()),
@@ -98,6 +109,21 @@ impl PtySession {
         cmd.env("GAVIN_SESSION_ID", session_id);
         if let Some(token) = session_token {
             cmd.env("GAVIN_SESSION_TOKEN", token);
+        }
+        // Which daemon opened this tab. `resolve_mcp_binary_path` puts the
+        // gavin-mcp that sits beside the running APP into the workspace's
+        // MCP config -- one entry, one binary, whichever app integrated
+        // last -- so the gavin-mcp an agent launches in here is not
+        // reliably this build's. Left to resolve its own `socket_path()`
+        // it would ask a daemon that is not the one hosting this session,
+        // or none at all.
+        //
+        // Skipped rather than fatal when the path cannot be resolved (a
+        // missing HOME): gavin-mcp falls back to its own default, which is
+        // exactly as good as what it had before, and refusing to open a
+        // terminal over it would be much worse.
+        if let Ok(socket) = protocol::socket_path() {
+            cmd.env("GAVIN_SESSION_SOCKET", socket.as_os_str());
         }
         cmd.env("TERM_PROGRAM", "ghostty");
         // An inherited version string from some *other* terminal would
@@ -166,8 +192,9 @@ impl PtySession {
         // terminal session should keep, and CLAUDE_CODE_EXECPATH names an
         // *install* -- two sessions of the same install share it -- so
         // none of those are this bug. Deliberately still passed in above:
-        // GAVIN_SESSION_ID and GAVIN_SESSION_TOKEN, which name THIS
-        // session and are the entire point of setting them.
+        // GAVIN_SESSION_ID, GAVIN_SESSION_TOKEN and GAVIN_SESSION_SOCKET,
+        // which name THIS session and the daemon serving it, and are the
+        // entire point of setting them.
         for key in [
             // "you are running under Claude Code", and by which entrypoint.
             "CLAUDECODE",
@@ -631,6 +658,39 @@ mod tests {
         assert!(output.contains("GITMARK=[][][][]"), "got: {output}");
     }
 
+    /// Which daemon opened this tab, so gavin-mcp reaches the one that
+    /// owns it rather than the one its own build would resolve.
+    /// `resolve_mcp_binary_path` puts the gavin-mcp sitting beside the
+    /// running APP into the workspace's MCP config -- one entry, one
+    /// binary, whichever app integrated last -- so a debug gavin-mcp can
+    /// land in a release tab and a release one in a debug tab.
+    ///
+    /// It must also SURVIVE both scrub loops below. Under the rule
+    /// `issue-launcher-env-leaks-into-sessions.md` drew -- a variable goes
+    /// only if it names the LAUNCHER's session rather than this one --
+    /// this names the daemon serving this very PTY, so it stays, like
+    /// GAVIN_SESSION_ID and GAVIN_SESSION_TOKEN beside it.
+    ///
+    /// Asserted on the file name rather than the whole path: the value
+    /// crosses into sh, which on Windows is MSYS and may respell a
+    /// `C:\...` path, and what this test is about is that the variable
+    /// arrives and is this build's endpoint.
+    #[test]
+    fn spawn_exports_this_daemons_endpoint_into_the_pty() {
+        let _guard = lock_env();
+        let name =
+            protocol::profile_file_name("daemon", "sock", protocol::BuildProfile::current());
+        let mut session = PtySession::spawn("/tmp", Some("/bin/sh"), "sid-44", None).unwrap();
+        let mut reader = session.reader().unwrap();
+        session
+            .write_input(b"printf 'SOCK%s=[%s]\\n' MARK \"$GAVIN_SESSION_SOCKET\"\n")
+            .unwrap();
+
+        let output = read_until_contains(&mut *reader, "SOCKMARK=[", Duration::from_secs(3));
+        session.kill().unwrap();
+        assert!(output.contains(&format!("{name}]")), "got: {output}");
+    }
+
     #[test]
     fn spawn_exports_the_session_id_into_the_pty() {
         // The only way anything running inside a session can name the tab
@@ -691,6 +751,299 @@ mod tests {
         let output = read_until_contains(&mut *reader, "QMARK=[", Duration::from_secs(3));
         session.kill().unwrap();
         assert!(output.contains("QMARK=[the plan's]"), "got: {output}");
+    }
+
+    /// The load-bearing assumption of the whole Windows port, asserted
+    /// instead of assumed: a session carrying a COMMAND runs under
+    /// `posix_shell()`, and that shell has to be ON A TERMINAL or every
+    /// full-screen agent TUI this app exists to host draws nothing.
+    ///
+    /// Trivially true on unix. On Windows it is ConPTY handing a tty to
+    /// Git for Windows' `sh.exe` -- MSYS reads a Windows console as one,
+    /// which is why Git Bash works in Windows Terminal, but portable-pty's
+    /// ConPTY path had never been run here, only compiled for.
+    ///
+    /// Both ends, because an agent reads keystrokes from stdin and draws
+    /// on stdout, and a pipe on either one is enough to make a TUI fall
+    /// back to line mode -- the failure this is meant to catch looks like
+    /// a working session until someone tries to answer a prompt in it.
+    #[test]
+    fn a_command_session_runs_on_a_tty_at_both_ends() {
+        // Both tests run OUTSIDE the printf's arguments. `$(…)` is a
+        // command substitution, which replaces stdout with a pipe for as
+        // long as it runs, so `[ -t 1 ]` inside one reports "not a
+        // terminal" on every platform there has ever been -- a test
+        // written that way fails identically on a working ConPTY and on
+        // a broken one, which is worse than not having it.
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(concat!(
+                "tin=; tout=; ",
+                "[ -t 0 ] && tin=in; ",
+                "[ -t 1 ] && tout=out; ",
+                r#"printf 'TTY%s=[%s][%s]\n' MARK "$tin" "$tout""#,
+            )),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "TTYMARK=[", Duration::from_secs(10));
+        session.kill().unwrap();
+        assert!(output.contains("TTYMARK=[in][out]"), "got: {output}");
+    }
+
+    /// The POSIX tools an emitted command line assumes it has.
+    ///
+    /// On Windows this is the whole of `path_with_posix_tools`: `sh -c`
+    /// reads no profile, and a default Git for Windows install puts only
+    /// `<git>\cmd` on the machine PATH, so without the daemon putting
+    /// them back a session gets a POSIX shell with no POSIX tools. The
+    /// first run of this test on a real Windows box failed with
+    /// `sh: line 1: ls: command not found` -- which is also what a
+    /// `script` tool's `bash -c` would have said.
+    ///
+    /// `bash` is named explicitly because `buildToolCommand` emits
+    /// `bash -c <body>` for every `script`-kind tool, and `sed` because
+    /// it stands for the rest of the MSYS set a tool body reaches for.
+    /// Not asserted on unix beyond "these exist", which they do.
+    #[test]
+    fn a_command_session_can_find_the_posix_tools_it_is_written_against() {
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(concat!(
+                r#"printf 'TOOLS%s=[%s][%s][%s]\n' MARK "#,
+                r#""$(command -v bash >/dev/null && echo bash)" "#,
+                r#""$(command -v ls >/dev/null && echo ls)" "#,
+                r#""$(command -v sed >/dev/null && echo sed)""#,
+            )),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "TOOLSMARK=[", Duration::from_secs(10));
+        session.kill().unwrap();
+        assert!(output.contains("TOOLSMARK=[bash][ls][sed]"), "got: {output}");
+    }
+
+    /// `buildToolCommand`'s failure epilogue (app/src/lib/cardRun.ts), run
+    /// by the interpreter that will actually run it.
+    ///
+    /// Two claims in one, and a rail step's verdict rests on both: the
+    /// `[gavin] <tool> exited with code N` line reaches the screen at all
+    /// -- a PTY closes its tab the moment the command exits, so without
+    /// it a tool that failed in half a second leaves nothing to read --
+    /// and the code is RE-RAISED, because it is the step's verdict (tools
+    /// spec T5) and a swallowed one reads as success.
+    ///
+    /// Spelled as the app emits it, real newlines and all, because the
+    /// point is that this exact text parses as POSIX under whichever
+    /// shell the OS resolved: `/bin/sh` on unix, Git for Windows' `sh.exe`
+    /// on Windows. `ls` of a path that cannot exist is the failure, since
+    /// it needs nothing installed and its code is not 0 anywhere.
+    #[test]
+    fn the_tool_failure_epilogue_prints_and_re_raises_the_code() {
+        let command = [
+            "ls /gavin/no/such/path",
+            "__gavin_code=$?",
+            r#"[ "$__gavin_code" -ne 0 ] && printf '\n[gavin] %s exited with code %s\n' 'my tool' "$__gavin_code""#,
+            r#"exit "$__gavin_code""#,
+        ]
+        .join("\n");
+
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session =
+            PtySession::spawn(&cwd, Some(&command), "test-session", None).unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(
+            &mut *reader,
+            "[gavin] my tool exited with code",
+            Duration::from_secs(10),
+        );
+        assert!(
+            output.contains("[gavin] my tool exited with code 2"),
+            "got: {output}"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let code = loop {
+            if let Some(code) = session.try_wait().unwrap() {
+                break code;
+            }
+            assert!(Instant::now() < deadline, "command did not exit; got: {output}");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(code, 2, "the epilogue swallowed the tool's exit code");
+    }
+
+    /// A `[worktree] setup` chain: several commands joined with `&&`, run
+    /// in a directory that did not exist when the session was created.
+    /// The `&&` has to short-circuit, or a setup whose first step failed
+    /// reports the last step's success.
+    #[test]
+    fn an_and_joined_setup_chain_short_circuits_on_the_first_failure() {
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some("echo FIRSTMARK && ls /gavin/no/such/path && echo SHOULD-NOT-RUN"),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let output = read_until_contains(&mut *reader, "FIRSTMARK", Duration::from_secs(10));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let code = loop {
+            if let Some(code) = session.try_wait().unwrap() {
+                break code;
+            }
+            assert!(Instant::now() < deadline, "chain did not exit; got: {output}");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_ne!(code, 0, "a chain whose middle step failed exited 0");
+        assert!(!output.contains("SHOULD-NOT-RUN"), "got: {output}");
+    }
+
+    /// OSC 7 all the way through: a prompt emits it, the terminal carries
+    /// it, and `OscCwdScanner` reads a cwd out of the far end.
+    ///
+    /// `osc::tests` already proves the parse, including the `/C:/…` →
+    /// `C:/…` fix a file URI's leading slash needs. What only a real PTY
+    /// can answer is whether the BYTES survive the trip, and on Windows
+    /// that is a live question rather than a formality: ConPTY is a
+    /// terminal emulator in its own right, re-rendering the screen rather
+    /// than piping output through, and an OSC it does not itself act on
+    /// is a plausible thing for it to drop.
+    ///
+    /// Git Bash emits nothing by default -- `git-prompt.sh` has no OSC 7
+    /// in it -- so the sequence is written by hand, exactly as a prompt
+    /// configured to emit one would. Nothing here is allowed to regress
+    /// idle detection either way: that is OSC 133 plus a quiet timer, and
+    /// a shell that reports no cwd is a supported shell.
+    #[test]
+    fn an_osc7_cwd_report_survives_the_terminal() {
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        // What a prompt that reports a cwd actually emits, and the reason
+        // `pwd -W` rather than `$PWD`: inside MSYS the shell's own idea of
+        // where it is is an MSYS path (`/c/Users/ada`, or `/tmp` for this
+        // directory), which no Windows API can open. `pwd -W` is the MSYS
+        // builtin that answers in the Windows spelling, `C:/Users/ada`,
+        // and a file URI's path component has to start with `/`, so a
+        // drive letter gets one put in front of it -- which is exactly
+        // the slash `strip_uri_drive_slash` exists to take back off.
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(concat!(
+                r#"p=$(pwd -W 2>/dev/null || pwd); "#,
+                r#"case "$p" in /*) ;; *) p="/$p";; esac; "#,
+                r#"printf '\033]7;file://%s%s\007' "$HOSTNAME" "$p"; "#,
+                r#"printf 'OSC%s-done\n' MARK"#,
+            )),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let mut scanner = crate::osc::OscCwdScanner::new();
+        let mut found: Vec<String> = Vec::new();
+        let mut collected = String::new();
+        let mut buf = [0u8; 4096];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    found.extend(scanner.feed(&buf[..n]));
+                    collected.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if !found.is_empty() && collected.contains("OSCMARK-done") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        session.kill().unwrap();
+
+        let reported = found
+            .last()
+            .unwrap_or_else(|| panic!("no OSC 7 reached the scanner; raw: {collected:?}"));
+        // A path, not a URI. On Windows that means the drive letter
+        // leads -- `C:/Users/…`, never `/C:/Users/…`, which is what the
+        // file-URI slash would otherwise leave behind and what nothing
+        // downstream can open. `resolve_path_under_cursor` and the file
+        // viewer both take this value as a path.
+        assert!(!reported.is_empty(), "empty cwd; raw: {collected:?}");
+        if cfg!(windows) {
+            let b = reported.as_bytes();
+            assert!(
+                b[0].is_ascii_alphabetic() && b.get(1) == Some(&b':'),
+                "expected a drive-letter path, got {reported:?}"
+            );
+        } else {
+            assert!(reported.starts_with('/'), "got {reported:?}");
+        }
+    }
+
+    /// A reader reaches END OF STREAM once the command in the PTY is
+    /// gone. Not a formality, and not the same claim as `try_wait`
+    /// returning a code.
+    ///
+    /// `retire`'s comment is the reason: "the pty closing is what gives
+    /// the pump its EOF -- which is the `session-exited` push a rail
+    /// step's completion is read from". Exit detection and EOF are two
+    /// different signals, and only the second one ends a step.
+    ///
+    /// On Windows that is a live question. ConPTY's output pipe is held
+    /// by conhost as well as by the child, so a pseudo-console that
+    /// keeps it open after the child exits would leave a reader blocked
+    /// forever — every finished rail step still looking like a running
+    /// one, and a pump thread per session that never returns.
+    ///
+    /// Read on a worker thread with a timeout on the receiving end, so a
+    /// PTY that never closes FAILS this test rather than hanging the
+    /// suite — which is the failure mode being guarded against, and a
+    /// test that hangs is one nobody can read the result of.
+    #[test]
+    fn a_readers_stream_ends_when_the_command_does() {
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(r#"printf 'EOF%s-probe\n' MARK"#),
+            "test-session",
+            None,
+        )
+        .unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut sink = Vec::new();
+            let outcome = reader.read_to_end(&mut sink);
+            let _ = tx.send(outcome.map(|_| String::from_utf8_lossy(&sink).into_owned()));
+        });
+
+        let arrived = rx.recv_timeout(Duration::from_secs(20));
+        session.kill().unwrap();
+        let text = arrived
+            .expect(
+                "the reader never reached end of stream after the command exited. \
+                 On Windows this is a KNOWN, FILED bug, not a flake and not your \
+                 change: a ConPTY's output pipe is held by conhost as well as by \
+                 the child, the pump breaks on Ok(0) and nothing else, and so a \
+                 session that ends by itself is never reported as exited. See \
+                 fix-windows-sessions-never-report-exit.md -- this test is that \
+                 card's gate and is expected to be red until it lands.",
+            )
+            .expect("reading the pty to the end failed");
+        assert!(text.contains("EOFMARK-probe"), "got: {text}");
     }
 
     #[test]

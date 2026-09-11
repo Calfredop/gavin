@@ -47,8 +47,8 @@
 
   async function restart(): Promise<void> {
     // Asks, where it used to restart on the press. Both branches of the
-    // Rust command run `pkill -x gavin-daemon`, and that daemon is
-    // shared with every other gavin window -- so this button ends
+    // Rust command stop the daemon on this socket, and it is shared with
+    // every other gavin window pointed at it -- so this button ends
     // somebody else's sessions too, and the host now requires the grant
     // a prompt mints (AS-05/R5).
     const token = await confirmDestructive("restart_daemon", [DAEMON_SUBJECT], {

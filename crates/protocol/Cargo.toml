@@ -9,6 +9,14 @@ serde_json = "1"
 anyhow = "1"
 sha2 = "0.10"
 
+# `Stream::server_pid` only. A connected socket knows which process is on
+# the other end of it, but std does not expose that on any unix -- the
+# accessors are still unstable -- so the `getsockopt` behind it is spelled
+# here. The Windows arm asks `GetNamedPipeServerProcessId` instead and
+# needs nothing new.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Only the Windows arms of `transport` and `random_hex` reach for this,
 # and only for the named-pipe, security-descriptor and CSPRNG calls they
 # make; a mac or Linux build never sees it.

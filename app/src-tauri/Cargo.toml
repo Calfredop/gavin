@@ -66,7 +66,19 @@ trash = { version = "5", default-features = false }
 # "Restorable" is the entire promise trash_path makes over `rm`.
 trash = { version = "5", default-features = false, features = ["chrono"] }
 
+[target.'cfg(unix)'.dependencies]
+# `daemon.rs` stops the daemon by pid now, not by name, and `kill` is the
+# whole of that on unix. The macOS block below asks for the same crate
+# for its own reasons; cargo merges the two.
+libc = "0.2"
+
 [target.'cfg(target_os = "windows")'.dependencies]
+# The other half of the same thing: OpenProcess/TerminateProcess, so
+# `daemon.rs` reaches exactly the process serving the socket instead of
+# shelling out to `taskkill /IM`. Same crate and version the daemon's
+# `proc.rs` already pins.
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 # COM back on, and it is not optional. The Windows backend is
 # IFileOperation, and trash-5.2.6 src/windows.rs:278 is a deliberate
 # compile error when neither `coinit_apartmentthreaded` nor

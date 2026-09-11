@@ -48,12 +48,37 @@ struct SocketTransport {
     conn: Option<Connection>,
 }
 
+/// The endpoint the daemon that opened this tab told us to use.
+///
+/// The environment passed in rather than read here, the same shape
+/// `protocol::resolve_app_support_dir` uses and for the same reason: the
+/// suite runs multi-threaded and mutating the process environment under
+/// that is how a green suite starts failing on someone else's machine.
+///
+/// `None` means "nobody told us", which is an agent running outside a
+/// gavin tab -- and the answer then is this build's own `socket_path()`,
+/// exactly what it was before. Empty counts as absent.
+fn resolve_socket_path(injected: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    injected.filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
 impl SocketTransport {
     fn new() -> Self {
-        Self {
-            socket_path: protocol::socket_path().map_err(|e| e.to_string()),
-            conn: None,
-        }
+        // GAVIN_SESSION_SOCKET is set by `PtySession::spawn` and names the
+        // daemon hosting THIS tab. It is preferred over
+        // `protocol::socket_path()` because the workspace's MCP config
+        // names a single gavin-mcp binary for both builds -- the app
+        // writes the one sitting beside ITSELF -- so this process cannot
+        // assume its own build's endpoint is the right one.
+        //
+        // Read ONLY here, never by `protocol::resolve_app_support_dir`, so
+        // an app launched from a tab still picks its own state by its own
+        // profile and nothing has to be stripped on the way out.
+        let socket_path = match resolve_socket_path(std::env::var_os("GAVIN_SESSION_SOCKET")) {
+            Some(injected) => Ok(injected),
+            None => protocol::socket_path().map_err(|e| e.to_string()),
+        };
+        Self { socket_path, conn: None }
     }
 
     /// Takes the socket path rather than resolving one itself, so the
@@ -1121,6 +1146,28 @@ fn main() {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// The daemon that opened this tab wins over the one this build would
+    /// resolve for itself. The workspace's MCP config names one gavin-mcp
+    /// binary for both builds, so "my own default" is a guess and the
+    /// injected value is a fact.
+    #[test]
+    fn an_injected_endpoint_is_preferred_over_this_builds_default() {
+        assert_eq!(
+            resolve_socket_path(Some(std::ffi::OsString::from("/tmp/x/daemon.sock"))),
+            Some(PathBuf::from("/tmp/x/daemon.sock"))
+        );
+    }
+
+    /// An agent run outside a gavin tab -- a plain shell, CI, every
+    /// existing test -- has no injection and must keep working exactly as
+    /// before. Empty counts as absent, the way every other optional
+    /// variable in this codebase is read.
+    #[test]
+    fn no_injection_falls_back_to_this_builds_own_endpoint() {
+        assert_eq!(resolve_socket_path(None), None);
+        assert_eq!(resolve_socket_path(Some(std::ffi::OsString::new())), None);
+    }
 
     struct MockTransport {
         replies: Vec<Response>,
