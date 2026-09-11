@@ -1,5 +1,5 @@
 ---
-order: 3072
+order: 2048
 title: [feat] linux port — the half that needs a Linux machine
 status: To Do
 ---

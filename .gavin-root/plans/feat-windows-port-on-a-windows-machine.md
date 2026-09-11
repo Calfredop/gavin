@@ -1,5 +1,5 @@
 ---
-order: 4096
+order: 3072
 title: [feat] windows port — the half that needs a Windows machine
 status: To Do
 ---
