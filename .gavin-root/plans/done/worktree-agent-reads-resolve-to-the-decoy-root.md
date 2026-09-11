@@ -1,11 +1,11 @@
 ---
 order: 6144
 title: A worktree agent's gavin_* reads answer about the decoy .gavin-root, so every board read fails
-status: To Do
+status: Done
 priority: high
 ---
 The read half of
-[fix-worktree-agent-card-writes-forbidden.md](./done/fix-worktree-agent-card-writes-forbidden.md),
+[fix-worktree-agent-card-writes-forbidden.md](./fix-worktree-agent-card-writes-forbidden.md),
 which fixed the writes. This one is older and still live.
 
 `gavin-mcp`'s `find_gavin_root` (`crates/gavin-mcp/src/main.rs:180`) walks up
@@ -27,11 +27,20 @@ the workspace it belongs to (the write-half card), and `resolve_hello` has the
 record in hand when it mints the `agent` identity. So `HelloAck` can carry that
 root, and `gavin-mcp` prefers it over walking up from cwd.
 
-- [ ] `Response::HelloAck` gains the session's workspace root
-- [ ] `gavin-mcp` prefers it, falling back to `find_gavin_root` when it is absent — an older daemon sends nothing, and that has to keep working
-- [ ] `resolve_against_root` then resolves a relative card path against the real workspace, not the decoy
-- [ ] A test with a worktree cwd whose own `.gavin-root` exists, proving the read goes to the workspace
+- [x] `Response::HelloAck` gains the session's workspace root
+- [x] `gavin-mcp` prefers it, falling back to `find_gavin_root` when it is absent — an older daemon sends nothing, and that has to keep working
+- [x] `resolve_against_root` then resolves a relative card path against the real workspace, not the decoy
+- [x] A test with a worktree cwd whose own `.gavin-root` exists, proving the read goes to the workspace
 
 A response gaining a field is invisible to `min_version_for`, which gates
 request TYPES — that is safe here only because an absent field has a defined
 meaning (fall back to the walk). It must not become a field the tool needs.
+
+## Landed
+
+No protocol version bump: `workspace_root` is `serde(default)` on
+`HelloAck`, so an older daemon's ack still parses and gavin-mcp falls back
+to the cwd walk. Needs a **daemon rebuild + restart** (to emit the field)
+and a **gavin-mcp rebuild** (to prefer it). Sessions created before the
+write-half fix still have `workspace_path == cwd`; relaunch those so the
+field names the real workspace.
