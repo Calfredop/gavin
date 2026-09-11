@@ -19,6 +19,7 @@
   } from "$lib/core/layoutState";
   import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
   import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
+  import { sanitizeFallbackThreshold } from "$lib/agents/agentFallback";
   import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
   import { modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
   import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "$lib/terminal/terminalFont";
@@ -611,10 +612,19 @@
       <FallbackChainEditor
         profiles={$agentProfilesStore}
         value={$agentDefaultsStore.agentFallback ?? []}
+        thresholds={$agentDefaultsStore.fallbackThresholds}
         onChange={(chain) =>
           void setAgentDefaults({
             ...$agentDefaultsStore,
             agentFallback: chain ?? [],
+          })}
+        onThresholdChange={(profileId, percent) =>
+          void setAgentDefaults({
+            ...$agentDefaultsStore,
+            fallbackThresholds: {
+              ...($agentDefaultsStore.fallbackThresholds ?? {}),
+              [profileId]: sanitizeFallbackThreshold(percent),
+            },
           })}
       />
     </section>

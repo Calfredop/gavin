@@ -799,6 +799,11 @@ mod workspaces_data_tests {
             custom_model_flag: "--llm".to_string(),
             complexity,
             agent_fallback: vec!["codex".to_string()],
+            fallback_thresholds: {
+                let mut m = HashMap::new();
+                m.insert("claude-code".to_string(), 80);
+                m
+            },
         };
         persist_workspaces(
             dir.path(),

@@ -331,6 +331,7 @@ export function launchDecision(
     armed,
     limitEnabled: cycle?.limitEnabled ?? false,
     limitPercent: cycle?.limitPercent ?? DEFAULT_CYCLE.limitPercent,
+    fallbackThresholds: get(agentDefaultsStore).fallbackThresholds,
     cyclePaused,
     resume,
   });

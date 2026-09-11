@@ -48,6 +48,31 @@ export function newlyAddedToChain(before: readonly string[], after: readonly str
   return sanitizeChain(after).filter((id) => !have.has(id));
 }
 
+/// Shipped fallback threshold: leave a tenth of the window rather than
+/// walking only when the pause's 95% fires. A missing or unusable stored
+/// value reads as this, so an upgrade without the map keeps a margin.
+export const DEFAULT_FALLBACK_THRESHOLD = 90;
+
+export type FallbackThresholds = Record<string, number>;
+
+/// The percent at which this profile is spent for a NEW launch.
+/// Resume uses the pause cycle's `limitPercent`, not this.
+export function fallbackThresholdFor(
+  profileId: string,
+  stored: FallbackThresholds | null | undefined
+): number {
+  const n = stored?.[profileId];
+  if (typeof n === "number" && Number.isFinite(n) && n >= 1 && n <= 100) return n;
+  return DEFAULT_FALLBACK_THRESHOLD;
+}
+
+/// Clamp a field the human just typed. Out-of-range becomes the default
+/// rather than 0 or 101, which `fallbackThresholdFor` would ignore.
+export function sanitizeFallbackThreshold(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_FALLBACK_THRESHOLD;
+  return Math.min(100, Math.max(1, Math.round(n)));
+}
+
 /// An agent with no probe, a failed probe, or limits disabled is never
 /// limit-spent — same posture `usageBlock` takes for "gavin cannot see".
 export function agentLimitSpent(
@@ -71,7 +96,11 @@ export interface LaunchDecisionInput {
   usageByProfile: Record<string, AgentUsageReport | undefined>;
   armed: ReadonlySet<string> | ((id: string) => boolean);
   limitEnabled: boolean;
+  /// Pause-cycle percent. New launches ignore this in favour of each
+  /// profile's `fallbackThresholds`; resume uses this so the leftover
+  /// margin stays available for a conversation already in flight.
   limitPercent: number;
+  fallbackThresholds?: FallbackThresholds | null;
   cyclePaused: boolean;
   /// Reopening the same conversation. The chain does not apply.
   resume: boolean;
@@ -88,8 +117,12 @@ function isArmed(
 export function decideLaunch(input: LaunchDecisionInput): FallbackDecision {
   if (input.cyclePaused) return { kind: "pause", why: "cycle" };
 
+  const percentFor = (id: string) =>
+    input.resume
+      ? input.limitPercent
+      : fallbackThresholdFor(id, input.fallbackThresholds);
   const spent = (id: string) =>
-    agentLimitSpent(input.usageByProfile[id], input.limitEnabled, input.limitPercent);
+    agentLimitSpent(input.usageByProfile[id], input.limitEnabled, percentFor(id));
   const primary = (input.resolvedProfileId ?? "").trim();
 
   if (input.resume) {

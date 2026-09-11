@@ -675,6 +675,12 @@ pub struct AgentDefaultsConfig {
     /// inherits this chain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_fallback: Vec<String>,
+    /// Per-profile percent at which a NEW launch walks away from that
+    /// agent. Missing key means 90. Distinct from the pause cycle's
+    /// `limit_percent`, which still gates resume. Machine-local with the
+    /// rest of this struct: the margin is about this subscription.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub fallback_thresholds: HashMap<String, u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -1054,6 +1060,7 @@ mod tests {
         assert_eq!(old.workspaces[0].agent_fallback, None);
         assert!(old.workspaces[0].armed_agents.is_empty());
         assert!(old.agent_defaults.agent_fallback.is_empty());
+        assert!(old.agent_defaults.fallback_thresholds.is_empty());
     }
 
     #[test]
@@ -1061,8 +1068,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
         config.agent_defaults.agent_fallback = vec!["codex".to_string()];
+        config.agent_defaults.fallback_thresholds.insert("claude-code".to_string(), 80);
         save(dir.path(), &config).unwrap();
-        assert_eq!(load(dir.path()).unwrap().agent_defaults.agent_fallback, vec!["codex".to_string()]);
+        let loaded = load(dir.path()).unwrap().agent_defaults;
+        assert_eq!(loaded.agent_fallback, vec!["codex".to_string()]);
+        assert_eq!(loaded.fallback_thresholds.get("claude-code"), Some(&80));
     }
 
     /// Both halves of the setting round-trip, and both read as absent from

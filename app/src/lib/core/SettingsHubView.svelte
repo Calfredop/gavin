@@ -19,6 +19,7 @@
     requireReviewDefault,
     setWorkspaceRequireReview,
     agentDefaultsStore,
+    setAgentDefaults,
     setWorkspaceComplexityTable,
     markGitTrackingAsked,
     trustedAgentConfigs,
@@ -80,7 +81,11 @@
   import { MIN_PERIOD_MINUTES, validateCycle } from "$lib/agents/agentPause";
   import { agentPauseStore, editableCycle, nowStore, pauseFor } from "$lib/agents/agentPauseState";
   import { armNewlyAdded } from "$lib/agents/agentFallbackState";
-  import { effectiveFallbackChain } from "$lib/agents/agentFallback";
+  import {
+    effectiveFallbackChain,
+    fallbackThresholdFor,
+    sanitizeFallbackThreshold,
+  } from "$lib/agents/agentFallback";
   import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
   import { UNFILED_WORKSPACE_ID } from "$lib/core/workspace";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
@@ -764,6 +769,32 @@
           </button>
           — re-run MCP, skills and Superpowers for this agent without changing the profile.
         </p>
+        {#if profileInfo?.usageProbe}
+          <label class="row">
+            <span>Walk at</span>
+            <span class="pct-row">
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={fallbackThresholdFor(agent.profileId, $agentDefaultsStore.fallbackThresholds)}
+                onchange={(e) =>
+                  void setAgentDefaults({
+                    ...$agentDefaultsStore,
+                    fallbackThresholds: {
+                      ...($agentDefaultsStore.fallbackThresholds ?? {}),
+                      [agent.profileId]: sanitizeFallbackThreshold(Number(e.currentTarget.value)),
+                    },
+                  })}
+              />
+              <span>%</span>
+            </span>
+          </label>
+          <p class="hint">
+            New launches walk the fallback chain at this percent, so a tenth of the window stays
+            free. Resume of a conversation already on this agent still uses the pause threshold.
+          </p>
+        {/if}
         <label class="row">
           <span>Command</span>
           <input
@@ -1116,6 +1147,7 @@
         value={ws.agentFallback ?? []}
         inherited={$agentDefaultsStore.agentFallback ?? []}
         inheriting={ws.agentFallback == null}
+        thresholds={$agentDefaultsStore.fallbackThresholds}
         onChange={(chain) => {
           const before = effectiveFallbackChain(
             ws.agentFallback,
@@ -1125,6 +1157,14 @@
             if (chain) armNewlyAdded(workspaceId, before, chain);
           });
         }}
+        onThresholdChange={(profileId, percent) =>
+          void setAgentDefaults({
+            ...$agentDefaultsStore,
+            fallbackThresholds: {
+              ...($agentDefaultsStore.fallbackThresholds ?? {}),
+              [profileId]: sanitizeFallbackThreshold(percent),
+            },
+          })}
       />
     </section>
 
@@ -1315,6 +1355,15 @@
     font-size: 1em;
     padding: 3px 8px;
     min-width: 240px;
+  }
+  .pct-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .pct-row input {
+    min-width: 0;
+    width: 4.5em;
   }
   /* The only row with two controls side by side, so the shared 240px
      floor becomes a CAP here instead: below it, because two of them

@@ -6,8 +6,10 @@ import {
   decideLaunch,
   effectiveFallbackChain,
   fallbackBlockedReason,
+  fallbackThresholdFor,
   newlyAddedToChain,
   sanitizeChain,
+  sanitizeFallbackThreshold,
   type LaunchDecisionInput,
 } from "$lib/agents/agentFallback";
 
@@ -83,6 +85,32 @@ describe("agentLimitSpent", () => {
   });
 });
 
+describe("fallbackThresholdFor", () => {
+  it("is 90 when the profile has no stored value", () => {
+    expect(fallbackThresholdFor("claude-code", undefined)).toBe(90);
+    expect(fallbackThresholdFor("claude-code", {})).toBe(90);
+  });
+
+  it("uses the stored percent for that profile", () => {
+    expect(fallbackThresholdFor("claude-code", { "claude-code": 80, codex: 95 })).toBe(80);
+  });
+
+  it("ignores non-finite and out-of-range values", () => {
+    expect(fallbackThresholdFor("claude-code", { "claude-code": 0 })).toBe(90);
+    expect(fallbackThresholdFor("claude-code", { "claude-code": 101 })).toBe(90);
+    expect(fallbackThresholdFor("claude-code", { "claude-code": Number.NaN })).toBe(90);
+  });
+});
+
+describe("sanitizeFallbackThreshold", () => {
+  it("clamps and rounds a typed percent, and defaults garbage", () => {
+    expect(sanitizeFallbackThreshold(80.4)).toBe(80);
+    expect(sanitizeFallbackThreshold(0)).toBe(1);
+    expect(sanitizeFallbackThreshold(200)).toBe(100);
+    expect(sanitizeFallbackThreshold(Number.NaN)).toBe(90);
+  });
+});
+
 describe("decideLaunch", () => {
   it("holds every start during a cycle pause, even with a ready fallback", () => {
     expect(
@@ -151,6 +179,42 @@ describe("decideLaunch", () => {
         armed: new Set(["codex"]),
       })
     ).toEqual({ kind: "pause", why: "usage-limit" });
+  });
+
+  it("walks a new launch at the profile's own threshold, even below the pause percent", () => {
+    expect(
+      decide({
+        limitPercent: 95,
+        fallbackThresholds: { "claude-code": 80 },
+        usageByProfile: { "claude-code": atLimit(85) },
+      })
+    ).toEqual({ kind: "use", profileId: "codex", viaFallback: true });
+  });
+
+  it("does not walk a resume until the pause percent, so the leftover margin stays usable", () => {
+    expect(
+      decide({
+        resume: true,
+        limitPercent: 95,
+        fallbackThresholds: { "claude-code": 80 },
+        usageByProfile: { "claude-code": atLimit(85) },
+      })
+    ).toEqual({ kind: "use", profileId: "claude-code", viaFallback: false });
+  });
+
+  it("skips a chain entry over its own threshold", () => {
+    expect(
+      decide({
+        chain: ["codex", "gemini"],
+        fallbackThresholds: { "claude-code": 90, codex: 80 },
+        usageByProfile: {
+          "claude-code": atLimit(95),
+          codex: atLimit(85),
+          gemini: UNSUPPORTED,
+        },
+        armed: new Set(["codex", "gemini"]),
+      })
+    ).toEqual({ kind: "use", profileId: "gemini", viaFallback: true });
   });
 
   it("treats a no-probe agent as eligible in the chain", () => {

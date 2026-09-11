@@ -31,6 +31,17 @@ describe("fallback agent surfaces", () => {
     expect(source("AgentStep.svelte")).toContain("FallbackChainEditor");
   });
 
+  it("edits a per-profile walk-at percent on every chain surface", () => {
+    expect(source("FallbackChainEditor.svelte")).toContain("onThresholdChange");
+    expect(source("FallbackChainEditor.svelte")).toContain("fallbackThresholdFor");
+    expect(source("SettingsHubView.svelte")).toContain("Walk at");
+    expect(source("SettingsHubView.svelte")).toContain("fallbackThresholds");
+    expect(source("AgentStep.svelte")).toContain("Walk at");
+    expect(source("AgentStep.svelte")).toContain("fallbackThresholds");
+    expect(source("GlobalSettingsModal.svelte")).toContain("onThresholdChange");
+    expect(source("GlobalSettingsModal.svelte")).toContain("fallbackThresholds");
+  });
+
   it("forces the arming wizard from a launch rather than skipping or launching degraded", () => {
     expect(source("cardRunActions.ts")).toContain("requestArm");
     expect(source("cardRunActions.ts")).toContain("holdLaunch");
