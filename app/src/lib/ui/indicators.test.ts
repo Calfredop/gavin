@@ -23,7 +23,6 @@ import {
   shellRestartedIndicator,
   unsavedEditsIndicator,
   usageProjectionIndicator,
-  usageRefreshingIndicator,
   worktreeStaleIndicator,
   type Indicator,
 } from "$lib/ui/indicators";
@@ -131,10 +130,7 @@ describe("the indicator vocabulary", () => {
       expect(
         Boolean(indicator.spin),
         `${indicator.axis}/${indicator.state} spins but does not mean "happening right now"`
-      ).toBe(
-        (indicator.axis === "agent" && indicator.state === "working") ||
-          (indicator.axis === "usage" && indicator.state === "refreshing")
-      );
+      ).toBe(indicator.axis === "agent" && indicator.state === "working");
     }
   });
 
@@ -356,20 +352,6 @@ describe("usageProjectionIndicator", () => {
     expect(badge.tip).toBe("Usage · Claude Code · Weekly runs out first");
     expect(badge.label).toBe(badge.tip);
     expect(badge.tone).toBe("danger");
-  });
-});
-
-describe("usageRefreshingIndicator", () => {
-  // Same axis as the semaphore, different question: the numbers on
-  // screen are last-known and a live read is in flight. Accent + spin
-  // because that is "happening right now", not a projection verdict.
-  it("spins on the usage axis in the accent of something in flight", () => {
-    const badge = usageRefreshingIndicator();
-    expect(badge.axis).toBe("usage");
-    expect(badge.state).toBe("refreshing");
-    expect(badge.tone).toBe("accent");
-    expect(badge.spin).toBe(true);
-    expect(badge.tip).toMatch(/^Usage · /);
   });
 });
 

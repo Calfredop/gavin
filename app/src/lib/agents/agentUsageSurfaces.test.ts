@@ -19,21 +19,17 @@ describe("usage cache surfaces", () => {
     expect(body.indexOf("hydrateUsageCache()")).toBeLessThan(body.lastIndexOf("void pollAll()"));
   });
 
-  it("draws the shared refreshing badge wherever cached numbers sit while a probe is in flight", () => {
-    for (const file of ["AgentUsageModal.svelte", "AppHubView.svelte", "Sidebar.svelte"]) {
-      const text = source(file);
-      expect(text, `${file} never imported StatusBadge`).toContain(
-        'import StatusBadge from "$lib/ui/StatusBadge.svelte"'
-      );
-      expect(text, `${file} never draws usageRefreshingIndicator`).toContain(
-        "usageRefreshingIndicator"
-      );
-    }
-  });
-
-  it("does not invent a second spinner on the usage panel's refresh button", () => {
+  it("spins each agent's Check again icon from that profile's probe, not a second badge", () => {
     const modal = source("AgentUsageModal.svelte");
     expect(modal).toContain("usageRefreshingStore");
+    expect(modal).toContain("spin={!!$usageRefreshingStore[profile.id]}");
+    expect(modal).not.toContain("usageRefreshingIndicator");
     expect(modal).not.toMatch(/let refreshing = \$state/);
+    expect(source("IconButton.svelte")).toMatch(/\bspin\?: boolean/);
+  });
+
+  it("does not draw a fleet-wide refreshing badge on the hub or sidebar", () => {
+    expect(source("AppHubView.svelte")).not.toContain("usageRefreshingIndicator");
+    expect(source("Sidebar.svelte")).not.toContain("usageRefreshingIndicator");
   });
 });

@@ -33,6 +33,10 @@
     /// ("New Tab (⌘T)") and shown as a badge while the command key is
     /// held. Formatted per platform in one place.
     shortcut?: ShortcutId;
+    /// Spins the glyph. Only for a press that is in flight right now --
+    /// the same claim StatusBadge makes with `indicator.spin`, at the
+    /// same 0.8s tempo.
+    spin?: boolean;
     /// Declared explicitly rather than left to the index signature below,
     /// which would type the event as `unknown` and make every inline
     /// handler an implicit-any at the call site.
@@ -57,6 +61,7 @@
     tip,
     shortcut,
     class: extraClass = "",
+    spin = false,
     ...rest
   }: Props = $props();
 
@@ -69,6 +74,7 @@
   type="button"
   class="icon-button {variant} tone-{tone} {extraClass}"
   class:active
+  class:spin
   aria-label={label}
   aria-pressed={active ? true : undefined}
   {disabled}
@@ -109,6 +115,27 @@
   .icon-button:disabled {
     opacity: 0.45;
     cursor: default;
+  }
+  /* A probe in flight is why the button is disabled; dimming it would
+     hide the one thing that says so. The glyph still rotates. */
+  .icon-button.spin:disabled {
+    opacity: 1;
+  }
+
+  /* Same tempo as StatusBadge's spinner, and the glyph rotates rather
+     than the button, so a labelled control does not orbit. */
+  .spin :global(svg) {
+    animation: icon-spin 0.8s linear infinite;
+  }
+  @keyframes icon-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spin :global(svg) {
+      animation: none;
+    }
   }
   .icon-button:focus-visible {
     outline: 1px solid var(--border-focus);

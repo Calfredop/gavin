@@ -608,26 +608,13 @@ export const RUN_OUTCOME_STATES = RUN_OUTCOMES;
 // fourth, quieter hourglass on the sidebar row for the first five
 // minutes of every session would be a mark that means "ignore me", and
 // the surfaces simply draw nothing until there is something to say.
-//
-// Refreshing last-known numbers is a different claim: the bars are
-// already on screen, a live read is in flight, and the accent + spin
-// on the same hourglass says they are moving. Same axis, same glyph,
-// the tone and the motion separate it from a projection verdict.
+// A live probe in flight spins that agent's Check again icon instead.
 
 const USAGE: Record<ProjectionBand, Indicator> = {
   clear: make("usage", "clear", Hourglass, "success", "projected to last past its reset"),
   tight: make("usage", "tight", Hourglass, "warning", "projected to run out close to its reset"),
   over: make("usage", "over", Hourglass, "danger", "projected to run out before its reset"),
 };
-
-const USAGE_REFRESHING = make(
-  "usage",
-  "refreshing",
-  Hourglass,
-  "accent",
-  "updating last known limits",
-  true
-);
 
 /// The semaphore for a projected limit. Null in, null out: a band the
 /// projection could not reach draws nothing at all.
@@ -645,11 +632,6 @@ export function usageProjectionIndicator(
   if (!detail) return base;
   const tip = `${AXIS_LABEL.usage} · ${detail}`;
   return { ...base, tip, label: tip };
-}
-
-/// Last-known numbers are on screen and a live probe is in flight.
-export function usageRefreshingIndicator(): Indicator {
-  return USAGE_REFRESHING;
 }
 
 export const PROJECTION_BANDS = ["clear", "tight", "over"] as const;
@@ -731,6 +713,5 @@ export function allIndicators(): Indicator[] {
     shellRestartedIndicator(true),
     shellOrphanIndicator(),
     ...PROJECTION_BANDS.map((band) => USAGE[band]),
-    USAGE_REFRESHING,
   ];
 }

@@ -2,7 +2,7 @@
 order: 11264
 kind: task
 title: [feat] usages cache
-status: In Progress
+status: Done
 complexity: moderate
 ---
 Usages must be cached, so that at app restart last cached data is shown. Cache should have stale timer set to usage reset. Usages should still update upon app restart, but in an ansync way (show indicator)
