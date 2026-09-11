@@ -746,7 +746,7 @@ fn cursor_token() -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn keychain_secret(service: &str) -> Option<String> {
-    Command::new("security")
+    crate::program::command("security")
         .args(["find-generic-password", "-s", service, "-w"])
         .output()
         .ok()
@@ -766,7 +766,7 @@ fn cursor_token_from_vscdb() -> Option<String> {
         return None;
     }
     let path_str = path.to_str()?;
-    let output = Command::new(crate::program::resolve_or_name("sqlite3"))
+    let output = crate::program::command(crate::program::resolve_or_name("sqlite3"))
         .args([
             "-readonly",
             "-batch",
@@ -776,7 +776,7 @@ fn cursor_token_from_vscdb() -> Option<String> {
         .output()
         .ok()
         .or_else(|| {
-            Command::new(crate::program::resolve_or_name("sqlite3"))
+            crate::program::command(crate::program::resolve_or_name("sqlite3"))
                 .args([
                     "-batch",
                     path_str,
