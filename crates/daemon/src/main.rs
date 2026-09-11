@@ -17,8 +17,27 @@ use server::SessionManager;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// The registry is the ONE store that splits per build.
+///
+/// Not tidiness: it is the only one holding PROCESS IDENTITY -- `pid` and
+/// `orphan_pid` -- and `SessionManager::recover` runs over every inherited
+/// row at every startup, probes the recorded pid with `proc::still_running`,
+/// records a live one as an orphan for the app to surface and the human to
+/// END, and respawns a bare shell in the row's cwd. Shared, a dev daemon
+/// starting while the release daemon holds live PTYs would bump the
+/// generation out from under those rows, mark them interrupted, list the
+/// other app's running agents as orphans offering to kill them, and open a
+/// phantom shell for each. That is the damage "never pkill gavin-daemon"
+/// exists to prevent, arriving through a different door.
+///
+/// Splitting it costs nothing durable. A PTY cannot outlive its daemon, so
+/// live sessions were never portable between builds, and this file holds
+/// only sessions, their queued input and a generation counter. The two
+/// stores beside it -- kanban and orchestration -- hold the work and
+/// deliberately do NOT split.
 fn db_path() -> anyhow::Result<PathBuf> {
-    Ok(protocol::app_support_dir()?.join("registry.sqlite"))
+    Ok(protocol::app_support_dir()?
+        .join(protocol::profile_file_name("registry", "sqlite", protocol::BuildProfile::current())))
 }
 
 fn kanban_db_path() -> anyhow::Result<PathBuf> {
@@ -71,8 +90,20 @@ mod tests {
         assert!(protocol::socket_path().unwrap().starts_with(&dir));
         assert!(db_path().unwrap().starts_with(&dir));
         assert!(kanban_db_path().unwrap().starts_with(&dir));
-        assert_eq!(protocol::socket_path().unwrap().file_name().unwrap(), "daemon.sock");
-        assert_eq!(db_path().unwrap().file_name().unwrap(), "registry.sqlite");
+        assert_eq!(
+            protocol::socket_path().unwrap().file_name().unwrap(),
+            protocol::profile_file_name("daemon", "sock", protocol::BuildProfile::current()).as_str()
+        );
+        assert_eq!(
+            db_path().unwrap().file_name().unwrap(),
+            protocol::profile_file_name("registry", "sqlite", protocol::BuildProfile::current())
+                .as_str()
+        );
+        // NOT through profile_file_name, and that is the point: these two
+        // hold the work -- board vocabularies, card runs, rails, steps,
+        // tools -- and both builds must find all of it. Pinned as
+        // literals so widening the split to them is a failing test rather
+        // than a quiet loss of everything on the board.
         assert_eq!(kanban_db_path().unwrap().file_name().unwrap(), "kanban.sqlite");
         assert_eq!(orchestration_db_path().unwrap().file_name().unwrap(), "orchestration.sqlite");
     }

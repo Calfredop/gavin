@@ -193,7 +193,23 @@ fn note_breakaway_refused(log: &Option<std::fs::File>) {
 fn daemon_log_file() -> Option<std::fs::File> {
     let dir = protocol::app_support_dir().ok()?;
     std::fs::create_dir_all(&dir).ok()?;
-    std::fs::OpenOptions::new().create(true).append(true).open(dir.join("daemon.log")).ok()
+    std::fs::OpenOptions::new().create(true).append(true).open(daemon_log_path(&dir)).ok()
+}
+
+/// The daemon log file, per build.
+///
+/// A release install and the dev tree run a daemon each, and two of them
+/// appending to one file interleaves into something nobody can read --
+/// which matters because this log is where a daemon that died and was
+/// replaced explains itself.
+///
+/// A pure function compiled on every platform, the way
+/// `protocol::check_sun_path` and `transport::pipe_name_for_path` already
+/// are: the caller above is Windows-only, and a rule that can only be
+/// checked on one platform is a rule nobody checks.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn daemon_log_path(dir: &Path) -> PathBuf {
+    dir.join(protocol::profile_file_name("daemon", "log", protocol::BuildProfile::current()))
 }
 
 /// How long a daemon gets to exit after being asked, before the blunt
@@ -370,6 +386,19 @@ fn kill_process(pid: u32) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use protocol::transport::Listener;
+
+    /// Two daemons appending to one file interleave into something nobody
+    /// can read, and this log is the record the Windows-port work has
+    /// leaned on repeatedly.
+    #[test]
+    fn the_daemon_log_is_named_per_build() {
+        let dir = Path::new("/state");
+        assert_eq!(
+            daemon_log_path(dir).file_name().unwrap(),
+            protocol::profile_file_name("daemon", "log", protocol::BuildProfile::current()).as_str()
+        );
+        assert!(daemon_log_path(dir).starts_with(dir));
+    }
 
     #[test]
     fn resolve_daemon_binary_path_is_sibling_of_current_exe() {
