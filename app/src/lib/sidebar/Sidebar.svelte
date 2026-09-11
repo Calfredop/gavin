@@ -5,7 +5,7 @@
   import SessionsManagerModal from "$lib/sessions/SessionsManagerModal.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import AgentUsageModal from "$lib/agents/AgentUsageModal.svelte";
-  import { activePause, nowStore, worstUsageProjection } from "$lib/agents/agentPauseState";
+  import { activePause, nowStore, usageRefreshingStore, worstUsageProjection } from "$lib/agents/agentPauseState";
   import { armRequest, completeArmRequest, dismissArmRequest } from "$lib/agents/agentFallbackState";
   import { pauseLabel } from "$lib/agents/agentPause";
   import { fleetStripLine, launchGateVerdict } from "$lib/agents/launchQueue";
@@ -85,6 +85,7 @@
     agentIndicatorByState,
     gitIndicator,
     usageProjectionIndicator,
+    usageRefreshingIndicator,
   } from "$lib/ui/indicators";
 
   import { sessionLabel, folderName } from "$lib/core/paths";
@@ -349,6 +350,8 @@
   function pressedRail(): void {
     if (showsRail) peekSidebar();
   }
+
+  const usageUpdating = $derived(Object.values($usageRefreshingStore).some(Boolean));
 
   /// The usage semaphore: whether the limits gavin can see will survive
   /// to their own reset at the burn it has measured. Null until there is
@@ -1679,6 +1682,9 @@
            It sits before the pause badge because it is the earlier
            warning of the two: amber here is the moment to throttle, and
            "At limit" is what happens to somebody who did not. -->
+      {#if usageUpdating}
+        <StatusBadge indicator={usageRefreshingIndicator()} size={11} />
+      {/if}
       {#if usageSemaphore}
         <StatusBadge indicator={usageSemaphore} size={11} class="footer-semaphore" />
       {/if}
