@@ -246,6 +246,7 @@ describe("hydrateUsageCache", () => {
     );
     hydrateUsageCache(nowMs, storage);
     expect(get(agentUsageStore)["claude-code"]).toBeUndefined();
+    expect(storage.map.has(USAGE_CACHE_KEY)).toBe(false);
   });
 
   it("drops a cached window the moment its reset arrives", () => {

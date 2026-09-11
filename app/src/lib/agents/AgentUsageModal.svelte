@@ -35,10 +35,6 @@
   const inUse = $derived(new Set(profilesInUse()));
   const profiles = $derived($agentProfilesStore.filter((p) => inUse.has(p.id)));
 
-  async function refresh(profileId: string): Promise<void> {
-    await refreshUsage(profileId, true);
-  }
-
   /// Absent is NOT `unsupported`: the first read has not landed yet, and
   /// "checking…" is a different sentence from "this agent has no limits".
   function reportFor(profileId: string): AgentUsageReport | undefined {
@@ -83,7 +79,7 @@
               label="Check again"
               size={11}
               disabled={!!$usageRefreshingStore[profile.id]}
-              onclick={() => void refresh(profile.id)}
+              onclick={() => void refreshUsage(profile.id, true)}
             />
           {/if}
         </header>

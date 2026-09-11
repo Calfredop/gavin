@@ -189,7 +189,9 @@ function persistUsageCache(nowMs: number = Date.now(), storage?: MaybeStorage): 
 /// first probes of the session run. Expired windows are already gone
 /// from what load returns.
 export function hydrateUsageCache(nowMs: number = Date.now(), storage?: MaybeStorage): void {
-  agentUsageStore.set(loadUsageCache(nowMs, storage));
+  const loaded = loadUsageCache(nowMs, storage);
+  agentUsageStore.set(loaded);
+  saveUsageCache(loaded, storage, nowMs);
   armStaleTimer(nowMs, storage);
 }
 
