@@ -705,6 +705,12 @@ export interface McpForeignServers {
 export interface IntegrationResult {
   written: string[];
   skipped: Array<[string, string]>;
+  /// The managed files whose previous contents were not gavin's own, as
+  /// [file, where the displaced bytes were kept]. Apart from `written`
+  /// because it is the only part of a run that says something was LOST,
+  /// and empty on an ordinary re-run, which writes bytes that are
+  /// already there.
+  replaced: Array<[string, string]>;
   mcpForeign?: McpForeignServers;
 }
 

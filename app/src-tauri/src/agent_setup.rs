@@ -1085,19 +1085,72 @@ fn write_mcp_config_toml(path: &Path, layout: &ResolvedMcp, binary: &Path) -> an
     Ok(())
 }
 
+/// A managed write, and what it cost. `replaced` is the file the
+/// displaced bytes were moved to -- `None` when there was nothing there,
+/// or when what was there is exactly what gavin just wrote.
+pub struct ManagedWrite {
+    pub path: PathBuf,
+    pub replaced: Option<PathBuf>,
+}
+
+/// Where gavin parks the bytes it displaced. Deliberately not a `.md`:
+/// every skill loader gavin writes for reads one filename per directory,
+/// and a second markdown file beside it is one more thing that could get
+/// picked up.
+const REPLACED_SUFFIX: &str = ".replaced";
+
+/// Writes a file gavin owns, preserving whatever it displaces.
+///
+/// Ownership is unchanged, and deliberately so: skipping a file that
+/// differs cannot tell a hand edit from a version an older gavin wrote,
+/// short of recording every write, and it would strand a workspace on
+/// the first skill it ever installed. What changes is that the displaced
+/// bytes survive. `f772997` added the `complexity:` section to
+/// `.claude/skills/gavin-develop/SKILL.md` and a later setup run put the
+/// stale template back over it -- with no prompt, no copy, and no record,
+/// in a checkout several people share, where the natural reading of the
+/// diff was that an agent had done it.
+///
+/// Identical bytes are not a displacement. The ordinary case is a re-run
+/// that changes nothing, and it has to stay silent or the report the
+/// caller renders is noise nobody reads.
+///
+/// One backup per file, holding the bytes displaced MOST recently: a
+/// per-run history would pile up inside a directory an agent reads, and
+/// the displacement worth showing is the one the human is looking at.
+fn write_owned(path: &Path, contents: &str) -> anyhow::Result<Option<PathBuf>> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    // Bytes, not a string: a file that is not UTF-8 has no business in a
+    // skill directory, but destroying it silently because it would not
+    // decode is exactly the failure this function exists to stop.
+    let displaced = std::fs::read(path).ok().filter(|existing| existing != contents.as_bytes());
+    let replaced = match displaced {
+        Some(existing) => {
+            let mut name = path.as_os_str().to_os_string();
+            name.push(REPLACED_SUFFIX);
+            let backup = PathBuf::from(name);
+            std::fs::write(&backup, existing)?;
+            Some(backup)
+        }
+        None => None,
+    };
+    std::fs::write(path, contents)?;
+    Ok(replaced)
+}
+
 /// Gavin-managed: overwritten wholesale on each setup run, whatever the
 /// file is. Substitution runs for every one of them, not just the ones
 /// that mention the PRD today: a document that grows a `{prd}` later
 /// needs no change here, and one that has none is unaffected.
-fn write_managed_file(root: &Path, file: &ManagedFile, prd: &str) -> anyhow::Result<PathBuf> {
-    let dir = root.join(file.dir);
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(file.file);
-    std::fs::write(&path, with_prd_path(file.contents, prd))?;
-    Ok(path)
+fn write_managed_file(root: &Path, file: &ManagedFile, prd: &str) -> anyhow::Result<ManagedWrite> {
+    let path = root.join(file.dir).join(file.file);
+    let replaced = write_owned(&path, &with_prd_path(file.contents, prd))?;
+    Ok(ManagedWrite { path, replaced })
 }
 
-fn write_skills(root: &Path, layout: &ResolvedMcp, prd: &str) -> anyhow::Result<Vec<PathBuf>> {
+fn write_skills(root: &Path, layout: &ResolvedMcp, prd: &str) -> anyhow::Result<Vec<ManagedWrite>> {
     layout.skills.iter().map(|skill| write_managed_file(root, skill, prd)).collect()
 }
 
@@ -1342,6 +1395,13 @@ fn isolate_refusal(layout: &ResolvedMcp) -> String {
 pub struct IntegrationResult {
     pub written: Vec<String>,
     pub skipped: Vec<(String, String)>,
+    /// The managed files whose previous contents were not gavin's own,
+    /// as (file, where the displaced bytes went). Reported apart from
+    /// `written` because it is the only line of this result that says
+    /// something was LOST: a workspace that hand-edited a skill has no
+    /// other way to learn the run took it. Empty on an ordinary re-run,
+    /// which writes the same bytes that were already there.
+    pub replaced: Vec<(String, String)>,
     /// The foreign MCP servers a decision is still outstanding for, so
     /// the caller can show them and re-run with a choice. Absent once
     /// there is nothing left to ask (AG-07).
@@ -1403,6 +1463,7 @@ fn run_integration(
     let prd = prd_relative_path(root);
     let mut written = Vec::new();
     let mut skipped = Vec::new();
+    let mut replaced = Vec::new();
     let mut mcp_foreign = None;
 
     // Written for EVERY profile -- the change W4 makes. Before this, a
@@ -1437,12 +1498,15 @@ fn run_integration(
             if layout.skills.is_empty() {
                 skipped.push(no_skill_file());
             } else {
-                written.extend(
-                    write_skills(root, layout, &prd)
-                        .map_err(|e| e.to_string())?
-                        .into_iter()
-                        .map(|p| p.to_string_lossy().to_string()),
-                );
+                for write in write_skills(root, layout, &prd).map_err(|e| e.to_string())? {
+                    written.push(write.path.to_string_lossy().to_string());
+                    if let Some(backup) = write.replaced {
+                        replaced.push((
+                            write.path.to_string_lossy().to_string(),
+                            backup.to_string_lossy().to_string(),
+                        ));
+                    }
+                }
             }
             let mcp_path = root.join(&layout.config_file);
             let foreign = foreign_mcp_servers(&mcp_path, layout).map_err(|e| e.to_string())?;
@@ -1505,14 +1569,14 @@ fn run_integration(
     // headless run names it by `--agent`. Written last so the wizard's
     // list reads outward from the instructions file.
     if let Some(file) = profile.agent_file.as_ref() {
-        written.push(
-            write_managed_file(root, file, &prd)
-                .map_err(|e| e.to_string())?
-                .to_string_lossy()
-                .to_string(),
-        );
+        let write = write_managed_file(root, file, &prd).map_err(|e| e.to_string())?;
+        written.push(write.path.to_string_lossy().to_string());
+        if let Some(backup) = write.replaced {
+            replaced
+                .push((write.path.to_string_lossy().to_string(), backup.to_string_lossy().to_string()));
+        }
     }
-    Ok(IntegrationResult { written, skipped, mcp_foreign })
+    Ok(IntegrationResult { written, skipped, replaced, mcp_foreign })
 }
 
 // --- What a setup run installed, for the delete wizard to undo ---------
@@ -1734,10 +1798,15 @@ pub fn compose_agent_prompt(root_path: String, flow: String) -> Result<String, S
         Some((parent, file)) => {
             // The step skill sits beside the gavin-managed ones: same
             // parent directory, one directory per skill, matching the
-            // profile.
+            // profile. Written through `write_owned` for the same reason
+            // they do: a composer action re-run over a step skill someone
+            // edited destroys it exactly the way a setup run destroys an
+            // edited managed skill. This flow has no result to report the
+            // displacement on, so the `.replaced` file beside it is the
+            // whole of the record -- which is why preserving the bytes
+            // matters more here, not less.
             let dir = root.join(parent).join(skill.name);
-            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            std::fs::write(dir.join(file), &document).map_err(|e| e.to_string())?;
+            write_owned(&dir.join(file), &document).map_err(|e| e.to_string())?;
             Ok(format!(
                 "Use the {} skill to write {target} for this repo. Interview me first.",
                 skill.name
@@ -2640,9 +2709,9 @@ mod tests {
 
         // The workflow skill, which repeats the path for the agent that
         // would rather read the file than call the tool.
-        let paths =
+        let writes =
             write_skills(dir.path(), &claude_layout(), &prd_relative_path(dir.path())).unwrap();
-        let workflow = std::fs::read_to_string(&paths[0]).unwrap();
+        let workflow = std::fs::read_to_string(&writes[0].path).unwrap();
         assert!(workflow.contains("read `docs/PRD.md`"), "{workflow}");
 
         // And the flow document, whether it lands as a file or a prompt.
@@ -2770,6 +2839,46 @@ mod tests {
                 assert!(args.ends_with('='), "{} must attach its prompt value", p.id);
             }
         }
+    }
+
+    /// A setup run over a workspace that EDITED a managed skill. The
+    /// skill still ends up as gavin's -- that part is unchanged -- but
+    /// the edit is preserved and, crucially, SAID. Silence is what made
+    /// this a bug worth a card: the human saw an unexplained revert in a
+    /// shared checkout and the obvious reading was that an agent did it.
+    #[test]
+    fn a_run_that_displaces_an_edited_skill_keeps_it_and_reports_it() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        run_integration(dir.path(), fake_binary(), None, None).unwrap();
+
+        // A re-run that changes nothing must say nothing, or the report
+        // cries wolf on every setup the human runs twice.
+        let quiet = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+        assert!(quiet.replaced.is_empty(), "{:?}", quiet.replaced);
+
+        let skill = dir.path().join(".claude/skills/gavin-develop/SKILL.md");
+        std::fs::write(&skill, "### Rate it: `complexity:`\nmy own words\n").unwrap();
+        let result = run_integration(dir.path(), fake_binary(), None, None).unwrap();
+
+        let (reported, backup) = result
+            .replaced
+            .iter()
+            .find(|(p, _)| p.ends_with("SKILL.md") && p.contains("gavin-develop"))
+            .expect("the displaced skill is named in the result");
+        assert_eq!(Path::new(reported), skill);
+        assert_eq!(
+            std::fs::read_to_string(backup).unwrap(),
+            "### Rate it: `complexity:`\nmy own words\n"
+        );
+        // Still written, and still gavin's: preserving the edit is not
+        // the same as honouring it.
+        assert!(std::fs::read_to_string(&skill).unwrap().contains("gavin_create_plan"));
+        // The three skills nobody touched are not reported -- only the
+        // one that actually lost something.
+        assert_eq!(result.replaced.len(), 1, "{:?}", result.replaced);
+        // And they are in `written` all the same: the run did write them.
+        assert!(result.written.iter().any(|p| p == reported));
     }
 
     /// The whole opencode install, from the one entry point that writes
@@ -3142,8 +3251,11 @@ mod tests {
     #[test]
     fn every_skill_is_written_and_overwritten() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
-        assert_eq!(paths.len(), 4, "workflow skill plus orchestrate, resume and develop");
+        let writes = write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
+        assert_eq!(writes.len(), 4, "workflow skill plus orchestrate, resume and develop");
+        let paths: Vec<PathBuf> = writes.iter().map(|w| w.path.clone()).collect();
+        // Nothing was there to displace, so nothing was preserved.
+        assert!(writes.iter().all(|w| w.replaced.is_none()), "a first run displaces nothing");
 
         let workflow = std::fs::read_to_string(&paths[0]).unwrap();
         assert!(workflow.contains("gavin_create_plan"), "{workflow}");
@@ -3170,23 +3282,159 @@ mod tests {
         assert!(develop.contains("kind: plan"), "{develop}");
         assert!(develop.contains("gavin_create_plan"), "{develop}");
 
-        // Gavin-managed: a hand-edited skill is replaced, not merged.
+        // Gavin-managed: a hand-edited skill is replaced, not merged --
+        // but the edit is not destroyed doing it.
         for p in &paths {
             std::fs::write(p, "mangled").unwrap();
         }
-        write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
+        let writes = write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
         assert!(std::fs::read_to_string(&paths[0]).unwrap().contains("gavin_create_plan"));
         assert!(std::fs::read_to_string(&paths[1]).unwrap().contains("gavin_get_orchestration"));
         assert!(std::fs::read_to_string(&paths[2]).unwrap().contains("Finished work stays finished"));
         assert!(std::fs::read_to_string(&paths[3])
             .unwrap()
             .contains("Nothing is written before you hear yes"));
+        for write in &writes {
+            let backup = write.replaced.as_ref().expect("the edit was displaced, so it was kept");
+            assert_eq!(std::fs::read_to_string(backup).unwrap(), "mangled");
+            assert!(backup.to_string_lossy().ends_with("SKILL.md.replaced"), "{backup:?}");
+        }
+
+        // And a third run, over gavin's own bytes, displaces nothing --
+        // the report has to stay empty when a re-run changes nothing, or
+        // it reads as a loss every time.
+        let writes = write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
+        assert!(writes.iter().all(|w| w.replaced.is_none()), "an idempotent re-run reports nothing");
+        // The kept edit is still there, untouched by the run that
+        // displaced nothing.
+        assert_eq!(
+            std::fs::read_to_string(paths[0].with_extension("md.replaced")).unwrap(),
+            "mangled"
+        );
+    }
+
+    /// Gavin's own checkout IS a gavin workspace, so every skill the app
+    /// embeds has a live counterpart under `.claude/skills/` that this
+    /// repo's agents read -- and a setup run against this root overwrites
+    /// that counterpart unconditionally. Nothing else links the two
+    /// copies: one is Rust-adjacent and one is prose, they are edited by
+    /// different kinds of work, and `f772997` added the `complexity:`
+    /// section to `.claude/skills/gavin-develop/SKILL.md` alone. The next
+    /// setup run reinstated the stale template over it, silently, in a
+    /// shared tree.
+    ///
+    /// Deliberately NOT a byte compare of the two paths: `gavin_skill.md`
+    /// carries a `{prd}` placeholder the installer substitutes per
+    /// workspace, so a plain diff would report `gavin` broken forever and
+    /// get switched off. This runs the installer's own substitution,
+    /// through the same `prd_relative_path` call `run_integration` makes,
+    /// against this workspace's own PRD.
+    #[test]
+    fn every_embedded_document_matches_the_copy_this_repo_ships() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        assert!(
+            repo.join(".gavin-root").is_dir(),
+            "{} is not the gavin workspace this test compares against",
+            repo.display()
+        );
+        let prd = prd_relative_path(&repo);
+
+        // Every document the app can drop into a workspace, at the
+        // workspace-relative path it lands on. Driven off the profile
+        // table rather than a list written out here, because a second
+        // hand-maintained list is the same convention that failed the
+        // first time.
+        let mut installs: Vec<(String, &'static str)> = Vec::new();
+        for profile in AGENT_PROFILES {
+            let layout = profile.mcp.as_ref().map(ResolvedMcp::from);
+            for file in layout.iter().flat_map(|l| l.skills.iter()) {
+                installs.push((format!("{}/{}", file.dir, file.file), file.contents));
+            }
+            // The step skills appear in no table -- compose_agent_prompt
+            // installs them into the same slot beside the managed ones --
+            // so they are reconstructed here the way it reconstructs
+            // them. These are the two flows `step_skill` answers.
+            if let Some((parent, file)) = layout.as_ref().and_then(ResolvedMcp::skill_slot) {
+                for flow in ["prd", "agent-file"] {
+                    let step = step_skill(flow).unwrap();
+                    installs
+                        .push((format!("{}/{}/{file}", parent.display(), step.name), step.document));
+                }
+            }
+            if let Some(file) = profile.agent_file.as_ref() {
+                installs.push((format!("{}/{}", file.dir, file.file), file.contents));
+            }
+        }
+
+        // Only `.claude/` is compared: this workspace is configured for
+        // Claude Code (`.gavin-root/config.toml`), so that is the set the
+        // repo commits and the set a setup run here would clobber. An
+        // `.opencode/` tree in this checkout would be a local artifact of
+        // someone switching profiles, not something the repo ships.
+        let mut checked: Vec<&str> = Vec::new();
+        for (rel, contents) in installs.iter().filter(|(rel, _)| rel.starts_with(".claude/")) {
+            let Ok(shipped) = std::fs::read_to_string(repo.join(rel)) else { continue };
+            // Line endings belong to the checkout, not to the document:
+            // this tree is cloned with core.autocrlf on Windows and
+            // without it elsewhere, and `include_str!` bakes in whichever
+            // the build machine had.
+            let norm = |s: &str| s.replace("\r\n", "\n");
+            assert_eq!(
+                norm(&with_prd_path(contents, &prd)),
+                norm(&shipped),
+                "{rel} has drifted from the template the app embeds — the next setup run \
+                 against this repo overwrites it with the app's copy"
+            );
+            checked.push(rel.as_str());
+        }
+        // Pinned, so a skill that goes MISSING from the repo fails here
+        // rather than dropping quietly out of the loop above.
+        assert_eq!(
+            checked,
+            [
+                ".claude/skills/gavin/SKILL.md",
+                ".claude/skills/gavin-orchestrate/SKILL.md",
+                ".claude/skills/gavin-resume/SKILL.md",
+                ".claude/skills/gavin-develop/SKILL.md",
+            ]
+        );
+
+        // What is left unguarded, and why. Distinct documents, first
+        // install path each: the step skills are written on demand by a
+        // composer action, so this repo has no committed copy to compare
+        // them against, and opencode's agent file belongs to a profile
+        // this workspace does not use. A NEW managed document lands in
+        // this list, which is the point -- adding one forces the decision
+        // about whether it needs a counterpart.
+        let guarded: Vec<&str> =
+            installs.iter().filter(|(r, _)| checked.contains(&r.as_str())).map(|(_, c)| *c).collect();
+        let mut unguarded: Vec<(&str, &str)> = Vec::new();
+        for (rel, contents) in &installs {
+            if guarded.contains(contents) || unguarded.iter().any(|(_, c)| c == contents) {
+                continue;
+            }
+            unguarded.push((rel.as_str(), contents));
+        }
+        assert_eq!(
+            unguarded.into_iter().map(|(r, _)| r).collect::<Vec<_>>(),
+            [
+                ".claude/skills/gavin-write-prd/SKILL.md",
+                ".claude/skills/gavin-write-agent-file/SKILL.md",
+                ".opencode/agent/gavin-commit.md",
+            ],
+            "a document the app embeds has no copy in this repo to check it against — give it \
+             one under .claude/skills/, or record here why it cannot have one"
+        );
     }
 
     #[test]
     fn every_skill_lands_in_its_own_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
+        let paths: Vec<PathBuf> = write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH)
+            .unwrap()
+            .into_iter()
+            .map(|w| w.path)
+            .collect();
         assert!(paths[0].ends_with(".claude/skills/gavin/SKILL.md"), "{:?}", paths[0]);
         assert!(paths[1].ends_with(".claude/skills/gavin-orchestrate/SKILL.md"), "{:?}", paths[1]);
         assert!(paths[2].ends_with(".claude/skills/gavin-resume/SKILL.md"), "{:?}", paths[2]);

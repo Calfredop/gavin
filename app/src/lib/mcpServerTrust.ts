@@ -69,6 +69,35 @@ export function mcpForeignNotice(servers: readonly ForeignMcpServer[]): string {
   return `This file already runs ${noun} gavin did not add.`;
 }
 
+/// The one-line summary the Settings panel shows after a setup run.
+///
+/// Lives here rather than in the component for the usual reason -- a
+/// template cannot be unit-tested and this string is the whole of what
+/// the human is told. `replaced` gets its own clause instead of folding
+/// into `written`: a setup run put a stale embedded template back over a
+/// skill this workspace had edited, with no prompt and nothing on
+/// screen, in a checkout several people share, and the obvious reading
+/// of the diff was that an agent had done it. The bytes are preserved
+/// now; this clause is the half that says so.
+/// `rootPath` is optional and paths stay absolute without one, matching
+/// the wizard's own `short`: a workspace with no root cannot have been
+/// set up, and trimming against `""` would eat the leading separator of
+/// every path instead.
+export function integrationNote(
+  result: IntegrationResult,
+  rootPath: string | undefined
+): string {
+  const short = (f: string): string => (rootPath ? f.replace(rootPath + "/", "") : f);
+  const clauses = [`Wrote: ${result.written.map(short).join(", ")}`];
+  for (const [file, backup] of result.replaced) {
+    clauses.push(`Replaced ${short(file)}, keeping your copy as ${short(backup)}`);
+  }
+  if (result.skipped.length > 0) {
+    clauses.push(`Skipped: ${result.skipped.map(([what]) => what).join(", ")}`);
+  }
+  return `${clauses.join(". ")} — re-run any time to update.`;
+}
+
 /// Runs `setupAgentIntegration`, resolving the gate from `storedChoice`
 /// when it already answers the set the host reports back. A first call
 /// with no choice is unavoidable either way -- reading the target file

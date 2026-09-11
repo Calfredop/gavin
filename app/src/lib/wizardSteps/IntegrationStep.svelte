@@ -92,6 +92,13 @@
     {#each result.written as path (path)}
       <li class="ok">✓ {short(path)}</li>
     {/each}
+    <!-- Its own line, and its own colour: this is the only row that says
+         a file gavin overwrote was not gavin's to begin with. Naming the
+         kept copy is the point -- without it the human learns nothing
+         they could act on. -->
+    {#each result.replaced as [file, backup] (file)}
+      <li class="replaced">⟳ {short(file)} — your copy kept as {short(backup)}</li>
+    {/each}
     {#each result.skipped as [what, why] (what)}
       <li class="skip">— {what}: {why}</li>
     {/each}
@@ -135,6 +142,11 @@
   }
   .ok {
     color: #8bc98b;
+  }
+  /* Amber, not green and not grey: the run succeeded, and something of
+     the workspace's own was displaced doing it. */
+  .replaced {
+    color: #e0b08a;
   }
   .skip {
     color: #888;
