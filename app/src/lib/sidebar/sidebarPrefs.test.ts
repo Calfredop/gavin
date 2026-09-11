@@ -30,6 +30,11 @@ import {
   saveScratchpadEnabled,
   scratchpadEnabled,
   setScratchpadEnabled,
+  PEEK_ON_HOVER_KEY,
+  loadSidebarPeekOnHover,
+  saveSidebarPeekOnHover,
+  sidebarPeekOnHover,
+  setSidebarPeekOnHover,
 } from "$lib/sidebar/sidebarPrefs";
 import { layoutState } from "$lib/core/layoutState";
 import { UNFILED_WORKSPACE_ID } from "$lib/core/workspace";
@@ -165,5 +170,39 @@ describe("switching the Scratchpad off", () => {
     expect(get(scratchpadEnabled)).toBe(true);
     expect(layoutMock.switchWorkspace).not.toHaveBeenCalled();
     expect(layoutMock.openAppHub).not.toHaveBeenCalled();
+  });
+});
+
+describe("remembering that hover opens the collapsed rail", () => {
+  it("round-trips through storage", () => {
+    const store = storage();
+    saveSidebarPeekOnHover(false, store);
+    expect(store.map.get(PEEK_ON_HOVER_KEY)).toBe("false");
+    expect(loadSidebarPeekOnHover(store)).toBe(false);
+    saveSidebarPeekOnHover(true, store);
+    expect(loadSidebarPeekOnHover(store)).toBe(true);
+  });
+
+  // On is the default and off is the choice, same shape as the
+  // Scratchpad: anything unreadable has to come back as on.
+  it("reads anything it did not write as on", () => {
+    expect(loadSidebarPeekOnHover(storage())).toBe(true);
+    expect(loadSidebarPeekOnHover(storage({ [PEEK_ON_HOVER_KEY]: "off" }))).toBe(true);
+    expect(loadSidebarPeekOnHover(undefined)).toBe(true);
+    expect(
+      loadSidebarPeekOnHover({
+        getItem() {
+          throw new Error("blocked");
+        },
+        setItem() {},
+      })
+    ).toBe(true);
+  });
+
+  it("sets the store", () => {
+    setSidebarPeekOnHover(false);
+    expect(get(sidebarPeekOnHover)).toBe(false);
+    setSidebarPeekOnHover(true);
+    expect(get(sidebarPeekOnHover)).toBe(true);
   });
 });

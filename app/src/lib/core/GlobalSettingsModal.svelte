@@ -36,7 +36,12 @@
     requireReviewToSelect,
   } from "$lib/cards/cardReview";
   import { resolveGitTracking } from "$lib/git/gitTracking";
-  import { scratchpadEnabled, setScratchpadEnabled } from "$lib/sidebar/sidebarPrefs";
+  import {
+    scratchpadEnabled,
+    setScratchpadEnabled,
+    sidebarPeekOnHover,
+    setSidebarPeekOnHover,
+  } from "$lib/sidebar/sidebarPrefs";
   import { hiddenHubViewCount, hubTabsHiddenDefault } from "$lib/hub/hubTabPrefs";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
   import { themeState } from "$lib/ui/themeState.svelte";
@@ -332,7 +337,7 @@
   /// workspace's Settings tab by mistake.
   const SECTIONS: SettingsSection[] = [
     { id: "appearance", keywords: ["Appearance", "Theme", "Light", "Dark", "system"] },
-    { id: "sidebar", keywords: ["Sidebar", "Scratchpad"] },
+    { id: "sidebar", keywords: ["Sidebar", "Scratchpad", "Hover to expand", "hover", "peek"] },
     { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
     { id: "terminal", keywords: ["Terminal", "Font size", "font"] },
     { id: "cards", keywords: ["Cards", "Auto commit", "commit", "Require review", "review"] },
@@ -411,6 +416,21 @@
         The Scratchpad is the pinned drawer a page with no workspace of its own lands in. Switching
         it off takes its row out of the sidebar and out of ⌘⌥-number; nothing inside it is closed or
         deleted, and switching it back on brings the row and its pages straight back.
+      </p>
+      <div class="row">
+        <span>Hover to expand</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={$sidebarPeekOnHover}
+            onchange={(e) => setSidebarPeekOnHover(e.currentTarget.checked)}
+          />
+          <span>Open the collapsed rail after hovering</span>
+        </label>
+      </div>
+      <p class="hint">
+        When the sidebar is its icon rail, hovering it for a moment floats the full column over the
+        view — the same overlay a press already opens. Switching this off leaves only the press.
       </p>
     </section>
 

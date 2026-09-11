@@ -1,5 +1,6 @@
-// The sidebar's own two preferences: whether the column is collapsed to
-// its icon rail, and whether the pinned Scratchpad has a row in it.
+// The sidebar's own preferences: whether the column is collapsed to
+// its icon rail, whether hovering that rail peeks the full column, and
+// whether the pinned Scratchpad has a row in it.
 //
 // Collapsed, NOT hidden: the column stays on screen as an icon rail, and
 // every workspace keeps a row -- just its initial rather than its name,
@@ -149,4 +150,37 @@ export async function setScratchpadEnabled(enabled: boolean): Promise<void> {
   const elsewhere = state.workspaces.find((w) => w.id !== UNFILED_WORKSPACE_ID);
   if (elsewhere) await switchWorkspace(elsewhere.id);
   else openAppHub();
+}
+
+export const PEEK_ON_HOVER_KEY = "gavin.sidebarPeekOnHover";
+
+/// On unless the human has said otherwise -- hovering the icon rail is
+/// how you read a collapsed row without committing to expand, so the
+/// gesture is the default and turning it off is the choice. Anything
+/// but the exact string this module writes for "off" reads as on, for
+/// the same reason the Scratchpad falls back to shown.
+export function loadSidebarPeekOnHover(storage: MaybeStorage = defaultStorage()): boolean {
+  try {
+    return storage?.getItem(PEEK_ON_HOVER_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+export function saveSidebarPeekOnHover(
+  enabled: boolean,
+  storage: MaybeStorage = defaultStorage()
+): void {
+  try {
+    storage?.setItem(PEEK_ON_HOVER_KEY, enabled ? "true" : "false");
+  } catch {
+    // Best-effort, as above.
+  }
+}
+
+export const sidebarPeekOnHover = writable<boolean>(loadSidebarPeekOnHover());
+
+export function setSidebarPeekOnHover(enabled: boolean): void {
+  sidebarPeekOnHover.set(enabled);
+  saveSidebarPeekOnHover(enabled);
 }

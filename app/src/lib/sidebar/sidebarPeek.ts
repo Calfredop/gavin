@@ -1,6 +1,6 @@
 // The collapsed sidebar's temporary full width: press a row on the icon
-// rail and the column opens over the content until the pointer leaves
-// it again.
+// rail -- or hover it long enough -- and the column opens over the
+// content until the pointer leaves it again.
 //
 // Deliberately NOT a second persisted preference beside sidebarPrefs'
 // collapse flag. A peek is a gesture, not a state the human chose: it
@@ -30,6 +30,92 @@ export function peekSidebar(): void {
 
 export function endSidebarPeek(): void {
   sidebarPeek.set(false);
+}
+
+/// How long the pointer must stay on the icon rail before a hover
+/// becomes a peek. Short enough to feel like the column answering, long
+/// enough that a glance across it on the way to the traffic lights does
+/// not flash the overlay.
+export const PEEK_HOVER_OPEN_MS = 300;
+
+/// How long the pointer may leave the peeked column before it closes.
+/// Shorter than the open dwell: this is only covering a restyle under
+/// the cursor and the gap between rail and overlay, not a second
+/// decision.
+export const PEEK_HOVER_CLOSE_MS = 200;
+
+type PeekHoverTimers = {
+  setTimeout: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  clearTimeout: (id: ReturnType<typeof setTimeout>) => void;
+};
+
+export type PeekHoverEnter = {
+  enabled: boolean;
+  collapsed: boolean;
+  peeking: boolean;
+};
+
+export type PeekHoverLeave = {
+  enabled: boolean;
+  peeking: boolean;
+};
+
+/// The dwell / leave-delay pair the collapsed rail uses when hover-to-
+/// open is on. Timers are injectable so the suite can drive them with
+/// fake clocks; the live sidebar uses the browser's.
+///
+/// A peek itself still lives only in the store above -- this controller
+/// never writes a preference. Whether hover is even offered is
+/// sidebarPrefs' question.
+export function createPeekHoverController(timers: PeekHoverTimers = globalThis) {
+  let openTimer: ReturnType<typeof setTimeout> | null = null;
+  let closeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearOpen = (): void => {
+    if (openTimer !== null) {
+      timers.clearTimeout(openTimer);
+      openTimer = null;
+    }
+  };
+
+  const clearClose = (): void => {
+    if (closeTimer !== null) {
+      timers.clearTimeout(closeTimer);
+      closeTimer = null;
+    }
+  };
+
+  return {
+    enter({ enabled, collapsed, peeking }: PeekHoverEnter): void {
+      clearClose();
+      if (!enabled || !collapsed || peeking) return;
+      clearOpen();
+      openTimer = timers.setTimeout(() => {
+        openTimer = null;
+        peekSidebar();
+      }, PEEK_HOVER_OPEN_MS);
+    },
+
+    leave({ enabled, peeking }: PeekHoverLeave): void {
+      clearOpen();
+      if (!peeking) return;
+      if (!enabled) {
+        clearClose();
+        endSidebarPeek();
+        return;
+      }
+      clearClose();
+      closeTimer = timers.setTimeout(() => {
+        closeTimer = null;
+        endSidebarPeek();
+      }, PEEK_HOVER_CLOSE_MS);
+    },
+
+    cancel(): void {
+      clearOpen();
+      clearClose();
+    },
+  };
 }
 
 /// The column is drawing its icon rail: collapsed, and not peeking.

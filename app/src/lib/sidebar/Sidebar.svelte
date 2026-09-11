@@ -42,8 +42,14 @@
   // prompt below is the one question that flow can ask.
   import { pendingOpen, initAndOpen, bindWithoutInit, cancelOpen } from "$lib/workspace/workspaceOpen";
   import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/git/gitTracking";
-  import { sidebarCollapsed, scratchpadEnabled, toggleSidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
-  import { endSidebarPeek, peekSidebar, sidebarPeek, sidebarShowsRail } from "$lib/sidebar/sidebarPeek";
+  import { sidebarCollapsed, sidebarPeekOnHover, scratchpadEnabled, toggleSidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
+  import {
+    createPeekHoverController,
+    endSidebarPeek,
+    peekSidebar,
+    sidebarPeek,
+    sidebarShowsRail,
+  } from "$lib/sidebar/sidebarPeek";
   import {
     closeSidebarSearch,
     searchSidebar,
@@ -300,18 +306,20 @@
   /// sidebar is never an overlay, whatever the peek flag says.
   const peeking = $derived($sidebarCollapsed && $sidebarPeek);
 
-  /// The element the peek is measured against: the pointer leaving it is
-  /// what ends the peek, and a press landing outside it is the backstop
-  /// for a peek the pointer never entered (the search button opens one
-  /// from the header row, where mouseleave alone would never fire).
-  /// $state because the $effect below reads it -- a plain `let` binding
-  /// establishes no reactivity there.
+  /// The element the peek is measured against: entering it starts the
+  /// hover dwell, leaving it ends the peek, and a press landing outside
+  /// it is the backstop for a peek the pointer never entered (the search
+  /// button opens one from the header row, where mouseleave alone would
+  /// never fire). $state because the $effect below reads it -- a plain
+  /// `let` binding establishes no reactivity there.
   let sidebarEl: HTMLElement | null = $state(null);
 
-  /// Both ways out of a peek, wired only while one is up.
+  const peekHover = createPeekHoverController();
+
+  /// Hover-to-open while collapsed, and both ways out of a peek.
   ///
-  /// Listeners rather than an `onmouseleave` attribute: the a11y warning
-  /// a bare div with a mouse handler earns can only be silenced with a
+  /// Listeners rather than mouse attributes: the a11y warning a bare
+  /// div with a mouse handler earns can only be silenced with a
   /// `svelte-ignore`, and that comment covers every element nested under
   /// it too -- four honest warnings in this file would have gone quiet
   /// with it.
@@ -320,19 +328,38 @@
   /// the header's search button opens one from outside the column, where
   /// mouseleave alone would never fire.
   $effect(() => {
-    if (!$sidebarPeek) return;
     const el = sidebarEl;
     if (!el) return;
-    const leave = (): void => endSidebarPeek();
-    const onDown = (event: MouseEvent): void => {
-      if (!el.contains(event.target as Node)) endSidebarPeek();
+    const collapsed = $sidebarCollapsed;
+    const enabled = $sidebarPeekOnHover;
+    const peekingNow = $sidebarPeek;
+    if (!enabled) peekHover.cancel();
+    const onEnter = (): void => {
+      peekHover.enter({ enabled, collapsed, peeking: peekingNow });
     };
-    el.addEventListener("mouseleave", leave);
-    // Capture, so a press that also opens a peek (the header's search
-    // button) closes the old one first and opens the new one on click.
-    window.addEventListener("mousedown", onDown, true);
+    const onLeave = (): void => {
+      peekHover.leave({ enabled, peeking: peekingNow });
+    };
+    const onDown = (event: MouseEvent): void => {
+      if (!el.contains(event.target as Node)) {
+        peekHover.cancel();
+        endSidebarPeek();
+      }
+    };
+    if (collapsed) {
+      el.addEventListener("mouseenter", onEnter);
+      el.addEventListener("mouseleave", onLeave);
+    } else {
+      peekHover.cancel();
+    }
+    if (peekingNow) {
+      // Capture, so a press that also opens a peek (the header's search
+      // button) closes the old one first and opens the new one on click.
+      window.addEventListener("mousedown", onDown, true);
+    }
     return () => {
-      el.removeEventListener("mouseleave", leave);
+      el.removeEventListener("mouseenter", onEnter);
+      el.removeEventListener("mouseleave", onLeave);
       window.removeEventListener("mousedown", onDown, true);
     };
   });
