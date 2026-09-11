@@ -2,7 +2,7 @@
 order: 6144
 kind: task
 title: [bug] rail not starting
-status: In Progress
+status: Done
 ---
 Why is the tools only rail in “Grimoria” workspace not starting when I press run button on its header?
 
