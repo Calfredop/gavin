@@ -26,19 +26,18 @@ describe("facet filter surfaces", () => {
     expect(filters).toContain("ANY_LABEL_LABEL");
     expect(source("boardFilters.ts")).toContain("Any label");
     // A Not-pair of options ("windows" / "Not windows") is the rejected
-    // spelling. Invert is a switch on the dropdown, not a second value.
+    // spelling. Invert is a switch on the option row, not a second value.
     expect(source("boardFilters.ts")).not.toContain("Not ${");
     expect(source("boardFilters.ts")).not.toContain("not:");
     expect(filters).not.toContain("Not ");
   });
 
-  it("puts a NOT switch on every facet dropdown", () => {
-    const dropdown = source("FacetDropdown.svelte");
-    expect(dropdown).toContain(">NOT</");
-    expect(dropdown).toContain("exclude");
-    expect(dropdown).toContain("onExcludeChange");
-    expect(dropdown).toContain("Click to switch");
-    expect(source("FacetFilters.svelte")).toContain("exclude={exclude.");
+  it("puts a NOT switch on each facet option, not on the dropdown chrome", () => {
+    expect(source("boardFilters.ts")).toContain('label: "NOT"');
+    expect(source("FacetDropdown.svelte")).not.toContain(">NOT</");
+    expect(source("FacetDropdown.svelte")).toContain("toggleFacetExclude");
+    expect(source("ContextMenu.svelte")).toContain("entry.switch");
+    expect(source("ContextMenu.svelte")).toContain("item-switch");
     expect(source("PlanExplorerHubView.svelte")).toContain("exclude={statusExclude}");
   });
 

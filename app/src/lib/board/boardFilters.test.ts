@@ -8,6 +8,7 @@ import {
   NO_RAIL,
   cardPasses,
   contextFacets,
+  emptyExclude,
   emptyFacets,
   facetMenuEntries,
   facetSummary,
@@ -18,10 +19,11 @@ import {
   labelFacets,
   pruneFacets,
   railFacets,
-  toggleExclude,
   toggleFacet,
+  toggleFacetExclude,
   underContext,
   type BoardFacets,
+  type FacetExclude,
 } from "$lib/board/boardFilters";
 import { AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
 import { isMenuItem } from "$lib/core/contextMenu";
@@ -108,6 +110,10 @@ const EMPTY_RAILS: RailIndex = railIndex(null);
 
 function facets(over: Partial<BoardFacets> = {}): BoardFacets {
   return { ...emptyFacets(), ...over };
+}
+
+function excluded(over: Partial<FacetExclude> = {}): FacetExclude {
+  return { ...emptyExclude(), ...over };
 }
 
 describe("facetsActive", () => {
@@ -213,22 +219,29 @@ describe("cardPasses", () => {
     expect(cardPasses(card("a", { kind: "plan" }), selected, rails)).toBe(false);
   });
 
-  it("inverts a kind facet so the chosen kinds drop", () => {
-    const selected = facets({ kind: ["plan"], exclude: { ...emptyFacets().exclude, kind: true } });
+  it("inverts one kind so that kind drops", () => {
+    const selected = facets({ kind: ["plan"], exclude: excluded({ kind: ["plan"] }) });
     expect(cardPasses(card("a", { kind: "plan" }), selected, EMPTY_RAILS)).toBe(false);
     expect(cardPasses(card("a", { kind: "task" }), selected, EMPTY_RAILS)).toBe(true);
     expect(cardPasses(card("a", { kind: "note" }), selected, EMPTY_RAILS)).toBe(true);
   });
 
-  it("inverts an OR: none of the chosen values may match", () => {
-    const selected = facets({ kind: ["plan", "note"], exclude: { ...emptyFacets().exclude, kind: true } });
+  it("inverts several kinds with no include — none of them may match", () => {
+    const selected = facets({ kind: ["plan", "note"], exclude: excluded({ kind: ["plan", "note"] }) });
     expect(cardPasses(card("a", { kind: "plan" }), selected, EMPTY_RAILS)).toBe(false);
     expect(cardPasses(card("a", { kind: "note" }), selected, EMPTY_RAILS)).toBe(false);
     expect(cardPasses(card("a", { kind: "task" }), selected, EMPTY_RAILS)).toBe(true);
   });
 
+  it("can include one kind and invert another", () => {
+    const selected = facets({ kind: ["plan", "note"], exclude: excluded({ kind: ["note"] }) });
+    expect(cardPasses(card("a", { kind: "plan" }), selected, EMPTY_RAILS)).toBe(true);
+    expect(cardPasses(card("a", { kind: "note" }), selected, EMPTY_RAILS)).toBe(false);
+    expect(cardPasses(card("a", { kind: "task" }), selected, EMPTY_RAILS)).toBe(false);
+  });
+
   it("inverts a context facet, still path-segment aware", () => {
-    const selected = facets({ context: ["/ws/app"], exclude: { ...emptyFacets().exclude, context: true } });
+    const selected = facets({ context: ["/ws/app"], exclude: excluded({ context: ["/ws/app"] }) });
     expect(cardPasses(card("a", { contextFolder: "/ws/app" }), selected, EMPTY_RAILS)).toBe(false);
     expect(cardPasses(card("a", { contextFolder: "/ws/app/ui" }), selected, EMPTY_RAILS)).toBe(false);
     expect(cardPasses(card("a", { contextFolder: "/ws" }), selected, EMPTY_RAILS)).toBe(true);
@@ -238,22 +251,14 @@ describe("cardPasses", () => {
   it("inverts a rail facet, including On no rail", () => {
     const onRail = card("a");
     const unplaced = card("b");
-    expect(cardPasses(onRail, facets({ rail: ["r1"], exclude: { ...emptyFacets().exclude, rail: true } }), rails)).toBe(
-      false
-    );
-    expect(cardPasses(unplaced, facets({ rail: ["r1"], exclude: { ...emptyFacets().exclude, rail: true } }), rails)).toBe(
-      true
-    );
-    expect(
-      cardPasses(unplaced, facets({ rail: [NO_RAIL], exclude: { ...emptyFacets().exclude, rail: true } }), rails)
-    ).toBe(false);
-    expect(cardPasses(onRail, facets({ rail: [NO_RAIL], exclude: { ...emptyFacets().exclude, rail: true } }), rails)).toBe(
-      true
-    );
+    expect(cardPasses(onRail, facets({ rail: ["r1"], exclude: excluded({ rail: ["r1"] }) }), rails)).toBe(false);
+    expect(cardPasses(unplaced, facets({ rail: ["r1"], exclude: excluded({ rail: ["r1"] }) }), rails)).toBe(true);
+    expect(cardPasses(unplaced, facets({ rail: [NO_RAIL], exclude: excluded({ rail: [NO_RAIL] }) }), rails)).toBe(false);
+    expect(cardPasses(onRail, facets({ rail: [NO_RAIL], exclude: excluded({ rail: [NO_RAIL] }) }), rails)).toBe(true);
   });
 
-  it("does not filter when exclude is on but nothing is ticked", () => {
-    const selected = facets({ exclude: { context: true, kind: true, rail: true, label: true } });
+  it("ignores an invert whose option is not ticked", () => {
+    const selected = facets({ exclude: excluded({ kind: ["plan"] }) });
     expect(cardPasses(card("a", { kind: "plan" }), selected, EMPTY_RAILS)).toBe(true);
     expect(facetsActive(selected)).toBe(false);
   });
@@ -421,7 +426,7 @@ describe("cardPasses label facet", () => {
   });
 
   it("inverts a label facet so a card carrying any chosen label drops", () => {
-    const selected = facets({ label: ["windows"], exclude: { ...emptyFacets().exclude, label: true } });
+    const selected = facets({ label: ["windows"], exclude: excluded({ label: ["windows"] }) });
     expect(cardPasses(card("a", { labels: ["windows"] }), selected, EMPTY_RAILS)).toBe(false);
     expect(cardPasses(card("a", { labels: [" Windows "] }), selected, EMPTY_RAILS)).toBe(false);
     expect(cardPasses(card("a", { labels: ["memory"] }), selected, EMPTY_RAILS)).toBe(true);
@@ -431,11 +436,22 @@ describe("cardPasses label facet", () => {
   it("inverts several labels — a card carrying any of them fails", () => {
     const selected = facets({
       label: ["windows", "memory"],
-      exclude: { ...emptyFacets().exclude, label: true },
+      exclude: excluded({ label: ["windows", "memory"] }),
     });
     expect(cardPasses(card("a", { labels: ["windows"] }), selected, EMPTY_RAILS)).toBe(false);
     expect(cardPasses(card("a", { labels: ["memory"] }), selected, EMPTY_RAILS)).toBe(false);
     expect(cardPasses(card("a"), selected, EMPTY_RAILS)).toBe(true);
+  });
+
+  it("can require one label and invert another", () => {
+    const selected = facets({
+      label: ["windows", "memory"],
+      exclude: excluded({ label: ["memory"] }),
+    });
+    expect(cardPasses(card("a", { labels: ["windows"] }), selected, EMPTY_RAILS)).toBe(true);
+    expect(cardPasses(card("a", { labels: ["memory"] }), selected, EMPTY_RAILS)).toBe(false);
+    expect(cardPasses(card("a", { labels: ["windows", "memory"] }), selected, EMPTY_RAILS)).toBe(false);
+    expect(cardPasses(card("a"), selected, EMPTY_RAILS)).toBe(false);
   });
 });
 
@@ -455,6 +471,16 @@ describe("pruneFacets label", () => {
     const selected = facets({ label: ["gone"] });
     expect(pruneFacets(selected, null, null, null)).toBe(selected);
   });
+
+  it("drops an invert whose option left the vocabulary", () => {
+    const selected = facets({
+      label: ["windows", "gone"],
+      exclude: excluded({ label: ["windows", "gone"] }),
+    });
+    const next = pruneFacets(selected, null, null, labels);
+    expect(next.label).toEqual(["windows"]);
+    expect(next.exclude.label).toEqual(["windows"]);
+  });
 });
 
 describe("toggleFacet / facetSummary / facetMenuEntries", () => {
@@ -470,31 +496,39 @@ describe("toggleFacet / facetSummary / facetMenuEntries", () => {
     expect(facetSummary(["note", "plan"], KIND_FACETS, ANY_KIND_LABEL)).toBe("Plans, Notes");
   });
 
-  it("prefixes the summary when the facet is inverted, but not the empty label", () => {
-    expect(facetSummary(["task"], KIND_FACETS, ANY_KIND_LABEL, true)).toBe("Not Tasks");
-    expect(facetSummary(["note", "plan"], KIND_FACETS, ANY_KIND_LABEL, true)).toBe("Not Plans, Notes");
-    expect(facetSummary([], KIND_FACETS, ANY_KIND_LABEL, true)).toBe(ANY_KIND_LABEL);
+  it("prefixes only the inverted options in the summary", () => {
+    expect(facetSummary(["task"], KIND_FACETS, ANY_KIND_LABEL, ["task"])).toBe("Not Tasks");
+    expect(facetSummary(["note", "plan"], KIND_FACETS, ANY_KIND_LABEL, ["note"])).toBe("Plans, Not Notes");
+    expect(facetSummary([], KIND_FACETS, ANY_KIND_LABEL, ["plan"])).toBe(ANY_KIND_LABEL);
   });
 
-  it("flips one facet's exclude flag and leaves the others", () => {
-    const start = emptyFacets().exclude;
-    expect(toggleExclude(start, "kind")).toEqual({ context: false, kind: true, rail: false, label: false });
-    expect(toggleExclude({ ...start, kind: true }, "kind")).toEqual(start);
-    expect(start).toEqual({ context: false, kind: false, rail: false, label: false });
+  it("selects an option as inverted, then switches it back to include", () => {
+    expect(toggleFacetExclude([], [], "plan")).toEqual({ selected: ["plan"], exclude: ["plan"] });
+    expect(toggleFacetExclude(["plan"], [], "plan")).toEqual({ selected: ["plan"], exclude: ["plan"] });
+    expect(toggleFacetExclude(["plan"], ["plan"], "plan")).toEqual({ selected: ["plan"], exclude: [] });
   });
 
-  it("builds keep-open checkboxes that route the toggle", () => {
+  it("builds keep-open checkboxes with a NOT switch on each row", () => {
     const picked: string[] = [];
-    const entries = facetMenuEntries(KIND_FACETS, ["plan"], (v) => picked.push(v));
+    const inverted: string[] = [];
+    const entries = facetMenuEntries(KIND_FACETS, ["plan"], ["plan"], (v) => picked.push(v), (v) => inverted.push(v));
     expect(entries.every(isMenuItem)).toBe(true);
-    expect(entries.map((e) => (isMenuItem(e) ? [e.label, e.checked, e.keepOpen] : null))).toEqual([
-      ["Plans", true, true],
-      ["Tasks", false, true],
-      ["Notes", false, true],
+    expect(
+      entries.map((e) =>
+        isMenuItem(e) ? [e.label, e.checked, e.keepOpen, e.switch?.label, e.switch?.active] : null
+      )
+    ).toEqual([
+      ["Plans", true, true, "NOT", true],
+      ["Tasks", false, true, "NOT", false],
+      ["Notes", false, true, "NOT", false],
     ]);
     const task = entries[1];
-    if (isMenuItem(task)) task.onPick();
+    if (isMenuItem(task)) {
+      task.onPick();
+      task.switch?.onPick();
+    }
     expect(picked).toEqual(["task"]);
+    expect(inverted).toEqual(["task"]);
   });
 });
 
@@ -516,7 +550,7 @@ describe("facetsEqual", () => {
 
   it("treats a polarity flip as a different answer", () => {
     const include = facets({ kind: ["plan"] });
-    const exclude = facets({ kind: ["plan"], exclude: { ...emptyFacets().exclude, kind: true } });
+    const exclude = facets({ kind: ["plan"], exclude: excluded({ kind: ["plan"] }) });
     expect(facetsEqual(include, exclude)).toBe(false);
   });
 });
@@ -529,6 +563,7 @@ describe("emptyFacets", () => {
     expect(a).not.toBe(b);
     expect(a.kind).not.toBe(b.kind);
     expect(a.exclude).not.toBe(b.exclude);
+    expect(a.exclude.kind).not.toBe(b.exclude.kind);
   });
 });
 

@@ -32,6 +32,12 @@
     item.onPick();
   }
 
+  function pickSwitch(item: ContextMenuItem): void {
+    if (item.disabled || !item.switch) return;
+    if (!item.keepOpen) closeContextMenu();
+    item.switch.onPick();
+  }
+
   function onWindowPointerDown(e: PointerEvent): void {
     if ($contextMenu && menuEl && !menuEl.contains(e.target as Node)) closeContextMenu();
   }
@@ -71,19 +77,30 @@
       {:else if isHeading(entry)}
         <div class="heading">{entry.heading}</div>
       {:else}
-        <button
-          type="button"
+        <div
           class="item"
           class:danger={entry.danger}
           class:active={entry.active}
-          disabled={entry.disabled}
+          class:has-switch={Boolean(entry.switch)}
           role={entry.checked === undefined ? "menuitem" : "menuitemcheckbox"}
           aria-checked={entry.checked === undefined ? undefined : entry.checked}
-          onclick={() => pick(entry)}
         >
-          <span class="marker">{entry.checked ? "✓" : entry.active ? "•" : ""}</span>
-          {entry.label}
-        </button>
+          <button type="button" class="item-main" disabled={entry.disabled} onclick={() => pick(entry)}>
+            <span class="marker">{entry.checked ? "✓" : entry.active ? "•" : ""}</span>
+            <span class="item-label">{entry.label}</span>
+          </button>
+          {#if entry.switch}
+            <button
+              type="button"
+              class="item-switch"
+              class:active={entry.switch.active}
+              aria-label={entry.switch.active ? `Include ${entry.label}` : `Exclude ${entry.label}`}
+              aria-pressed={entry.switch.active}
+              disabled={entry.disabled}
+              onclick={() => pickSwitch(entry)}
+            >{entry.switch.label}</button>
+          {/if}
+        </div>
       {/if}
     {/each}
   </div>
@@ -104,6 +121,19 @@
     flex-direction: column;
   }
   .item {
+    display: flex;
+    align-items: stretch;
+    border-radius: 4px;
+  }
+  .item:hover {
+    background: var(--surface-overlay);
+  }
+  .item.danger:hover {
+    background: var(--surface-danger);
+  }
+  .item-main {
+    flex: 1 1 0;
+    min-width: 0;
     background: transparent;
     border: none;
     border-radius: 4px;
@@ -116,27 +146,55 @@
     font-size: 0.8em;
     padding: 5px 8px;
     text-align: left;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
-  .item:hover:not(:disabled) {
-    background: var(--surface-overlay);
+  .item.has-switch .item-main {
+    border-radius: 4px 0 0 4px;
   }
-  .item:disabled {
+  .item-main:disabled {
     opacity: 0.4;
     cursor: default;
   }
-  .item.danger {
+  .item.danger .item-main {
     color: var(--danger-text);
   }
-  .item.danger:hover:not(:disabled) {
-    background: var(--surface-danger);
+  .item-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .marker {
     width: 10px;
     flex: 0 0 auto;
     color: var(--success-text);
+  }
+  .item-switch {
+    flex: 0 0 auto;
+    background: transparent;
+    border: none;
+    border-left: 1px solid var(--border);
+    border-radius: 0 4px 4px 0;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.68em;
+    padding: 0 7px;
+  }
+  .item-switch:hover:not(:disabled) {
+    color: var(--text);
+  }
+  .item-switch.active {
+    color: var(--danger);
+    background: var(--surface-selected);
+  }
+  .item-switch:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .item-switch:focus-visible,
+  .item-main:focus-visible {
+    outline: 1px solid var(--border-focus);
+    outline-offset: -1px;
   }
   .separator {
     height: 1px;

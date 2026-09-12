@@ -32,13 +32,24 @@ export interface RailIndex {
   rails: { id: string; name: string }[];
 }
 
-/// Empty selection is unset regardless of polarity -- a dangling invert
-/// is waiting for a tick, not a filter of its own. A hit plus exclude
-/// fails; a miss plus exclude passes. Shared by the board lens so the
-/// two surfaces invert the same way.
-export function selectionPasses(selected: readonly string[], hit: boolean, exclude: boolean): boolean {
+/// One facet's verdict. Selected values that are not in `exclude` OR:
+/// the card must match at least one. Selected values that ARE in
+/// `exclude` are forbidden: matching any of them fails. Values listed
+/// only in `exclude` (not selected) are ignored -- invert lives on the
+/// option, so an unticked NOT is polarity waiting for a tick. Shared by
+/// the board lens so the two surfaces invert the same way.
+export function facetMatches(
+  selected: readonly string[],
+  exclude: readonly string[] | undefined,
+  hits: (value: string) => boolean
+): boolean {
   if (selected.length === 0) return true;
-  return exclude ? !hit : hit;
+  const denied = exclude ?? [];
+  const include = selected.filter((v) => !denied.includes(v));
+  const invert = selected.filter((v) => denied.includes(v));
+  if (include.length > 0 && !include.some(hits)) return false;
+  if (invert.length > 0 && invert.some(hits)) return false;
+  return true;
 }
 
 /// Path-segment aware containment: "/a/auth2" is not under "/a/auth".
@@ -85,11 +96,11 @@ export function statusFacets(columnNames: string[], contexts: ExplorerContextNod
 }
 
 export interface PlanFilterExclude {
-  status?: boolean;
-  context?: boolean;
-  kind?: boolean;
-  rail?: boolean;
-  label?: boolean;
+  status?: string[];
+  context?: string[];
+  kind?: string[];
+  rail?: string[];
+  label?: string[];
 }
 
 export interface PlanFilterState {
@@ -105,8 +116,8 @@ export interface PlanFilterState {
   kind: string[];
   /// Label names. Empty is every card, labeled or not.
   label: string[];
-  /// Per-facet invert. Absent or false is include (the historic
-  /// default). A flag with an empty selection does not filter.
+  /// Per-option invert: the selected values whose NOT switch is on.
+  /// Absent or empty is include (the historic default).
   exclude?: PlanFilterExclude;
 }
 
@@ -146,24 +157,21 @@ function fileKeeper(state: PlanFilterState, rails: RailIndex): (file: ExplorerFi
     if (wantStatus.length > 0) {
       if (!isCardGroup(file.group)) return false;
       const have = slugStatus(file.status ?? "");
-      const hit = wantStatus.some((s) => slugStatus(s) === have);
-      if (!selectionPasses(wantStatus, hit, exclude?.status === true)) return false;
+      if (!facetMatches(wantStatus, exclude?.status, (s) => slugStatus(s) === have)) return false;
     }
     if (wantRail.length > 0) {
       if (!isCardGroup(file.group)) return false;
       const on = rails.byCard.get(file.path);
-      const hit = wantRail.some((r) => (r === NO_RAIL ? on === undefined : on === r));
-      if (!selectionPasses(wantRail, hit, exclude?.rail === true)) return false;
+      if (!facetMatches(wantRail, exclude?.rail, (r) => (r === NO_RAIL ? on === undefined : on === r))) return false;
     }
     if (wantKind.length > 0) {
       if (!isCardGroup(file.group)) return false;
       if (file.kind == null) return false;
-      if (!selectionPasses(wantKind, wantKind.includes(file.kind), exclude?.kind === true)) return false;
+      if (!facetMatches(wantKind, exclude?.kind, (k) => k === file.kind)) return false;
     }
     if (wantLabel.length > 0) {
       if (!isCardGroup(file.group)) return false;
-      const hit = wantLabel.some((name) => fileHasLabel(file, name));
-      if (!selectionPasses(wantLabel, hit, exclude?.label === true)) return false;
+      if (!facetMatches(wantLabel, exclude?.label, (name) => fileHasLabel(file, name))) return false;
     }
     return true;
   };
@@ -192,13 +200,7 @@ export function filterExplorer(
     // drops whole, docs and specs included -- unlike the card-only
     // facets below, which narrow a context's contents rather than the
     // set of contexts.
-    if (
-      !selectionPasses(
-        state.context,
-        state.context.some((folder) => underContext(ctx.folderPath, folder)),
-        state.exclude?.context === true
-      )
-    ) {
+    if (!facetMatches(state.context, state.exclude?.context, (folder) => underContext(ctx.folderPath, folder))) {
       continue;
     }
     const groups: ExplorerGroupNode[] = [];

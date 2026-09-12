@@ -22,6 +22,14 @@ export interface ContextMenuItem {
   // menu closed on the tick would hide the state it just changed, and
   // the human would have to reopen it to act on the choice they made.
   keepOpen?: boolean;
+  // A trailing click-to-switch on the row. Its pick does not fire
+  // `onPick` -- it is a second action on the same row (a facet option's
+  // NOT). keepOpen still applies; the switch's handler republishes.
+  switch?: {
+    label: string;
+    active?: boolean;
+    onPick: () => void;
+  };
   onPick: () => void;
 }
 

@@ -307,7 +307,7 @@ describe("filterExplorer", () => {
 
   describe("exclude polarity", () => {
     it("inverts status so the chosen statuses drop", () => {
-      const out = filterExplorer(contexts, { ...base, status: ["Done"], exclude: { status: true } }, railIndex(orch));
+      const out = filterExplorer(contexts, { ...base, status: ["Done"], exclude: { status: ["Done"] } }, railIndex(orch));
       expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Git tab"]);
     });
 
@@ -321,7 +321,7 @@ describe("filterExplorer", () => {
           ],
         }),
       ];
-      const out = filterExplorer(withKinds, { ...base, kind: ["plan"], exclude: { kind: true } }, railIndex(orch));
+      const out = filterExplorer(withKinds, { ...base, kind: ["plan"], exclude: { kind: ["plan"] } }, railIndex(orch));
       expect(out.contexts[0].groups.map((g) => g.group)).toEqual(["plans"]);
       expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Reminder"]);
     });
@@ -333,7 +333,7 @@ describe("filterExplorer", () => {
         kind: "context",
         groups: [{ group: "plans", label: "Plans", files: [file("/ws/auth/.gavin/plans/login.md", "Login", "To Do")], archived: [] }],
       });
-      const out = filterExplorer([...contexts, auth], { ...base, context: ["/ws/auth"], exclude: { context: true } }, railIndex(orch));
+      const out = filterExplorer([...contexts, auth], { ...base, context: ["/ws/auth"], exclude: { context: ["/ws/auth"] } }, railIndex(orch));
       expect(out.contexts.map((c) => c.name)).toEqual(["root"]);
     });
 
@@ -343,13 +343,27 @@ describe("filterExplorer", () => {
       const withLabels: ExplorerContextNode[] = [
         context({ groups: [{ group: "plans", label: "Plans", files: [tagged, bare], archived: [] }] }),
       ];
-      const out = filterExplorer(withLabels, { ...base, label: ["windows"], exclude: { label: true } }, railIndex(orch));
+      const out = filterExplorer(withLabels, { ...base, label: ["windows"], exclude: { label: ["windows"] } }, railIndex(orch));
       expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Kanban search"]);
     });
 
     it("inverts a rail so the cards on it drop", () => {
-      const out = filterExplorer(contexts, { ...base, rail: ["r1"], exclude: { rail: true } }, railIndex(orch));
+      const out = filterExplorer(contexts, { ...base, rail: ["r1"], exclude: { rail: ["r1"] } }, railIndex(orch));
       expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Kanban search"]);
+    });
+
+    it("can require one label and invert another", () => {
+      const tagged = { ...gitTab, labels: ["windows"] };
+      const both = { ...kanban, labels: ["windows", "memory"] };
+      const withLabels: ExplorerContextNode[] = [
+        context({ groups: [{ group: "plans", label: "Plans", files: [tagged, both], archived: [] }] }),
+      ];
+      const out = filterExplorer(
+        withLabels,
+        { ...base, label: ["windows", "memory"], exclude: { label: ["memory"] } },
+        railIndex(orch)
+      );
+      expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Git tab"]);
     });
   });
 });

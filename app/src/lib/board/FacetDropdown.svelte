@@ -13,9 +13,10 @@
   import { contextMenu, openMenuUnder, setContextMenuEntries } from "$lib/core/contextMenu";
   import { tooltip } from "$lib/core/tooltip";
   import {
+    dropFacetValue,
     facetMenuEntries,
     facetSummary,
-    toggleFacet,
+    toggleFacetExclude,
     type FacetOption,
     type FacetSelection,
   } from "$lib/board/boardFilters";
@@ -26,11 +27,9 @@
     emptyLabel: string;
     options: FacetOption[];
     selected: FacetSelection;
-    onChange: (next: FacetSelection) => void;
-    /// Invert this facet. The NOT switch flips it; empty selection is
-    /// still unset either way.
-    exclude?: boolean;
-    onExcludeChange?: (next: boolean) => void;
+    /// Values whose NOT switch is on. Empty is include.
+    exclude?: FacetSelection;
+    onChange: (selected: FacetSelection, exclude: FacetSelection) => void;
   }
 
   let {
@@ -39,18 +38,12 @@
     emptyLabel,
     options,
     selected,
+    exclude = [],
     onChange,
-    exclude = false,
-    onExcludeChange,
   }: Props = $props();
 
   const summary = $derived(facetSummary(selected, options, emptyLabel, exclude));
   const disabled = $derived(options.length === 0);
-  const invertTip = $derived(
-    exclude
-      ? "Click to switch — show cards that match the chosen values"
-      : "Click to switch — hide cards that match the chosen values"
-  );
 
   // The shared menu layer closes on any pointerdown outside itself, and
   // that lands before this button's click: a naive onclick would shut
@@ -63,30 +56,38 @@
     dismissedMenu = get(contextMenu) !== null;
   }
 
-  function entries(sel: FacetSelection) {
-    return facetMenuEntries(options, sel, (value) => {
-      const next = toggleFacet(sel, value);
-      onChange(next);
-      setContextMenuEntries(entries(next));
-    });
+  function publish(sel: FacetSelection, ex: FacetSelection): void {
+    onChange(sel, ex);
+    setContextMenuEntries(entries(sel, ex));
+  }
+
+  function entries(sel: FacetSelection, ex: FacetSelection) {
+    return facetMenuEntries(
+      options,
+      sel,
+      ex,
+      (value) => {
+        const next = dropFacetValue(sel, ex, value);
+        publish(next.selected, next.exclude);
+      },
+      (value) => {
+        const next = toggleFacetExclude(sel, ex, value);
+        publish(next.selected, next.exclude);
+      }
+    );
   }
 
   function openMenu(event: MouseEvent): void {
     const dismissed = dismissedMenu;
     dismissedMenu = false;
     if (dismissed || disabled) return;
-    openMenuUnder(event.currentTarget as HTMLElement, entries(selected));
-  }
-
-  function flipExclude(event: MouseEvent): void {
-    event.stopPropagation();
-    onExcludeChange?.(!exclude);
+    openMenuUnder(event.currentTarget as HTMLElement, entries(selected, exclude));
   }
 </script>
 
 <!-- Tooltip on the wrap so a disabled control (no options yet) still
      names itself: a disabled button never fires mouseenter. -->
-<span class="facet-dropdown-wrap" class:excluding={exclude} use:tooltip={disabled ? tip : null}>
+<span class="facet-dropdown-wrap" use:tooltip={tip}>
   <button
     type="button"
     class="facet-dropdown"
@@ -94,23 +95,12 @@
     aria-label={ariaLabel}
     aria-haspopup="menu"
     {disabled}
-    use:tooltip={disabled ? null : tip}
     onpointerdown={onPointerDown}
     onclick={openMenu}
   >
     <span class="summary">{summary}</span>
     <ChevronDown size={11} />
   </button>
-  <button
-    type="button"
-    class="facet-not"
-    class:active={exclude}
-    aria-label={exclude ? "Include chosen values" : "Exclude chosen values"}
-    aria-pressed={exclude}
-    {disabled}
-    use:tooltip={invertTip}
-    onclick={flipExclude}
-  >NOT</button>
 </span>
 
 <style>
@@ -118,27 +108,17 @@
     display: inline-flex;
     flex: 1 1 0;
     min-width: 0;
-    max-width: 196px;
-    background: var(--surface-raised);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    overflow: hidden;
-  }
-  .facet-dropdown-wrap:hover {
-    border-color: var(--border-strong);
-  }
-  .facet-dropdown-wrap.excluding {
-    border-color: var(--border-strong);
+    max-width: 160px;
   }
   .facet-dropdown {
     display: flex;
     align-items: center;
     gap: 2px;
-    flex: 1 1 0;
+    width: 100%;
     min-width: 0;
-    background: transparent;
-    border: none;
-    border-radius: 0;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 4px;
     color: var(--text);
     font-family: monospace;
     font-size: 0.72rem;
@@ -146,12 +126,15 @@
     cursor: pointer;
     text-align: left;
   }
+  .facet-dropdown:hover:not(:disabled) {
+    border-color: var(--border-strong);
+  }
   .facet-dropdown:focus-visible {
     outline: 1px solid var(--border-focus);
     outline-offset: -1px;
   }
   .facet-dropdown.active {
-    color: var(--text);
+    border-color: var(--border-strong);
   }
   .facet-dropdown:disabled {
     opacity: 0.55;
@@ -163,32 +146,5 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .facet-not {
-    flex: 0 0 auto;
-    align-self: stretch;
-    background: transparent;
-    border: none;
-    border-left: 1px solid var(--border);
-    color: var(--text-muted);
-    font-family: monospace;
-    font-size: 0.62rem;
-    padding: 0 5px;
-    cursor: pointer;
-  }
-  .facet-not:hover:not(:disabled) {
-    color: var(--text);
-  }
-  .facet-not.active {
-    color: var(--danger);
-    background: var(--surface-selected);
-  }
-  .facet-not:focus-visible {
-    outline: 1px solid var(--border-focus);
-    outline-offset: -1px;
-  }
-  .facet-not:disabled {
-    opacity: 0.55;
-    cursor: default;
   }
 </style>

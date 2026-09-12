@@ -165,7 +165,7 @@
   // tab switch, and "shared with Kanban and Review" cannot mean that.
   let query = $state("");
   let statusFacet = $state<string[]>([]);
-  let statusExclude = $state(false);
+  let statusExclude = $state<string[]>([]);
   const hub = $derived($hubFacetState[workspaceId]);
   const sharedFacets = $derived(facetsFor(hub, "plans"));
   const facetsLinked = $derived(isTabLinked(hub, "plans"));
@@ -205,6 +205,10 @@
     if (statusFacet.length > 0) {
       const next = statusFacet.filter((s) => statuses.includes(s));
       if (next.length !== statusFacet.length) statusFacet = next;
+    }
+    if (statusExclude.length > 0) {
+      const next = statusExclude.filter((s) => statusFacet.includes(s));
+      if (next.length !== statusExclude.length) statusExclude = next;
     }
   });
   $effect(() => {
@@ -470,8 +474,10 @@
             options={statuses.map((name) => ({ value: name, label: name }))}
             selected={statusFacet}
             exclude={statusExclude}
-            onChange={(next) => (statusFacet = next)}
-            onExcludeChange={(next) => (statusExclude = next)}
+            onChange={(next, nextExclude) => {
+              statusFacet = next;
+              statusExclude = nextExclude;
+            }}
           />
           <FacetFilters
             facets={sharedFacets}
@@ -490,7 +496,7 @@
               onclick={() => {
                 query = "";
                 statusFacet = [];
-                statusExclude = false;
+                statusExclude = [];
                 resetTabFacets(workspaceId, "plans");
               }}
             >Reset</button>

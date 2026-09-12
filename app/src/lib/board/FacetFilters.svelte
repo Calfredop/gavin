@@ -22,7 +22,6 @@
     emptyExclude,
     labelFacets,
     railFacets,
-    toggleExclude,
     type BoardFacets,
     type ContextFacet,
   } from "$lib/board/boardFilters";
@@ -54,8 +53,7 @@
   options={contexts}
   selected={facets.context}
   exclude={exclude.context}
-  onChange={(context) => onChange({ ...facets, context })}
-  onExcludeChange={() => onChange({ ...facets, exclude: toggleExclude(exclude, "context") })}
+  onChange={(context, nextExclude) => onChange({ ...facets, context, exclude: { ...exclude, context: nextExclude } })}
 />
 <FacetDropdown
   ariaLabel="Filter by kind"
@@ -64,8 +62,7 @@
   options={KIND_FACETS}
   selected={facets.kind}
   exclude={exclude.kind}
-  onChange={(kind) => onChange({ ...facets, kind })}
-  onExcludeChange={() => onChange({ ...facets, exclude: toggleExclude(exclude, "kind") })}
+  onChange={(kind, nextExclude) => onChange({ ...facets, kind, exclude: { ...exclude, kind: nextExclude } })}
 />
 <FacetDropdown
   ariaLabel="Filter by rail"
@@ -74,8 +71,7 @@
   options={railOptions}
   selected={facets.rail}
   exclude={exclude.rail}
-  onChange={(rail) => onChange({ ...facets, rail })}
-  onExcludeChange={() => onChange({ ...facets, exclude: toggleExclude(exclude, "rail") })}
+  onChange={(rail, nextExclude) => onChange({ ...facets, rail, exclude: { ...exclude, rail: nextExclude } })}
 />
 <FacetDropdown
   ariaLabel="Filter by label"
@@ -84,8 +80,7 @@
   options={labelOptions}
   selected={facets.label}
   exclude={exclude.label}
-  onChange={(label) => onChange({ ...facets, label })}
-  onExcludeChange={() => onChange({ ...facets, exclude: toggleExclude(exclude, "label") })}
+  onChange={(label, nextExclude) => onChange({ ...facets, label, exclude: { ...exclude, label: nextExclude } })}
 />
 <IconButton
   icon={linked ? Link2 : Link2Off}
