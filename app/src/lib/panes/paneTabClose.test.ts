@@ -2,11 +2,12 @@ import { describe, it, expect } from "vitest";
 import { svelteSources } from "$lib/sources";
 
 // The close box on a pane tab is chrome the label has to share. It
-// used to stay painted at rest, so every idle tab carried an X. The
+// used to sit in the flex row -- an X slot beside the title, painted
+// or not -- so the handle never gave the content its full width. The
 // suites cannot see a component <style> (compiled away; vite hands SSR
 // an empty string for a CSS import), so this pins the declarations
-// themselves: hidden until the tab is hovered or focused, space still
-// reserved so hover never reflows the strip.
+// themselves: the title fills the handle, the X overlays the handle's
+// far right as a solid glyph, and it stays hidden until hover/focus.
 
 const SOURCES = svelteSources();
 
@@ -50,7 +51,30 @@ describe("the pane tab close box", () => {
     expect(rest["pointer-events"]).toBe("none");
 
     const hovered = rule(PANE, ".tab:hover .close, .tab:focus-within .close");
-    expect(Number(hovered.opacity)).toBeGreaterThan(0);
+    expect(hovered.opacity).toBe("1");
     expect(hovered["pointer-events"]).toBe("auto");
+  });
+
+  it("overlays the close on the far right of the handle, opaque", () => {
+    expect(PANE).toContain('class="tab-title"');
+    // A sibling of the title and badges, not nested in the title --
+    // otherwise `right: 0` is the label's trailing edge, not the handle's.
+    expect(PANE.indexOf('class="close"')).toBeGreaterThan(PANE.indexOf('class="restored-badge"'));
+
+    const title = rule(PANE, ".tab-title");
+    expect(title.flex).toBe("1 1 auto");
+    expect(title["min-width"]).toBe("0");
+
+    const label = rule(PANE, ".tab-label");
+    expect(label.width).toBe("100%");
+    expect(label["max-width"]).toBeUndefined();
+
+    expect(rule(PANE, ".tab").position).toBe("relative");
+    const close = rule(PANE, ".close");
+    expect(close.position).toBe("absolute");
+    expect(close.right).toBe("0");
+    expect(close.background).toBe("var(--surface-base)");
+    expect(close.background).not.toContain("gradient");
+    expect(close.background).not.toContain("transparent");
   });
 });

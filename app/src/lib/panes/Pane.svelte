@@ -558,30 +558,32 @@
               <ShortcutHint text={String(digit)} />
             {/if}
           {/if}
-          {#if editingSessionId === sessionId}
-            <input
-              class="tab-label-input"
-              bind:this={editInput}
-              bind:value={editValue}
-              onclick={(e) => e.stopPropagation()}
-              onblur={commitEdit}
-              onkeydown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  commitEdit();
-                } else if (e.key === "Escape") {
-                  e.preventDefault();
-                  cancelEdit();
-                }
-              }}
-            />
-          {:else}
-            <span
-              class="tab-label"
-              use:tooltip={tabTooltip(sessionId)}
-              ondblclick={() => startEditing(sessionId)}>{tabLabel(sessionId)}</span
-            >
-          {/if}
+          <span class="tab-title">
+            {#if editingSessionId === sessionId}
+              <input
+                class="tab-label-input"
+                bind:this={editInput}
+                bind:value={editValue}
+                onclick={(e) => e.stopPropagation()}
+                onblur={commitEdit}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitEdit();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelEdit();
+                  }
+                }}
+              />
+            {:else}
+              <span
+                class="tab-label"
+                use:tooltip={tabTooltip(sessionId)}
+                ondblclick={() => startEditing(sessionId)}>{tabLabel(sessionId)}</span
+              >
+            {/if}
+          </span>
           {#if tabStatusBadge(sessionId)}
             {@const status = tabStatusBadge(sessionId)}
             {#if status}<StatusBadge indicator={status} size={10} />{/if}
@@ -984,8 +986,18 @@
   .tab.drop-after {
     box-shadow: inset -2px 0 0 0 var(--ws-accent, #4a9eff);
   }
-  .tab-label {
+  /* The title takes the handle's width. The close is taken out of flow
+     and painted over the handle's far right, so an idle tab is the
+     label at full width and a hovered one does not grow a slot. */
+  .tab-title {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
     max-width: 120px;
+  }
+  .tab-label {
+    display: block;
+    width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1014,8 +1026,7 @@
     opacity: 0.75;
   }
   .tab-label-input {
-    max-width: 120px;
-    width: 100px;
+    width: 100%;
     background: var(--surface-sunken);
     color: var(--text);
     border: 1px solid var(--border-focus);
@@ -1024,24 +1035,28 @@
     font-size: 1em;
     padding: 0 2px;
   }
-  /* Hidden until the tab is hovered or focused: a close box always
-     painted is chrome the label has to share every idle moment. Layout
-     stays reserved so hover never reflows the strip. pointer-events
+  /* Hidden until the tab is hovered or focused. Out of flow on the
+     handle's far right -- `.tab` is already `position: relative` --
+     so it never steals width. Solid fill, no fade: the glyph sits
+     over whatever the handle already painted there. pointer-events
      follow visibility so an invisible X cannot steal a click meant
-     for the tab. Same contract as BoardCard's run-pills. */
+     for the tab. */
   .close {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    background: var(--surface-base);
     opacity: 0;
     pointer-events: none;
-    transition: opacity 120ms;
   }
   .tab:hover .close,
   .tab:focus-within .close {
-    opacity: 0.6;
-    pointer-events: auto;
-  }
-  .tab:hover .close:hover,
-  .tab:focus-within .close:hover {
     opacity: 1;
+    pointer-events: auto;
   }
   .content {
     position: relative;
