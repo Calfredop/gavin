@@ -32,6 +32,15 @@ export interface RailIndex {
   rails: { id: string; name: string }[];
 }
 
+/// Empty selection is unset regardless of polarity -- a dangling invert
+/// is waiting for a tick, not a filter of its own. A hit plus exclude
+/// fails; a miss plus exclude passes. Shared by the board lens so the
+/// two surfaces invert the same way.
+export function selectionPasses(selected: readonly string[], hit: boolean, exclude: boolean): boolean {
+  if (selected.length === 0) return true;
+  return exclude ? !hit : hit;
+}
+
 /// Path-segment aware containment: "/a/auth2" is not under "/a/auth".
 /// Shared by the context facet here and in boardFilters.ts -- a card's
 /// context and a tree node's folder path are the same kind of string, so
@@ -75,6 +84,14 @@ export function statusFacets(columnNames: string[], contexts: ExplorerContextNod
   return out;
 }
 
+export interface PlanFilterExclude {
+  status?: boolean;
+  context?: boolean;
+  kind?: boolean;
+  rail?: boolean;
+  label?: boolean;
+}
+
 export interface PlanFilterState {
   query: string;
   /// Status names. Empty is every status. Compared by slug.
@@ -88,6 +105,9 @@ export interface PlanFilterState {
   kind: string[];
   /// Label names. Empty is every card, labeled or not.
   label: string[];
+  /// Per-facet invert. Absent or false is include (the historic
+  /// default). A flag with an empty selection does not filter.
+  exclude?: PlanFilterExclude;
 }
 
 export interface FilteredExplorer {
@@ -115,31 +135,35 @@ function fileKeeper(state: PlanFilterState, rails: RailIndex): (file: ExplorerFi
   const wantRail = state.rail;
   const wantKind = state.kind;
   const wantLabel = state.label;
+  const exclude = state.exclude;
 
   return (file) => {
     if (!matchesFields(tokens, [file.label, file.path, file.status])) return false;
     // Archived cards answer every card-only facet: they are ordinary
     // plan files that happen to be filed away, and they keep the status
     // they were archived with. Only docs and specs are taken out of the
-    // tree.
+    // tree. Invert still sets the facet, so those groups stay out.
     if (wantStatus.length > 0) {
       if (!isCardGroup(file.group)) return false;
       const have = slugStatus(file.status ?? "");
-      if (!wantStatus.some((s) => slugStatus(s) === have)) return false;
+      const hit = wantStatus.some((s) => slugStatus(s) === have);
+      if (!selectionPasses(wantStatus, hit, exclude?.status === true)) return false;
     }
     if (wantRail.length > 0) {
       if (!isCardGroup(file.group)) return false;
       const on = rails.byCard.get(file.path);
       const hit = wantRail.some((r) => (r === NO_RAIL ? on === undefined : on === r));
-      if (!hit) return false;
+      if (!selectionPasses(wantRail, hit, exclude?.rail === true)) return false;
     }
     if (wantKind.length > 0) {
       if (!isCardGroup(file.group)) return false;
-      if (file.kind == null || !wantKind.includes(file.kind)) return false;
+      if (file.kind == null) return false;
+      if (!selectionPasses(wantKind, wantKind.includes(file.kind), exclude?.kind === true)) return false;
     }
     if (wantLabel.length > 0) {
       if (!isCardGroup(file.group)) return false;
-      if (!wantLabel.some((name) => fileHasLabel(file, name))) return false;
+      const hit = wantLabel.some((name) => fileHasLabel(file, name));
+      if (!selectionPasses(wantLabel, hit, exclude?.label === true)) return false;
     }
     return true;
   };
@@ -169,8 +193,11 @@ export function filterExplorer(
     // facets below, which narrow a context's contents rather than the
     // set of contexts.
     if (
-      state.context.length > 0 &&
-      !state.context.some((folder) => underContext(ctx.folderPath, folder))
+      !selectionPasses(
+        state.context,
+        state.context.some((folder) => underContext(ctx.folderPath, folder)),
+        state.exclude?.context === true
+      )
     ) {
       continue;
     }

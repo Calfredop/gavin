@@ -20,14 +20,26 @@ describe("facet filter surfaces", () => {
     expect(source("boardFilters.ts")).toContain("keepOpen: true");
   });
 
-  it("offers Any-empty labels and no Not pair", () => {
+  it("offers Any-empty labels and no Not pair of options", () => {
     const filters = source("FacetFilters.svelte");
     expect(filters).toContain("Filter by label");
     expect(filters).toContain("ANY_LABEL_LABEL");
     expect(source("boardFilters.ts")).toContain("Any label");
+    // A Not-pair of options ("windows" / "Not windows") is the rejected
+    // spelling. Invert is a switch on the dropdown, not a second value.
     expect(source("boardFilters.ts")).not.toContain("Not ${");
     expect(source("boardFilters.ts")).not.toContain("not:");
     expect(filters).not.toContain("Not ");
+  });
+
+  it("puts a NOT switch on every facet dropdown", () => {
+    const dropdown = source("FacetDropdown.svelte");
+    expect(dropdown).toContain(">NOT</");
+    expect(dropdown).toContain("exclude");
+    expect(dropdown).toContain("onExcludeChange");
+    expect(dropdown).toContain("Click to switch");
+    expect(source("FacetFilters.svelte")).toContain("exclude={exclude.");
+    expect(source("PlanExplorerHubView.svelte")).toContain("exclude={statusExclude}");
   });
 
   it("reaches Kanban, Review and Plans, including Plans' own status facet", () => {

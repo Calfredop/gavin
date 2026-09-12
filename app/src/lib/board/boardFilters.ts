@@ -2,7 +2,9 @@
 // always renders, narrowed by four checkbox dropdowns -- the card's
 // context, its kind, the orchestration rail carrying it, and its labels.
 // Each dropdown is a set: empty means "any", more than one means OR
-// inside that facet, and the four facets AND together.
+// inside that facet, and the four facets AND together. A NOT switch on
+// the dropdown inverts that OR (none of the chosen values) without
+// minting a second option per name.
 //
 // Shaped exactly like pageBoard.ts's page lens and boardSearch.ts's
 // search lens, and for the same reason: it never mutates the projection
@@ -16,7 +18,7 @@
 // rail facet. Two surfaces asking the same question must not answer it
 // two ways.
 
-import { ANY, NO_RAIL, underContext, type RailIndex } from "$lib/board/planFilter";
+import { ANY, NO_RAIL, selectionPasses, underContext, type RailIndex } from "$lib/board/planFilter";
 import type { ContextMenuEntry } from "$lib/core/contextMenu";
 import type { GavinTree } from "$lib/core/gavin";
 import { slugStatus, type CardView } from "$lib/core/planBoard";
@@ -35,6 +37,18 @@ export interface FacetOption {
   label: string;
 }
 
+/// One facet's invert. False is include (the historic default). True
+/// drops cards that match the selection -- De Morgan of the OR inside
+/// the facet. Empty selection stays unset either way.
+export interface FacetExclude {
+  context: boolean;
+  kind: boolean;
+  rail: boolean;
+  label: boolean;
+}
+
+export type FacetKey = keyof FacetExclude;
+
 export interface BoardFacets {
   /// Context folder paths. Empty is every context. The ROOT context is
   /// never offered as a path: every context in the workspace is a
@@ -48,10 +62,17 @@ export interface BoardFacets {
   rail: FacetSelection;
   /// Label names. Empty is every card, labeled or not.
   label: FacetSelection;
+  /// Per-dropdown invert, flipped by the NOT switch. A dangling true
+  /// with nothing ticked is polarity waiting for a tick, not a filter.
+  exclude: FacetExclude;
+}
+
+export function emptyExclude(): FacetExclude {
+  return { context: false, kind: false, rail: false, label: false };
 }
 
 export function emptyFacets(): BoardFacets {
-  return { context: [], kind: [], rail: [], label: [] };
+  return { context: [], kind: [], rail: [], label: [], exclude: emptyExclude() };
 }
 
 export const NO_FACETS: BoardFacets = emptyFacets();
@@ -66,12 +87,17 @@ function sameSelection(a: FacetSelection, b: FacetSelection): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
+function sameExclude(a: FacetExclude, b: FacetExclude): boolean {
+  return a.context === b.context && a.kind === b.kind && a.rail === b.rail && a.label === b.label;
+}
+
 export function facetsEqual(a: BoardFacets, b: BoardFacets): boolean {
   return (
     sameSelection(a.context, b.context) &&
     sameSelection(a.kind, b.kind) &&
     sameSelection(a.rail, b.rail) &&
-    sameSelection(a.label, b.label)
+    sameSelection(a.label, b.label) &&
+    sameExclude(a.exclude ?? emptyExclude(), b.exclude ?? emptyExclude())
   );
 }
 
@@ -89,13 +115,26 @@ export function toggleFacet(selected: FacetSelection, value: string): FacetSelec
   return selected.includes(value) ? selected.filter((v) => v !== value) : [...selected, value];
 }
 
+/// Flip one dropdown's invert. The other three stay put.
+export function toggleExclude(exclude: FacetExclude, key: FacetKey): FacetExclude {
+  return { ...exclude, [key]: !exclude[key] };
+}
+
 /// What the dropdown button reads. Empty is the unset label; otherwise
 /// the selected options in option order, so "Plans, Tasks" does not
-/// reshuffle when the human ticks them the other way round.
-export function facetSummary(selected: FacetSelection, options: FacetOption[], empty: string): string {
+/// reshuffle when the human ticks them the other way round. Invert
+/// prefixes the joined labels; the empty label stays the empty label.
+export function facetSummary(
+  selected: FacetSelection,
+  options: FacetOption[],
+  empty: string,
+  exclude = false
+): string {
   if (selected.length === 0) return empty;
   const labels = options.filter((o) => selected.includes(o.value)).map((o) => o.label);
-  return labels.length > 0 ? labels.join(", ") : empty;
+  if (labels.length === 0) return empty;
+  const joined = labels.join(", ");
+  return exclude ? "Not " + joined : joined;
 }
 
 /// Checkbox rows for one facet. Each pick keeps the menu open so a
@@ -165,7 +204,8 @@ export function contextFacets(tree: GavinTree | undefined): ContextFacet[] {
 export type LabelFacet = FacetOption;
 
 /// The label dropdown: each vocabulary name, nothing else. Empty
-/// selection is "any label" (unlabeled cards included); there is no Not.
+/// selection is "any label" (unlabeled cards included). Invert is the
+/// dropdown's NOT switch, not a second option per name.
 export function labelFacets(labels: { name: string }[]): LabelFacet[] {
   return labels.map((l) => ({ value: l.name, label: l.name }));
 }
@@ -182,28 +222,27 @@ function cardHasLabel(card: CardView, name: string): boolean {
   return card.labels.some((l) => slugStatus(l) === want);
 }
 
-function matchesSelection(selected: FacetSelection, value: string): boolean {
-  return selected.length === 0 || selected.includes(value);
-}
-
 /// One card's verdict, so the board and the archive grid ask the same
 /// question of the same card.
 export function cardPasses(card: CardView, facets: BoardFacets, rails: RailIndex): boolean {
   if (
-    facets.context.length > 0 &&
-    !facets.context.some((folder) => underContext(card.contextFolder, folder))
+    !selectionPasses(
+      facets.context,
+      facets.context.some((folder) => underContext(card.contextFolder, folder)),
+      facets.exclude?.context === true
+    )
   ) {
     return false;
   }
-  if (!matchesSelection(facets.kind, card.kind)) return false;
+  if (!selectionPasses(facets.kind, facets.kind.includes(card.kind), facets.exclude?.kind === true)) return false;
   if (facets.rail.length > 0) {
     const on = rails.byCard.get(card.id);
     const hit = facets.rail.some((r) => (r === NO_RAIL ? on === undefined : on === r));
-    if (!hit) return false;
+    if (!selectionPasses(facets.rail, hit, facets.exclude?.rail === true)) return false;
   }
   if (facets.label.length > 0) {
     const hit = facets.label.some((name) => cardHasLabel(card, name));
-    if (!hit) return false;
+    if (!selectionPasses(facets.label, hit, facets.exclude?.label === true)) return false;
   }
   return true;
 }

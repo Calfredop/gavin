@@ -19,8 +19,10 @@
     ANY_LABEL_LABEL,
     ANY_RAIL_LABEL,
     KIND_FACETS,
+    emptyExclude,
     labelFacets,
     railFacets,
+    toggleExclude,
     type BoardFacets,
     type ContextFacet,
   } from "$lib/board/boardFilters";
@@ -42,6 +44,7 @@
   let { facets, contexts, rails, labels = [], linked, onChange, onToggleLink }: Props = $props();
   const labelOptions = $derived(labelFacets(labels));
   const railOptions = $derived(railFacets(rails));
+  const exclude = $derived(facets.exclude ?? emptyExclude());
 </script>
 
 <FacetDropdown
@@ -50,7 +53,9 @@
   emptyLabel={ALL_CONTEXTS_LABEL}
   options={contexts}
   selected={facets.context}
+  exclude={exclude.context}
   onChange={(context) => onChange({ ...facets, context })}
+  onExcludeChange={() => onChange({ ...facets, exclude: toggleExclude(exclude, "context") })}
 />
 <FacetDropdown
   ariaLabel="Filter by kind"
@@ -58,7 +63,9 @@
   emptyLabel={ANY_KIND_LABEL}
   options={KIND_FACETS}
   selected={facets.kind}
+  exclude={exclude.kind}
   onChange={(kind) => onChange({ ...facets, kind })}
+  onExcludeChange={() => onChange({ ...facets, exclude: toggleExclude(exclude, "kind") })}
 />
 <FacetDropdown
   ariaLabel="Filter by rail"
@@ -66,7 +73,9 @@
   emptyLabel={ANY_RAIL_LABEL}
   options={railOptions}
   selected={facets.rail}
+  exclude={exclude.rail}
   onChange={(rail) => onChange({ ...facets, rail })}
+  onExcludeChange={() => onChange({ ...facets, exclude: toggleExclude(exclude, "rail") })}
 />
 <FacetDropdown
   ariaLabel="Filter by label"
@@ -74,7 +83,9 @@
   emptyLabel={ANY_LABEL_LABEL}
   options={labelOptions}
   selected={facets.label}
+  exclude={exclude.label}
   onChange={(label) => onChange({ ...facets, label })}
+  onExcludeChange={() => onChange({ ...facets, exclude: toggleExclude(exclude, "label") })}
 />
 <IconButton
   icon={linked ? Link2 : Link2Off}

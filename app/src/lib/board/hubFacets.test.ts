@@ -6,7 +6,11 @@ import { facetsFor, hubFacetState, isTabLinked, resetTabFacets, setTabFacets, se
 const WS = "ws1";
 
 function context(): BoardFacets {
-  return { context: ["/ws/auth"], kind: [], rail: [], label: [] };
+  return { ...emptyFacets(), context: ["/ws/auth"] };
+}
+
+function of(over: Partial<BoardFacets>): BoardFacets {
+  return { ...emptyFacets(), ...over };
 }
 
 beforeEach(() => {
@@ -38,7 +42,7 @@ describe("unlinking", () => {
     expect(facetsFor(frozen, "review")).toEqual(context());
 
     // Kanban and Plans stay linked and move together; Review does not.
-    const changed: BoardFacets = { context: [], kind: ["task"], rail: [], label: [] };
+    const changed = of({ kind: ["task"] });
     setTabFacets(WS, "plans", changed);
     const ws = get(hubFacetState)[WS];
     expect(facetsFor(ws, "kanban")).toEqual(changed);
@@ -49,17 +53,17 @@ describe("unlinking", () => {
 
   it("edits from an unlinked tab do not reach the linked ones", () => {
     setTabLinked(WS, "review", false);
-    setTabFacets(WS, "review", { context: [], kind: [], rail: ["r1"], label: [] });
+    setTabFacets(WS, "review", of({ rail: ["r1"] }));
     const ws = get(hubFacetState)[WS];
     expect(facetsFor(ws, "kanban")).toEqual(NO_FACETS);
-    expect(facetsFor(ws, "review")).toEqual({ context: [], kind: [], rail: ["r1"], label: [] });
+    expect(facetsFor(ws, "review")).toEqual(of({ rail: ["r1"] }));
   });
 });
 
 describe("relinking", () => {
   it("drops the tab's own answer and rejoins at whatever shared reads now", () => {
     setTabLinked(WS, "review", false);
-    setTabFacets(WS, "review", { context: [], kind: [], rail: ["r1"], label: [] });
+    setTabFacets(WS, "review", of({ rail: ["r1"] }));
     setTabFacets(WS, "kanban", context());
     setTabLinked(WS, "review", true);
     const ws = get(hubFacetState)[WS];
@@ -67,7 +71,7 @@ describe("relinking", () => {
     expect(facetsFor(ws, "review")).toEqual(context());
 
     // And it follows further shared changes again.
-    const changed: BoardFacets = { context: [], kind: ["note"], rail: [], label: [] };
+    const changed = of({ kind: ["note"] });
     setTabFacets(WS, "plans", changed);
     expect(facetsFor(get(hubFacetState)[WS], "review")).toEqual(changed);
   });
@@ -83,7 +87,7 @@ describe("resetTabFacets", () => {
   it("clears only the unlinked tab's own facets", () => {
     setTabFacets(WS, "kanban", context());
     setTabLinked(WS, "review", false);
-    setTabFacets(WS, "review", { context: [], kind: [], rail: ["r1"], label: [] });
+    setTabFacets(WS, "review", of({ rail: ["r1"] }));
     resetTabFacets(WS, "review");
     const ws = get(hubFacetState)[WS];
     expect(facetsFor(ws, "review")).toEqual(NO_FACETS);

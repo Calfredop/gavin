@@ -165,6 +165,7 @@
   // tab switch, and "shared with Kanban and Review" cannot mean that.
   let query = $state("");
   let statusFacet = $state<string[]>([]);
+  let statusExclude = $state(false);
   const hub = $derived($hubFacetState[workspaceId]);
   const sharedFacets = $derived(facetsFor(hub, "plans"));
   const facetsLinked = $derived(isTabLinked(hub, "plans"));
@@ -182,6 +183,13 @@
         context: sharedFacets.context,
         kind: sharedFacets.kind,
         label: sharedFacets.label,
+        exclude: {
+          status: statusExclude,
+          context: sharedFacets.exclude?.context,
+          kind: sharedFacets.exclude?.kind,
+          rail: sharedFacets.exclude?.rail,
+          label: sharedFacets.exclude?.label,
+        },
       },
       rails
     )
@@ -461,7 +469,9 @@
             emptyLabel={ANY_STATUS_LABEL}
             options={statuses.map((name) => ({ value: name, label: name }))}
             selected={statusFacet}
+            exclude={statusExclude}
             onChange={(next) => (statusFacet = next)}
+            onExcludeChange={(next) => (statusExclude = next)}
           />
           <FacetFilters
             facets={sharedFacets}
@@ -480,6 +490,7 @@
               onclick={() => {
                 query = "";
                 statusFacet = [];
+                statusExclude = false;
                 resetTabFacets(workspaceId, "plans");
               }}
             >Reset</button>

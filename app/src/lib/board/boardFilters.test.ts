@@ -18,6 +18,7 @@ import {
   labelFacets,
   pruneFacets,
   railFacets,
+  toggleExclude,
   toggleFacet,
   underContext,
   type BoardFacets,
@@ -211,6 +212,51 @@ describe("cardPasses", () => {
     expect(cardPasses(card("a"), selected, rails)).toBe(true);
     expect(cardPasses(card("a", { kind: "plan" }), selected, rails)).toBe(false);
   });
+
+  it("inverts a kind facet so the chosen kinds drop", () => {
+    const selected = facets({ kind: ["plan"], exclude: { ...emptyFacets().exclude, kind: true } });
+    expect(cardPasses(card("a", { kind: "plan" }), selected, EMPTY_RAILS)).toBe(false);
+    expect(cardPasses(card("a", { kind: "task" }), selected, EMPTY_RAILS)).toBe(true);
+    expect(cardPasses(card("a", { kind: "note" }), selected, EMPTY_RAILS)).toBe(true);
+  });
+
+  it("inverts an OR: none of the chosen values may match", () => {
+    const selected = facets({ kind: ["plan", "note"], exclude: { ...emptyFacets().exclude, kind: true } });
+    expect(cardPasses(card("a", { kind: "plan" }), selected, EMPTY_RAILS)).toBe(false);
+    expect(cardPasses(card("a", { kind: "note" }), selected, EMPTY_RAILS)).toBe(false);
+    expect(cardPasses(card("a", { kind: "task" }), selected, EMPTY_RAILS)).toBe(true);
+  });
+
+  it("inverts a context facet, still path-segment aware", () => {
+    const selected = facets({ context: ["/ws/app"], exclude: { ...emptyFacets().exclude, context: true } });
+    expect(cardPasses(card("a", { contextFolder: "/ws/app" }), selected, EMPTY_RAILS)).toBe(false);
+    expect(cardPasses(card("a", { contextFolder: "/ws/app/ui" }), selected, EMPTY_RAILS)).toBe(false);
+    expect(cardPasses(card("a", { contextFolder: "/ws" }), selected, EMPTY_RAILS)).toBe(true);
+    expect(cardPasses(card("a", { contextFolder: "/ws/app2" }), selected, EMPTY_RAILS)).toBe(true);
+  });
+
+  it("inverts a rail facet, including On no rail", () => {
+    const onRail = card("a");
+    const unplaced = card("b");
+    expect(cardPasses(onRail, facets({ rail: ["r1"], exclude: { ...emptyFacets().exclude, rail: true } }), rails)).toBe(
+      false
+    );
+    expect(cardPasses(unplaced, facets({ rail: ["r1"], exclude: { ...emptyFacets().exclude, rail: true } }), rails)).toBe(
+      true
+    );
+    expect(
+      cardPasses(unplaced, facets({ rail: [NO_RAIL], exclude: { ...emptyFacets().exclude, rail: true } }), rails)
+    ).toBe(false);
+    expect(cardPasses(onRail, facets({ rail: [NO_RAIL], exclude: { ...emptyFacets().exclude, rail: true } }), rails)).toBe(
+      true
+    );
+  });
+
+  it("does not filter when exclude is on but nothing is ticked", () => {
+    const selected = facets({ exclude: { context: true, kind: true, rail: true, label: true } });
+    expect(cardPasses(card("a", { kind: "plan" }), selected, EMPTY_RAILS)).toBe(true);
+    expect(facetsActive(selected)).toBe(false);
+  });
 });
 
 describe("filterBoardByFacets", () => {
@@ -373,6 +419,24 @@ describe("cardPasses label facet", () => {
     expect(cardPasses(card("a", { labels: ["windows"] }), selected, EMPTY_RAILS)).toBe(true);
     expect(cardPasses(card("a", { kind: "plan", labels: ["windows"] }), selected, EMPTY_RAILS)).toBe(false);
   });
+
+  it("inverts a label facet so a card carrying any chosen label drops", () => {
+    const selected = facets({ label: ["windows"], exclude: { ...emptyFacets().exclude, label: true } });
+    expect(cardPasses(card("a", { labels: ["windows"] }), selected, EMPTY_RAILS)).toBe(false);
+    expect(cardPasses(card("a", { labels: [" Windows "] }), selected, EMPTY_RAILS)).toBe(false);
+    expect(cardPasses(card("a", { labels: ["memory"] }), selected, EMPTY_RAILS)).toBe(true);
+    expect(cardPasses(card("a"), selected, EMPTY_RAILS)).toBe(true);
+  });
+
+  it("inverts several labels — a card carrying any of them fails", () => {
+    const selected = facets({
+      label: ["windows", "memory"],
+      exclude: { ...emptyFacets().exclude, label: true },
+    });
+    expect(cardPasses(card("a", { labels: ["windows"] }), selected, EMPTY_RAILS)).toBe(false);
+    expect(cardPasses(card("a", { labels: ["memory"] }), selected, EMPTY_RAILS)).toBe(false);
+    expect(cardPasses(card("a"), selected, EMPTY_RAILS)).toBe(true);
+  });
 });
 
 describe("pruneFacets label", () => {
@@ -406,6 +470,19 @@ describe("toggleFacet / facetSummary / facetMenuEntries", () => {
     expect(facetSummary(["note", "plan"], KIND_FACETS, ANY_KIND_LABEL)).toBe("Plans, Notes");
   });
 
+  it("prefixes the summary when the facet is inverted, but not the empty label", () => {
+    expect(facetSummary(["task"], KIND_FACETS, ANY_KIND_LABEL, true)).toBe("Not Tasks");
+    expect(facetSummary(["note", "plan"], KIND_FACETS, ANY_KIND_LABEL, true)).toBe("Not Plans, Notes");
+    expect(facetSummary([], KIND_FACETS, ANY_KIND_LABEL, true)).toBe(ANY_KIND_LABEL);
+  });
+
+  it("flips one facet's exclude flag and leaves the others", () => {
+    const start = emptyFacets().exclude;
+    expect(toggleExclude(start, "kind")).toEqual({ context: false, kind: true, rail: false, label: false });
+    expect(toggleExclude({ ...start, kind: true }, "kind")).toEqual(start);
+    expect(start).toEqual({ context: false, kind: false, rail: false, label: false });
+  });
+
   it("builds keep-open checkboxes that route the toggle", () => {
     const picked: string[] = [];
     const entries = facetMenuEntries(KIND_FACETS, ["plan"], (v) => picked.push(v));
@@ -436,6 +513,12 @@ describe("facetsEqual", () => {
     expect(facetsEqual(facets({ kind: ["plan"] }), facets({ kind: ["task"] }))).toBe(false);
     expect(facetsEqual(NO_FACETS, emptyFacets())).toBe(true);
   });
+
+  it("treats a polarity flip as a different answer", () => {
+    const include = facets({ kind: ["plan"] });
+    const exclude = facets({ kind: ["plan"], exclude: { ...emptyFacets().exclude, kind: true } });
+    expect(facetsEqual(include, exclude)).toBe(false);
+  });
 });
 
 describe("emptyFacets", () => {
@@ -445,6 +528,7 @@ describe("emptyFacets", () => {
     expect(a).toEqual(b);
     expect(a).not.toBe(b);
     expect(a.kind).not.toBe(b.kind);
+    expect(a.exclude).not.toBe(b.exclude);
   });
 });
 

@@ -304,6 +304,54 @@ describe("filterExplorer", () => {
       expect(out.contexts[0].groups.map((g) => g.group)).toEqual(["plans"]);
     });
   });
+
+  describe("exclude polarity", () => {
+    it("inverts status so the chosen statuses drop", () => {
+      const out = filterExplorer(contexts, { ...base, status: ["Done"], exclude: { status: true } }, railIndex(orch));
+      expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Git tab"]);
+    });
+
+    it("inverts kind so the chosen kinds drop, and still takes docs out", () => {
+      const reminder = file("/ws/.gavin-root/plans/reminder.md", "Reminder", null, "plans", "note");
+      const withKinds: ExplorerContextNode[] = [
+        context({
+          groups: [
+            { group: "plans", label: "Plans", files: [gitTab, reminder], archived: [] },
+            { group: "docs", label: "Docs", files: [readme], archived: [] },
+          ],
+        }),
+      ];
+      const out = filterExplorer(withKinds, { ...base, kind: ["plan"], exclude: { kind: true } }, railIndex(orch));
+      expect(out.contexts[0].groups.map((g) => g.group)).toEqual(["plans"]);
+      expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Reminder"]);
+    });
+
+    it("inverts context so the chosen folder and its subfolders drop", () => {
+      const auth = context({
+        folderPath: "/ws/auth",
+        name: "auth",
+        kind: "context",
+        groups: [{ group: "plans", label: "Plans", files: [file("/ws/auth/.gavin/plans/login.md", "Login", "To Do")], archived: [] }],
+      });
+      const out = filterExplorer([...contexts, auth], { ...base, context: ["/ws/auth"], exclude: { context: true } }, railIndex(orch));
+      expect(out.contexts.map((c) => c.name)).toEqual(["root"]);
+    });
+
+    it("inverts a label so a card carrying it drops", () => {
+      const tagged = { ...gitTab, labels: ["windows"] };
+      const bare = { ...kanban, labels: [] as string[] };
+      const withLabels: ExplorerContextNode[] = [
+        context({ groups: [{ group: "plans", label: "Plans", files: [tagged, bare], archived: [] }] }),
+      ];
+      const out = filterExplorer(withLabels, { ...base, label: ["windows"], exclude: { label: true } }, railIndex(orch));
+      expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Kanban search"]);
+    });
+
+    it("inverts a rail so the cards on it drop", () => {
+      const out = filterExplorer(contexts, { ...base, rail: ["r1"], exclude: { rail: true } }, railIndex(orch));
+      expect(out.contexts[0].groups[0].files.map((f) => f.label)).toEqual(["Kanban search"]);
+    });
+  });
 });
 
 describe("underContext", () => {
