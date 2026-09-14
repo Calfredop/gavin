@@ -1,5 +1,5 @@
 ---
-order: 12288
+order: 3072
 title: [chore] a stable release install beside the dev tree on Windows
 labels: windows
 status: In Progress

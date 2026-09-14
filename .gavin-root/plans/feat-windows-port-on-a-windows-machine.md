@@ -1,6 +1,6 @@
 ---
 model: opus[1m]
-order: 9216
+order: 1024
 title: [feat] windows port — the half that needs a Windows machine
 labels: windows
 status: In Progress

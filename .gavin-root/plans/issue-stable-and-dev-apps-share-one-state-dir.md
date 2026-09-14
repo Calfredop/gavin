@@ -1,5 +1,5 @@
 ---
-order: 13312
+order: 4096
 kind: task
 title: [issue] the stable and dev apps share one daemon and one config.json
 labels: windows
