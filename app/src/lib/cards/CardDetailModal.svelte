@@ -71,6 +71,7 @@
   import { isViewTab } from "$lib/panes/tabIdentity";
   import { cardSessionState } from "$lib/board/columnRunAction";
   import { composePlanPrompt, composeTaskPrompt, developAvailable, agentPromptBlocker } from "$lib/cards/cardRun";
+  import { mustPromptBody } from "$lib/agents/actionPromptsState";
   import { cardNeedsReview, resolveRequireReview } from "$lib/cards/cardReview";
   import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
   import { resumeNoteFor } from "$lib/agents/autoResume";
@@ -1032,9 +1033,23 @@
                 paths,
                 null,
                 withheld,
-                $resolvedAgents(workspaceId).sessionIdDiscovery
+                $resolvedAgents(workspaceId).sessionIdDiscovery,
+                {
+                  template: mustPromptBody("action:run-task", workspaceId),
+                  nameTabBase: mustPromptBody("action:name-tab-first", workspaceId),
+                }
               )
-            : composePlanPrompt(card.id, paths, null, withheld, $resolvedAgents(workspaceId).sessionIdDiscovery),
+            : composePlanPrompt(
+                card.id,
+                paths,
+                null,
+                withheld,
+                $resolvedAgents(workspaceId).sessionIdDiscovery,
+                {
+                  template: mustPromptBody("action:run-plan", workspaceId),
+                  nameTabBase: mustPromptBody("action:name-tab-first", workspaceId),
+                }
+              ),
       });
     } finally {
       reviewBusy = false;

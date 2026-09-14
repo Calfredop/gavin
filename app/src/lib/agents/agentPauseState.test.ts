@@ -27,6 +27,7 @@ vi.mock("$lib/core/layoutState", async () => {
       complexity: {},
       agentFallback: [] as string[],
       fallbackThresholds: {} as Record<string, number>,
+      actionPromptOverrides: {} as Record<string, string>,
     }),
   };
 });
@@ -77,6 +78,7 @@ beforeEach(() => {
     complexity: {},
     agentFallback: [],
     fallbackThresholds: {},
+    actionPromptOverrides: {},
   });
 });
 
@@ -366,6 +368,7 @@ describe("the gate", () => {
       complexity: {},
       agentFallback: [],
       fallbackThresholds: { "claude-code": 80 },
+      actionPromptOverrides: {},
     });
     layoutState.set({
       workspaces: [{ id: "w1", agentFallback: ["codex"], armedAgents: ["codex"] }],

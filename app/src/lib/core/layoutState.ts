@@ -1332,6 +1332,11 @@ export async function bootstrap(): Promise<void> {
   // itself, and `fetchTools` is a load-once that would never refetch.
   const { initToolListeners } = await import("$lib/orchestration/toolsState");
   unlisteners.push(await initToolListeners());
+  // Action-prompt overrides persist on the workspace record; bind the
+  // writer so the Tools explorer can save without importing this module
+  // at load time (cycle with actionPromptsState ↔ layoutState).
+  const { bindWorkspacePromptPersistence } = await import("$lib/agents/actionPromptsState");
+  bindWorkspacePromptPersistence(setWorkspaceActionPromptOverrides);
   // Same dynamic-import reason as above: agentPauseState reads
   // resolvedAgentFor from this module. Started here rather than from a
   // component, because a pause whose clock only advances while one tab is
@@ -2609,6 +2614,28 @@ export async function setWorkspaceAutoCommit(
   const state = get(layoutState);
   const workspaces = state.workspaces.map((w) =>
     w.id === workspaceId ? { ...w, autoCommit: enabled ?? undefined } : w
+  );
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// This workspace's action-prompt overrides. Empty map clears every
+/// override so the app-wide / shipped defaults apply again.
+export async function setWorkspaceActionPromptOverrides(
+  workspaceId: string,
+  overrides: Record<string, string>
+): Promise<void> {
+  const state = get(layoutState);
+  const cleaned = Object.fromEntries(
+    Object.entries(overrides).filter(([, body]) => typeof body === "string" && body.trim())
+  );
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId
+      ? {
+          ...w,
+          actionPromptOverrides: Object.keys(cleaned).length > 0 ? cleaned : undefined,
+        }
+      : w
   );
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);

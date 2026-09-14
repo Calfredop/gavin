@@ -22,7 +22,8 @@ import { findSessionLocation, hubViewIsOnScreen } from "$lib/core/workspace";
 import type { AgentCommitRecord, Workspace } from "$lib/core/workspace";
 import { folderName } from "$lib/core/paths";
 import { maybeNotifyAgentCommit, type AgentCommitVerdict } from "$lib/core/notifications";
-import { buildHeadlessCommand, COMMIT_PROMPT } from "$lib/cards/cardRun";
+import { buildHeadlessCommand } from "$lib/cards/cardRun";
+import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import {
   MAX_AUTO_RESUME_ATTEMPTS,
   autoResumePolicy,
@@ -580,9 +581,9 @@ function awaitExit(sessionId: string): Promise<number> {
   });
 }
 
-/// The Git tab's "Commit via agent": one canned prompt (COMMIT_PROMPT),
-/// run by a HIDDEN agent session -- no tab, no page, the button is the
-/// whole interface. This app stages and commits nothing itself; the
+/// The Git tab's "Commit via agent": the builtin:commit body (overrides
+/// applied), run by a HIDDEN agent session -- no tab, no page, the button
+/// is the whole interface. This app stages and commits nothing itself; the
 /// agent decides the chunks.
 ///
 /// The run has to be a headless one: an interactive agent sits at its
@@ -611,7 +612,8 @@ export async function commitViaAgent(
     return false;
   }
   const agent = resolvedAgentFor(workspaceId);
-  const command = buildHeadlessCommand(agent.launchCommand, agent.headlessArgs, COMMIT_PROMPT);
+  const prompt = mustPromptBody("builtin:commit", workspaceId);
+  const command = buildHeadlessCommand(agent.launchCommand, agent.headlessArgs, prompt);
   if (!command) {
     noteError(workspaceId, `Commit via agent needs a headless agent — ${agent.profileId} has none`);
     return false;

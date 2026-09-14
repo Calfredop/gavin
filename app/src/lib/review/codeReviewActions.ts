@@ -30,6 +30,7 @@ import { gavinTrees } from "$lib/core/gavinState";
 import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
 import { revealSession } from "$lib/cards/cardRunActions";
 import { buildRunCommand, provisionalSessionName } from "$lib/cards/cardRun";
+import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import {
   composeReviewPrompt,
   defaultReviewBase,
@@ -262,6 +263,8 @@ async function launchReview(request: {
     contextFolder: request.contextFolder,
     plansFolder: request.plansFolder,
     card: request.card,
+    template: mustPromptBody("action:code-review", request.workspaceId),
+    nameTabBase: mustPromptBody("action:name-tab-first", request.workspaceId),
   });
   // No conversation id, for the same reason a develop run has none: a
   // review binds to nothing, so there is no record for one to outlive

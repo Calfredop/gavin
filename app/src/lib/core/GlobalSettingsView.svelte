@@ -76,6 +76,7 @@
   import { agentPauseStore, profilesInUse, saveAgentPause } from "$lib/agents/agentPauseState";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
   import type { LaunchConfig } from "$lib/agents/launchGate";
+  import ToolsExplorerView from "$lib/orchestration/ToolsExplorerView.svelte";
 
   // Full-page app settings: opened via appSettingsOpen, closed by
   // navigating away (sidebar / hub / workspace), not by a Done button.
@@ -344,6 +345,17 @@
     },
     { id: "agent-defaults", keywords: ["Agent defaults", "model", "Claude Code", "Codex"] },
     { id: "custom-agent", keywords: ["Custom agent", "Command", "Model flag"] },
+    {
+      id: "tools",
+      keywords: [
+        "Tools",
+        "Action prompts",
+        "agent prompt",
+        "commit via agent",
+        "critical review",
+        "prompt overrides",
+      ],
+    },
     { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
     {
       id: "fallback-agent",
@@ -626,6 +638,17 @@
         custom agent stays dark rather than guessing a flag. A workspace can override both on its
         own Settings tab.
       </p>
+    </section>
+
+    <section hidden={!settingsFilter.visible("tools") || selectedSection !== "tools"}>
+      <h3>Tools</h3>
+      <p class="hint">
+        App-wide agent action prompts and global tools. A workspace can override any prompt on its
+        Tools tab; workspace wording wins when both are set.
+      </p>
+      <div class="tools-explorer">
+        <ToolsExplorerView scope="app" />
+      </div>
     </section>
 
     <section hidden={!settingsFilter.visible("complexity") || selectedSection !== "complexity"}>
@@ -1072,6 +1095,14 @@
   }
   .hint.error {
     color: var(--danger-text);
+  }
+  .tools-explorer {
+    margin-top: 10px;
+    min-height: 420px;
+    height: min(70vh, 640px);
+  }
+  .tools-explorer :global(.explorer) {
+    height: 100%;
   }
   .check {
     display: flex;

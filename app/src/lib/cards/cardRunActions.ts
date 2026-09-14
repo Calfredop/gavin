@@ -27,7 +27,9 @@ import {
   runStatusNeeded,
   unresumableConversationReason,
   type ConversationLog,
+  type CardPromptOptions,
 } from "$lib/cards/cardRun";
+import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import {
   developingBlocker,
   developingRunOn,
@@ -70,6 +72,14 @@ function holdLaunch(workspaceId: string, decision: ReturnType<typeof launchDecis
     return fallbackBlockedReason(decision);
   }
   return fallbackBlockedReason(decision);
+}
+
+/// Resolved template + name-tab opener for a card-launch composer.
+function promptOpts(workspaceId: string, actionId: string): CardPromptOptions {
+  return {
+    template: mustPromptBody(actionId, workspaceId),
+    nameTabBase: mustPromptBody("action:name-tab-first", workspaceId),
+  };
 }
 
 /// The run gate for a card's attachments: the absolute paths to hand the
@@ -369,7 +379,7 @@ export async function developCard(
   const command = buildRunCommand(
     agent.launchCommand,
     agent.promptArgs,
-    composeDevelopPrompt(card.id, card.title, agent.sessionIdDiscovery)
+    composeDevelopPrompt(card.id, card.title, agent.sessionIdDiscovery, promptOpts(workspaceId, "action:develop"))
   );
   if (command === null) return noPromptReason(agent.label);
 
@@ -555,17 +565,48 @@ async function launchCard(
         body,
         resolved.paths,
         resolved.withheld,
-        agent.sessionIdDiscovery
+        agent.sessionIdDiscovery,
+        promptOpts(workspaceId, "action:review-launch")
       );
     }
     if (kind === "task") {
       return mode === "resume"
-        ? composeResumeTaskPrompt(at, card.title, body, resolved.paths, resolved.withheld, agent.sessionIdDiscovery)
-        : composeTaskPrompt(at, card.title, body, resolved.paths, null, resolved.withheld, agent.sessionIdDiscovery);
+        ? composeResumeTaskPrompt(
+            at,
+            card.title,
+            body,
+            resolved.paths,
+            resolved.withheld,
+            agent.sessionIdDiscovery,
+            promptOpts(workspaceId, "action:resume-task")
+          )
+        : composeTaskPrompt(
+            at,
+            card.title,
+            body,
+            resolved.paths,
+            null,
+            resolved.withheld,
+            agent.sessionIdDiscovery,
+            promptOpts(workspaceId, "action:run-task")
+          );
     }
     return mode === "resume"
-      ? composeResumePlanPrompt(at, resolved.paths, resolved.withheld, agent.sessionIdDiscovery)
-      : composePlanPrompt(at, resolved.paths, null, resolved.withheld, agent.sessionIdDiscovery);
+      ? composeResumePlanPrompt(
+          at,
+          resolved.paths,
+          resolved.withheld,
+          agent.sessionIdDiscovery,
+          promptOpts(workspaceId, "action:resume-plan")
+        )
+      : composePlanPrompt(
+          at,
+          resolved.paths,
+          null,
+          resolved.withheld,
+          agent.sessionIdDiscovery,
+          promptOpts(workspaceId, "action:run-plan")
+        );
   };
   if (!reopening) {
     const file = await backend.readFileForViewer(card.id);
@@ -845,8 +886,24 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   const agent = resolvedAgentFor(workspaceId);
   const composePrompt = (at: string): string =>
     card.kind === "task"
-      ? composeTaskPrompt(at, card.title, body, resolved.paths, null, resolved.withheld, agent.sessionIdDiscovery)
-      : composePlanPrompt(at, resolved.paths, null, resolved.withheld, agent.sessionIdDiscovery);
+      ? composeTaskPrompt(
+          at,
+          card.title,
+          body,
+          resolved.paths,
+          null,
+          resolved.withheld,
+          agent.sessionIdDiscovery,
+          promptOpts(workspaceId, "action:run-task")
+        )
+      : composePlanPrompt(
+          at,
+          resolved.paths,
+          null,
+          resolved.withheld,
+          agent.sessionIdDiscovery,
+          promptOpts(workspaceId, "action:run-plan")
+        );
   const reviewed = await ensureCardReviewed({
     workspaceId,
     path: card.id,

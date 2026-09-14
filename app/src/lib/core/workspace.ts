@@ -243,6 +243,11 @@ export interface Workspace {
   /// `custom`. Machine-local like `terminalFontSize`: a resume flag is a
   /// fact about the binary on THIS machine, not the repository.
   customResumeArgs?: string;
+  /// Overrides of shipped agent action prompts for this workspace, keyed
+  /// by catalog id. Absent or empty inherits the app-wide map (and then
+  /// the shipped default). Machine-local like `autoCommit`: which wording
+  /// THIS human wants agents to see is a habit, not a project fact.
+  actionPromptOverrides?: Record<string, string>;
 }
 
 /// A workspace that left the app through the sidebar X, kept so its

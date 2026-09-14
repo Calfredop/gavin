@@ -12,6 +12,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import * as backend from "$lib/core/backend";
 import { toolLibrary, toRecord, isBuiltinId, BUILTIN_TOOLS } from "$lib/orchestration/orchestrationTools";
 import type { Tool, ToolRecord } from "$lib/orchestration/orchestrationTools";
+import { libraryWithPromptOverrides } from "$lib/agents/actionPromptsState";
 
 /// The daemon's rows, by workspace. Null means "not fetched yet", which
 /// the scheduler must distinguish from "no tools" -- an unloaded library
@@ -28,16 +29,17 @@ export function dismissToolError(workspaceId: string): void {
   });
 }
 
-/// The whole library for a workspace: built-ins plus its stored rows.
-/// Null while the fetch is still in flight -- callers pass that null
-/// straight through to nextActions, which treats it as "unknown", not
-/// "empty".
+/// The whole library for a workspace: built-ins plus its stored rows,
+/// with action-prompt overrides applied to agent tool bodies. Null while
+/// the fetch is still in flight -- callers pass that null straight
+/// through to nextActions, which treats it as "unknown", not "empty".
 export function libraryFor(
   records: Record<string, ToolRecord[] | null>,
   workspaceId: string
 ): Tool[] | null {
   const rows = records[workspaceId];
-  return rows === null || rows === undefined ? null : toolLibrary(rows);
+  if (rows === null || rows === undefined) return null;
+  return libraryWithPromptOverrides(toolLibrary(rows), workspaceId);
 }
 
 /// The library, or just the built-ins while the fetch is in flight. For
@@ -47,7 +49,7 @@ export function renderLibraryFor(
   records: Record<string, ToolRecord[] | null>,
   workspaceId: string
 ): Tool[] {
-  return libraryFor(records, workspaceId) ?? BUILTIN_TOOLS;
+  return libraryFor(records, workspaceId) ?? libraryWithPromptOverrides(BUILTIN_TOOLS, workspaceId);
 }
 
 export async function fetchTools(workspaceId: string): Promise<void> {

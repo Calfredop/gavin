@@ -1,9 +1,24 @@
 // Pure prompt/command composition for executable cards (card-model spec
 // §3). The run flow (cardRunActions.ts) wires these to real sessions.
+//
+// Templates live in actionPrompts.ts; composers fill them. Call sites that
+// know a workspace pass the resolved body (mustPromptBody) so overrides
+// take effect — omitted, the DEFAULT_* constant is what every existing
+// unit test already asserts.
 
 import { attachmentPromptBlock } from "$lib/cards/attachments";
 import { slugStatus } from "$lib/core/planBoard";
 import { cardIsOutside } from "$lib/git/worktreeCards";
+import {
+  DEFAULT_DEVELOP,
+  DEFAULT_NAME_TAB_FIRST,
+  DEFAULT_RESUME_PLAN,
+  DEFAULT_RESUME_TASK,
+  DEFAULT_REVIEW_LAUNCH,
+  DEFAULT_RUN_PLAN,
+  DEFAULT_RUN_TASK,
+  fillTemplate,
+} from "$lib/agents/actionPromptDefaults";
 
 // Every launched agent gets the same opening instruction, board Run and
 // orchestration alike: name the tab before doing anything else. A page
@@ -11,9 +26,14 @@ import { cardIsOutside } from "$lib/git/worktreeCards";
 // which agent is doing what, and the agent is the only one who knows.
 // Stated here as well as in the gavin skill because this line is what an
 // agent reads FIRST -- the skill explains, the prompt orders.
-export const NAME_TAB_FIRST =
-  "First, before anything else: call gavin_name_session to name this tab — " +
-  "two to four words for the work itself, not for you.";
+export const NAME_TAB_FIRST = DEFAULT_NAME_TAB_FIRST;
+
+/// Optional last-arg bag for every card composer: a resolved template
+/// (workspace/app override) and/or a resolved name-tab opener.
+export interface CardPromptOptions {
+  template?: string;
+  nameTabBase?: string;
+}
 
 // v38: an agent whose CLI mints its OWN conversation id -- opencode
 // today, per agent_setup.rs's `session_id_discovery` -- gets a second
@@ -24,15 +44,18 @@ export const NAME_TAB_FIRST =
 //
 // A profile that mints its id up front (Claude Code) or has no verified
 // convention (codex, gemini, cursor, custom) has an empty
-// sessionIdDiscovery and gets NAME_TAB_FIRST completely unchanged --
+// sessionIdDiscovery and gets the base completely unchanged --
 // the same no-fallback-BETWEEN-rows rule sessionIdArgs/resumeArgs
 // already take: a discovery command that fits nobody's CLI is worse
 // than admitting there is none.
-export function nameTabFirst(sessionIdDiscovery: string | null | undefined): string {
+export function nameTabFirst(
+  sessionIdDiscovery: string | null | undefined,
+  base = NAME_TAB_FIRST
+): string {
   const command = sessionIdDiscovery?.trim();
-  if (!command) return NAME_TAB_FIRST;
+  if (!command) return base;
   return (
-    `${NAME_TAB_FIRST} Your CLI mints its own conversation id, which gavin has no way to ` +
+    `${base} Your CLI mints its own conversation id, which gavin has no way to ` +
     `fix at launch -- so once one exists, run \`${command}\` and pass what it prints as ` +
     `gavin_name_session's second argument.`
   );
@@ -117,17 +140,17 @@ export function composeTaskPrompt(
   attachments: string[] = [],
   cwd: string | null = null,
   withheld: string[] = [],
-  sessionIdDiscovery: string | null | undefined = null
+  sessionIdDiscovery: string | null | undefined = null,
+  options?: CardPromptOptions
 ): string {
-  return (
-    `${nameTabFirst(sessionIdDiscovery)}\n\n` +
-    `You are executing the task card at ${path} ("${title}").` +
-    `${attachmentPromptBlock(attachments, withheld)}\n\n` +
-    `${body}\n\n` +
-    `While you work, keep this card's status current with gavin_set_plan_field on ${path}; ` +
-    `set it to the board's done column when finished.` +
-    cardHomeNote(path, cwd)
-  );
+  return fillTemplate(options?.template ?? DEFAULT_RUN_TASK, {
+    name_tab_first: nameTabFirst(sessionIdDiscovery, options?.nameTabBase),
+    path,
+    title,
+    attachments: attachmentPromptBlock(attachments, withheld),
+    body,
+    card_home_note: cardHomeNote(path, cwd),
+  });
 }
 
 export function composePlanPrompt(
@@ -135,16 +158,15 @@ export function composePlanPrompt(
   attachments: string[] = [],
   cwd: string | null = null,
   withheld: string[] = [],
-  sessionIdDiscovery: string | null | undefined = null
+  sessionIdDiscovery: string | null | undefined = null,
+  options?: CardPromptOptions
 ): string {
-  return (
-    `${nameTabFirst(sessionIdDiscovery)}\n\n` +
-    `Read ${path} and execute that plan. Work its checklist top to bottom: ` +
-    `tick items (- [x]) as you complete them, promote items that need their own agent ` +
-    `with gavin_promote_task, and keep the plan's status current with gavin_set_plan_field.` +
-    attachmentPromptBlock(attachments, withheld) +
-    cardHomeNote(path, cwd)
-  );
+  return fillTemplate(options?.template ?? DEFAULT_RUN_PLAN, {
+    name_tab_first: nameTabFirst(sessionIdDiscovery, options?.nameTabBase),
+    path,
+    attachments: attachmentPromptBlock(attachments, withheld),
+    card_home_note: cardHomeNote(path, cwd),
+  });
 }
 
 // Develop (the To Do column's counterpart to Resume): a thin card that
@@ -173,18 +195,14 @@ export function composePlanPrompt(
 export function composeDevelopPrompt(
   path: string,
   title: string,
-  sessionIdDiscovery: string | null | undefined = null
+  sessionIdDiscovery: string | null | undefined = null,
+  options?: CardPromptOptions
 ): string {
-  return (
-    `${nameTabFirst(sessionIdDiscovery)}\n\n` +
-    `Use the gavin-develop skill on the card at ${path} ("${title}"): develop it into ` +
-    `work an agent can execute \u2014 a checklist, nested task cards, both, or, when it is ` +
-    `really one sitting, a sharper prompt \u2014 and set the card's kind and complexity to ` +
-    `match what you wrote.\n\n` +
-    `Interview me in this tab before you decide anything, and write nothing to the card ` +
-    `until I approve what you propose. Leave the card's status where it is: developing a ` +
-    `card is not starting it.`
-  );
+  return fillTemplate(options?.template ?? DEFAULT_DEVELOP, {
+    name_tab_first: nameTabFirst(sessionIdDiscovery, options?.nameTabBase),
+    path,
+    title,
+  });
 }
 
 // POSIX single-quoting: wrap in single quotes, closing/reopening around
@@ -389,11 +407,10 @@ export function agentPromptBlocker(
   return promptArgs === null ? noPromptReason(agentLabel) : null;
 }
 
-/// The one instruction behind the Git tab's "Commit via agent". Fixed
-/// text with nothing interpolated: the button IS the whole interaction,
-/// so there is no user input to compose in -- and no NAME_TAB_FIRST
-/// either, because this run has no tab to name. The app names its
-/// session itself, for the case where the human reveals it.
+/// Legacy one-liner kept for back-compat tests. The Git tab's
+/// "Commit via agent" now uses mustPromptBody("builtin:commit", …) —
+/// the full rail-tool body — so this short string is no longer what
+/// the launch sends.
 export const COMMIT_PROMPT =
   "Commit pending and unversioned changes, in logical chunks. Do not push.";
 
@@ -487,35 +504,30 @@ export function composeResumeTaskPrompt(
   body: string,
   attachments: string[] = [],
   withheld: string[] = [],
-  sessionIdDiscovery: string | null | undefined = null
+  sessionIdDiscovery: string | null | undefined = null,
+  options?: CardPromptOptions
 ): string {
-  return (
-    `${nameTabFirst(sessionIdDiscovery)}\n\n` +
-    `Use the gavin-resume skill to resume the task card at ${path} ("${title}"). ` +
-    `Work on it already started and stopped.` +
-    `${attachmentPromptBlock(attachments, withheld)}\n\n` +
-    `${body}\n\n` +
-    `Find what is already done before you write anything, then carry on from there. ` +
-    `Keep this card's status current with gavin_set_plan_field on ${path}; ` +
-    `set it to the board's done column when finished.`
-  );
+  return fillTemplate(options?.template ?? DEFAULT_RESUME_TASK, {
+    name_tab_first: nameTabFirst(sessionIdDiscovery, options?.nameTabBase),
+    path,
+    title,
+    attachments: attachmentPromptBlock(attachments, withheld),
+    body,
+  });
 }
 
 export function composeResumePlanPrompt(
   path: string,
   attachments: string[] = [],
   withheld: string[] = [],
-  sessionIdDiscovery: string | null | undefined = null
+  sessionIdDiscovery: string | null | undefined = null,
+  options?: CardPromptOptions
 ): string {
-  return (
-    `${nameTabFirst(sessionIdDiscovery)}\n\n` +
-    `Use the gavin-resume skill to resume the plan at ${path}. Work on it already started ` +
-    `and stopped: find what is already done before you write anything — the checklist's ` +
-    `ticks are the record, but not the whole of it. Then work it top to bottom from there, ` +
-    `ticking items (- [x]) as you complete them, promoting items that need their own agent ` +
-    `with gavin_promote_task, and keeping the plan's status current with gavin_set_plan_field.` +
-    attachmentPromptBlock(attachments, withheld)
-  );
+  return fillTemplate(options?.template ?? DEFAULT_RESUME_PLAN, {
+    name_tab_first: nameTabFirst(sessionIdDiscovery, options?.nameTabBase),
+    path,
+    attachments: attachmentPromptBlock(attachments, withheld),
+  });
 }
 
 // The Review tab's launch: an agent brought up ON a card whose work is
@@ -542,7 +554,8 @@ export function composeReviewLaunchPrompt(
   body: string,
   attachments: string[] = [],
   withheld: string[] = [],
-  sessionIdDiscovery: string | null | undefined = null
+  sessionIdDiscovery: string | null | undefined = null,
+  options?: CardPromptOptions
 ): string {
   const subject = kind === "task" ? "task card" : "plan";
   // The body is quoted when there is one and skipped when there is not,
@@ -551,14 +564,12 @@ export function composeReviewLaunchPrompt(
   // paragraph in the middle of the prompt reads as a section that failed
   // to load.
   const quoted = body.trim() ? `\n\n${body.trim()}` : "";
-  return (
-    `${nameTabFirst(sessionIdDiscovery)}\n\n` +
-    `The work for the ${subject} at ${path} ("${title}") is finished and is being reviewed. ` +
-    `Read the card and find what the work actually did — the checklist, the files it ` +
-    `touched, and the commits on this checkout — before you answer anything.` +
-    `${attachmentPromptBlock(attachments, withheld)}${quoted}\n\n` +
-    `Change nothing until you are asked to. Do not change this card's status: it is sitting ` +
-    `in the column that put it in front of a reviewer, and moving it takes it off their list. ` +
-    `Wait for the reviewer's first question.`
-  );
+  return fillTemplate(options?.template ?? DEFAULT_REVIEW_LAUNCH, {
+    name_tab_first: nameTabFirst(sessionIdDiscovery, options?.nameTabBase),
+    subject,
+    path,
+    title,
+    attachments: attachmentPromptBlock(attachments, withheld),
+    quoted_body: quoted,
+  });
 }

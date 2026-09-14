@@ -11,6 +11,7 @@
 // them.
 
 import { NAME_TAB_FIRST, noPromptReason } from "$lib/cards/cardRun";
+import { DEFAULT_CODE_REVIEW, fillTemplate } from "$lib/agents/actionPromptDefaults";
 import type { BranchInfo } from "$lib/git/git";
 
 // ---- The review-rules file -------------------------------------------------
@@ -146,6 +147,10 @@ export interface ReviewPromptOptions {
   /// rail step: orchestration names a step's session itself, and none of
   /// the other built-in tool bodies carry the line either.
   nameTab?: boolean;
+  /// Resolved template (workspace/app override). Omitted → DEFAULT_CODE_REVIEW.
+  template?: string;
+  /// Resolved name-tab opener when `nameTab` is true.
+  nameTabBase?: string;
 }
 
 /// The instruction a review agent is handed, on every surface: the Git
@@ -156,7 +161,16 @@ export interface ReviewPromptOptions {
 /// copies of that would drift into three different card shapes on one
 /// board. Only the SUBJECT differs, and it is one sentence.
 export function composeReviewPrompt(options: ReviewPromptOptions): string {
-  const { base, rulesPath, contextFolder, plansFolder, card, nameTab = true } = options;
+  const {
+    base,
+    rulesPath,
+    contextFolder,
+    plansFolder,
+    card,
+    nameTab = true,
+    template,
+    nameTabBase,
+  } = options;
   const subject = card
     ? `the work done for the card at ${card.path} ("${card.title}")`
     : "the changes on this branch";
@@ -174,47 +188,36 @@ export function composeReviewPrompt(options: ReviewPromptOptions): string {
       "rather than assuming they are the defaults" +
       (card ? ", and name the card above in the body, since it is where the finding came from" : "");
 
-  return [
-    nameTab ? NAME_TAB_FIRST : "",
-    "",
-    `Review ${subject} against \`${base}\`. Change nothing: this is a review, and the ` +
-      `cards you file are its whole output.`,
-    "",
-    `First read \`${rulesPath}\`. It is this workspace's review rules, and where it says ` +
-      `something your own habits do not, it wins. If it is not there, review by your own ` +
-      `judgement and do not create it.`,
-    card
-      ? `Then read the card itself — it says what the work was FOR, and a review that does ` +
-        `not know the intent reports style.`
-      : "",
-    "",
-    "Look for correctness bugs first, then reuse and simplification opportunities. Before " +
-      "you write a finding down, establish the case that actually breaks: inputs, state, and " +
-      "the wrong output or crash they produce. A finding you cannot make fail is a guess, and " +
-      "a board full of guesses costs more to clear than the review saved.",
-    "",
-    "File each finding you keep as its own card, with `gavin_create_plan`:",
-    "",
-    contextFolder
-      ? `- \`context_folder\`: \`${contextFolder}\``
-      : "- `context_folder`: this workspace's root gavin context — find its folder with " +
-        "`gavin_get_tree` rather than guessing",
-    "- `file_name`: kebab-case, prefixed `review-`",
-    "- `title`: the defect in one line — what is wrong, not which file it is in",
-    "- `kind`: `task` when the fix is work an agent could execute, and then the body IS that " +
-      "agent's prompt; `note` when it is an observation for a human to judge",
+  // Trailing newline when present so the template's `{{card_read_line}}\n`
+  // still leaves a blank line before "Look for…" (same as the old
+  // array-join shape).
+  const card_read_line = card
+    ? "Then read the card itself — it says what the work was FOR, and a review that does " +
+      "not know the intent reports style.\n"
+    : "";
+
+  const context_folder_line = contextFolder
+    ? `- \`context_folder\`: \`${contextFolder}\``
+    : "- `context_folder`: this workspace's root gavin context — find its folder with " +
+      "`gavin_get_tree` rather than guessing";
+
+  const plans_folder = plansFolder ? `\`${plansFolder}\`` : "that context's `plans/` folder";
+
+  const filled = fillTemplate(template ?? DEFAULT_CODE_REVIEW, {
+    name_tab_first: nameTab ? (nameTabBase ?? NAME_TAB_FIRST) : "",
+    subject,
+    base,
+    rules_path: rulesPath,
+    card_read_line,
+    context_folder_line,
     placement,
-    "- the body always gives `file:line`, what breaks, and the concrete case that breaks it",
-    "",
-    "Create them most severe first, so the column reads in that order. If the gavin tools are " +
-      "unreachable, write the same cards by hand as markdown files in " +
-      (plansFolder ? `\`${plansFolder}\`` : "that context's `plans/` folder") +
-      " — same frontmatter, one file per finding — rather than reporting them only in this " +
-      "terminal.",
-    "",
-    "If you find nothing worth a card, say so plainly and file none. A clean review is a " +
-      "result, not a failure to produce output.",
-  ]
+    plans_folder,
+  });
+
+  // Collapse doubled blanks the empty name-tab / card-read slots leave,
+  // then trim — same filter the previous array-join path used.
+  return filled
+    .split("\n")
     .filter((line, i, all) => line !== "" || all[i - 1] !== "")
     .join("\n")
     .trim();

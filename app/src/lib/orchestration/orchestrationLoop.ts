@@ -22,6 +22,7 @@
 //    drop it.
 
 import { shellQuote } from "$lib/cards/cardRun";
+import { DEFAULT_UNTIL_RETRY_PREFIX, fillTemplate } from "$lib/agents/actionPromptDefaults";
 // Types only -- erased at compile time, so orchestration.ts is free to
 // import this module's VALUES without a runtime cycle.
 import type { Orchestration, Rail, Step } from "$lib/orchestration/orchestration";
@@ -169,22 +170,22 @@ export function checkTail(output: string, lines: number = RETRY_TAIL_LINES): str
 /// What opens the retried agent's prompt. The check's own words, fenced,
 /// then the instruction -- an agent that is handed a failure and not
 /// told what to do with it writes a report instead of a fix.
-export function retryPromptPrefix(output: string): string {
-  return (
-    "The previous attempt failed this check:\n" +
-    "```\n" +
-    `${checkTail(output)}\n` +
-    "```\n" +
-    "Fix it, then finish."
-  );
+export function retryPromptPrefix(output: string, template?: string): string {
+  return fillTemplate(template ?? DEFAULT_UNTIL_RETRY_PREFIX, {
+    check_output: checkTail(output),
+  });
 }
 
 /// The prompt an agent step is actually launched with. `null` output
 /// means this launch is not a retry at all, and the prompt is untouched
 /// -- the common case, and the one that must stay byte-identical.
-export function withRetryPrefix(prompt: string, output: string | null): string {
+export function withRetryPrefix(
+  prompt: string,
+  output: string | null,
+  template?: string
+): string {
   if (output === null || !checkTail(output)) return prompt;
-  return `${retryPromptPrefix(output)}\n\n${prompt}`;
+  return `${retryPromptPrefix(output, template)}\n\n${prompt}`;
 }
 
 /// The stall reason a spent budget leaves behind: what happened, how

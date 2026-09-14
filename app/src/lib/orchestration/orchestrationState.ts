@@ -146,6 +146,7 @@ import {
   runStatusNeeded,
   unresumableConversationReason,
 } from "$lib/cards/cardRun";
+import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { stripFrontmatter } from "$lib/cards/planChecklist";
 import { slugStatus } from "$lib/core/planBoard";
 import {
@@ -1288,7 +1289,11 @@ async function executeToolLaunch(
   // exactly what "a shell step is simply re-run" means.
   const prompt =
     tool.kind === "agent"
-      ? withRetryPrefix(body, await retryNoteFor(workspaceId, rail, step.id))
+      ? withRetryPrefix(
+          body,
+          await retryNoteFor(workspaceId, rail, step.id),
+          mustPromptBody("action:until-retry-prefix", workspaceId)
+        )
       : body;
   const command =
     tool.kind === "agent"
@@ -1475,6 +1480,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   const launchAgent =
     decision.viaFallback ? agentForProfile(workspaceId, decision.profileId) : agent;
   let prompt: string;
+  const nameTabBase = mustPromptBody("action:name-tab-first", workspaceId);
   if (entry.plan.kind === "task") {
     prompt = composeTaskPrompt(
       step.cardPath,
@@ -1483,15 +1489,33 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
       resolved.paths,
       cwd,
       resolved.withheld,
-      launchAgent.sessionIdDiscovery
+      launchAgent.sessionIdDiscovery,
+      {
+        template: mustPromptBody("action:run-task", workspaceId),
+        nameTabBase,
+      }
     );
   } else {
-    prompt = composePlanPrompt(step.cardPath, resolved.paths, cwd, resolved.withheld, launchAgent.sessionIdDiscovery);
+    prompt = composePlanPrompt(
+      step.cardPath,
+      resolved.paths,
+      cwd,
+      resolved.withheld,
+      launchAgent.sessionIdDiscovery,
+      {
+        template: mustPromptBody("action:run-plan", workspaceId),
+        nameTabBase,
+      }
+    );
   }
   // A card step re-run by a loop opens with what failed. Null except on
   // a retry, and then this is the whole difference between "do the card"
   // and "the check you have to pass says this".
-  prompt = withRetryPrefix(prompt, await retryNoteFor(workspaceId, rail, stepId));
+  prompt = withRetryPrefix(
+    prompt,
+    await retryNoteFor(workspaceId, rail, stepId),
+    mustPromptBody("action:until-retry-prefix", workspaceId)
+  );
 
   const conversationId = conversationIdForLaunch(launchAgent);
   const command = buildRunCommand(
@@ -2803,7 +2827,13 @@ export function requestOrganize(
   return launchOrchestrationAgent(
     workspaceId,
     { railId: null, label: ORGANIZE_LABEL },
-    composeOrganizePrompt(orch, unplaced, conflictSummary)
+    composeOrganizePrompt(
+      orch,
+      unplaced,
+      conflictSummary,
+      mustPromptBody("action:organize", workspaceId),
+      mustPromptBody("action:name-tab-first", workspaceId)
+    )
   );
 }
 
@@ -2824,7 +2854,15 @@ export function requestRailReorganize(
   return launchOrchestrationAgent(
     workspaceId,
     { railId, label: reorganizeLabel(rail.name) },
-    composeRailPrompt(orch, rail, cards, tools, conflictSummary)
+    composeRailPrompt(
+      orch,
+      rail,
+      cards,
+      tools,
+      conflictSummary,
+      mustPromptBody("action:reorganize", workspaceId),
+      mustPromptBody("action:name-tab-first", workspaceId)
+    )
   );
 }
 

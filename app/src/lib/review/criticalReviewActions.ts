@@ -21,6 +21,7 @@ import {
 import { gavinTrees } from "$lib/core/gavinState";
 import { kanbanState, cardSessionFor } from "$lib/board/kanbanState";
 import { buildRunCommand, provisionalSessionName } from "$lib/cards/cardRun";
+import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { candidateLabel, type Candidate } from "$lib/cards/bestOfN";
 import {
   composeCriticalReviewPrompt,
@@ -300,6 +301,9 @@ export async function launchCriticalReviewSessions(
       reviewerLabel: label,
       reviewerTotal: input.reviewers.length,
       alsoBuildFindingsRail: alsoBuild,
+      template: mustPromptBody("action:code-review", input.workspaceId),
+      nameTabBase: mustPromptBody("action:name-tab-first", input.workspaceId),
+      suffixTemplate: mustPromptBody("action:critical-review-suffix", input.workspaceId),
     });
     const conversationId = conversationIdForLaunch(agent);
     const command = buildRunCommand(

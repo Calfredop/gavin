@@ -14,11 +14,16 @@
 //
 // Kept out of orchestrationState.ts so the wording is testable without a
 // terminal to launch (spec O10's habit: the load-bearing part is a pure
-// function).
+// function). Templates live in actionPrompts.ts; call sites pass overrides.
 
 import type { CardEntry, Orchestration, Rail, Step, ToolSummary } from "$lib/orchestration/orchestration";
 import { isToolStep, stepStateOf } from "$lib/orchestration/orchestration";
 import { NAME_TAB_FIRST } from "$lib/cards/cardRun";
+import {
+  DEFAULT_ORGANIZE,
+  DEFAULT_REORGANIZE,
+  fillTemplate,
+} from "$lib/agents/actionPromptDefaults";
 
 const READ_FIRST =
   "Read gavin_get_orchestration for the authoritative picture before writing anything.";
@@ -104,7 +109,9 @@ function conflictBlock(conflictSummary: string[], railName: string | null): stri
 export function composeOrganizePrompt(
   orch: Orchestration | null,
   unplaced: CardEntry[],
-  conflictSummary: string[]
+  conflictSummary: string[],
+  template?: string,
+  nameTabBase?: string
 ): string {
   // The whole list is one gavin_get_orchestration call away, and this one
   // arrives as a launch argument -- so a big backlog is cut here and SAID
@@ -118,33 +125,24 @@ export function composeOrganizePrompt(
       : []),
   ].join("\n");
 
-  return [
-    NAME_TAB_FIRST,
-    "",
-    "Use the gavin-orchestrate skill to put this workspace's UNPLACED cards on rails.",
-    "",
+  const unplaced_block =
     unplaced.length > 0
       ? `${plural(unplaced.length, "card")} nobody has placed yet:\n${list}`
-      : "Nothing is unplaced right now — say so and change nothing rather than inventing work.",
-    "",
+      : "Nothing is unplaced right now — say so and change nothing rather than inventing work.";
+
+  const rails_block =
     orch && orch.rails.length > 0
       ? `The tab currently shows:\n${orch.rails.map(railLine).join("\n")}`
-      : "The tab has no rails yet — create them.",
-    "",
-    conflictBlock(conflictSummary, null),
-    "",
-    "Place every unplaced card the payload lists: extend a rail where the work belongs on one, add",
-    "a rail where it does not. Leave the steps already on rails where they are unless a card you",
-    "are placing forces a reorder — and if it does, say which and why.",
-    "",
-    "Organizing means parallelizing: spread the work as wide as it can safely go. Prefer a new rail",
-    "over a longer one, and give each rail that must run at the same time its own isolation — create",
-    "the worktree and the branch yourself with git, then send worktreePath and branch on the rail.",
-    "An unbound rail is not isolated, and a worktreePath nothing created is a stalled rail.",
-    "",
-    READ_FIRST,
-    CARRY_THROUGH,
-  ].join("\n");
+      : "The tab has no rails yet — create them.";
+
+  return fillTemplate(template ?? DEFAULT_ORGANIZE, {
+    name_tab_first: nameTabBase ?? NAME_TAB_FIRST,
+    unplaced_block,
+    rails_block,
+    conflicts_block: conflictBlock(conflictSummary, null),
+    read_first: READ_FIRST,
+    carry_through: CARRY_THROUGH,
+  });
 }
 
 /// A rail header's "Reorganize with agent…" — the same skill, aimed at
@@ -156,7 +154,9 @@ export function composeRailPrompt(
   cards: Map<string, CardEntry>,
   tools: ToolSummary[],
   /// Already narrowed to this rail by the caller (conflictsForRail).
-  conflictSummary: string[]
+  conflictSummary: string[],
+  template?: string,
+  nameTabBase?: string
 ): string {
   const stages = [...rail.stages].sort((a, b) => a.position - b.position);
   const body = stages
@@ -169,22 +169,17 @@ export function composeRailPrompt(
     })
     .join("\n");
 
-  return [
-    NAME_TAB_FIRST,
-    "",
-    `Use the gavin-orchestrate skill to reorganize the rail "${rail.name}" — that rail only.`,
-    "",
+  const rail_body =
     stages.length > 0
       ? `It runs in ${binding(rail)} and holds:\n${body}`
-      : `It runs in ${binding(rail)} and holds no steps yet — say so rather than filling it from elsewhere.`,
-    "",
-    conflictBlock(conflictSummary, `this rail`),
-    "",
-    "Reorganize this rail's stages: reorder them, split a stage whose steps would collide in one",
-    "checkout, merge stages that are genuinely independent. Keep the steps it already holds — this",
-    "is not the place to add or drop work — and send every OTHER rail back exactly as you read it.",
-    "",
-    READ_FIRST,
-    CARRY_THROUGH,
-  ].join("\n");
+      : `It runs in ${binding(rail)} and holds no steps yet — say so rather than filling it from elsewhere.`;
+
+  return fillTemplate(template ?? DEFAULT_REORGANIZE, {
+    name_tab_first: nameTabBase ?? NAME_TAB_FIRST,
+    rail_name: rail.name,
+    rail_body,
+    conflicts_block: conflictBlock(conflictSummary, `this rail`),
+    read_first: READ_FIRST,
+    carry_through: CARRY_THROUGH,
+  });
 }

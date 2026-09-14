@@ -742,14 +742,18 @@ describe("commit via agent", () => {
 
   it("runs the canned prompt headlessly, in the view's cwd, with no tab", async () => {
     const { done } = await launch();
-    expect(backend.createSession).toHaveBeenCalledWith(
-      "/r",
-      'claude -p --allowedTools "Bash(git *)" -- \'Commit pending and unversioned changes, in logical chunks. Do not push.\'',
-      // The view's cwd is where it RUNS; the workspace root is what the
-      // daemon scopes the agent against, and they are not the same answer
-      // once the git view is following a worktree.
-      "/repos/gavin"
-    );
+    expect(backend.createSession).toHaveBeenCalledOnce();
+    const [, command, root] = vi.mocked(backend.createSession).mock.calls[0]!;
+    // Prompt is builtin:commit (overrides applied) — same wording the
+    // rail tool uses, so the Git button and a Commit step stay in sync.
+    expect(command).toMatch(/^claude -p --allowedTools "Bash\(git \*\)" -- '/);
+    expect(command).toContain("Commit the uncommitted work in this checkout.");
+    expect(command).toContain("Do NOT push");
+    // The view's cwd is where it RUNS; the workspace root is what the
+    // daemon scopes the agent against, and they are not the same answer
+    // once the git view is following a worktree.
+    expect(root).toBe("/repos/gavin");
+    expect(vi.mocked(backend.createSession).mock.calls[0]![0]).toBe("/r");
 
     // Hidden: nothing lands on the Agents page unless the human asks.
     expect(handleAgentSessionSpawned).not.toHaveBeenCalled();

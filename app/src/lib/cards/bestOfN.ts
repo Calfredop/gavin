@@ -18,6 +18,7 @@ import type { ConfirmCheck, ConfirmOptions } from "$lib/core/dialog";
 import type { AgentConfig } from "$lib/core/gavin";
 import { branchNameFrom, defaultWorktreePath, freeBranchNameFrom, splitPath } from "$lib/git/git";
 import { count } from "$lib/orchestration/railConfirm";
+import { DEFAULT_BEST_OF_N_SUFFIX, fillTemplate } from "$lib/agents/actionPromptDefaults";
 
 /// One entry in a run: the workspace's agent with a profile and/or a
 /// model of its own. Both are plain strings rather than optionals --
@@ -256,20 +257,20 @@ export function candidatesError(candidates: readonly Candidate[]): string | null
 ///    for one agent and wrong for N: the first to finish would move a
 ///    card the other two are still working, and the human's pick is
 ///    what actually decides this card's fate.
-export function candidatePromptSuffix(label: string, total: number): string {
-  return (
-    `\n\nYou are one of ${total} agents running this card side by side, each in a git worktree ` +
-    `of its own. You are “${label}”, and this shell already starts in your worktree — work only ` +
-    `in it, and do not switch branches or merge: another candidate's work and the human's own ` +
-    `checkout are what you would be editing.\n\n` +
-    `Begin your tab name with “${label} ” so the panes stay tellable apart. Leave this card's ` +
-    `status alone — a human compares the candidates and picks one, and that pick is what ` +
-    `records the outcome.`
-  );
+export function candidatePromptSuffix(label: string, total: number, template?: string): string {
+  return fillTemplate(template ?? DEFAULT_BEST_OF_N_SUFFIX, {
+    label,
+    total: String(total),
+  });
 }
 
-export function composeCandidatePrompt(prompt: string, label: string, total: number): string {
-  return prompt + candidatePromptSuffix(label, total);
+export function composeCandidatePrompt(
+  prompt: string,
+  label: string,
+  total: number,
+  template?: string
+): string {
+  return prompt + candidatePromptSuffix(label, total, template);
 }
 
 /// The page the candidates are tiled on. Named for the card, because the

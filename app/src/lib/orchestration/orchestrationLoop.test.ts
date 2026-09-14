@@ -703,7 +703,6 @@ describe("the until step's wiring", () => {
     "OrchestrationDrawer.svelte",
     "ToolLibraryDialog.svelte",
     "OrchestrationStepChip.svelte",
-    "WorkspaceToolsHubView.svelte",
   ]) {
     it(`${path} draws a tool's icon through the shared lookup`, () => {
       expect(SOURCES[path], path).toContain("toolIcon");

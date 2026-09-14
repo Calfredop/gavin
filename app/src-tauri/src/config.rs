@@ -419,6 +419,12 @@ pub struct Workspace {
     /// not this list. Empty is the ordinary case.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub armed_agents: Vec<String>,
+    /// Overrides of shipped agent action prompts for this workspace,
+    /// keyed by catalog id. Empty inherits the app-wide map on
+    /// `AgentDefaultsConfig::action_prompt_overrides` (and then the
+    /// shipped default). Machine-local like `auto_commit`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub action_prompt_overrides: HashMap<String, String>,
 }
 
 /// One recorded decision on `Workspace::mcp_foreign_servers_choice`.
@@ -681,6 +687,14 @@ pub struct AgentDefaultsConfig {
     /// rest of this struct: the margin is about this subscription.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub fallback_thresholds: HashMap<String, u8>,
+    /// App-wide overrides of shipped agent action prompts, keyed by
+    /// catalog id (`action:run-task`, `builtin:commit`, …). Empty means
+    /// every prompt uses its default. Lives here rather than as another
+    /// `persist_workspaces` positional for the same reason
+    /// `agent_fallback` does. A workspace override lives on
+    /// `Workspace::action_prompt_overrides`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub action_prompt_overrides: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -981,6 +995,7 @@ mod tests {
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            action_prompt_overrides: HashMap::new(),
         }
     }
 

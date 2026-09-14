@@ -102,6 +102,12 @@ export interface AgentDefaults {
   /// Per-profile percent at which a new launch walks away. Missing key
   /// means 90. Resume still uses the pause cycle's limitPercent.
   fallbackThresholds: Record<string, number>;
+  /// App-wide overrides of shipped agent action prompts, keyed by catalog
+  /// id (`action:run-task`, `builtin:commit`, …). Empty means every prompt
+  /// uses its default; a workspace map on `Workspace.actionPromptOverrides`
+  /// wins per id. Lives here so it rides `setAgentDefaults` rather than a
+  /// new persist_workspaces positional.
+  actionPromptOverrides: Record<string, string>;
 }
 
 export const EMPTY_AGENT_DEFAULTS: AgentDefaults = {
@@ -110,6 +116,7 @@ export const EMPTY_AGENT_DEFAULTS: AgentDefaults = {
   complexity: {},
   agentFallback: [],
   fallbackThresholds: {},
+  actionPromptOverrides: {},
 };
 
 /// Whether an entry says anything at all. A row with neither half filled

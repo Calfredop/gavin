@@ -20,6 +20,7 @@ import {
   type ReviewPromptOptions,
   type ReviewedCard,
 } from "$lib/review/codeReview";
+import { DEFAULT_CRITICAL_REVIEW_SUFFIX, fillTemplate } from "$lib/agents/actionPromptDefaults";
 
 export type { Candidate };
 export { seedCandidates, candidateLabel };
@@ -113,6 +114,9 @@ export interface CriticalReviewPromptOptions extends ReviewPromptOptions {
   /// rail (findings-rail card); the prompt only says the cards matter
   /// for that when the toggle is on.
   alsoBuildFindingsRail?: boolean;
+  /// Override for the suffix template only (the review body still uses
+  /// `template` / `nameTabBase` from ReviewPromptOptions).
+  suffixTemplate?: string;
 }
 
 /// Framing on top of the ordinary review prompt: same filing path, plus
@@ -120,24 +124,18 @@ export interface CriticalReviewPromptOptions extends ReviewPromptOptions {
 export function reviewerPromptSuffix(
   label: string,
   total: number,
-  alsoBuildFindingsRail = false
+  alsoBuildFindingsRail = false,
+  template?: string
 ): string {
-  const lines = [
-    "",
-    `You are one of ${total} reviewers critiquing this work side by side in the ` +
-      `same checkout. You are “${label}”. This shell already starts where the ` +
-      `work lives — review only; change no files, switch no branches, and do not merge.`,
-    "",
-    `Begin your tab name with “${label} ” so the panes stay tellable apart.`,
-  ];
-  if (alsoBuildFindingsRail) {
-    lines.push(
-      "",
-      "File every finding as its own card — those cards are what a findings rail " +
-        "will be built from after this run."
-    );
-  }
-  return "\n" + lines.join("\n");
+  const findings_rail_note = alsoBuildFindingsRail
+    ? "\n\nFile every finding as its own card — those cards are what a findings rail " +
+      "will be built from after this run."
+    : "";
+  return fillTemplate(template ?? DEFAULT_CRITICAL_REVIEW_SUFFIX, {
+    reviewer_label: label,
+    reviewer_total: String(total),
+    findings_rail_note,
+  });
 }
 
 /// The instruction every critical-review session is handed. Filing rules
@@ -148,11 +146,12 @@ export function composeCriticalReviewPrompt(options: CriticalReviewPromptOptions
     reviewerLabel,
     reviewerTotal,
     alsoBuildFindingsRail = false,
+    suffixTemplate,
     ...review
   } = options;
   return (
     composeReviewPrompt(review) +
-    reviewerPromptSuffix(reviewerLabel, reviewerTotal, alsoBuildFindingsRail)
+    reviewerPromptSuffix(reviewerLabel, reviewerTotal, alsoBuildFindingsRail, suffixTemplate)
   );
 }
 

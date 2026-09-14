@@ -39,6 +39,7 @@ import {
   switchWorkspaceView,
 } from "$lib/core/layoutState";
 import { buildRunCommand, composePlanPrompt, composeTaskPrompt, noPromptReason, provisionalSessionName, runStatusNeeded } from "$lib/cards/cardRun";
+import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { developingBlocker } from "$lib/cards/developingCardsState";
 import { resolveAttachmentsForRun } from "$lib/cards/cardRunActions";
@@ -109,10 +110,17 @@ export async function startBestOfN(
   const file = await backend.readFileForViewer(card.id);
   if (!file.exists) return `Card file not found: ${card.id}`;
   const body = stripFrontmatter(file.content).trim();
+  const nameTabBase = mustPromptBody("action:name-tab-first", workspaceId);
   const composePrompt = (at: string): string =>
     card.kind === "task"
-      ? composeTaskPrompt(at, card.title, body, resolved.paths, null, resolved.withheld)
-      : composePlanPrompt(at, resolved.paths, null, resolved.withheld);
+      ? composeTaskPrompt(at, card.title, body, resolved.paths, null, resolved.withheld, null, {
+          template: mustPromptBody("action:run-task", workspaceId),
+          nameTabBase,
+        })
+      : composePlanPrompt(at, resolved.paths, null, resolved.withheld, null, {
+          template: mustPromptBody("action:run-plan", workspaceId),
+          nameTabBase,
+        });
   const reviewed = await ensureCardReviewed({
     workspaceId,
     path: card.id,
@@ -159,7 +167,12 @@ export async function startBestOfN(
     const command = buildRunCommand(
       agent.launchCommand,
       agent.promptArgs,
-      composeCandidatePrompt(prompt, plan.label, plans.length),
+      composeCandidatePrompt(
+        prompt,
+        plan.label,
+        plans.length,
+        mustPromptBody("action:best-of-n-suffix", workspaceId)
+      ),
       agent.sessionIdArgs,
       conversationId
     );
