@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   reviewersError,
   criticalReviewPageName,
+  criticalReviewDialogSeedKey,
   earliestStepBaseSha,
   seedCriticalReviewBase,
   reviewerPromptSuffix,
@@ -13,6 +14,8 @@ import {
   alsoBuildFindingsRailParam,
   critiqueSessionsComplete,
 } from "$lib/review/criticalReview";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const BASE = {
   base: "main",
@@ -75,6 +78,55 @@ describe("criticalReviewPageName", () => {
 
   it("falls back when the subject has no words", () => {
     expect(criticalReviewPageName("   ")).toBe("Critical review");
+  });
+});
+
+describe("criticalReviewDialogSeedKey", () => {
+  // The dialog is mounted for the app's life and re-seeds when a new
+  // request lands. Gating on `request === seededFor` with `$state` loops
+  // forever: Svelte 5 proxies every object it stores, so identity never
+  // holds, the effect clears the reviewer rows on every tick, and a click
+  // on "+ Add reviewer" lands on the backdrop and closes the modal.
+  it("is null when nothing is pending", () => {
+    expect(criticalReviewDialogSeedKey(null)).toBeNull();
+  });
+
+  it("is a stable string for the same subject, not the request object", () => {
+    const a = {
+      workspaceId: "ws-1",
+      subjectKind: "card" as const,
+      subject: "the work done for Fix login",
+      railId: null,
+    };
+    const b = { ...a };
+    expect(criticalReviewDialogSeedKey(a)).toBe(criticalReviewDialogSeedKey(b));
+    expect(criticalReviewDialogSeedKey(a)).toContain("ws-1");
+    expect(criticalReviewDialogSeedKey(a)).toContain("card");
+  });
+
+  it("differs when the subject changes", () => {
+    const card = {
+      workspaceId: "ws-1",
+      subjectKind: "card" as const,
+      subject: "card A",
+      railId: null,
+    };
+    const rail = {
+      workspaceId: "ws-1",
+      subjectKind: "rail" as const,
+      subject: "rail “auth”",
+      railId: "r1",
+    };
+    expect(criticalReviewDialogSeedKey(card)).not.toBe(criticalReviewDialogSeedKey(rail));
+  });
+
+  it("the dialog seeds on that key, never on request-object identity", () => {
+    const dialog = readFileSync(
+      join(import.meta.dirname, "CriticalReviewDialog.svelte"),
+      "utf8"
+    );
+    expect(dialog).toContain("criticalReviewDialogSeedKey");
+    expect(dialog).not.toMatch(/request\s*===\s*seededFor/);
   });
 });
 

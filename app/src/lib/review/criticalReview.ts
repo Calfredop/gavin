@@ -62,6 +62,23 @@ export function criticalReviewPageName(subjectLabel: string): string {
   return collapsed ? `Critical review: ${collapsed}` : "Critical review";
 }
 
+/// Stable key for CriticalReviewDialog's re-seed. A string, never the
+/// request object: the dialog stores the last key in `$state`, and
+/// Svelte 5 proxies every object it stores so `request === seededFor`
+/// would never hold — the effect would clear the reviewer rows on every
+/// tick and make "+ Add reviewer" dismiss the modal.
+export function criticalReviewDialogSeedKey(
+  request: {
+    workspaceId: string;
+    subjectKind: CriticalReviewSubjectKind;
+    subject: string;
+    railId: string | null;
+  } | null
+): string | null {
+  if (!request) return null;
+  return `${request.workspaceId}:${request.subjectKind}:${request.railId ?? ""}:${request.subject}`;
+}
+
 /// Earliest non-empty baseSha among a rail's steps, in step order. The
 /// rail-as-subject baseline prefers a worktree fork point when one is
 /// known; this is the fallback the feat card names.

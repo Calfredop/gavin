@@ -11,6 +11,7 @@
   import { CUSTOM_MODEL } from "$lib/agents/agentModel";
   import {
     candidateLabel,
+    criticalReviewDialogSeedKey,
     reviewersError,
     seedCandidates,
     type Candidate,
@@ -39,12 +40,14 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
   let seeded = $state(false);
-  let seededFor = $state<typeof $criticalReviewRequest>(null);
+  // String key, not the request object — see criticalReviewDialogSeedKey.
+  let seededFor = $state<string | null>(null);
 
   $effect(() => {
     const request = $criticalReviewRequest;
-    if (request === seededFor) return;
-    seededFor = request;
+    const key = criticalReviewDialogSeedKey(request);
+    if (key === seededFor) return;
+    seededFor = key;
     base = request?.base ?? "";
     alsoBuildFindingsRail = false;
     error = null;
