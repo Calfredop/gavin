@@ -982,6 +982,20 @@ export function agentProfiles(): Promise<
   return invoke("agent_profiles");
 }
 
+/// PATH sweep of built-in agent CLIs for the init wizard. `custom` is
+/// never included — it has no default command to probe.
+export function detectAgentBinaries(): Promise<
+  Array<{
+    id: string;
+    label: string;
+    command: string;
+    found: boolean;
+    path: string | null;
+  }>
+> {
+  return invoke("detect_agent_binaries");
+}
+
 /// The models each agent CAN be given right now, keyed by profile id --
 /// for the CLIs whose picker is a list of dated ids rather than aliases
 /// (codex, opencode). Resolved host-side once per app PROCESS, so a

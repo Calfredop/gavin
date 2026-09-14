@@ -2172,6 +2172,51 @@ pub fn agent_profiles() -> Vec<AgentProfileDto> {
         .collect()
 }
 
+/// One row of the init-wizard PATH sweep: every built-in profile whose
+/// default command is non-empty, plus whether that command resolves.
+#[derive(serde::Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedAgentDto {
+    pub id: String,
+    pub label: String,
+    pub command: String,
+    pub found: bool,
+    /// Absolute path when found; null when missing. The wizard shows it
+    /// as a title so a wrong binary on PATH is visible without a second
+    /// round trip.
+    pub path: Option<String>,
+}
+
+/// Which of gavin's built-in agent CLIs are startable on this machine.
+/// `custom` is skipped: it has no default command to probe. The sweep is
+/// PATH-only — same posture as `program::on_path` for `gh` — and does not
+/// spawn anything, so a missing license or a broken install still reads
+/// as "found" when the shim exists.
+#[tauri::command]
+pub fn detect_agent_binaries() -> Vec<DetectedAgentDto> {
+    detect_agent_binaries_with(AGENT_PROFILES, |name| crate::program::resolve(name))
+}
+
+fn detect_agent_binaries_with(
+    profiles: &[AgentProfile],
+    resolve: impl Fn(&str) -> Option<std::path::PathBuf>,
+) -> Vec<DetectedAgentDto> {
+    profiles
+        .iter()
+        .filter(|p| !p.command.is_empty())
+        .map(|p| {
+            let path = resolve(p.command);
+            DetectedAgentDto {
+                id: p.id.to_string(),
+                label: p.label.to_string(),
+                command: p.command.to_string(),
+                found: path.is_some(),
+                path: path.map(|p| p.to_string_lossy().into_owned()),
+            }
+        })
+        .collect()
+}
+
 /// Renames the agent instructions file. Refuses when the target exists --
 /// gavin never overwrites (D10) -- and when either name is not a bare
 /// filename, so a settings field can never write outside the root.
@@ -2276,6 +2321,29 @@ mod tests {
                 assert!(!p.command.is_empty(), "{} has no command", p.id);
             }
         }
+    }
+
+    #[test]
+    fn detect_skips_custom_and_reports_path_hits() {
+        use std::path::PathBuf;
+        let rows = detect_agent_binaries_with(AGENT_PROFILES, |name| match name {
+            "claude" | "agent" => Some(PathBuf::from(format!("/opt/bin/{name}"))),
+            _ => None,
+        });
+        assert!(rows.iter().all(|r| r.id != "custom"));
+        assert_eq!(
+            rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["claude-code", "codex", "gemini", "cursor", "opencode"]
+        );
+        let claude = rows.iter().find(|r| r.id == "claude-code").unwrap();
+        assert!(claude.found);
+        assert_eq!(claude.path.as_deref(), Some("/opt/bin/claude"));
+        let codex = rows.iter().find(|r| r.id == "codex").unwrap();
+        assert!(!codex.found);
+        assert_eq!(codex.path, None);
+        let cursor = rows.iter().find(|r| r.id == "cursor").unwrap();
+        assert!(cursor.found);
+        assert_eq!(cursor.command, "agent");
     }
 
     /// The conventions re-verified 2026-08-23, pinned so a drift in the

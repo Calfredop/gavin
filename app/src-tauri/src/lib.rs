@@ -193,6 +193,7 @@ pub fn run() {
             superpowers::superpowers_install,
             agent_setup::setup_agent_integration,
             agent_setup::agent_profiles,
+            agent_setup::detect_agent_binaries,
             agent_models::agent_model_catalog,
             agent_usage::agent_usage,
             memory::system_memory,

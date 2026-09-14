@@ -14,6 +14,12 @@
     inherited?: string[] | null;
     inheriting?: boolean;
     thresholds?: FallbackThresholds | null;
+    /// Profile ids whose CLI resolved on PATH (init wizard). Options for
+    /// those ids get a "found" suffix; other built-ins get "not found".
+    foundIds?: ReadonlySet<string> | null;
+    /// Every built-in id the sweep considered (found or not). Needed so
+    /// `custom` and unswept ids are not labelled "not found".
+    sweptIds?: ReadonlySet<string> | null;
     onChange: (chain: string[] | null) => void;
     onThresholdChange?: (profileId: string, percent: number) => void;
   }
@@ -23,6 +29,8 @@
     inherited = null,
     inheriting = false,
     thresholds = null,
+    foundIds = null,
+    sweptIds = null,
     onChange,
     onThresholdChange,
   }: Props = $props();
@@ -47,6 +55,13 @@
 
   function probed(id: string): boolean {
     return Boolean(usable.find((p) => p.id === id)?.usageProbe);
+  }
+
+  function optionLabel(profile: AgentProfileInfo): string {
+    if (!foundIds || !sweptIds || !sweptIds.has(profile.id)) return profile.label;
+    return foundIds.has(profile.id)
+      ? `${profile.label} (found)`
+      : `${profile.label} (not found)`;
   }
 
   function chainHint(ids: string[]): string {
@@ -83,7 +98,7 @@
     <div class="row">
       <select value={id} onchange={(e) => setAt(i, e.currentTarget.value)}>
         {#each usable as profile (profile.id)}
-          <option value={profile.id}>{profile.label}</option>
+          <option value={profile.id}>{optionLabel(profile)}</option>
         {/each}
       </select>
       {#if probed(id)}

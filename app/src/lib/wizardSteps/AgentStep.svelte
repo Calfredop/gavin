@@ -1,6 +1,15 @@
 <script lang="ts">
   import { editableCycle, saveAgentPause } from "$lib/agents/agentPauseState";
+  import {
+    foundAgentsSummary,
+    isAgentFound,
+    missingFromAppFallback,
+    suggestFallbackChain,
+    suggestMainProfile,
+    type DetectedAgent,
+  } from "$lib/agents/agentDetect";
   import { pickPath } from "$lib/workspace/picker";
+  import * as backend from "$lib/core/backend";
   import {
     layoutState,
     agentProfilesStore,
@@ -32,6 +41,9 @@
       $agentModelDefaultsStore
     )
   );
+  /// Explicit `[agent].command` in config.toml — the step-done signal.
+  /// Resolved profile defaults do not count; only a written key does.
+  const commandAlreadySet = $derived(Boolean($trustedAgentConfigs(workspaceId)?.command));
 
   let commandDraft = $state("");
   let seeded = $state(false);
@@ -44,6 +56,72 @@
 
   let fileError = $state<string | null>(null);
   let picking = $state(false);
+
+  let detected = $state<DetectedAgent[] | null>(null);
+  let sweepError = $state<string | null>(null);
+  let appliedSweep = $state(false);
+
+  const foundIds = $derived(
+    detected ? new Set(detected.filter((d) => d.found).map((d) => d.id)) : null
+  );
+  const sweptIds = $derived(detected ? new Set(detected.map((d) => d.id)) : null);
+  const missingFallback = $derived(
+    detected
+      ? missingFromAppFallback(detected, $agentDefaultsStore.agentFallback)
+      : []
+  );
+
+  $effect(() => {
+    let cancelled = false;
+    void backend
+      .detectAgentBinaries()
+      .then((rows) => {
+        if (cancelled) return;
+        detected = rows;
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        sweepError = String(e instanceof Error ? e.message : e);
+        detected = [];
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  /// Once the PATH sweep lands, seed main + fallback from found agents
+  /// and app settings — but only when this step has not already written
+  /// a command (resume must not fight the human's earlier pick).
+  $effect(() => {
+    if (appliedSweep || !detected) return;
+    const main = suggestMainProfile({
+      detected,
+      currentProfileId: agentCfg.profileId,
+      appFallback: $agentDefaultsStore.agentFallback,
+      commandAlreadySet,
+    });
+    const chain = suggestFallbackChain({
+      detected,
+      mainProfileId: main,
+      appFallback: $agentDefaultsStore.agentFallback,
+    });
+    appliedSweep = true;
+    if (!commandAlreadySet && main && main !== agentCfg.profileId) {
+      const profile = $agentProfilesStore.find((p) => p.id === main);
+      void setAgentField(workspaceId, "profile", main).then(() => {
+        if (profile?.command) {
+          commandDraft = profile.command;
+          seeded = true;
+        }
+      });
+    }
+    if (chain && chain.length > 0) {
+      void setAgentDefaults({
+        ...$agentDefaultsStore,
+        agentFallback: chain,
+      });
+    }
+  });
 
   /// Points the workspace at an instructions file the repo already has,
   /// BEFORE the next step writes anything. That ordering is the whole
@@ -81,6 +159,15 @@
     }
   }
 
+  async function onProfileChange(profileId: string): Promise<void> {
+    await setAgentField(workspaceId, "profile", profileId);
+    const profile = $agentProfilesStore.find((p) => p.id === profileId);
+    if (profile?.command) {
+      commandDraft = profile.command;
+      seeded = true;
+    }
+  }
+
   async function continueStep(): Promise<void> {
     // Always written, even unchanged: the presence of [agent].command in
     // config.toml is what makes this step detectable (spec §3.2).
@@ -103,12 +190,37 @@
   async function togglePause(enabled: boolean): Promise<void> {
     await saveAgentPause({ ...pauseCycle, enabled });
   }
+
+  function profileOptionLabel(id: string, label: string): string {
+    if (!foundIds || !sweptIds) return label;
+    if (!sweptIds.has(id)) return label;
+    return foundIds.has(id) ? `${label} (found)` : `${label} (not found)`;
+  }
 </script>
 
 <h3>Which agent?</h3>
 <p class="hint">
   gavin writes the integration files for the agent you pick, and starts it with this command.
 </p>
+
+{#if detected}
+  <p class="found" class:empty={foundIds && foundIds.size === 0}>
+    {foundAgentsSummary(detected)}
+  </p>
+  {#if missingFallback.length > 0}
+    <p class="hint indent">
+      App fallback includes
+      {missingFallback
+        .map((id) => $agentProfilesStore.find((p) => p.id === id)?.label ?? id)
+        .join(", ")}
+      — not found on PATH. You can keep them or pick a found agent below.
+    </p>
+  {/if}
+{:else if sweepError}
+  <p class="warn">{sweepError}</p>
+{:else}
+  <p class="hint">Looking for agent CLIs on PATH…</p>
+{/if}
 
 <!-- The wizard is where a freshly cloned repo is met for the first time,
      so this is the earliest place the human can see that config.toml
@@ -120,13 +232,19 @@
   <span>Profile</span>
   <select
     value={agentCfg.profileId}
-    onchange={(e) => void setAgentField(workspaceId, "profile", e.currentTarget.value)}
+    onchange={(e) => void onProfileChange(e.currentTarget.value)}
   >
     {#each $agentProfilesStore as profile (profile.id)}
-      <option value={profile.id}>{profile.label}</option>
+      <option value={profile.id}>{profileOptionLabel(profile.id, profile.label)}</option>
     {/each}
   </select>
 </label>
+{#if detected && sweptIds?.has(agentCfg.profileId) && !isAgentFound(detected, agentCfg.profileId)}
+  <p class="warn">
+    “{$agentProfilesStore.find((p) => p.id === agentCfg.profileId)?.label ?? agentCfg.profileId}”
+    was not found on PATH — set the command below, or pick a found profile.
+  </p>
+{/if}
 {#if probedHere}
   <label class="row">
     <span>Walk at</span>
@@ -206,6 +324,8 @@
       profiles={$agentProfilesStore}
       value={$agentDefaultsStore.agentFallback ?? []}
       thresholds={$agentDefaultsStore.fallbackThresholds}
+      {foundIds}
+      {sweptIds}
       onChange={(chain) =>
         void setAgentDefaults({
           ...$agentDefaultsStore,
@@ -248,6 +368,15 @@
      belonging to the row above it rather than to the step. */
   .hint.indent {
     margin: -4px 0 10px 90px;
+  }
+  .found {
+    margin: 0 0 12px;
+    color: #9aaa9a;
+    font-family: monospace;
+    font-size: 0.8em;
+  }
+  .found.empty {
+    color: #e0b08a;
   }
   .check {
     display: flex;
