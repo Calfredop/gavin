@@ -60,21 +60,37 @@ describe("the hub view", () => {
 
   it("shows that resolver's own reason rather than a second sentence", () => {
     const text = source(VIEW);
-    expect(text).toContain('{:else if baseline?.kind === "none"}');
+    expect(text).toContain('{:else if card && baseline?.kind === "none"}');
     expect(text).toContain("{baseline.reason}");
   });
 
   it("re-resolves the selection against the list rather than trusting the stored path", () => {
     // The list moves under the selection whenever the query changes, the
     // archive toggle flips, or a card is filed elsewhere in the app.
-    expect(source(VIEW)).toContain("resolveSelection(groups, prefs.selected)");
+    expect(source(VIEW)).toContain("resolveReviewSelection(groups, railSubjects, prefs.selected)");
   });
 
   it("groups through reviewBoard.ts rather than clustering in the template", () => {
     const text = source(VIEW);
     expect(text).toContain("groupCandidates(candidates)");
     expect(text).toContain("reviewCards(merged, reviewColumns,");
+    expect(text).toContain("reviewRails(orch?.rails ?? [],");
     expect(text).toContain("resolveReviewColumns(columns, prefs.columns)");
+  });
+
+  it("offers Critical review from the strip for the current selection", () => {
+    const text = source(VIEW);
+    expect(text).toContain("criticalReviewOffer(");
+    expect(text).toContain("Critical review…");
+    expect(text).toContain("requestRailCriticalReview");
+    expect(text).toContain("requestCardCriticalReview");
+  });
+
+  it("offers Build review rail from findings for remembered critical-review runs", () => {
+    const text = source(VIEW);
+    expect(text).toContain("Build review rail from findings…");
+    expect(text).toContain("requestFindingsRail");
+    expect(text).toContain("criticalReviewRuns");
   });
 
   it("drops the open file when the selected card changes", () => {
@@ -105,9 +121,10 @@ describe("the hub view", () => {
   });
 
   it("writes the resolved selection down instead of re-deriving it forever", () => {
-    // `resolveSelection` falls back to the first card of the first
-    // group, and group ORDER moves as each batch of touched files lands.
-    // Underived, the three panes re-target on their own while loading.
+    // `resolveReviewSelection` falls back to the first rail or the first
+    // card of the first group, and group ORDER moves as each batch of
+    // touched files lands. Underived, the three panes re-target on their
+    // own while loading.
     expect(source(VIEW)).toContain("setReviewPrefs(workspaceId, { selected: path })");
   });
 
@@ -225,5 +242,57 @@ describe("the launch", () => {
 
   it("reopens the conversation when the profile can", () => {
     expect(source(ACTIONS)).toContain('mode === "resume" || mode === "review"\n      ? buildResumeCommand');
+  });
+});
+
+describe("critical review wiring", () => {
+  it("mounts the dialog once at the app root beside ReviewDialog", () => {
+    // +page.svelte is outside lib/; read it the same way launchWallSurfaces does.
+    const routes = import.meta.glob("../../routes/*.svelte", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+    const page = Object.entries(routes).find(([p]) => p.endsWith("/+page.svelte"))?.[1];
+    expect(page, "no source for +page.svelte").toBeTruthy();
+    expect(page!).toContain("CriticalReviewDialog");
+    expect(page!).toContain("FindingsRailDialog");
+    expect(page!).toContain("startFindingsRailAutoBuild");
+    expect(page!).toContain("<ReviewDialog");
+  });
+
+  it("keeps Review with agent and adds Critical review on the card menu", () => {
+    const menu = source("cardMenu.ts");
+    expect(menu).toContain('"Review with agent…"');
+    expect(menu).toContain('"Critical review…"');
+    expect(menu).toContain("requestCardCriticalReview");
+  });
+
+  it("offers Critical review from the rail menu", () => {
+    expect(source("OrchestrationRail.svelte")).toContain('"Critical review…"');
+    expect(source("OrchestrationHubView.svelte")).toContain("requestRailCriticalReview");
+  });
+
+  it("reuses the single-agent filing path for reviewers", () => {
+    expect(source("criticalReview.ts")).toContain("composeReviewPrompt");
+    expect(source("criticalReview.ts")).toContain("alsoBuildFindingsRail");
+  });
+
+  it("exposes Review-tab entry points for rails-as-subjects", () => {
+    const hub = source("reviewCriticalReview.ts");
+    expect(hub).toContain("requestCardCriticalReview");
+    expect(hub).toContain("requestRailCriticalReview");
+    expect(hub).toContain("criticalReviewOffer");
+  });
+
+  it("resolves rail baselines and subject ids in reviewBoard, not the template", () => {
+    const board = source("reviewBoard.ts");
+    expect(board).toContain("export function reviewRails");
+    expect(board).toContain("export function railReviewBaseline");
+    expect(board).toContain("export function criticalReviewOffer");
+    expect(board).toContain("RAIL_SUBJECT_PREFIX");
+    // Card clustering stays card-only.
+    expect(board).toContain("groupCandidates");
+    expect(source("reviewState.ts")).toContain("export function railTouchRequest");
   });
 });

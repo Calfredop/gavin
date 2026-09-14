@@ -80,6 +80,39 @@ import {
 import { currentPlatform } from "$lib/core/platform";
 import type { Tool } from "$lib/orchestration/orchestrationTools";
 import {
+  alsoBuildFindingsRailParam,
+  parseReviewersParam,
+  railSubjectLabel,
+  seedCandidates,
+} from "$lib/review/criticalReview";
+import { launchCriticalReviewSessions } from "$lib/review/criticalReviewActions";
+import {
+  criticalReviewRuns,
+  critiqueSessionIdsByStep as critiqueSessionsMap,
+} from "$lib/review/criticalReviewState";
+import {
+  plansFolderPath,
+  reviewRulesPath,
+} from "$lib/review/codeReview";
+import {
+  agentProfilesStore,
+  layoutState,
+  agentForCard,
+  agentForProfile,
+  resolvedAgentFor,
+  armFailureDetection,
+  baseShaForLaunch,
+  cardReviewed,
+  conversationIdForLaunch,
+  createSessionOnPage,
+  createSessionOnNewPage,
+  handleAgentSessionSpawned,
+  sessionExits,
+  setOrchestrationAgent,
+  setSessionName,
+  workspaceRootPath,
+} from "$lib/core/layoutState";
+import {
   buildUntilScript,
   exhaustedReason,
   isPrStep,
@@ -99,23 +132,6 @@ import { gavinTrees, patchPlanField } from "$lib/core/gavinState";
 import { gitStore, refresh as refreshGit } from "$lib/git/gitState";
 import { branchResolvable } from "$lib/git/git";
 import { isGavinOwnPath } from "$lib/git/gitTracking";
-import {
-  layoutState,
-  agentForCard,
-  agentForProfile,
-  resolvedAgentFor,
-  armFailureDetection,
-  baseShaForLaunch,
-  cardReviewed,
-  conversationIdForLaunch,
-  createSessionOnPage,
-  createSessionOnNewPage,
-  handleAgentSessionSpawned,
-  sessionExits,
-  setOrchestrationAgent,
-  setSessionName,
-  workspaceRootPath,
-} from "$lib/core/layoutState";
 import { decoyEditedSteps } from "$lib/git/worktreeCards";
 import { allSessionIds } from "$lib/panes/layout";
 import {
@@ -1173,6 +1189,79 @@ async function executeToolLaunch(
     return false;
   }
 
+  // Critical review on the whole rail: N reviewers, shared checkout,
+  // same launch as the dialog. Sessions live on a tiled page; the step
+  // run carries no single sessionId (the scheduler reads them from
+  // criticalReviewRuns via stepId).
+  if (tool.kind === "critique") {
+    const tree = get(gavinTrees)[workspaceId];
+    const cwd = rail.worktreePath ?? (tree && !tree.rootMissing ? tree.rootPath : null);
+    if (!cwd) {
+      await setStepRunAction(
+        workspaceId,
+        step.id,
+        "stalled",
+        null,
+        "no worktree bound and the workspace has no root"
+      );
+      return false;
+    }
+    const rootFolder =
+      tree && !tree.rootMissing
+        ? tree.rootPath
+        : workspaceRootPath(workspaceId);
+    if (!rootFolder) {
+      await setStepRunAction(
+        workspaceId,
+        step.id,
+        "stalled",
+        null,
+        "this workspace has no root to file findings into"
+      );
+      return false;
+    }
+    const params = stepParams(step);
+    const base = resolveToolParam(tool, params, "base")?.trim() || "main";
+    const alsoBuild = alsoBuildFindingsRailParam(resolveToolParam(tool, params, "also_build_rail"));
+    let reviewers = parseReviewersParam(resolveToolParam(tool, params, "reviewers"));
+    if (reviewers.length === 0) {
+      const profiles = get(agentProfilesStore);
+      const agent = resolvedAgentFor(workspaceId);
+      reviewers = seedCandidates(
+        profiles.map((p) => ({
+          id: p.id,
+          models: p.models ?? [],
+          promptArgs: p.promptArgs,
+        })),
+        agent.profileId,
+        agent.model ?? ""
+      );
+    }
+    const err = await launchCriticalReviewSessions({
+      workspaceId,
+      cwd,
+      base,
+      rulesPath: reviewRulesPath(rootFolder),
+      contextFolder: rootFolder,
+      plansFolder: plansFolderPath(rootFolder, "root"),
+      subjectKind: "rail",
+      subjectLabel: railSubjectLabel(rail.name),
+      card: null,
+      railId: rail.id,
+      railName: rail.name,
+      reviewers,
+      alsoBuildFindingsRail: alsoBuild,
+      stepId: step.id,
+      switchToTerminal: false,
+    });
+    if (err) {
+      await setStepRunAction(workspaceId, step.id, "stalled", null, err);
+      return false;
+    }
+    await setStepRunAction(workspaceId, step.id, "running", null, null, null, cwd, 0);
+    return false;
+  }
+
   // The rail's checkout, NOT a card's contextFolder -- there is no card.
   const tree = get(gavinTrees)[workspaceId];
   const cwd = rail.worktreePath ?? (tree && !tree.rootMissing ? tree.rootPath : null);
@@ -1879,7 +1968,8 @@ async function runTick(workspaceId: string): Promise<boolean> {
       failureReasons,
       currentPrReports(),
       Math.floor(Date.now() / 1000),
-      get(layoutState).sessionsSeenWorking ?? new Set()
+      get(layoutState).sessionsSeenWorking ?? new Set(),
+      critiqueSessionsMap(get(criticalReviewRuns)[workspaceId])
     )
   );
 }

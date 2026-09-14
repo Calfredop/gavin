@@ -35,6 +35,10 @@
   import WorkspaceCreateModal from "$lib/workspace/WorkspaceCreateModal.svelte";
   import BestOfNDialog from "$lib/cards/BestOfNDialog.svelte";
   import { bestOfNRequest, hydrateRuns } from "$lib/cards/bestOfNState";
+  import CriticalReviewDialog from "$lib/review/CriticalReviewDialog.svelte";
+  import FindingsRailDialog from "$lib/review/FindingsRailDialog.svelte";
+  import { hydrateRuns as hydrateCriticalReviewRuns } from "$lib/review/criticalReviewState";
+  import { startFindingsRailAutoBuild } from "$lib/review/criticalReviewFindingsRailActions";
   import { showAlert } from "$lib/core/dialog";
   import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspace/workspaceCreate";
   import { resolveAgentConfig, accentVar } from "$lib/core/settings";
@@ -86,6 +90,7 @@
   let uninstallHints: (() => void) | null = null;
   let uninstallLineClipboard: (() => void) | null = null;
   let unlistenClose: (() => void) | null = null;
+  let stopFindingsRailAutoBuild: (() => void) | null = null;
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
   const activeView = $derived(activeWorkspace ? getActiveView(activeWorkspace) : "terminal");
@@ -154,6 +159,7 @@
       if (hydratedRuns.has(ws.id)) continue;
       hydratedRuns.add(ws.id);
       hydrateRuns(ws.id);
+      hydrateCriticalReviewRuns(ws.id);
     }
   });
   // What the tab strip can report as running. The commit agent is a
@@ -305,6 +311,7 @@
     uninstallShortcuts = installKeyboardShortcuts();
     uninstallHints = installHintTracking();
     uninstallLineClipboard = installLineClipboard();
+    stopFindingsRailAutoBuild = startFindingsRailAutoBuild();
   });
 
   onDestroy(() => {
@@ -312,6 +319,7 @@
     uninstallShortcuts?.();
     uninstallHints?.();
     uninstallLineClipboard?.();
+    stopFindingsRailAutoBuild?.();
     teardown();
   });
 </script>
@@ -628,6 +636,16 @@
      Before AppDialog for the same tree-order reason: an alert raised
      from inside this one has to land on top of it. -->
 <ReviewDialog />
+
+<!-- Critical review: N reviewers on one checkout. Mounted once for the
+     same reason as BestOfNDialog — card menu, rail menu, and (once
+     rails-as-subjects lands) the Review tab all open it. -->
+<CriticalReviewDialog />
+
+<!-- Explicit "Build review rail from findings" — cull dialog. Same
+     once-at-root reason: the Review tab opens it, and auto-build does
+     not. -->
+<FindingsRailDialog />
 
 <AppDialog />
 

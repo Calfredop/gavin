@@ -1,7 +1,8 @@
-// The Review tab's pure half: which cards are up for review, what each
-// one touched, and how those cards cluster into the groups the left list
-// draws. No Svelte, no Tauri, no I/O -- reviewState.ts fetches and
-// ReviewHubView.svelte renders.
+// The Review tab's pure half: which cards are up for review, which rails
+// sit beside them as subjects, what each one touched, and how those
+// cards cluster into the groups the left list draws. No Svelte, no
+// Tauri, no I/O -- reviewState.ts fetches and ReviewHubView.svelte
+// renders.
 //
 // The grouping is the reason this tab exists. A finished card on its own
 // is a diff you have already agreed to; two finished cards that wrote to
@@ -9,7 +10,8 @@
 // it because a column is ordered by when work started, not by what it
 // touched. So cards are clustered by SHARED FILES: every card appears
 // exactly once, in the company of the other cards its edits collide
-// with.
+// with. Rails are first-class subjects in the same list, but they do
+// not join that clustering -- a rail is one checkout/branch as a whole.
 //
 // The one rule every string below follows, inherited from
 // runChanges.ts: a card with no recorded baseline is never reported as a
@@ -19,12 +21,13 @@
 // card reviewed clean had been looked at.
 
 import type { Column } from "$lib/board/kanban";
-import { doneColumnOf } from "$lib/orchestration/orchestration";
+import { doneColumnOf, type Rail } from "$lib/orchestration/orchestration";
 import { slugStatus, type CardView, type MergedProjection } from "$lib/core/planBoard";
 import { cardMatches } from "$lib/board/boardSearch";
-import { queryTokens } from "$lib/core/search";
+import { matchesFields, queryTokens } from "$lib/core/search";
 import { cardPasses, type BoardFacets } from "$lib/board/boardFilters";
-import type { RailIndex } from "$lib/board/planFilter";
+import { facetMatches, NO_RAIL, type RailIndex } from "$lib/board/planFilter";
+import { earliestStepBaseSha } from "$lib/review/criticalReview";
 
 /// One card up for review, with what its run touched.
 ///
@@ -235,6 +238,149 @@ export function reviewCards(
   return reviewable.filter((card) => cardMatches(card, tokens));
 }
 
+// ---- Rails as subjects ------------------------------------------------------
+
+/// Selection ids for rails. Card ids are absolute paths; rail ids are
+/// short and could collide with a future path spelling, so every rail
+/// subject is namespaced. The hub and the store both key on this string.
+export const RAIL_SUBJECT_PREFIX = "rail:";
+
+export function railSubjectId(railId: string): string {
+  return `${RAIL_SUBJECT_PREFIX}${railId}`;
+}
+
+export function isRailSubjectId(id: string): boolean {
+  return id.startsWith(RAIL_SUBJECT_PREFIX);
+}
+
+export function railIdFromSubject(id: string): string | null {
+  return isRailSubjectId(id) ? id.slice(RAIL_SUBJECT_PREFIX.length) : null;
+}
+
+/// One rail up for review, with what its combined checkout touched.
+///
+/// Rails sit in the SAME list as cards — not behind a Cards|Rails
+/// switcher. They do not join card file-clustering: a rail is one
+/// subject (its worktree/branch as a whole), and folding it into a
+/// shared-file group would report card collisions the rail never
+/// participated in. `groupCandidates` stays card-only.
+export interface ReviewRailCandidate {
+  /// `railSubjectId(railId)` — what selection and the store key on.
+  id: string;
+  railId: string;
+  name: string;
+  worktreePath: string | null;
+  branch: string | null;
+  files: string[] | null;
+  checkout: string | null;
+  baseSha: string | null;
+  /// Inputs the Critical-review dialog needs when this row is selected.
+  worktreeForkPoint: string | null;
+  stepBaseShas: (string | null)[];
+}
+
+/// Baseline for a rail-as-subject diff: worktree fork point, else the
+/// earliest step baseSha in step order. Null when neither is known —
+/// the tab then reports the rail as unmeasured, the same way a card
+/// with no binding is. Never a trunk branch name: `git_run_changes`
+/// needs a commit, and the dialog's free-text default is a different
+/// question.
+export function railReviewBaseline(options: {
+  worktreeForkPoint?: string | null;
+  stepBaseShas?: readonly (string | null | undefined)[];
+}): string | null {
+  const fork = options.worktreeForkPoint?.trim();
+  if (fork) return fork;
+  return earliestStepBaseSha(options.stepBaseShas ?? []);
+}
+
+export interface ReviewRailOptions {
+  query: string;
+  /// Only the rail facet applies: a rail is not a card, so kind /
+  /// context / label have nothing honest to say about it. Empty rail
+  /// facet = every rail.
+  facets: BoardFacets;
+}
+
+/// Whether this rail passes the shared rail facet. `NO_RAIL` never
+/// matches a rail — that option means unplaced cards.
+function railPassesFacet(railId: string, facets: BoardFacets): boolean {
+  return facetMatches(facets.rail, facets.exclude.rail, (v) => (v === NO_RAIL ? false : v === railId));
+}
+
+/// The rails the tab lists, in rail position order — peers of
+/// `reviewCards`, not a second mode.
+export function reviewRails(rails: readonly Rail[], options: ReviewRailOptions): Rail[] {
+  const tokens = queryTokens(options.query);
+  const listed = [...rails]
+    .filter((rail) => railPassesFacet(rail.id, options.facets))
+    .sort((a, b) => a.position - b.position);
+  if (tokens.length === 0) return listed;
+  return listed.filter((rail) =>
+    matchesFields(tokens, [rail.name, rail.branch ?? null, rail.worktreePath])
+  );
+}
+
+/// Build a list row from a rail and whatever the store has measured.
+export function railCandidate(
+  rail: Pick<Rail, "id" | "name" | "worktreePath"> & { branch?: string | null },
+  measured: {
+    files: string[] | null;
+    checkout: string | null;
+    baseSha: string | null;
+    worktreeForkPoint?: string | null;
+    stepBaseShas?: readonly (string | null)[];
+  } = { files: null, checkout: null, baseSha: null }
+): ReviewRailCandidate {
+  const stepBaseShas = [...(measured.stepBaseShas ?? [])];
+  const worktreeForkPoint = measured.worktreeForkPoint?.trim() || null;
+  return {
+    id: railSubjectId(rail.id),
+    railId: rail.id,
+    name: rail.name,
+    worktreePath: rail.worktreePath,
+    branch: rail.branch ?? null,
+    files: measured.files,
+    checkout: measured.checkout,
+    baseSha: measured.baseSha,
+    worktreeForkPoint,
+    stepBaseShas,
+  };
+}
+
+/// What "Critical review…" from the current selection should open.
+/// Null when nothing is selected — the hub hides the action then.
+export type ReviewCriticalOffer =
+  | { kind: "card"; cardPath: string }
+  | {
+      kind: "rail";
+      railId: string;
+      worktreeForkPoint: string | null;
+      stepBaseShas: readonly (string | null)[];
+    };
+
+export function criticalReviewOffer(
+  selected: string | null,
+  rails: readonly ReviewRailCandidate[],
+  cardPaths: ReadonlySet<string> | readonly string[]
+): ReviewCriticalOffer | null {
+  if (!selected) return null;
+  const railId = railIdFromSubject(selected);
+  if (railId !== null) {
+    const rail = rails.find((r) => r.railId === railId);
+    if (!rail) return null;
+    return {
+      kind: "rail",
+      railId: rail.railId,
+      worktreeForkPoint: rail.worktreeForkPoint,
+      stepBaseShas: rail.stepBaseShas,
+    };
+  }
+  const paths = cardPaths instanceof Set ? cardPaths : new Set(cardPaths);
+  if (!paths.has(selected)) return null;
+  return { kind: "card", cardPath: selected };
+}
+
 // ---- Grouping ---------------------------------------------------------------
 
 /// Union-find over the candidates: two cards join when they share a
@@ -424,12 +570,18 @@ export function noFilesHint(cards: ReviewCandidate[]): string {
 }
 
 /// The one line the tab's header reduces to. Null when there is nothing
-/// to say yet.
-export function reviewSummary(groups: ReviewGroup[]): string | null {
+/// to say yet. Rails count beside cards — same list, one summary.
+export function reviewSummary(
+  groups: ReviewGroup[],
+  rails: readonly ReviewRailCandidate[] = []
+): string | null {
   const cards = groups.reduce((n, g) => n + g.cards.length, 0);
-  if (cards === 0) return null;
+  const railCount = rails.length;
+  if (cards === 0 && railCount === 0) return null;
+  const parts: string[] = [];
+  if (railCount > 0) parts.push(`${railCount} rail${railCount === 1 ? "" : "s"}`);
+  if (cards > 0) parts.push(`${cards} card${cards === 1 ? "" : "s"}`);
   const clusters = groups.filter((g) => g.id !== NO_FILES_GROUP_ID).length;
-  const parts = [`${cards} card${cards === 1 ? "" : "s"}`];
   if (clusters > 0) parts.push(`${clusters} group${clusters === 1 ? "" : "s"}`);
   return parts.join(" · ");
 }
@@ -443,9 +595,31 @@ export function reviewSummary(groups: ReviewGroup[]): string | null {
 /// toggle flips and when the touched files arrive -- and a selection
 /// pointing at a card the list no longer holds renders three empty
 /// columns beside a list that has plenty in it.
+///
+/// Card-only. Prefer `resolveReviewSelection` once rails are in the
+/// list — this stays for callers and tests that only hold card groups.
 export function resolveSelection(groups: ReviewGroup[], selected: string | null): string | null {
   const paths = new Set(groups.flatMap((g) => g.cards.map((c) => c.card.id)));
   if (selected && paths.has(selected)) return selected;
+  return groups[0]?.cards[0]?.card.id ?? null;
+}
+
+/// Selection across rails and card groups in one list. Keeps a still-
+/// listed choice; otherwise the first rail, else the first card.
+///
+/// Rails lead the fallback so a workspace that only has rails (or whose
+/// card filters emptied the card half) still has a subject, and so the
+/// list does not jump past every rail to land on a card.
+export function resolveReviewSelection(
+  groups: ReviewGroup[],
+  rails: readonly ReviewRailCandidate[],
+  selected: string | null
+): string | null {
+  const railIds = new Set(rails.map((r) => r.id));
+  if (selected && railIds.has(selected)) return selected;
+  const cardPaths = new Set(groups.flatMap((g) => g.cards.map((c) => c.card.id)));
+  if (selected && cardPaths.has(selected)) return selected;
+  if (rails[0]) return rails[0].id;
   return groups[0]?.cards[0]?.card.id ?? null;
 }
 

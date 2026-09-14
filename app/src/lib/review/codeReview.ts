@@ -63,9 +63,9 @@ export function plansFolderPath(folderPath: string, kind: "root" | "context"): s
 /// file is a wish list ("write good code") that changes no review.
 export const REVIEW_RULES_STARTER = `# Review rules
 
-House rules for "Review with agent" in this workspace. The review agent
-reads this file before it reads the diff, and these rules win over its
-own habits.
+House rules for "Review with agent" and "Critical review" in this workspace.
+The review agent reads this file before it reads the diff, and these rules
+win over its own habits.
 
 Write rules that could FAIL a review — something a reviewer can check
 against the diff and answer yes or no. A rule nobody can fail is a

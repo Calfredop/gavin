@@ -65,6 +65,8 @@ describe("the tool kind icons", () => {
       // reading as the badge a running review step wears
       // (reviewWaitIndicator).
       ["review", "lucide-eye"],
+      // N reviewers side by side — not the single eye of a human pause.
+      ["critique", "lucide-users"],
     ];
     for (const [kind, glyph] of named) expect(glyphClass(kind), kind).toBe(glyph);
   });

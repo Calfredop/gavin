@@ -6,22 +6,32 @@ import {
   NO_FILES_LABEL,
   MAX_REMEMBERED_GROUPS,
   SAME_BASELINE_LABEL,
+  RAIL_SUBJECT_PREFIX,
+  criticalReviewOffer,
   everyGroupExpanded,
   fileLabel,
   isGroupExpanded,
+  isRailSubjectId,
   setAllGroupsExpanded,
   toggleExpandedGroup,
   noFilesHint,
   groupCandidates,
   groupLabel,
+  railCandidate,
+  railIdFromSubject,
+  railReviewBaseline,
+  railSubjectId,
   resolveReviewColumns,
+  resolveReviewSelection,
   resolveSelection,
   reviewCards,
+  reviewRails,
   reviewStatusSlugs,
   reviewSummary,
   withBaselinePeers,
   type ReviewCandidate,
   type ReviewGroup,
+  type ReviewRailCandidate,
 } from "$lib/review/reviewBoard";
 import type { CardView, MergedProjection } from "$lib/core/planBoard";
 import type { Column } from "$lib/board/kanban";
@@ -557,5 +567,188 @@ describe("group expansion", () => {
 
   it("does not remember a group twice", () => {
     expect(setAllGroupsExpanded([group("a")], ["a"], true)).toEqual(["a"]);
+  });
+});
+
+function rail(over: Partial<Rail> & Pick<Rail, "id" | "name">): Rail {
+  return {
+    position: 0,
+    worktreePath: null,
+    pageId: null,
+    stages: [],
+    ...over,
+  };
+}
+
+describe("rail subjects", () => {
+  it("namespaces selection ids so they cannot collide with card paths", () => {
+    expect(railSubjectId("r1")).toBe(`${RAIL_SUBJECT_PREFIX}r1`);
+    expect(isRailSubjectId(railSubjectId("r1"))).toBe(true);
+    expect(isRailSubjectId("/ws/.gavin-root/plans/a.md")).toBe(false);
+    expect(railIdFromSubject(railSubjectId("r1"))).toBe("r1");
+    expect(railIdFromSubject("/ws/.gavin-root/plans/a.md")).toBeNull();
+  });
+
+  it("lists rails in position order beside the card half of the list", () => {
+    const rails = [
+      rail({ id: "r2", name: "Later", position: 2 }),
+      rail({ id: "r1", name: "First", position: 0 }),
+    ];
+    expect(reviewRails(rails, { query: "", facets: NO_FACETS }).map((r) => r.id)).toEqual([
+      "r1",
+      "r2",
+    ]);
+  });
+
+  it("filters rails by the search query on name, branch and worktree", () => {
+    const rails = [
+      rail({ id: "r1", name: "Auth", branch: "feat/auth", worktreePath: "/repo-auth" }),
+      rail({ id: "r2", name: "Docs", branch: "docs", worktreePath: "/repo-docs" }),
+    ];
+    expect(reviewRails(rails, { query: "auth", facets: NO_FACETS }).map((r) => r.name)).toEqual([
+      "Auth",
+    ]);
+    expect(reviewRails(rails, { query: "repo-docs", facets: NO_FACETS }).map((r) => r.name)).toEqual([
+      "Docs",
+    ]);
+  });
+
+  it("honours the shared rail facet and never treats NO_RAIL as a rail", () => {
+    const rails = [
+      rail({ id: "r1", name: "Backend" }),
+      rail({ id: "r2", name: "Frontend" }),
+    ];
+    const onlyBackend: BoardFacets = { ...NO_FACETS, rail: ["r1"] };
+    expect(reviewRails(rails, { query: "", facets: onlyBackend }).map((r) => r.id)).toEqual(["r1"]);
+
+    const unplaced: BoardFacets = { ...NO_FACETS, rail: ["__unplaced__"] };
+    expect(reviewRails(rails, { query: "", facets: unplaced })).toEqual([]);
+  });
+
+  it("prefers a worktree fork point over step baseShas for the diff baseline", () => {
+    expect(
+      railReviewBaseline({
+        worktreeForkPoint: "forked",
+        stepBaseShas: ["step-a", "step-b"],
+      })
+    ).toBe("forked");
+  });
+
+  it("falls back to the earliest non-empty step baseSha in order", () => {
+    expect(
+      railReviewBaseline({
+        worktreeForkPoint: null,
+        stepBaseShas: [null, "  ", "first", "second"],
+      })
+    ).toBe("first");
+  });
+
+  it("has no baseline when neither fork point nor step sha is known", () => {
+    expect(railReviewBaseline({ worktreeForkPoint: "  ", stepBaseShas: [null, ""] })).toBeNull();
+  });
+
+  it("does not fold rails into card file clustering", () => {
+    // A rail that touched the same path as two cards must not enlarge
+    // their group: clustering stays card-only.
+    const groups = groupCandidates([
+      candidate("A", ["shared.ts"]),
+      candidate("B", ["shared.ts"]),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].cards.map((c) => c.card.title)).toEqual(["A", "B"]);
+    // railCandidate is a different shape; groupCandidates never sees it.
+    const listed = railCandidate(rail({ id: "r1", name: "Auth", worktreePath: "/repo-auth" }), {
+      files: ["shared.ts"],
+      checkout: "/repo",
+      baseSha: "forked",
+    });
+    expect(listed.id).toBe(railSubjectId("r1"));
+    expect(listed.files).toEqual(["shared.ts"]);
+  });
+});
+
+describe("resolveReviewSelection", () => {
+  const groups = groupCandidates([candidate("A", ["a.ts"]), candidate("B", ["b.ts"])]);
+  const rails: ReviewRailCandidate[] = [
+    railCandidate(rail({ id: "r1", name: "Auth" }), {
+      files: null,
+      checkout: null,
+      baseSha: null,
+    }),
+  ];
+
+  it("keeps a rail selection the list still holds", () => {
+    expect(resolveReviewSelection(groups, rails, railSubjectId("r1"))).toBe(railSubjectId("r1"));
+  });
+
+  it("keeps a card selection the list still holds", () => {
+    const b = groups[1].cards[0].card.id;
+    expect(resolveReviewSelection(groups, rails, b)).toBe(b);
+  });
+
+  it("falls to the first rail when the selection dropped out", () => {
+    expect(resolveReviewSelection(groups, rails, "/gone.md")).toBe(railSubjectId("r1"));
+  });
+
+  it("falls to the first card when there are no rails", () => {
+    expect(resolveReviewSelection(groups, [], null)).toBe(groups[0].cards[0].card.id);
+  });
+
+  it("selects nothing when both halves are empty", () => {
+    expect(resolveReviewSelection([], [], "/a.md")).toBeNull();
+  });
+});
+
+describe("criticalReviewOffer", () => {
+  const rails: ReviewRailCandidate[] = [
+    railCandidate(
+      rail({ id: "r1", name: "Auth", worktreePath: "/repo-auth" }),
+      {
+        files: ["a.ts"],
+        checkout: "/repo-auth",
+        baseSha: "forked",
+        worktreeForkPoint: "forked",
+        stepBaseShas: ["step"],
+      }
+    ),
+  ];
+
+  it("offers a rail subject with the baseline inputs the dialog needs", () => {
+    expect(criticalReviewOffer(railSubjectId("r1"), rails, [])).toEqual({
+      kind: "rail",
+      railId: "r1",
+      worktreeForkPoint: "forked",
+      stepBaseShas: ["step"],
+    });
+  });
+
+  it("offers a card subject by path", () => {
+    expect(criticalReviewOffer("/plans/a.md", rails, ["/plans/a.md"])).toEqual({
+      kind: "card",
+      cardPath: "/plans/a.md",
+    });
+  });
+
+  it("offers nothing when the selection is gone", () => {
+    expect(criticalReviewOffer(railSubjectId("gone"), rails, [])).toBeNull();
+    expect(criticalReviewOffer("/plans/gone.md", rails, ["/plans/a.md"])).toBeNull();
+    expect(criticalReviewOffer(null, rails, [])).toBeNull();
+  });
+});
+
+describe("reviewSummary with rails", () => {
+  it("counts rails beside cards", () => {
+    const groups = groupCandidates([candidate("A", ["a.ts"])]);
+    const rails = [railCandidate(rail({ id: "r1", name: "Auth" }))];
+    expect(reviewSummary(groups, rails)).toBe("1 rail · 1 card · 1 group");
+  });
+
+  it("still summarises cards alone the way it used to", () => {
+    const groups = groupCandidates([
+      candidate("A", ["a.ts"]),
+      candidate("B", ["b.ts"]),
+      candidate("C", null),
+    ]);
+    expect(reviewSummary(groups)).toBe("3 cards · 2 groups");
   });
 });

@@ -90,6 +90,9 @@ vi.mock("$lib/core/layoutState", () => ({
 vi.mock("$lib/review/codeReviewActions", () => ({
   requestCardReview: vi.fn().mockResolvedValue(null),
 }));
+vi.mock("$lib/review/criticalReviewActions", () => ({
+  requestCardCriticalReview: vi.fn().mockResolvedValue(null),
+}));
 // The first-Run review's interactive half owns its own suite too; Develop
 // only needs it reachable, not driven, so it is pre-approved here.
 vi.mock("$lib/cards/cardReviewActions", () => ({
@@ -122,6 +125,7 @@ import * as backend from "$lib/core/backend";
 import { askConfirmChecked } from "$lib/core/dialog";
 import { findSessionLocation } from "$lib/core/workspace";
 import { requestCardReview } from "$lib/review/codeReviewActions";
+import { requestCardCriticalReview } from "$lib/review/criticalReviewActions";
 import { layoutState } from "$lib/core/layoutState";
 import { kanbanState } from "$lib/board/kanbanState";
 import { orchestrations } from "$lib/orchestration/orchestrationState";
@@ -305,9 +309,15 @@ describe("buildCardMenuEntries", () => {
       expect(labels(buildCardMenuEntries(card(kind, "To Do"), hooks()))).toContain(
         "Review with agent…"
       );
+      expect(labels(buildCardMenuEntries(card(kind, "To Do"), hooks()))).toContain(
+        "Critical review…"
+      );
     }
     expect(labels(buildCardMenuEntries(card("note", "To Do"), hooks()))).not.toContain(
       "Review with agent…"
+    );
+    expect(labels(buildCardMenuEntries(card("note", "To Do"), hooks()))).not.toContain(
+      "Critical review…"
     );
   });
 
@@ -321,10 +331,12 @@ describe("buildCardMenuEntries", () => {
     const live = labels(buildCardMenuEntries(card("task", "In Progress"), hooks()));
     expect(live).toContain("Jump to session");
     expect(live).toContain("Review with agent…");
+    expect(live).toContain("Critical review…");
     vi.mocked(findSessionLocation).mockReturnValue(null);
     const exited = labels(buildCardMenuEntries(card("task", "In Progress"), hooks()));
     expect(exited).toContain("Re-launch agent");
     expect(exited).toContain("Review with agent…");
+    expect(exited).toContain("Critical review…");
   });
 
   it("picking Review hands the card to the review flow and reports a refusal", async () => {
@@ -335,6 +347,25 @@ describe("buildCardMenuEntries", () => {
     item(entries, "Review with agent…")?.onPick?.();
     await vi.waitFor(() => expect(errors).toEqual(["nope"]));
     expect(requestCardReview).toHaveBeenCalledWith("ws-1", c);
+  });
+
+  it("picking Critical review hands the card to that flow and reports a refusal", async () => {
+    vi.mocked(requestCardCriticalReview).mockResolvedValue("nope");
+    const errors: string[] = [];
+    const c = card("plan", "Done");
+    const entries = buildCardMenuEntries(c, hooks({ reportError: (m) => errors.push(m) }));
+    item(entries, "Critical review…")?.onPick?.();
+    await vi.waitFor(() => expect(errors).toEqual(["nope"]));
+    expect(requestCardCriticalReview).toHaveBeenCalledWith("ws-1", c);
+  });
+
+  it("keeps Review with agent and Critical review as separate entries", () => {
+    const entries = labels(buildCardMenuEntries(card("plan", "Done"), hooks()));
+    expect(entries).toContain("Review with agent…");
+    expect(entries).toContain("Critical review…");
+    expect(entries.indexOf("Critical review…")).toBeGreaterThan(
+      entries.indexOf("Review with agent…")
+    );
   });
 
   it("picking Develop spawns the skill's agent and leaves the card's status alone", async () => {

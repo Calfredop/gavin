@@ -37,6 +37,8 @@ const agentMock = vi.hoisted(() =>
     launchCommand: "claude",
     file: "CLAUDE.md",
     profile: "claude-code",
+    profileId: "claude-code",
+    model: "sonnet",
     failurePatterns: ["API Error:"],
     failureCauses: [
       { pattern: "/login", cause: "auth" },
@@ -73,6 +75,14 @@ vi.mock("$lib/core/layoutState", () => ({
   // card steps and its tool steps would launch with different agents.
   agentForCard: agentMock,
   agentForProfile: agentMock,
+  agentProfilesStore: writable([
+    {
+      id: "claude-code",
+      label: "Claude Code",
+      models: ["sonnet", "opus"],
+      promptArgs: "",
+    },
+  ]),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   // Null by default: no conversation id unless a test asks for one, which
   // is what an unverified profile OR a pre-v21 daemon looks like.
@@ -100,6 +110,10 @@ vi.mock("$lib/core/layoutState", () => ({
 // board, so the rail-control tests exercise arming without also running
 // the scheduler. The drop-onto-a-running-stage tests set a board into it
 // precisely because they need the scheduler to run.
+vi.mock("$lib/review/criticalReviewActions", () => ({
+  launchCriticalReviewSessions: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("$lib/board/kanbanState", () => ({
   kanbanState: writable<Record<string, unknown>>({}),
   linkCardSessionAction: vi.fn(),
@@ -2143,6 +2157,88 @@ describe("a manual-review gate's executor", () => {
     vi.mocked(backend.setStepRun).mockClear();
     await markStepDone("ws-1", "gate");
     expect(backend.setStepRun).toHaveBeenCalledWith("gate", "done", null, null, null, null, null);
+  });
+});
+
+/// Critical review on the rail: N reviewers via the shared launch, step
+/// left running with no single sessionId (scheduler reads criticalReviewRuns).
+function critiqueRailPlan(): Orchestration {
+  return {
+    ...emptyOrchestration(),
+    rails: [
+      {
+        id: "r1",
+        name: "backend",
+        position: 0,
+        worktreePath: "/x/wt",
+        branch: null,
+        pageId: "p1",
+        stages: [
+          {
+            id: "s0",
+            position: 0,
+            steps: [{ id: "crit", position: 0, cardPath: "", toolId: "builtin:critical-review" }],
+          },
+        ],
+      },
+    ],
+    railRuns: [{ railId: "r1", state: "running", currentStageId: "s0" }],
+    stepRuns: [{ stepId: "crit", state: "pending", sessionId: null, reason: null }],
+  };
+}
+
+describe("a critical-review step's executor", () => {
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.getOrchestration).mockResolvedValue(critiqueRailPlan());
+    setRailPageLive();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [] });
+  });
+
+  it("launches N reviewers through the shared critical-review path", async () => {
+    const { launchCriticalReviewSessions } = await import("$lib/review/criticalReviewActions");
+    await executeActions("ws-1", [{ kind: "launch", stepId: "crit" }]);
+    expect(launchCriticalReviewSessions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: "ws-1",
+        cwd: "/x/wt",
+        railId: "r1",
+        stepId: "crit",
+        alsoBuildFindingsRail: false,
+        switchToTerminal: false,
+      })
+    );
+    const reviewers = vi.mocked(launchCriticalReviewSessions).mock.calls[0][0].reviewers;
+    expect(reviewers.length).toBeGreaterThanOrEqual(2);
+    expect(backend.setStepRun).toHaveBeenLastCalledWith(
+      "crit",
+      "running",
+      null,
+      null,
+      null,
+      "/x/wt",
+      0
+    );
+  });
+
+  it("stalls with the launch error when reviewers cannot start", async () => {
+    const { launchCriticalReviewSessions } = await import("$lib/review/criticalReviewActions");
+    vi.mocked(launchCriticalReviewSessions).mockResolvedValueOnce("need two reviewers");
+    await executeActions("ws-1", [{ kind: "launch", stepId: "crit" }]);
+    expect(backend.setStepRun).toHaveBeenLastCalledWith(
+      "crit",
+      "stalled",
+      null,
+      "need two reviewers",
+      null,
+      null,
+      null
+    );
   });
 });
 

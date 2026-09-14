@@ -1521,7 +1521,7 @@ mod tests {
     /// kind pr" -- after the human had typed.
     #[test]
     fn every_kind_the_app_can_author_round_trips() {
-        for kind in ["agent", "command", "script", "gavin", "until", "pr", "review"] {
+        for kind in ["agent", "command", "script", "gavin", "until", "pr", "review", "critique"] {
             let mut s = store();
             let mut t = tool("u1", Some("ws-1"));
             t.kind = kind.into();

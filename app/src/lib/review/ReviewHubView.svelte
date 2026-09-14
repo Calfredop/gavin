@@ -24,15 +24,21 @@
   import ReviewCardList from "$lib/review/ReviewCardList.svelte";
   import ReviewFilePane from "$lib/review/ReviewFilePane.svelte";
   import {
+    criticalReviewOffer,
     groupCandidates,
+    isRailSubjectId,
+    railCandidate,
+    railSubjectId,
     resolveReviewColumns,
-    resolveSelection,
+    resolveReviewSelection,
     reviewCards,
+    reviewRails,
     reviewSummary,
     setAllGroupsExpanded,
     toggleExpandedGroup,
     withBaselinePeers,
     type ReviewCandidate,
+    type ReviewRailCandidate,
   } from "$lib/review/reviewBoard";
   import {
     prefsFor,
@@ -44,12 +50,22 @@
   import {
     clearReviewFile,
     loadTouchedFiles,
+    railTouchRequest,
     reviewStore,
     selectReviewFile,
     type TouchRequest,
   } from "$lib/review/reviewState";
+  import {
+    requestCardCriticalReview,
+    requestRailCriticalReview,
+  } from "$lib/review/reviewCriticalReview";
+  import {
+    requestFindingsRail,
+  } from "$lib/review/criticalReviewFindingsRailActions";
+  import { criticalReviewRuns } from "$lib/review/criticalReviewState";
   import { runBaseline, type RunBaseline } from "$lib/cards/runChanges";
   import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
+  import { conflictCheckout } from "$lib/orchestration/orchestration";
   import { railIndex } from "$lib/board/planFilter";
   import { contextFacets, facetsEqual, pruneFacets } from "$lib/board/boardFilters";
   import { facetsFor, isTabLinked, hubFacetState, resetTabFacets, setTabFacets, setTabLinked } from "$lib/board/hubFacets";
@@ -139,6 +155,12 @@
   );
   const archivedPaths = $derived(new Set((merged?.archived ?? []).map((c) => c.id)));
 
+  // Rails as peers of the card list — same search/facet lens, no
+  // Cards|Rails switcher. Position order from reviewRails.
+  const listedRails = $derived(
+    reviewRails(orch?.rails ?? [], { query: prefs.query, facets })
+  );
+
   // A card's baseline: its binding's, through the same resolver the
   // Changes view uses -- so "no baseline" is spelled once and means the
   // same thing on both surfaces.
@@ -152,12 +174,21 @@
     return runBaseline(cardSessionFor(board, card.id), $daemonCompat);
   }
 
-  // Every measurable card, each carrying the other baselines recorded
-  // against its checkout -- what stops its window where the next run
-  // started. Without that, a card in a checkout several agents share
-  // reports the whole tree's work as its own, and the clustering below
-  // has nothing left to tell cards apart by.
-  const requests = $derived<TouchRequest[]>(
+  /// Step baseShas in rail step order — the fallback when no worktree
+  /// fork point is known yet (railReviewBaseline).
+  function stepBaseShasFor(rail: (typeof listedRails)[number]): (string | null)[] {
+    return rail.stages.flatMap((stage) =>
+      stage.steps.map((step) => {
+        if (!step.cardPath) return null;
+        return cardSessionFor(board, step.cardPath)?.baseSha ?? null;
+      })
+    );
+  }
+
+  // Card requests carry peer baselines; rail requests do not — a rail
+  // subject is the whole checkout since its baseline, and mixing its
+  // sha into withBaselinePeers would bound every card in that cwd.
+  const cardRequests = $derived(
     withBaselinePeers(
       listed
         .map((card) => {
@@ -169,6 +200,21 @@
         .filter((r): r is { path: string; cwd: string; baseSha: string } => r !== null)
     )
   );
+  const railRequests = $derived<TouchRequest[]>(
+    listedRails
+      .map((rail) => {
+        const cwd = conflictCheckout(rail, tree);
+        if (!cwd) return null;
+        return railTouchRequest({
+          railId: rail.id,
+          cwd,
+          worktreeForkPoint: null,
+          stepBaseShas: stepBaseShasFor(rail),
+        });
+      })
+      .filter((r): r is TouchRequest => r !== null)
+  );
+  const requests = $derived<TouchRequest[]>([...cardRequests, ...railRequests]);
 
   // What the list is ASKING FOR, reduced to a string. The effect below
   // depends on this rather than on `requests`, and that indirection is
@@ -223,14 +269,29 @@
     })
   );
   const groups = $derived(groupCandidates(candidates));
-  const summary = $derived(reviewSummary(groups));
+
+  const railSubjects = $derived<ReviewRailCandidate[]>(
+    listedRails.map((rail) => {
+      const steps = stepBaseShasFor(rail);
+      const subjectId = railSubjectId(rail.id);
+      const run = view?.runs[subjectId];
+      return railCandidate(rail, {
+        files: run?.files ?? null,
+        checkout: run ? (run.changes?.root ?? run.cwd) : null,
+        baseSha: run?.baseSha ?? null,
+        worktreeForkPoint: null,
+        stepBaseShas: steps,
+      });
+    })
+  );
+  const summary = $derived(reviewSummary(groups, railSubjects));
 
   // The selection is re-resolved against the list on every change, never
   // merely remembered: the list moves under it when the query changes,
   // when the archive toggle flips, and when a card is filed elsewhere in
   // the app. A selection pointing at a card the list no longer holds
   // renders three empty columns beside a list with plenty in it.
-  const selected = $derived(resolveSelection(groups, prefs.selected));
+  const selected = $derived(resolveReviewSelection(groups, railSubjects, prefs.selected));
 
   // ...and then written down, so the answer stops moving. Nothing about
   // `resolveSelection` is stable while the tab is loading: it falls back
@@ -250,7 +311,14 @@
     untrack(() => setReviewPrefs(workspaceId, { selected: path }));
   });
 
-  const card = $derived(listed.find((c) => c.id === selected) ?? null);
+  const selectedRail = $derived(
+    selected && isRailSubjectId(selected)
+      ? (railSubjects.find((r) => r.id === selected) ?? null)
+      : null
+  );
+  const card = $derived(
+    selectedRail ? null : (listed.find((c) => c.id === selected) ?? null)
+  );
   const binding = $derived(card ? (cardSessionFor(board, card.id) ?? null) : null);
   const run = $derived(selected ? (view?.runs[selected] ?? null) : null);
   // The selected card's baseline, kept as the union rather than reduced:
@@ -259,14 +327,60 @@
   // "why can't gavin say what this card touched".
   const baseline = $derived(card ? baselineFor(card) : null);
 
-  // Changing card drops the file: a diff belongs to the card it was read
-  // from, and leaving it up under another card's name would be somebody
+  const criticalOffer = $derived(
+    criticalReviewOffer(
+      selected,
+      railSubjects,
+      listed.map((c) => c.id)
+    )
+  );
+  let criticalError = $state<string | null>(null);
+  // Critical-review runs still remembered for this workspace — the run
+  // summary and the explicit "Build review rail from findings" entry.
+  const critiqueRuns = $derived($criticalReviewRuns[workspaceId] ?? []);
+  let findingsError = $state<string | null>(null);
+
+  async function startCriticalReview(): Promise<void> {
+    if (!criticalOffer) return;
+    criticalError = null;
+    if (criticalOffer.kind === "card") {
+      const c = listed.find((x) => x.id === criticalOffer.cardPath);
+      if (!c) return;
+      const err = await requestCardCriticalReview(workspaceId, c);
+      if (err) criticalError = err;
+      return;
+    }
+    const rail = listedRails.find((r) => r.id === criticalOffer.railId);
+    if (!rail) return;
+    const rootPath = tree && !tree.rootMissing ? tree.rootPath : null;
+    const err = await requestRailCriticalReview(
+      workspaceId,
+      { id: rail.id, name: rail.name, worktreePath: rail.worktreePath },
+      {
+        worktreeForkPoint: criticalOffer.worktreeForkPoint,
+        stepBaseShas: criticalOffer.stepBaseShas,
+        rootPath,
+      }
+    );
+    if (err) criticalError = err;
+  }
+
+  function openFindingsRail(pageId: string): void {
+    findingsError = null;
+    const err = requestFindingsRail(workspaceId, pageId);
+    if (err) findingsError = err;
+  }
+
+  // Changing card/rail drops the file: a diff belongs to the subject it
+  // was read from, and leaving it up under another name would be somebody
   // else's work under this heading.
   let fileFor = $state<string | null>(null);
   $effect(() => {
     const path = selected;
     if (fileFor === path) return;
     fileFor = path;
+    criticalError = null;
+    findingsError = null;
     untrack(() => clearReviewFile(workspaceId));
   });
 
@@ -304,6 +418,7 @@
 <div class="review" class:collapsed={prefs.listCollapsed}>
   <ReviewCardList
     {groups}
+    railSubjects={railSubjects}
     {selected}
     collapsed={prefs.listCollapsed}
     query={prefs.query}
@@ -346,14 +461,39 @@
 
   <div class="panes">
     <div class="strip">
-      <span class="title">{card?.title ?? "Nothing selected"}</span>
+      <span class="title"
+        >{selectedRail?.name ?? card?.title ?? "Nothing selected"}</span
+      >
       {#if summary}<span class="summary">{summary}</span>{/if}
+      {#if criticalOffer}
+        <button type="button" class="critical" onclick={() => void startCriticalReview()}>
+          Critical review…
+        </button>
+      {/if}
+      {#if criticalError}<span class="critical-error">{criticalError}</span>{/if}
     </div>
+    {#if critiqueRuns.length > 0}
+      <div class="run-summary" aria-label="Critical review runs">
+        {#each critiqueRuns as run (run.pageId)}
+          <div class="run">
+            <span class="run-label">
+              Critical review: {run.subjectLabel}
+              <span class="run-meta">{run.sessionIds.length} reviewers</span>
+            </span>
+            <button type="button" class="critical" onclick={() => openFindingsRail(run.pageId)}>
+              Build review rail from findings…
+            </button>
+          </div>
+        {/each}
+        {#if findingsError}<span class="critical-error">{findingsError}</span>{/if}
+      </div>
+    {/if}
     <div class="cols" bind:this={colsEl}>
       <ReviewAgentPane
         bind:this={agentPane}
         {workspaceId}
         {card}
+        rail={selectedRail}
         {binding}
         pane={prefs.pane}
         onPane={(next) => setReviewPrefs(workspaceId, { pane: next })}
@@ -366,22 +506,36 @@
 
       <div class="files">
         <div class="head"><span class="label">Touched files</span></div>
-        <div class="file-list" role="listbox" aria-label="Files this card's run touched">
-          {#if !card}
-            <div class="none">Select a card</div>
-          {:else if loadingPaths.has(card.id)}
+        <div
+          class="file-list"
+          role="listbox"
+          aria-label={selectedRail
+            ? "Files this rail's checkout touched"
+            : "Files this card's run touched"}
+        >
+          {#if !card && !selectedRail}
+            <div class="none">Select a card or rail</div>
+          {:else if selected && loadingPaths.has(selected)}
             <div class="none">Reading the checkout…</div>
           {:else if run?.error}
             <div class="none error">{run.error}</div>
           {:else if run?.problem}
             <!-- A sentence, not an empty list: see reviewBoard.ts. -->
             <div class="none">{run.problem}</div>
-          {:else if baseline?.kind === "none"}
+          {:else if card && baseline?.kind === "none"}
             <div class="none">{baseline.reason}</div>
+          {:else if selectedRail && !run}
+            <div class="none">
+              Gavin didn't record where this rail's work started, so it can't say what it touched.
+            </div>
           {:else if !run}
             <div class="none">Reading the checkout…</div>
           {:else if run.files && run.files.length === 0}
-            <div class="none">This run changed nothing in the checkout.</div>
+            <div class="none">
+              {selectedRail
+                ? "This rail changed nothing in the checkout."
+                : "This run changed nothing in the checkout."}
+            </div>
           {:else if run.changes}
             {#each run.changes.files as entry (entry.path)}
               <GitFileRow
@@ -480,6 +634,54 @@
     flex: none;
     font-size: 0.78em;
     color: var(--text-muted);
+  }
+  .critical {
+    margin-left: auto;
+    flex: none;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text);
+    font-size: 0.78em;
+    cursor: pointer;
+  }
+  .critical:hover {
+    background: var(--surface-hover, rgba(255, 255, 255, 0.04));
+  }
+  .critical-error {
+    flex: none;
+    font-size: 0.78em;
+    color: var(--danger, #e57373);
+  }
+  .run-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    flex: none;
+    background: var(--surface-overlay, transparent);
+  }
+  .run-summary .run {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .run-summary .run-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.78em;
+    color: var(--text-muted);
+  }
+  .run-summary .run-meta {
+    color: var(--text-subtle);
+  }
+  .run-summary .critical {
+    margin-left: auto;
   }
   /* A grid, not three flex children: the middle column is a file list
      with a natural width and the outer two are elastic, and only a

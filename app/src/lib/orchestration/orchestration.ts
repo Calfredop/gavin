@@ -12,6 +12,7 @@ import { isPrStep, isUntilStep, stepBefore, summaryParam, untilMax, untilVerdict
 import { isUnreviewedStall } from "$lib/cards/cardReview";
 import { prKey, prRequirement, prWaitVerdict } from "$lib/git/pullRequest";
 import type { PrReport } from "$lib/git/pullRequest";
+import { critiqueSessionsComplete } from "$lib/review/criticalReview";
 
 export interface Step {
   id: string;
@@ -51,6 +52,16 @@ export function isReviewStep(
 ): boolean {
   if (!step.toolId || !kinds) return false;
   return kinds.get(step.toolId) === "review";
+}
+
+/// A Critical-review step: N reviewer sessions, complete-then-advance.
+/// Same cold-start / unknown-id rules as isReviewStep.
+export function isCritiqueStep(
+  step: Step,
+  kinds: ReadonlyMap<string, ToolSummary["kind"]> | null
+): boolean {
+  if (!step.toolId || !kinds) return false;
+  return kinds.get(step.toolId) === "critique";
 }
 
 /// The overrides a step carries, tolerating the field being absent --
@@ -202,7 +213,7 @@ export interface ConflictNote {
 export interface ToolSummary {
   id: string;
   name: string;
-  kind: "agent" | "command" | "script" | "gavin" | "until" | "pr" | "review";
+  kind: "agent" | "command" | "script" | "gavin" | "until" | "pr" | "review" | "critique";
   params?: { name: string; default: string }[];
 }
 
@@ -1424,7 +1435,13 @@ export function nextActions(
   /// Empty by default so a caller that does not know (every test that
   /// is not about this) reads as "nobody has worked", which is the
   /// honest production default: do not complete a step on a prompt.
-  sessionsSeenWorking: ReadonlySet<string> = new Set()
+  sessionsSeenWorking: ReadonlySet<string> = new Set(),
+  /// Reviewer session ids for each running `critique` step, by step id.
+  /// Built from criticalReviewRuns in the tick. Empty by default: a
+  /// caller that does not know leaves every critique step waiting
+  /// (never completes on a guess, never stalls for missing sessions
+  /// that simply were not passed in).
+  critiqueSessionIdsByStep: ReadonlyMap<string, readonly string[]> = new Map()
 ): Action[] {
   const actions: Action[] = [];
   const cards = cardIndex(tree);
@@ -1498,6 +1515,57 @@ export function nextActions(
           // stalling it would replace "waiting for you" with a failure
           // nobody caused.
           if (isReviewStep(step, toolKind)) continue;
+          // A `critique` step's sessions live on a tiled page, not on
+          // `stepRuns.sessionId`. Complete-then-advance when every
+          // reviewer has finished; stall if any broke or was interrupted.
+          // Still waiting is honest on a paused rail — same as review —
+          // because the reviewers keep working whether the rail is
+          // advancing or not.
+          if (isCritiqueStep(step, toolKind)) {
+            const ids = critiqueSessionIdsByStep.get(step.id) ?? [];
+            let critiqueAction: Action | null = null;
+            for (const sid of ids) {
+              const fr = failureReasonById.get(sid);
+              if (fr !== undefined) {
+                critiqueAction = deadSessionAction(
+                  step,
+                  statusOf(cards.get(step.cardPath)),
+                  doneSlug,
+                  done?.name ?? "the done column",
+                  toolName.get(step.toolId as string) ?? "the tool",
+                  undefined,
+                  false,
+                  fr
+                );
+                break;
+              }
+              if (interruptedSessionIds.has(sid)) {
+                critiqueAction = deadSessionAction(
+                  step,
+                  statusOf(cards.get(step.cardPath)),
+                  doneSlug,
+                  done?.name ?? "the done column",
+                  toolName.get(step.toolId as string) ?? "the tool",
+                  undefined,
+                  true
+                );
+                break;
+              }
+            }
+            if (critiqueAction) {
+              actions.push(critiqueAction);
+            } else if (
+              critiqueSessionsComplete({
+                sessionIds: ids,
+                liveSessionIds,
+                sessionStatuses,
+                sessionsSeenWorking,
+              })
+            ) {
+              actions.push({ kind: "markDone", stepId: step.id });
+            }
+            continue;
+          }
           const sessionId = runByStep.get(step.id)?.sessionId ?? null;
           // A tool step running with NO session, before the library has
           // loaded. It is almost certainly the `pr` step above -- the
@@ -1695,6 +1763,71 @@ export function nextActions(
           // session rules below from stalling a step that is doing
           // exactly what it was told.
           if (isReviewStep(step, toolKind)) break stepBody;
+          // Rule 3h -- a `critique` step: N reviewer sessions on a tiled
+          // page. Complete-then-advance when every session has finished
+          // its turn or exited. Distinct from rule 3g (human pause) and
+          // from a single `agent` tool (rule 3b).
+          if (isCritiqueStep(step, toolKind)) {
+            const ids = critiqueSessionIdsByStep.get(step.id) ?? [];
+            let stalledCritique = false;
+            for (const sid of ids) {
+              const fr = failureReasonById.get(sid);
+              if (fr !== undefined) {
+                const action = deadSessionAction(
+                  step,
+                  cardStatus,
+                  doneSlug,
+                  done?.name ?? "the done column",
+                  toolName.get(step.toolId as string) ?? "the tool",
+                  undefined,
+                  false,
+                  fr
+                );
+                actions.push(action);
+                if (action.kind === "markDone") {
+                  simulated.set(step.id, "done");
+                } else {
+                  simulated.set(step.id, "stalled");
+                  stalled = true;
+                }
+                stalledCritique = true;
+                break;
+              }
+              if (interruptedSessionIds.has(sid)) {
+                const action = deadSessionAction(
+                  step,
+                  cardStatus,
+                  doneSlug,
+                  done?.name ?? "the done column",
+                  toolName.get(step.toolId as string) ?? "the tool",
+                  undefined,
+                  true
+                );
+                actions.push(action);
+                if (action.kind === "markDone") {
+                  simulated.set(step.id, "done");
+                } else {
+                  simulated.set(step.id, "stalled");
+                  stalled = true;
+                }
+                stalledCritique = true;
+                break;
+              }
+            }
+            if (stalledCritique) break stepBody;
+            if (
+              critiqueSessionsComplete({
+                sessionIds: ids,
+                liveSessionIds,
+                sessionStatuses,
+                sessionsSeenWorking,
+              })
+            ) {
+              actions.push({ kind: "markDone", stepId: step.id });
+              simulated.set(step.id, "done");
+            }
+            break stepBody;
+          }
           // Rule 3f -- a `pr` step, waiting on a pull request. Checked
           // before everything below because all of that asks what a
           // SESSION did, and this step has none: gavin does the waiting

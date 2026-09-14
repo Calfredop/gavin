@@ -29,6 +29,7 @@ import {
   TOOL_KINDS,
   PR_BODY,
   REVIEW_BODY,
+  CRITIQUE_BODY,
   type ToolKind,
   bodyForKind,
   toolBodyEditor,
@@ -58,8 +59,8 @@ describe("the built-in set", () => {
     return tool;
   };
 
-  it("ships seventeen tools with unique builtin: ids", () => {
-    expect(BUILTIN_TOOLS).toHaveLength(17);
+  it("ships eighteen tools with unique builtin: ids", () => {
+    expect(BUILTIN_TOOLS).toHaveLength(18);
     const ids = BUILTIN_TOOLS.map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids.every(isBuiltinId)).toBe(true);
@@ -114,6 +115,7 @@ describe("the built-in set", () => {
     expect([...kinds].sort()).toEqual([
       "agent",
       "command",
+      "critique",
       "gavin",
       "pr",
       "review",
@@ -136,6 +138,22 @@ describe("the built-in set", () => {
     // offers Skip and Mark done like every running step, and a gate
     // whose exit the human has to guess at is a wedged rail.
     expect(tool.description).toContain("Skip");
+  });
+
+  // N agents, not one (builtin:code-review) and not a human pause
+  // (manual-review). Defaults keep auto-build off and reviewers blank
+  // so launch seeds the dialog's pair.
+  it("ships a Critical review step distinct from single-agent and manual review", () => {
+    const tool = builtin("builtin:critical-review");
+    expect(tool.kind).toBe("critique");
+    expect(tool.body).toBe(CRITIQUE_BODY);
+    expect(tool.params.map((p) => [p.name, p.default])).toEqual([
+      ["base", "main"],
+      ["also_build_rail", "off"],
+      ["reviewers", ""],
+    ]);
+    expect(tool.description).toMatch(/N agents/i);
+    expect(findTool(BUILTIN_TOOLS, "builtin:code-review")?.kind).toBe("agent");
   });
 
   // Chaining rails is the whole point: the last step of one rail arms
@@ -529,6 +547,7 @@ describe("authoring a kind", () => {
       "until",
       "pr",
       "review",
+      "critique",
       "gavin",
     ]);
   });
@@ -545,6 +564,7 @@ describe("authoring a kind", () => {
       "until",
       "pr",
       "review",
+      "critique",
     ];
     expect([...TOOL_KINDS].sort()).toEqual([...kinds].sort());
   });
@@ -563,10 +583,11 @@ describe("authoring a kind", () => {
     // runs no source at all. A text box here would invite a prompt
     // nobody would ever read.
     expect(toolBodyEditor("review").shape).toBe("none");
+    expect(toolBodyEditor("critique").shape).toBe("none");
   });
 
   // A stray click on a chip must cost a click, not an authored body --
-  // and the two kinds with a FIXED body are the two that can destroy
+  // and the kinds with a FIXED body are the ones that can destroy
   // one. `review` joins `pr` in that rule rather than beside it.
   it("stashes an authored body across a switch to review and back", () => {
     expect(bodyForKind("review", "npm test", null)).toBe(REVIEW_BODY);
@@ -576,10 +597,16 @@ describe("authoring a kind", () => {
     expect(bodyForKind("command", REVIEW_BODY, null)).toBe(REVIEW_BODY);
   });
 
-  it("names the parameters the three argument kinds read, and nobody else's", () => {
+  it("stashes across a switch to critique the same way", () => {
+    expect(bodyForKind("critique", "npm test", null)).toBe(CRITIQUE_BODY);
+    expect(bodyForKind("command", CRITIQUE_BODY, "npm test")).toBe("npm test");
+  });
+
+  it("names the parameters the argument kinds read, and nobody else's", () => {
     expect(toolKindParamNote("until")).toContain("`max`");
     expect(toolKindParamNote("pr")).toContain("`require`");
     expect(toolKindParamNote("gavin")).toContain("`rail`");
+    expect(toolKindParamNote("critique")).toContain("`base`");
     // `review` reads none: it takes no arguments at all, and a note
     // promising one would send a human looking for a field to fill in.
     for (const kind of ["agent", "command", "script", "review"] as const) {

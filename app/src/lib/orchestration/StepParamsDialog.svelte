@@ -136,7 +136,9 @@
             ? "This step will wait on this rail's pull request, re-running the step before it while a check fails:"
             : tool.kind === "review"
               ? "This step will hold the rail here until you skip it, or mark it done:"
-              : "This step will run:"}
+              : tool.kind === "critique"
+                ? "This step will start N reviewers on this rail's checkout, then advance when they finish:"
+                : "This step will run:"}
     </p>
     <pre class="preview">{preview}</pre>
 

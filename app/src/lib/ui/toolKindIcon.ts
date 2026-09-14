@@ -21,6 +21,7 @@ import {
   GitPullRequest,
   Repeat,
   Terminal,
+  Users,
   Zap,
 } from "@lucide/svelte";
 import type { Tool, ToolKind } from "$lib/orchestration/orchestrationTools";
@@ -41,6 +42,7 @@ const TOOL_KIND_ICON: Record<ToolKind, Component<{ size?: number }>> = {
   until: Repeat,
   pr: GitPullRequest,
   review: Eye,
+  critique: Users,
 };
 
 export function toolKindIcon(kind: ToolKind): Component<{ size?: number }> {

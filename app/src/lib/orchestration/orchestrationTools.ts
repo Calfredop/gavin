@@ -54,12 +54,26 @@ import { composeReviewPrompt, REVIEW_RULES_LABEL } from "$lib/review/codeReview"
 /// a step the scheduler will never finish by itself, which is exactly
 /// what "hold here until I have looked at this" means.
 ///
+/// `critique` is N agents reviewing the rail's checkout in parallel
+/// (Critical review): same fan-out as the dialog, findings as cards,
+/// complete-then-advance when every reviewer session finishes. Distinct
+/// from `agent`/`builtin:code-review` (one session) and from `review`
+/// (human pause).
+///
 /// A kind rather than a body, for the reason `until` is one: what makes
 /// it this tool is its COMPLETION RULE, and the scheduler branches on
 /// `kind` everywhere so a duplicate -- or one a newer gavin ships --
 /// holds the rail for the same reason this one does rather than because
 /// an id was recognised.
-export type ToolKind = "agent" | "command" | "script" | "gavin" | "until" | "pr" | "review";
+export type ToolKind =
+  | "agent"
+  | "command"
+  | "script"
+  | "gavin"
+  | "until"
+  | "pr"
+  | "review"
+  | "critique";
 
 /// Where a tool came from. `builtin` is read-only -- the library dialog
 /// offers Duplicate instead of Edit. Derived from the wire's
@@ -180,6 +194,7 @@ export const TOOL_KINDS: ToolKind[] = [
   "until",
   "pr",
   "review",
+  "critique",
   "gavin",
 ];
 
@@ -196,7 +211,9 @@ export function toolKindLabel(kind: ToolKind): string {
             ? "Wait on a pull request"
             : kind === "review"
               ? "Wait for a manual review"
-              : "Bash script";
+              : kind === "critique"
+                ? "Critical review (N agents)"
+                : "Bash script";
 }
 
 const PLATFORM_LABELS: Record<AppPlatform, string> = {
@@ -281,15 +298,20 @@ export const PR_BODY = "await-pr";
 /// saved.
 export const REVIEW_BODY = "await-review";
 
-/// How a kind's body is authored. Three shapes, because the six kinds
+/// A `critique` tool's body: the launch composes N reviewer prompts
+/// (criticalReview.ts); this marker is what makes a rail read on paper
+/// say Critical review rather than looking like an empty agent step.
+export const CRITIQUE_BODY = "critical-review";
+
+/// How a kind's body is authored. Three shapes, because the kinds
 /// have three different relationships with their bodies:
 ///
 /// - `text` — the body IS source the human writes: a prompt, a command
 ///   line, a script, or the shell check an `until` step loops on.
 /// - `action` — the body NAMES something this app implements, so the
 ///   form offers the names rather than a text box. Only `gavin`.
-/// - `none` — there is no body to write. `pr` and `review`, the two
-///   kinds that run nothing at all.
+/// - `none` — there is no body to write. `pr`, `review`, and `critique`
+///   (critique composes prompts at launch from its parameters).
 ///
 /// A descriptor rather than a chain of ternaries in the template,
 /// because the same three questions (what to call the field, how tall,
@@ -351,6 +373,14 @@ export function toolBodyEditor(kind: ToolKind): ToolBodyEditor {
           "so you can read the work — and go on editing it, or put an agent back on it — " +
           "until you press Skip on the step to send the rail past it.",
       };
+    case "critique":
+      return {
+        shape: "none",
+        note:
+          "Nothing to write: at launch gavin starts N reviewer agents on this rail's " +
+          "checkout (same prompts as Critical review…). Configure base, reviewers, and " +
+          "the findings-rail toggle as parameters.",
+      };
     default:
       return {
         shape: "text",
@@ -370,15 +400,16 @@ function isFixedBody(body: string): boolean {
   return (
     said === PR_BODY ||
     said === REVIEW_BODY ||
+    said === CRITIQUE_BODY ||
     (GAVIN_ACTIONS as readonly string[]).includes(said)
   );
 }
 
 /// The body a draft carries after the human picks a different kind.
 ///
-/// Three of the kinds have no body a human writes, and all three still
-/// need one: `gavinActionOf` READS a `gavin` body, and a `pr` or
-/// `review` body is what makes the step legible on paper. So switching
+/// Four of the kinds have no body a human writes, and all four still
+/// need one: `gavinActionOf` READS a `gavin` body, and a `pr`,
+/// `review`, or `critique` body is what makes the step legible on paper. So switching
 /// to any of them replaces whatever was in the box. `stashed` is the authored body held across that swap
 /// -- switching back restores it, so a stray click on a chip costs a
 /// click rather than eight lines of prompt.
@@ -393,6 +424,7 @@ function isFixedBody(body: string): boolean {
 export function bodyForKind(kind: ToolKind, current: string, stashed: string | null): string {
   if (kind === "pr") return PR_BODY;
   if (kind === "review") return REVIEW_BODY;
+  if (kind === "critique") return CRITIQUE_BODY;
   if (kind === "gavin") {
     return gavinActionOf({ kind, body: current }) ? current.trim() : GAVIN_ACTIONS[0];
   }
@@ -417,14 +449,16 @@ export function toolKindParamNote(kind: ToolKind): string | null {
       return "This kind reads a `require` parameter (checks / approval) and a `max` — how many times a failing check may send the rail back.";
     case "gavin":
       return "The parameters are the action's arguments: `start-rail` reads `rail`, the name of the rail to arm, and an optional `workspace` -- which workspace it is in, blank for this rail's own.";
+    case "critique":
+      return "This kind reads `base` (compare against), `also_build_rail` (on/off, default off), and `reviewers` (profile or profile:model, one per line — blank seeds the same pair the Critical review dialog opens with).";
     default:
       return null;
   }
 }
 
 // ---- The built-in set ------------------------------------------------------
-// Seventeen tools covering every example the cards named, and
-// demonstrating all three authorable kinds. Data, not code: nothing
+// Eighteen tools covering every example the cards named, and
+// demonstrating every authorable kind. Data, not code: nothing
 // about running any of them is special.
 //
 // The last two, Consolidate repo and Reconcile repo, are the ones the
@@ -679,6 +713,30 @@ export const BUILTIN_TOOLS: Tool[] = [
       plansFolder: null,
       nameTab: false,
     }),
+  },
+  {
+    id: "builtin:critical-review",
+    name: "Critical review",
+    description:
+      "N agents critique this rail's checkout side by side and file findings as cards. " +
+      "Advances when every reviewer finishes — not a human pause (Manual review) and not " +
+      "a single agent (Review this branch).",
+    kind: "critique",
+    scope: "builtin",
+    params: [
+      { name: "base", label: "Compare against", default: "main" },
+      {
+        name: "also_build_rail",
+        label: "Also build findings rail (on/off)",
+        default: "off",
+      },
+      {
+        name: "reviewers",
+        label: "Reviewers (profile or profile:model, one per line)",
+        default: "",
+      },
+    ],
+    body: CRITIQUE_BODY,
   },
   {
     id: "builtin:notify",

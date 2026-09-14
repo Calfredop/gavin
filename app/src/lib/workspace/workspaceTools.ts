@@ -271,6 +271,9 @@ const CANNOT_RUN_ALONE: Partial<Record<ToolKind, string>> = {
   review:
     "A Manual-review tool runs nothing and waits for you — there is nothing for a Run button " +
     "to start, so it only means something as a step.",
+  critique:
+    "A Critical-review tool launches N reviewers against a rail's checkout — it only means " +
+    "something as a step.",
 };
 
 /// The sentence for a kind that never runs alone, or null for one that

@@ -29,6 +29,7 @@
   import { grantForAnsweredPrompt } from "$lib/core/confirmGate";
   import { openContextMenuFromEvent, contextMenu, openMenuUnder } from "$lib/core/contextMenu";
   import { buildCardMenuEntries } from "$lib/cards/cardMenu";
+  import { requestRailCriticalReview } from "$lib/review/criticalReviewActions";
   import { gitStore, ensureGitView, refresh as refreshGit } from "$lib/git/gitState";
   import { requestedCardDetail, takeCardDetailRequest } from "$lib/cards/cardTabLink";
   import { layoutState, daemonCompat } from "$lib/core/layoutState";
@@ -697,6 +698,32 @@
     const paused = orch?.railRuns.find((r) => r.railId === railId)?.state === "paused";
     void (paused ? resumeRail(workspaceId, railId) : startRail(workspaceId, railId));
   }
+
+  /// Critical review of the whole rail: same checkout, N reviewers. Step
+  /// baseShas seed the dialog when no worktree fork point is known yet
+  /// (the Review-tab rails card will supply fork points later).
+  function onCriticalReview(rail: {
+    id: string;
+    name: string;
+    worktreePath: string | null;
+    stages: { steps: { cardPath: string }[] }[];
+  }): void {
+    const boardState = get(kanbanState)[workspaceId];
+    const stepBaseShas = rail.stages.flatMap((stage) =>
+      stage.steps.map((step) => {
+        if (!step.cardPath) return null;
+        return cardSessionFor(boardState, step.cardPath)?.baseSha ?? null;
+      })
+    );
+    const rootPath = tree && !tree.rootMissing ? tree.rootPath : null;
+    void requestRailCriticalReview(
+      workspaceId,
+      { id: rail.id, name: rail.name, worktreePath: rail.worktreePath },
+      { stepBaseShas, rootPath }
+    ).then((err) => {
+      if (err) cardWriteError = err;
+    });
+  }
 </script>
 
 <div class="view">
@@ -835,6 +862,7 @@
           onDelete={() => (railPrompt = { kind: "delete", railId: rail.id })}
           onMoveAll={(e) => handleMoveAll(rail, e)}
           onClearDone={() => (railPrompt = { kind: "clear", railId: rail.id })}
+          onCriticalReview={() => onCriticalReview(rail)}
           pageName={ws?.pages.find((p) => p.id === rail.pageId)?.name ?? null}
           checkout={conflictCheckout(rail, tree)}
           editing={editingRailId === rail.id}

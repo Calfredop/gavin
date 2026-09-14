@@ -32,10 +32,14 @@
   import type { CardSession, Column, Label } from "$lib/board/kanban";
   import type { CardView } from "$lib/core/planBoard";
   import type { ReviewPane } from "$lib/review/reviewPrefs";
+  import type { ReviewRailCandidate } from "$lib/review/reviewBoard";
 
   interface Props {
     workspaceId: string;
     card: CardView | null;
+    /// When a rail is selected, the agent column explains that and
+    /// leaves Session/Plan to cards.
+    rail?: ReviewRailCandidate | null;
     /// The card's binding, or null when nothing has ever run it.
     binding: CardSession | null;
     /// Which of the two views is showing, and how to change it. Owned by
@@ -58,6 +62,7 @@
   let {
     workspaceId,
     card,
+    rail = null,
     binding,
     pane,
     onPane,
@@ -114,25 +119,40 @@
 
 <div class="agent">
   <div class="head">
-    <span class="label">{pane === "plan" ? "Plan" : "Agent"}</span>
-    {#if pane === "session" && sessionId}
+    <span class="label">{rail ? "Rail" : pane === "plan" ? "Plan" : "Agent"}</span>
+    {#if !rail && pane === "session" && sessionId}
       <span class="live">running</span>
     {/if}
-    <div class="modes" role="group" aria-label="What to show for this card">
-      <button
-        type="button"
-        class:active={pane === "session"}
-        onclick={() => onPane("session")}
-      >
-        Session
-      </button>
-      <button type="button" class:active={pane === "plan"} onclick={() => onPane("plan")}>
-        Plan
-      </button>
-    </div>
+    {#if !rail}
+      <div class="modes" role="group" aria-label="What to show for this card">
+        <button
+          type="button"
+          class:active={pane === "session"}
+          onclick={() => onPane("session")}
+        >
+          Session
+        </button>
+        <button type="button" class:active={pane === "plan"} onclick={() => onPane("plan")}>
+          Plan
+        </button>
+      </div>
+    {/if}
   </div>
-  {#if !card}
-    <div class="none">Select a card</div>
+  {#if rail}
+    <div class="idle">
+      <p>
+        Rail “{rail.name}” — its combined worktree/branch diff is in the files
+        column. Critical review… in the strip opens reviewers on this checkout.
+      </p>
+      {#if rail.branch}
+        <p class="hint">Branch {rail.branch}</p>
+      {/if}
+      {#if rail.worktreePath}
+        <p class="hint">{rail.worktreePath}</p>
+      {/if}
+    </div>
+  {:else if !card}
+    <div class="none">Select a card or rail</div>
   {:else if pane === "plan"}
     <!-- Keyed on the card: CardDetailModal reads its file in an effect
          and holds a body buffer for it, and every other host of this

@@ -20,6 +20,7 @@ import {
 import { developingRunOn } from "$lib/cards/developingCardsState";
 import { DEVELOPING_MENU_LABEL } from "$lib/cards/developingCards";
 import { requestCardReview } from "$lib/review/codeReviewActions";
+import { requestCardCriticalReview } from "$lib/review/criticalReviewActions";
 import { developAvailable } from "$lib/cards/cardRun";
 import { cardSessionState } from "$lib/board/columnRunAction";
 import { findCardPlacement } from "$lib/orchestration/orchestration";
@@ -190,6 +191,17 @@ export function buildCardMenuEntries(card: CardView, hooks: CardMenuHooks): Cont
       label: "Review with agent…",
       onPick: () => {
         void requestCardReview(workspaceId, card).then((err) => {
+          if (err) hooks.reportError(err);
+        });
+      },
+    });
+    // Beside the single-agent review, not instead of it: N reviewers in
+    // the same checkout, filing findings as cards. Ellipsis — the dialog
+    // asks for agents, base, and the findings-rail toggle.
+    entries.push({
+      label: "Critical review…",
+      onPick: () => {
+        void requestCardCriticalReview(workspaceId, card).then((err) => {
           if (err) hooks.reportError(err);
         });
       },

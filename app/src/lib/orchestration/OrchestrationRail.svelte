@@ -123,6 +123,8 @@
     /// Takes the rail's finished steps off it. The cards are untouched:
     /// only the steps that pointed at them leave.
     onClearDone: () => void;
+    /// Opens the Critical review dialog for this rail as one subject.
+    onCriticalReview: () => void;
     /// Resolved page name for the bindings row; null when unbound.
     pageName: string | null;
     /// The checkout this rail's work happens in (`conflictCheckout`), or
@@ -204,6 +206,7 @@
     onDelete,
     onMoveAll,
     onClearDone,
+    onCriticalReview,
     onBind,
     onReorganize,
     reorganize,
@@ -374,7 +377,7 @@
   /// of the fix.
   function resumeNoteOf(step: Step) {
     const kind = step.toolId ? findTool(tools, step.toolId)?.kind : undefined;
-    if (kind === "until" || kind === "pr") return null;
+    if (kind === "until" || kind === "pr" || kind === "critique") return null;
     return resumeNoteFor($resumeTrail[step.id], runOf(step.id)?.resumeAttempts);
   }
 
@@ -426,6 +429,14 @@
         onPick: () => onSaveStageAsTemplate(stage.id),
       },
       { label: "Ungroup", onPick: () => onUngroupStage(stage.id) },
+    ]);
+  }
+
+  /// The rail's own ⋯ menu. Starts with Critical review; more rail-wide
+  /// actions can land here without crowding the icon row further.
+  function openRailMenu(e: MouseEvent): void {
+    openContextMenuFromEvent(e, [
+      { label: "Critical review…", onPick: () => onCriticalReview() },
     ]);
   }
 </script>
@@ -585,6 +596,7 @@
         disabled={doneSteps.length === 0}
         onclick={onClearDone}
       />
+      <IconButton icon={Ellipsis} label="Rail menu" onclick={openRailMenu} />
       <IconButton icon={Trash2} label="Delete rail" tone="danger" onclick={onDelete} />
     </div>
     <div class="bindings">

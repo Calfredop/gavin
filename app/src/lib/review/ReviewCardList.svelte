@@ -20,7 +20,7 @@
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tooltip } from "$lib/core/tooltip";
-  import { everyGroupExpanded, isGroupExpanded, type ReviewGroup } from "$lib/review/reviewBoard";
+  import { everyGroupExpanded, isGroupExpanded, type ReviewGroup, type ReviewRailCandidate } from "$lib/review/reviewBoard";
   import { facetsActive, type BoardFacets, type ContextFacet } from "$lib/board/boardFilters";
   import type { RailIndex } from "$lib/board/planFilter";
   import FacetFilters from "$lib/board/FacetFilters.svelte";
@@ -28,6 +28,8 @@
 
   interface Props {
     groups: ReviewGroup[];
+    /// Rails listed beside the card groups — same list, not a switcher.
+    railSubjects?: ReviewRailCandidate[];
     selected: string | null;
     collapsed: boolean;
     query: string;
@@ -72,6 +74,7 @@
   }
   let {
     groups,
+    railSubjects = [],
     selected,
     collapsed,
     query,
@@ -110,7 +113,10 @@
   const allOpen = $derived(everyGroupExpanded(groups, expandedGroups));
 
   let pickerOpen = $state(false);
-  const total = $derived(groups.reduce((n, g) => n + g.cards.length, 0));
+  const total = $derived(
+    groups.reduce((n, g) => n + g.cards.length, 0) + railSubjects.length
+  );
+  const empty = $derived(groups.length === 0 && railSubjects.length === 0);
 </script>
 
 {#if collapsed}
@@ -204,13 +210,50 @@
     </div>
 
     <div class="groups">
-      {#if groups.length === 0}
+      {#if empty}
         <p class="empty">
           {filtering
-            ? "No card up for review matches that."
+            ? "No card or rail up for review matches that."
             : "Nothing is waiting for review."}
         </p>
       {:else}
+        {#if railSubjects.length > 0}
+          <div class="group">
+            <div class="group-head rails-head">
+              <span class="group-label">Rails</span>
+              <span class="group-count">{railSubjects.length}</span>
+            </div>
+            <div class="cards" role="listbox" aria-label="Rails">
+              {#each railSubjects as rail (rail.id)}
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <div
+                  class="card"
+                  class:selected={selected === rail.id}
+                  role="option"
+                  aria-selected={selected === rail.id}
+                  tabindex="-1"
+                  onclick={() => onSelect(rail.id)}
+                >
+                  <span class="title">{rail.name}</span>
+                  <span class="meta">
+                    <span class="chip">rail</span>
+                    {#if loadingPaths.has(rail.id)}
+                      <span class="files reading">reading…</span>
+                    {:else if rail.files === null}
+                      <span class="files" use:tooltip={"Gavin didn't record where this rail's work started."}>
+                        not measured
+                      </span>
+                    {:else}
+                      <span class="files">
+                        {rail.files.length} file{rail.files.length === 1 ? "" : "s"}
+                      </span>
+                    {/if}
+                  </span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
         {#each groups as group (group.id)}
           <div class="group">
             <button type="button" class="group-head" onclick={() => onToggleGroup(group.id)}>
@@ -420,6 +463,9 @@
     color: var(--text-muted);
     font-size: 0.78em;
     cursor: pointer;
+  }
+  .rails-head {
+    cursor: default;
   }
   .group-label {
     flex: 1;

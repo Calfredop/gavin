@@ -3869,6 +3869,83 @@ describe("every built-in tool can finish", () => {
         );
         expect(actions).toEqual([]);
       });
+    } else if (tool.kind === "critique") {
+      // Complete-then-advance when every reviewer finishes — not a
+      // human Skip, and not a single agentTurnEnded on stepRuns.sessionId.
+      const critiqueArmed = (): Orchestration => {
+        const orch = armed(tool.id);
+        return {
+          ...orch,
+          stepRuns: [{ stepId: "t1", state: "running", sessionId: null, reason: null }],
+        };
+      };
+      const sessions = new Map([["t1", ["r1", "r2"] as const]]);
+
+      it(`${tool.id} finishes when every reviewer turn has ended`, () => {
+        const actions = nextActions(
+          critiqueArmed(),
+          BOARD,
+          CARDS,
+          [],
+          new Set(["r1", "r2"]),
+          summary,
+          new Map(),
+          new Map([
+            ["r1", "idle" as const],
+            ["r2", "idle" as const],
+          ]),
+          new Set(),
+          new Map(),
+          {},
+          0,
+          new Set(["r1", "r2"]),
+          sessions
+        );
+        expect(actions).toContainEqual({ kind: "markDone", stepId: "t1" });
+      });
+
+      it(`${tool.id} waits while any reviewer is still working`, () => {
+        const actions = nextActions(
+          critiqueArmed(),
+          BOARD,
+          CARDS,
+          [],
+          new Set(["r1", "r2"]),
+          summary,
+          new Map(),
+          new Map([
+            ["r1", "idle" as const],
+            ["r2", "working" as const],
+          ]),
+          new Set(),
+          new Map(),
+          {},
+          0,
+          new Set(["r1", "r2"]),
+          sessions
+        );
+        expect(actions).toEqual([]);
+      });
+
+      it(`${tool.id} finishes when reviewers have exited the layout`, () => {
+        const actions = nextActions(
+          critiqueArmed(),
+          BOARD,
+          CARDS,
+          [],
+          new Set(),
+          summary,
+          new Map(),
+          new Map(),
+          new Set(),
+          new Map(),
+          {},
+          0,
+          new Set(),
+          sessions
+        );
+        expect(actions).toContainEqual({ kind: "markDone", stepId: "t1" });
+      });
     } else if (tool.kind === "pr") {
       // It has no session at all: gavin waits on GitHub itself, so the
       // verdict comes off the poll's report rather than off an exit code.

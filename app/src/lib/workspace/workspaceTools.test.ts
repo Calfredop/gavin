@@ -55,12 +55,21 @@ function run(over: Partial<ToolRun> = {}): ToolRun {
 const V30: DaemonCompat = { daemonVersion: 30, appVersion: 30, degraded: false };
 const V29: DaemonCompat = { daemonVersion: 29, appVersion: 30, degraded: true };
 
-const STEP_ONLY: ToolKind[] = ["gavin", "until", "pr", "review"];
+const STEP_ONLY: ToolKind[] = ["gavin", "until", "pr", "review", "critique"];
 
 // Every kind is one or the other, and nothing else says so: a kind added
 // to ToolKind and forgotten in both lists takes a Run button whose
 // tooltip is the daemon version, on a tool that cannot run.
-const EVERY_KIND: ToolKind[] = ["agent", "command", "script", "gavin", "until", "pr", "review"];
+const EVERY_KIND: ToolKind[] = [
+  "agent",
+  "command",
+  "script",
+  "gavin",
+  "until",
+  "pr",
+  "review",
+  "critique",
+];
 
 describe("which tools run standalone", () => {
   it("names exactly the three kinds a Run button can start", () => {

@@ -4578,7 +4578,7 @@ mod tests {
     fn save_tool_accepts_every_kind_the_app_can_author() {
         let dir = tempfile::tempdir().unwrap();
         let manager = test_manager(&dir);
-        for kind in ["agent", "command", "script", "gavin", "until", "pr", "review"] {
+        for kind in ["agent", "command", "script", "gavin", "until", "pr", "review", "critique"] {
             let mut tool = a_tool(&format!("u-{kind}"), Some("ws-1"));
             tool.kind = kind.into();
             match handle_request(&manager, Request::SaveTool { tool }) {

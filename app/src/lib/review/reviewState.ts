@@ -1,18 +1,22 @@
-// The Review tab's store: what each listed card touched, and which file
-// of the selected card is on screen.
+// The Review tab's store: what each listed card or rail touched, and
+// which file of the selected subject is on screen.
 //
 // Demand-loaded, like runChangesState.ts and for the same reason -- a
-// `git diff` per card is not something the app may do behind a tab
+// `git diff` per subject is not something the app may do behind a tab
 // nobody opened -- but with one difference that matters: this tab needs
-// EVERY listed card's files at once, because the grouping is the view.
-// So the fetches are pooled rather than serialized, capped so a board
-// with forty finished cards does not fork forty gits at once, and cached
-// per (cwd, baseSha, peers) so re-opening the tab, flipping the archive
-// toggle or typing in the search box costs nothing.
+// EVERY listed subject's files at once, because the grouping is the view
+// (cards) and rails sit beside them in the same list. So the fetches are
+// pooled rather than serialized, capped so a board with forty finished
+// cards does not fork forty gits at once, and cached per (cwd, baseSha,
+// peers) so re-opening the tab, flipping the archive toggle or typing in
+// the search box costs nothing.
 //
 // A card's entry is keyed by its own baseline, not by a timestamp:
 // re-launching a card gives it a new one, and that is exactly when the
-// cached answer stops being about the run anybody is looking at.
+// cached answer stops being about the run anybody is looking at. A
+// rail's entry is keyed the same way, under `railSubjectId`, and its
+// request carries empty peers so the combined worktree/branch window is
+// not sliced by neighbouring card runs.
 //
 // Supersession is guarded with a token counter rather than by comparing
 // objects: Svelte 5's `$state` proxies everything it touches, so a
@@ -22,6 +26,7 @@ import { get, writable } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import type { FileDiff, RunChanges } from "$lib/git/git";
 import { changesProblem } from "$lib/cards/runChanges";
+import { isRailSubjectId, railReviewBaseline, railSubjectId } from "$lib/review/reviewBoard";
 
 /// How many `git diff`s may be in flight at once. Four rather than one
 /// because the tab is unusable until they all land, and rather than
@@ -43,6 +48,33 @@ export interface TouchRequest {
   cwd: string;
   baseSha: string;
   peers: string[];
+}
+
+/// A rail's combined checkout diff as a `TouchRequest`, or null when
+/// neither a worktree fork point nor any step baseSha is known.
+///
+/// Peers are always empty: a rail subject is the whole worktree/branch
+/// since its baseline, not a slice bounded by other runs. Card requests
+/// still go through `withBaselinePeers`; mixing a rail's sha into that
+/// set would bound every card in the same cwd against the rail's fork
+/// and mis-report their windows.
+export function railTouchRequest(options: {
+  railId: string;
+  cwd: string;
+  worktreeForkPoint?: string | null;
+  stepBaseShas?: readonly (string | null | undefined)[];
+}): TouchRequest | null {
+  const baseSha = railReviewBaseline({
+    worktreeForkPoint: options.worktreeForkPoint,
+    stepBaseShas: options.stepBaseShas,
+  });
+  if (!baseSha) return null;
+  return {
+    path: railSubjectId(options.railId),
+    cwd: options.cwd,
+    baseSha,
+    peers: [],
+  };
 }
 
 /// What this tab knows about one card's run.
@@ -145,6 +177,7 @@ async function fetchOne(workspaceId: string, request: TouchRequest, token: numbe
       error: null,
     });
   } catch (e) {
+    const whose = isRailSubjectId(request.path) ? "rail's" : "card's";
     store(workspaceId, request, token, {
       cwd: request.cwd,
       baseSha: request.baseSha,
@@ -153,7 +186,7 @@ async function fetchOne(workspaceId: string, request: TouchRequest, token: numbe
       changes: null,
       files: null,
       problem: null,
-      error: `Couldn't read this card's changes: ${errorText(e)}`,
+      error: `Couldn't read this ${whose} changes: ${errorText(e)}`,
     });
   }
 }

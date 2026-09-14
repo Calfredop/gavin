@@ -11,12 +11,14 @@ import {
   FETCH_CONCURRENCY,
   clearReviewFile,
   loadTouchedFiles,
+  railTouchRequest,
   reviewStore,
   selectReviewFile,
   viewFor,
   type TouchRequest,
   type TouchedRun,
 } from "$lib/review/reviewState";
+import { railSubjectId } from "$lib/review/reviewBoard";
 import type { FileDiff, RunChanges } from "$lib/git/git";
 
 const WS = "ws1";
@@ -308,5 +310,76 @@ describe("clearReviewFile", () => {
     expect(viewFor(WS).selectedFile).toBeNull();
     // The cache survives, so returning to the tab costs no gits.
     expect(viewFor(WS).runs["/a.md"].files).toEqual(["app/src/lib/git.ts"]);
+  });
+});
+
+describe("railTouchRequest", () => {
+  it("keys the request under the rail subject id with empty peers", () => {
+    expect(
+      railTouchRequest({
+        railId: "r1",
+        cwd: "/repo-auth",
+        worktreeForkPoint: "forked",
+        stepBaseShas: ["step"],
+      })
+    ).toEqual({
+      path: railSubjectId("r1"),
+      cwd: "/repo-auth",
+      baseSha: "forked",
+      peers: [],
+    });
+  });
+
+  it("falls back to the earliest step baseSha when there is no fork point", () => {
+    expect(
+      railTouchRequest({
+        railId: "r1",
+        cwd: "/repo",
+        worktreeForkPoint: null,
+        stepBaseShas: [null, BASE],
+      })
+    ).toEqual({
+      path: railSubjectId("r1"),
+      cwd: "/repo",
+      baseSha: BASE,
+      peers: [],
+    });
+  });
+
+  it("asks for nothing when the rail has no measurable baseline", () => {
+    expect(
+      railTouchRequest({
+        railId: "r1",
+        cwd: "/repo",
+        worktreeForkPoint: null,
+        stepBaseShas: [null, ""],
+      })
+    ).toBeNull();
+  });
+});
+
+describe("loadTouchedFiles for rail subjects", () => {
+  it("stores a rail's combined diff under its subject id", async () => {
+    runChanges.mockResolvedValue(changes());
+    const req = railTouchRequest({
+      railId: "r1",
+      cwd: "/repo-auth",
+      worktreeForkPoint: BASE,
+    })!;
+    await loadTouchedFiles(WS, [req]);
+    expect(runChanges).toHaveBeenCalledWith("/repo-auth", BASE, []);
+    expect(viewFor(WS).runs[railSubjectId("r1")].files).toEqual(["app/src/lib/git.ts"]);
+  });
+
+  it("names a rail in the failure sentence", async () => {
+    runChanges.mockRejectedValueOnce(new Error("git exploded"));
+    const req = railTouchRequest({
+      railId: "r1",
+      cwd: "/repo",
+      worktreeForkPoint: BASE,
+    })!;
+    await loadTouchedFiles(WS, [req]);
+    expect(viewFor(WS).runs[railSubjectId("r1")].error).toMatch(/this rail's changes/);
+    expect(viewFor(WS).runs[railSubjectId("r1")].error).toMatch(/git exploded/);
   });
 });
