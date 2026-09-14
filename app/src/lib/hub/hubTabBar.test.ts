@@ -135,6 +135,17 @@ describe("the hub tabs' first row", () => {
       "1px solid var(--border)"
     );
     expect(rule(sidebar, ".sidebar.collapsed .footer-divider").margin).toBe("0");
+    // First workspace initial keeps the hub-bar band the expand row
+    // used to own before it moved to the system controls.
+    expect(rule(sidebar, ".collapsed-list > .collapsed-row:first-child").height).toBe(
+      "var(--hub-bar-height)"
+    );
+    expect(rule(sidebar, ".collapsed-list > .collapsed-row:first-child")["border-bottom"]).toBe(
+      "1px solid var(--border)"
+    );
+    expect(
+      rule(sidebar, ".collapsed-list > .collapsed-row:first-child + .collapsed-row")["border-top"]
+    ).toBe("none");
   });
 
   it("draws the workspace hairline on the top of each row", () => {

@@ -2008,12 +2008,25 @@
     background: var(--surface-raised);
     color: var(--text);
   }
-  /* Between workspaces, edge to edge. The expand button is the same
-     class and sits under the header, so only rows in the list carry
-     the rule -- that button's own bottom border already owns the
-     first-row seam. */
+  /* Same band as the hub tab's first row -- and as the Scratchpad when
+     the column is open. The expand toggle used to own this height as
+     the rail's first row; after it moved to the system controls, the
+     first workspace initial has to keep the band or the hairline steps
+     under the view beside it. The rule is the last pixel of the 40px. */
+  .collapsed-list > .collapsed-row:first-child {
+    flex: 0 0 var(--hub-bar-height);
+    height: var(--hub-bar-height);
+    min-height: 0;
+    max-height: var(--hub-bar-height);
+    border-bottom: 1px solid var(--border);
+  }
+  /* Between workspaces, edge to edge. The first row's bottom border
+     already owns the hub-bar seam, so only later rows carry a top rule. */
   .collapsed-list .collapsed-row + .collapsed-row {
     border-top: 1px solid var(--border);
+  }
+  .collapsed-list > .collapsed-row:first-child + .collapsed-row {
+    border-top: none;
   }
   /* A chip rather than a bare letter: on a column this narrow the row IS
      an icon, and a letter with nothing around it reads as text that lost
