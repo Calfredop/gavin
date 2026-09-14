@@ -154,6 +154,14 @@ describe("what the scroller carries", () => {
     expect(DETAIL).toContain("loadSectionsOpen()");
   });
 
+  it("colours a label chip's border only when the card carries that label", () => {
+    // The vocabulary chips are always drawn; painting every one's border
+    // in its colour made an off chip read as on — especially `windows`,
+    // which sits in this workspace's vocabulary for the label filter.
+    expect(DETAIL).toContain("style:border-color={on ? l.color : undefined}");
+    expect(DETAIL).not.toContain("style:border-color={l.color}");
+  });
+
   it("keeps every launch out of it", () => {
     // Reaching an agent is the bar's job, and the bar is pinned. If a
     // launch button ever lands back in the scrolling band -- worse, in a

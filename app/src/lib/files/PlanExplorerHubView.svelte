@@ -271,6 +271,13 @@
     }
     try {
       if (group === "plans") {
+        // Same rule as the Kanban composer's open: a card filed under a
+        // label (or kind / rail / context) lens would land on a board the
+        // human cannot see — it is born with no labels and on no rail.
+        // Clear the shared facets first so the new card stays in view,
+        // rather than tempting a hand-applied `windows` (or whatever was
+        // filtered) just to find it again.
+        resetTabFacets(workspaceId, "plans");
         // Same daemon path agents use: validated, never overwrites. The
         // status is passed rather than defaulted so this and the
         // placement below cannot name two different columns.

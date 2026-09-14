@@ -49,4 +49,15 @@ describe("facet filter surfaces", () => {
     expect(source("PlanExplorerHubView.svelte")).toContain("Filter by status");
     expect(source("PlanExplorerHubView.svelte")).not.toMatch(/<select[^>]*Filter by status/);
   });
+
+  it("clears facets when a card is filed, rather than stamping the active labels onto it", () => {
+    // A card is born with no labels. Filing one under a label lens would
+    // hide it; the rejected fix was writing the filter onto the card
+    // (every new card "getting" whatever tag was filtered). Both surfaces
+    // that create cards clear the lens instead.
+    expect(source("KanbanBoard.svelte")).toContain('resetTabFacets(workspaceId, "kanban")');
+    expect(source("KanbanBoard.svelte")).toContain("Stamping the active labels onto the card");
+    expect(source("PlanExplorerHubView.svelte")).toContain('resetTabFacets(workspaceId, "plans")');
+    expect(source("CardComposeModal.svelte")).toContain("labels: [],");
+  });
 });

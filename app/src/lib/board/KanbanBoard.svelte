@@ -204,8 +204,10 @@
     if (!board) return;
     // A card composed under a lens would be filed onto a board the human
     // cannot see -- the archive toggle, and equally a facet the new card
-    // will not match (its context, its kind, and a card is born on no
-    // rail at all). Every lens comes off with the composer.
+    // will not match (its context, its kind, its labels — a card is born
+    // with none — and a card is born on no rail at all). Every lens comes
+    // off with the composer. Stamping the active labels onto the card
+    // instead was rejected: a filter is not a tag.
     closeArchive();
     resetTabFacets(workspaceId, "kanban");
     composeStatus = defaultComposeStatus(board.columns.map((c) => c.name), preferred);

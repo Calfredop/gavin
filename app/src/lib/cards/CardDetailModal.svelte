@@ -1508,11 +1508,12 @@
                 <span class="label">Labels</span>
                 <div class="chips">
                   {#each labels as l (l.id)}
+                    {@const on = activeLabelSlugs.has(slugStatus(l.name))}
                     <button
                       type="button"
                       class="chip"
-                      class:active={activeLabelSlugs.has(slugStatus(l.name))}
-                      style:border-color={l.color}
+                      class:active={on}
+                      style:border-color={on ? l.color : undefined}
                       onclick={() => void toggleLabel(l.name)}
                     >
                       {l.name}
