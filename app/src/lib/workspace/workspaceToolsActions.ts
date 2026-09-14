@@ -41,6 +41,7 @@ import {
   handleAgentSessionSpawned,
   layoutState,
   resolvedAgentFor,
+  retainTabOnExit,
   setSessionName,
   workspaceRootPath,
 } from "$lib/core/layoutState";
@@ -189,6 +190,12 @@ async function launch(
 
   if (tool.kind === "agent") {
     void armFailureDetection(sessionId, agent.failurePatterns);
+  } else {
+    // A shell tool's PTY can exit in under a second. Without this the
+    // session-exited handler closes the tab before the human can read
+    // the epilogue, and a script that refused in 50ms looks like a
+    // no-op that only jumped focus around.
+    retainTabOnExit(sessionId);
   }
   handleAgentSessionSpawned(workspaceId, sessionId);
   // Revealed for the reason a review is: nothing else on screen would

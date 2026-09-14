@@ -161,7 +161,7 @@ describe("endSession", () => {
     // The daemon pushes session-exited for a session it was hosting, but
     // not for a row it had already marked exited -- so the tab would sit
     // there dead until the next reload.
-    expect(handleSessionExited).toHaveBeenCalledWith("s-1");
+    expect(handleSessionExited).toHaveBeenCalledWith("s-1", { force: true });
   });
 
   it("ends a surviving process BEFORE the session that records it", async () => {

@@ -99,6 +99,7 @@ vi.mock("$lib/core/layoutState", () => ({
   // about scheduling rather than about provenance.
   cardReviewed: vi.fn(() => true),
   setSessionName: vi.fn().mockResolvedValue(undefined),
+  retainTabOnExit: vi.fn(),
   // tick() reads this through get(), so it has to be a real store.
   sessionExits: { subscribe: (fn: (v: unknown) => void) => (fn(new Map()), () => {}) },
   // initOrchestrationListeners now starts auto-resume beside the

@@ -107,6 +107,7 @@ import {
   createSessionOnPage,
   createSessionOnNewPage,
   handleAgentSessionSpawned,
+  retainTabOnExit,
   sessionExits,
   setOrchestrationAgent,
   setSessionName,
@@ -1322,9 +1323,13 @@ async function executeToolLaunch(
   // A command tool's PTY can close in well under a second, so the tab
   // needs a name the moment it appears or it is unidentifiable. Best
   // effort: a nameless tab is cosmetic, not a reason to stall a step
-  // whose session is already running.
+  // whose session is already running. And the tab has to SURVIVE that
+  // exit, or the epilogue is gone before anyone can read it -- the same
+  // retain a standalone Tools-tab run registers.
   if (tool.kind === "agent") {
     void armFailureDetection(sessionId, agent.failurePatterns);
+  } else {
+    retainTabOnExit(sessionId);
   }
   try {
     // The store, not backend.setSessionName: the backend command only

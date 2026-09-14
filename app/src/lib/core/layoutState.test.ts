@@ -163,6 +163,7 @@ import {
   switchToSessionInPage,
   focusPane,
   handleSessionExited,
+  retainTabOnExit,
   handleCwdChanged,
   handleSessionStatusChanged,
   setSessionRead,
@@ -1267,6 +1268,37 @@ describe("handleSessionExited", () => {
     const state = get(layoutState);
     expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["a"]));
     expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+  });
+
+  // A command/script tool's PTY can exit in under a second. Closing the
+  // tab then takes the scrollback with it -- the human who was just
+  // jumped there sees an empty Agents page and concludes the script
+  // never ran. retainTabOnExit is what standalone tool runs (and rail
+  // shell steps) opt into so the epilogue stays readable until they
+  // dismiss the tab themselves.
+  it("keeps a retained tab and its terminal when the session exits", () => {
+    setState([ws("ws-1", [page("page-1", leaf(["tool-1"]))])], "ws-1", "tool-1");
+    retainTabOnExit("tool-1");
+
+    handleSessionExited("tool-1");
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["tool-1"]));
+    expect(state.focusedSessionId).toBe("tool-1");
+    expect(terminalRegistry.destroyTerminal).not.toHaveBeenCalled();
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+  });
+
+  it("still removes a retained tab when the human closes it", async () => {
+    setState([ws("ws-1", [page("page-1", leaf(["tool-1", "other"]))])], "ws-1", "tool-1");
+    retainTabOnExit("tool-1");
+    vi.mocked(backend.killSession).mockResolvedValue(undefined);
+
+    await closeSession("tool-1");
+
+    const state = get(layoutState);
+    expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["other"]));
+    expect(terminalRegistry.destroyTerminal).toHaveBeenCalledWith("tool-1");
   });
 });
 

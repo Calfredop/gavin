@@ -3069,7 +3069,10 @@ export async function closeSession(sessionId: string): Promise<void> {
   if (!closed) return;
   // Tree first, maps second (see ClosedTabs): the other order leaves the
   // tab in the tree for a render with nothing left to classify it.
-  handleSessionExited(sessionId);
+  // force: a shell tool run opts into retainTabOnExit so its scrollback
+  // survives the PTY dying; the human closing the tab is the moment that
+  // retention ends.
+  handleSessionExited(sessionId, { force: true });
   await pruneClosedTabs(closed);
 }
 
@@ -3097,7 +3100,26 @@ export function recordSessionExit(sessionId: string, exitCode: number): void {
   sessionExits.update((m) => new Map(m).set(sessionId, exitCode));
 }
 
-export function handleSessionExited(sessionId: string): void {
+/// Sessions whose tab should SURVIVE the PTY exiting.
+///
+/// A `command` or `script` tool's session can close in well under a
+/// second. `handleSessionExited` would then take the tab (and its
+/// scrollback) with it, so the reveal that just jumped the human there
+/// lands on an empty page and the run looks like it never happened --
+/// exactly the failure the failure-epilogue in `buildToolCommand` was
+/// meant to prevent. Callers that launch a shell tool register here;
+/// `closeSession` clears the flag with `force` when the human dismisses
+/// the tab themselves.
+const retainedOnExit = new Set<string>();
+
+export function retainTabOnExit(sessionId: string): void {
+  retainedOnExit.add(sessionId);
+}
+
+export function handleSessionExited(
+  sessionId: string,
+  opts: { force?: boolean } = {}
+): void {
   // Cleared here rather than left standing like cwd and status, and the
   // difference is what the entry IS. Those are facts about a session
   // that stay true after it ends; a queue is undelivered content, and
@@ -3117,6 +3139,13 @@ export function handleSessionExited(sessionId: string): void {
   for (const [tabId, tab] of Object.entries(get(layoutState).cardTabsById)) {
     if (tab.view === "followups" && tab.sessionId === sessionId) void closeSession(tabId);
   }
+  if (!opts.force && retainedOnExit.has(sessionId)) {
+    // Leave the tab and its xterm alone. The exit code is already in
+    // `sessionExits` (recorded before this call), and the tool-run row
+    // is closed by the daemon; what the human still needs is the text.
+    return;
+  }
+  retainedOnExit.delete(sessionId);
   const state = get(layoutState);
   // A main agent session lives outside every page tree (D12), so the
   // search below can never find it -- without this branch its terminal

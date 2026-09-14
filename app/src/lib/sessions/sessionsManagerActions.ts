@@ -219,6 +219,8 @@ async function runKill(row: SessionRow, announce: boolean): Promise<boolean> {
   // The daemon's own `session-exited` push does this too, but only for a
   // session it was hosting -- a row it had already marked exited produces
   // no push, and its tab would sit there dead until the next reload.
-  handleSessionExited(row.id);
+  // force: a retained tool-run tab was kept on purpose after its PTY
+  // died; ending it from here is the human dismissing that scrollback.
+  handleSessionExited(row.id, { force: true });
   return true;
 }

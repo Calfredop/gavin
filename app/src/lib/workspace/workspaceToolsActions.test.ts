@@ -16,6 +16,7 @@ vi.mock("$lib/core/layoutState", () => ({
   conversationIdForLaunch: vi.fn(() => "conv-1"),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   handleAgentSessionSpawned: vi.fn(),
+  retainTabOnExit: vi.fn(),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   workspaceRootPath: vi.fn(() => "/repo" as string | null),
   agentDefaultsStore: writable({
@@ -34,6 +35,7 @@ import {
   handleAgentSessionSpawned,
   layoutState,
   resolvedAgentFor,
+  retainTabOnExit,
   setSessionName,
   workspaceRootPath,
 } from "$lib/core/layoutState";
@@ -185,6 +187,24 @@ describe("the launch", () => {
     expect(setSessionName).toHaveBeenCalledWith("sess-1", "Deploy");
     expect(revealSession).toHaveBeenCalledWith("sess-1");
     expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws-1", "sess-1");
+  });
+
+  // And keeps that tab after exit: otherwise the jump lands on a page
+  // that vanishes with the PTY, and a script that printed its refusal
+  // in 50ms looks like it never ran.
+  it("retains a shell tool's tab so a fast exit stays readable", async () => {
+    await requestToolRun("ws-1", tool({ kind: "script", body: "echo hi" }));
+    expect(retainTabOnExit).toHaveBeenCalledWith("sess-1");
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/repo",
+      expect.stringContaining("bash -c"),
+      "/repo"
+    );
+  });
+
+  it("does not retain an agent tool's tab — those do not exit on their own", async () => {
+    await requestToolRun("ws-1", tool({ kind: "agent", body: "do the thing" }));
+    expect(retainTabOnExit).not.toHaveBeenCalled();
   });
 
   it("files the run with the daemon, so a failure nobody watched survives", async () => {
