@@ -24,10 +24,10 @@ tab and coexists with single-agent "Review with agent". No direct-edits mode in 
 
 ## Checklist
 
-- [ ] [Critical-review dialog + launch](critical-review-dialog.md)
-- [ ] [Review tab: rails as subjects](critical-review-tab-rails.md)
-- [ ] [Orchestration critical-review step](critical-review-rail-step.md)
-- [ ] [Build review rail from findings](critical-review-findings-rail.md)
+- [x] [Critical-review dialog + launch](critical-review-dialog.md)
+- [x] [Review tab: rails as subjects](critical-review-tab-rails.md)
+- [x] [Orchestration critical-review step](critical-review-rail-step.md)
+- [x] [Build review rail from findings](critical-review-findings-rail.md)
 
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.

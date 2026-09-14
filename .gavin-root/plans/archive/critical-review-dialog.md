@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Critical-review dialog + launch
-status: To Do
+status: Done
 parent: feat-critical-review.md
 complexity: complex
 ---

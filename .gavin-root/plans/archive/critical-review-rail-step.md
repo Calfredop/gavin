@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Orchestration critical-review step
-status: To Do
+status: Done
 parent: feat-critical-review.md
 complexity: complex
 ---

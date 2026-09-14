@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Review tab: rails as subjects
-status: To Do
+status: Done
 parent: feat-critical-review.md
 complexity: moderate
 ---

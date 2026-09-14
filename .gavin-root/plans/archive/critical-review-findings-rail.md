@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Build review rail from findings
-status: To Do
+status: Done
 parent: feat-critical-review.md
 complexity: moderate
 ---
