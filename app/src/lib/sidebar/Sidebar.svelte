@@ -42,7 +42,7 @@
   // prompt below is the one question that flow can ask.
   import { pendingOpen, initAndOpen, bindWithoutInit, cancelOpen } from "$lib/workspace/workspaceOpen";
   import { INIT_TRACKING_LABEL, resolveGitTracking } from "$lib/git/gitTracking";
-  import { sidebarCollapsed, sidebarPeekOnHover, scratchpadEnabled, toggleSidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
+  import { sidebarCollapsed, sidebarPeekOnHover, scratchpadEnabled } from "$lib/sidebar/sidebarPrefs";
   import {
     createPeekHoverController,
     endSidebarPeek,
@@ -81,7 +81,6 @@
     AppWindow,
     Search,
     Pin,
-    PanelLeftOpen,
   } from "@lucide/svelte";
   import { themeState } from "$lib/ui/themeState.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
@@ -1472,24 +1471,11 @@
     </div>
   {/if}
   {#if showsRail}
-    <!-- The way back out of the rail, and the first row of it. The
-         header row beside this column carries that toggle while the
-         sidebar is open; collapsed, there is no room for a row of chrome
-         over a 36px column and none is spent -- the toggle costs exactly
-         what a workspace row costs, in the column it acts on, and the
-         other two chrome buttons stand down until the column is open
-         again. -->
-    <div class="rail-chrome">
-      <button
-        type="button"
-        class="collapsed-row"
-        use:tooltip={"Expand sidebar"}
-        aria-label="Expand sidebar"
-        onclick={toggleSidebarCollapsed}
-      >
-        <span class="collapsed-initial"><PanelLeftOpen size={13} /></span>
-      </button>
-    </div>
+    <!-- Just the workspace initials. The way back out of the rail lives
+         in the window's corner next to the platform controls
+         (SidebarActions), not as a row here: a hover-peek redraws this
+         column full-width and would hide a rail-only toggle for as long
+         as the pointer stayed on it. -->
     {@render collapsedList()}
   {:else if searchHits}
     {@render searchResults(searchHits)}
@@ -1982,27 +1968,10 @@
     padding: 8px;
     color: var(--text-muted);
   }
-  /* The rail's own first row, above the list rather than in it: the
-     workspaces scroll and this must not scroll away with them -- it is
-     the only way back to the open column. */
-  .rail-chrome {
-    flex: 0 0 auto;
-  }
   /* Full width of the rail: an inset rule on a 36px column is a stub.
      The same hairline the expanded list draws between workspaces. */
   .sidebar.collapsed .footer-divider {
     margin: 0;
-  }
-  /* Same band as the hub tab's first row -- and as the Scratchpad when
-     the column is open. The hairline is the last pixel of the 40px, so
-     it meets the tab bar rather than sitting a step under a shorter
-     expand button. */
-  .rail-chrome .collapsed-row {
-    flex: 0 0 var(--hub-bar-height);
-    height: var(--hub-bar-height);
-    min-height: 0;
-    max-height: var(--hub-bar-height);
-    border-bottom: 1px solid var(--border);
   }
   /* The collapsed rail's rows. Centred rather than left-aligned: with no
      names to line up, a left edge would only make the initials look

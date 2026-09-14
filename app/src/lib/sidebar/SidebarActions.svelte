@@ -1,6 +1,6 @@
 <script lang="ts">
   // The sidebar's own chrome: open a folder into the column, search it,
-  // collapse it. Drawn in the window's corner (TitleBar.svelte),
+  // collapse / expand it. Drawn in the window's corner (TitleBar.svelte),
   // at the right of the strip -- the leftover between the platform's
   // controls and this group is the drag handle -- over the column all
   // three act on.
@@ -13,23 +13,26 @@
   // over an open column these cost nothing: they sit in the 124px the
   // traffic lights leave of a 200px top row.
   //
-  // Collapsed, they stand down entirely. There is no room for them over
-  // a 36px rail, a search box has nowhere to go in a column showing
-  // initials, and the one button that must survive -- the way back out
-  // -- becomes the rail's own first row instead (Sidebar.svelte's
-  // .rail-chrome), where it costs exactly what a workspace row costs.
+  // Collapsed, Open and Search stand down (a search box has nowhere to
+  // go in a column of initials). The toggle stays: it is the way back
+  // out, and it has to keep living next to the window controls -- not
+  // as the rail's first row -- because a hover-peek redraws the full
+  // column and would hide a rail-only button for as long as the pointer
+  // stays on it. The corner widens by one IconButton for it
+  // (--window-corner-min on .app.sidebar-collapsed).
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { PanelLeftClose, Search, FolderOpen } from "@lucide/svelte";
+  import { PanelLeftClose, PanelLeftOpen, Search, FolderOpen } from "@lucide/svelte";
   import { sidebarCollapsed, toggleSidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
   import { sidebarSearchOpen, toggleSidebarSearch } from "$lib/sidebar/sidebarSearch";
   import { openWorkspaceFolder } from "$lib/workspace/workspaceOpen";
   import { layoutState } from "$lib/core/layoutState";
 
   // Keyed off the preference rather than off sidebarShowsRail: a peek is
-  // the collapsed column borrowing its full width for a glance, and
-  // three buttons appearing in the corner as the pointer passes would be
-  // a flicker rather than an offer -- the peek ends the moment the
-  // pointer leaves the column to reach for them.
+  // the collapsed column borrowing its full width for a glance. Open /
+  // Search must not flicker into the corner as the pointer passes -- the
+  // peek ends the moment the pointer leaves the column to reach for
+  // them. The toggle is the exception: it stays put at both widths so
+  // there is always a way back without chasing a disappearing row.
   const collapsed = $derived($sidebarCollapsed);
 
   // The two that act on the workspace list, which does not exist until
@@ -38,31 +41,29 @@
   const ready = $derived($layoutState.status === "ready");
 </script>
 
-{#if !collapsed}
-  <div class="sidebar-actions">
-    {#if ready}
-      <IconButton
-        icon={FolderOpen}
-        label="Open workspace…"
-        size={14}
-        onclick={() => void openWorkspaceFolder()}
-      />
-      <IconButton
-        icon={Search}
-        label="Search workspaces, pages and sessions"
-        size={14}
-        active={$sidebarSearchOpen}
-        onclick={toggleSidebarSearch}
-      />
-    {/if}
+<div class="sidebar-actions">
+  {#if !collapsed && ready}
     <IconButton
-      icon={PanelLeftClose}
-      label="Collapse sidebar"
+      icon={FolderOpen}
+      label="Open workspace…"
       size={14}
-      onclick={toggleSidebarCollapsed}
+      onclick={() => void openWorkspaceFolder()}
     />
-  </div>
-{/if}
+    <IconButton
+      icon={Search}
+      label="Search workspaces, pages and sessions"
+      size={14}
+      active={$sidebarSearchOpen}
+      onclick={toggleSidebarSearch}
+    />
+  {/if}
+  <IconButton
+    icon={collapsed ? PanelLeftOpen : PanelLeftClose}
+    label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+    size={14}
+    onclick={toggleSidebarCollapsed}
+  />
+</div>
 
 <style>
   .sidebar-actions {

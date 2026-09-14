@@ -684,8 +684,14 @@
        rather than measured because the row beside the corner has to
        leave room for it before either has been laid out. Keep in step
        with WindowControls.svelte -- windowControls.test.ts adds the
-       tiles up and checks the total against the value below. */
+       tiles up and checks the total against the value below.
+
+       --window-corner-min is what TitleBar and CornerOverhang actually
+       size from: the controls alone while the column is open (the rail
+       is wider), and the controls plus the expand toggle while it is
+       collapsed. */
     --window-corner-width: 76px;
+    --window-corner-min: var(--window-corner-width);
   }
   .app.wide-window-controls {
     --window-corner-width: 96px;
@@ -704,6 +710,11 @@
   }
   .app.sidebar-collapsed {
     --rail-width: var(--rail-collapsed-width);
+    /* Controls + the expand toggle that stays in the corner (IconButton
+       at size 14 with 5px pad each side = 24px, plus sidebar-actions'
+       4px lead and the corner's own 6px trailing pad). Open / Search
+       stand down; this is the only chrome that survives the collapse. */
+    --window-corner-min: calc(var(--window-corner-width) + 34px);
   }
   .body {
     flex: 1 1 auto;
@@ -719,11 +730,12 @@
 
      Collapsed, this narrows to an icon rail; it never goes away. It
      cannot: it is the only place the workspace list exists, and the
-     toggle back out of the rail is a row in it. What sets the collapsed
-     width is what the rail draws -- a chip and its padding. It used to
-     be the platform's: the window controls sat in a strip inside this
-     column, so 76px of traffic lights (120 off macOS) was the narrowest
-     it could ever go, whatever the rows measured. */
+     toggle back out of the rail lives in the corner over it (next to
+     the window controls), not as a row in the rail. What sets the
+     collapsed width is what the rail draws -- a chip and its padding.
+     It used to be the platform's: the window controls sat in a strip
+     inside this column, so 76px of traffic lights (120 off macOS) was
+     the narrowest it could ever go, whatever the rows measured. */
   .rail {
     flex: 0 0 auto;
     width: var(--rail-width);

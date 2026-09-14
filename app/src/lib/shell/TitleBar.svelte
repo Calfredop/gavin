@@ -21,11 +21,12 @@
   // of that header row leaves exactly the overhang (CornerOverhang.svelte),
   // so nothing is ever drawn beneath the corner.
   //
-  // Its width is `max(the platform's controls, the rail)`: over an open
+  // Its width is `max(--window-corner-min, the rail)`: over an open
   // column it is that column's own top row, and over a collapsed one it
-  // shrinks to the controls and hangs 40px into the row beside it. It
-  // keeps the SIDEBAR's surface at both widths, because what it is the
-  // header of is the column, not the view.
+  // shrinks to the controls plus the one expand toggle that stays in
+  // this strip, and hangs into the row beside it. It keeps the SIDEBAR's
+  // surface at both widths, because what it is the header of is the
+  // column, not the view.
   //
   // The rail's top row is what stays in flow, under the corner at every
   // width: it is the height that puts the sidebar's first row on the
@@ -52,8 +53,8 @@
   <!-- No data-tauri-drag-region: Tauri's injected script would fire its
        own maximize on top of the one windowDrag decides on. The run
        between the lights and the column's own buttons is the handle;
-       collapsed those buttons stand down and this spacer is the rest of
-       the corner. -->
+       collapsed Open and Search stand down and the expand toggle is what
+       this spacer leads into. -->
   <div class="drag-spacer" use:windowDrag></div>
   <SidebarActions />
 </div>
@@ -75,7 +76,7 @@
     z-index: 1;
     display: flex;
     align-items: center;
-    width: max(var(--window-corner-width), var(--rail-width));
+    width: max(var(--window-corner-min), var(--rail-width));
     height: var(--header-height);
     box-sizing: border-box;
     padding-right: 6px;

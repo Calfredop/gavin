@@ -133,10 +133,6 @@ describe("the hub tabs' first row", () => {
       "1px solid var(--border)"
     );
     expect(rule(sidebar, ".sidebar.collapsed .footer-divider").margin).toBe("0");
-    expect(rule(sidebar, ".rail-chrome .collapsed-row").height).toBe("var(--hub-bar-height)");
-    expect(rule(sidebar, ".rail-chrome .collapsed-row")["border-bottom"]).toBe(
-      "1px solid var(--border)"
-    );
   });
 
   it("draws the workspace hairline on the top of each row", () => {

@@ -236,8 +236,9 @@ describe("the window's corner and the rail under it", () => {
     expect(corner.top).toBe("0");
     expect(corner.left).toBe("0");
     // Over an open column the corner IS that column's top row; over a
-    // collapsed one it shrinks to the controls and overhangs.
-    expect(corner.width).toBe("max(var(--window-corner-width), var(--rail-width))");
+    // collapsed one it shrinks to the controls plus the expand toggle
+    // and overhangs.
+    expect(corner.width).toBe("max(var(--window-corner-min), var(--rail-width))");
     // The view column's header row is painted later in tree order and
     // would otherwise cover whatever of the corner overhangs the rail.
     expect(corner["z-index"]).toBe("1");
@@ -252,9 +253,10 @@ describe("the window's corner and the rail under it", () => {
     // and the subtraction between them: room for exactly what hangs
     // over, and none at all when the rail is the wider of the two.
     expect(rule(OVERHANG, ".corner-overhang").width).toBe(
-      "max(0px, calc(var(--window-corner-width) - var(--rail-width)))"
+      "max(0px, calc(var(--window-corner-min) - var(--rail-width)))"
     );
     expect(rule(PAGE, ".app")["--window-corner-width"]).toBe("76px");
+    expect(rule(PAGE, ".app")["--window-corner-min"]).toBe("var(--window-corner-width)");
     // The tiles off macOS, added up in windowControls.test.ts.
     expect(rule(PAGE, ".app.wide-window-controls")["--window-corner-width"]).toBe("96px");
     expect(PAGE).toContain("class:wide-window-controls={!isMacSync()}");
@@ -270,19 +272,29 @@ describe("the window's corner and the rail under it", () => {
     expect(rule(PAGE, ".rail")["max-width"]).toBeUndefined();
   });
 
-  // Collapsed, the corner is the controls alone: the toggle moves into
-  // the rail itself, where it costs what a workspace row costs, and the
-  // two actions that need a full-width column stand down.
-  it("moves the collapse toggle into the rail while the rail is collapsed", () => {
-    expect(ACTIONS).toContain("{#if !collapsed}");
+  // Collapsed, Open and Search stand down in the corner; the expand
+  // toggle stays next to the window controls so a hover-peek cannot
+  // hide the only way back. The corner widens by one IconButton for it.
+  it("keeps the expand toggle in the corner while the rail is collapsed", () => {
+    expect(ACTIONS).toContain('label={collapsed ? "Expand sidebar" : "Collapse sidebar"}');
+    expect(ACTIONS).toContain("icon={collapsed ? PanelLeftOpen : PanelLeftClose}");
     expect(ACTIONS).toContain("const collapsed = $derived($sidebarCollapsed);");
+    // Open / Search still gate on the preference; the toggle does not.
+    expect(ACTIONS).toContain("{#if !collapsed && ready}");
+    expect(ACTIONS).not.toContain("{#if !collapsed}");
     const SIDEBAR = source("Sidebar.svelte");
-    expect(SIDEBAR).toMatch(/\{#if showsRail\}[\s\S]*?class="rail-chrome"/);
-    expect(SIDEBAR).toContain('aria-label="Expand sidebar"');
-    expect(SIDEBAR).toContain("onclick={toggleSidebarCollapsed}");
-    // Above the scrolling list rather than in it: it is the only way
-    // back to the open column, so it must not scroll away.
-    expect(rule(SIDEBAR, ".rail-chrome").flex).toBe("0 0 auto");
+    expect(SIDEBAR).not.toContain("rail-chrome");
+    expect(SIDEBAR).not.toContain('aria-label="Expand sidebar"');
+    // Room for the surviving toggle: controls + one IconButton strip.
+    expect(rule(PAGE, ".app.sidebar-collapsed")["--window-corner-min"]).toBe(
+      "calc(var(--window-corner-width) + 34px)"
+    );
+    expect(rule(TITLE_BAR, ".corner").width).toBe(
+      "max(var(--window-corner-min), var(--rail-width))"
+    );
+    expect(rule(OVERHANG, ".corner-overhang").width).toBe(
+      "max(0px, calc(var(--window-corner-min) - var(--rail-width)))"
+    );
   });
 
   // Everything that acts on the window or on the column is in the

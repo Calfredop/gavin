@@ -3,11 +3,11 @@
   // row is the top edge of the window.
   //
   // The corner (TitleBar.svelte) is positioned over the rail's top-left
-  // and is as wide as `max(the platform's controls, the rail)`. Over an
-  // open column those are the same edge and this box is zero. Over a
-  // collapsed one the rail is 36px and the controls are not, so the
-  // corner hangs into THIS row -- and this is the box that keeps the
-  // row's first tab out from under it.
+  // and is as wide as `max(--window-corner-min, the rail)`. Over an open
+  // column those are the same edge and this box is zero. Over a
+  // collapsed one the rail is 36px and the min is the controls plus the
+  // expand toggle, so the corner hangs into THIS row -- and this is the
+  // box that keeps the row's first tab out from under it.
   //
   // A box rather than a padding rule on each row: there are three rows
   // that can be the window's top edge (the hub tabs, a page's session
@@ -23,6 +23,6 @@
 <style>
   .corner-overhang {
     flex: 0 0 auto;
-    width: max(0px, calc(var(--window-corner-width) - var(--rail-width)));
+    width: max(0px, calc(var(--window-corner-min) - var(--rail-width)));
   }
 </style>
