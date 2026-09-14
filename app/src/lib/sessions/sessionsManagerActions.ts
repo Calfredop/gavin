@@ -28,6 +28,7 @@ import {
 import { findSessionLocation } from "$lib/core/workspace";
 import { confirmDestructive, DAEMON_SUBJECT } from "$lib/core/confirmGate";
 import {
+  idleSessions,
   killBatchConfirm,
   killConfirm,
   killFailedAlert,
@@ -105,6 +106,13 @@ export function endStaleSessions(rows: SessionRow[]): Promise<number> {
     rows.filter((r) => r.stale),
     "stale"
   );
+}
+
+/// Ends the idle rows -- agent neither working nor waiting, and not
+/// stale -- after asking once. Filter and prompt share `idleSessions` /
+/// `"idle"` so the button's count and what actually ends cannot drift.
+export function endIdleSessions(rows: SessionRow[]): Promise<number> {
+  return endBatch(idleSessions(rows), "idle");
 }
 
 /// Ends the rows the human picked, after asking once with their names.

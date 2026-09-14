@@ -441,10 +441,26 @@ export function killConfirm(row: SessionRow): KillPrompt {
   return { title: `End “${row.label}”?`, lines, confirmLabel: "End session", danger: true };
 }
 
+/// Whether Kill idle would end this row.
+///
+/// Same sense of idle as the sidebar's Close Idle Tabs: the agent is
+/// neither working nor waiting on the human. Stale rows are left to
+/// Clear stale — an exited record is not idle work, and an orphan needs
+/// the stale wording that names SIGTERM.
+export function isIdleSession(row: SessionRow): boolean {
+  if (row.stale) return false;
+  return row.status !== "working" && row.status !== "waiting_for_input";
+}
+
+/// The rows Kill idle acts on, in the list order the panel is showing.
+export function idleSessions(rows: SessionRow[]): SessionRow[] {
+  return rows.filter(isIdleSession);
+}
+
 /// Which button a batch came from. The rows are already the batch --
 /// the caller has filtered them -- and the scope only decides how the
 /// prompt talks about them.
-export type KillScope = "all" | "stale" | "selected";
+export type KillScope = "all" | "stale" | "selected" | "idle";
 
 const NAMES_SHOWN = 6;
 
@@ -497,6 +513,27 @@ function costLine(rows: SessionRow[]): string | null {
 /// clearing an orphan sends SIGTERM to a live process.
 export function killBatchConfirm(rows: SessionRow[], scope: KillScope): KillPrompt | null {
   if (rows.length === 0) return null;
+
+  // Idle keeps its own wording even for a batch of one: the card asked
+  // for a confirm that current work might get lost, and the single-row
+  // End-session prompt does not say that.
+  if (scope === "idle") {
+    const n = rows.length;
+    const lines = [
+      "Idle means the agent is neither working nor waiting on you.",
+      "Current work in those sessions might still get lost — scrollback and anything not yet written to disk.",
+    ];
+    const cost = costLine(rows);
+    if (cost) lines.push(cost);
+    lines.push(DISK_STAYS);
+    return {
+      title: n === 1 ? `Kill idle session “${rows[0].label}”?` : `Kill ${plural(n, "idle session")}?`,
+      lines,
+      confirmLabel: "Kill idle",
+      danger: true,
+    };
+  }
+
   if (rows.length === 1) return killConfirm(rows[0]);
   const n = rows.length;
 

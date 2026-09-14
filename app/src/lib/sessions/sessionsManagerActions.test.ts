@@ -36,6 +36,7 @@ import {
 } from "$lib/core/layoutState";
 import {
   endAllSessions,
+  endIdleSessions,
   endSelectedSessions,
   endSession,
   endStaleSessions,
@@ -247,6 +248,48 @@ describe("endStaleSessions", () => {
     ]);
     expect(askConfirm).toHaveBeenCalledTimes(1);
     expect(asked().confirmLabel).toBe("Clear stale");
+  });
+});
+
+describe("endIdleSessions", () => {
+  it("ends only idle rows, and leaves working and waiting alone", async () => {
+    const ended = await endIdleSessions([
+      row({ id: "busy", status: "working", state: "active" }),
+      row({ id: "quiet", status: "idle", state: "idle" }),
+      row({ id: "ask", status: "waiting_for_input", state: "waiting" }),
+      row({ id: "hidden-quiet", status: "idle", state: "hidden", visible: false }),
+    ]);
+    expect(ended).toBe(2);
+    expect(vi.mocked(backend.killSession).mock.calls.map((c) => c[0])).toEqual([
+      "quiet",
+      "hidden-quiet",
+    ]);
+  });
+
+  it("leaves stale rows to Clear stale", async () => {
+    expect(
+      await endIdleSessions([
+        row({ id: "gone", stale: true, staleness: "exited", state: "exited", status: "exited" }),
+      ])
+    ).toBe(0);
+    expect(askConfirm).not.toHaveBeenCalled();
+  });
+
+  it("asks once with the Kill idle wording, including the lost-work warning", async () => {
+    await endIdleSessions([
+      row({ id: "a", status: "idle", state: "idle" }),
+      row({ id: "b", status: "idle", state: "idle" }),
+    ]);
+    expect(askConfirm).toHaveBeenCalledTimes(1);
+    expect(asked().confirmLabel).toBe("Kill idle");
+    expect(asked().danger).toBe(true);
+    expect(asked().lines.join(" ")).toMatch(/might still get lost/i);
+  });
+
+  it("does nothing when the answer is no", async () => {
+    vi.mocked(askConfirm).mockResolvedValue(false);
+    expect(await endIdleSessions([row({ id: "a", status: "idle", state: "idle" })])).toBe(0);
+    expect(backend.killSession).not.toHaveBeenCalled();
   });
 });
 

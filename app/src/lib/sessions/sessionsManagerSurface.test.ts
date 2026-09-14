@@ -87,10 +87,23 @@ describe("the panel", () => {
     const text = source(PANEL);
     expect(text).toContain("endAllSessions");
     expect(text).toContain("endStaleSessions");
+    expect(text).toContain("endIdleSessions");
     expect(text).toContain("endSelectedSessions");
     expect(text).toContain("endSession");
     expect(text).toContain("jumpToSession");
     expect(text).toContain("restartDaemon");
+  });
+
+  it("offers Kill idle as a red header action next to Clear stale", () => {
+    const text = source(PANEL);
+    const header = text.slice(text.indexOf("<header>"), text.indexOf("</header>"));
+    expect(header).toContain("Kill idle");
+    expect(header.indexOf("Clear stale")).toBeLessThan(header.indexOf("Kill idle"));
+    expect(header.indexOf("Kill idle")).toBeLessThan(header.indexOf("Kill all"));
+    // The button itself carries class="danger"; a quiet neighbour would
+    // hide that this ends live sessions whose work may still be lost.
+    const idleBtn = header.slice(header.indexOf("Kill idle") - 120, header.indexOf("Kill idle"));
+    expect(idleBtn).toContain('class="danger"');
   });
 
   it("offers the restart from the same header as the kills", () => {

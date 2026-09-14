@@ -8,6 +8,7 @@ import {
   killConfirm,
   killFailedAlert,
   killPlan,
+  idleSessions,
   managerSummary,
   nextSort,
   refusedOrphanAlert,
@@ -370,6 +371,30 @@ describe("confirmations", () => {
     expect(killBatchConfirm([], "all")).toBe(null);
     expect(killBatchConfirm([], "stale")).toBe(null);
     expect(killBatchConfirm([], "selected")).toBe(null);
+    expect(killBatchConfirm([], "idle")).toBe(null);
+  });
+
+  it("warns that killing idle sessions can still lose current work", () => {
+    // Idle is not "safe to discard": scrollback and anything not on disk
+    // go with the session, which is why the button is danger-red.
+    const rows = rowsFor([session({ id: "a" }), session({ id: "b" })]);
+    const prompt = killBatchConfirm(rows, "idle")!;
+    expect(prompt.title).toContain("2 idle");
+    expect(prompt.confirmLabel).toBe("Kill idle");
+    expect(prompt.danger).toBe(true);
+    const text = prompt.lines.join(" ");
+    expect(text).toMatch(/neither working nor waiting/i);
+    expect(text).toMatch(/might still get lost/i);
+  });
+
+  it("keeps the work-might-be-lost warning even for a single idle session", () => {
+    // Unlike the other scopes, idle does not fall through to the generic
+    // End-session prompt — that one never mentions lost work.
+    const [row] = rowsFor([session({ command: "claude" })]);
+    const prompt = killBatchConfirm([row], "idle")!;
+    expect(prompt.title).toContain(row.label);
+    expect(prompt.confirmLabel).toBe("Kill idle");
+    expect(prompt.lines.join(" ")).toMatch(/might still get lost/i);
   });
 });
 
@@ -515,6 +540,27 @@ describe("managerSummary", () => {
 
   it("says so when there are none", () => {
     expect(managerSummary([])).toBe("no sessions");
+  });
+});
+
+describe("idleSessions", () => {
+  it("keeps rows whose agent is neither working nor waiting, and drops the rest", () => {
+    const rows = sessionRows({
+      sample: {
+        sessions: [
+          session({ id: "quiet", status: "idle" }),
+          session({ id: "busy", status: "working" }),
+          session({ id: "ask", status: "waiting_for_input" }),
+          session({ id: "gone", status: "exited" }),
+          session({ id: "hidden-quiet", status: "idle", cwd: "/repo/x" }),
+        ],
+        metrics: true,
+      },
+      previous: null,
+      workspaces: [showing("quiet"), showing("busy"), showing("ask")],
+      sessionNames: {},
+    });
+    expect(idleSessions(rows).map((r) => r.id).sort()).toEqual(["hidden-quiet", "quiet"]);
   });
 });
 

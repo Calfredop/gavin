@@ -18,6 +18,7 @@
     NO_SELECTION,
     formatCpu,
     formatMemory,
+    idleSessions,
     managerSummary,
     nextSort,
     selectRow,
@@ -39,6 +40,7 @@
   } from "$lib/sessions/sessionsManager";
   import {
     endAllSessions,
+    endIdleSessions,
     endSelectedSessions,
     endSession,
     endStaleSessions,
@@ -145,6 +147,7 @@
   const picked = $derived(selectedRows(rows, selection));
   const pickedIds = $derived(new Set(picked.map((r) => r.id)));
   const staleCount = $derived(rows.filter((r) => r.stale).length);
+  const idleCount = $derived(idleSessions(rows).length);
   /// What the list adds up to, from the same rows the grid is drawing --
   /// so the bottom line can never describe a different sample than the
   /// rows above it.
@@ -216,6 +219,10 @@
 
   async function clearStale(): Promise<void> {
     if ((await endStaleSessions(rows)) > 0) await refresh();
+  }
+
+  async function killIdle(): Promise<void> {
+    if ((await endIdleSessions(rows)) > 0) await refresh();
   }
 
   /// Restarting is the one action here that takes the daemon away, so
@@ -320,6 +327,14 @@
       <span class="count">{loaded ? managerSummary(rows) : "reading…"}</span>
       <button type="button" disabled={staleCount === 0} onclick={() => void clearStale()}>
         Clear stale{staleCount > 0 ? ` (${staleCount})` : ""}
+      </button>
+      <button
+        type="button"
+        class="danger"
+        disabled={idleCount === 0}
+        onclick={() => void killIdle()}
+      >
+        Kill idle{idleCount > 0 ? ` (${idleCount})` : ""}…
       </button>
       <button
         type="button"
