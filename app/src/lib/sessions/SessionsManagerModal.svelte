@@ -521,7 +521,7 @@
 
 <style>
   /* Deliberately the same type scale and row rhythm as
-     GlobalSettingsModal, so the two panels the sidebar footer opens read
+     GlobalSettingsView, so the sidebar footer's panels read
      as one family rather than two designs. */
   .manager {
     display: flex;

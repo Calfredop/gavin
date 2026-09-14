@@ -188,6 +188,8 @@ import {
   handOffWorkspace,
   appHubOpen,
   openAppHub,
+  appSettingsOpen,
+  openAppSettings,
   closeWorkspace,
   createPage,
   createSessionOnNewPage,
@@ -2053,6 +2055,27 @@ describe("the app hub", () => {
     await switchWorkspace("ws-2");
 
     expect(get(appHubOpen)).toBe(false);
+  });
+
+  it("closes app Settings when a workspace is switched to", async () => {
+    setState([ws("ws-1", []), ws("ws-2", [])], "ws-1", null);
+    openAppSettings();
+
+    await switchWorkspace("ws-2");
+
+    expect(get(appSettingsOpen)).toBe(false);
+  });
+
+  it("opens Settings by taking the hub down, and the reverse", () => {
+    openAppHub();
+    expect(get(appHubOpen)).toBe(true);
+    openAppSettings();
+    expect(get(appHubOpen)).toBe(false);
+    expect(get(appSettingsOpen)).toBe(true);
+    openAppHub();
+    expect(get(appSettingsOpen)).toBe(false);
+    expect(get(appHubOpen)).toBe(true);
+    appHubOpen.set(false);
   });
 
   it("closes when the workspace switched to is the one already active", async () => {

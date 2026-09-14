@@ -68,6 +68,8 @@ describe("the view boundary", () => {
     // render is indistinguishable from a dead button.
     expect(body).toContain("{#if $appHubOpen}");
     expect(body).toContain("<AppHubView />");
+    expect(body).toContain("$appSettingsOpen");
+    expect(body).toContain("<GlobalSettingsView />");
     // And its siblings, because the same silence covers all of them.
     expect(body).toContain("<TerminalView workspaceId={activeWorkspace.id} />");
     expect(body).toContain("<activeViewDef.component workspaceId={activeWorkspace.id} />");

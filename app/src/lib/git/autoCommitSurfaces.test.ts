@@ -25,7 +25,7 @@ function source(name: string): string {
 const COMPOSER = "CardComposeModal.svelte";
 const DETAIL = "CardDetailModal.svelte";
 const WORKSPACE_PANEL = "SettingsHubView.svelte";
-const APP_PANEL = "GlobalSettingsModal.svelte";
+const APP_PANEL = "GlobalSettingsView.svelte";
 
 describe("the composer", () => {
   it("offers the box only where the kind can carry it", () => {

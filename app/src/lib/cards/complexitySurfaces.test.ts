@@ -44,7 +44,7 @@ const DETAIL = "CardDetailModal.svelte";
 const PLANS_PANEL = "PlanMetadataPanel.svelte";
 const TABLE = "ComplexityTable.svelte";
 const WORKSPACE_PANEL = "SettingsHubView.svelte";
-const APP_PANEL = "GlobalSettingsModal.svelte";
+const APP_PANEL = "GlobalSettingsView.svelte";
 
 describe("the card surfaces", () => {
   // The half `min_version_for` is structurally blind to. A v30 daemon

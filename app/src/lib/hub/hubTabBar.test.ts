@@ -66,6 +66,8 @@ describe("the hub tabs' first row", () => {
     ["FilesHubView.svelte", ".tree-head"],
     ["PlanExplorerHubView.svelte", ".sidebar-head"],
     ["FileEditor.svelte", ".modes"],
+    ["SettingsHubView.svelte", ".nav-head"],
+    ["GlobalSettingsView.svelte", ".nav-head"],
   ];
 
   it("draws a rule under both bars", () => {

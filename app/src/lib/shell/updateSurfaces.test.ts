@@ -3,7 +3,7 @@ import { svelteSources } from "$lib/sources";
 
 // The update channel is expressed on two surfaces that nothing links: a
 // badge on the sidebar's Settings row, and the Updates section of the
-// app-wide Settings modal. Neither is reachable from any other suite --
+// app-wide Settings page. Neither is reachable from any other suite --
 // a badge bound to a store nobody sets renders perfectly as nothing, and
 // an Install button wired to no handler type-checks fine. Both are dead
 // controls, and a dead control on THIS feature means an install that
@@ -22,7 +22,7 @@ function source(name: string): string {
 }
 
 const SIDEBAR = "Sidebar.svelte";
-const PANEL = "GlobalSettingsModal.svelte";
+const PANEL = "GlobalSettingsView.svelte";
 
 describe("the sidebar badge", () => {
   it("reads the store the launch check writes", () => {

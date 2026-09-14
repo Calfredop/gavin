@@ -15,7 +15,7 @@ import { source } from "$lib/sources";
 const SIDEBAR = "Sidebar.svelte";
 const ROOT_CONTROL = "WorkspaceRootControl.svelte";
 const WORKSPACE_PANEL = "SettingsHubView.svelte";
-const APP_PANEL = "GlobalSettingsModal.svelte";
+const APP_PANEL = "GlobalSettingsView.svelte";
 const WIZARD = "SetupWizard.svelte";
 const WIZARD_STEP = "GitStep.svelte";
 

@@ -49,7 +49,6 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { searchSettings, type SettingsSection } from "$lib/core/settingsSearch";
-  import Modal from "$lib/core/Modal.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, type PauseCycle, validateCycle } from "$lib/agents/agentPause";
   import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "$lib/core/confirmGate";
@@ -78,10 +77,8 @@
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
   import type { LaunchConfig } from "$lib/agents/launchGate";
 
-  interface Props {
-    onClose: () => void;
-  }
-  let { onClose }: Props = $props();
+  // Full-page app settings: opened via appSettingsOpen, closed by
+  // navigating away (sidebar / hub / workspace), not by a Done button.
 
   /// System first, matching the default -- and matching the order the
   /// three states read in: follow the OS, or override it either way.
@@ -366,21 +363,45 @@
   ];
   let settingsQuery = $state("");
   const settingsFilter = $derived(searchSettings(SECTIONS, settingsQuery));
+  let selectedSection = $state(SECTIONS[0].id);
+  $effect(() => {
+    if (settingsFilter.visible(selectedSection)) return;
+    const first = SECTIONS.find((s) => settingsFilter.visible(s.id));
+    if (first) selectedSection = first.id;
+  });
+  function sectionLabel(section: SettingsSection): string {
+    return section.keywords[0] ?? section.id;
+  }
 </script>
 
-<Modal {onClose}>
-  <div class="global-settings">
-    <h2>Settings</h2>
-
-    <SearchInput
-      bind:value={settingsQuery}
-      class="settings-search"
-      label="Search settings"
-      placeholder="Search settings…"
-      matches={settingsFilter.filtering ? settingsFilter : null}
-    />
-
-    <section hidden={!settingsFilter.visible("appearance")}>
+<div class="global-settings">
+  <aside class="settings-nav">
+    <div class="nav-head">
+      <SearchInput
+        bind:value={settingsQuery}
+        class="settings-search"
+        label="Search settings"
+        placeholder="Search settings…"
+        matches={settingsFilter.filtering ? settingsFilter : null}
+      />
+    </div>
+    <nav class="nav-list" aria-label="Settings sections">
+      {#each SECTIONS as section (section.id)}
+        <button
+          type="button"
+          class="nav-item"
+          class:active={selectedSection === section.id}
+          hidden={!settingsFilter.visible(section.id)}
+          aria-current={selectedSection === section.id ? "page" : undefined}
+          onclick={() => (selectedSection = section.id)}
+        >
+          {sectionLabel(section)}
+        </button>
+      {/each}
+    </nav>
+  </aside>
+  <div class="settings-body">
+    <section hidden={!settingsFilter.visible("appearance") || selectedSection !== "appearance"}>
       <h3>Appearance</h3>
       <div class="row">
         <span>Theme</span>
@@ -399,7 +420,7 @@
       </div>
     </section>
 
-    <section hidden={!settingsFilter.visible("sidebar")}>
+    <section hidden={!settingsFilter.visible("sidebar") || selectedSection !== "sidebar"}>
       <h3>Sidebar</h3>
       <div class="row">
         <span>Scratchpad</span>
@@ -434,7 +455,7 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("hub-tabs")}>
+    <section hidden={!settingsFilter.visible("hub-tabs") || selectedSection !== "hub-tabs"}>
       <h3>Hub tabs</h3>
       <div class="row">
         <span>Sections</span>
@@ -449,7 +470,7 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("terminal")}>
+    <section hidden={!settingsFilter.visible("terminal") || selectedSection !== "terminal"}>
       <h3>Terminal</h3>
       <div class="row">
         <span>Font size</span>
@@ -471,7 +492,7 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("cards")}>
+    <section hidden={!settingsFilter.visible("cards") || selectedSection !== "cards"}>
       <h3>Cards</h3>
       <div class="row">
         <span>Auto commit</span>
@@ -508,7 +529,7 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("git")}>
+    <section hidden={!settingsFilter.visible("git") || selectedSection !== "git"}>
       <h3>Git</h3>
       <div class="row">
         <span>Track gavin's files</span>
@@ -532,7 +553,7 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("agent-defaults")}>
+    <section hidden={!settingsFilter.visible("agent-defaults") || selectedSection !== "agent-defaults"}>
       <h3>Agent defaults</h3>
       {#if profiles.length === 0}
         <p class="hint">Waiting for the agent profile table…</p>
@@ -570,7 +591,7 @@
       {/if}
     </section>
 
-    <section hidden={!settingsFilter.visible("custom-agent")}>
+    <section hidden={!settingsFilter.visible("custom-agent") || selectedSection !== "custom-agent"}>
       <h3>Custom agent</h3>
       <div class="row">
         <span>Command</span>
@@ -607,7 +628,7 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("complexity")}>
+    <section hidden={!settingsFilter.visible("complexity") || selectedSection !== "complexity"}>
       <h3>Complexity</h3>
       <p class="hint">
         A card can say how hard its work is, and each level can run a different agent — so a rename
@@ -622,7 +643,7 @@
       />
     </section>
 
-    <section hidden={!settingsFilter.visible("fallback-agent")}>
+    <section hidden={!settingsFilter.visible("fallback-agent") || selectedSection !== "fallback-agent"}>
       <h3>Fallback agent</h3>
       <p class="hint">
         When a launch's agent is over its usage threshold, walk this chain instead of pausing. A
@@ -649,7 +670,7 @@
       />
     </section>
 
-    <section hidden={!settingsFilter.visible("agent-pause")}>
+    <section hidden={!settingsFilter.visible("agent-pause") || selectedSection !== "agent-pause"}>
       <h3>Agent pause</h3>
       <p class="hint">
         Sit out part of every window so a rail does not spend a subscription limit
@@ -720,7 +741,7 @@
       {/if}
     </section>
 
-    <section hidden={!settingsFilter.visible("memory-wall")}>
+    <section hidden={!settingsFilter.visible("memory-wall") || selectedSection !== "memory-wall"}>
       <h3>Memory wall</h3>
       <p class="hint">
         A ceiling on how many agents may be taking a turn at once, and a hold while the
@@ -767,7 +788,7 @@
       </div>
     </section>
 
-    <section hidden={!settingsFilter.visible("updates")}>
+    <section hidden={!settingsFilter.visible("updates") || selectedSection !== "updates"}>
       <h3>Updates</h3>
       <p class="hint">
         gavin checks once when it starts, and installs nothing on its own. A download is
@@ -838,7 +859,7 @@
       {/if}
     </section>
 
-    <section hidden={!settingsFilter.visible("daemon")}>
+    <section hidden={!settingsFilter.visible("daemon") || selectedSection !== "daemon"}>
       <h3>Daemon</h3>
       <p class="hint">
         gavin-daemon owns every terminal session and watches your plan files. Restart it after
@@ -859,7 +880,7 @@
       {/if}
     </section>
 
-    <section hidden={!settingsFilter.visible("remote-access")}>
+    <section hidden={!settingsFilter.visible("remote-access") || selectedSection !== "remote-access"}>
       <h3>Remote access</h3>
       <p class="hint">
         Every connection to the daemon carries an identity now: the app holds a token the daemon
@@ -891,15 +912,12 @@
       </p>
     </section>
 
-    <div class="actions">
-      <button type="button" onclick={onClose}>Done</button>
-    </div>
   </div>
-</Modal>
+</div>
 
-<!-- Outside the panel, not inside it: a modal nested in another modal's
-     scrolling body would be clipped by it. Later in the tree so it lands
-     on top, the same rule +page.svelte follows for its alert layer. -->
+<!-- Outside the panel, not inside its scrolling body: later in the tree
+     so it lands on top, the same rule +page.svelte follows for its alert
+     layer. -->
 {#if hubTabsOpen}
   <HubTabsModal onClose={() => (hubTabsOpen = false)} />
 {/if}
@@ -924,24 +942,78 @@
 {/if}
 
 <style>
-  /* Deliberately the same rules as SettingsHubView's panel, so the
-     app-wide and per-workspace settings read as one family rather than
-     two designs that happen to sit next to each other. */
+  /* Same family as SettingsHubView: left navigator + detail pane. */
   .global-settings {
+    display: grid;
+    grid-template-columns: minmax(140px, 180px) minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
+    box-sizing: border-box;
+    color: var(--text);
+    font-family: monospace;
+    font-size: 0.85em;
+  }
+  .settings-nav {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    border-right: 1px solid var(--border);
+  }
+  .nav-head {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 var(--hub-bar-height);
+    height: var(--hub-bar-height);
+    min-height: 0;
+    max-height: var(--hub-bar-height);
+    box-sizing: border-box;
+    padding: 0 6px;
+    overflow: hidden;
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-head :global(.settings-search) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .nav-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 6px;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .nav-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 1em;
+    padding: 5px 8px;
+    cursor: pointer;
+  }
+  .nav-item:hover {
+    background: var(--surface-overlay);
+    color: var(--text);
+  }
+  .nav-item.active {
+    background: var(--surface-overlay);
+    color: var(--text);
+  }
+  .settings-body {
+    padding: 16px;
     display: flex;
     flex-direction: column;
     gap: 22px;
-    font-size: 0.85em;
-    min-width: 380px;
-  }
-  .global-settings :global(.settings-search) {
-    flex: 0 0 auto;
-  }
-  h2 {
-    margin: 0;
-    font-size: 1em;
-    font-weight: normal;
-    color: var(--text);
+    overflow-y: auto;
+    min-width: 0;
+    min-height: 0;
   }
   h3 {
     margin: 0 0 10px;
@@ -977,7 +1049,7 @@
      select is as wide as its widest option, and this panel lists EVERY
      profile -- including opencode, whose catalogue is 450
      provider-qualified names. Uncapped, that one row is wider than the
-     modal while the rows above it sit at 140px. */
+     pane while the rows above it sit at 140px. */
   .row select {
     min-width: 140px;
     max-width: 240px;
@@ -1014,10 +1086,6 @@
   .unit {
     color: var(--text-muted);
   }
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-  }
   .row button.manage {
     background: var(--surface-base);
     border: 1px solid var(--border);
@@ -1033,7 +1101,7 @@
     cursor: default;
   }
   /* A URL outruns the shared select cap, so it takes the room the row
-     has rather than forcing the modal to scroll. */
+     has rather than forcing the pane to scroll sideways. */
   .endpoint-row input {
     min-width: 0;
     flex: 1 1 auto;
@@ -1047,15 +1115,5 @@
   }
   .warn {
     color: var(--warning-text);
-  }
-  .actions button {
-    background: var(--surface-overlay);
-    border: none;
-    color: var(--text);
-    padding: 5px 12px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-family: monospace;
-    font-size: 1em;
   }
 </style>

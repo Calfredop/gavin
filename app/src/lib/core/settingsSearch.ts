@@ -1,5 +1,5 @@
 // The Settings panels' search box -- the per-workspace tab and the
-// app-wide modal both use it, so "search settings" means the same thing
+// app-wide page both use it, so "search settings" means the same thing
 // in either place.
 //
 // Whole SECTIONS hide or show together, not rows inside one: a settings

@@ -4,6 +4,7 @@ import { needsChromeRow } from "$lib/shell/windowChrome";
 const ready = {
   status: "ready",
   appHubOpen: false,
+  appSettingsOpen: false,
   hasWorkspace: true,
   activeView: "kanban",
   hasPageTree: true,
@@ -26,6 +27,10 @@ describe("needsChromeRow", () => {
 
   it("is true for the app hub, which is drawn over every workspace", () => {
     expect(needsChromeRow({ ...ready, appHubOpen: true })).toBe(true);
+  });
+
+  it("is true for app Settings, which is also a full page over every workspace", () => {
+    expect(needsChromeRow({ ...ready, appSettingsOpen: true })).toBe(true);
   });
 
   it("is true for a window holding no workspace", () => {

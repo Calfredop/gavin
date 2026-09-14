@@ -24,8 +24,8 @@ describe("fallback agent surfaces", () => {
   });
 
   it("edits the chain in app settings, workspace settings, and the init wizard", () => {
-    expect(source("GlobalSettingsModal.svelte")).toContain("Fallback agent");
-    expect(source("GlobalSettingsModal.svelte")).toContain("FallbackChainEditor");
+    expect(source("GlobalSettingsView.svelte")).toContain("Fallback agent");
+    expect(source("GlobalSettingsView.svelte")).toContain("FallbackChainEditor");
     expect(source("SettingsHubView.svelte")).toContain("Fallback agent");
     expect(source("SettingsHubView.svelte")).toContain("setWorkspaceFallback");
     expect(source("AgentStep.svelte")).toContain("FallbackChainEditor");
@@ -38,8 +38,8 @@ describe("fallback agent surfaces", () => {
     expect(source("SettingsHubView.svelte")).toContain("fallbackThresholds");
     expect(source("AgentStep.svelte")).toContain("Walk at");
     expect(source("AgentStep.svelte")).toContain("fallbackThresholds");
-    expect(source("GlobalSettingsModal.svelte")).toContain("onThresholdChange");
-    expect(source("GlobalSettingsModal.svelte")).toContain("fallbackThresholds");
+    expect(source("GlobalSettingsView.svelte")).toContain("onThresholdChange");
+    expect(source("GlobalSettingsView.svelte")).toContain("fallbackThresholds");
   });
 
   it("forces the arming wizard from a launch rather than skipping or launching degraded", () => {

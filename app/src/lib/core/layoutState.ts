@@ -356,12 +356,28 @@ async function seedQueuedInputs(): Promise<void> {
 /// of the workspace it would otherwise render.
 export const appHubOpen = hotState("appHubOpen", () => writable(false), hotBag);
 
+/// App-level Settings as a full-page view (same family as the app hub),
+/// not a modal and not a workspace hub tab. Deliberately not persisted
+/// for the same reason as `appHubOpen`: a relaunch should land where
+/// you left off working.
+export const appSettingsOpen = hotState("appSettingsOpen", () => writable(false), hotBag);
+
 export function openAppHub(): void {
+  appSettingsOpen.set(false);
   appHubOpen.set(true);
 }
 
 export function closeAppHub(): void {
   appHubOpen.set(false);
+}
+
+export function openAppSettings(): void {
+  appHubOpen.set(false);
+  appSettingsOpen.set(true);
+}
+
+export function closeAppSettings(): void {
+  appSettingsOpen.set(false);
 }
 
 // Pulls the current compat verdict from the Rust side. Called at every
@@ -483,6 +499,7 @@ function adoptWorkspaces(data: WorkspacesData): void {
 function activateWorkspace(state: WorkspacesData, workspaceId: string): WorkspacesData {
   if (claimedElsewhere(workspaceId)) return state;
   closeAppHub();
+  closeAppSettings();
   return workspace.switchWorkspace(state, workspaceId, Date.now());
 }
 
@@ -3537,6 +3554,7 @@ export async function switchToTab(sessionId: string): Promise<void> {
   // runs -- but this is reachable from the sidebar with the hub up, and
   // choosing a tab plainly means "show me that tab".
   closeAppHub();
+  closeAppSettings();
   const newTree = layout.switchTab(location.tree, sessionId);
   const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);
   const data = workspace.setPageFocus(withTree, location.workspaceId, location.pageId, sessionId);
@@ -3666,6 +3684,7 @@ export async function createWorkspace(name: string): Promise<void> {
   // switchWorkspace, so the hub is taken down here rather than there --
   // the hub's own "+ New workspace…" must land you in what it created.
   closeAppHub();
+  closeAppSettings();
   // Claimed before it is stored, so no window ever reads this workspace
   // as unowned -- which, absence meaning "the main window", would put it
   // in two windows at once the moment anything switched to it there.
@@ -3776,6 +3795,7 @@ export async function switchWorkspaceView(workspaceId: string, view: string): Pr
   // tiles) plainly mean "show me that tab" -- leaving the hub up would
   // change the view underneath it and look like nothing happened.
   closeAppHub();
+  closeAppSettings();
   const data = workspace.switchWorkspaceView(state, workspaceId, view);
   layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
   await persistWorkspaces(data.workspaces, data.activeWorkspaceId);

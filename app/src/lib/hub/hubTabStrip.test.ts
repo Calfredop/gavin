@@ -40,7 +40,7 @@ function source(name: string): string {
 const ROW = "+page.svelte";
 const MODAL = "HubTabsModal.svelte";
 const WORKSPACE_PANEL = "SettingsHubView.svelte";
-const APP_PANEL = "GlobalSettingsModal.svelte";
+const APP_PANEL = "GlobalSettingsView.svelte";
 
 describe("the tab row", () => {
   const row = source(ROW);

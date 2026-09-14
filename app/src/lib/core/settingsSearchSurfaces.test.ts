@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { source } from "$lib/sources";
 
 // A static pre-flight over the two settings panels (SettingsHubView.svelte,
-// GlobalSettingsModal.svelte): the search box works by hiding whichever
+// GlobalSettingsView.svelte): the search box works by hiding whichever
 // <section> a query doesn't match (settingsSearch.ts), driven off a
 // hand-written SECTIONS array that is NOT generated from the markup --
 // nothing re-derives it, so a section added to one without the other
@@ -18,12 +18,14 @@ interface SectionUse {
   title: string;
 }
 
-/// Every `<section hidden={!settingsFilter.visible("id")}>` immediately
+/// Every `<section hidden={!settingsFilter.visible("id") …}>` immediately
 /// followed by its `<h3>` -- the template's own list of searchable
-/// sections, in the order they render.
+/// sections, in the order they render. The selected-section gate may
+/// sit beside the search predicate; the id is still what search drives.
 function templateSections(text: string): SectionUse[] {
   const out: SectionUse[] = [];
-  const re = /<section hidden=\{!settingsFilter\.visible\("([a-z-]+)"\)\}>\s*<h3>([^<]+)<\/h3>/g;
+  const re =
+    /<section hidden=\{!settingsFilter\.visible\("([a-z-]+)"\)(?:\s*\|\|\s*selectedSection !== "[a-z-]+")?\}>\s*<h3>([^<]+)<\/h3>/g;
   for (const m of text.matchAll(re)) out.push({ id: m[1], title: m[2] });
   return out;
 }
@@ -86,7 +88,7 @@ describe("settings search stays in lockstep with its panels", () => {
     checkFile("SettingsHubView.svelte");
   });
 
-  it("wires every GlobalSettingsModal section to the search box", () => {
-    checkFile("GlobalSettingsModal.svelte");
+  it("wires every GlobalSettingsView section to the search box", () => {
+    checkFile("GlobalSettingsView.svelte");
   });
 });

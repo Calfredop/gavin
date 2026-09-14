@@ -151,7 +151,7 @@
 </Modal>
 
 <style>
-  /* The same family as GlobalSettingsModal and SettingsHubView: one look
+  /* The same family as GlobalSettingsView and SettingsHubView: one look
      for every panel that edits a preference. */
   .hub-tabs {
     display: flex;

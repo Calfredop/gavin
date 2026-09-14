@@ -9,6 +9,7 @@
     switchWorkspaceView,
     retryConnect,
     appHubOpen,
+    appSettingsOpen,
   } from "$lib/core/layoutState";
   import { signalFrontendReady } from "$lib/core/backend";
   import { installKeyboardShortcuts } from "$lib/core/keyboard";
@@ -55,6 +56,7 @@
   import CornerOverhang from "$lib/shell/CornerOverhang.svelte";
   import { isMacSync } from "$lib/core/platform";
   import AppHubView from "$lib/hub/AppHubView.svelte";
+  import GlobalSettingsView from "$lib/core/GlobalSettingsView.svelte";
   import WorkspaceRootControl from "$lib/workspace/WorkspaceRootControl.svelte";
   import DaemonCompatBanner from "$lib/shell/DaemonCompatBanner.svelte";
   import DaemonRequestErrorBanner from "$lib/shell/DaemonRequestErrorBanner.svelte";
@@ -101,6 +103,7 @@
     chromeRowFor({
       status: $layoutState.status,
       appHubOpen: $appHubOpen,
+      appSettingsOpen: $appSettingsOpen,
       hasWorkspace: activeWorkspace !== null,
       activeView,
       hasPageTree: getActiveTree($layoutState) !== null,
@@ -429,6 +432,10 @@
           {#if $appHubOpen}
             <div class="view">
               <AppHubView />
+            </div>
+          {:else if $appSettingsOpen}
+            <div class="view">
+              <GlobalSettingsView />
             </div>
           {:else if !activeWorkspace}
             <div class="overlay">

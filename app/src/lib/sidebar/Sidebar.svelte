@@ -1,6 +1,5 @@
 <script lang="ts">
   import { accentVar } from "$lib/core/settings";
-  import GlobalSettingsModal from "$lib/core/GlobalSettingsModal.svelte";
   import AgentArmWizard from "$lib/workspace/AgentArmWizard.svelte";
   import SessionsManagerModal from "$lib/sessions/SessionsManagerModal.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
@@ -32,6 +31,8 @@
     setPagePinned,
     appHubOpen,
     openAppHub,
+    appSettingsOpen,
+    openAppSettings,
     agentProfilesStore,
     gitTrackingDefault,
     attentionState,
@@ -663,7 +664,8 @@
   /// The app-wide settings panel. A modal, not a hub tab: every hub tab
   /// renders inside one workspace, which is the wrong shape for a
   /// preference that spans all of them.
-  let showGlobalSettings = $state(false);
+  // App settings is a full-page view (appSettingsOpen), not a modal —
+  // same family as the app hub. Task manager / Usage stay modals.
 
   // The pending "Close Idle Tabs" confirmation: the frozen id list and
   // the copy describing it, both built when the menu entry was picked.
@@ -1733,7 +1735,15 @@
         >
       {/if}
     </button>
-    <button class="footer-row" onclick={() => (showGlobalSettings = true)}>
+    <button
+      class="footer-row"
+      class:active={$appSettingsOpen}
+      aria-current={$appSettingsOpen ? "page" : undefined}
+      onclick={() => {
+        openAppSettings();
+        pressedRail();
+      }}
+    >
       <Settings size={12} />
       <span>Settings</span>
       <!-- The whole of the "quiet check" the update channel makes: one
@@ -1804,10 +1814,6 @@
 
 {#if $openAppPanel === "usage"}
   <AgentUsageModal onClose={closeAppPanel} />
-{/if}
-
-{#if showGlobalSettings}
-  <GlobalSettingsModal onClose={() => (showGlobalSettings = false)} />
 {/if}
 
 {#if $armRequest}

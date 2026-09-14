@@ -25,7 +25,7 @@ describe("the sidebar footer", () => {
   it("puts that row above Settings, which is where the card asked for it", () => {
     const footer = source(SIDEBAR).slice(source(SIDEBAR).indexOf('class="sidebar-footer"'));
     expect(footer.indexOf('showAppPanel("sessions")')).toBeLessThan(
-      footer.indexOf("showGlobalSettings")
+      footer.indexOf("openAppSettings")
     );
   });
 

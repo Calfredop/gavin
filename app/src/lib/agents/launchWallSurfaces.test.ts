@@ -295,7 +295,7 @@ describe("the done-session reclaim", () => {
   });
 
   it("has its own switch in the settings, written through the launch config", () => {
-    const settings = source("GlobalSettingsModal.svelte");
+    const settings = source("GlobalSettingsView.svelte");
     expect(settings).toContain("Close idle agents of done cards when memory runs short");
     expect(settings).toContain("editLaunch({ reclaimDoneSessions: e.currentTarget.checked })");
   });
@@ -327,7 +327,7 @@ describe("the Run all estimates", () => {
 
 describe("the settings", () => {
   it("edits both fields through the launch config, not the workspaces save", () => {
-    const settings = source("GlobalSettingsModal.svelte");
+    const settings = source("GlobalSettingsView.svelte");
     expect(settings).toContain("Agents running at once");
     expect(settings).toContain("Hold new agents when memory is under pressure");
     expect(settings).toContain("saveLaunchConfig(");

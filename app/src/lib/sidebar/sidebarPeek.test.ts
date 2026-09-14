@@ -148,7 +148,7 @@ describe("the hover peek is wired through, not re-derived in the template", () =
   });
 
   it("Settings draws the toggle next to Scratchpad", () => {
-    const settings = source("GlobalSettingsModal.svelte");
+    const settings = source("GlobalSettingsView.svelte");
     expect(settings).toContain("sidebarPeekOnHover");
     expect(settings).toContain("Hover to expand");
   });

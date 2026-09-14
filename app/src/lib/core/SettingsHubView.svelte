@@ -184,7 +184,7 @@
   /// Agent before Complexity: the table names which agent runs each
   /// level, so the profile/command that feed it have to sit above it.
   /// App-wide controls (Updates, Daemon, Remote access) live in the
-  /// sidebar Settings modal — this panel is per-workspace only.
+  /// sidebar Settings page — this panel is per-workspace only.
   const SECTIONS: SettingsSection[] = [
     { id: "workspace", keywords: ["Workspace", "Name", "rename", "Colour", "Color", "accent", "Root", "folder"] },
     { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
@@ -222,6 +222,19 @@
   ];
   let settingsQuery = $state("");
   const settingsFilter = $derived(searchSettings(SECTIONS, settingsQuery));
+  /// Which section the left navigator has selected. Search still hides
+  /// unmatched sections; the nav only offers the ones that remain, and
+  /// the content pane shows the selection rather than every match at
+  /// once -- same shape as Files' tree + detail.
+  let selectedSection = $state(SECTIONS[0].id);
+  $effect(() => {
+    if (settingsFilter.visible(selectedSection)) return;
+    const first = SECTIONS.find((s) => settingsFilter.visible(s.id));
+    if (first) selectedSection = first.id;
+  });
+  function sectionLabel(section: SettingsSection): string {
+    return section.keywords[0] ?? section.id;
+  }
 
   // --- terminal ---------------------------------------------------------
   /// What this workspace inherits when it sets no size of its own: the
@@ -583,15 +596,33 @@
 
 {#if ws}
   <div class="settings">
-    <SearchInput
-      bind:value={settingsQuery}
-      class="settings-search"
-      label="Search settings"
-      placeholder="Search settings…"
-      matches={settingsFilter.filtering ? settingsFilter : null}
-    />
-
-    <section hidden={!settingsFilter.visible("workspace")}>
+    <aside class="settings-nav">
+      <div class="nav-head">
+        <SearchInput
+          bind:value={settingsQuery}
+          class="settings-search"
+          label="Search settings"
+          placeholder="Search settings…"
+          matches={settingsFilter.filtering ? settingsFilter : null}
+        />
+      </div>
+      <nav class="nav-list" aria-label="Settings sections">
+        {#each SECTIONS as section (section.id)}
+          <button
+            type="button"
+            class="nav-item"
+            class:active={selectedSection === section.id}
+            hidden={!settingsFilter.visible(section.id)}
+            aria-current={selectedSection === section.id ? "page" : undefined}
+            onclick={() => (selectedSection = section.id)}
+          >
+            {sectionLabel(section)}
+          </button>
+        {/each}
+      </nav>
+    </aside>
+    <div class="settings-body">
+    <section hidden={!settingsFilter.visible("workspace") || selectedSection !== "workspace"}>
       <h3>Workspace</h3>
       <label class="row">
         <span>Name</span>
@@ -620,7 +651,7 @@
       </div>
     </section>
 
-    <section hidden={!settingsFilter.visible("hub-tabs")}>
+    <section hidden={!settingsFilter.visible("hub-tabs") || selectedSection !== "hub-tabs"}>
       <h3>Hub tabs</h3>
       <div class="row">
         <span>Sections</span>
@@ -640,7 +671,7 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("terminal")}>
+    <section hidden={!settingsFilter.visible("terminal") || selectedSection !== "terminal"}>
       <h3>Terminal</h3>
       <div class="row">
         <span>Font size</span>
@@ -663,7 +694,7 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("cards")}>
+    <section hidden={!settingsFilter.visible("cards") || selectedSection !== "cards"}>
       <h3>Cards</h3>
       <div class="row">
         <span>Auto commit</span>
@@ -700,7 +731,7 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("git")}>
+    <section hidden={!settingsFilter.visible("git") || selectedSection !== "git"}>
       <h3>Git</h3>
       {#if !hasRoot}
         <!-- Same shape the Agent section takes: without a root there is no
@@ -729,7 +760,7 @@
       {/if}
     </section>
 
-    <section hidden={!settingsFilter.visible("agent")}>
+    <section hidden={!settingsFilter.visible("agent") || selectedSection !== "agent"}>
       <h3>Agent</h3>
       <!-- Above the Command field it gates: the field shows the RESOLVED
            command, so without this the panel would silently answer with
@@ -1008,7 +1039,7 @@
       {/if}
     </section>
 
-    <section hidden={!settingsFilter.visible("complexity")}>
+    <section hidden={!settingsFilter.visible("complexity") || selectedSection !== "complexity"}>
       <h3>Complexity</h3>
       <p class="hint">
         Which agent runs a card of each difficulty, in this workspace only. A level left on its
@@ -1023,7 +1054,7 @@
       />
     </section>
 
-    <section hidden={!settingsFilter.visible("agent-pause")}>
+    <section hidden={!settingsFilter.visible("agent-pause") || selectedSection !== "agent-pause"}>
       <h3>Agent pause</h3>
       <!-- Absent means INHERIT, which is not the same as off: a
            workspace that wants no pause while the app has one stores a
@@ -1135,7 +1166,7 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("fallback-agent")}>
+    <section hidden={!settingsFilter.visible("fallback-agent") || selectedSection !== "fallback-agent"}>
       <h3>Fallback agent</h3>
       <p class="hint">
         When this workspace's agent is over its usage threshold, new launches walk this chain
@@ -1168,7 +1199,7 @@
       />
     </section>
 
-    <section hidden={!settingsFilter.visible("unattended-recovery")}>
+    <section hidden={!settingsFilter.visible("unattended-recovery") || selectedSection !== "unattended-recovery"}>
       <h3>Unattended recovery</h3>
       <!-- Off by default, and the only setting on this screen that is.
            The others are habits; this one is consent -- a run that
@@ -1192,7 +1223,7 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("notifications")}>
+    <section hidden={!settingsFilter.visible("notifications") || selectedSection !== "notifications"}>
       <h3>Notifications</h3>
       <label class="check">
         <input
@@ -1216,7 +1247,7 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("confirmations")}>
+    <section hidden={!settingsFilter.visible("confirmations") || selectedSection !== "confirmations"}>
       <h3>Confirmations</h3>
       <label class="check">
         <input
@@ -1232,7 +1263,7 @@
       </p>
     </section>
 
-    <section hidden={!settingsFilter.visible("danger-zone")}>
+    <section hidden={!settingsFilter.visible("danger-zone") || selectedSection !== "danger-zone"}>
       <h3>Danger zone</h3>
       <p class="hint">
         Remove gavin from this workspace's folder: its plans, skills, MCP entry and instructions
@@ -1256,6 +1287,7 @@
         {/if}
       </div>
     </section>
+    </div>
   </div>
 
   {#if hubTabsOpen}
@@ -1311,19 +1343,77 @@
 
 <style>
   .settings {
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 22px;
-    overflow-y: auto;
+    display: grid;
+    grid-template-columns: minmax(140px, 180px) minmax(0, 1fr);
     height: 100%;
+    min-height: 0;
     box-sizing: border-box;
     color: var(--text);
     font-family: monospace;
     font-size: 0.85em;
   }
-  .settings :global(.settings-search) {
-    flex: 0 0 auto;
+  .settings-nav {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    border-right: 1px solid var(--border);
+  }
+  .nav-head {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    /* Locked to the hub first-row band the Scratchpad and Files share. */
+    flex: 0 0 var(--hub-bar-height);
+    height: var(--hub-bar-height);
+    min-height: 0;
+    max-height: var(--hub-bar-height);
+    box-sizing: border-box;
+    padding: 0 6px;
+    overflow: hidden;
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-head :global(.settings-search) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .nav-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 6px;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .nav-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 1em;
+    padding: 5px 8px;
+    cursor: pointer;
+  }
+  .nav-item:hover {
+    background: var(--surface-overlay);
+    color: var(--text);
+  }
+  .nav-item.active {
+    background: var(--surface-overlay);
+    color: var(--text);
+  }
+  .settings-body {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    overflow-y: auto;
+    min-width: 0;
+    min-height: 0;
   }
   h3 {
     margin: 0 0 10px;

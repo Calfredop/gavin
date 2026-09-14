@@ -17,6 +17,8 @@ export interface WindowChromeInput {
   status: string;
   /// The app hub is open over every workspace, and has no strip.
   appHubOpen: boolean;
+  /// App-level Settings as a full page — same chrome need as the hub.
+  appSettingsOpen: boolean;
   /// This window holds no workspace at all.
   hasWorkspace: boolean;
   /// The hub tab (or `terminal`) the active workspace is showing.
@@ -29,6 +31,7 @@ export interface WindowChromeInput {
 export function needsChromeRow(input: WindowChromeInput): boolean {
   if (input.status !== "ready") return true;
   if (input.appHubOpen) return true;
+  if (input.appSettingsOpen) return true;
   if (!input.hasWorkspace) return true;
   // Every hub tab draws its own strip; only the terminal view can be
   // left without a header, and only before it has a page to draw.
