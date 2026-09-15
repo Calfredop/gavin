@@ -54,15 +54,26 @@ impl PtySession {
             Some(c) => {
                 let shell = crate::shell::posix_shell();
                 let mut cmd = CommandBuilder::new(shell.as_os_str());
-                cmd.args(["-c", c]);
                 // `sh -c` reads no profile, and on Windows the PATH it
                 // would otherwise inherit is the one a default Git for
                 // Windows install leaves behind: `<git>\cmd` and nothing
                 // else, so the shell running an emitted POSIX line has no
                 // `bash`, `ls`, `sed` or `grep`. `path_with_posix_tools`
                 // puts back what `/etc/profile` would have, and answers
-                // None everywhere else.
-                if let Some(path) = crate::shell::path_with_posix_tools(&shell) {
+                // None everywhere else -- in which case the PATH the line
+                // resolves against below, and the one the shell inherits
+                // by not being told otherwise, are one and the same.
+                let path = crate::shell::path_with_posix_tools(&shell);
+                let resolve_against =
+                    path.clone().unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default());
+                // Git Bash's PATH search finds a bare `agent.exe` but not
+                // a bare `agent` that is really `agent.cmd` -- the shape
+                // an npm-global install and many other Windows CLIs take.
+                // See `rewrite_for_windows_shim`'s doc comment. A no-op on
+                // every non-Windows platform (PATHEXT is unset there).
+                let c = crate::shell::rewrite_for_windows_shim(c, &resolve_against);
+                cmd.args(["-c", &c]);
+                if let Some(path) = path {
                     cmd.env("PATH", path);
                 }
                 cmd

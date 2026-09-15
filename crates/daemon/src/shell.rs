@@ -172,6 +172,58 @@ pub fn posix_tools_path(
     Some(out)
 }
 
+/// Rewrite a command line's leading word to include the extension Windows
+/// would resolve it to, when that is one Git Bash's own PATH search would
+/// otherwise miss.
+///
+/// `sh -c` finds a bare `.exe` on PATH -- MSYS's search handles that
+/// extension itself -- but it does not probe `PATHEXT`, so a command
+/// installed as `agent.cmd` (the shape every npm-global install and many
+/// other Windows CLI installers use) reports "command not found" even
+/// though the exact same name resolves fine from `cmd.exe`, PowerShell, or
+/// a bash prompt a human types into. Handing bash the literal `agent.cmd`
+/// sidesteps the gap: an exact existing filename, extension and all, is
+/// something bash's own PATH search does match, and MSYS's spawn already
+/// knows how to run a `.bat`/`.cmd` once it has one.
+///
+/// A no-op wherever it cannot help: a leading word that already carries a
+/// path separator or a dot, an empty `PATHEXT` (every non-Windows
+/// platform, since this is only ever called from the Windows arm of
+/// [`PtySession::spawn`]), or nothing on `path` answering to any `PATHEXT`
+/// candidate at all -- which is also what a multi-command line's leading
+/// shell keyword (`cd`, `if`, …) hits, since none of those are files.
+pub fn rewrite_for_windows_shim(command: &str, path: &std::ffi::OsStr) -> String {
+    let pathext = std::env::var("PATHEXT").unwrap_or_default();
+    command_with_windows_shim(command, path, &pathext, |p| p.is_file())
+}
+
+/// The pure half of the above.
+pub fn command_with_windows_shim(
+    command: &str,
+    path: &std::ffi::OsStr,
+    pathext: &str,
+    exists: impl Fn(&Path) -> bool,
+) -> String {
+    let word_end = command.find(char::is_whitespace).unwrap_or(command.len());
+    let word = &command[..word_end];
+    if word.is_empty() || word.contains(['/', '\\', '.']) {
+        return command.to_string();
+    }
+    // Lower-cased once here rather than left to the real filesystem's own
+    // case-insensitivity: `PATHEXT` is conventionally all-caps, but the
+    // files it describes almost never are, and a test's fake `exists`
+    // should not have to special-case what NTFS would paper over.
+    let exts: Vec<String> =
+        pathext.split(';').filter(|e| !e.is_empty()).map(|e| e.to_ascii_lowercase()).collect();
+    let found = std::env::split_paths(path).find_map(|dir| {
+        exts.iter().find(|ext| exists(&dir.join(format!("{word}{ext}")))).cloned()
+    });
+    match found {
+        Some(ext) => format!("{word}{ext}{}", &command[word_end..]),
+        None => command.to_string(),
+    }
+}
+
 /// `git --exec-path`, or `None` when git is not there to ask.
 fn git_exec_path() -> Option<String> {
     let out = std::process::Command::new("git").arg("--exec-path").output().ok()?;
@@ -427,5 +479,106 @@ mod tests {
             return;
         }
         assert_eq!(posix_shell(), PathBuf::from("/bin/sh"));
+    }
+
+    /// The case this exists for: an npm-global shim, which is a `.cmd`
+    /// file, not a `.exe`.
+    #[test]
+    fn a_cmd_shim_gets_its_extension_appended() {
+        let path = std::ffi::OsString::from("C:/tools");
+        let rewritten = command_with_windows_shim(
+            "agent 'do the thing'",
+            &path,
+            ".COM;.EXE;.BAT;.CMD",
+            present(&["C:/tools/agent.cmd"]),
+        );
+        assert_eq!(rewritten, "agent.cmd 'do the thing'");
+    }
+
+    /// PATHEXT order is honoured: an `.exe` earlier in the list wins over
+    /// a `.cmd` later in the same directory, matching what `cmd.exe`
+    /// itself would run.
+    #[test]
+    fn the_first_pathext_match_wins_over_a_later_one() {
+        let path = std::ffi::OsString::from("C:/tools");
+        let rewritten = command_with_windows_shim(
+            "thing arg",
+            &path,
+            ".COM;.EXE;.BAT;.CMD",
+            present(&["C:/tools/thing.exe", "C:/tools/thing.cmd"]),
+        );
+        assert_eq!(rewritten, "thing.exe arg");
+    }
+
+    /// PATH order is honoured too: the first directory that has ANY
+    /// match wins, even over a better match further down PATH.
+    #[test]
+    fn the_first_path_directory_with_a_match_wins() {
+        let path = std::ffi::OsString::from("C:/first;C:/second");
+        let rewritten = command_with_windows_shim(
+            "thing",
+            &path,
+            ".COM;.EXE;.BAT;.CMD",
+            present(&["C:/first/thing.cmd", "C:/second/thing.exe"]),
+        );
+        assert_eq!(rewritten, "thing.cmd");
+    }
+
+    /// A bare name that already resolves (an `.exe` MSYS's own search
+    /// would have found anyway) is left alone -- there is nothing broken
+    /// to fix, and rewriting it would just be noise.
+    #[test]
+    fn a_word_matching_nothing_on_pathext_is_left_alone() {
+        let path = std::ffi::OsString::from("C:/tools");
+        let rewritten = command_with_windows_shim(
+            "sh -c 'true'",
+            &path,
+            ".COM;.EXE;.BAT;.CMD",
+            present(&[]),
+        );
+        assert_eq!(rewritten, "sh -c 'true'");
+    }
+
+    /// A multi-command line's leading shell keyword is not a file on any
+    /// PATH directory, so it is left alone -- the miss this function
+    /// cannot close, not a regression it introduces.
+    #[test]
+    fn a_leading_shell_builtin_is_left_alone_even_if_a_later_word_is_a_shim() {
+        let path = std::ffi::OsString::from("C:/tools");
+        let rewritten = command_with_windows_shim(
+            "cd /work && agent 'go'",
+            &path,
+            ".COM;.EXE;.BAT;.CMD",
+            present(&["C:/tools/agent.cmd"]),
+        );
+        assert_eq!(rewritten, "cd /work && agent 'go'");
+    }
+
+    /// A word that already carries a path or an extension is assumed
+    /// already-qualified and is not second-guessed.
+    #[test]
+    fn an_already_qualified_word_is_left_alone() {
+        let path = std::ffi::OsString::from("C:/tools");
+        for word in ["C:/tools/agent", "agent.cmd", "./agent"] {
+            let line = format!("{word} 'go'");
+            let rewritten = command_with_windows_shim(
+                &line,
+                &path,
+                ".COM;.EXE;.BAT;.CMD",
+                present(&["C:/tools/agent.cmd"]),
+            );
+            assert_eq!(rewritten, line);
+        }
+    }
+
+    /// An empty `PATHEXT` -- every non-Windows platform -- makes this a
+    /// pure no-op, which is what lets `rewrite_for_windows_shim` skip its
+    /// own `cfg!(windows)` check and just call through.
+    #[test]
+    fn an_empty_pathext_is_always_a_no_op() {
+        let path = std::ffi::OsString::from("C:/tools");
+        let rewritten =
+            command_with_windows_shim("agent 'go'", &path, "", present(&["C:/tools/agent.cmd"]));
+        assert_eq!(rewritten, "agent 'go'");
     }
 }
