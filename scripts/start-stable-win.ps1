@@ -6,11 +6,21 @@
 .DESCRIPTION
     The counterpart of start-dev-win.ps1 for the release install described
     in .gavin-root/plans/chore-stable-release-install-on-windows.md: a
-    Gavin built from a pinned commit and installed outside the checkout, so
-    that no edit and no `cargo build` in the dev tree can reach it or the
+    Gavin built in the sibling gavin-stable worktree, kept isolated from the
+    dev tree, so that no edit and no `cargo build` here can reach it or the
     daemon it owns.
 
-    In order: find the stable Gavin.exe, refuse one that has no
+    In order: stop any Gavin/gavin-daemon/gavin-mcp already running FROM THAT
+    WORKTREE (never anything installed, never anything by bare process name --
+    a rebuild can't relink over its own locked last output), re-cut the
+    worktree to this checkout's `main` tip, and rebuild it -- daemon, mcp,
+    and the app together, via `npm run bundle` -- unless -SkipBuild, -DryRun,
+    or -Path says otherwise. A bare `cargo build --release` is not enough for
+    that rebuild: it skips the Tauri CLI's `custom-protocol` feature and
+    links a binary that points at `devUrl` instead of the bundled frontend,
+    which shows ERR_CONNECTION_REFUSED on launch instead of the app.
+
+    Then: find the stable Gavin.exe, refuse one that has no
     gavin-daemon.exe / gavin-mcp.exe beside it (the app would spawn nothing
     and write an MCP path that does not exist), say which daemon is already
     listening so a dev daemon is not adopted by surprise, then start the app
@@ -34,7 +44,12 @@
     then the stable worktree's release output beside this checkout.
 
 .PARAMETER DryRun
-    Do every check and say what would be started, without starting it.
+    Do every check and say what would be started, without starting it. Also
+    skips the worktree re-cut and rebuild, which is not a quick check.
+
+.PARAMETER SkipBuild
+    Skip re-cutting and rebuilding the gavin-stable worktree; launch
+    whatever was last built or installed. Implied by -Path.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\start-stable-win.ps1
@@ -45,7 +60,8 @@
 [CmdletBinding()]
 param(
     [string]$Path,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,6 +71,71 @@ $Root = Split-Path -Parent $PSScriptRoot
 function Say($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Warn($m) { Write-Host "warning: $m" -ForegroundColor Yellow }
 function Die($m) { Write-Host "error: $m" -ForegroundColor Red; exit 1 }
+
+# --- keep the stable worktree current ---------------------------------------
+
+# A stable app that never advances is as useless as one dev edits can reach.
+# So this script re-cuts the sibling gavin-stable worktree (recipe:
+# .gavin-root/plans/chore-stable-release-install-on-windows.md) to wherever
+# THIS checkout's `main` points right now, and rebuilds every part -- daemon,
+# mcp, and the app together, via the same `npm run bundle` the recipe uses --
+# before it ever looks for something to launch. `git checkout -m --detach`
+# merges rather than discards, so a worktree with real local changes fails
+# loudly here instead of losing them.
+$StableRoot = Join-Path (Split-Path -Parent $Root) 'gavin-stable'
+
+if ($Path) {
+    Say 'skipping the worktree refresh: -Path names an explicit exe to launch'
+}
+elseif ($DryRun) {
+    Say 'skipping the worktree refresh for -DryRun; pass no flags to also re-cut and rebuild first'
+}
+elseif ($SkipBuild) {
+    Say 'skipping the worktree refresh (-SkipBuild); launching whatever was last built or installed'
+}
+elseif (-not (Test-Path (Join-Path $StableRoot '.git'))) {
+    Warn "no worktree at $StableRoot; nothing to rebuild. See the recipe in .gavin-root/plans/chore-stable-release-install-on-windows.md."
+}
+else {
+    # A rebuild can't relink over its own last output. Only ever stops
+    # processes running FROM THIS WORKTREE -- never anything under
+    # Programs\Gavin (an install is the human's deliberate upgrade step,
+    # recipe step 4) and never anything by bare process name, which would
+    # reach the dev daemon too.
+    $running = Get-Process -Name 'Gavin', 'gavin-daemon', 'gavin-mcp' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and $_.Path.StartsWith($StableRoot, [System.StringComparison]::OrdinalIgnoreCase) }
+    if ($running) {
+        Say ('stopping the running stable build so the rebuild can replace it: ' +
+            (($running | ForEach-Object { "$($_.ProcessName) (pid $($_.Id))" }) -join ', '))
+        $running | Stop-Process -Force
+        Start-Sleep -Milliseconds 500
+    }
+
+    $mainTip = (git -C $Root rev-parse main).Trim()
+    $stableHead = (git -C $StableRoot rev-parse HEAD).Trim()
+    if ($stableHead -ne $mainTip) {
+        Say "moving the stable worktree from $stableHead to main's tip ($mainTip)"
+        git -C $StableRoot checkout -m --detach $mainTip
+        if ($LASTEXITCODE -ne 0) {
+            Die "could not move the stable worktree to $mainTip -- resolve it by hand in $StableRoot."
+        }
+    }
+    else {
+        Say "stable worktree already at main's tip ($mainTip)"
+    }
+
+    Say 'rebuilding the stable app (daemon, mcp, and app together) -- a few minutes'
+    Push-Location (Join-Path $StableRoot 'app')
+    try {
+        npm run bundle
+        if ($LASTEXITCODE -ne 0) {
+            Die 'npm run bundle failed -- see the output above.'
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
 
 # --- which Gavin -----------------------------------------------------------
 
