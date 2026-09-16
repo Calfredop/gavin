@@ -1,6 +1,6 @@
 version = 1
 
 [agent]
-profile = "cursor"
-command = "agent"
+profile = "claude-code"
+command = "claude"
 file = "CLAUDE.md"
