@@ -74,6 +74,7 @@
   import { orchDragState } from "$lib/orchestration/orchestrationDrag";
   import { openContextMenuFromEvent } from "$lib/core/contextMenu";
   import { railBindChip, type RailBindChip, type RailBindTab } from "$lib/orchestration/railBind";
+  import { remembersScroll } from "$lib/orchestration/orchestrationScroll";
 
   interface Props {
     rail: Rail;
@@ -646,8 +647,12 @@
 
   <!-- Everything below the header scrolls, and only this element does:
        the rail is exactly as tall as the grid, the way a kanban column
-       is exactly as tall as the board. -->
-  <div class="rail-body" data-orch-rail-body>
+       is exactly as tall as the board. Which is also why this element,
+       and not `.rail`, is the one that remembers where it was left: the
+       tab is destroyed on every switch away and each rail scrolls on its
+       own, so one offset for the tab would put every rail back at
+       whatever the last one read was showing. -->
+  <div class="rail-body" data-orch-rail-body use:remembersScroll={{ workspaceId, railId: rail.id }}>
   {#each stagesShown as stage, i (stage.id)}
     {#if newStageAt === i}<div class="stage-placeholder"></div>{/if}
     {#if i > 0 && newStageAt !== i}<div class="connector"></div>{/if}

@@ -9,6 +9,7 @@
   import type { RailBindTab } from "$lib/orchestration/railBind";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { searchOrchestration } from "$lib/orchestration/orchestrationSearch";
+  import { remembersScroll } from "$lib/orchestration/orchestrationScroll";
   import ToolLibraryDialog from "$lib/orchestration/ToolLibraryDialog.svelte";
   import StepParamsDialog from "$lib/orchestration/StepParamsDialog.svelte";
   import { attachOrchestrationDrag } from "$lib/orchestration/orchestrationDragGlue";
@@ -834,7 +835,7 @@
          "no rail matches" line already does; with no rails the drawer
          gets a null target and draws its rows inert. -->
     <div class="body" bind:this={bodyEl}>
-      <div class="grid" bind:this={gridEl}>
+      <div class="grid" bind:this={gridEl} use:remembersScroll={{ workspaceId, railId: null }}>
       {#if rails.length === 0}
         <p class="empty">
           No rails yet. A rail is a column of stages over your cards — add one, then add steps to it.

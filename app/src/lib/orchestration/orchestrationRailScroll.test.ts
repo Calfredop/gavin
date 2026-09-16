@@ -143,7 +143,10 @@ describe("a rail", () => {
   });
 
   it("scrolls its stages in a body the drag glue can find", () => {
-    expect(source(RAIL)).toContain('<div class="rail-body" data-orch-rail-body>');
+    // Open-ended: the tag carries the scroll-memory action too now (see
+    // orchestrationScroll.test.ts), and what this guard is about is the
+    // attribute the glue queries, not what else stands beside it.
+    expect(source(RAIL)).toContain('<div class="rail-body" data-orch-rail-body');
     const body = ruleFor(RAIL, ".rail-body");
     expect(body).toContain("overflow-y: auto");
     expect(body).toContain("flex: 1 1 auto");
