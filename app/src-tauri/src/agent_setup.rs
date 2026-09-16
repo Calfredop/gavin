@@ -21,10 +21,15 @@ pub enum McpFormat {
     /// (`.mcp.json`) and Gemini CLI (`.gemini/settings.json`).
     JsonServers,
     /// The same, plus the `type: "stdio"` Cursor's docs list as required
-    /// for a local server. Its own variant rather than a key written
-    /// unconditionally: Gemini's documented server fields do not include
-    /// `type`, and gavin does not put keys it has not verified into
-    /// someone else's config.
+    /// for a local server, and an `env` block that re-forwards the three
+    /// `GAVIN_SESSION_*` values the daemon put on the PTY. Cursor's Agent
+    /// CLI strips almost every inherited variable when it spawns an MCP
+    /// server (PATH/cwd only), so without `${env:…}` interpolation
+    /// `gavin_name_session` sees no tab id even though the agent itself
+    /// has one. Its own variant rather than a key written unconditionally:
+    /// Gemini's documented server fields do not include `type`, Claude
+    /// inherits the full PTY env so it needs no passthrough, and gavin
+    /// does not put keys it has not verified into someone else's config.
     JsonServersStdio,
     /// JSON `mcp.<key>` = `{ type: "local", command: [...], enabled }` —
     /// opencode (`opencode.json`). The command is an array here, not a
@@ -884,17 +889,24 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // (`cursor`). The IDE's positionals are paths; this CLI takes a
         // prompt. Workspaces that still name `cursor` as command need
         // to switch to `agent` (Settings / the agent-change wizard).
-        command: "agent",
-        // `agent "<prompt>"`: bare positional starts the interactive
-        // session (`Usage: agent [options] [command] [prompt...]`).
+        //
+        // `--approve-mcps` and `--trust` belong on the command itself,
+        // not in a human custom override: without them Cursor stalls on
+        // MCP/workspace prompts (or a hand-rolled flag line eats the
+        // positional and the tab opens empty). No trailing `--` here —
+        // `composeLaunchCommand` appends `--model …` after this string,
+        // and a `--` would turn that model flag into prompt text.
+        // Verified against `agent --help` 2026.09.10.
+        command: "agent --approve-mcps --trust",
+        // Bare positional after the flags
+        // (`Usage: agent [options] [command] [prompt...]`).
         prompt_args: Some(""),
         // Print mode for scripts; `--force` so a hidden run can write
         // and run tools (without it, `-p` proposes and applies nothing);
-        // `--trust` skips the workspace-trust prompt that would stall a
-        // headless commit. Trailing `--` so a prompt starting with `-`
-        // is not read as a flag. Verified against `agent --help`
-        // 2026-09-11 and cursor.com/docs/cli/headless.
-        headless_args: "-p --force --trust --",
+        // same MCP/trust pins as the interactive command. Trailing `--`
+        // so a prompt starting with `-` is not read as a flag. Verified
+        // against `agent --help` 2026-09-11 and cursor.com/docs/cli/headless.
+        headless_args: "-p --force --approve-mcps --trust --",
         failure_patterns: &[],
         failure_causes: &[],
         session_id_args: "",
@@ -1242,7 +1254,22 @@ impl McpFormat {
                 serde_json::json!({ "type": "local", "command": [command], "enabled": true })
             }
             McpFormat::JsonServersStdio => {
-                serde_json::json!({ "type": "stdio", "command": command, "args": [] })
+                // Cursor's `${env:NAME}` interpolation reads from the
+                // agent process (the PTY child that still has the
+                // daemon's injections) and puts them back on gavin-mcp.
+                // Literal values would freeze one tab's id into the
+                // workspace file; absent vars become empty and the tools
+                // fail closed the same way a bare terminal does.
+                serde_json::json!({
+                    "type": "stdio",
+                    "command": command,
+                    "args": [],
+                    "env": {
+                        "GAVIN_SESSION_ID": "${env:GAVIN_SESSION_ID}",
+                        "GAVIN_SESSION_TOKEN": "${env:GAVIN_SESSION_TOKEN}",
+                        "GAVIN_SESSION_SOCKET": "${env:GAVIN_SESSION_SOCKET}",
+                    }
+                })
             }
             McpFormat::JsonServers | McpFormat::TomlServers => {
                 serde_json::json!({ "command": command, "args": [] })
@@ -2205,7 +2232,10 @@ fn detect_agent_binaries_with(
         .iter()
         .filter(|p| !p.command.is_empty())
         .map(|p| {
-            let path = resolve(p.command);
+            // The profile command may carry flags (`agent --approve-mcps
+            // --trust --`); PATH only answers for the leading word.
+            let bin = p.command.split_whitespace().next().unwrap_or(p.command);
+            let path = resolve(bin);
             DetectedAgentDto {
                 id: p.id.to_string(),
                 label: p.label.to_string(),
@@ -2272,6 +2302,8 @@ mod tests {
         // models are dated ids from `--list-models`, so none ship here.
         assert_eq!(by("cursor").model_flag, "--model");
         assert!(by("cursor").models.is_empty());
+        assert_eq!(by("cursor").command, "agent --approve-mcps --trust");
+        assert_eq!(by("cursor").headless_args, "-p --force --approve-mcps --trust --");
         assert_eq!(by("custom").model_flag, "");
     }
 
@@ -2343,7 +2375,8 @@ mod tests {
         assert_eq!(codex.path, None);
         let cursor = rows.iter().find(|r| r.id == "cursor").unwrap();
         assert!(cursor.found);
-        assert_eq!(cursor.command, "agent");
+        assert_eq!(cursor.command, "agent --approve-mcps --trust");
+        assert_eq!(cursor.path.as_deref(), Some("/opt/bin/agent"));
     }
 
     /// The conventions re-verified 2026-08-23, pinned so a drift in the
@@ -3538,9 +3571,9 @@ mod tests {
         profile_by_id(id).mcp.as_ref().unwrap().into()
     }
 
-    /// Gemini and Cursor are the "path change only" pair -- except Cursor's
-    /// docs now list `type` as required for a local server, so its entry
-    /// carries one and Gemini's does not.
+    /// Gemini and Cursor share the mcpServers shape, but Cursor also needs
+    /// `type: "stdio"` and the GAVIN_SESSION_* env passthrough — Cursor
+    /// strips inherited env when spawning MCP, Gemini does not.
     #[test]
     fn gemini_and_cursor_write_mcp_servers_at_their_own_paths() {
         let dir = tempfile::tempdir().unwrap();
@@ -3554,6 +3587,7 @@ mod tests {
         assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
         assert_eq!(v.pointer("/mcpServers/gavin/args").unwrap(), &serde_json::json!([]));
         assert!(v.pointer("/mcpServers/gavin/type").is_none(), "not a documented Gemini field");
+        assert!(v.pointer("/mcpServers/gavin/env").is_none(), "Gemini inherits the PTY env");
 
         let c = write_mcp_config(dir.path(), &layout("cursor"), binary).unwrap();
         assert!(c.ends_with(".cursor/mcp.json"), "{c:?}");
@@ -3561,6 +3595,18 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&c).unwrap()).unwrap();
         assert_eq!(v.pointer("/mcpServers/gavin/type").unwrap(), "stdio");
         assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
+        assert_eq!(
+            v.pointer("/mcpServers/gavin/env/GAVIN_SESSION_ID").unwrap(),
+            "${env:GAVIN_SESSION_ID}"
+        );
+        assert_eq!(
+            v.pointer("/mcpServers/gavin/env/GAVIN_SESSION_TOKEN").unwrap(),
+            "${env:GAVIN_SESSION_TOKEN}"
+        );
+        assert_eq!(
+            v.pointer("/mcpServers/gavin/env/GAVIN_SESSION_SOCKET").unwrap(),
+            "${env:GAVIN_SESSION_SOCKET}"
+        );
     }
 
     /// opencode's second JSON shape: a different container, and the
