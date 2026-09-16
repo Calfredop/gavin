@@ -186,6 +186,19 @@ pub fn posix_tools_path(
 /// something bash's own PATH search does match, and MSYS's spawn already
 /// knows how to run a `.bat`/`.cmd` once it has one.
 ///
+/// **`.cmd` / `.bat` and multiline prompts.** Those shims forward args
+/// with `%*`, and `cmd.exe` truncates an argument at the first newline.
+/// Gavin's card prompts are always multiline (name-tab line, blank line,
+/// body), so launching via `agent.cmd` delivers only the first line.
+/// Cursor Agent's `agent.ps1` would keep newlines, but driving that
+/// script through `powershell.exe -File` opens a **new console window**
+/// under ConPTY (MSYS spawning a second Win32 console host) -- the rail
+/// tab stays empty while a separate PowerShell window runs the agent.
+/// So when the install layout matches what `agent.ps1` would run
+/// (`node.exe` + `index.js` beside the shim, or under `versions/<ver>/`),
+/// rewrite straight to that node pair: multiline argv survives (measured)
+/// and the process stays on the PTY. No node entry keeps the `.cmd` form.
+///
 /// A no-op wherever it cannot help: a leading word that already carries a
 /// path separator or a dot, an empty `PATHEXT` (every non-Windows
 /// platform, since this is only ever called from the Windows arm of
@@ -194,15 +207,73 @@ pub fn posix_tools_path(
 /// shell keyword (`cd`, `if`, …) hits, since none of those are files.
 pub fn rewrite_for_windows_shim(command: &str, path: &std::ffi::OsStr) -> String {
     let pathext = std::env::var("PATHEXT").unwrap_or_default();
-    command_with_windows_shim(command, path, &pathext, |p| p.is_file())
+    command_with_windows_shim(command, path, &pathext, |p| p.is_file(), resolve_bundled_node_entry)
 }
 
-/// The pure half of the above.
+/// POSIX single-quote for a path embedded in an `sh -c` line.
+fn posix_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// What Cursor's `agent.ps1` resolves to: a `node.exe` + `index.js` pair
+/// either beside the shim or under the newest `versions/<ver>/` directory.
+/// `None` when the layout is not that shape (a plain npm `.cmd` with no
+/// bundled runtime).
+fn resolve_bundled_node_entry(dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    let direct_node = dir.join("node.exe");
+    let direct_index = dir.join("index.js");
+    if direct_node.is_file() && direct_index.is_file() {
+        return Some((direct_node, direct_index));
+    }
+    let versions = dir.join("versions");
+    let entries = std::fs::read_dir(&versions).ok()?;
+    let mut best: Option<(u32, String, PathBuf)> = None;
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(key) = cursor_agent_version_key(&name) else { continue };
+        let better = match &best {
+            None => true,
+            Some((k, n, _)) => key > *k || (key == *k && name > *n),
+        };
+        if better {
+            best = Some((key, name, entry.path()));
+        }
+    }
+    let ver_dir = best?.2;
+    let node = ver_dir.join("node.exe");
+    let index = ver_dir.join("index.js");
+    (node.is_file() && index.is_file()).then_some((node, index))
+}
+
+/// Cursor Agent version dirs are `YYYY.MM.DD[-HH-MM-SS]-<commit>`. The
+/// date packs into a sortable u32 the same way `agent.ps1`'s
+/// `Parse-VersionString` does; same-day builds break ties by name.
+fn cursor_agent_version_key(name: &str) -> Option<u32> {
+    let date = name.split('-').next()?;
+    let mut parts = date.split('.');
+    let y: u32 = parts.next()?.parse().ok()?;
+    let m: u32 = parts.next()?.parse().ok()?;
+    let d: u32 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || m > 12 || d > 31 {
+        return None;
+    }
+    Some(y * 10_000 + m * 100 + d)
+}
+
+/// The pure half of [`rewrite_for_windows_shim`].
+///
+/// `node_entry` is how a `.cmd` directory yields a bundled node pair:
+/// production passes [`resolve_bundled_node_entry`]; tests pass a stub.
 pub fn command_with_windows_shim(
     command: &str,
     path: &std::ffi::OsStr,
     pathext: &str,
     exists: impl Fn(&Path) -> bool,
+    node_entry: impl Fn(&Path) -> Option<(PathBuf, PathBuf)>,
 ) -> String {
     let word_end = command.find(char::is_whitespace).unwrap_or(command.len());
     let word = &command[..word_end];
@@ -216,10 +287,30 @@ pub fn command_with_windows_shim(
     let exts: Vec<String> =
         pathext.split(';').filter(|e| !e.is_empty()).map(|e| e.to_ascii_lowercase()).collect();
     let found = std::env::split_paths(path).find_map(|dir| {
-        exts.iter().find(|ext| exists(&dir.join(format!("{word}{ext}")))).cloned()
+        exts.iter().find_map(|ext| {
+            let candidate = dir.join(format!("{word}{ext}"));
+            exists(&candidate).then(|| (dir.clone(), ext.clone()))
+        })
     });
     match found {
-        Some(ext) => format!("{word}{ext}{}", &command[word_end..]),
+        Some((dir, ext)) if matches!(ext.as_str(), ".cmd" | ".bat") => {
+            if let Some((node, script)) = node_entry(&dir) {
+                let node = node.to_string_lossy().replace('\\', "/");
+                let script = script.to_string_lossy().replace('\\', "/");
+                // CURSOR_INVOKED_AS is what agent.ps1 stamps before exec;
+                // without it some CLI paths treat the process as anonymous.
+                format!(
+                    "CURSOR_INVOKED_AS={} {} {}{}",
+                    posix_single_quote(&format!("{word}.ps1")),
+                    posix_single_quote(&node),
+                    posix_single_quote(&script),
+                    &command[word_end..]
+                )
+            } else {
+                format!("{word}{ext}{}", &command[word_end..])
+            }
+        }
+        Some((_, ext)) => format!("{word}{ext}{}", &command[word_end..]),
         None => command.to_string(),
     }
 }
@@ -242,6 +333,20 @@ mod tests {
     fn present(paths: &[&str]) -> impl Fn(&Path) -> bool {
         let set: HashSet<String> = paths.iter().map(|p| p.to_string()).collect();
         move |p: &Path| set.contains(&p.to_string_lossy().replace('\\', "/"))
+    }
+
+    fn no_node(_: &Path) -> Option<(PathBuf, PathBuf)> {
+        None
+    }
+
+    fn shim(command: &str, path: &str, pathext: &str, files: &[&str]) -> String {
+        command_with_windows_shim(
+            command,
+            &std::ffi::OsString::from(path),
+            pathext,
+            present(files),
+            no_node,
+        )
     }
 
     /// A stock 64-bit Git for Windows, which is the case this exists for.
@@ -481,18 +586,103 @@ mod tests {
         assert_eq!(posix_shell(), PathBuf::from("/bin/sh"));
     }
 
+    /// Against a real Cursor Agent install when one is on PATH: the
+    /// rewrite must land on node.exe, not powershell.exe and not
+    /// agent.cmd -- those are the two broken Windows shapes.
+    #[cfg(windows)]
+    #[test]
+    fn on_windows_a_real_cursor_agent_rewrites_to_bundled_node() {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let rewritten = rewrite_for_windows_shim("agent --trust 'line1\n\nline2'", &path);
+        if rewritten.starts_with("agent ") || rewritten == "agent --trust 'line1\n\nline2'" {
+            // No agent on PATH in this environment -- nothing to assert.
+            return;
+        }
+        assert!(
+            rewritten.contains("node.exe") && rewritten.contains("index.js"),
+            "expected bundled node launch, got: {rewritten}"
+        );
+        assert!(
+            !rewritten.contains("powershell"),
+            "powershell opens a new console window under ConPTY: {rewritten}"
+        );
+        assert!(
+            !rewritten.contains("agent.cmd"),
+            "agent.cmd truncates multiline prompts: {rewritten}"
+        );
+        assert!(
+            rewritten.contains("line1\n\nline2"),
+            "prompt newlines must survive the rewrite: {rewritten}"
+        );
+    }
+
     /// The case this exists for: an npm-global shim, which is a `.cmd`
-    /// file, not a `.exe`.
+    /// file, not a `.exe`. No bundled node runtime -- keep the `.cmd` form.
     #[test]
     fn a_cmd_shim_gets_its_extension_appended() {
+        assert_eq!(
+            shim("agent 'do the thing'", "C:/tools", ".COM;.EXE;.BAT;.CMD", &["C:/tools/agent.cmd"]),
+            "agent.cmd 'do the thing'"
+        );
+    }
+
+    /// Cursor Agent's install is `agent.cmd` + `versions/<ver>/node.exe`.
+    /// Rewriting to that node pair keeps multiline prompts (unlike `.cmd`
+    /// `%*`) and stays on the ConPTY (unlike `powershell.exe -File`).
+    #[test]
+    fn a_cmd_shim_with_bundled_node_runs_node_directly() {
         let path = std::ffi::OsString::from("C:/tools");
         let rewritten = command_with_windows_shim(
-            "agent 'do the thing'",
+            "agent --approve-mcps --trust 'line1\n\nline2'",
             &path,
             ".COM;.EXE;.BAT;.CMD",
             present(&["C:/tools/agent.cmd"]),
+            |_| {
+                Some((
+                    PathBuf::from("C:/tools/versions/2026.09.10-abc/node.exe"),
+                    PathBuf::from("C:/tools/versions/2026.09.10-abc/index.js"),
+                ))
+            },
         );
-        assert_eq!(rewritten, "agent.cmd 'do the thing'");
+        assert_eq!(
+            rewritten,
+            "CURSOR_INVOKED_AS='agent.ps1' 'C:/tools/versions/2026.09.10-abc/node.exe' 'C:/tools/versions/2026.09.10-abc/index.js' --approve-mcps --trust 'line1\n\nline2'"
+        );
+    }
+
+    /// A node path with an apostrophe still round-trips through the
+    /// POSIX single-quote the rewrite embeds.
+    #[test]
+    fn a_node_path_with_an_apostrophe_is_posix_quoted() {
+        let path = std::ffi::OsString::from("C:/Ada's tools");
+        let rewritten = command_with_windows_shim(
+            "agent 'go'",
+            &path,
+            ".CMD",
+            present(&["C:/Ada's tools/agent.cmd"]),
+            |_| {
+                Some((
+                    PathBuf::from("C:/Ada's tools/node.exe"),
+                    PathBuf::from("C:/Ada's tools/index.js"),
+                ))
+            },
+        );
+        assert_eq!(
+            rewritten,
+            "CURSOR_INVOKED_AS='agent.ps1' 'C:/Ada'\\''s tools/node.exe' 'C:/Ada'\\''s tools/index.js' 'go'"
+        );
+    }
+
+    /// Newest `versions/<ver>/` wins; same-day builds break ties by name.
+    #[test]
+    fn cursor_agent_version_key_packs_the_date() {
+        assert_eq!(cursor_agent_version_key("2026.09.10-fd3934a"), Some(2026_09_10));
+        assert_eq!(cursor_agent_version_key("2026.9.1-aabbcc"), Some(2026_09_01));
+        assert_eq!(
+            cursor_agent_version_key("2026.09.10-12-00-00-fd3934a"),
+            Some(2026_09_10)
+        );
+        assert_eq!(cursor_agent_version_key("not-a-version"), None);
     }
 
     /// PATHEXT order is honoured: an `.exe` earlier in the list wins over
@@ -500,28 +690,30 @@ mod tests {
     /// itself would run.
     #[test]
     fn the_first_pathext_match_wins_over_a_later_one() {
-        let path = std::ffi::OsString::from("C:/tools");
-        let rewritten = command_with_windows_shim(
-            "thing arg",
-            &path,
-            ".COM;.EXE;.BAT;.CMD",
-            present(&["C:/tools/thing.exe", "C:/tools/thing.cmd"]),
+        assert_eq!(
+            shim(
+                "thing arg",
+                "C:/tools",
+                ".COM;.EXE;.BAT;.CMD",
+                &["C:/tools/thing.exe", "C:/tools/thing.cmd"]
+            ),
+            "thing.exe arg"
         );
-        assert_eq!(rewritten, "thing.exe arg");
     }
 
     /// PATH order is honoured too: the first directory that has ANY
     /// match wins, even over a better match further down PATH.
     #[test]
     fn the_first_path_directory_with_a_match_wins() {
-        let path = std::ffi::OsString::from("C:/first;C:/second");
-        let rewritten = command_with_windows_shim(
-            "thing",
-            &path,
-            ".COM;.EXE;.BAT;.CMD",
-            present(&["C:/first/thing.cmd", "C:/second/thing.exe"]),
+        assert_eq!(
+            shim(
+                "thing",
+                "C:/first;C:/second",
+                ".COM;.EXE;.BAT;.CMD",
+                &["C:/first/thing.cmd", "C:/second/thing.exe"]
+            ),
+            "thing.cmd"
         );
-        assert_eq!(rewritten, "thing.cmd");
     }
 
     /// A bare name that already resolves (an `.exe` MSYS's own search
@@ -529,14 +721,10 @@ mod tests {
     /// to fix, and rewriting it would just be noise.
     #[test]
     fn a_word_matching_nothing_on_pathext_is_left_alone() {
-        let path = std::ffi::OsString::from("C:/tools");
-        let rewritten = command_with_windows_shim(
-            "sh -c 'true'",
-            &path,
-            ".COM;.EXE;.BAT;.CMD",
-            present(&[]),
+        assert_eq!(
+            shim("sh -c 'true'", "C:/tools", ".COM;.EXE;.BAT;.CMD", &[]),
+            "sh -c 'true'"
         );
-        assert_eq!(rewritten, "sh -c 'true'");
     }
 
     /// A multi-command line's leading shell keyword is not a file on any
@@ -544,30 +732,27 @@ mod tests {
     /// cannot close, not a regression it introduces.
     #[test]
     fn a_leading_shell_builtin_is_left_alone_even_if_a_later_word_is_a_shim() {
-        let path = std::ffi::OsString::from("C:/tools");
-        let rewritten = command_with_windows_shim(
-            "cd /work && agent 'go'",
-            &path,
-            ".COM;.EXE;.BAT;.CMD",
-            present(&["C:/tools/agent.cmd"]),
+        assert_eq!(
+            shim(
+                "cd /work && agent 'go'",
+                "C:/tools",
+                ".COM;.EXE;.BAT;.CMD",
+                &["C:/tools/agent.cmd"]
+            ),
+            "cd /work && agent 'go'"
         );
-        assert_eq!(rewritten, "cd /work && agent 'go'");
     }
 
     /// A word that already carries a path or an extension is assumed
     /// already-qualified and is not second-guessed.
     #[test]
     fn an_already_qualified_word_is_left_alone() {
-        let path = std::ffi::OsString::from("C:/tools");
         for word in ["C:/tools/agent", "agent.cmd", "./agent"] {
             let line = format!("{word} 'go'");
-            let rewritten = command_with_windows_shim(
-                &line,
-                &path,
-                ".COM;.EXE;.BAT;.CMD",
-                present(&["C:/tools/agent.cmd"]),
+            assert_eq!(
+                shim(&line, "C:/tools", ".COM;.EXE;.BAT;.CMD", &["C:/tools/agent.cmd"]),
+                line
             );
-            assert_eq!(rewritten, line);
         }
     }
 
@@ -576,9 +761,9 @@ mod tests {
     /// own `cfg!(windows)` check and just call through.
     #[test]
     fn an_empty_pathext_is_always_a_no_op() {
-        let path = std::ffi::OsString::from("C:/tools");
-        let rewritten =
-            command_with_windows_shim("agent 'go'", &path, "", present(&["C:/tools/agent.cmd"]));
-        assert_eq!(rewritten, "agent 'go'");
+        assert_eq!(
+            shim("agent 'go'", "C:/tools", "", &["C:/tools/agent.cmd"]),
+            "agent 'go'"
+        );
     }
 }
