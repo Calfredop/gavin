@@ -1,11 +1,14 @@
 <script lang="ts">
-  import { GitBranch, RefreshCw, Download, ArrowDown, ArrowUp, Archive, ArchiveRestore, Bot, Check, Eye, ScanSearch, EyeOff } from "@lucide/svelte";
+  import { GitBranch, RefreshCw, Download, ArrowDown, ArrowUp, Archive, ArchiveRestore, Bot, Check, Eye, ScanSearch, EyeOff, Square } from "@lucide/svelte";
   import {
     gitStore,
     refresh,
     commitViaAgent,
     revealAgentCommit,
+    stopAgentCommit,
     agentCommitPhase,
+    agentCommitStopping,
+    agentCommitElapsed,
     agentCommitBlocker,
     fetch,
     pull,
@@ -64,7 +67,27 @@
   );
   const agentPhase = $derived(agentCommitPhase(view));
   const agentBusy = $derived(agentPhase === "starting" || agentPhase === "running");
+  const agentStopping = $derived(agentCommitStopping(view));
   const agentBlocker = $derived(agentCommitBlocker(view, agent.headlessArgs));
+
+  // The clock behind "Committing… 4m 12s". A commit run is the one thing
+  // this tab starts that has no progress of its own to report -- the
+  // agent is thinking, and gavin cannot see how far in it is -- so the
+  // age of the run is the only honest signal there is about whether to
+  // keep waiting. It is also what makes a WEDGED run legible: forty
+  // minutes on a two-file diff says what a spinner never could.
+  //
+  // Ticked here rather than derived from a store, because nothing
+  // changes in the state between seconds. One second is as fine as the
+  // label goes, and the interval only exists while a run does.
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!agentBusy) return;
+    now = Date.now();
+    const id = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(id);
+  });
+  const agentElapsed = $derived(agentCommitElapsed(view, now));
 
   // Reviewing needs a gavin context to file findings into, so the root
   // context is the gate -- not the repository. A rooted workspace whose
@@ -183,7 +206,11 @@
   {#if agentBusy}
     <span class="agent-state" role="status" aria-live="polite">
       <span class="spinner" aria-hidden="true"></span>
-      Committing…
+      {agentStopping ? "Stopping…" : "Committing…"}
+      <!-- The age of the run, once there is one. Absent for a run
+           adopted from a record that never stored a start -- gitState
+           returns null rather than counting from the adoption. -->
+      {#if agentElapsed}<span class="agent-elapsed">{agentElapsed}</span>{/if}
     </span>
     {#if agentPhase === "running"}
       <IconButton
@@ -194,6 +221,24 @@
         variant="outlined"
         size={13}
         onclick={() => void revealAgentCommit(workspaceId)}
+      />
+      <!-- The way out of a run that is never going to finish. A commit
+           agent can wedge for reasons gavin cannot see, and until this
+           existed the only remedy was hunting the hidden session down in
+           the task manager. Disabled once the kill is on its way, so a
+           second press cannot fire a second one.
+
+           Same gate as Show: before the daemon hands a session back
+           there is nothing to kill, and that window is one await wide. -->
+      <IconButton
+        icon={Square}
+        label="Stop the commit agent"
+        text="Stop"
+        tip="Kill the agent. Anything it already committed stays committed."
+        variant="outlined"
+        size={13}
+        disabled={agentStopping}
+        onclick={() => void stopAgentCommit(workspaceId)}
       />
     {/if}
   {:else if agentPhase === "done"}
@@ -328,6 +373,12 @@
   }
   .agent-state.done {
     color: var(--success-text);
+  }
+  /* Tabular, so a ticking clock does not shuffle the buttons beside it
+     one pixel left and right every second. */
+  .agent-elapsed {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.8;
   }
   /* A refused review has no session and no banner of its own -- the Git
      tab's own error strip belongs to git operations. */

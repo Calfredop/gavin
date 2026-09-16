@@ -107,7 +107,24 @@ export interface GitViewState {
   /// The hidden agent session asked to commit, from the click until it
   /// exits. `sessionId` is null for the gap between the click and the
   /// daemon handing one back -- the only window with nothing to reveal.
-  agentCommit: { sessionId: string | null } | null;
+  agentCommit: {
+    sessionId: string | null;
+    /// When the run began, so the toolbar can say how long it has been
+    /// going. A spinner that has looked identical for forty minutes is
+    /// the "indeterminate progress" this bug was filed about: it cannot
+    /// tell a human whether to keep waiting or to stop the thing.
+    ///
+    /// Null only for a run adopted from a record an older build wrote,
+    /// which never stored one. The label then omits the duration rather
+    /// than counting from the adoption -- "12s" for a run that has been
+    /// wedged since yesterday would be a worse answer than none.
+    startedAt: number | null;
+    /// A kill the human asked for, from the press until the exit lands.
+    /// In memory only: a stop request is about THIS window's press, and
+    /// after a restart the run is either alive (and stoppable again) or
+    /// already gone.
+    stopping: boolean;
+  } | null;
   /// Set for AGENT_COMMIT_FLASH_MS after a run that actually emptied the
   /// tree, so the button can say it worked. Nothing else flashes: a
   /// failure, or a run that left changes behind, goes to `error`, which
@@ -528,6 +545,35 @@ export function agentCommitPhase(view: GitViewState | null): AgentCommitPhase {
   return view.agentCommitDone ? "done" : "idle";
 }
 
+/// Whether a stop has been asked for and not yet landed. Deliberately
+/// NOT a fifth `AgentCommitPhase`: the phase says what the run is doing,
+/// and a run being killed is still running. Folding it into the enum
+/// would also silently re-enable the manual Commit button, whose
+/// `agentBusy` is written in terms of the phase.
+export function agentCommitStopping(view: GitViewState | null): boolean {
+  return view?.agentCommit?.stopping === true;
+}
+
+/// How long the run has been going, or null when nothing is running and
+/// when an adopted record never recorded a start.
+///
+/// Coarse on purpose: seconds while that is still informative, then
+/// minutes, then hours. The number is read by someone deciding whether
+/// to wait, and a ticking millisecond field answers that no better while
+/// redrawing the toolbar sixty times a second.
+export function agentCommitElapsed(view: GitViewState | null, now: number): string | null {
+  const startedAt = view?.agentCommit?.startedAt ?? null;
+  if (startedAt === null) return null;
+  // Clamped at zero: config.json outlives a system clock change, and a
+  // run whose age reads "-3s" looks like a bug in the very panel a human
+  // has come to because something already looks broken.
+  const secs = Math.max(0, Math.floor((now - startedAt) / 1000));
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ${secs % 60}s`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
 /// Why the action is unavailable, or null when it can run. Separate from
 /// the phase so the button can SAY why it is disabled rather than just
 /// looking broken.
@@ -618,7 +664,13 @@ export async function commitViaAgent(
     noteError(workspaceId, `Commit via agent needs a headless agent — ${agent.profileId} has none`);
     return false;
   }
-  update(workspaceId, (st) => ({ ...st, agentCommit: { sessionId: null }, agentCommitDone: false, error: null }));
+  const startedAt = Date.now();
+  update(workspaceId, (st) => ({
+    ...st,
+    agentCommit: { sessionId: null, startedAt, stopping: false },
+    agentCommitDone: false,
+    error: null,
+  }));
   let sessionId: string;
   try {
     sessionId = await backend.createSession(s.cwd, command, workspaceRootPath(workspaceId) ?? undefined);
@@ -632,9 +684,11 @@ export async function commitViaAgent(
   // session, where a tab labelled by its cwd is indistinguishable from
   // every other agent running in the same repo.
   await backend.setSessionName(sessionId, "commit").catch(() => {});
-  update(workspaceId, (st) => (st.agentCommit?.sessionId === null ? { ...st, agentCommit: { sessionId } } : st));
+  update(workspaceId, (st) =>
+    st.agentCommit?.sessionId === null ? { ...st, agentCommit: { ...st.agentCommit, sessionId } } : st
+  );
   // Written down BEFORE the wait, because the window may not survive it.
-  await rememberAgentCommit(workspaceId, { sessionId, cwd: s.cwd, retries });
+  await rememberAgentCommit(workspaceId, { sessionId, cwd: s.cwd, retries, startedAt });
 
   return watchAgentCommit(workspaceId, sessionId, tail);
 }
@@ -670,9 +724,28 @@ async function watchAgentCommit(
     await forgetAgentCommit(workspaceId, sessionId);
     return false;
   }
+  // Read before the marker is cleared: an exit that arrives because the
+  // human pressed Stop has to be told apart from one the run reached on
+  // its own, and the only record of the press is the marker itself.
+  const stopped = current(workspaceId)?.agentCommit?.stopping === true;
   update(workspaceId, (st) => ({ ...st, agentCommit: null }));
   await forgetAgentCommit(workspaceId, sessionId);
   await refresh(workspaceId);
+
+  // A run the human ended has no verdict to reach. Its exit code
+  // describes the kill (137, or whatever the platform signals with), not
+  // the work, so calling it a failure would be wrong twice over: it
+  // would put a red "exit 137" in the banner for something the human
+  // did on purpose, and it would feed that code to the retry policy,
+  // which would start the very run they just stopped all over again.
+  //
+  // The refresh above still ran, because it is the one thing that IS
+  // worth saying: the agent may have committed half the tree before it
+  // wedged, and the Changes list now shows exactly what is left.
+  if (stopped) {
+    noteError(workspaceId, "Commit via agent stopped");
+    return false;
+  }
 
   // Exit 0 is NOT the verdict on its own: a headless agent that decides
   // it cannot do the job still reports that in prose and exits cleanly.
@@ -850,11 +923,60 @@ async function adoptAgentCommit(ws: Workspace): Promise<void> {
     return;
   }
   ensureGitView(ws.id, record.cwd);
-  update(ws.id, (st) => ({ ...st, agentCommit: { sessionId: record.sessionId }, agentCommitDone: false }));
+  update(ws.id, (st) => ({
+    ...st,
+    agentCommit: { sessionId: record.sessionId, startedAt: record.startedAt ?? null, stopping: false },
+    agentCommitDone: false,
+  }));
   const tail = await captureTail(record.sessionId);
   // Not awaited: the sweep must not hold bootstrap open for a run that
   // may have hours left in it.
   void watchAgentCommit(ws.id, record.sessionId, tail);
+}
+
+/// Ends a run that is not going to end by itself.
+///
+/// A commit run's only terminal condition is its process exiting, and
+/// the process belongs to an agent -- which can wedge for reasons gavin
+/// neither causes nor can see: a prompt it is waiting on, a network call
+/// that never returns, a tool it will not stop retrying. Without this the
+/// Git tab sat on `awaitExit` for the life of the window, and the only
+/// way out of it was the task manager: find the hidden session among
+/// every other session on the machine, and kill it there. Every other
+/// long operation in this toolbar has had a cancel since SP2
+/// (`cancelOp`); the one that hands the work to an agent is the one that
+/// most needs it.
+///
+/// The kill is a REQUEST, not the end of the run. It goes through the
+/// daemon and comes back as an ordinary exit, down the same
+/// `watchAgentCommit` path every run takes -- so a run that was already
+/// finishing as the human pressed Stop still gets its real verdict, and
+/// there is no second place where a run can be concluded.
+export async function stopAgentCommit(workspaceId: string): Promise<boolean> {
+  const run = current(workspaceId)?.agentCommit;
+  // Nothing to kill before the daemon has handed a session back. That
+  // window is one await wide, and a "stop" that has to be remembered
+  // across it would be more machinery than the case is worth.
+  if (!run?.sessionId || run.stopping) return false;
+  const sessionId = run.sessionId;
+  update(workspaceId, (st) =>
+    st.agentCommit?.sessionId === sessionId ? { ...st, agentCommit: { ...st.agentCommit, stopping: true } } : st
+  );
+  try {
+    await backend.killSession(sessionId);
+  } catch (e) {
+    // The kill did not take, so the run is still going and still has to
+    // be stoppable. Leaving the control on "Stopping…" would re-create
+    // the exact wedge this function exists to remove, one step further
+    // in.
+    update(workspaceId, (st) =>
+      st.agentCommit?.sessionId === sessionId
+        ? { ...st, agentCommit: { ...st.agentCommit, stopping: false }, error: `Could not stop the commit agent: ${errorText(e)}` }
+        : st
+    );
+    return false;
+  }
+  return true;
 }
 
 /// Pulls the hidden session onto the Agents page and jumps to it. The

@@ -52,6 +52,15 @@ export interface AgentCommitRecord {
   /// the window would reset on the very event the record exists for.
   /// Absent reads as zero.
   retries?: number;
+  /// Epoch milliseconds at the launch, for the Git tab's elapsed clock.
+  ///
+  /// Persisted rather than re-stamped on adoption for the same reason
+  /// `retries` is: the run outlives the window, and a clock restarted by
+  /// the restart would tell a human that a job wedged since yesterday
+  /// has been going twelve seconds. Absent -- which is what every record
+  /// an older build wrote looks like -- means "not known", and the
+  /// toolbar then shows no duration rather than a made-up one.
+  startedAt?: number;
 }
 
 /// An orchestration agent run: the session doing it, what it is, and the

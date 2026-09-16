@@ -57,6 +57,7 @@ vi.mock("$lib/core/backend", () => ({
   createSession: vi.fn().mockResolvedValue("agent-1"),
   setSessionName: vi.fn().mockResolvedValue(undefined),
   adoptSession: vi.fn().mockResolvedValue(true),
+  killSession: vi.fn().mockResolvedValue(undefined),
 }));
 // pty-output listeners are collected so a test can push a hidden run's
 // output at them; every other event keeps the inert default.
@@ -135,6 +136,7 @@ import {
   markResolved, saveConflict, openMergeTool,
   addIgnorePattern, loadIgnoreFile, saveIgnoreFile,
   commitViaAgent, revealAgentCommit, agentCommitPhase, agentCommitBlocker, AGENT_COMMIT_FLASH_MS,
+  stopAgentCommit, agentCommitStopping, agentCommitElapsed,
   adoptAgentCommits,
 } from "$lib/git/gitState";
 import { maybeNotifyAgentCommit } from "$lib/core/notifications";
@@ -869,6 +871,126 @@ describe("commit via agent", () => {
     expect(handleAgentSessionSpawned).not.toHaveBeenCalled();
   });
 
+  // The bug this exists for: a commit agent that hangs left the Git tab
+  // spinning on `awaitExit` with no way out of the app, so the only
+  // remedy was finding the hidden session in the task manager and
+  // killing it there. Every other long op in this toolbar has a cancel
+  // (`cancelOp`); the one that hands work to an agent -- the least
+  // predictable of them -- had none.
+  describe("stopping a run that will not finish", () => {
+    it("kills the hidden session and says so, without calling it a failure", async () => {
+      const { done } = await launch();
+      expect(await stopAgentCommit("ws")).toBe(true);
+      expect(backend.killSession).toHaveBeenCalledWith("agent-1");
+      // Still running until the exit actually lands: the kill is a
+      // request, and the verdict path is the same one every run takes.
+      expect(agentCommitStopping(get(gitStore)["ws"])).toBe(true);
+      expect(agentCommitPhase(get(gitStore)["ws"])).toBe("running");
+
+      vi.mocked(backend.gitStatus).mockClear();
+      exitWith(137);
+      expect(await done).toBe(false);
+      expect(agentCommitPhase(get(gitStore)["ws"])).toBe("idle");
+      // Not "failed (exit 137)": the human ended it, and a killed
+      // process's exit code describes the kill, not the work.
+      expect(get(gitStore)["ws"].error).toBe("Commit via agent stopped");
+      // Refreshed anyway -- the agent may have committed some of it
+      // before it wedged, and that is exactly what the human needs to see.
+      expect(backend.gitStatus).toHaveBeenCalled();
+    });
+
+    it("never announces a stopped run as a failure", async () => {
+      layoutState.set({
+        workspaces: [{ id: "ws", name: "gavin", rootPath: "/r", pages: [] }],
+        activeWorkspaceId: null,
+        interruptedSessionIds: new Set(),
+      } as never);
+      const { done } = await launch();
+      await stopAgentCommit("ws");
+      exitWith(137);
+      await done;
+      expect(maybeNotifyAgentCommit).not.toHaveBeenCalled();
+    });
+
+    it("drops the persisted record, so a restart does not adopt the corpse", async () => {
+      const { done } = await launch();
+      // What the launch persisted. `forgetAgentCommit` checks itself
+      // against the tree before erasing anything, and the write that put
+      // it there is a mock, so the test stands it up by hand.
+      layoutState.set({
+        workspaces: [
+          { id: "ws", rootPath: "/r", pages: [], gitView: { agentCommit: { sessionId: "agent-1", cwd: "/r" } } },
+        ],
+        activeWorkspaceId: null,
+        interruptedSessionIds: new Set(),
+      } as never);
+      vi.mocked(setGitViewPrefs).mockClear();
+      await stopAgentCommit("ws");
+      exitWith(137);
+      await done;
+      expect(setGitViewPrefs).toHaveBeenCalledWith("ws", { agentCommit: undefined });
+    });
+
+    it("has nothing to stop before the daemon hands back a session", async () => {
+      expect(await stopAgentCommit("ws")).toBe(false);
+      expect(backend.killSession).not.toHaveBeenCalled();
+    });
+
+    // A second press must not fire a second kill: the first one is
+    // already on its way, and the run ends when the exit lands.
+    it("ignores a second press while the first kill is in flight", async () => {
+      const { done } = await launch();
+      expect(await stopAgentCommit("ws")).toBe(true);
+      expect(await stopAgentCommit("ws")).toBe(false);
+      expect(backend.killSession).toHaveBeenCalledTimes(1);
+      exitWith(137);
+      await done;
+    });
+
+    // A kill that did not take leaves the run going, so the button has
+    // to come back rather than sit on "Stopping…" for ever -- which is
+    // the very wedge this whole change is here to remove.
+    it("puts the control back when the kill fails", async () => {
+      const { done } = await launch();
+      vi.mocked(backend.killSession).mockRejectedValueOnce(new Error("no such session"));
+      expect(await stopAgentCommit("ws")).toBe(false);
+      expect(agentCommitStopping(get(gitStore)["ws"])).toBe(false);
+      expect(agentCommitPhase(get(gitStore)["ws"])).toBe("running");
+      expect(get(gitStore)["ws"].error).toBe(
+        "Could not stop the commit agent: no such session"
+      );
+      exitWith(0);
+      await done;
+    });
+  });
+
+  // "Indeterminate progress" was the other half of the complaint: a
+  // spinner that has looked identical for forty minutes tells a human
+  // nothing about whether to wait or to stop it.
+  describe("how long it has been going", () => {
+    it("counts from the launch, and reads as nothing before one starts", async () => {
+      expect(agentCommitElapsed(null, 0)).toBeNull();
+      const { done } = await launch();
+      const startedAt = get(gitStore)["ws"].agentCommit!.startedAt!;
+      expect(agentCommitElapsed(get(gitStore)["ws"], startedAt + 9_000)).toBe("9s");
+      expect(agentCommitElapsed(get(gitStore)["ws"], startedAt + 95_000)).toBe("1m 35s");
+      expect(agentCommitElapsed(get(gitStore)["ws"], startedAt + 3_723_000)).toBe("1h 2m");
+      exitWith(0);
+      await done;
+    });
+
+    // A clock that runs backwards is worse than no clock: a config
+    // written before a system clock change would otherwise render a
+    // negative age.
+    it("never goes negative", async () => {
+      const { done } = await launch();
+      const startedAt = get(gitStore)["ws"].agentCommit!.startedAt!;
+      expect(agentCommitElapsed(get(gitStore)["ws"], startedAt - 5_000)).toBe("0s");
+      exitWith(0);
+      await done;
+    });
+  });
+
   // Everything else a hidden run produces stays inside the Git tab: a
   // banner only that tab shows, and a flash that is gone in four
   // seconds. The notification is the run's only way of reaching a human
@@ -996,7 +1118,10 @@ describe("adoptAgentCommits", () => {
     expect(setGitViewPrefs).toHaveBeenCalledWith("ws", {
       // `retries: 0` because a human's press is always a NEW run with a
       // fresh budget -- only gavin's own retry starts one above zero.
-      agentCommit: { sessionId: "agent-1", cwd: "/r", retries: 0 },
+      // `startedAt` is the launch stamp the Git tab's elapsed label
+      // reads back after a restart; the clock itself is what the value
+      // is, so the test pins that one is written, not which millisecond.
+      agentCommit: { sessionId: "agent-1", cwd: "/r", retries: 0, startedAt: expect.any(Number) },
     });
     // What that write persists, which the clear below checks itself
     // against before erasing anything.

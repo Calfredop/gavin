@@ -125,6 +125,13 @@ pub struct AgentCommitRecord {
     /// the very event the record exists for.
     #[serde(default)]
     pub retries: u32,
+    /// Epoch milliseconds at the launch, for the Git tab's "Committing…
+    /// 4m 12s" label. Optional and skipped when absent, so a config
+    /// written by a build that predates it still loads, and so this
+    /// build writing one does not break a build that does not read it --
+    /// a release install and a dev tree share this file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
 }
 
 /// The orchestration agent run (a Generate, or one rail's Reorganize)
@@ -1310,6 +1317,35 @@ mod tests {
         assert_eq!(config.workspaces[0].active_view, None);
     }
 
+    /// A commit run that was in flight when an OLDER build wrote the
+    /// config has no `startedAt`, and a release install and a dev tree
+    /// share this file -- so one of them writing the field must never
+    /// stop the other loading the record. Absent reads as "not known",
+    /// which the Git tab renders as no duration rather than as a
+    /// fabricated one.
+    #[test]
+    fn load_defaults_a_commit_records_start_to_none_when_an_older_build_wrote_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [{"id": "ws-1", "name": "A", "pages": [],
+                "gitView": {"agentCommit": {"sessionId": "commit-1", "cwd": "/r"}}}]}"#,
+        )
+        .unwrap();
+
+        let config = load(dir.path()).unwrap();
+        let record = config.workspaces[0]
+            .git_view
+            .as_ref()
+            .unwrap()
+            .agent_commit
+            .as_ref()
+            .unwrap();
+        assert_eq!(record.session_id, "commit-1");
+        assert_eq!(record.started_at, None);
+        assert_eq!(record.retries, 0);
+    }
+
     #[test]
     fn workspace_serializes_to_the_camel_case_shape_the_frontend_expects() {
         let json = serde_json::to_value(&sample_workspace()).unwrap();
@@ -1397,6 +1433,7 @@ mod tests {
                 session_id: "commit-1".to_string(),
                 cwd: "/r/repo-feature".to_string(),
                 retries: 1,
+                started_at: Some(1_757_000_000_000),
             }),
         });
         let config = AppConfig {
