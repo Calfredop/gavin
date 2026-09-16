@@ -1,16 +1,14 @@
 <script lang="ts">
-  // The Tools tab: Plans-like editor for agent action prompts and custom
-  // tools, with the modal kept for full authoring (params, kinds, groups)
-  // and for Duplicate of non-agent built-ins.
+  // The Tools tab: one Plans-like explorer — sidebar of tools, full
+  // editor + Run on select. Manage tools… still opens the library dialog
+  // for groups and for New / Duplicate drafts that need the full form.
   import { Plus, Settings2 } from "@lucide/svelte";
-  import { daemonCompat } from "$lib/core/layoutState";
   import { toolRecords, fetchTools, renderLibraryFor } from "$lib/orchestration/toolsState";
   import {
     groupTemplateRecords,
     libraryFor as templateLibraryFor,
     fetchGroupTemplates,
   } from "$lib/orchestration/groupTemplatesState";
-  import { refreshToolRuns } from "$lib/orchestration/toolRunsState";
   import { emptyTool, type Tool } from "$lib/orchestration/orchestrationTools";
   import ToolsExplorerView from "$lib/orchestration/ToolsExplorerView.svelte";
   import ToolLibraryDialog from "$lib/orchestration/ToolLibraryDialog.svelte";
@@ -29,20 +27,13 @@
     void fetchGroupTemplates(id);
   });
 
-  $effect(() => {
-    const id = workspaceId;
-    void refreshToolRuns(id, $daemonCompat);
-  });
-
   const library = $derived(renderLibraryFor($toolRecords, workspaceId));
   const templates = $derived(templateLibraryFor($groupTemplateRecords, workspaceId) ?? []);
 </script>
 
 <div class="view">
   <header class="bar">
-    <p class="lede">
-      Edit agent action prompts and tools. Workspace overrides win over app defaults.
-    </p>
+    <p class="lede">Tools and agent action prompts — edit in place, Run when it can stand alone.</p>
     <span class="spacer"></span>
     <button
       type="button"
@@ -57,7 +48,11 @@
   </header>
 
   <div class="explorer-wrap">
-    <ToolsExplorerView scope="workspace" {workspaceId} />
+    <ToolsExplorerView
+      scope="workspace"
+      {workspaceId}
+      onManage={(draft) => (managing = { draft })}
+    />
   </div>
 </div>
 
@@ -79,6 +74,7 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
+    overflow: hidden;
   }
   .bar {
     display: flex;
