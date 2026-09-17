@@ -1,6 +1,6 @@
-// Pure list/selection helpers for the Plans-like Tools explorer: action
-// prompts plus editable custom tools. Persistence stays in
-// actionPromptsState / toolsState.
+// Pure list/selection helpers for the Plans-like Tools explorer: the
+// full tool library plus action prompts that are not already a tool
+// body. Persistence stays in actionPromptsState / toolsState.
 
 import {
   ACTION_PROMPTS,
@@ -13,6 +13,7 @@ import {
 } from "$lib/agents/actionPrompts";
 import type { Tool } from "$lib/orchestration/orchestrationTools";
 import { isBuiltinId } from "$lib/orchestration/orchestrationTools";
+import { listedTools } from "$lib/workspace/workspaceTools";
 
 export type ExplorerScope = "workspace" | "app";
 
@@ -44,6 +45,8 @@ export function matchesExplorerSearch(haystack: string, query: string): boolean 
   return haystack.toLowerCase().includes(q);
 }
 
+/// Action prompts that are NOT also a built-in tool body — those already
+/// appear in the tools list under their builtin: id.
 export function promptListItems(
   appOverrides: Record<string, string> | null | undefined,
   workspaceOverrides: Record<string, string> | null | undefined,
@@ -53,6 +56,7 @@ export function promptListItems(
     .map(({ label, prompts }) => ({
       groupLabel: label,
       items: prompts
+        .filter((p) => !p.toolId)
         .filter((p) =>
           matchesExplorerSearch(`${p.name} ${p.description} ${p.id}`, query)
         )
@@ -68,25 +72,41 @@ export function promptListItems(
     .filter((g) => g.items.length > 0);
 }
 
-/// Custom tools the explorer may edit inline. Built-ins are edited via
-/// their action-prompt catalog entry (agent ones) or Duplicate (others).
-export function editableToolsFor(
+/// Every tool the library offers here: workspace → global → builtin order
+/// (listedTools), filtered to global-only in app settings.
+export function toolsForExplorer(
   library: Tool[],
   scope: ExplorerScope,
   query: string
 ): ToolListItem[] {
-  return library
-    .filter((t) => !isBuiltinId(t.id))
-    .filter((t) => (scope === "app" ? t.scope === "global" : true))
+  const base = listedTools(library).filter((t) =>
+    scope === "app" ? t.scope === "global" || t.scope === "builtin" : true
+  );
+  return base
     .filter((t) => matchesExplorerSearch(`${t.name} ${t.description} ${t.kind}`, query))
     .map((t) => ({
       kind: "tool" as const,
       id: t.id,
       name: t.name,
       description: t.description,
-      scopeLabel: t.scope === "global" ? "All workspaces" : "This workspace",
+      scopeLabel:
+        t.scope === "builtin"
+          ? "Built-in"
+          : t.scope === "global"
+            ? "All workspaces"
+            : "This workspace",
       tool: t,
     }));
+}
+
+/// @deprecated use toolsForExplorer — kept for older tests that only
+/// wanted custom rows.
+export function editableToolsFor(
+  library: Tool[],
+  scope: ExplorerScope,
+  query: string
+): ToolListItem[] {
+  return toolsForExplorer(library, scope, query).filter((t) => !isBuiltinId(t.id));
 }
 
 export function sourceLabel(source: ActionPromptSource, scope: ExplorerScope): string {
@@ -104,6 +124,12 @@ export function promptEditorHint(prompt: ActionPrompt, body: string): string | n
   const undeclared = undeclaredActionPlaceholders(prompt, body);
   if (undeclared.length === 0) return null;
   return `Unknown placeholders: ${undeclared.map((n) => `{{${n}}}`).join(", ")}`;
+}
+
+/// Whether this tool's body is stored as an action-prompt override
+/// (built-in agent templates) rather than a daemon tool row.
+export function toolBodyIsPromptOverride(tool: Pick<Tool, "id" | "scope">): boolean {
+  return tool.scope === "builtin" && Boolean(actionPromptById(tool.id));
 }
 
 export function selectionStillValid(

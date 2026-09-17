@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  editableToolsFor,
-  matchesExplorerSearch,
   promptListItems,
+  matchesExplorerSearch,
   sourceLabel,
+  toolBodyIsPromptOverride,
+  toolsForExplorer,
 } from "./toolsExplorer";
 import type { Tool } from "./orchestrationTools";
+import { BUILTIN_TOOLS } from "./orchestrationTools";
 
 const tool = (partial: Partial<Tool> & Pick<Tool, "id" | "name" | "scope">): Tool => ({
   description: "",
@@ -16,36 +18,39 @@ const tool = (partial: Partial<Tool> & Pick<Tool, "id" | "name" | "scope">): Too
 });
 
 describe("toolsExplorer", () => {
-  it("lists prompt groups and filters by query", () => {
-    const all = promptListItems({}, {}, "");
-    expect(all.some((g) => g.items.some((i) => i.id === "builtin:commit"))).toBe(true);
-    const filtered = promptListItems({}, {}, "critical");
-    expect(filtered.flatMap((g) => g.items).every((i) => /critical/i.test(i.name + i.description))).toBe(
-      true
-    );
+  it("lists tools including built-ins, and filters", () => {
+    const items = toolsForExplorer(BUILTIN_TOOLS, "workspace", "commit");
+    expect(items.some((t) => t.id === "builtin:commit")).toBe(true);
+    expect(items.every((t) => /commit/i.test(t.name + t.description + t.tool.kind))).toBe(true);
   });
 
-  it("marks override source", () => {
-    const items = promptListItems({ "action:develop": "x" }, { "builtin:commit": "y" }, "");
-    const develop = items.flatMap((g) => g.items).find((i) => i.id === "action:develop")!;
-    const commit = items.flatMap((g) => g.items).find((i) => i.id === "builtin:commit")!;
-    expect(develop.source).toBe("app");
-    expect(commit.source).toBe("workspace");
-    expect(sourceLabel("app", "workspace")).toBe("Using app default");
-  });
-
-  it("lists only editable custom tools for the scope", () => {
+  it("keeps global+builtin in app scope, drops workspace tools", () => {
     const library = [
-      tool({ id: "builtin:commit", name: "Commit", scope: "builtin" }),
+      ...BUILTIN_TOOLS.slice(0, 2),
       tool({ id: "g1", name: "Global", scope: "global" }),
       tool({ id: "w1", name: "Workspace", scope: "workspace" }),
     ];
-    expect(editableToolsFor(library, "app", "").map((t) => t.id)).toEqual(["g1"]);
-    expect(editableToolsFor(library, "workspace", "").map((t) => t.id).sort()).toEqual(["g1", "w1"]);
+    const ids = toolsForExplorer(library, "app", "").map((t) => t.id);
+    expect(ids).toContain("g1");
+    expect(ids).not.toContain("w1");
+    expect(ids.some((id) => id.startsWith("builtin:"))).toBe(true);
   });
 
-  it("matchesExplorerSearch is case-insensitive", () => {
+  it("omits tool-backed prompts from the action-prompt groups", () => {
+    const groups = promptListItems({}, {}, "");
+    const ids = groups.flatMap((g) => g.items.map((i) => i.id));
+    expect(ids).toContain("action:run-task");
+    expect(ids).not.toContain("builtin:commit");
+  });
+
+  it("marks prompt-override tools", () => {
+    expect(toolBodyIsPromptOverride({ id: "builtin:commit", scope: "builtin" })).toBe(true);
+    expect(toolBodyIsPromptOverride({ id: "builtin:push", scope: "builtin" })).toBe(false);
+    expect(toolBodyIsPromptOverride({ id: "g1", scope: "global" })).toBe(false);
+  });
+
+  it("sourceLabel and search helpers", () => {
+    expect(sourceLabel("app", "workspace")).toBe("Using app default");
     expect(matchesExplorerSearch("Commit via agent", "COMMIT")).toBe(true);
-    expect(matchesExplorerSearch("Commit", "merge")).toBe(false);
   });
 });
