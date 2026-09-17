@@ -15,6 +15,13 @@
   interface PickerOption {
     value: string;
     label: string;
+    // What this rung costs, under its label. A ladder of consequences
+    // has nothing but this to say; a destination picker has nothing to
+    // add and leaves it off.
+    detail?: string;
+    // This rung ends something unrecoverable: while it is the one
+    // picked, the confirm button is red and Enter dismisses.
+    danger?: boolean;
   }
 
   interface Props {
@@ -24,7 +31,16 @@
     lines: string[];
     // Optional destination picker (e.g. where a deleted column's cards
     // should go); its value is handed to the chosen action.
-    picker?: { label: string; options: PickerOption[] } | null;
+    // `expanded` shows every rung at once instead of folding them into
+    // a <select>; `default` is the rung it opens on. A destructive
+    // ladder must be expanded -- answers hidden behind a click cannot be
+    // claimed to have been read.
+    picker?: {
+      label: string;
+      options: PickerOption[];
+      default?: string;
+      expanded?: boolean;
+    } | null;
     // A variation on the one action ("also delete the merged
     // branches"), so a flow with a follow-up question asks once. Never
     // a second "are you sure": the title still has to describe what the
@@ -66,7 +82,10 @@
   // convention, and it is the reason Enter can be trusted here at all --
   // every destructive prompt in the app marks its choice `danger`, so
   // Enter dismisses those rather than firing them.
-  const enterIsSafe = $derived(choices.length > 0 && !choices.some((c) => c.danger));
+  const pickedOption = $derived(picker?.options.find((o) => o.value === picked) ?? null);
+  const enterIsSafe = $derived(
+    choices.length > 0 && !choices.some((c) => c.danger) && !pickedOption?.danger
+  );
   // Once, on the first render that has a button to aim at -- not on
   // every re-run of the effect, or a later state change would yank focus
   // back out of wherever the human had moved it.
@@ -88,9 +107,30 @@
   });
 
   // Defaulted in an effect rather than at declaration: reading `picker`
-  // once would freeze the first render's value.
+  // once would freeze the first render's value. The ladder's own default
+  // wins over "first option", because where a ladder opens is a decision
+  // its data made (appClose.ts opens on the rung that changes nothing)
+  // and not an accident of option order.
   $effect(() => {
-    if (picked === null && picker && picker.options.length > 0) picked = picker.options[0].value;
+    if (picked === null && picker && picker.options.length > 0) {
+      picked = picker.default ?? picker.options[0].value;
+    }
+  });
+
+  // A ladder can turn a safe prompt into a destructive one AFTER focus
+  // has been placed: the human opens on "close this window", where Enter
+  // is harmless and focus sits on the confirm button, and then picks the
+  // rung that stops the daemon. Focus follows them down, or Enter fires
+  // the very rung the ladder exists to make deliberate.
+  let dangerFocusTaken = false;
+  $effect(() => {
+    if (!pickedOption?.danger) {
+      dangerFocusTaken = false;
+      return;
+    }
+    if (dangerFocusTaken || !cancelButton) return;
+    dangerFocusTaken = true;
+    cancelButton.focus();
   });
 </script>
 
@@ -102,14 +142,27 @@
     {/each}
   </ul>
   {#if picker && picker.options.length > 0}
-    <label class="picker">
-      <span>{picker.label}</span>
-      <select bind:value={picked}>
+    {#if picker.expanded}
+      <fieldset class="ladder">
+        <legend>{picker.label}</legend>
         {#each picker.options as option (option.value)}
-          <option value={option.value}>{option.label}</option>
+          <label class="rung">
+            <input type="radio" value={option.value} bind:group={picked} />
+            <span class="rung-label">{option.label}</span>
+            {#if option.detail}<span class="rung-detail">{option.detail}</span>{/if}
+          </label>
         {/each}
-      </select>
-    </label>
+      </fieldset>
+    {:else}
+      <label class="picker">
+        <span>{picker.label}</span>
+        <select bind:value={picked}>
+          {#each picker.options as option (option.value)}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+      </label>
+    {/if}
   {/if}
   {#if block}
     <div class="block-label">{block.label}</div>
@@ -124,7 +177,7 @@
       <button
         type="button"
         bind:this={choiceButtons[i]}
-        class:danger={choice.danger}
+        class:danger={choice.danger || pickedOption?.danger}
         disabled={choice.needsPick && picked === null}
         onclick={() => choice.onPick(picked, checked)}
       >
@@ -183,6 +236,42 @@
     font-size: 0.85em;
     color: var(--text-muted);
     margin-bottom: 14px;
+  }
+  .ladder {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin: 0 0 14px;
+    padding: 8px 10px 4px;
+  }
+  .ladder legend {
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--text-muted);
+    padding: 0 4px;
+  }
+  .rung {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2px 6px;
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--text);
+    margin-bottom: 8px;
+    cursor: pointer;
+  }
+  .rung input {
+    grid-row: 1;
+    margin: 2px 0 0;
+  }
+  .rung-label {
+    grid-row: 1;
+  }
+  /* Under the label, in the second column so it lines up with it rather
+     than with the radio: the consequence is the rung's own sentence, not
+     a caption for the group. */
+  .rung-detail {
+    grid-column: 2;
+    color: var(--text-muted);
   }
   .check {
     display: flex;

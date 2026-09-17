@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { get } from "svelte/store";
-import { askConfirm, askConfirmChecked, showAlert, answerDialog, dialogRequest, resetDialogs } from "$lib/core/dialog";
+import {
+  askConfirm,
+  askConfirmChecked,
+  askConfirmPicked,
+  showAlert,
+  answerDialog,
+  dialogRequest,
+  resetDialogs,
+} from "$lib/core/dialog";
 
 beforeEach(() => {
   resetDialogs();
@@ -35,6 +43,48 @@ describe("askConfirm", () => {
     resetDialogs();
     void askConfirm({ title: "a", confirmLabel: "Restore", cancelLabel: "Start fresh" });
     expect(current().cancelLabel).toBe("Start fresh");
+  });
+});
+
+// One prompt, four answers: the ladder the close prompt asks with, where
+// the rungs are the answer rather than a second question.
+describe("askConfirmPicked", () => {
+  const LADDER = {
+    title: "Close gavin?",
+    confirmLabel: "Close",
+    picker: {
+      label: "How far should closing reach?",
+      expanded: true,
+      default: "window",
+      options: [
+        { value: "window", label: "Close this window", detail: "Your sessions keep running." },
+        { value: "daemon", label: "Close everything", detail: "Stops the daemon too." },
+      ],
+    },
+  };
+
+  it("carries the ladder to the modal and the chosen rung back", async () => {
+    const answer = askConfirmPicked(LADDER);
+    const req = current();
+    expect(req.picker?.options.map((o) => o.value)).toEqual(["window", "daemon"]);
+    expect(req.picker?.expanded).toBe(true);
+    answerDialog(req.id, true, false, "daemon");
+    expect(await answer).toEqual({ confirmed: true, checked: false, picked: "daemon" });
+  });
+
+  // The rung the prompt opened on is the answer when the human touches
+  // nothing. A ladder that answered null there would make every caller
+  // re-implement the default, and they would drift apart.
+  it("answers with the rung it opened on when nothing was picked", async () => {
+    const answer = askConfirmPicked(LADDER);
+    answerDialog(current().id, true);
+    expect((await answer).picked).toBe("window");
+  });
+
+  it("reports the dismissal rather than the rung when cancelled", async () => {
+    const answer = askConfirmPicked(LADDER);
+    answerDialog(current().id, false);
+    expect((await answer).confirmed).toBe(false);
   });
 });
 

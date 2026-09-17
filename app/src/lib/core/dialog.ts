@@ -32,12 +32,52 @@ export interface ConfirmCheck {
   default?: boolean;
 }
 
+/// One rung of a ConfirmPicker.
+export interface ConfirmPickerOption {
+  value: string;
+  label: string;
+  /// What choosing this rung costs, under its label. Optional: a picker
+  /// choosing a destination ("move the cards to...") has nothing to add,
+  /// while a severity ladder has nothing BUT this to say.
+  detail?: string;
+  /// This rung ends something that cannot be got back. The prompt keeps
+  /// focus on the dismissing button while it is the one picked, so a
+  /// ladder is safe to answer by reflex at the top and never at the
+  /// bottom.
+  danger?: boolean;
+}
+
+/// A ladder of answers to the one question, where the rungs are the
+/// answer rather than a variation on it.
+///
+/// It exists for ConfirmCheck's reason -- one prompt rather than a
+/// second one nobody reads -- but for a question whose answers are a
+/// severity order ("this window" ... "and stop the daemon") rather than
+/// a yes with a tick-box hung off it.
+export interface ConfirmPicker {
+  /// What the ladder chooses, above it. One short line.
+  label: string;
+  options: ConfirmPickerOption[];
+  /// The rung the prompt opens on, and the answer when the human
+  /// touches nothing. Never a rung more destructive than the title
+  /// says, for the reason a tick-box is never default-on.
+  default?: string;
+  /// Show every rung at once rather than folding them into a <select>.
+  /// A destructive ladder must be expanded: answers hidden behind a
+  /// click cannot be claimed to have been read.
+  expanded?: boolean;
+}
+
 /// Both halves of the answer. `checked` is meaningless when `confirmed`
 /// is false, and is reported as the value the box was left at rather
 /// than reset -- nobody reads it after a cancel.
 export interface ConfirmAnswer {
   confirmed: boolean;
   checked: boolean;
+  /// The rung, for a prompt that carried a ladder. Absent -- not null
+  /// -- for one that did not, so every caller that never asked for a
+  /// picker keeps the answer shape it always had.
+  picked?: string;
 }
 
 /// A block of text the prompt shows VERBATIM, in a scrollable
@@ -77,6 +117,11 @@ export interface ConfirmOptions {
   /// reads its value back; `askConfirm` still resolves to a plain
   /// boolean, so no existing call site has to care.
   check?: ConfirmCheck;
+  /// A ladder of answers, read back by `askConfirmPicked`. A prompt
+  /// carries one or the other: a ladder whose rungs already say "and
+  /// end the sessions" plus a box saying the same thing is two controls
+  /// that can disagree.
+  picker?: ConfirmPicker;
   /// Text the reader must be able to see byte for byte. See ConfirmBlock.
   block?: ConfirmBlock;
 }
@@ -99,6 +144,7 @@ export interface DialogRequest {
   cancelLabel: string;
   danger: boolean;
   check: ConfirmCheck | null;
+  picker: ConfirmPicker | null;
   block: ConfirmBlock | null;
 }
 
@@ -136,6 +182,7 @@ function confirmRequest(options: ConfirmOptions): DialogRequest {
     cancelLabel: options.cancelLabel ?? "Cancel",
     danger: options.danger ?? false,
     check: options.check ?? null,
+    picker: options.picker ?? null,
     block: options.block ?? null,
   };
 }
@@ -153,6 +200,17 @@ export function askConfirmChecked(options: ConfirmOptions & { check: ConfirmChec
   return enqueue(confirmRequest(options));
 }
 
+/// The same prompt, asked as a ladder: one question whose answer is
+/// which rung the human picked. `default` is required here and not
+/// merely honoured, because that is what makes the answer total -- an
+/// untouched prompt still resolves to a rung, so no call site has to
+/// invent its own fallback and drift from the one the modal showed.
+export function askConfirmPicked(
+  options: ConfirmOptions & { picker: ConfirmPicker & { default: string } }
+): Promise<ConfirmAnswer & { picked: string }> {
+  return enqueue(confirmRequest(options)) as Promise<ConfirmAnswer & { picked: string }>;
+}
+
 /// States something and resolves when it has been dismissed. Drop-in
 /// for the native `message()`; awaited by callers that want to know the
 /// human has seen it, ignored by the ones that only had to say it.
@@ -165,6 +223,7 @@ export async function showAlert(options: AlertOptions): Promise<void> {
     cancelLabel: options.dismissLabel ?? "OK",
     danger: false,
     check: null,
+    picker: null,
     block: null,
   });
 }
@@ -176,12 +235,28 @@ export async function showAlert(options: AlertOptions): Promise<void> {
 ///
 /// `checked` is whatever the tick-box was left at; a prompt without one
 /// answers false and nobody reads it.
-export function answerDialog(id: number, confirmed: boolean, checked = false): void {
+///
+/// `picked` is the rung, and null means the human never touched the
+/// ladder -- which is an answer, not the absence of one: it resolves to
+/// the rung the prompt opened on. A prompt with no ladder carries no
+/// `picked` key at all rather than a null every existing caller would
+/// have to start ignoring.
+export function answerDialog(
+  id: number,
+  confirmed: boolean,
+  checked = false,
+  picked: string | null = null
+): void {
   const current = queue[0];
   if (!current || current.request.id !== id) return;
   queue = queue.slice(1);
   head.set(queue[0]?.request ?? null);
-  current.resolve({ confirmed, checked });
+  const ladder = current.request.picker;
+  if (!ladder) {
+    current.resolve({ confirmed, checked });
+    return;
+  }
+  current.resolve({ confirmed, checked, picked: picked ?? ladder.default ?? ladder.options[0]?.value });
 }
 
 /// Test-only reset: drops every queued request without settling it, so
