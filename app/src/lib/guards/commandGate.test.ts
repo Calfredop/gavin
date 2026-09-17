@@ -59,6 +59,10 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   delete_card_file: ["gated", "removes a card from the board and from disk"],
   remove_gavin_footprint: ["gated", "empties a workspace of gavin, through the delete wizard"],
   restart_daemon: ["gated", "pkills a daemon shared with every other gavin window"],
+  stop_daemon: [
+    "gated",
+    "the same daemon as restart_daemon and the same shared reach, minus the half that brings it back: this one leaves every session ended and nothing listening. It is the close prompt's bottom rung, and the rung IS the confirmation the host mints from.",
+  ],
   install_update: [
     "gated",
     "replaces the app bundle -- both sidecars with it -- and relaunches. The subject is the version, not a placeholder: the confirmation is for installing a particular release, and the host refuses the token if the endpoint has moved on.",
@@ -239,6 +243,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   claim_workspace_window: ["ordinary"],
   focus_workspace_window: ["ordinary"],
   close_workspace_window: ["ordinary"],
+  close_all_workspace_windows: ["ordinary"],
   scan_gavin_footprint: ["ordinary"],
   git_repo_info: ["ordinary"],
   gavin_git_tracking: ["ordinary"],
