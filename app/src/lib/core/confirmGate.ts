@@ -34,10 +34,12 @@ export type GatedAction =
   | "install_update"
   | "remove_gavin_footprint"
   | "restart_daemon"
+  | "stop_daemon"
   | "trash_entry";
 
-/// `restart_daemon` takes no path. There is one daemon, so its prompt
-/// names one subject and this is it (`confirm_gate::DAEMON_SUBJECT`).
+/// `restart_daemon` and `stop_daemon` take no path. There is one
+/// daemon, so their prompts name one subject and this is it
+/// (`confirm_gate::DAEMON_SUBJECT`).
 export const DAEMON_SUBJECT = "";
 
 // `install_update` gets no constant of its own, even though there is

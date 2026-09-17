@@ -287,9 +287,10 @@
       closePromptOpen = true;
       let shouldClose = false;
       try {
-        // Asks, and -- if the human ticked the box -- ends every session
-        // before returning, because a destroyed window has no frontend
-        // left to await the kills with.
+        // Asks, and does everything the rung the human picked reaches
+        // -- closing the other windows, sweeping the sessions, stopping
+        // the daemon -- BEFORE returning, because a destroyed window has
+        // no frontend left to await any of it with.
         shouldClose = await confirmWindowClose();
       } finally {
         closePromptOpen = false;

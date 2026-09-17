@@ -53,6 +53,7 @@ pub const GATED_ACTIONS: &[&str] = &[
     "install_update",
     "remove_gavin_footprint",
     "restart_daemon",
+    "stop_daemon",
     "trash_entry",
 ];
 
@@ -250,6 +251,27 @@ mod tests {
         let id = open(&g, "trash_entry", &["/w/a.txt"]);
         let token = answer(&g, id, true).expect("a yes mints");
         assert!(spend(&g, &token, "trash_entry", "/w/a.txt").is_ok());
+    }
+
+    /// The close prompt's bottom rung stops the daemon for good, which
+    /// is a different question from Settings' "restart it" -- one leaves
+    /// the daemon running and one does not. A grant is bound to the
+    /// action its prompt named, so the restart prompt's token cannot
+    /// answer for the stop.
+    #[test]
+    fn a_restart_grant_cannot_stop_the_daemon() {
+        let g = gate();
+        let id = open(&g, "restart_daemon", &[DAEMON_SUBJECT]);
+        let token = answer(&g, id, true).expect("a yes mints");
+        assert!(spend(&g, &token, "stop_daemon", DAEMON_SUBJECT).is_err());
+    }
+
+    /// Registration is the gate: `open_confirmation` refuses to mint for
+    /// an action that is not on the list, so a command left off it can
+    /// never be confirmed at all.
+    #[test]
+    fn stopping_the_daemon_is_a_gated_action() {
+        assert!(GATED_ACTIONS.contains(&"stop_daemon"));
     }
 
     #[test]

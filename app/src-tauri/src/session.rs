@@ -2368,6 +2368,44 @@ pub fn restart_daemon(
     bootstrap(app_handle).map_err(|e| e.to_string())
 }
 
+/// Stops the daemon on this build's endpoint and leaves it stopped.
+///
+/// The difference from `restart_daemon` is the whole point of the
+/// command: that one exists to bring the daemon back, and every route to
+/// it is a human saying "this connection is wedged". This one is the
+/// close prompt's bottom rung -- the human is done for the day and is
+/// asking, deliberately, for the work to stop outliving the window.
+///
+/// So: no `reconnect`, and no `bootstrap`. Rewiring the app onto a
+/// daemon nobody asked for is the one thing that rung promises will not
+/// happen. The connection epoch is still bumped first, so the relay
+/// thread goes quiet instead of logging a closed socket at a window that
+/// is already on its way out.
+///
+/// `token` is the grant `confirm_gate` minted when the human picked the
+/// rung. Like the restart, it is aimed at the pid serving THIS socket
+/// rather than at everything named gavin-daemon: a release install and a
+/// dev build keep separate endpoints, and stopping one must not reach
+/// the other.
+#[tauri::command]
+pub fn stop_daemon(
+    app_handle: AppHandle,
+    token: String,
+    gate: State<crate::confirm_gate::ConfirmGate>,
+) -> Result<(), String> {
+    crate::confirm_gate::spend(
+        &gate,
+        &token,
+        "stop_daemon",
+        crate::confirm_gate::DAEMON_SUBJECT,
+    )?;
+    if let Some(epoch) = app_handle.try_state::<ConnectionEpoch>() {
+        epoch.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    let socket = socket_path().map_err(|e| e.to_string())?;
+    crate::daemon::stop_running_daemon(&socket).map_err(|e| e.to_string())
+}
+
 /// Rewires a running app onto a freshly restarted daemon, with no
 /// relaunch.
 ///

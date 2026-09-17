@@ -208,6 +208,14 @@ export function focusWorkspaceWindow(workspaceId: string): Promise<void> {
 
 /// Closes the window a workspace lives in, if it has one of its own. A
 /// no-op for a workspace in the main window.
+/// Closes every window a workspace was given, leaving the main window
+/// -- the one asking -- for its own caller to destroy last. One round
+/// trip rather than one per label: the close prompt is on its way out
+/// and has no business awaiting N of them.
+export function closeAllWorkspaceWindows(): Promise<void> {
+  return invoke("close_all_workspace_windows");
+}
+
 export function closeWorkspaceWindow(workspaceId: string): Promise<void> {
   return invoke("close_workspace_window", { workspaceId });
 }
@@ -542,6 +550,14 @@ export function getBootstrapError(): Promise<string | null> {
 // was restarted but this app process needs a relaunch to rewire.
 export function restartDaemon(token: string): Promise<void> {
   return invoke("restart_daemon", { token });
+}
+
+/// Stops the daemon on this build's endpoint and leaves it stopped --
+/// the difference from `restartDaemon`, which exists to bring it back.
+/// Gated: the token must have been minted for a prompt that was on
+/// screen (`confirm_gate.rs`).
+export function stopDaemon(token: string): Promise<void> {
+  return invoke("stop_daemon", { token });
 }
 
 /// The update channel, described without touching the network:

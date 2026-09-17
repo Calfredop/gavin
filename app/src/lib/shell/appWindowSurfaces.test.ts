@@ -115,6 +115,6 @@ describe("closing a workspace window", () => {
     const prompt = PAGE.indexOf("confirmWindowClose()");
     expect(guard).toBeGreaterThan(-1);
     expect(prompt).toBeGreaterThan(guard);
-    expect(closeWindowPrompt().title).toBe("Close this window?");
+    expect(closeWindowPrompt().title).toBe("Close gavin?");
   });
 });

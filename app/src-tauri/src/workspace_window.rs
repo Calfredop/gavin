@@ -227,6 +227,49 @@ pub fn focus_workspace_window(
 /// wizard): a window whose workspace no longer exists has nothing to
 /// show. A no-op for a workspace in the main window -- removing a
 /// workspace must never take the app down with it.
+/// The labels the close prompt's "every window" rungs reach: every
+/// window a workspace was given, and never the main one -- its own
+/// frontend destroys it last, after the sessions have been swept, and a
+/// page destroyed mid-sweep has nothing left to await the kills with.
+///
+/// Deduped and sorted. Two workspaces can share one window, and a second
+/// destroy against a label already gone is an error the sweep would only
+/// have to swallow; sorted because a HashMap's order is not the same
+/// twice running, and a test cannot pin what it cannot predict.
+fn labels_to_close(windows: &HashMap<String, String>) -> Vec<String> {
+    let mut labels: Vec<String> = windows
+        .values()
+        .filter(|label| label.as_str() != MAIN_WINDOW_LABEL)
+        .cloned()
+        .collect();
+    labels.sort();
+    labels.dedup();
+    labels
+}
+
+/// Closes every window except the main one.
+///
+/// Since a workspace can be given a window of its own, the main window
+/// destroying itself left the others standing and the app running. This
+/// is what the close prompt's second rung and up reach for.
+///
+/// Best-effort per window, and never an error: the human asked to leave,
+/// and one window that will not go is not a reason to leave the rest on
+/// screen or to abandon the rungs below it. The registry entries are
+/// dropped by the Destroyed handler, so this only asks.
+#[tauri::command]
+pub fn close_all_workspace_windows(
+    app_handle: AppHandle,
+    state: tauri::State<WorkspaceWindows>,
+) -> Result<(), String> {
+    for label in labels_to_close(&snapshot(&state)) {
+        if let Some(window) = app_handle.get_webview_window(&label) {
+            let _ = window.destroy();
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn close_workspace_window(
     workspace_id: String,
@@ -246,4 +289,39 @@ pub fn close_workspace_window(
         broadcast(&app_handle, &state);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(w, l)| (w.to_string(), l.to_string())).collect()
+    }
+
+    /// The main window is the one that asked, and its own frontend
+    /// destroys it last: closing it here would take the page down
+    /// mid-sweep, before the rungs below it had run.
+    #[test]
+    fn the_main_window_is_never_in_the_sweep() {
+        assert_eq!(
+            labels_to_close(&map(&[("w1", MAIN_WINDOW_LABEL), ("w2", "ws-2")])),
+            vec!["ws-2".to_string()]
+        );
+    }
+
+    /// Two workspaces can share one window. Asking Tauri to destroy that
+    /// label twice is a second destroy against a window already gone.
+    #[test]
+    fn a_window_holding_two_workspaces_is_closed_once() {
+        assert_eq!(
+            labels_to_close(&map(&[("w1", "ws-2"), ("w2", "ws-2")])),
+            vec!["ws-2".to_string()]
+        );
+    }
+
+    #[test]
+    fn nothing_to_sweep_when_every_workspace_is_in_the_main_window() {
+        assert!(labels_to_close(&map(&[("w1", MAIN_WINDOW_LABEL)])).is_empty());
+    }
 }

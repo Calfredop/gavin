@@ -61,7 +61,7 @@
   function close(): void {
     // close(), not destroy() -- close() fires CloseRequested, which
     // +page.svelte's existing onCloseRequested handler already intercepts
-    // with the "your sessions will keep running" confirm dialog. Reusing
+    // with the ladder that asks how far closing should reach. Reusing
     // that flow here (rather than duplicating a second confirm prompt) is
     // the whole reason this calls close() instead of destroy().
     getCurrentWindow().close();
