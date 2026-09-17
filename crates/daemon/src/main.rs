@@ -4,6 +4,7 @@ mod kanban;
 mod orchestration;
 mod osc;
 mod proc;
+mod program;
 mod pty;
 mod registry;
 mod screen;
@@ -76,6 +77,14 @@ fn main() -> anyhow::Result<()> {
 
     let socket = protocol::socket_path()?;
     println!("gavin-daemon listening on {}", socket.display());
+    // Which console state this daemon is in, for the machine nobody can
+    // attach a debugger to: a launcher that gave it none is the state
+    // `program::command` exists to survive.
+    #[cfg(windows)]
+    println!(
+        "gavin-daemon console: {}",
+        if program::has_console() { "attached" } else { "none (each child gets a hidden one)" }
+    );
     server::run_server(&socket, manager)?;
     Ok(())
 }

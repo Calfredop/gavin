@@ -317,7 +317,7 @@ pub fn command_with_windows_shim(
 
 /// `git --exec-path`, or `None` when git is not there to ask.
 fn git_exec_path() -> Option<String> {
-    let out = std::process::Command::new("git").arg("--exec-path").output().ok()?;
+    let out = crate::program::command("git").arg("--exec-path").output().ok()?;
     if !out.status.success() {
         return None;
     }

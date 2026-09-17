@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// Hard cap on how long a single `git status` subprocess is allowed to
@@ -75,7 +75,7 @@ pub fn resolve_repo_root(cwd: &str) -> Option<String> {
     // a revision argument, exits non-zero, and this function would then
     // return `None` for every session on that machine with nothing logged
     // to explain why.
-    let output = Command::new("git")
+    let output = crate::program::command("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -109,7 +109,7 @@ pub fn resolve_repo_root(cwd: &str) -> Option<String> {
 /// and a bare one in a non-repo prints git's error to stdout on some
 /// versions. Both would otherwise be recorded as a sha.
 pub fn head_sha(cwd: &str) -> Option<String> {
-    let output = Command::new("git")
+    let output = crate::program::command("git")
         .args(["rev-parse", "--verify", "-q", "HEAD"])
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -153,7 +153,7 @@ pub fn head_sha(cwd: &str) -> Option<String> {
 /// `std::process` deadlock that `Child::wait_with_output` exists to
 /// avoid, and which a timeout loop cannot use directly.
 fn run_git_capture(repo_root: &str, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut child = Command::new("git")
+    let mut child = crate::program::command("git")
         .args(args)
         .current_dir(repo_root)
         .stdin(Stdio::null())
