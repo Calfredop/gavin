@@ -17,7 +17,9 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/screenshot-agents.png" alt="Gavin — agents running in parallel with the plan sidebar">
+  <img src="docs/images/screenshot-placeholder.svg" alt="Gavin — three agent sessions side by side, with the workspace sidebar listing every session and its status">
+  <br>
+  <sub>Illustrative mock-up — the projects, branches and output are invented.</sub>
 </p>
 
 ## Why
