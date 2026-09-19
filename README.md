@@ -17,9 +17,9 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/screenshot-placeholder.svg" alt="Gavin — three agent sessions side by side, with the workspace sidebar listing every session and its status">
+  <img src="docs/images/mock-kanban.svg" alt="Gavin — a workspace's Kanban tab: To Do, In Progress and Done columns of note, task and plan cards, one plan expanded to show its nested tasks">
   <br>
-  <sub>Illustrative mock-up — the projects, branches and output are invented.</sub>
+  <sub>The images on this page are illustrative mock-ups — the projects, cards, branches and output are invented.</sub>
 </p>
 
 ## Why
@@ -35,16 +35,48 @@ and the settled architectural decisions.
 
 ## Features
 
-- **Real terminals** — workspaces, pages, tabs, and split panes; each
-  session keeps its own idle / working / waiting status, with OS
-  notifications when an agent needs you.
-- **Kanban that is the repo** — cards are plain markdown under
-  `.gavin*/plans/` (note / task / plan), committed alongside the code.
-  Statuses come from the board columns; nesting, labels, search, and
-  run actions live on the same surface agents write over MCP.
-- **Orchestration rails** — ordered steps bound to a worktree or branch,
-  each rail spawning a page of its own, so parallel work stays visible
-  and ordered.
+Every workspace opens on a **hub** — Home, Git, Kanban, Orchestration,
+Tools, Review and the repo's own documents as tabs. Two of those tabs are
+where the work is decided; the terminals are where it happens.
+
+### Kanban that is the repo
+
+Cards are plain markdown under `.gavin*/plans/`, committed alongside the
+code, and come in three kinds: a **note** is a reminder, a **task** is one
+unit of agent work whose body *is* the prompt, a **plan** is a checklist
+that can nest tasks of its own. Statuses come from the board's columns.
+Run a card and it becomes a live session — the card carries that
+session's working / waiting / idle mark from then on. Labels, priority,
+complexity, search and filters live on the same surface the agents write
+to over MCP, so the board the human reads is the board the agents keep.
+
+### Orchestration rails
+
+<p align="center">
+  <img src="docs/images/mock-orchestration.svg" alt="Gavin — the Orchestration tab: three rails side by side, each a column of card steps and tool steps bound to a worktree and branch, with a drawer of unplaced cards and tools on the right">
+</p>
+
+A **rail** is a column of ordered steps bound to a worktree and a branch,
+and it runs on a page of its own — so parallel work stays parallel,
+visible, and in order. A step is either a card from the board or a
+**tool**: run the tests, loop until a check passes, open a pull request
+and wait for it, review the branch, merge, notify. Steps group into
+stages that run in sequence or in parallel; a rail starts by hand, after
+another rail, or after all of them. When an agent stops to ask something,
+the rail says *needs you* and waits.
+
+### Real terminals
+
+<p align="center">
+  <img src="docs/images/mock-agents.svg" alt="Gavin — three agent sessions side by side, with the workspace sidebar listing every session and its status">
+</p>
+
+Workspaces, pages, tabs and split panes over real PTYs. Each session
+keeps its own idle / working / waiting status in the sidebar, with OS
+notifications when an agent needs you.
+
+### And underneath
+
 - **Git tab** — local changes, sync, branches, worktrees, history, and a
   3-pane conflict merge — without leaving the app.
 - **A daemon that outlives the window** — `gavin-daemon` owns every PTY

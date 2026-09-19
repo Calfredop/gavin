@@ -1,0 +1,413 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900" xml:space="preserve" role="img" aria-labelledby="t">
+<title id="t">Gavin — illustrative mock-up of a workspace's Kanban tab, with invented cards</title>
+<style>text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono',monospace;white-space:pre}.m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono',monospace}use{fill:none;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}</style>
+<defs>
+<clipPath id="win"><rect width="1600" height="900" rx="12"/></clipPath>
+<symbol id="trash" overflow="visible"><path d="M-5 -3.5 H5 M-3.5 -3.5 V4.5 a1 1 0 0 0 1 1 H2.5 a1 1 0 0 0 1 -1 V-3.5 M-1.5 -3.5 V-5.5 H1.5 V-3.5"/></symbol>
+<symbol id="brush" overflow="visible"><path d="M4.5 -5.5 L-0.5 -0.5 M-3.5 0 L1.5 5 M-3.5 0 L1 -1.5 L2.5 0 L1.5 5 H-4.5 Q-3 3 -3.5 0 Z"/></symbol>
+<symbol id="stack" overflow="visible"><rect x="-2.5" y="-2.5" width="8" height="8" rx="1.2"/><path d="M-5.5 2.5 V-4.3 a1.2 1.2 0 0 1 1.2 -1.2 H2.5"/></symbol>
+<symbol id="buoy" overflow="visible"><circle r="5.2"/><circle r="2"/><path d="M-3.7 -3.7 L-1.4 -1.4 M1.4 1.4 L3.7 3.7 M3.7 -3.7 L1.4 -1.4 M-3.7 3.7 L-1.4 1.4"/></symbol>
+<symbol id="rotate" overflow="visible"><path d="M-4.6 -1 A4.8 4.8 0 1 1 -3.4 3.4 M-5.2 -5 V-1 H-1.2"/></symbol>
+<symbol id="sparkle" overflow="visible"><path d="M0 -5.5 L1.4 -1.4 L5.5 0 L1.4 1.4 L0 5.5 L-1.4 1.4 L-5.5 0 L-1.4 -1.4 Z"/></symbol>
+<symbol id="sliders" overflow="visible"><path d="M-5 -3 H5 M-5 3 H5"/><circle cx="-1.5" cy="-3" r="1.5"/><circle cx="2" cy="3" r="1.5"/></symbol>
+<symbol id="grip" overflow="visible"><path d="M-2 -4 h0.01 M-2 0 h0.01 M-2 4 h0.01 M2 -4 h0.01 M2 0 h0.01 M2 4 h0.01" stroke-width="2"/></symbol>
+<symbol id="group" overflow="visible"><rect x="-5.5" y="-5.5" width="6.5" height="6.5" rx="1"/><rect x="-1" y="-1" width="6.5" height="6.5" rx="1"/></symbol>
+<symbol id="code" overflow="visible"><path d="M-4 -5.5 H1.5 L4 -3 V5.5 H-4 Z M-1.2 0 L-2.4 1.4 L-1.2 2.8 M1.2 0 L2.4 1.4 L1.2 2.8"/></symbol>
+<symbol id="users" overflow="visible"><circle cx="-1.5" cy="-2.5" r="2.2"/><path d="M-5.5 5 a4 4 0 0 1 8 0 M3 -4.4 a2.2 2.2 0 0 1 0 4 M4.2 1.6 a4 4 0 0 1 1.6 3.4"/></symbol>
+<symbol id="pr" overflow="visible"><circle cx="-3.5" cy="-3.5" r="1.6"/><circle cx="-3.5" cy="3.5" r="1.6"/><circle cx="3.5" cy="3.5" r="1.6"/><path d="M-3.5 -1.9 V1.9 M3.5 1.9 V-1.5 a2 2 0 0 0 -2 -2 H0"/></symbol>
+<symbol id="repeat" overflow="visible"><path d="M-4.5 -0.5 V-1.5 a2 2 0 0 1 2 -2 H4.5 M2.5 -5.5 L4.5 -3.5 L2.5 -1.5 M4.5 0.5 V1.5 a2 2 0 0 1 -2 2 H-4.5 M-2.5 5.5 L-4.5 3.5 L-2.5 1.5"/></symbol>
+<symbol id="term" overflow="visible"><rect x="-5.5" y="-4.5" width="11" height="9" rx="1.5"/><path d="M-3 -1.5 L-1 0.5 L-3 2.5 M0.5 2.5 H3"/></symbol>
+<symbol id="fgit" overflow="visible"><path d="M-5.5 -4 H-1.5 L0 -2.5 H5.5 V4.5 H-5.5 Z"/><circle cx="-1" cy="1.5" r="1"/><circle cx="2.5" cy="1.5" r="1"/></symbol>
+<symbol id="panels" overflow="visible"><rect x="-5.5" y="-4.5" width="11" height="9" rx="1.5"/><path d="M-5.5 -1.5 H5.5 M-1.5 -1.5 V4.5"/></symbol>
+<symbol id="zap" overflow="visible"><path d="M1 -5.5 L-4 1 H0 L-1 5.5 L4 -1 H0 Z"/></symbol>
+<symbol id="minus" overflow="visible"><path d="M-4 0 H4"/></symbol>
+<symbol id="chev2" overflow="visible"><path d="M-4 -3.5 L-0.5 0 L-4 3.5 M0.5 -3.5 L4 0 L0.5 3.5"/></symbol>
+<symbol id="skip" overflow="visible"><path d="M-4.5 -4 L2 0 L-4.5 4 Z M4.5 -4 V4"/></symbol>
+<symbol id="checks" overflow="visible"><path d="M-6 0.5 L-3.5 3 L1 -2.5 M0 2 L1 3 L6 -2.5"/></symbol>
+<symbol id="sq-check" overflow="visible"><rect x="-4.5" y="-4.5" width="9" height="9" rx="1.5"/><path d="M-2.2 0 L-0.6 1.8 L2.4 -1.8"/></symbol>
+<symbol id="sq-dot" overflow="visible"><rect x="-4.5" y="-4.5" width="9" height="9" rx="1.5"/><path d="M0 0 h0.01" stroke-width="2.6"/></symbol>
+<symbol id="sq" overflow="visible"><rect x="-4.5" y="-4.5" width="9" height="9" rx="1.5"/></symbol>
+<symbol id="idle" overflow="visible"><circle r="4.8" stroke-dasharray="2.2 2.2"/></symbol>
+<symbol id="bubble" overflow="visible"><path d="M-5 5 L-4 2.2 A5.2 5.2 0 1 1 -2 4 Z"/></symbol>
+<symbol id="loader" overflow="visible"><path d="M0 -5 A5 5 0 1 1 -5 0"/></symbol>
+<symbol id="gauge" overflow="visible"><path d="M-5 3.5 A5.5 5.5 0 1 1 5 3.5 M0 1 L3 -2.5"/></symbol>
+<symbol id="route" overflow="visible"><circle cx="-3.5" cy="4" r="1.5"/><circle cx="3.5" cy="-4" r="1.5"/><path d="M-2 4 H2.5 a2 2 0 0 0 0 -4 H-2.5 a2 2 0 0 1 0 -4 H2"/></symbol>
+<symbol id="k-plan" overflow="visible"><path d="M-4 -5.5 H1.5 L4 -3 V5.5 H-4 Z M-2 0 H2 M-2 2.5 H2"/></symbol>
+<symbol id="k-task" overflow="visible"><path d="M-3.5 -5 L4.5 0 L-3.5 5 Z"/></symbol>
+<symbol id="k-note" overflow="visible"><path d="M-5 -5 H5 V1 L1 5 H-5 Z M5 1 H1 V5"/></symbol>
+<symbol id="archive" overflow="visible"><rect x="-5.5" y="-4.5" width="11" height="3" rx="0.8"/><path d="M-4.5 -1.5 V4.5 H4.5 V-1.5 M-1.5 1.2 H1.5"/></symbol>
+<symbol id="link" overflow="visible"><path d="M-1.5 -3 H-3 a3 3 0 0 0 0 6 H-1.5 M1.5 -3 H3 a3 3 0 0 1 0 6 H1.5 M-2 0 H2"/></symbol>
+<symbol id="lock" overflow="visible"><rect x="-3.5" y="-0.5" width="7" height="5.5" rx="1"/><path d="M-2 -0.5 V-2.5 a2 2 0 0 1 4 0 V-0.5"/></symbol>
+<symbol id="t-win" overflow="visible"><rect x="-5.5" y="-4.5" width="11" height="9" rx="1.5"/><path d="M-5.5 -1.5 H5.5"/></symbol>
+<symbol id="t-gear" overflow="visible"><circle r="2"/><path d="M0 -5.5 V-4 M0 4 V5.5 M-5.5 0 H-4 M4 0 H5.5 M-3.9 -3.9 L-2.8 -2.8 M2.8 2.8 L3.9 3.9 M-3.9 3.9 L-2.8 2.8 M2.8 -2.8 L3.9 -3.9"/></symbol>
+<symbol id="t-files" overflow="visible"><path d="M-2.5 -5.5 H2 L4.5 -3 V3 H-2.5 Z M-4.5 -2.5 V5.5 H2"/></symbol>
+<symbol id="t-bot" overflow="visible"><rect x="-5" y="-2.5" width="10" height="7.5" rx="2"/><path d="M0 -2.5 V-5 M-2 1 V2 M2 1 V2"/></symbol>
+<symbol id="t-doc" overflow="visible"><path d="M-4 -5.5 H1.5 L4 -3 V5.5 H-4 Z M-2 0 H2 M-2 2.5 H2"/></symbol>
+<symbol id="t-eye" overflow="visible"><path d="M-6 0 C-3 -5 3 -5 6 0 C3 5 -3 5 -6 0 Z"/><circle r="1.8"/></symbol>
+<symbol id="t-way" overflow="visible"><circle cx="-4" cy="3.5" r="1.6"/><circle cx="4" cy="3.5" r="1.6"/><circle cx="0" cy="-3.5" r="1.6"/><path d="M-3 2 L-1 -2 M3 2 L1 -2 M-2.4 3.5 H2.4"/></symbol>
+<symbol id="t-kanban" overflow="visible"><path d="M-4 -5 V5 M0 -5 V1 M4 -5 V3.5"/></symbol>
+<symbol id="t-home" overflow="visible"><rect x="-5.5" y="-5.5" width="4.5" height="6.5" rx="1"/><rect x="1" y="-5.5" width="4.5" height="3.5" rx="1"/><rect x="1" y="0.5" width="4.5" height="5" rx="1"/><rect x="-5.5" y="3" width="4.5" height="2.5" rx="1"/></symbol>
+<symbol id="down" overflow="visible"><path d="M-4 -2 L0 2 L4 -2"/></symbol>
+<symbol id="right" overflow="visible"><path d="M-2 -4 L2 0 L-2 4"/></symbol>
+<symbol id="plus" overflow="visible"><path d="M-4 0 H4 M0 -4 V4"/></symbol>
+<symbol id="close" overflow="visible"><path d="M-3 -3 L3 3 M3 -3 L-3 3"/></symbol>
+<symbol id="home" overflow="visible"><path d="M-5 0 L0 -5 L5 0 M-3.5 -1 V5 H3.5 V-1"/></symbol>
+<symbol id="branch" overflow="visible"><path d="M-2 -2.5 V4 M-2 1 C-2 -1 3 0 3 -2.5"/><circle cx="-2" cy="-4" r="1.4"/><circle cx="3" cy="-4" r="1.4"/></symbol>
+<symbol id="split" overflow="visible"><rect x="-6" y="-5" width="12" height="10" rx="1.5"/><path d="M0 -5 V5"/></symbol>
+<symbol id="rows" overflow="visible"><rect x="-6" y="-5" width="12" height="10" rx="1.5"/><path d="M-6 0 H6"/></symbol>
+<symbol id="search" overflow="visible"><circle cx="-1" cy="-1" r="4"/><path d="M2 2 L5.5 5.5"/></symbol>
+<symbol id="play" overflow="visible"><path d="M-3 -4 L4 0 L-3 4 Z"/></symbol>
+<symbol id="check" overflow="visible"><path d="M-4 0 L-1 3 L4 -3"/></symbol>
+<symbol id="dots" overflow="visible"><path d="M-5 0 h0.01 M0 0 h0.01 M5 0 h0.01" stroke-width="2.4"/></symbol>
+<symbol id="arrow" overflow="visible"><path d="M-6 0 H5 M2 -3 L5 0 L2 3"/></symbol>
+<symbol id="folder" overflow="visible"><path d="M-5 -3.5 H-1 L0.5 -2 H5 V4 H-5 Z"/></symbol>
+<symbol id="tool" overflow="visible"><path d="M-4 4 L1 -1 M0 -4 a3 3 0 1 0 4 4 L2 -2 Z"/></symbol>
+<symbol id="pause" overflow="visible"><path d="M-2.5 -4 V4 M2.5 -4 V4"/></symbol>
+</defs>
+<g clip-path="url(#win)">
+<rect x="0" y="0" width="1600" height="900" rx="0" fill="#1a1a1a"/>
+<rect x="0" y="0" width="1600" height="40" rx="0" fill="#1e1e1e"/>
+<circle cx="26" cy="20" r="6" fill="#ff5f57"/>
+<circle cx="46" cy="20" r="6" fill="#febc2e"/>
+<circle cx="66" cy="20" r="6" fill="#28c840"/>
+<use href="#t-home" x="115" y="20" stroke="#999"/>
+<text x="129" y="24.5" fill="#999" font-size="12.5">Home</text>
+<line x1="174.6" y1="13" x2="174.6" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#branch" x="197.1" y="20" stroke="#999"/>
+<text x="211.1" y="24.5" fill="#999" font-size="12.5">Git</text>
+<line x1="249.175" y1="13" x2="249.175" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-kanban" x="271.675" y="20" stroke="#eee"/>
+<text x="285.675" y="24.5" fill="#eee" font-size="12.5">Kanban</text>
+<rect x="252.675" y="38" width="90.15" height="2" rx="0" fill="#d9a648"/>
+<line x1="346.32500000000005" y1="13" x2="346.32500000000005" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-way" x="368.82500000000005" y="20" stroke="#999"/>
+<text x="382.82500000000005" y="24.5" fill="#999" font-size="12.5">Orchestration</text>
+<circle cx="485.65000000000003" cy="10" r="3" fill="#d9a648"/>
+<line x1="496.15000000000003" y1="13" x2="496.15000000000003" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#tool" x="518.6500000000001" y="20" stroke="#999"/>
+<text x="532.6500000000001" y="24.5" fill="#999" font-size="12.5">Tools</text>
+<line x1="585.7750000000001" y1="13" x2="585.7750000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-eye" x="608.2750000000001" y="20" stroke="#999"/>
+<text x="622.2750000000001" y="24.5" fill="#999" font-size="12.5">Review</text>
+<line x1="682.9250000000001" y1="13" x2="682.9250000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-doc" x="705.4250000000001" y="20" stroke="#999"/>
+<text x="719.4250000000001" y="24.5" fill="#999" font-size="12.5">PRD</text>
+<line x1="757.5000000000001" y1="13" x2="757.5000000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-bot" x="780.0000000000001" y="20" stroke="#999"/>
+<text x="794.0000000000001" y="24.5" fill="#999" font-size="12.5">AGENTS.md</text>
+<line x1="877.2250000000001" y1="13" x2="877.2250000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#folder" x="899.7250000000001" y="20" stroke="#999"/>
+<text x="913.7250000000001" y="24.5" fill="#999" font-size="12.5">Plans</text>
+<line x1="966.8500000000001" y1="13" x2="966.8500000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-files" x="989.3500000000001" y="20" stroke="#999"/>
+<text x="1003.3500000000001" y="24.5" fill="#999" font-size="12.5">Files</text>
+<use href="#lock" x="1071.9750000000001" y="20" stroke="#999"/>
+<use href="#t-gear" x="1484" y="20" stroke="#999"/>
+<use href="#t-win" x="1514" y="20" stroke="#999"/>
+<line x1="1534" y1="13" x2="1534" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#plus" x="1556" y="20" stroke="#999"/>
+<use href="#down" transform="translate(1576 21) scale(0.8)" stroke="#999"/>
+<line x1="0" y1="40" x2="1600" y2="40" stroke="#3a3a3a" stroke-width="1"/>
+<rect x="0" y="40" width="300" height="860" rx="0" fill="#232323"/>
+<use href="#down" x="18" y="64" stroke="#999"/>
+<text x="34" y="68" fill="#999" font-size="13" font-style="italic" class="m">Scratchpad</text>
+<use href="#plus" x="272" y="64" stroke="#999"/>
+<line x1="0" y1="82" x2="300" y2="82" stroke="#3a3a3a" stroke-width="1"/>
+<rect x="3" y="83" width="297" height="50" rx="0" fill="#2f2f2f"/>
+<use href="#home" x="18" y="100" stroke="#eee"/>
+<use href="#down" x="40" y="100" stroke="#999"/>
+<text x="56" y="104" fill="#eee" font-size="13" font-weight="600" class="m">acme-shop</text>
+<rect x="150" y="91" width="30" height="18" rx="9" fill="#3a3320" stroke="#a15c2f" stroke-width="1"/>
+<text x="165" y="104" fill="#d9a648" font-size="11" text-anchor="middle" class="m">1</text>
+<use href="#plus" x="252" y="100" stroke="#999"/>
+<use href="#close" x="276" y="100" stroke="#999"/>
+<text x="56" y="124" fill="#999" font-size="11" class="m">3 worktrees · 18 changes</text>
+<use href="#down" x="40" y="146" stroke="#999"/>
+<text x="56" y="150" fill="#ddd" font-size="13" class="m">Page 1</text>
+<text x="276" y="150" fill="#999" font-size="11" text-anchor="end" class="m">1</text>
+<circle cx="64" cy="171" r="3.5" fill="none" stroke="#666" stroke-width="1.5"/>
+<text x="78" y="175" fill="#bbb" font-size="12" class="m">storefront</text>
+<text x="78" y="189" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">acme-shop  </tspan><tspan fill="#d9a648">main</tspan></text>
+<use href="#down" x="40" y="210" stroke="#999"/>
+<text x="56" y="214" fill="#ddd" font-size="13" class="m">Agents</text>
+<text x="276" y="214" fill="#999" font-size="11" text-anchor="end" class="m">4</text>
+<circle cx="64" cy="235" r="4" fill="#4a9eff"/>
+<text x="78" y="239" fill="#bbb" font-size="12" class="m">login flow</text>
+<text x="78" y="253" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">acme-shop  </tspan><tspan fill="#d9a648">feat/login-flow</tspan></text>
+<circle cx="64" cy="271" r="4" fill="#d9a648"/>
+<text x="78" y="275" fill="#bbb" font-size="12" class="m">cart totals</text>
+<text x="78" y="289" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">acme-shop  </tspan><tspan fill="#d9a648">fix/cart-rounding</tspan></text>
+<text x="276" y="275" fill="#d9a648" font-size="10.5" text-anchor="end" class="m">needs you</text>
+<circle cx="64" cy="307" r="4" fill="#4a9eff"/>
+<text x="78" y="311" fill="#bbb" font-size="12" class="m">search index</text>
+<text x="78" y="325" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">acme-shop  </tspan><tspan fill="#d9a648">feat/search-ranking</tspan></text>
+<circle cx="64" cy="343" r="4" fill="#8bc98b"/>
+<text x="78" y="347" fill="#bbb" font-size="12" class="m">checkout tests</text>
+<text x="78" y="361" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">acme-shop  </tspan><tspan fill="#d9a648">test/checkout</tspan></text>
+<rect x="0" y="82" width="3" height="288" rx="0" fill="#8bc98b"/>
+<line x1="0" y1="370" x2="300" y2="370" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#home" x="18" y="388" stroke="#999"/>
+<use href="#down" x="40" y="388" stroke="#999"/>
+<text x="56" y="392" fill="#eee" font-size="13" font-weight="600" class="m">weather-cli</text>
+<use href="#plus" x="252" y="388" stroke="#999"/>
+<use href="#close" x="276" y="388" stroke="#999"/>
+<text x="56" y="412" fill="#999" font-size="11" class="m">2 worktrees · 5 changes</text>
+<use href="#down" x="40" y="434" stroke="#999"/>
+<text x="56" y="438" fill="#ddd" font-size="13" class="m">Agents</text>
+<text x="276" y="438" fill="#999" font-size="11" text-anchor="end" class="m">2</text>
+<circle cx="64" cy="459" r="3.5" fill="none" stroke="#666" stroke-width="1.5"/>
+<text x="78" y="463" fill="#bbb" font-size="12" class="m">forecast cache</text>
+<text x="78" y="477" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">weather-cli  </tspan><tspan fill="#d9a648">feat/cache</tspan></text>
+<circle cx="64" cy="495" r="4" fill="#4a9eff"/>
+<text x="78" y="499" fill="#bbb" font-size="12" class="m">units flag</text>
+<text x="78" y="513" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">weather-cli  </tspan><tspan fill="#d9a648">feat/units</tspan></text>
+<rect x="0" y="370" width="3" height="152" rx="0" fill="#d9b45c"/>
+<line x1="0" y1="522" x2="300" y2="522" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#home" x="18" y="540" stroke="#999"/>
+<use href="#right" x="40" y="540" stroke="#999"/>
+<text x="56" y="544" fill="#eee" font-size="13" font-weight="600" class="m">notes-app</text>
+<use href="#plus" x="252" y="540" stroke="#999"/>
+<use href="#close" x="276" y="540" stroke="#999"/>
+<text x="56" y="564" fill="#999" font-size="11" class="m">6 changes</text>
+<rect x="0" y="522" width="3" height="52" rx="0" fill="#8ab4e0"/>
+<line x1="0" y1="574" x2="300" y2="574" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#home" x="18" y="592" stroke="#999"/>
+<use href="#right" x="40" y="592" stroke="#999"/>
+<text x="56" y="596" fill="#eee" font-size="13" font-weight="600" class="m">dotfiles</text>
+<use href="#plus" x="252" y="592" stroke="#999"/>
+<use href="#close" x="276" y="592" stroke="#999"/>
+<text x="56" y="616" fill="#999" font-size="11" class="m">clean</text>
+<rect x="0" y="574" width="3" height="52" rx="0" fill="#b48ae0"/>
+<line x1="0" y1="626" x2="300" y2="626" stroke="#3a3a3a" stroke-width="1"/>
+<line x1="0" y1="800" x2="300" y2="800" stroke="#3a3a3a" stroke-width="1"/>
+<text x="18" y="826" fill="#999" font-size="12" class="m">Task manager</text>
+<rect x="126" y="812" width="160" height="20" rx="4" fill="#1a1a1a" stroke="#3a3a3a" stroke-width="1"/>
+<text x="206" y="826" fill="#999" font-size="10.5" text-anchor="middle" class="m">Agents 4/6 · 9 of 32 GB</text>
+<text x="18" y="852" fill="#999" font-size="12" class="m">Usage</text>
+<text x="18" y="878" fill="#999" font-size="12" class="m">Settings</text>
+<line x1="300" y1="40" x2="300" y2="900" stroke="#3a3a3a" stroke-width="1"/>
+<rect x="301" y="41" width="1300" height="860" rx="0" fill="#1e1e1e"/>
+<rect x="320" y="49" width="440" height="26" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#search" transform="translate(335 62) scale(0.9)" stroke="#666"/>
+<text x="350" y="66" fill="#666" font-size="11">Search cards — title, file, status, label, context…</text>
+<rect x="776" y="51" width="118" height="22" rx="4" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1"/>
+<text x="784" y="66" fill="#eee" font-size="11">All contexts</text>
+<use href="#down" transform="translate(880 62) scale(0.7)" stroke="#999"/>
+<rect x="900" y="51" width="118" height="22" rx="4" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1"/>
+<text x="908" y="66" fill="#eee" font-size="11">Any kind</text>
+<use href="#down" transform="translate(1004 62) scale(0.7)" stroke="#999"/>
+<rect x="1024" y="51" width="118" height="22" rx="4" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1"/>
+<text x="1032" y="66" fill="#eee" font-size="11">Any rail</text>
+<use href="#down" transform="translate(1128 62) scale(0.7)" stroke="#999"/>
+<rect x="1148" y="51" width="118" height="22" rx="4" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1"/>
+<text x="1156" y="66" fill="#eee" font-size="11">Any label</text>
+<use href="#down" transform="translate(1252 62) scale(0.7)" stroke="#999"/>
+<rect x="1278" y="51" width="24" height="22" rx="4" fill="none" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#link" transform="translate(1290 62) scale(0.8)" stroke="#999"/>
+<rect x="1532" y="51" width="41.244" height="22" rx="4" fill="none" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#archive" transform="translate(1544 62) scale(0.8)" stroke="#999"/>
+<text x="1553" y="66" fill="#999" font-size="11">12</text>
+<line x1="300" y1="84" x2="1600" y2="84" stroke="#3a3a3a" stroke-width="1"/>
+<rect x="320" y="104" width="300" height="630" rx="8" fill="#2f2f2f"/>
+<text x="332" y="130" fill="#eee" font-size="14" font-weight="700">To Do</text>
+<text x="382.14" y="130" fill="#666" font-size="12">5</text>
+<use href="#close" transform="translate(601 125) scale(1.05)" stroke="#e08a8a"/>
+<rect x="542" y="114" width="34.622" height="22" rx="4" fill="none" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#play" transform="translate(554 125) scale(0.8)" stroke="#7ea8d8"/>
+<text x="563" y="129" fill="#7ea8d8" font-size="11">4</text>
+<rect x="332" y="146" width="276" height="106" rx="6" fill="#17301a" stroke="#3f6b3f" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#k-plan" transform="translate(348 163) scale(0.9)" stroke="#8bc98b"/>
+<use href="#route" transform="translate(367 163) scale(0.85)" stroke="#999"/>
+<circle cx="380.8" cy="167.2" r="0.9" fill="#d9a648"/>
+<line x1="384.0" y1="168" x2="384.0" y2="165.0" stroke="#d9a648" stroke-width="1.8"/>
+<line x1="387.2" y1="168" x2="387.2" y2="162.5" stroke="#d9a648" stroke-width="1.8"/>
+<line x1="390.4" y1="168" x2="390.4" y2="160.0" stroke="#d9a648" stroke-width="1.8"/>
+<use href="#gauge" transform="translate(405 163) scale(0.85)" stroke="#999"/>
+<text x="413" y="167" fill="#999" font-size="10">4</text>
+<text x="424" y="167" fill="#999" font-size="11">0/6</text>
+<text x="598" y="167" fill="#999" font-size="11" text-anchor="end">3</text>
+<use href="#right" transform="translate(584 163) scale(0.8)" stroke="#999"/>
+<text x="342" y="188" fill="#eee" font-size="13">Guest checkout</text>
+<rect x="342" y="199" width="64.568" height="18" rx="9" fill="none" stroke="#6ad1c9" stroke-width="1"/>
+<text x="349" y="211.5" fill="#ddd" font-size="10.5">checkout</text>
+<rect x="342" y="224" width="32.963" height="18" rx="9" fill="none" stroke="#3f6b3f" stroke-width="1"/>
+<text x="349" y="236.5" fill="#8bc98b" font-size="10.5">web</text>
+<rect x="332" y="260" width="276" height="98" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#k-task" transform="translate(348 277) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#route" transform="translate(367 277) scale(0.85)" stroke="#999"/>
+<circle cx="380.8" cy="281.2" r="0.9" fill="#999"/>
+<line x1="384.0" y1="282" x2="384.0" y2="279.0" stroke="#999" stroke-width="1.8"/>
+<line x1="387.2" y1="282" x2="387.2" y2="276.5" stroke="#999" stroke-width="1.8"/>
+<use href="#gauge" transform="translate(405 277) scale(0.85)" stroke="#999"/>
+<text x="413" y="281" fill="#999" font-size="10">2</text>
+<text x="342" y="302" fill="#eee" font-size="13">Add a remember-me checkbox to</text>
+<text x="342" y="319" fill="#eee" font-size="13">login</text>
+<rect x="342" y="330" width="39.284" height="18" rx="9" fill="none" stroke="#b48ae0" stroke-width="1"/>
+<text x="349" y="342.5" fill="#ddd" font-size="10.5">auth</text>
+<rect x="332" y="366" width="276" height="106" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#k-task" transform="translate(348 383) scale(0.9)" stroke="#7ea8d8"/>
+<circle cx="361.8" cy="387.2" r="0.9" fill="#999"/>
+<line x1="365.0" y1="388" x2="365.0" y2="385.0" stroke="#999" stroke-width="1.8"/>
+<use href="#gauge" transform="translate(386 383) scale(0.85)" stroke="#999"/>
+<text x="394" y="387" fill="#999" font-size="10">3</text>
+<text x="342" y="408" fill="#eee" font-size="13">Rate-limit the search endpoint</text>
+<rect x="342" y="419" width="39.284" height="18" rx="9" fill="none" stroke="#e0a86a" stroke-width="1"/>
+<text x="349" y="431.5" fill="#ddd" font-size="10.5">perf</text>
+<rect x="386.284" y="419" width="45.605" height="18" rx="9" fill="none" stroke="#8bc98b" stroke-width="1"/>
+<text x="393.284" y="431.5" fill="#ddd" font-size="10.5">infra</text>
+<rect x="342" y="444" width="51.926" height="18" rx="9" fill="none" stroke="#555" stroke-width="1"/>
+<text x="349" y="456.5" fill="#999" font-size="10.5">search</text>
+<rect x="332" y="480" width="276" height="98" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#k-note" transform="translate(348 497) scale(0.9)" stroke="#d9a648"/>
+<text x="342" y="522" fill="#eee" font-size="13">Ask design about the empty-cart</text>
+<text x="342" y="539" fill="#eee" font-size="13">illustration</text>
+<rect x="342" y="550" width="51.926" height="18" rx="9" fill="none" stroke="#c9c98b" stroke-width="1"/>
+<text x="349" y="562.5" fill="#ddd" font-size="10.5">design</text>
+<rect x="332" y="586" width="276" height="106" rx="6" fill="#20242a" stroke="#555" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#k-task" transform="translate(348 603) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#gauge" transform="translate(367 603) scale(0.85)" stroke="#999"/>
+<text x="375" y="607" fill="#999" font-size="10">2</text>
+<rect x="586" y="591" width="17" height="17" rx="4" fill="#1e1e1e" opacity="0.85"/>
+<use href="#close" transform="translate(594.5 599.5) scale(0.8)" stroke="#ddd"/>
+<text x="342" y="628" fill="#eee" font-size="13">Migrate product images to WebP</text>
+<rect x="342" y="639" width="39.284" height="18" rx="9" fill="none" stroke="#e0a86a" stroke-width="1"/>
+<text x="349" y="651.5" fill="#ddd" font-size="10.5">perf</text>
+<rect x="551.94" y="664" width="46.06" height="18" rx="9" fill="#2f2f2f" stroke="#3f6b3f" stroke-width="1"/>
+<path d="M560.94 669 l6 4 l-6 4 Z" fill="#8bc98b"/>
+<text x="571.94" y="676.5" fill="#8bc98b" font-size="10">hub</text>
+<rect x="451.72" y="664" width="94.22" height="18" rx="9" fill="#2f2f2f" stroke="#4a6a8a" stroke-width="1"/>
+<path d="M460.72 669 l6 4 l-6 4 Z" fill="#7ea8d8"/>
+<text x="471.72" y="676.5" fill="#7ea8d8" font-size="10">new session</text>
+<text x="332" y="714" fill="#999" font-size="12">+ Add card</text>
+<rect x="634" y="104" width="300" height="629" rx="8" fill="#2f2f2f"/>
+<text x="646" y="130" fill="#eee" font-size="14" font-weight="700">In Progress</text>
+<text x="746.708" y="130" fill="#666" font-size="12">4</text>
+<use href="#close" transform="translate(915 125) scale(1.05)" stroke="#e08a8a"/>
+<rect x="646" y="146" width="276" height="81" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<clipPath id="cc1"><rect x="646" y="146" width="276" height="81" rx="6"/></clipPath>
+<rect x="646" y="146" width="3" height="81" fill="#4a9eff" clip-path="url(#cc1)"/>
+<use href="#k-task" transform="translate(665 163) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#route" transform="translate(684 163) scale(0.85)" stroke="#999"/>
+<circle cx="697.8" cy="167.2" r="0.9" fill="#e08a8a"/>
+<line x1="701.0" y1="168" x2="701.0" y2="165.0" stroke="#e08a8a" stroke-width="1.8"/>
+<line x1="704.2" y1="168" x2="704.2" y2="162.5" stroke="#e08a8a" stroke-width="1.8"/>
+<line x1="707.4" y1="168" x2="707.4" y2="160.0" stroke="#e08a8a" stroke-width="1.8"/>
+<line x1="710.6" y1="168" x2="710.6" y2="157.5" stroke="#e08a8a" stroke-width="1.8"/>
+<use href="#gauge" transform="translate(722 163) scale(0.85)" stroke="#999"/>
+<text x="730" y="167" fill="#999" font-size="10">2</text>
+<use href="#loader" transform="translate(747 163) scale(0.95)" stroke="#7ea8d8"/>
+<text x="659" y="188" fill="#eee" font-size="13">Fix the login flow</text>
+<rect x="659" y="199" width="39.284" height="18" rx="9" fill="none" stroke="#b48ae0" stroke-width="1"/>
+<text x="666" y="211.5" fill="#ddd" font-size="10.5">auth</text>
+<rect x="703.284" y="199" width="32.963" height="18" rx="9" fill="none" stroke="#e08a8a" stroke-width="1"/>
+<text x="710.284" y="211.5" fill="#ddd" font-size="10.5">bug</text>
+<rect x="646" y="235" width="276" height="98" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<clipPath id="cc2"><rect x="646" y="235" width="276" height="98" rx="6"/></clipPath>
+<rect x="646" y="235" width="3" height="98" fill="#a15c2f" clip-path="url(#cc2)"/>
+<use href="#k-task" transform="translate(665 252) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#route" transform="translate(684 252) scale(0.85)" stroke="#999"/>
+<circle cx="697.8" cy="256.2" r="0.9" fill="#d9a648"/>
+<line x1="701.0" y1="257" x2="701.0" y2="254.0" stroke="#d9a648" stroke-width="1.8"/>
+<line x1="704.2" y1="257" x2="704.2" y2="251.5" stroke="#d9a648" stroke-width="1.8"/>
+<line x1="707.4" y1="257" x2="707.4" y2="249.0" stroke="#d9a648" stroke-width="1.8"/>
+<use href="#gauge" transform="translate(722 252) scale(0.85)" stroke="#999"/>
+<text x="730" y="256" fill="#999" font-size="10">3</text>
+<use href="#bubble" transform="translate(747 252) scale(0.95)" stroke="#d9a648"/>
+<text x="747.4" y="255" fill="#d9a648" font-size="7.5" text-anchor="middle" font-weight="700">?</text>
+<text x="659" y="277" fill="#eee" font-size="13">Cart and invoice totals disagree</text>
+<text x="659" y="294" fill="#eee" font-size="13">by a cent</text>
+<rect x="659" y="305" width="64.568" height="18" rx="9" fill="none" stroke="#6ad1c9" stroke-width="1"/>
+<text x="666" y="317.5" fill="#ddd" font-size="10.5">checkout</text>
+<rect x="728.568" y="305" width="32.963" height="18" rx="9" fill="none" stroke="#e08a8a" stroke-width="1"/>
+<text x="735.568" y="317.5" fill="#ddd" font-size="10.5">bug</text>
+<rect x="646" y="341" width="276" height="261" rx="6" fill="#17301a" stroke="#3f6b3f" stroke-width="1" stroke-dasharray="4 3"/>
+<clipPath id="cc3"><rect x="646" y="341" width="276" height="261" rx="6"/></clipPath>
+<rect x="646" y="341" width="3" height="261" fill="#4a9eff" clip-path="url(#cc3)"/>
+<use href="#k-plan" transform="translate(665 358) scale(0.9)" stroke="#8bc98b"/>
+<circle cx="678.8" cy="362.2" r="0.9" fill="#999"/>
+<line x1="682.0" y1="363" x2="682.0" y2="360.0" stroke="#999" stroke-width="1.8"/>
+<line x1="685.2" y1="363" x2="685.2" y2="357.5" stroke="#999" stroke-width="1.8"/>
+<use href="#gauge" transform="translate(703 358) scale(0.85)" stroke="#999"/>
+<text x="711" y="362" fill="#999" font-size="10">4</text>
+<text x="722" y="362" fill="#999" font-size="11">2/5</text>
+<use href="#loader" transform="translate(755.866 358) scale(0.95)" stroke="#7ea8d8"/>
+<text x="912" y="362" fill="#999" font-size="11" text-anchor="end">3</text>
+<use href="#down" transform="translate(898 358) scale(0.8)" stroke="#999"/>
+<text x="659" y="383" fill="#eee" font-size="13">Search ranking</text>
+<rect x="659" y="394" width="51.926" height="18" rx="9" fill="none" stroke="#3f6b3f" stroke-width="1"/>
+<text x="666" y="406.5" fill="#8bc98b" font-size="10.5">search</text>
+<rect x="659" y="421" width="253" height="171" rx="6" fill="#000" opacity="0.25"/>
+<rect x="666" y="428" width="239" height="49" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<clipPath id="cc4"><rect x="666" y="428" width="239" height="49" rx="6"/></clipPath>
+<rect x="666" y="428" width="3" height="49" fill="#4a9eff" clip-path="url(#cc4)"/>
+<use href="#k-task" transform="translate(682 442) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#gauge" transform="translate(701 442) scale(0.85)" stroke="#999"/>
+<text x="709" y="446" fill="#999" font-size="10">2</text>
+<use href="#loader" transform="translate(726 442) scale(0.95)" stroke="#7ea8d8"/>
+<text x="676" y="466" fill="#eee" font-size="12">Boost title over body</text>
+<rect x="666" y="482" width="239" height="49" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#k-task" transform="translate(679 496) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#gauge" transform="translate(698 496) scale(0.85)" stroke="#999"/>
+<text x="706" y="500" fill="#999" font-size="10">1</text>
+<text x="673" y="520" fill="#eee" font-size="12">Break ties by recency</text>
+<rect x="666" y="536" width="239" height="49" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#k-task" transform="translate(679 550) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#gauge" transform="translate(698 550) scale(0.85)" stroke="#999"/>
+<text x="706" y="554" fill="#999" font-size="10">3</text>
+<text x="673" y="574" fill="#eee" font-size="12">Tokenize unicode queries</text>
+<rect x="646" y="610" width="276" height="81" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<clipPath id="cc5"><rect x="646" y="610" width="276" height="81" rx="6"/></clipPath>
+<rect x="646" y="610" width="3" height="81" fill="#3f6b3f" clip-path="url(#cc5)"/>
+<use href="#k-task" transform="translate(665 627) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#route" transform="translate(684 627) scale(0.85)" stroke="#999"/>
+<use href="#gauge" transform="translate(703 627) scale(0.85)" stroke="#999"/>
+<text x="711" y="631" fill="#999" font-size="10">3</text>
+<use href="#idle" transform="translate(728 627) scale(0.95)" stroke="#999"/>
+<text x="659" y="652" fill="#eee" font-size="13">Checkout end-to-end tests</text>
+<rect x="659" y="663" width="45.605" height="18" rx="9" fill="none" stroke="#8ab4e0" stroke-width="1"/>
+<text x="666" y="675.5" fill="#ddd" font-size="10.5">tests</text>
+<text x="646" y="713" fill="#999" font-size="12">+ Add card</text>
+<rect x="948" y="104" width="300" height="449" rx="8" fill="#2f2f2f"/>
+<text x="960" y="130" fill="#eee" font-size="14" font-weight="700">Done</text>
+<text x="1001.712" y="130" fill="#666" font-size="12">4</text>
+<use href="#close" transform="translate(1229 125) scale(1.05)" stroke="#e08a8a"/>
+<rect x="1170" y="114" width="34.622" height="22" rx="4" fill="none" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#archive" transform="translate(1182 125) scale(0.8)" stroke="#999"/>
+<text x="1191" y="129" fill="#999" font-size="11">4</text>
+<rect x="960" y="146" width="276" height="81" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#k-task" transform="translate(976 163) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#route" transform="translate(995 163) scale(0.85)" stroke="#999"/>
+<use href="#gauge" transform="translate(1014 163) scale(0.85)" stroke="#999"/>
+<text x="1022" y="167" fill="#999" font-size="10">3</text>
+<text x="970" y="188" fill="#eee" font-size="13">Move sessions to signed cookies</text>
+<rect x="970" y="199" width="39.284" height="18" rx="9" fill="none" stroke="#b48ae0" stroke-width="1"/>
+<text x="977" y="211.5" fill="#ddd" font-size="10.5">auth</text>
+<rect x="960" y="235" width="276" height="106" rx="6" fill="#17301a" stroke="#3f6b3f" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#k-plan" transform="translate(976 252) scale(0.9)" stroke="#8bc98b"/>
+<use href="#gauge" transform="translate(995 252) scale(0.85)" stroke="#999"/>
+<text x="1003" y="256" fill="#999" font-size="10">5</text>
+<text x="1014" y="256" fill="#999" font-size="11">7/7</text>
+<text x="1226" y="256" fill="#999" font-size="11" text-anchor="end">4</text>
+<use href="#right" transform="translate(1212 252) scale(0.8)" stroke="#999"/>
+<text x="970" y="277" fill="#eee" font-size="13">Payment webhooks</text>
+<rect x="970" y="288" width="64.568" height="18" rx="9" fill="none" stroke="#6ad1c9" stroke-width="1"/>
+<text x="977" y="300.5" fill="#ddd" font-size="10.5">checkout</text>
+<rect x="970" y="313" width="32.963" height="18" rx="9" fill="none" stroke="#3f6b3f" stroke-width="1"/>
+<text x="977" y="325.5" fill="#8bc98b" font-size="10.5">web</text>
+<rect x="960" y="349" width="276" height="81" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#k-task" transform="translate(976 366) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#gauge" transform="translate(995 366) scale(0.85)" stroke="#999"/>
+<text x="1003" y="370" fill="#999" font-size="10">1</text>
+<text x="970" y="391" fill="#eee" font-size="13">Product page skeleton loaders</text>
+<rect x="970" y="402" width="51.926" height="18" rx="9" fill="none" stroke="#c9c98b" stroke-width="1"/>
+<text x="977" y="414.5" fill="#ddd" font-size="10.5">design</text>
+<rect x="960" y="438" width="276" height="73" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#k-note" transform="translate(976 455) scale(0.9)" stroke="#d9a648"/>
+<text x="970" y="480" fill="#eee" font-size="13">Staging database was reseeded on</text>
+<text x="970" y="497" fill="#eee" font-size="13">Monday</text>
+<text x="960" y="533" fill="#999" font-size="12">+ Add card</text>
+<rect x="1262" y="104" width="300" height="40" rx="8" fill="none" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="1276" y="129" fill="#999" font-size="12">+ Add column</text>
+</g>
+<rect x="0.5" y="0.5" width="1599" height="899" rx="12" fill="none" stroke="#555"/>
+</svg>
