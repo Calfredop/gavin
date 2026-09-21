@@ -458,15 +458,19 @@ fn sensitive_home_roots() -> Vec<(&'static str, PathBuf)> {
         .collect()
 }
 
-/// Resolves a card's `attachments:` entries against the workspace root
-/// and classifies each one -- `Root`/`ExtraContext` inside what gavin
+/// Resolves a card's `attachments:` entries against `root` and
+/// classifies each one -- `Root`/`ExtraContext` inside what gavin
 /// already trusts, `Outside` a legal reference gavin will not read
 /// silently, `Refused` one it will never read at all.
 ///
-/// The root, never the session's cwd: a card bound to a rail runs in a
-/// worktree, and resolving `docs/spec.md` against wherever the agent
-/// happens to start would hand two sessions two different files (or one
-/// of them nothing at all) from the same card.
+/// `root` is the checkout the agent is about to run in, and the caller
+/// names it (`resolveAttachmentsForRun` in `cardRunActions.ts`): the
+/// workspace root for a board Run, the rail's worktree for a step on a
+/// bound rail, whose card is about that checkout and not the root's copy
+/// of it. This command does not care which. Containment is classified
+/// against whatever it is given, `extra_contexts` is read from the
+/// `.gavin-root/config.toml` under it (a worktree carries the file), and
+/// the sensitive-home refusals below are root-independent.
 ///
 /// EVERY resolvable candidate is canonicalized (`resolve_for_containment`,
 /// the same walk-up-and-follow-symlinks the five raw-path commands above

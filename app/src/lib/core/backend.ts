@@ -155,7 +155,9 @@ export function viewableExtensions(): Promise<string[]> {
 /// One entry per requested path, in the order given, classified by
 /// `location` (`attachments.ts` owns what each value means and what to
 /// do with it). `absolutePath` is null only for a `refused` entry --
-/// resolved against the WORKSPACE ROOT rather than any session's cwd.
+/// resolved against `root`, the checkout the agent will run in: the
+/// workspace root for a board Run, the rail's worktree for a step on a
+/// bound rail (`resolveAttachmentsForRun` in `cardRunActions.ts` decides).
 export function attachmentStatus(root: string, paths: string[]): Promise<AttachmentStatus[]> {
   return invoke("attachment_status", { root, paths });
 }

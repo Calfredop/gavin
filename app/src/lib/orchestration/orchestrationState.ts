@@ -1398,12 +1398,24 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     return false;
   }
 
+  // The rail's own checkout, decided ONCE and read twice: the attachment
+  // gate resolves against it, and the launch cwd below is it. One value
+  // so the two can never name different checkouts -- the gate used to
+  // stat the workspace root while the agent started in the worktree, so
+  // a bound rail stalled on every file its branch had added and, where
+  // the file existed in both, told the agent to read the root's copy of
+  // the one it was about to edit. Null for an unbound rail, whose agent
+  // runs in the root anyway and resolves there.
+  const worktree = rail.worktreePath;
+
   // The same gate a board Run uses, and for the same reason -- but here
   // the refusal STALLS the step instead of starting it. A rail that ran
   // a card with a dead attachment would carry the damage into every
   // stage after it, so the reason lands on the chip and rule 5 pauses
   // the rail, exactly as a failed launch does.
-  const resolved = await resolveAttachmentsForRun(workspaceId, entry.plan.attachments ?? []);
+  const resolved = await resolveAttachmentsForRun(workspaceId, entry.plan.attachments ?? [], {
+    root: worktree,
+  });
   if ("error" in resolved) {
     await setStepRunAction(workspaceId, stepId, "stalled", null, resolved.error);
     return false;
@@ -1414,7 +1426,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // its own copy of the card, and the prompt has to say so (see
   // cardHomeNote). An agent that writes the copy leaves the board where
   // it was and this step running forever.
-  const cwd = rail.worktreePath ?? entry.contextFolder;
+  const cwd = worktree ?? entry.contextFolder;
   // The card file, for both kinds now. A plan step's prompt only names
   // the file, but the body is still what its agent goes on to execute --
   // and it is still what the human has to have read before a rail hands

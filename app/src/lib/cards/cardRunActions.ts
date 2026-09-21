@@ -99,18 +99,34 @@ function promptOpts(workspaceId: string, actionId: string): CardPromptOptions {
 /// Shared with the orchestration scheduler so a rail step and a board
 /// Run refuse on exactly the same evidence.
 ///
+/// Relative entries resolve against the checkout the agent is about to
+/// RUN IN, and the caller names it: the workspace root unless
+/// `options.root` says otherwise. A board Run, a Resume, Develop,
+/// Best-of-N and the main agent all run in the root, so they pass
+/// nothing; a rail step on a bound rail passes the rail's worktree
+/// (`executeLaunch`). The root used to be the rule for every launch, on
+/// the ground that one card must hand every session the same bytes --
+/// and for a bound rail that premise is inverted by construction. The
+/// rail was given a worktree precisely so its agent works on a checkout
+/// that differs from the root, and a card placed on it is about THAT
+/// checkout: the root's copy is a file the agent is not editing, and a
+/// file only the branch has could not be attached at all. Two rails
+/// running one card on two branches and reading two different files is
+/// exactly what the human asked for when they cut the branches.
+///
 /// `statuses` comes back beside the two lists because the first-Run
 /// review sheet names each entry by where it RESOLVED and how big it is
 /// (`cardReview.ts`), and re-stat'ing for the sheet would let it describe
 /// a different set of files from the one about to be handed over.
 export async function resolveAttachmentsForRun(
   workspaceId: string,
-  attachments: string[]
+  attachments: string[],
+  options: { root?: string | null } = {}
 ): Promise<
   { paths: string[]; withheld: string[]; statuses: AttachmentStatus[] } | { error: string }
 > {
   if (attachments.length === 0) return { paths: [], withheld: [], statuses: [] };
-  const root = workspaceRootPath(workspaceId);
+  const root = options.root ?? workspaceRootPath(workspaceId);
   // Only reachable with attachments to resolve: a relative one has
   // nothing to resolve against, and guessing a base is how a card ends
   // up reading a file from whatever directory the app was launched in.

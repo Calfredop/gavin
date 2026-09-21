@@ -92,7 +92,8 @@ vi.mock("$lib/core/layoutState", () => ({
   createSessionOnPage: vi.fn(),
   createSessionOnNewPage: vi.fn().mockResolvedValue(null),
   // The card-attachment run gate resolves relative paths against the
-  // workspace ROOT, so the scheduler reaches for this before it spawns.
+  // workspace ROOT when the rail has no checkout of its own, so the
+  // scheduler reaches for this before it spawns on an unbound rail.
   workspaceRootPath: vi.fn(() => "/ws"),
   // The first-Run review's marker read: a rail stalls a step whose card
   // nobody has read. True by default, since almost every fixture here is
@@ -1526,7 +1527,48 @@ describe("executeActions", () => {
     expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
   });
 
-  it("a step whose attachments resolve puts their absolute paths in the prompt", async () => {
+  it("a bound rail's step resolves its attachments against the worktree and puts those paths in the prompt", async () => {
+    cardAttachments.a = ["docs/spec.md"];
+    vi.mocked(backend.attachmentStatus).mockResolvedValue([
+      {
+        path: "docs/spec.md",
+        absolutePath: "/x/wt/docs/spec.md",
+        exists: true,
+        location: "root",
+        refusedReason: null,
+      },
+    ]);
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    // Resolved against the rail's worktree, the checkout the agent is
+    // about to run in, not the workspace root: the rail was given a
+    // worktree precisely so its agent works on files that differ from
+    // the root's, and a card placed on it is about THAT checkout. The
+    // root's copy is a file the agent is not editing.
+    expect(backend.attachmentStatus).toHaveBeenCalledWith("/x/wt", ["docs/spec.md"]);
+    const command = vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0][3] as string;
+    expect(command).toContain("/x/wt/docs/spec.md");
+  });
+
+  it("an unbound rail's step still resolves its attachments against the workspace root", async () => {
+    // No checkout of its own means its agent runs in the root, exactly
+    // as a board Run's does -- so it reads the same files from the same
+    // place a Run would.
+    orchestrations.update((all) => ({
+      ...all,
+      "ws-1": {
+        ...all["ws-1"],
+        rails: all["ws-1"].rails.map((r) => ({ ...r, worktreePath: null })),
+      },
+    }));
     cardAttachments.a = ["docs/spec.md"];
     vi.mocked(backend.attachmentStatus).mockResolvedValue([
       {
@@ -1547,11 +1589,48 @@ describe("executeActions", () => {
 
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
 
-    // Resolved against the workspace root, not the rail's worktree cwd:
-    // one card must hand every session the same bytes.
     expect(backend.attachmentStatus).toHaveBeenCalledWith("/ws", ["docs/spec.md"]);
     const command = vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0][3] as string;
     expect(command).toContain("/ws/docs/spec.md");
+  });
+
+  it("a bound rail launches on an attachment that exists only in its worktree, instead of stalling", async () => {
+    // The case the gate used to get wrong: a file the rail's branch
+    // ADDED. Stat'd against the root it does not exist, and the step
+    // stalled before any session was spawned; stat'd against the
+    // worktree it is there, and the step runs with it in the prompt.
+    cardAttachments.a = ["app/src-tauri/src/agent_install.rs"];
+    vi.mocked(backend.attachmentStatus).mockImplementation(async (root, paths) =>
+      paths.map((path) => ({
+        path,
+        absolutePath: `${root}/${path}`,
+        exists: root === "/x/wt",
+        location: "root" as const,
+        refusedReason: null,
+      }))
+    );
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(backend.setStepRun).not.toHaveBeenCalledWith(
+      "t1",
+      "stalled",
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledTimes(1);
+    const command = vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0][3] as string;
+    expect(command).toContain("/x/wt/app/src-tauri/src/agent_install.rs");
   });
 
   it("a launch that cannot create a session stalls the step instead of throwing", async () => {
