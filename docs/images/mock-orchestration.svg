@@ -1,0 +1,576 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900" xml:space="preserve" role="img" aria-labelledby="t">
+<title id="t">Gavin — illustrative mock-up of a workspace's Orchestration tab, with invented rails</title>
+<style>text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono',monospace;white-space:pre}.m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono',monospace}use{fill:none;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}</style>
+<defs>
+<clipPath id="win"><rect width="1600" height="900" rx="12"/></clipPath>
+<symbol id="trash" overflow="visible"><path d="M-5 -3.5 H5 M-3.5 -3.5 V4.5 a1 1 0 0 0 1 1 H2.5 a1 1 0 0 0 1 -1 V-3.5 M-1.5 -3.5 V-5.5 H1.5 V-3.5"/></symbol>
+<symbol id="brush" overflow="visible"><path d="M4.5 -5.5 L-0.5 -0.5 M-3.5 0 L1.5 5 M-3.5 0 L1 -1.5 L2.5 0 L1.5 5 H-4.5 Q-3 3 -3.5 0 Z"/></symbol>
+<symbol id="stack" overflow="visible"><rect x="-2.5" y="-2.5" width="8" height="8" rx="1.2"/><path d="M-5.5 2.5 V-4.3 a1.2 1.2 0 0 1 1.2 -1.2 H2.5"/></symbol>
+<symbol id="buoy" overflow="visible"><circle r="5.2"/><circle r="2"/><path d="M-3.7 -3.7 L-1.4 -1.4 M1.4 1.4 L3.7 3.7 M3.7 -3.7 L1.4 -1.4 M-3.7 3.7 L-1.4 1.4"/></symbol>
+<symbol id="rotate" overflow="visible"><path d="M-4.6 -1 A4.8 4.8 0 1 1 -3.4 3.4 M-5.2 -5 V-1 H-1.2"/></symbol>
+<symbol id="sparkle" overflow="visible"><path d="M0 -5.5 L1.4 -1.4 L5.5 0 L1.4 1.4 L0 5.5 L-1.4 1.4 L-5.5 0 L-1.4 -1.4 Z"/></symbol>
+<symbol id="sliders" overflow="visible"><path d="M-5 -3 H5 M-5 3 H5"/><circle cx="-1.5" cy="-3" r="1.5"/><circle cx="2" cy="3" r="1.5"/></symbol>
+<symbol id="grip" overflow="visible"><path d="M-2 -4 h0.01 M-2 0 h0.01 M-2 4 h0.01 M2 -4 h0.01 M2 0 h0.01 M2 4 h0.01" stroke-width="2"/></symbol>
+<symbol id="group" overflow="visible"><rect x="-5.5" y="-5.5" width="6.5" height="6.5" rx="1"/><rect x="-1" y="-1" width="6.5" height="6.5" rx="1"/></symbol>
+<symbol id="code" overflow="visible"><path d="M-4 -5.5 H1.5 L4 -3 V5.5 H-4 Z M-1.2 0 L-2.4 1.4 L-1.2 2.8 M1.2 0 L2.4 1.4 L1.2 2.8"/></symbol>
+<symbol id="users" overflow="visible"><circle cx="-1.5" cy="-2.5" r="2.2"/><path d="M-5.5 5 a4 4 0 0 1 8 0 M3 -4.4 a2.2 2.2 0 0 1 0 4 M4.2 1.6 a4 4 0 0 1 1.6 3.4"/></symbol>
+<symbol id="pr" overflow="visible"><circle cx="-3.5" cy="-3.5" r="1.6"/><circle cx="-3.5" cy="3.5" r="1.6"/><circle cx="3.5" cy="3.5" r="1.6"/><path d="M-3.5 -1.9 V1.9 M3.5 1.9 V-1.5 a2 2 0 0 0 -2 -2 H0"/></symbol>
+<symbol id="repeat" overflow="visible"><path d="M-4.5 -0.5 V-1.5 a2 2 0 0 1 2 -2 H4.5 M2.5 -5.5 L4.5 -3.5 L2.5 -1.5 M4.5 0.5 V1.5 a2 2 0 0 1 -2 2 H-4.5 M-2.5 5.5 L-4.5 3.5 L-2.5 1.5"/></symbol>
+<symbol id="term" overflow="visible"><rect x="-5.5" y="-4.5" width="11" height="9" rx="1.5"/><path d="M-3 -1.5 L-1 0.5 L-3 2.5 M0.5 2.5 H3"/></symbol>
+<symbol id="fgit" overflow="visible"><path d="M-5.5 -4 H-1.5 L0 -2.5 H5.5 V4.5 H-5.5 Z"/><circle cx="-1" cy="1.5" r="1"/><circle cx="2.5" cy="1.5" r="1"/></symbol>
+<symbol id="panels" overflow="visible"><rect x="-5.5" y="-4.5" width="11" height="9" rx="1.5"/><path d="M-5.5 -1.5 H5.5 M-1.5 -1.5 V4.5"/></symbol>
+<symbol id="zap" overflow="visible"><path d="M1 -5.5 L-4 1 H0 L-1 5.5 L4 -1 H0 Z"/></symbol>
+<symbol id="minus" overflow="visible"><path d="M-4 0 H4"/></symbol>
+<symbol id="chev2" overflow="visible"><path d="M-4 -3.5 L-0.5 0 L-4 3.5 M0.5 -3.5 L4 0 L0.5 3.5"/></symbol>
+<symbol id="skip" overflow="visible"><path d="M-4.5 -4 L2 0 L-4.5 4 Z M4.5 -4 V4"/></symbol>
+<symbol id="checks" overflow="visible"><path d="M-6 0.5 L-3.5 3 L1 -2.5 M0 2 L1 3 L6 -2.5"/></symbol>
+<symbol id="sq-check" overflow="visible"><rect x="-4.5" y="-4.5" width="9" height="9" rx="1.5"/><path d="M-2.2 0 L-0.6 1.8 L2.4 -1.8"/></symbol>
+<symbol id="sq-dot" overflow="visible"><rect x="-4.5" y="-4.5" width="9" height="9" rx="1.5"/><path d="M0 0 h0.01" stroke-width="2.6"/></symbol>
+<symbol id="sq" overflow="visible"><rect x="-4.5" y="-4.5" width="9" height="9" rx="1.5"/></symbol>
+<symbol id="idle" overflow="visible"><circle r="4.8" stroke-dasharray="2.2 2.2"/></symbol>
+<symbol id="bubble" overflow="visible"><path d="M-5 5 L-4 2.2 A5.2 5.2 0 1 1 -2 4 Z"/></symbol>
+<symbol id="loader" overflow="visible"><path d="M0 -5 A5 5 0 1 1 -5 0"/></symbol>
+<symbol id="gauge" overflow="visible"><path d="M-5 3.5 A5.5 5.5 0 1 1 5 3.5 M0 1 L3 -2.5"/></symbol>
+<symbol id="route" overflow="visible"><circle cx="-3.5" cy="4" r="1.5"/><circle cx="3.5" cy="-4" r="1.5"/><path d="M-2 4 H2.5 a2 2 0 0 0 0 -4 H-2.5 a2 2 0 0 1 0 -4 H2"/></symbol>
+<symbol id="k-plan" overflow="visible"><path d="M-4 -5.5 H1.5 L4 -3 V5.5 H-4 Z M-2 0 H2 M-2 2.5 H2"/></symbol>
+<symbol id="k-task" overflow="visible"><path d="M-3.5 -5 L4.5 0 L-3.5 5 Z"/></symbol>
+<symbol id="k-note" overflow="visible"><path d="M-5 -5 H5 V1 L1 5 H-5 Z M5 1 H1 V5"/></symbol>
+<symbol id="archive" overflow="visible"><rect x="-5.5" y="-4.5" width="11" height="3" rx="0.8"/><path d="M-4.5 -1.5 V4.5 H4.5 V-1.5 M-1.5 1.2 H1.5"/></symbol>
+<symbol id="link" overflow="visible"><path d="M-1.5 -3 H-3 a3 3 0 0 0 0 6 H-1.5 M1.5 -3 H3 a3 3 0 0 1 0 6 H1.5 M-2 0 H2"/></symbol>
+<symbol id="lock" overflow="visible"><rect x="-3.5" y="-0.5" width="7" height="5.5" rx="1"/><path d="M-2 -0.5 V-2.5 a2 2 0 0 1 4 0 V-0.5"/></symbol>
+<symbol id="t-win" overflow="visible"><rect x="-5.5" y="-4.5" width="11" height="9" rx="1.5"/><path d="M-5.5 -1.5 H5.5"/></symbol>
+<symbol id="t-gear" overflow="visible"><circle r="2"/><path d="M0 -5.5 V-4 M0 4 V5.5 M-5.5 0 H-4 M4 0 H5.5 M-3.9 -3.9 L-2.8 -2.8 M2.8 2.8 L3.9 3.9 M-3.9 3.9 L-2.8 2.8 M2.8 -2.8 L3.9 -3.9"/></symbol>
+<symbol id="t-files" overflow="visible"><path d="M-2.5 -5.5 H2 L4.5 -3 V3 H-2.5 Z M-4.5 -2.5 V5.5 H2"/></symbol>
+<symbol id="t-bot" overflow="visible"><rect x="-5" y="-2.5" width="10" height="7.5" rx="2"/><path d="M0 -2.5 V-5 M-2 1 V2 M2 1 V2"/></symbol>
+<symbol id="t-doc" overflow="visible"><path d="M-4 -5.5 H1.5 L4 -3 V5.5 H-4 Z M-2 0 H2 M-2 2.5 H2"/></symbol>
+<symbol id="t-eye" overflow="visible"><path d="M-6 0 C-3 -5 3 -5 6 0 C3 5 -3 5 -6 0 Z"/><circle r="1.8"/></symbol>
+<symbol id="t-way" overflow="visible"><circle cx="-4" cy="3.5" r="1.6"/><circle cx="4" cy="3.5" r="1.6"/><circle cx="0" cy="-3.5" r="1.6"/><path d="M-3 2 L-1 -2 M3 2 L1 -2 M-2.4 3.5 H2.4"/></symbol>
+<symbol id="t-kanban" overflow="visible"><path d="M-4 -5 V5 M0 -5 V1 M4 -5 V3.5"/></symbol>
+<symbol id="t-home" overflow="visible"><rect x="-5.5" y="-5.5" width="4.5" height="6.5" rx="1"/><rect x="1" y="-5.5" width="4.5" height="3.5" rx="1"/><rect x="1" y="0.5" width="4.5" height="5" rx="1"/><rect x="-5.5" y="3" width="4.5" height="2.5" rx="1"/></symbol>
+<symbol id="down" overflow="visible"><path d="M-4 -2 L0 2 L4 -2"/></symbol>
+<symbol id="right" overflow="visible"><path d="M-2 -4 L2 0 L-2 4"/></symbol>
+<symbol id="plus" overflow="visible"><path d="M-4 0 H4 M0 -4 V4"/></symbol>
+<symbol id="close" overflow="visible"><path d="M-3 -3 L3 3 M3 -3 L-3 3"/></symbol>
+<symbol id="home" overflow="visible"><path d="M-5 0 L0 -5 L5 0 M-3.5 -1 V5 H3.5 V-1"/></symbol>
+<symbol id="branch" overflow="visible"><path d="M-2 -2.5 V4 M-2 1 C-2 -1 3 0 3 -2.5"/><circle cx="-2" cy="-4" r="1.4"/><circle cx="3" cy="-4" r="1.4"/></symbol>
+<symbol id="split" overflow="visible"><rect x="-6" y="-5" width="12" height="10" rx="1.5"/><path d="M0 -5 V5"/></symbol>
+<symbol id="rows" overflow="visible"><rect x="-6" y="-5" width="12" height="10" rx="1.5"/><path d="M-6 0 H6"/></symbol>
+<symbol id="search" overflow="visible"><circle cx="-1" cy="-1" r="4"/><path d="M2 2 L5.5 5.5"/></symbol>
+<symbol id="play" overflow="visible"><path d="M-3 -4 L4 0 L-3 4 Z"/></symbol>
+<symbol id="check" overflow="visible"><path d="M-4 0 L-1 3 L4 -3"/></symbol>
+<symbol id="dots" overflow="visible"><path d="M-5 0 h0.01 M0 0 h0.01 M5 0 h0.01" stroke-width="2.4"/></symbol>
+<symbol id="arrow" overflow="visible"><path d="M-6 0 H5 M2 -3 L5 0 L2 3"/></symbol>
+<symbol id="folder" overflow="visible"><path d="M-5 -3.5 H-1 L0.5 -2 H5 V4 H-5 Z"/></symbol>
+<symbol id="tool" overflow="visible"><path d="M-4 4 L1 -1 M0 -4 a3 3 0 1 0 4 4 L2 -2 Z"/></symbol>
+<symbol id="pause" overflow="visible"><path d="M-2.5 -4 V4 M2.5 -4 V4"/></symbol>
+</defs>
+<g clip-path="url(#win)">
+<rect x="0" y="0" width="1600" height="900" rx="0" fill="#1a1a1a"/>
+<rect x="0" y="0" width="1600" height="40" rx="0" fill="#1e1e1e"/>
+<circle cx="26" cy="20" r="6" fill="#ff5f57"/>
+<circle cx="46" cy="20" r="6" fill="#febc2e"/>
+<circle cx="66" cy="20" r="6" fill="#28c840"/>
+<use href="#t-home" x="115" y="20" stroke="#999"/>
+<text x="129" y="24.5" fill="#999" font-size="12.5">Home</text>
+<line x1="174.6" y1="13" x2="174.6" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#branch" x="197.1" y="20" stroke="#999"/>
+<text x="211.1" y="24.5" fill="#999" font-size="12.5">Git</text>
+<line x1="249.175" y1="13" x2="249.175" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-kanban" x="271.675" y="20" stroke="#999"/>
+<text x="285.675" y="24.5" fill="#999" font-size="12.5">Kanban</text>
+<line x1="346.32500000000005" y1="13" x2="346.32500000000005" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-way" x="368.82500000000005" y="20" stroke="#eee"/>
+<text x="382.82500000000005" y="24.5" fill="#eee" font-size="12.5">Orchestration</text>
+<rect x="349.82500000000005" y="38" width="142.825" height="2" rx="0" fill="#d9a648"/>
+<circle cx="485.65000000000003" cy="10" r="3" fill="#d9a648"/>
+<line x1="496.15000000000003" y1="13" x2="496.15000000000003" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#tool" x="518.6500000000001" y="20" stroke="#999"/>
+<text x="532.6500000000001" y="24.5" fill="#999" font-size="12.5">Tools</text>
+<line x1="585.7750000000001" y1="13" x2="585.7750000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-eye" x="608.2750000000001" y="20" stroke="#999"/>
+<text x="622.2750000000001" y="24.5" fill="#999" font-size="12.5">Review</text>
+<line x1="682.9250000000001" y1="13" x2="682.9250000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-doc" x="705.4250000000001" y="20" stroke="#999"/>
+<text x="719.4250000000001" y="24.5" fill="#999" font-size="12.5">PRD</text>
+<line x1="757.5000000000001" y1="13" x2="757.5000000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-bot" x="780.0000000000001" y="20" stroke="#999"/>
+<text x="794.0000000000001" y="24.5" fill="#999" font-size="12.5">AGENTS.md</text>
+<line x1="877.2250000000001" y1="13" x2="877.2250000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#folder" x="899.7250000000001" y="20" stroke="#999"/>
+<text x="913.7250000000001" y="24.5" fill="#999" font-size="12.5">Plans</text>
+<line x1="966.8500000000001" y1="13" x2="966.8500000000001" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#t-files" x="989.3500000000001" y="20" stroke="#999"/>
+<text x="1003.3500000000001" y="24.5" fill="#999" font-size="12.5">Files</text>
+<use href="#lock" x="1071.9750000000001" y="20" stroke="#999"/>
+<use href="#t-gear" x="1484" y="20" stroke="#999"/>
+<use href="#t-win" x="1514" y="20" stroke="#999"/>
+<line x1="1534" y1="13" x2="1534" y2="27" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#plus" x="1556" y="20" stroke="#999"/>
+<use href="#down" transform="translate(1576 21) scale(0.8)" stroke="#999"/>
+<line x1="0" y1="40" x2="1600" y2="40" stroke="#3a3a3a" stroke-width="1"/>
+<rect x="0" y="40" width="300" height="860" rx="0" fill="#232323"/>
+<use href="#down" x="18" y="64" stroke="#999"/>
+<text x="34" y="68" fill="#999" font-size="13" font-style="italic" class="m">Scratchpad</text>
+<use href="#plus" x="272" y="64" stroke="#999"/>
+<line x1="0" y1="82" x2="300" y2="82" stroke="#3a3a3a" stroke-width="1"/>
+<rect x="3" y="83" width="297" height="50" rx="0" fill="#2f2f2f"/>
+<use href="#home" x="18" y="100" stroke="#eee"/>
+<use href="#down" x="40" y="100" stroke="#999"/>
+<text x="56" y="104" fill="#eee" font-size="13" font-weight="600" class="m">acme-shop</text>
+<rect x="150" y="91" width="30" height="18" rx="9" fill="#3a3320" stroke="#a15c2f" stroke-width="1"/>
+<text x="165" y="104" fill="#d9a648" font-size="11" text-anchor="middle" class="m">1</text>
+<use href="#plus" x="252" y="100" stroke="#999"/>
+<use href="#close" x="276" y="100" stroke="#999"/>
+<text x="56" y="124" fill="#999" font-size="11" class="m">3 worktrees · 18 changes</text>
+<use href="#down" x="40" y="146" stroke="#999"/>
+<text x="56" y="150" fill="#ddd" font-size="13" class="m">Page 1</text>
+<text x="276" y="150" fill="#999" font-size="11" text-anchor="end" class="m">1</text>
+<circle cx="64" cy="171" r="3.5" fill="none" stroke="#666" stroke-width="1.5"/>
+<text x="78" y="175" fill="#bbb" font-size="12" class="m">storefront</text>
+<text x="78" y="189" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">acme-shop  </tspan><tspan fill="#d9a648">main</tspan></text>
+<use href="#down" x="40" y="210" stroke="#999"/>
+<text x="56" y="214" fill="#ddd" font-size="13" class="m">Agents</text>
+<text x="276" y="214" fill="#999" font-size="11" text-anchor="end" class="m">4</text>
+<circle cx="64" cy="235" r="4" fill="#4a9eff"/>
+<text x="78" y="239" fill="#bbb" font-size="12" class="m">login flow</text>
+<text x="78" y="253" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">acme-shop  </tspan><tspan fill="#d9a648">feat/login-flow</tspan></text>
+<circle cx="64" cy="271" r="4" fill="#d9a648"/>
+<text x="78" y="275" fill="#bbb" font-size="12" class="m">cart totals</text>
+<text x="78" y="289" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">acme-shop  </tspan><tspan fill="#d9a648">fix/cart-rounding</tspan></text>
+<text x="276" y="275" fill="#d9a648" font-size="10.5" text-anchor="end" class="m">needs you</text>
+<circle cx="64" cy="307" r="4" fill="#4a9eff"/>
+<text x="78" y="311" fill="#bbb" font-size="12" class="m">search index</text>
+<text x="78" y="325" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">acme-shop  </tspan><tspan fill="#d9a648">feat/search-ranking</tspan></text>
+<circle cx="64" cy="343" r="4" fill="#8bc98b"/>
+<text x="78" y="347" fill="#bbb" font-size="12" class="m">checkout tests</text>
+<text x="78" y="361" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">acme-shop  </tspan><tspan fill="#d9a648">test/checkout</tspan></text>
+<rect x="0" y="82" width="3" height="288" rx="0" fill="#8bc98b"/>
+<line x1="0" y1="370" x2="300" y2="370" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#home" x="18" y="388" stroke="#999"/>
+<use href="#down" x="40" y="388" stroke="#999"/>
+<text x="56" y="392" fill="#eee" font-size="13" font-weight="600" class="m">weather-cli</text>
+<use href="#plus" x="252" y="388" stroke="#999"/>
+<use href="#close" x="276" y="388" stroke="#999"/>
+<text x="56" y="412" fill="#999" font-size="11" class="m">2 worktrees · 5 changes</text>
+<use href="#down" x="40" y="434" stroke="#999"/>
+<text x="56" y="438" fill="#ddd" font-size="13" class="m">Agents</text>
+<text x="276" y="438" fill="#999" font-size="11" text-anchor="end" class="m">2</text>
+<circle cx="64" cy="459" r="3.5" fill="none" stroke="#666" stroke-width="1.5"/>
+<text x="78" y="463" fill="#bbb" font-size="12" class="m">forecast cache</text>
+<text x="78" y="477" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">weather-cli  </tspan><tspan fill="#d9a648">feat/cache</tspan></text>
+<circle cx="64" cy="495" r="4" fill="#4a9eff"/>
+<text x="78" y="499" fill="#bbb" font-size="12" class="m">units flag</text>
+<text x="78" y="513" fill="#eee" font-size="10.5" class="m"><tspan fill="#666">weather-cli  </tspan><tspan fill="#d9a648">feat/units</tspan></text>
+<rect x="0" y="370" width="3" height="152" rx="0" fill="#d9b45c"/>
+<line x1="0" y1="522" x2="300" y2="522" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#home" x="18" y="540" stroke="#999"/>
+<use href="#right" x="40" y="540" stroke="#999"/>
+<text x="56" y="544" fill="#eee" font-size="13" font-weight="600" class="m">notes-app</text>
+<use href="#plus" x="252" y="540" stroke="#999"/>
+<use href="#close" x="276" y="540" stroke="#999"/>
+<text x="56" y="564" fill="#999" font-size="11" class="m">6 changes</text>
+<rect x="0" y="522" width="3" height="52" rx="0" fill="#8ab4e0"/>
+<line x1="0" y1="574" x2="300" y2="574" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#home" x="18" y="592" stroke="#999"/>
+<use href="#right" x="40" y="592" stroke="#999"/>
+<text x="56" y="596" fill="#eee" font-size="13" font-weight="600" class="m">dotfiles</text>
+<use href="#plus" x="252" y="592" stroke="#999"/>
+<use href="#close" x="276" y="592" stroke="#999"/>
+<text x="56" y="616" fill="#999" font-size="11" class="m">clean</text>
+<rect x="0" y="574" width="3" height="52" rx="0" fill="#b48ae0"/>
+<line x1="0" y1="626" x2="300" y2="626" stroke="#3a3a3a" stroke-width="1"/>
+<line x1="0" y1="800" x2="300" y2="800" stroke="#3a3a3a" stroke-width="1"/>
+<text x="18" y="826" fill="#999" font-size="12" class="m">Task manager</text>
+<rect x="126" y="812" width="160" height="20" rx="4" fill="#1a1a1a" stroke="#3a3a3a" stroke-width="1"/>
+<text x="206" y="826" fill="#999" font-size="10.5" text-anchor="middle" class="m">Agents 4/6 · 9 of 32 GB</text>
+<text x="18" y="852" fill="#999" font-size="12" class="m">Usage</text>
+<text x="18" y="878" fill="#999" font-size="12" class="m">Settings</text>
+<line x1="300" y1="40" x2="300" y2="900" stroke="#3a3a3a" stroke-width="1"/>
+<rect x="301" y="41" width="1300" height="860" rx="0" fill="#1e1e1e"/>
+<rect x="316" y="49" width="440" height="26" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#search" transform="translate(331 62) scale(0.9)" stroke="#666"/>
+<text x="346" y="66" fill="#666" font-size="11">Search rails, steps, unplaced cards…</text>
+<rect x="1517.104" y="49" width="66.896" height="26" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#plus" transform="translate(1533.104 62) scale(0.95)" stroke="#eee"/>
+<text x="1545.104" y="66.5" fill="#eee" font-size="12">Rail</text>
+<rect x="1420.984" y="49" width="88.12" height="26" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#brush" transform="translate(1436.984 62) scale(0.95)" stroke="#eee"/>
+<text x="1448.984" y="66.5" fill="#eee" font-size="12">Clear</text>
+<use href="#down" transform="translate(1496.1039999999998 62.5) scale(0.7)" stroke="#eee"/>
+<rect x="1324.416" y="49" width="88.568" height="26" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#play" transform="translate(1340.416 62) scale(0.95)" stroke="#eee"/>
+<text x="1352.416" y="66.5" fill="#eee" font-size="12">Run all</text>
+<rect x="1151.936" y="49" width="164.48000000000002" height="26" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1"/>
+<text x="1161.936" y="66.5" fill="#eee" font-size="12">Organize with agent…</text>
+<line x1="300" y1="84" x2="1600" y2="84" stroke="#3a3a3a" stroke-width="1"/>
+<line x1="640.0" y1="84" x2="640.0" y2="900" stroke="#3a3a3a" stroke-width="1"/>
+<text x="312.0" y="111" fill="#eee" font-size="16" font-weight="600">Auth</text>
+<use href="#chev2" transform="translate(571.646 106) scale(0.9)" stroke="#7ea8d8"/>
+<text x="581.646" y="110" fill="#7ea8d8" font-size="11">running</text>
+<use href="#pause" transform="translate(320.0 133) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#sparkle" transform="translate(346.0 133) scale(0.9)" stroke="#999"/>
+<use href="#rotate" transform="translate(372.0 133) scale(0.9)" stroke="#999"/>
+<rect x="388.0" y="123" width="20" height="20" rx="4" fill="#3a3a3a"/>
+<use href="#buoy" transform="translate(398.0 133) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#stack" transform="translate(424.0 133) scale(0.9)" stroke="#999"/>
+<use href="#brush" transform="translate(450.0 133) scale(0.9)" stroke="#999"/>
+<use href="#dots" transform="translate(476.0 133) scale(0.9)" stroke="#999"/>
+<use href="#trash" transform="translate(502.0 133) scale(0.9)" stroke="#e08a8a"/>
+<rect x="312.0" y="150" width="115.494" height="18" rx="3" fill="#3a3a3a"/>
+<g opacity="0.75">
+<use href="#fgit" transform="translate(323.0 159) scale(0.8)" stroke="#999"/>
+</g>
+<text x="333.0" y="163" fill="#999" font-size="10.5">acme-shop-auth</text>
+<rect x="433.494" y="150" width="121.815" height="18" rx="3" fill="#3a3a3a"/>
+<g opacity="0.75">
+<use href="#branch" transform="translate(444.494 159) scale(0.8)" stroke="#999"/>
+</g>
+<text x="454.494" y="163" fill="#999" font-size="10.5">feat/login-flow</text>
+<rect x="312.0" y="172" width="52.284" height="18" rx="3" fill="#3a3a3a"/>
+<g opacity="0.75">
+<use href="#panels" transform="translate(323.0 181) scale(0.8)" stroke="#999"/>
+</g>
+<text x="333.0" y="185" fill="#999" font-size="10.5">Auth</text>
+<rect x="370.284" y="172" width="115.494" height="18" rx="3" fill="#3a3a3a"/>
+<g opacity="0.75">
+<use href="#zap" transform="translate(381.284 181) scale(0.8)" stroke="#999"/>
+</g>
+<text x="391.284" y="185" fill="#999" font-size="10.5">starts by hand</text>
+<line x1="300.0" y1="198" x2="640.0" y2="198" stroke="#3a3a3a" stroke-width="1"/>
+<g opacity="0.72">
+<rect x="312.0" y="210" width="316.0" height="105" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#k-task" transform="translate(328.0 227) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#gauge" transform="translate(347.0 227) scale(0.85)" stroke="#999"/>
+<text x="355.0" y="231" fill="#999" font-size="10">3</text>
+<text x="322.0" y="252" fill="#eee" font-size="13">Move sessions to signed cookies</text>
+<rect x="322.0" y="263" width="39.284" height="18" rx="9" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+<text x="329.0" y="275.5" fill="#ddd" font-size="10.5">Done</text>
+<line x1="322.0" y1="288" x2="618.0" y2="288" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#sq-check" transform="translate(328.0 300) scale(0.9)" stroke="#8bc98b"/>
+<text x="338.0" y="304" fill="#8bc98b" font-size="11">done</text>
+<use href="#close" transform="translate(613.0 300) scale(0.9)" stroke="#999"/>
+</g>
+<rect x="309.5" y="207.5" width="321.0" height="110" rx="8" fill="none" stroke="#3f6b3f" stroke-width="2"/>
+<line x1="470.0" y1="318" x2="470.0" y2="328" stroke="#555" stroke-width="1"/>
+<rect x="312.0" y="331" width="316.0" height="105" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<clipPath id="cc1"><rect x="312.0" y="331" width="316.0" height="105" rx="6"/></clipPath>
+<rect x="312.0" y="331" width="3" height="105" fill="#4a9eff" clip-path="url(#cc1)"/>
+<use href="#k-task" transform="translate(331.0 348) scale(0.9)" stroke="#7ea8d8"/>
+<circle cx="344.8" cy="352.2" r="0.9" fill="#e08a8a"/>
+<line x1="348.0" y1="353" x2="348.0" y2="350.0" stroke="#e08a8a" stroke-width="1.8"/>
+<line x1="351.2" y1="353" x2="351.2" y2="347.5" stroke="#e08a8a" stroke-width="1.8"/>
+<line x1="354.4" y1="353" x2="354.4" y2="345.0" stroke="#e08a8a" stroke-width="1.8"/>
+<line x1="357.6" y1="353" x2="357.6" y2="342.5" stroke="#e08a8a" stroke-width="1.8"/>
+<use href="#gauge" transform="translate(369.0 348) scale(0.85)" stroke="#999"/>
+<text x="377.0" y="352" fill="#999" font-size="10">2</text>
+<use href="#loader" transform="translate(394.0 348) scale(0.95)" stroke="#7ea8d8"/>
+<text x="325.0" y="373" fill="#eee" font-size="13">Fix the login flow</text>
+<rect x="325.0" y="384" width="83.53099999999999" height="18" rx="9" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+<text x="332.0" y="396.5" fill="#ddd" font-size="10.5">In Progress</text>
+<line x1="325.0" y1="409" x2="618.0" y2="409" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#sq-dot" transform="translate(331.0 421) scale(0.9)" stroke="#7ea8d8"/>
+<text x="341.0" y="425" fill="#7ea8d8" font-size="11">running</text>
+<use href="#close" transform="translate(613.0 421) scale(0.9)" stroke="#999"/>
+<use href="#skip" transform="translate(593.0 421) scale(0.8)" stroke="#999"/>
+<use href="#checks" transform="translate(571.0 421) scale(0.8)" stroke="#999"/>
+<rect x="309.5" y="328.5" width="321.0" height="110" rx="8" fill="none" stroke="#4a9eff" stroke-width="2"/>
+<line x1="470.0" y1="439" x2="470.0" y2="449" stroke="#555" stroke-width="1"/>
+<rect x="312.0" y="452" width="316.0" height="105" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#k-task" transform="translate(328.0 469) scale(0.9)" stroke="#7ea8d8"/>
+<circle cx="341.8" cy="473.2" r="0.9" fill="#999"/>
+<line x1="345.0" y1="474" x2="345.0" y2="471.0" stroke="#999" stroke-width="1.8"/>
+<line x1="348.2" y1="474" x2="348.2" y2="468.5" stroke="#999" stroke-width="1.8"/>
+<use href="#gauge" transform="translate(366.0 469) scale(0.85)" stroke="#999"/>
+<text x="374.0" y="473" fill="#999" font-size="10">2</text>
+<text x="322.0" y="494" fill="#eee" font-size="13">Add a remember-me checkbox to login</text>
+<rect x="322.0" y="505" width="45.605" height="18" rx="9" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+<text x="329.0" y="517.5" fill="#ddd" font-size="10.5">To Do</text>
+<line x1="322.0" y1="530" x2="618.0" y2="530" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#sq" transform="translate(328.0 542) scale(0.9)" stroke="#999"/>
+<text x="338.0" y="546" fill="#999" font-size="11">pending</text>
+<use href="#close" transform="translate(613.0 542) scale(0.9)" stroke="#999"/>
+<line x1="470.0" y1="560" x2="470.0" y2="570" stroke="#555" stroke-width="1"/>
+<rect x="312.0" y="573" width="316.0" height="30" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#term" transform="translate(327.0 588) scale(0.95)" stroke="#999"/>
+<text x="340.0" y="592.5" fill="#eee" font-size="12">Run tests</text>
+<use href="#sq" transform="translate(596.0 588) scale(0.95)" stroke="#999"/>
+<use href="#close" transform="translate(615.0 588) scale(0.85)" stroke="#999"/>
+<line x1="470.0" y1="606" x2="470.0" y2="616" stroke="#555" stroke-width="1"/>
+<rect x="312.0" y="619" width="316.0" height="30" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#term" transform="translate(327.0 634) scale(0.95)" stroke="#999"/>
+<text x="340.0" y="638.5" fill="#eee" font-size="12">Open a pull request</text>
+<use href="#sq" transform="translate(596.0 634) scale(0.95)" stroke="#999"/>
+<use href="#close" transform="translate(615.0 634) scale(0.85)" stroke="#999"/>
+<line x1="470.0" y1="652" x2="470.0" y2="662" stroke="#555" stroke-width="1"/>
+<rect x="312.0" y="665" width="316.0" height="30" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#pr" transform="translate(327.0 680) scale(0.95)" stroke="#999"/>
+<text x="340.0" y="684.5" fill="#eee" font-size="12">Wait for the pull request</text>
+<use href="#sq" transform="translate(596.0 680) scale(0.95)" stroke="#999"/>
+<use href="#close" transform="translate(615.0 680) scale(0.85)" stroke="#999"/>
+<rect x="312.0" y="707" width="316.0" height="30" rx="6" fill="none" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#plus" transform="translate(434.0 722) scale(0.9)" stroke="#999"/>
+<text x="446.0" y="726.5" fill="#999" font-size="12">Add step</text>
+<line x1="980.0" y1="84" x2="980.0" y2="900" stroke="#3a3a3a" stroke-width="1"/>
+<text x="652.0" y="111" fill="#eee" font-size="16" font-weight="600">Checkout</text>
+<use href="#bubble" transform="translate(824.048 106) scale(0.9)" stroke="#d9a648"/>
+<text x="834.048" y="110" fill="#d9a648" font-size="11">needs you</text>
+<text x="824.448" y="108.6" fill="#d9a648" font-size="7" text-anchor="middle" font-weight="700">?</text>
+<use href="#chev2" transform="translate(911.646 106) scale(0.9)" stroke="#7ea8d8"/>
+<text x="921.646" y="110" fill="#7ea8d8" font-size="11">running</text>
+<use href="#pause" transform="translate(660.0 133) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#sparkle" transform="translate(686.0 133) scale(0.9)" stroke="#999"/>
+<use href="#rotate" transform="translate(712.0 133) scale(0.9)" stroke="#999"/>
+<use href="#buoy" transform="translate(738.0 133) scale(0.9)" stroke="#999"/>
+<use href="#stack" transform="translate(764.0 133) scale(0.9)" stroke="#999"/>
+<use href="#brush" transform="translate(790.0 133) scale(0.9)" stroke="#999"/>
+<use href="#dots" transform="translate(816.0 133) scale(0.9)" stroke="#999"/>
+<use href="#trash" transform="translate(842.0 133) scale(0.9)" stroke="#e08a8a"/>
+<rect x="652.0" y="150" width="140.778" height="18" rx="3" fill="#3a3a3a"/>
+<g opacity="0.75">
+<use href="#fgit" transform="translate(663.0 159) scale(0.8)" stroke="#999"/>
+</g>
+<text x="673.0" y="163" fill="#999" font-size="10.5">acme-shop-checkout</text>
+<rect x="798.778" y="150" width="134.457" height="18" rx="3" fill="#3a3a3a"/>
+<g opacity="0.75">
+<use href="#branch" transform="translate(809.778 159) scale(0.8)" stroke="#999"/>
+</g>
+<text x="819.778" y="163" fill="#999" font-size="10.5">fix/cart-rounding</text>
+<rect x="652.0" y="172" width="77.568" height="18" rx="3" fill="#3a3a3a"/>
+<g opacity="0.75">
+<use href="#panels" transform="translate(663.0 181) scale(0.8)" stroke="#999"/>
+</g>
+<text x="673.0" y="185" fill="#999" font-size="10.5">Checkout</text>
+<rect x="735.568" y="172" width="115.494" height="18" rx="3" fill="#3a3a3a"/>
+<g opacity="0.75">
+<use href="#zap" transform="translate(746.568 181) scale(0.8)" stroke="#999"/>
+</g>
+<text x="756.568" y="185" fill="#999" font-size="10.5">starts by hand</text>
+<line x1="640.0" y1="198" x2="980.0" y2="198" stroke="#3a3a3a" stroke-width="1"/>
+<rect x="652.0" y="210" width="316.0" height="122" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<clipPath id="cc2"><rect x="652.0" y="210" width="316.0" height="122" rx="6"/></clipPath>
+<rect x="652.0" y="210" width="3" height="122" fill="#a15c2f" clip-path="url(#cc2)"/>
+<use href="#k-task" transform="translate(671.0 227) scale(0.9)" stroke="#7ea8d8"/>
+<circle cx="684.8" cy="231.2" r="0.9" fill="#d9a648"/>
+<line x1="688.0" y1="232" x2="688.0" y2="229.0" stroke="#d9a648" stroke-width="1.8"/>
+<line x1="691.2" y1="232" x2="691.2" y2="226.5" stroke="#d9a648" stroke-width="1.8"/>
+<line x1="694.4" y1="232" x2="694.4" y2="224.0" stroke="#d9a648" stroke-width="1.8"/>
+<use href="#gauge" transform="translate(709.0 227) scale(0.85)" stroke="#999"/>
+<text x="717.0" y="231" fill="#999" font-size="10">3</text>
+<use href="#bubble" transform="translate(734.0 227) scale(0.95)" stroke="#d9a648"/>
+<text x="734.4" y="230" fill="#d9a648" font-size="7.5" text-anchor="middle" font-weight="700">?</text>
+<text x="665.0" y="252" fill="#eee" font-size="13">Cart and invoice totals disagree by a</text>
+<text x="665.0" y="269" fill="#eee" font-size="13">cent</text>
+<rect x="665.0" y="280" width="83.53099999999999" height="18" rx="9" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+<text x="672.0" y="292.5" fill="#ddd" font-size="10.5">In Progress</text>
+<line x1="665.0" y1="305" x2="958.0" y2="305" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#sq-dot" transform="translate(671.0 317) scale(0.9)" stroke="#7ea8d8"/>
+<text x="681.0" y="321" fill="#7ea8d8" font-size="11">running</text>
+<use href="#bubble" transform="translate(743.354 317) scale(0.85)" stroke="#d9a648"/>
+<text x="743.754" y="319.6" fill="#d9a648" font-size="7" text-anchor="middle" font-weight="700">?</text>
+<text x="753.354" y="321" fill="#d9a648" font-size="11">needs you</text>
+<use href="#close" transform="translate(953.0 317) scale(0.9)" stroke="#999"/>
+<use href="#skip" transform="translate(933.0 317) scale(0.8)" stroke="#999"/>
+<use href="#checks" transform="translate(911.0 317) scale(0.8)" stroke="#999"/>
+<rect x="649.5" y="207.5" width="321.0" height="127" rx="8" fill="none" stroke="#a15c2f" stroke-width="2"/>
+<line x1="810.0" y1="335" x2="810.0" y2="345" stroke="#555" stroke-width="1"/>
+<rect x="652.0" y="348" width="316.0" height="258" rx="8" fill="none" stroke="#555" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#grip" transform="translate(666.0 367) scale(0.8)" stroke="#999"/>
+<text x="678.0" y="371" fill="#999" font-size="11">stage 2</text>
+<rect x="818.0" y="357" width="120" height="20" rx="4" fill="none" stroke="#3a3a3a" stroke-width="1"/>
+<rect x="819.0" y="358" width="62" height="18" rx="3" fill="#3a3a3a"/>
+<text x="850.0" y="371" fill="#eee" font-size="10.5" text-anchor="middle">sequence</text>
+<text x="909.0" y="371" fill="#666" font-size="10.5" text-anchor="middle">parallel</text>
+<use href="#dots" transform="translate(954.0 367) scale(0.85)" stroke="#999"/>
+<rect x="660.0" y="384" width="300.0" height="105" rx="6" fill="#17301a" stroke="#3f6b3f" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#k-plan" transform="translate(676.0 401) scale(0.9)" stroke="#8bc98b"/>
+<circle cx="689.8" cy="405.2" r="0.9" fill="#d9a648"/>
+<line x1="693.0" y1="406" x2="693.0" y2="403.0" stroke="#d9a648" stroke-width="1.8"/>
+<line x1="696.2" y1="406" x2="696.2" y2="400.5" stroke="#d9a648" stroke-width="1.8"/>
+<line x1="699.4" y1="406" x2="699.4" y2="398.0" stroke="#d9a648" stroke-width="1.8"/>
+<use href="#gauge" transform="translate(714.0 401) scale(0.85)" stroke="#999"/>
+<text x="722.0" y="405" fill="#999" font-size="10">4</text>
+<text x="733.0" y="405" fill="#999" font-size="11">0/6</text>
+<text x="950.0" y="405" fill="#999" font-size="11" text-anchor="end">3</text>
+<use href="#right" transform="translate(936.0 401) scale(0.8)" stroke="#999"/>
+<text x="670.0" y="426" fill="#eee" font-size="13">Guest checkout</text>
+<rect x="670.0" y="437" width="45.605" height="18" rx="9" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+<text x="677.0" y="449.5" fill="#ddd" font-size="10.5">To Do</text>
+<rect x="720.605" y="437" width="32.963" height="18" rx="9" fill="none" stroke="#3f6b3f" stroke-width="1"/>
+<text x="727.605" y="449.5" fill="#8bc98b" font-size="10.5">web</text>
+<line x1="670.0" y1="462" x2="950.0" y2="462" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#sq" transform="translate(676.0 474) scale(0.9)" stroke="#999"/>
+<text x="686.0" y="478" fill="#999" font-size="11">pending</text>
+<use href="#close" transform="translate(945.0 474) scale(0.9)" stroke="#999"/>
+<rect x="660.0" y="495" width="300.0" height="105" rx="6" fill="#20242a" stroke="#4a6a8a" stroke-width="1" stroke-dasharray="4 3"/>
+<clipPath id="cc3"><rect x="660.0" y="495" width="300.0" height="105" rx="6"/></clipPath>
+<rect x="660.0" y="495" width="3" height="105" fill="#3f6b3f" clip-path="url(#cc3)"/>
+<use href="#k-task" transform="translate(679.0 512) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#gauge" transform="translate(698.0 512) scale(0.85)" stroke="#999"/>
+<text x="706.0" y="516" fill="#999" font-size="10">3</text>
+<use href="#idle" transform="translate(723.0 512) scale(0.95)" stroke="#999"/>
+<text x="673.0" y="537" fill="#eee" font-size="13">Checkout end-to-end tests</text>
+<rect x="673.0" y="548" width="83.53099999999999" height="18" rx="9" fill="#3a3a3a" stroke="#555" stroke-width="1"/>
+<text x="680.0" y="560.5" fill="#ddd" font-size="10.5">In Progress</text>
+<line x1="673.0" y1="573" x2="950.0" y2="573" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#sq" transform="translate(679.0 585) scale(0.9)" stroke="#999"/>
+<text x="689.0" y="589" fill="#999" font-size="11">pending</text>
+<use href="#close" transform="translate(945.0 585) scale(0.9)" stroke="#999"/>
+<line x1="810.0" y1="609" x2="810.0" y2="619" stroke="#555" stroke-width="1"/>
+<rect x="652.0" y="622" width="316.0" height="30" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#t-bot" transform="translate(667.0 637) scale(0.95)" stroke="#999"/>
+<text x="680.0" y="641.5" fill="#eee" font-size="12">Commit changes</text>
+<use href="#sq" transform="translate(936.0 637) scale(0.95)" stroke="#999"/>
+<use href="#close" transform="translate(955.0 637) scale(0.85)" stroke="#999"/>
+<line x1="810.0" y1="655" x2="810.0" y2="665" stroke="#555" stroke-width="1"/>
+<rect x="652.0" y="668" width="316.0" height="30" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#t-bot" transform="translate(667.0 683) scale(0.95)" stroke="#999"/>
+<text x="680.0" y="687.5" fill="#eee" font-size="12">Review this branch</text>
+<use href="#sq" transform="translate(936.0 683) scale(0.95)" stroke="#999"/>
+<use href="#close" transform="translate(955.0 683) scale(0.85)" stroke="#999"/>
+<rect x="652.0" y="710" width="316.0" height="30" rx="6" fill="none" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#plus" transform="translate(774.0 725) scale(0.9)" stroke="#999"/>
+<text x="786.0" y="729.5" fill="#999" font-size="12">Add step</text>
+<line x1="1320.0" y1="84" x2="1320.0" y2="900" stroke="#3a3a3a" stroke-width="1"/>
+<text x="992.0" y="111" fill="#eee" font-size="16" font-weight="600">Release</text>
+<use href="#minus" transform="translate(1271.512 106) scale(0.9)" stroke="#999"/>
+<text x="1281.512" y="110" fill="#999" font-size="11">idle</text>
+<use href="#play" transform="translate(1000.0 133) scale(0.9)" stroke="#7ea8d8"/>
+<use href="#sparkle" transform="translate(1026.0 133) scale(0.9)" stroke="#999"/>
+<use href="#rotate" transform="translate(1052.0 133) scale(0.9)" stroke="#999"/>
+<use href="#buoy" transform="translate(1078.0 133) scale(0.9)" stroke="#999"/>
+<use href="#stack" transform="translate(1104.0 133) scale(0.9)" stroke="#999"/>
+<use href="#brush" transform="translate(1130.0 133) scale(0.9)" stroke="#999"/>
+<use href="#dots" transform="translate(1156.0 133) scale(0.9)" stroke="#999"/>
+<use href="#trash" transform="translate(1182.0 133) scale(0.9)" stroke="#e08a8a"/>
+<rect x="992.0" y="150" width="134.457" height="18" rx="3" fill="#3a3a3a"/>
+<g opacity="0.75">
+<use href="#fgit" transform="translate(1003.0 159) scale(0.8)" stroke="#999"/>
+</g>
+<text x="1013.0" y="163" fill="#999" font-size="10.5">acme-shop-release</text>
+<rect x="1132.4569999999999" y="150" width="96.53099999999999" height="18" rx="3" fill="#3a3a3a"/>
+<g opacity="0.75">
+<use href="#branch" transform="translate(1143.4569999999999 159) scale(0.8)" stroke="#999"/>
+</g>
+<text x="1153.4569999999999" y="163" fill="#999" font-size="10.5">release/1.4</text>
+<g opacity="0.75">
+<use href="#panels" transform="translate(1003.0 181) scale(0.8)" stroke="#666"/>
+</g>
+<text x="1013.0" y="185" fill="#666" font-size="10.5">page at launch</text>
+<rect x="1113.494" y="172" width="121.815" height="18" rx="3" fill="#3a3a3a"/>
+<g opacity="0.75">
+<use href="#zap" transform="translate(1124.494 181) scale(0.8)" stroke="#999"/>
+</g>
+<text x="1134.494" y="185" fill="#999" font-size="10.5">after all rails</text>
+<line x1="980.0" y1="198" x2="1320.0" y2="198" stroke="#3a3a3a" stroke-width="1"/>
+<rect x="992.0" y="210" width="316.0" height="30" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#t-bot" transform="translate(1007.0 225) scale(0.95)" stroke="#999"/>
+<text x="1020.0" y="229.5" fill="#eee" font-size="12">Update from a branch</text>
+<text x="1172.48" y="229.5" fill="#666" font-size="11">branch=main</text>
+<use href="#sliders" transform="translate(1256.0 225) scale(0.85)" stroke="#999"/>
+<use href="#sq" transform="translate(1276.0 225) scale(0.95)" stroke="#999"/>
+<use href="#close" transform="translate(1295.0 225) scale(0.85)" stroke="#999"/>
+<line x1="1150.0" y1="243" x2="1150.0" y2="253" stroke="#555" stroke-width="1"/>
+<rect x="992.0" y="256" width="316.0" height="30" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#repeat" transform="translate(1007.0 271) scale(0.95)" stroke="#999"/>
+<text x="1020.0" y="275.5" fill="#eee" font-size="12">Loop until a check passes</text>
+<text x="1208.6" y="275.5" fill="#666" font-size="11">max=3</text>
+<use href="#sliders" transform="translate(1256.0 271) scale(0.85)" stroke="#999"/>
+<use href="#sq" transform="translate(1276.0 271) scale(0.95)" stroke="#999"/>
+<use href="#close" transform="translate(1295.0 271) scale(0.85)" stroke="#999"/>
+<line x1="1150.0" y1="289" x2="1150.0" y2="299" stroke="#555" stroke-width="1"/>
+<rect x="992.0" y="302" width="316.0" height="30" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#t-bot" transform="translate(1007.0 317) scale(0.95)" stroke="#999"/>
+<text x="1020.0" y="321.5" fill="#eee" font-size="12">Browser test (Chrome)</text>
+<use href="#sq" transform="translate(1276.0 317) scale(0.95)" stroke="#999"/>
+<use href="#close" transform="translate(1295.0 317) scale(0.85)" stroke="#999"/>
+<line x1="1150.0" y1="335" x2="1150.0" y2="345" stroke="#555" stroke-width="1"/>
+<rect x="992.0" y="348" width="316.0" height="30" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#t-eye" transform="translate(1007.0 363) scale(0.95)" stroke="#999"/>
+<text x="1020.0" y="367.5" fill="#eee" font-size="12">Manual review</text>
+<use href="#sq" transform="translate(1276.0 363) scale(0.95)" stroke="#999"/>
+<use href="#close" transform="translate(1295.0 363) scale(0.85)" stroke="#999"/>
+<line x1="1150.0" y1="381" x2="1150.0" y2="391" stroke="#555" stroke-width="1"/>
+<rect x="992.0" y="394" width="316.0" height="30" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#term" transform="translate(1007.0 409) scale(0.95)" stroke="#999"/>
+<text x="1020.0" y="413.5" fill="#eee" font-size="12">Push branch</text>
+<use href="#sq" transform="translate(1276.0 409) scale(0.95)" stroke="#999"/>
+<use href="#close" transform="translate(1295.0 409) scale(0.85)" stroke="#999"/>
+<line x1="1150.0" y1="427" x2="1150.0" y2="437" stroke="#555" stroke-width="1"/>
+<rect x="992.0" y="440" width="316.0" height="30" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#term" transform="translate(1007.0 455) scale(0.95)" stroke="#999"/>
+<text x="1020.0" y="459.5" fill="#eee" font-size="12">Open a pull request</text>
+<use href="#sq" transform="translate(1276.0 455) scale(0.95)" stroke="#999"/>
+<use href="#close" transform="translate(1295.0 455) scale(0.85)" stroke="#999"/>
+<line x1="1150.0" y1="473" x2="1150.0" y2="483" stroke="#555" stroke-width="1"/>
+<rect x="992.0" y="486" width="316.0" height="30" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#code" transform="translate(1007.0 501) scale(0.95)" stroke="#999"/>
+<text x="1020.0" y="505.5" fill="#eee" font-size="12">Send a notification</text>
+<use href="#sq" transform="translate(1276.0 501) scale(0.95)" stroke="#999"/>
+<use href="#close" transform="translate(1295.0 501) scale(0.85)" stroke="#999"/>
+<rect x="992.0" y="528" width="316.0" height="30" rx="6" fill="none" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<use href="#plus" transform="translate(1114.0 543) scale(0.9)" stroke="#999"/>
+<text x="1126.0" y="547.5" fill="#999" font-size="12">Add step</text>
+<rect x="1320" y="85" width="280" height="816" rx="0" fill="#1a1a1a"/>
+<line x1="1320" y1="84" x2="1320" y2="900" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#right" transform="translate(1336 101) scale(0.95)" stroke="#999"/>
+<text x="1350" y="105.5" fill="#999" font-size="12">Unplaced (4)</text>
+<line x1="1320" y1="118" x2="1600" y2="118" stroke="#3a3a3a" stroke-width="1"/>
+<rect x="1330" y="126" width="260" height="26" rx="6" fill="#2f2f2f" stroke="#3a3a3a" stroke-width="1"/>
+<use href="#search" transform="translate(1345 139) scale(0.9)" stroke="#666"/>
+<text x="1360" y="143" fill="#666" font-size="11">Filter this panel…</text>
+<text x="1332" y="172" fill="#666" font-size="10.5">Drag onto a rail. Click a card to open</text>
+<text x="1332" y="187" fill="#666" font-size="10.5">it, a tool to append it.</text>
+<use href="#down" transform="translate(1337 212) scale(0.8)" stroke="#999"/>
+<text x="1350" y="216" fill="#999" font-size="11">Groups</text>
+<text x="1586" y="216" fill="#666" font-size="11" text-anchor="end">2</text>
+<use href="#group" transform="translate(1342 237) scale(0.9)" stroke="#999"/>
+<text x="1356" y="241.5" fill="#eee" font-size="12">test, review, ship</text>
+<rect x="1565.164" y="230" width="20.836" height="15" rx="3" fill="none" stroke="#3a3a3a" stroke-width="1"/>
+<text x="1575.582" y="240.5" fill="#666" font-size="9" text-anchor="middle">WS</text>
+<use href="#group" transform="translate(1342 261) scale(0.9)" stroke="#999"/>
+<text x="1356" y="265.5" fill="#eee" font-size="12">fix until green</text>
+<rect x="1559.746" y="254" width="26.254" height="15" rx="3" fill="none" stroke="#3a3a3a" stroke-width="1"/>
+<text x="1572.873" y="264.5" fill="#666" font-size="9" text-anchor="middle">ALL</text>
+<rect x="1332" y="276" width="256" height="24" rx="5" fill="none" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="1460.0" y="292" fill="#999" font-size="11" text-anchor="middle">Manage groups…</text>
+<use href="#down" transform="translate(1337 322) scale(0.8)" stroke="#999"/>
+<text x="1350" y="326" fill="#999" font-size="11">Tools</text>
+<text x="1586" y="326" fill="#666" font-size="11" text-anchor="end">18</text>
+<use href="#t-bot" transform="translate(1342 347) scale(0.9)" stroke="#999"/>
+<text x="1356" y="351.5" fill="#eee" font-size="12">Browser test (Chrome)</text>
+<use href="#t-bot" transform="translate(1342 371) scale(0.9)" stroke="#999"/>
+<text x="1356" y="375.5" fill="#eee" font-size="12">Commit changes</text>
+<use href="#t-bot" transform="translate(1342 395) scale(0.9)" stroke="#999"/>
+<text x="1356" y="399.5" fill="#eee" font-size="12">Consolidate repo</text>
+<use href="#users" transform="translate(1342 419) scale(0.9)" stroke="#999"/>
+<text x="1356" y="423.5" fill="#eee" font-size="12">Critical review</text>
+<use href="#repeat" transform="translate(1342 443) scale(0.9)" stroke="#999"/>
+<text x="1356" y="447.5" fill="#eee" font-size="12">Loop until a check passes</text>
+<use href="#t-eye" transform="translate(1342 467) scale(0.9)" stroke="#999"/>
+<text x="1356" y="471.5" fill="#eee" font-size="12">Manual review</text>
+<use href="#t-bot" transform="translate(1342 491) scale(0.9)" stroke="#999"/>
+<text x="1356" y="495.5" fill="#eee" font-size="12">Merge this rail into a branch</text>
+<use href="#term" transform="translate(1342 515) scale(0.9)" stroke="#999"/>
+<text x="1356" y="519.5" fill="#eee" font-size="12">Open a pull request</text>
+<text x="1356" y="541" fill="#666" font-size="11">… 10 more</text>
+<rect x="1332" y="554" width="256" height="24" rx="5" fill="none" stroke="#3a3a3a" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="1460.0" y="570" fill="#999" font-size="11" text-anchor="middle">Manage tools…</text>
+<use href="#down" transform="translate(1337 600) scale(0.8)" stroke="#999"/>
+<text x="1350" y="604" fill="#999" font-size="11">To Do</text>
+<text x="1586" y="604" fill="#666" font-size="11" text-anchor="end">3</text>
+<use href="#k-plan" transform="translate(1342 625) scale(0.9)" stroke="#999"/>
+<text x="1356" y="629.5" fill="#eee" font-size="12">Rate-limit the search endpoint</text>
+<use href="#k-plan" transform="translate(1342 649) scale(0.9)" stroke="#999"/>
+<text x="1356" y="653.5" fill="#eee" font-size="12">Migrate product images to WebP</text>
+<use href="#k-plan" transform="translate(1342 673) scale(0.9)" stroke="#999"/>
+<text x="1356" y="677.5" fill="#eee" font-size="12">Ask design about the empty…</text>
+<use href="#down" transform="translate(1337 698) scale(0.8)" stroke="#999"/>
+<text x="1350" y="702" fill="#999" font-size="11">In Progress</text>
+<text x="1586" y="702" fill="#666" font-size="11" text-anchor="end">1</text>
+<use href="#checks" transform="translate(1342 723) scale(0.9)" stroke="#999"/>
+<text x="1356" y="727.5" fill="#eee" font-size="12">Search ranking</text>
+<rect x="1565.164" y="716" width="20.836" height="15" rx="3" fill="none" stroke="#3a3a3a" stroke-width="1"/>
+<text x="1575.582" y="726.5" fill="#666" font-size="9" text-anchor="middle">+3</text>
+</g>
+<rect x="0.5" y="0.5" width="1599" height="899" rx="12" fill="none" stroke="#555"/>
+</svg>
