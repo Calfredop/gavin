@@ -7808,6 +7808,86 @@ mod tests {
         await_status(&mut reader, &id, "idle");
     }
 
+    // ---- the failures Claude Code prints WITHOUT "API Error:" ---------
+    //
+    // Taken from this repo's own transcripts (2026-09), where the fake-API
+    // measurement above never looked. Each is one line, verbatim, on a
+    // session with nothing else set: only that ONE pattern is sent, so a
+    // pass means that pattern alone did it. Octal escapes stand in for the
+    // apostrophe and the middle dot, and the last word of each pattern
+    // arrives as a `%s` argument, so the shell's echo of the typed command
+    // never contains the pattern (see PRINT_FAILURE).
+
+    /// A quiet session whose screen carries `printf_cmd`'s output must go
+    /// `failed` on `pattern` alone, and the reason must open with the
+    /// agent's own sentence. Widths are the pty's 80 columns, so a longer
+    /// line reaches the daemon as its first row.
+    fn assert_pattern_fails_a_quiet_session(pattern: &str, printf_cmd: &str, reason_starts: &str) {
+        assert!(
+            !printf_cmd.contains(pattern),
+            "the typed command must not contain {pattern:?}, or the shell's echo passes for it"
+        );
+        let (socket_path, _dir) = start_test_server();
+        let (mut stream, mut reader, id) = failure_test_session(&socket_path, Some(&[pattern]));
+        write_message(
+            &mut stream,
+            &Request::WriteInput { id: id.clone(), data: printf_cmd.to_string() },
+        )
+        .unwrap();
+        let reason = await_status(&mut reader, &id, "failed").unwrap_or_default();
+        assert!(
+            reason.starts_with(reason_starts),
+            "reason {reason:?} should open with {reason_starts:?}"
+        );
+    }
+
+    #[test]
+    fn a_session_limit_line_goes_failed_not_idle() {
+        assert_pattern_fails_a_quiet_session(
+            "hit your session limit",
+            "printf 'You\\047ve hit your session %s \\302\\267 resets 6:50pm (Europe/Rome)\\n' limit\n",
+            "You've hit your session limit \u{b7} resets 6:50pm (Europe/Rome)",
+        );
+    }
+
+    #[test]
+    fn a_usage_credits_limit_line_goes_failed_not_idle() {
+        // 97 characters, so on 80 columns the daemon sees the first 80 and
+        // the pattern has to sit inside them.
+        assert_pattern_fails_a_quiet_session(
+            "/usage-credits to continue or switch",
+            "printf 'You\\047ve reached your Fable 5 limit. Run %s to continue or switch models with /model.\\n' /usage-credits\n",
+            "You've reached your Fable 5 limit. Run /usage-credits to continue or switch",
+        );
+    }
+
+    #[test]
+    fn an_expired_login_line_goes_failed_not_idle() {
+        assert_pattern_fails_a_quiet_session(
+            "Please run /login",
+            "printf 'Login expired \\302\\267 Please run %s\\n' /login\n",
+            "Login expired \u{b7} Please run /login",
+        );
+    }
+
+    #[test]
+    fn a_disabled_subscription_line_goes_failed_not_idle() {
+        assert_pattern_fails_a_quiet_session(
+            "disabled Claude subscription access",
+            "printf 'Your organization has disabled Claude subscription %s for Claude Code \\302\\267 Use an Anthropic API key instead, or ask your admin to enable access\\n' access\n",
+            "Your organization has disabled Claude subscription access for Claude Code",
+        );
+    }
+
+    #[test]
+    fn a_request_timed_out_line_goes_failed_not_idle() {
+        assert_pattern_fails_a_quiet_session(
+            "Request timed out",
+            "printf 'Request timed %s\\n' out\n",
+            "Request timed out",
+        );
+    }
+
     /// The reason is shown to a human on four surfaces, so it must be
     /// the agent's SENTENCE and not the bullet its TUI drew in front of
     /// it. Both glyphs here were taken off a real Claude Code screen.

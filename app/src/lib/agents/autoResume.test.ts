@@ -24,14 +24,23 @@ import {
 const CLAUDE: FailureCausePattern[] = [
   { pattern: "/login", cause: "auth" },
   { pattern: "OAuth token has expired", cause: "auth" },
+  { pattern: "disabled Claude subscription access", cause: "auth" },
+  { pattern: "temporarily limiting requests", cause: "outage" },
   { pattern: "exceeded your usage limit", cause: "usage-limit" },
   { pattern: "usage limit", cause: "usage-limit" },
+  { pattern: "hit your session limit", cause: "usage-limit" },
+  { pattern: "/usage-credits to continue or switch", cause: "usage-limit" },
   { pattern: "529 Overloaded", cause: "outage" },
   { pattern: "Overloaded", cause: "outage" },
+  { pattern: "Server error mid-response", cause: "outage" },
   { pattern: "Connection dropped", cause: "network" },
   { pattern: "ECONNRESET", cause: "network" },
   { pattern: "empty or malformed response", cause: "network" },
   { pattern: "Connection error", cause: "network" },
+  { pattern: "Connection closed mid-response", cause: "network" },
+  { pattern: "Connection lost mid-response", cause: "network" },
+  { pattern: "The response stopped arriving", cause: "network" },
+  { pattern: "Request timed out", cause: "network" },
 ];
 
 describe("classifyFailure", () => {
@@ -48,12 +57,45 @@ describe("classifyFailure", () => {
     expect(
       classifyFailure("API Error: 529 Overloaded. This is a server-side issue", CLAUDE)
     ).toBe("outage");
+    // Server-side throttling, not the account's budget, though its line
+    // ends "You have exceeded your usage limit": an outage, so it must
+    // not read as a hold for a reset that never comes.
     expect(
       classifyFailure(
-        "API Error: Server is temporarily limiting requests. You have exceeded your usage limit.",
+        "API Error: Server is temporarily limiting requests (not your usage limit) · You have exceeded your usage limit. Please try again later.",
         CLAUDE
       )
-    ).toBe("usage-limit");
+    ).toBe("outage");
+  });
+
+  // The lines real transcripts held that the fake-API session never saw.
+  // The sleep line stays unknown: the daemon's own slept-mid-turn verdict
+  // owns suspend, so the profile has no row for it.
+  it("names the failures Claude Code really printed without the fake API's help", () => {
+    const cases: Array<[string, string]> = [
+      ["You've hit your session limit · resets 6:50pm (Europe/Rome)", "usage-limit"],
+      [
+        "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.",
+        "usage-limit",
+      ],
+      ["Login expired · Please run /login", "auth"],
+      [
+        "Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access",
+        "auth",
+      ],
+      ["Request timed out", "network"],
+      ["API Error: Connection closed mid-response. The response above may be incomplete.", "network"],
+      ["API Error: Connection lost mid-response. The response above may be incomplete.", "network"],
+      ["API Error: The response stopped arriving. The response above may be incomplete.", "network"],
+      ["API Error: Server error mid-response. The response above may be incomplete.", "outage"],
+      [
+        "API Error: Your computer went to sleep mid-response. The response above may be incomplete.",
+        "unknown",
+      ],
+    ];
+    for (const [line, cause] of cases) {
+      expect(classifyFailure(line, CLAUDE), line).toBe(cause);
+    }
   });
 
   // The ordering trap: the expired-token line carries "API Error:" too,

@@ -317,7 +317,9 @@ pub struct AgentProfile {
     /// before the response, a stream killed mid-flight, a 429 usage
     /// limit and an expired token all leave the process ALIVE and quiet
     /// with one line on screen, and the only thing every one of them
-    /// shares is `API Error:`.
+    /// shares is `API Error:` -- until real transcripts turned up five
+    /// lines that do not carry it (a session limit, a login that
+    /// expired, ...), each of which the profile's row now names.
     pub failure_patterns: &'static [&'static str],
     /// What each of those failures MEANS, for the one caller that has to
     /// act on it without a human: auto-resume.
@@ -657,24 +659,87 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // prompt. During the retries the session is NOT quiet -- the
         // countdown repaints once a second -- which is why the daemon
         // only reads this at the moment a quiet session would go idle.
-        failure_patterns: &["API Error:"],
-        // Drawn from the same measurement session as the pattern above,
-        // and from nowhere else: every string here appeared verbatim on
-        // a real Claude Code screen driven against a fake API. Auth is
-        // FIRST because its line carries "API Error:" as well, and a
-        // token that needs a login back must never read as a network
-        // blip worth retrying.
+        //
+        // The fake-API session only saw failures that print "API Error:".
+        // The real ones do not all: this repo's own transcripts (2026-09,
+        // entries flagged `isApiErrorMessage`) hold five lines Claude
+        // Code prints WITHOUT it, and a turn that ends on one read as a
+        // finished turn, so a rail's agent step completed on it. Each is
+        // matched by the most distinctive fragment of its line, because
+        // every entry is tried against the WHOLE rendered screen -- and
+        // two obvious fragments are not safe. `limit · resets` and
+        // `/usage-credits` also end Claude Code's near-limit WARNING
+        // ("You've used 90% of your session limit · resets ... ·
+        // Run /usage-credits to ...", read off the v2.1.278 binary's
+        // message templates), which paints on healthy sessions. A wrapped
+        // row can still hide the tail of a long line; that costs a
+        // missed detection, which is what happened before these entries.
+        //
+        //   "You've hit your session limit · resets 6:50pm (Europe/Rome)"
+        //   "You've reached your Fable 5 limit. Run /usage-credits to
+        //    continue or switch models with /model."
+        //   "Login expired · Please run /login"
+        //   "Your organization has disabled Claude subscription access for
+        //    Claude Code · Use an Anthropic API key instead, ..."
+        //   "Request timed out"
+        //
+        // `Request timed out` is the whole line, so it has no longer
+        // fragment to prefer: a test log or an agent's own summary that
+        // says it on screen at the quiet->idle moment reads as a failure.
+        failure_patterns: &[
+            "API Error:",
+            "hit your session limit",
+            "/usage-credits to continue or switch",
+            "Please run /login",
+            "disabled Claude subscription access",
+            "Request timed out",
+        ],
+        // Two provenances, both real Claude Code output and neither
+        // invented. Ten rows are the fake-API session's (the two auth
+        // rows `/login` and `OAuth token has expired`, the two `usage
+        // limit` rows, the two `Overloaded` rows and four network
+        // ones): every string appeared verbatim on a live screen. The
+        // other nine come from the transcripts above -- the exact
+        // `text` of each error message (2026-09), not a painted screen.
+        // A guessed row is worse than a missing one, so a line nobody
+        // has seen gets none.
+        //
+        // ORDER decides, first match wins. Auth is FIRST because its line
+        // carries "API Error:" as well, and a token that needs a login
+        // back must never read as a network blip worth retrying. The
+        // `temporarily limiting requests` row is server-side throttling
+        // -- its line reads "(not your usage limit) · You have
+        // exceeded your usage limit" -- so it must come BEFORE both
+        // usage-limit rows or it classifies as an exhausted budget, a
+        // wait for a reset that never comes.
+        //
+        // `Your computer went to sleep mid-response` has NO row, on
+        // purpose: the daemon's own slept-mid-turn verdict owns suspend,
+        // and a row here would race it. Nor is there a bare
+        // `mid-response` row, which would swallow that line.
         failure_causes: &[
             FailureCausePattern { pattern: "/login", cause: "auth" },
             FailureCausePattern { pattern: "OAuth token has expired", cause: "auth" },
+            FailureCausePattern { pattern: "disabled Claude subscription access", cause: "auth" },
+            FailureCausePattern { pattern: "temporarily limiting requests", cause: "outage" },
             FailureCausePattern { pattern: "exceeded your usage limit", cause: "usage-limit" },
             FailureCausePattern { pattern: "usage limit", cause: "usage-limit" },
+            FailureCausePattern { pattern: "hit your session limit", cause: "usage-limit" },
+            FailureCausePattern {
+                pattern: "/usage-credits to continue or switch",
+                cause: "usage-limit",
+            },
             FailureCausePattern { pattern: "529 Overloaded", cause: "outage" },
             FailureCausePattern { pattern: "Overloaded", cause: "outage" },
+            FailureCausePattern { pattern: "Server error mid-response", cause: "outage" },
             FailureCausePattern { pattern: "Connection dropped", cause: "network" },
             FailureCausePattern { pattern: "ECONNRESET", cause: "network" },
             FailureCausePattern { pattern: "empty or malformed response", cause: "network" },
             FailureCausePattern { pattern: "Connection error", cause: "network" },
+            FailureCausePattern { pattern: "Connection closed mid-response", cause: "network" },
+            FailureCausePattern { pattern: "Connection lost mid-response", cause: "network" },
+            FailureCausePattern { pattern: "The response stopped arriving", cause: "network" },
+            FailureCausePattern { pattern: "Request timed out", cause: "network" },
         ],
         // `claude --session-id <uuid>` (a real UUID; the CLI validates
         // it) and `claude --resume <uuid>`. Verified end to end: the
@@ -2657,6 +2722,109 @@ mod tests {
             .find(|row| line.contains(row.pattern))
             .expect("claude-code classifies its own expired-token line");
         assert_eq!(first.cause, "auth");
+
+        // The second ordering trap, from a real transcript. Server-side
+        // throttling says "(not your usage limit) · You have exceeded
+        // your usage limit", so BOTH usage-limit rows match it, and
+        // whichever reads it first decides. It is an outage -- a hold
+        // for a reset that never comes would strand the rail. Checked on
+        // the whole line and on its first 80 columns, which is all a
+        // terminal that narrow paints on one row.
+        let throttled = "API Error: Server is temporarily limiting requests (not your usage limit) \u{b7} You have exceeded your usage limit. Please try again later.";
+        for line in [throttled.to_string(), throttled.chars().take(80).collect::<String>()] {
+            assert_eq!(claude_cause(&line), "outage", "{line}");
+        }
+        let position = |pattern: &str| {
+            claude
+                .failure_causes
+                .iter()
+                .position(|row| row.pattern == pattern)
+                .unwrap_or_else(|| panic!("no cause row for {pattern:?}"))
+        };
+        assert!(
+            position("temporarily limiting requests") < position("exceeded your usage limit")
+                && position("temporarily limiting requests") < position("usage limit"),
+            "the throttling row must come before every usage-limit row"
+        );
+    }
+
+    /// What claude-code's cause table says about `line`: the first row
+    /// whose pattern the line contains, in table order, which is exactly
+    /// `classifyFailure`'s rule, or `unknown` when none does.
+    fn claude_cause(line: &str) -> &'static str {
+        profile_by_id("claude-code")
+            .failure_causes
+            .iter()
+            .find(|row| line.contains(row.pattern))
+            .map_or("unknown", |row| row.cause)
+    }
+
+    /// Whether claude-code's profile would call `line` a failure: the
+    /// daemon's test, `line.contains(pattern)` for any pattern.
+    fn claude_detects(line: &str) -> bool {
+        profile_by_id("claude-code").failure_patterns.iter().any(|p| line.contains(p))
+    }
+
+    /// Every distinct error Claude Code printed in this repo's own
+    /// transcripts (2026-09, `"isApiErrorMessage": true`), verbatim, and
+    /// the cause each one has to classify as. The fake-API session found
+    /// the `API Error:` family; this is the family it missed, so the table
+    /// is what stops a reworded pattern from quietly un-detecting one.
+    ///
+    /// The sleep line is `unknown` ON PURPOSE: the daemon's slept-mid-turn
+    /// verdict owns suspend, and a cause row would race it.
+    const REAL_CLAUDE_FAILURES: &[(&str, &str)] = &[
+        ("API Error: Connection dropped (ECONNRESET)", "network"),
+        ("API Error: API returned an empty or malformed response (HTTP 200) \u{2014} check for a proxy or gateway intercepting the request. Response: content-type event-stream, body is an event stream (the non-streaming request was answered with a stream), 203 bytes, request-id absent. This was the non-streaming retry of streaming request (no Anthropic request-id), which failed with: no_events, StreamNoEventsError", "network"),
+        ("API Error: 529 Overloaded. This is a server-side issue, usually temporary \u{2014} try again in a moment. If it persists, check your inference gateway (127.0.0.1:8802).", "outage"),
+        ("Please run /login \u{b7} API Error: 401 OAuth token has expired. Please run /login", "auth"),
+        ("Please run /login \u{b7} API Error: 401 OAuth access token has been revoked.", "auth"),
+        ("API Error: Server is temporarily limiting requests (not your usage limit) \u{b7} You have exceeded your usage limit. Please try again later.", "outage"),
+        ("You've hit your session limit \u{b7} resets 6:50pm (Europe/Rome)", "usage-limit"),
+        ("You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.", "usage-limit"),
+        ("Login expired \u{b7} Please run /login", "auth"),
+        ("Your organization has disabled Claude subscription access for Claude Code \u{b7} Use an Anthropic API key instead, or ask your admin to enable access", "auth"),
+        ("Request timed out", "network"),
+        ("API Error: Connection closed mid-response. The response above may be incomplete.", "network"),
+        ("API Error: Connection lost mid-response. The response above may be incomplete.", "network"),
+        ("API Error: The response stopped arriving. The response above may be incomplete.", "network"),
+        ("API Error: Server error mid-response. The response above may be incomplete.", "outage"),
+        ("API Error: Your computer went to sleep mid-response. The response above may be incomplete.", "unknown"),
+    ];
+
+    #[test]
+    fn every_error_claude_code_really_printed_is_detected_and_classified() {
+        for (line, cause) in REAL_CLAUDE_FAILURES {
+            assert!(claude_detects(line), "a broken turn would read as finished: {line}");
+            assert_eq!(claude_cause(line), *cause, "{line}");
+
+            // The daemon reads one screen ROW, and an 80-column terminal
+            // wraps the long lines. The first row alone has to reach the
+            // same verdict, or the answer depends on the tile's width.
+            let first_row: String = line.chars().take(80).collect();
+            assert!(claude_detects(&first_row), "lost to an 80-column wrap: {first_row}");
+            assert_eq!(claude_cause(&first_row), *cause, "{first_row}");
+        }
+    }
+
+    /// The reason `limit · resets` and a bare `/usage-credits` are NOT
+    /// patterns. Claude Code ends its near-limit WARNING with the same
+    /// tail ("You've used 90% of your session limit · resets ... · Run
+    /// /usage-credits to ..."), and that paints on healthy sessions, so
+    /// either fragment would turn every turn near the limit into a
+    /// failure. Built from the message templates in the v2.1.278 binary,
+    /// not measured off a screen -- the hard-stop lines above are the
+    /// measured ones.
+    #[test]
+    fn claude_codes_near_limit_warnings_do_not_read_as_failures() {
+        for line in [
+            "You've used 90% of your session limit \u{b7} resets 6:50pm",
+            "You've used 75% of your weekly limit \u{b7} resets Fri 3:00pm \u{b7} Run /usage-credits to ask your admin for more",
+            "Approaching session limit \u{b7} resets 6:50pm \u{b7} Run /usage-credits to turn on extra usage for your org",
+            "Approaching weekly limit \u{b7} Run /usage-credits to raise the cap",
+        ] {
+            assert!(!claude_detects(line), "a healthy session would read as broken: {line}");
+        }
     }
 
     /// The grant a hidden run needs has to exist wherever there is no
