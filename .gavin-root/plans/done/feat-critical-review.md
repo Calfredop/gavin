@@ -3,7 +3,7 @@ model: fable
 agent: claude-code
 order: 5632
 title: [feat] critical review
-status: To Do
+status: Done
 complexity: complex
 ---
 Critical review: N other agents critique finished work (a Done card or a whole rail),
