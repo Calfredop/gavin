@@ -98,19 +98,27 @@ function rightClick(target: NativeMenuEvent["target"], extra: Partial<NativeMenu
   return { target, altKey: false, defaultPrevented: false, ...extra };
 }
 
+/// A node exactly as given -- unlike `on`, no default `closest`, so a
+/// bare `{}` stays a node that cannot answer.
+function bare(el: Record<string, unknown>): EventTarget {
+  return el as unknown as EventTarget;
+}
+
 describe("isInsideContextMenu", () => {
   it("is false for nothing, and for a node that cannot answer", () => {
     expect(isInsideContextMenu(null)).toBe(false);
-    expect(isInsideContextMenu({})).toBe(false);
+    expect(isInsideContextMenu(bare({}))).toBe(false);
   });
 
   it("asks closest for the shared menu layer", () => {
     expect(
-      isInsideContextMenu({
-        closest: (s: string) => (s === CONTEXT_MENU_SELECTOR ? {} : null),
-      })
+      isInsideContextMenu(
+        bare({
+          closest: (s: string) => (s === CONTEXT_MENU_SELECTOR ? {} : null),
+        })
+      )
     ).toBe(true);
-    expect(isInsideContextMenu({ closest: () => null })).toBe(false);
+    expect(isInsideContextMenu(bare({ closest: () => null }))).toBe(false);
   });
 
   it("the layer marks itself with the same attribute the helper looks for", () => {

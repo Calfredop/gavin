@@ -26,6 +26,7 @@ import { scratchpadEnabled } from "$lib/sidebar/sidebarPrefs";
 import { cmdHeld, isMacSync } from "$lib/core/platform";
 import { digitFromCode, matchesChord, resolveIndex, SHORTCUTS } from "$lib/core/shortcuts";
 import { requestedCompose, resolveComposeTarget } from "$lib/cards/composeRequest";
+import { nextWaitingJump } from "$lib/agents/nextWaitingJump";
 
 /// Just the parts of a KeyboardEvent the shortcut layer reads. A real
 /// KeyboardEvent satisfies it structurally; tests build one by hand,
@@ -204,6 +205,18 @@ export async function handleShortcutKeydown(event: ShortcutKeyEvent): Promise<bo
     if (!target) return false;
     consume();
     requestedCompose.set(target);
+    return true;
+  }
+
+  // Next waiting session: like new card, not about the focused terminal,
+  // so it works from every tab of the workspace. The top bar's button
+  // decides where it goes (nextWaitingJump.ts); with nothing waiting the
+  // key is left alone rather than swallowed.
+  if (matchesChord(event, SHORTCUTS["next-waiting"], isMac)) {
+    const jump = nextWaitingJump();
+    if (!jump) return false;
+    consume();
+    jump();
     return true;
   }
 

@@ -6,9 +6,10 @@
 
 import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
-import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, resolvedAgentFor, setSessionName, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { findSessionLocation } from "$lib/core/workspace";
+import type { AttentionRow } from "$lib/agents/attentionInbox";
 import { cardSessionState } from "$lib/board/columnRunAction";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
 import { patchPlanField, patchPlanPath } from "$lib/core/gavinState";
@@ -210,6 +211,25 @@ export async function revealSession(sessionId: string): Promise<boolean> {
   await switchWorkspaceView(location.workspaceId, "terminal");
   await switchToSessionInPage(location.workspaceId, location.pageId, sessionId);
   return true;
+}
+
+/// Put the human in front of a session that is waiting on them: an
+/// attention inbox row, clicked in the hub's "Waiting on you" panel or
+/// picked from the top bar's next button -- one jump for both, so the two
+/// doors onto the same list cannot land in different places.
+///
+/// A row with no page is the workspace's own Home agent, which lives
+/// outside every page tree; adopting it onto a page would move it out of
+/// the panel that owns it, so that one lands on the Home tab.
+export async function revealWaitingSession(
+  row: Pick<AttentionRow, "sessionId" | "workspaceId" | "pageId">
+): Promise<void> {
+  if (row.pageId === null) {
+    await switchWorkspace(row.workspaceId);
+    await switchWorkspaceView(row.workspaceId, "home");
+    return;
+  }
+  await revealSession(row.sessionId);
 }
 
 /// Puts the human in front of the agent DEVELOPING this card, if one is.

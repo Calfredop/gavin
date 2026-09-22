@@ -48,6 +48,7 @@ import {
 import { copySelection, pasteClipboard } from "$lib/core/clipboard";
 import { handleShortcutKeydown, type ShortcutKeyEvent } from "$lib/core/keyboard";
 import { requestedCompose } from "$lib/cards/composeRequest";
+import { provideNextWaitingJump } from "$lib/agents/nextWaitingJump";
 import {
   hubTabOrderByWorkspace,
   hubTabsHiddenByWorkspace,
@@ -480,5 +481,70 @@ describe("⌘N — new card", () => {
     setState({ workspaces: [{ id: "ws-1", name: "ws-1", pages: [], activePageId: null, activeView: "kanban" }] });
     expect(await handleShortcutKeydown(event({ key: "n", metaKey: false, ctrlKey: true }))).toBe(true);
     expect(get(requestedCompose)).toEqual({ kind: "hub", workspaceId: "ws-1" });
+  });
+});
+
+describe("⇧⌘A — next waiting session", () => {
+  /// Stands in for the top bar's button: offers `jump` (or nothing) for
+  /// the duration of one test.
+  function offering(jump: (() => void) | null): () => void {
+    return provideNextWaitingJump(() => jump);
+  }
+
+  it("presses the button's jump and claims the key", async () => {
+    const jump = vi.fn();
+    const withdraw = offering(jump);
+    const e = event({ key: "A", shiftKey: true });
+    expect(await handleShortcutKeydown(e)).toBe(true);
+    expect(jump).toHaveBeenCalledTimes(1);
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(e.stopPropagation).toHaveBeenCalled();
+    withdraw();
+  });
+
+  // Nothing waiting, or no button on screen at all: the key belongs to
+  // whatever else wants it, never swallowed for nothing.
+  it("leaves the key alone when nothing is waiting, or no button is on screen", async () => {
+    const withdraw = offering(null);
+    const e = event({ key: "A", shiftKey: true });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    withdraw();
+
+    const bare = event({ key: "A", shiftKey: true });
+    expect(await handleShortcutKeydown(bare)).toBe(false);
+    expect(bare.preventDefault).not.toHaveBeenCalled();
+  });
+
+  // Not a terminal chord: the button is on every tab's top row, so the
+  // key works from the hub's tabs too.
+  it("works from a hub tab, not only the terminal view", async () => {
+    setState({ workspaces: hubWorkspace("kanban") });
+    const jump = vi.fn();
+    const withdraw = offering(jump);
+    expect(await handleShortcutKeydown(event({ key: "A", shiftKey: true }))).toBe(true);
+    expect(jump).toHaveBeenCalledTimes(1);
+    withdraw();
+  });
+
+  // ⌘A is Select All, and ⌥⌘A is nobody's to take.
+  it("is not ⌘A or ⌥⇧⌘A", async () => {
+    const jump = vi.fn();
+    const withdraw = offering(jump);
+    expect(await handleShortcutKeydown(event({ key: "a" }))).toBe(false);
+    expect(await handleShortcutKeydown(event({ key: "A", shiftKey: true, altKey: true }))).toBe(false);
+    expect(jump).not.toHaveBeenCalled();
+    withdraw();
+  });
+
+  it("on Windows/Linux it is Ctrl+Shift+A", async () => {
+    (globalThis as Record<string, unknown>).__testIsMac = false;
+    const jump = vi.fn();
+    const withdraw = offering(jump);
+    expect(await handleShortcutKeydown(event({ key: "A", shiftKey: true, metaKey: false, ctrlKey: true }))).toBe(
+      true
+    );
+    expect(jump).toHaveBeenCalledTimes(1);
+    withdraw();
   });
 });

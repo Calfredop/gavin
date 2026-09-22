@@ -53,6 +53,7 @@
   } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import NewPageButton from "$lib/panes/NewPageButton.svelte";
+  import NextWaitingButton from "$lib/agents/NextWaitingButton.svelte";
   import CornerOverhang from "$lib/shell/CornerOverhang.svelte";
   import ShortcutHint from "$lib/ui/ShortcutHint.svelte";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
@@ -755,11 +756,14 @@
         <IconButton icon={Columns2} label="Split Right" size={14} shortcut="split-right" onclick={() => split("row")} />
         <IconButton icon={Rows2} label="Split Down" size={14} shortcut="split-down" onclick={() => split("column")} />
         <IconButton icon={X} label="Close Pane" size={14} onclick={handleClosePane} />
-        <!-- Last, and behind a rule: the only control here that is not
-             about this pane. It adds a PAGE, and it rides on this row
-             because this row is the top of the window on a terminal page,
-             exactly as the hub tab row is on every other tab. -->
+        <!-- Last, and behind a rule: the only controls here that are not
+             about this pane but about its workspace. One goes to the
+             workspace's sessions waiting on you; the other adds a PAGE.
+             They ride on this row because this row is the top of the
+             window on a terminal page, exactly as the hub tab row is on
+             every other tab. -->
         <span class="divider"></span>
+        <NextWaitingButton />
         <NewPageButton />
       </div>
     {/if}

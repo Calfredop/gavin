@@ -18,8 +18,11 @@ import {
   Bot,
   Eye,
   FileCode2,
+  FileText,
   GitPullRequest,
+  ListChecks,
   Repeat,
+  StickyNote,
   Terminal,
   Users,
   Zap,
@@ -69,4 +72,26 @@ export function toolKindIcon(kind: ToolKind): Component<{ size?: number }> {
 /// is a real answer where a question mark would not be.
 export function toolIcon(tool: Pick<Tool, "kind" | "icon">): Component<{ size?: number }> {
   return iconByName(tool.icon) ?? toolKindIcon(tool.kind);
+}
+
+/// The glyph a STEP draws, on the rail's chip and on the node graph's
+/// node alike -- one rule, so a step cannot wear one icon in the strip
+/// and another in the graph.
+///
+/// A tool step draws its tool (`toolIcon`); a tool step whose tool was
+/// deleted still has to render, and a terminal is the honest guess for
+/// "something that used to run". A card step draws its card's KIND --
+/// the checklist a plan is, the sticky a note is, the page a task is --
+/// which is how the graph says "node type" for the half of the steps
+/// that have no tool kind to draw.
+export function stepIcon(
+  cardKind: string | null | undefined,
+  toolId: string | null | undefined,
+  tool: Pick<Tool, "kind" | "icon"> | undefined
+): Component<{ size?: number }> {
+  if (tool) return toolIcon(tool);
+  if (toolId) return Terminal;
+  if (cardKind === "plan") return ListChecks;
+  if (cardKind === "note") return StickyNote;
+  return FileText;
 }

@@ -24,7 +24,7 @@ export interface ChordEvent {
   altKey: boolean;
 }
 
-export type ShortcutId = "new-tab" | "close-tab" | "split-right" | "split-down" | "new-card";
+export type ShortcutId = "new-tab" | "close-tab" | "split-right" | "split-down" | "new-card" | "next-waiting";
 
 export const SHORTCUTS: Record<ShortcutId, Chord> = {
   "new-tab": { key: "t" },
@@ -35,6 +35,13 @@ export const SHORTCUTS: Record<ShortcutId, Chord> = {
   // the focused terminal at all -- composeRequest.ts decides which board
   // is on screen, and the key is left alone when none is.
   "new-card": { key: "n" },
+  // The top bar's next button: jump to the next session in this
+  // workspace waiting on you (A for attention). Shifted because every
+  // bare ⌘-letter a human reaches for is taken -- by this table, by the
+  // macOS app menu, or, as Ctrl on Linux and Windows, by the agent at
+  // the prompt: Ctrl+J is its newline. Like new-card it is not about the
+  // focused terminal, and it leaves the key alone when nothing waits.
+  "next-waiting": { key: "a", shift: true },
 };
 
 export function matchesChord(e: ChordEvent, chord: Chord, isMac: boolean): boolean {

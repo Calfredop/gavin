@@ -874,8 +874,12 @@ mod tests {
     fn spawn_leaf(seconds: u32) -> std::process::Child {
         #[cfg(unix)]
         {
+            // `exec`, so the shell BECOMES the sleep. Leaving it to the
+            // shell is not the same thing: macOS's bash-as-sh execs a lone
+            // command on its own, Ubuntu's dash forks it and waits, and a
+            // leaf with a child is not a leaf.
             std::process::Command::new("/bin/sh")
-                .args(["-c", &format!("sleep {seconds}")])
+                .args(["-c", &format!("exec sleep {seconds}")])
                 .spawn()
                 .unwrap()
         }

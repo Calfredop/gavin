@@ -50,6 +50,7 @@
   import TitleBar from "$lib/shell/TitleBar.svelte";
   import WindowResizeEdges from "$lib/shell/WindowResizeEdges.svelte";
   import NewPageButton from "$lib/panes/NewPageButton.svelte";
+  import NextWaitingButton from "$lib/agents/NextWaitingButton.svelte";
   import OpenInWindowButton from "$lib/panes/OpenInWindowButton.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Sidebar from "$lib/sidebar/Sidebar.svelte";
@@ -575,9 +576,11 @@
                        it. -->
                   <OpenInWindowButton />
                   <!-- Behind a rule, like the pane row's own: everything
-                       left of it acts on THIS workspace, and what follows
-                       adds a page to it. -->
+                       left of it acts on THIS workspace as a whole, and
+                       what follows goes into it -- to its sessions waiting
+                       on you, or to a page added to it. -->
                   <span class="divider"></span>
+                  <NextWaitingButton />
                   <NewPageButton />
                 </div>
               </div>

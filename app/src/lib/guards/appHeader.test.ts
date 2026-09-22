@@ -420,6 +420,45 @@ describe("what the bars carry", () => {
     expect(source("NewPageButton.svelte")).not.toContain('text="New page"');
   });
 
+  // The way to the workspace's sessions waiting on you sits immediately
+  // before New page, behind the same rule, on both rows.
+  it("offers the next waiting session from both rows, just before New page", () => {
+    for (const text of [PAGE, PANE]) {
+      expect(text).toMatch(/<span class="divider"><\/span>\s*<NextWaitingButton \/>\s*<NewPageButton \/>/);
+    }
+    // Split: the icon jumps straight to the next wait, and the chevron
+    // opens the list over the shared menu, the way New page's does. Both
+    // are disabled -- with the reason on the wrapper -- when nothing waits.
+    const button = source("NextWaitingButton.svelte");
+    expect(button).toMatch(/icon=\{SkipForward\}[\s\S]*?onclick=\{jumpNext\}/);
+    expect(button).toMatch(/icon=\{ChevronDown\}[\s\S]*?onclick=\{openMenu\}/);
+    expect(button).toContain("void revealWaitingSession(target)");
+    // ⇧⌘A presses this same jump rather than working "next" out again,
+    // and the icon advertises it (tooltip and hold-⌘ badge).
+    expect(button).toContain("onMount(() => provideNextWaitingJump(nextJump));");
+    expect(button).toMatch(/icon=\{SkipForward\}[\s\S]*?shortcut="next-waiting"[\s\S]*?onclick=\{jumpNext\}/);
+    expect(button.match(/disabled=\{blocked\}/g)).toHaveLength(2);
+    // The open list follows the fleet: re-published in place while it is
+    // still this button's menu, closed when nothing is left waiting.
+    expect(button).toContain("get(contextMenu)?.entries !== published");
+    expect(button).toContain("setContextMenuEntries(published)");
+    expect(button).toContain("closeContextMenu()");
+    // The dot's colour reaches the menu layer's marker. The fallback in
+    // CURRENT_DOT_COLOR is the focused tab's own; pin the two together.
+    expect(source("ContextMenu.svelte")).toContain('<span class="marker" style:color={entry.markerColor}');
+    expect(rule(PANE, ".tab.focused")["border-bottom-color"]).toBe("var(--ws-accent, #d9a648)");
+    expect(button).toContain('use:tooltip={blocked ? tip : ""}');
+    // The hub's list, not a second definition of "waiting on you".
+    expect(button).toContain("state: $attentionState");
+    // Bound to the active workspace, like New page: both the list the
+    // button counts and the one its menu shows are narrowed to it.
+    expect(button).toContain("getActiveWorkspace($layoutState)");
+    expect(button).toContain(
+      "workspaceWaiting(attentionInbox(input, Date.now()), activeWorkspace?.id ?? null)"
+    );
+    expect(button).toContain("workspaceWaiting(attentionInbox(input, Date.now()), ws.id)");
+  });
+
   // What the window lost with the full-width strip: room to grab it.
   // Every row that can be the window's top edge hands its leftover back,
   // a page's tab row included -- press the bar right of the last tab and

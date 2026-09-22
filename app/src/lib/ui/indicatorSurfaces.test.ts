@@ -56,13 +56,11 @@ function bareColouredDots(css: string): string[] {
 /// already carries its own icon, its own label, an aria-label and a
 /// tooltip, all of which name the fact in words. Nothing there rests on
 /// the colour alone.
-/// The collapsed sidebar's waiting pip is the same exception one rail
-/// over. The rail is collapsed, so the dot is not competing with other
-/// badges in a row -- and the row it sits on carries the session's
-/// initial, its aria-label and its tooltip, each of which names the wait
-/// in words. The dot itself is `aria-hidden`, so nothing is announced by
-/// colour alone either. Widen the rule here rather than in the component:
-/// a StatusBadge with a glyph does not fit a 6px corner.
+///
+/// The collapsed sidebar's waiting pip is the same case: it is
+/// `aria-hidden` on a workspace initial whose button's tooltip and
+/// aria-label both name the wait and its count, and a 36px row has no
+/// room for StatusBadge's icon-and-count.
 const ALLOWED_DOTS: Record<string, number> = {
   "+page.svelte": 1,
   "Sidebar.svelte": 1,

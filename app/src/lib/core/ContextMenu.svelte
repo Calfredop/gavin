@@ -7,6 +7,7 @@
     suppressesNativeMenu,
     type ContextMenuItem,
   } from "$lib/core/contextMenu";
+  import { tooltip } from "$lib/core/tooltip";
 
   let menuEl = $state<HTMLElement | null>(null);
   let clamped = $state({ x: 0, y: 0 });
@@ -85,9 +86,18 @@
           role={entry.checked === undefined ? "menuitem" : "menuitemcheckbox"}
           aria-checked={entry.checked === undefined ? undefined : entry.checked}
         >
-          <button type="button" class="item-main" disabled={entry.disabled} onclick={() => pick(entry)}>
-            <span class="marker">{entry.checked ? "✓" : entry.active ? "•" : ""}</span>
+          <button
+            type="button"
+            class="item-main"
+            disabled={entry.disabled}
+            onclick={() => pick(entry)}
+            use:tooltip={entry.tip}
+          >
+            <span class="marker" style:color={entry.markerColor}
+              >{entry.checked ? "✓" : entry.active ? "•" : ""}</span
+            >
             <span class="item-label">{entry.label}</span>
+            {#if entry.detail}<span class="item-detail">{entry.detail}</span>{/if}
           </button>
           {#if entry.switch}
             <button
@@ -161,6 +171,15 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Pushed to the row's end and never shrunk: the label is the part
+     that ellipsizes. */
+  .item-detail {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding-left: 12px;
+    color: var(--text-subtle);
     white-space: nowrap;
   }
   .marker {

@@ -45,8 +45,7 @@ describe("a tool this machine cannot run", () => {
   // dark-Run reason comes from.
   it("darkens the Tools tab's Run button through runBlockedReason", () => {
     expect(source("workspaceTools.ts")).toContain("toolPlatformBlockedReason(input.tool, input.platform)");
-    // WorkspaceToolsHubView is a thin wrapper now; the Run button and its
-    // gate live in the explorer it delegates to.
+    // The Run button is the explorer's; WorkspaceToolsHubView only frames it.
     expect(source("ToolsExplorerView.svelte")).toContain("platform: currentPlatform()");
     // And the launch itself, for the paths that never touch the button
     // -- a queued run draining is the real one.

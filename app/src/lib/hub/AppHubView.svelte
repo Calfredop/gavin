@@ -25,7 +25,6 @@
   import {
     layoutState,
     switchWorkspace,
-    switchWorkspaceView,
     switchToSessionInPage,
     daemonCompat,
     agentProfilesStore,
@@ -87,7 +86,7 @@
     type AttentionRow,
   } from "$lib/agents/attentionInbox";
   import { openLinkedCard } from "$lib/cards/cardTabLink";
-  import { revealSession } from "$lib/cards/cardRunActions";
+  import { revealWaitingSession } from "$lib/cards/cardRunActions";
   import { kanbanState } from "$lib/board/kanbanState";
   import { fleetStripLine } from "$lib/agents/launchQueue";
   import { gavinTrees } from "$lib/core/gavinState";
@@ -391,23 +390,6 @@
     if (!task.pageId || !task.pageWorkspaceId) return;
     void switchToSessionInPage(task.pageWorkspaceId, task.pageId, task.sessionId);
   }
-
-  /// An inbox row's click: the session that is waiting, in the tab that
-  /// holds it. `revealSession` activates the workspace, its page and the
-  /// tab in one go -- the same jump the tab bar's ↗ and the sidebar's
-  /// session rows make.
-  ///
-  /// A row with no page is the workspace's own Home agent, which lives
-  /// outside every page tree; adopting it onto a page would move it out
-  /// of the panel that owns it, so that one lands on the Home tab.
-  async function openWaiting(row: AttentionRow): Promise<void> {
-    if (row.pageId === null) {
-      await switchWorkspace(row.workspaceId);
-      await switchWorkspaceView(row.workspaceId, "home");
-      return;
-    }
-    await revealSession(row.sessionId);
-  }
 </script>
 
 <div class="hub">
@@ -559,7 +541,7 @@
             <button
               type="button"
               class="waiting-row reason-{row.reason}"
-              onclick={() => void openWaiting(row)}
+              onclick={() => void revealWaitingSession(row)}
               use:tooltip={rowTip(row)}
               aria-label={rowTip(row)}
             >

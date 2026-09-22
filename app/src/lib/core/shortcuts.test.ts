@@ -49,6 +49,21 @@ describe("matchesChord", () => {
   });
 });
 
+// A chord two actions claim fires only the one keyboard.ts happens to
+// test first, and the other's button advertises a key that does
+// something else.
+describe("SHORTCUTS", () => {
+  it("gives every action a chord of its own", () => {
+    const spelled = Object.values(SHORTCUTS).map((c) => formatChord(c, true));
+    expect(new Set(spelled).size).toBe(spelled.length);
+  });
+
+  it("jumps to the next waiting session on ⇧⌘A, and Ctrl+Shift+A off macOS", () => {
+    expect(formatShortcut("next-waiting", true)).toBe("⇧⌘A");
+    expect(formatShortcut("next-waiting", false)).toBe("Ctrl+Shift+A");
+  });
+});
+
 describe("formatChord", () => {
   it("uses Apple's modifier order and symbols on macOS", () => {
     expect(formatChord({ key: "t" }, true)).toBe("⌘T");

@@ -698,15 +698,19 @@ describe("the until step's wiring", () => {
   // `toolIcon` rather than `toolKindIcon` since v33: it answers the
   // tool's OWN icon first and falls back to the kind. A surface still
   // calling the kind lookup directly would draw a terminal on the one
-  // tool its author deliberately made a rocket.
+  // tool its author deliberately made a rocket. The two STEP surfaces
+  // -- the chip and the node graph's node -- reach it through
+  // `stepIcon`, which calls it for a tool step and is shared so a step
+  // cannot wear one glyph on the chip and another on the node.
   for (const path of [
     "OrchestrationDrawer.svelte",
     "ToolLibraryDialog.svelte",
     "OrchestrationStepChip.svelte",
+    "OrchestrationNodesView.svelte",
     "ToolsExplorerView.svelte",
   ]) {
     it(`${path} draws a tool's icon through the shared lookup`, () => {
-      expect(SOURCES[path], path).toContain("toolIcon");
+      expect(SOURCES[path], path).toMatch(/\b(?:toolIcon|stepIcon)\b/);
     });
   }
 
