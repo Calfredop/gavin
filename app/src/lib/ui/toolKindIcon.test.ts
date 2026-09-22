@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render } from "svelte/server";
 import type { Component } from "svelte";
-import { toolIcon, toolKindIcon } from "$lib/ui/toolKindIcon";
+import { stepIcon, toolIcon, toolKindIcon } from "$lib/ui/toolKindIcon";
 import { TOOL_KINDS, type ToolKind } from "$lib/orchestration/orchestrationTools";
 
 /// The rendered lucide class of any glyph. The kind-keyed helper below
@@ -111,5 +111,34 @@ describe("a tool's own icon", () => {
   // `pr` tool made a rocket draws a rocket, not a pull request.
   it("prefers the picked icon to the kind's own", () => {
     expect(toolIcon({ kind: "pr", icon: "rocket" })).not.toBe(toolKindIcon("pr"));
+  });
+});
+
+// A STEP's glyph: the rail's chip and the node graph's node draw the
+// same step, and this is the one rule both read -- lifted out of the
+// chip's template so the graph could not drift from it.
+describe("a step's glyph", () => {
+  it("draws a tool step's own tool", () => {
+    expect(stepIcon("task", "t1", { kind: "pr", icon: "rocket" })).toBe(
+      toolIcon({ kind: "pr", icon: "rocket" })
+    );
+    expect(stepIcon(undefined, "t1", { kind: "agent", icon: null })).toBe(toolKindIcon("agent"));
+  });
+
+  // The tool was deleted out from under the step. It still has to
+  // render -- the step stalls with a reason the moment the rail reaches
+  // it -- and a terminal is the honest guess for what used to run.
+  it("draws a terminal for a tool step whose tool is gone", () => {
+    expect(classOf(stepIcon(undefined, "gone", undefined), "gone tool")).toBe("lucide-terminal");
+  });
+
+  // The card's kind is the node's type: what a plan, a note and a task
+  // each look like on the board is what they look like on the graph.
+  it("draws a card step by its card's kind", () => {
+    expect(classOf(stepIcon("plan", null, undefined), "plan")).toBe("lucide-list-checks");
+    expect(classOf(stepIcon("note", null, undefined), "note")).toBe("lucide-sticky-note");
+    expect(classOf(stepIcon("task", null, undefined), "task")).toBe("lucide-file-text");
+    // A card the tree has not resolved yet reads as the plain page.
+    expect(classOf(stepIcon(undefined, null, undefined), "unknown")).toBe("lucide-file-text");
   });
 });

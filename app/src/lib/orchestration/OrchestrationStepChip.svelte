@@ -1,15 +1,5 @@
 <script lang="ts">
-  import {
-    FileText,
-    ListChecks,
-    StickyNote,
-    CheckCheck,
-    RotateCw,
-    SkipForward,
-    X,
-    Terminal,
-    Sliders,
-  } from "@lucide/svelte";
+  import { CheckCheck, RotateCw, SkipForward, X, Sliders } from "@lucide/svelte";
   import { tooltip } from "$lib/core/tooltip";
   import { highlightedConflict } from "$lib/orchestration/orchestrationState";
   import IconButton from "$lib/ui/IconButton.svelte";
@@ -20,7 +10,7 @@
   import type { Tool } from "$lib/orchestration/orchestrationTools";
   import { attentionTip } from "$lib/orchestration/orchestration";
   import type { CardEntry, StepAttention, StepState } from "$lib/orchestration/orchestration";
-  import { toolIcon } from "$lib/ui/toolKindIcon";
+  import { stepIcon } from "$lib/ui/toolKindIcon";
 
   interface Props {
     /// Drives the drag engine's [data-orch-step] hook. On the chip's own
@@ -120,17 +110,9 @@
   const title = $derived(
     toolId ? (tool?.name ?? toolId) : (entry?.plan.title ?? cardPath.split("/").pop() ?? cardPath)
   );
-  const Icon = $derived(
-    tool
-      ? toolIcon(tool)
-      : toolId
-        ? Terminal
-        : kind === "plan"
-          ? ListChecks
-          : kind === "note"
-            ? StickyNote
-            : FileText
-  );
+  // One rule with the node graph's node (ui/toolKindIcon.ts): a step
+  // must not wear one glyph in the strip and another in the graph.
+  const Icon = $derived(stepIcon(kind, toolId, tool));
   const overrides = $derived(tool ? describeOverrides(tool, toolParams) : "");
   const attentionTitle = $derived(
     attention ? attentionTip(attention, doneColumnName ?? "the done column") : ""

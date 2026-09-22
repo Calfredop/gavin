@@ -1,7 +1,14 @@
 <script lang="ts">
-  import { BrushCleaning, ChevronDown, Play, Plus } from "@lucide/svelte";
+  import { BrushCleaning, ChevronDown, Columns3, Play, Plus, Workflow } from "@lucide/svelte";
   import { get } from "svelte/store";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import OrchestrationRail from "$lib/orchestration/OrchestrationRail.svelte";
+  import OrchestrationNodesView from "$lib/orchestration/OrchestrationNodesView.svelte";
+  import {
+    loadViewMode,
+    saveViewMode,
+    type OrchestrationViewMode,
+  } from "$lib/orchestration/orchestrationViewMode";
   import OrchestrationConflicts from "$lib/orchestration/OrchestrationConflicts.svelte";
   import OrchestrationDragPreview from "$lib/orchestration/OrchestrationDragPreview.svelte";
   import OrchestrationDrawer from "$lib/orchestration/OrchestrationDrawer.svelte";
@@ -487,6 +494,23 @@
   // when it actually flips.
   const filtering = $derived(lens.filtering);
 
+  // Which of the tab's two views is on screen (orchestrationViewMode.ts):
+  // the rail strip, or the node graph. Re-read when the workspace under
+  // a mounted tab changes, so one workspace's choice does not leak into
+  // another's; written on every press, so it outlives the remount every
+  // hub-tab switch is. Seeded from storage at construction ON PURPOSE --
+  // the effect alone would paint the strip for a frame before the graph
+  // a human chose -- and the effect is what covers the prop changing.
+  // svelte-ignore state_referenced_locally
+  let viewMode = $state<OrchestrationViewMode>(loadViewMode(workspaceId));
+  $effect(() => {
+    viewMode = loadViewMode(workspaceId);
+  });
+  function setViewMode(mode: OrchestrationViewMode): void {
+    viewMode = mode;
+    saveViewMode(workspaceId, mode);
+  }
+
   // Which rail's name is being edited. Owned here so a rail created by
   // the button below can open straight into rename mode.
   let editingRailId = $state<string | null>(null);
@@ -540,6 +564,9 @@
   // the step at the wrong position. Re-attaches the moment the box is
   // cleared. (Nothing else rides this engine here -- its click callback
   // is a no-op -- so simply not attaching is the whole lock.)
+  // Off in the nodes view for the same reason and by the same lock: the
+  // graph binds no `gridEl`, so the engine -- whose hit-testing is
+  // written against the strip's columns and bands -- never sees it.
   $effect(() => {
     if (!bodyEl || !gridEl || filtering) return;
     return attachOrchestrationDrag({
@@ -737,6 +764,31 @@
       label="Search rails and cards"
       placeholder="Search rails, steps, unplaced cards…"
     />
+    <!-- Two ways to look at the same plan, beside the search box because
+         both are lenses over the body and neither changes the plan. The
+         strip is where a rail is ARRANGED (drag lives there); the graph
+         is where the plan is READ -- a node per step, an arrow where one
+         rail starts another. -->
+    <div class="view-toggle" role="group" aria-label="View">
+      <IconButton
+        icon={Columns3}
+        label="Rails view"
+        tip="Rails — a column per rail; drag steps to arrange them"
+        variant="segmented"
+        size={13}
+        active={viewMode === "rails"}
+        onclick={() => setViewMode("rails")}
+      />
+      <IconButton
+        icon={Workflow}
+        label="Nodes view"
+        tip="Nodes — a node per step, an arrow where one rail starts another"
+        variant="segmented"
+        size={13}
+        active={viewMode === "nodes"}
+        onclick={() => setViewMode("nodes")}
+      />
+    </div>
     {#if lens.filtering}
       <span class="summary">
         {lens.railsShown} {lens.railsShown === 1 ? "rail" : "rails"} ·
@@ -835,6 +887,34 @@
          "no rail matches" line already does; with no rails the drawer
          gets a null target and draws its rows inert. -->
     <div class="body" bind:this={bodyEl}>
+      {#if viewMode === "nodes"}
+        <!-- The graph stands where the strip does, beside the same
+             drawer. No `gridEl` is bound in this branch, which is the
+             whole of how drag stays off here: the engine's effect
+             attaches only when the strip is on screen, and the drawer's
+             rows still add by click. -->
+        <OrchestrationNodesView
+          {orch}
+          {cards}
+          {tools}
+          {placedCards}
+          {numbered}
+          {attentions}
+          doneColumnName={doneName}
+          filtering={lens.filtering}
+          railShown={lens.railShown}
+          stepLit={lens.stepLit}
+          {onStart}
+          onPause={(railId) => void pauseRail(workspaceId, railId)}
+          onOpenCard={(path) => (openCardPath = path)}
+          onCardContextMenu={handleCardContextMenu}
+          onRetryStep={(stepId) => void retryStep(workspaceId, stepId)}
+          onMarkStepDone={(stepId) => void markStepDone(workspaceId, stepId)}
+          onSkipStep={(stepId) => void skipStep(workspaceId, stepId)}
+          onRemoveStep={(stepId) => void removeStepAction(workspaceId, stepId)}
+          onEditStepParams={(stepId) => (editingParamsFor = stepId)}
+        />
+      {:else}
       <div class="grid" bind:this={gridEl} use:remembersScroll={{ workspaceId, railId: null }}>
       {#if rails.length === 0}
         <p class="empty">
@@ -918,6 +998,7 @@
         >+ Add rail</button>
       {/if}
       </div>
+      {/if}
       <OrchestrationDrawer
         groups={unplacedGroups}
         filtering={lens.filtering}
@@ -1200,6 +1281,17 @@
   .bar :global(.bar-search) {
     flex: 1 1 auto;
     max-width: 420px;
+  }
+  /* The settings view's theme toggle, declaration for declaration: a
+     sunken well the segmented buttons sit in, where the pressed one is
+     the answer. */
+  .view-toggle {
+    display: flex;
+    flex: none;
+    gap: 2px;
+    background: var(--surface-sunken);
+    border-radius: 4px;
+    padding: 1px;
   }
   .summary {
     flex: 0 0 auto;

@@ -32,6 +32,9 @@ describe("the gavin tool kind", () => {
     "ToolLibraryDialog.svelte",
     "OrchestrationStepChip.svelte",
     "WorkspaceToolsHubView.svelte",
+    // The node graph's node: the same step the chip draws, on the tab's
+    // other view.
+    "OrchestrationNodesView.svelte",
   ];
 
   for (const path of ICON_SITES) {
@@ -41,8 +44,12 @@ describe("the gavin tool kind", () => {
       // `toolIcon` since v33, which resolves the tool's OWN icon and
       // falls back to this lookup. A surface calling `toolKindIcon`
       // directly would ignore the human's pick on that one surface --
-      // exactly the drift the shared lookup was made to end.
-      expect(source).toContain("toolIcon");
+      // exactly the drift the shared lookup was made to end. `stepIcon`
+      // is the same answer one level up: it calls `toolIcon` for a tool
+      // step, and the two step surfaces share it so a step cannot wear
+      // one glyph on the chip and another on the node.
+      expect(source).toMatch(/\b(?:toolIcon|stepIcon)\b/);
+      expect(source).not.toContain("toolKindIcon(");
     });
   }
 
