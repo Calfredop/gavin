@@ -135,7 +135,7 @@ describe("the modal", () => {
 
   it("asks before discarding, with the accounting and a danger choice", () => {
     const text = source(MODAL);
-    expect(text).toContain("discardPrompt(changes, title)");
+    expect(text).toContain("discardPrompt(changes, title, foreign.map(foreignLine))");
     expect(text).toContain("askConfirm(");
     expect(text).toContain("danger: true");
   });

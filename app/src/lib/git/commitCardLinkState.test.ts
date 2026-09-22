@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { get } from "svelte/store";
 
 vi.mock("$lib/core/backend", () => ({
-  typesafeVerdict: vi.fn(),
+  typesafeAsk: vi.fn(),
   typesafeSettings: vi.fn(),
 }));
 
@@ -50,7 +50,7 @@ async function flush(): Promise<void> {
 
 beforeEach(() => {
   __resetForTesting();
-  vi.mocked(backend.typesafeVerdict).mockReset();
+  vi.mocked(backend.typesafeAsk).mockReset();
   vi.mocked(backend.typesafeSettings).mockReset();
   typesafeSettings.set({ enabled: true, hasKey: true });
 });
@@ -64,7 +64,7 @@ describe("askCommitCardLink", () => {
     typesafeSettings.set({ enabled: false, hasKey: true });
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
-    expect(backend.typesafeVerdict).not.toHaveBeenCalled();
+    expect(backend.typesafeAsk).not.toHaveBeenCalled();
     // Not even a `read` slot: a commit nobody asked about must look
     // exactly like one on a build without this feature.
     expect(get(commitCardLinks)).toEqual({});
@@ -74,7 +74,7 @@ describe("askCommitCardLink", () => {
     typesafeSettings.set({ enabled: true, hasKey: false });
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
-    expect(backend.typesafeVerdict).not.toHaveBeenCalled();
+    expect(backend.typesafeAsk).not.toHaveBeenCalled();
     expect(get(commitCardLinks)).toEqual({});
   });
 
@@ -84,11 +84,11 @@ describe("askCommitCardLink", () => {
     // ever; it means "ask the host".
     typesafeSettings.set(null);
     vi.mocked(backend.typesafeSettings).mockResolvedValue({ enabled: true, hasKey: true });
-    vi.mocked(backend.typesafeVerdict).mockResolvedValue(body("card_01", 0.9, { card_01: 0.9, card_02: 0.1, none: 0 }));
+    vi.mocked(backend.typesafeAsk).mockResolvedValue(body("card_01", 0.9, { card_01: 0.9, card_02: 0.1, none: 0 }));
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
     expect(backend.typesafeSettings).toHaveBeenCalledTimes(1);
-    expect(backend.typesafeVerdict).toHaveBeenCalledTimes(1);
+    expect(backend.typesafeAsk).toHaveBeenCalledTimes(1);
   });
 
   it("stays off when the host cannot say", async () => {
@@ -96,20 +96,20 @@ describe("askCommitCardLink", () => {
     vi.mocked(backend.typesafeSettings).mockRejectedValue(new Error("no config"));
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
-    expect(backend.typesafeVerdict).not.toHaveBeenCalled();
+    expect(backend.typesafeAsk).not.toHaveBeenCalled();
   });
 
   it("asks nothing for an empty board", async () => {
     // A Choice with only `none` on it has nothing to answer.
     askCommitCardLink(WS, "abc", COMMIT, []);
     await flush();
-    expect(backend.typesafeVerdict).not.toHaveBeenCalled();
+    expect(backend.typesafeAsk).not.toHaveBeenCalled();
     expect(get(commitCardLinks)).toEqual({});
   });
 
   it("marks the commit pending, then reads the link the answer names", async () => {
     const d = deferred<unknown>();
-    vi.mocked(backend.typesafeVerdict).mockReturnValue(d.promise);
+    vi.mocked(backend.typesafeAsk).mockReturnValue(d.promise);
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
     expect(get(commitCardLinks)[WS]).toEqual({ key: "abc", entry: { state: "pending" } });
@@ -122,10 +122,10 @@ describe("askCommitCardLink", () => {
   });
 
   it("sends the commit and the board's titles, and nothing else of the cards", async () => {
-    vi.mocked(backend.typesafeVerdict).mockResolvedValue(body("none", 0.9, { card_01: 0.05, card_02: 0.05, none: 0.9 }));
+    vi.mocked(backend.typesafeAsk).mockResolvedValue(body("none", 0.9, { card_01: 0.05, card_02: 0.05, none: 0.9 }));
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
-    const [request] = vi.mocked(backend.typesafeVerdict).mock.calls[0] as [Record<string, unknown>];
+    const [request] = vi.mocked(backend.typesafeAsk).mock.calls[0] as [Record<string, unknown>];
     expect(request.model).toBe("jev-1.13.0");
     expect(request.state).toEqual({ commit: COMMIT });
     const wire = JSON.stringify(request);
@@ -136,18 +136,18 @@ describe("askCommitCardLink", () => {
   });
 
   it("asks once per commit, however often the pane re-renders", async () => {
-    vi.mocked(backend.typesafeVerdict).mockResolvedValue(body("card_01", 0.9, { card_01: 0.9, card_02: 0.1, none: 0 }));
+    vi.mocked(backend.typesafeAsk).mockResolvedValue(body("card_01", 0.9, { card_01: 0.9, card_02: 0.1, none: 0 }));
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
-    expect(backend.typesafeVerdict).toHaveBeenCalledTimes(1);
+    expect(backend.typesafeAsk).toHaveBeenCalledTimes(1);
   });
 
   it("drops an answer for a commit the human has moved on from", async () => {
     const first = deferred<unknown>();
-    vi.mocked(backend.typesafeVerdict)
+    vi.mocked(backend.typesafeAsk)
       .mockReturnValueOnce(first.promise)
       .mockResolvedValueOnce(body("card_02", 0.9, { card_01: 0.1, card_02: 0.9, none: 0 }));
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
@@ -169,14 +169,14 @@ describe("askCommitCardLink", () => {
   });
 
   it("reads a failed request as no link", async () => {
-    vi.mocked(backend.typesafeVerdict).mockRejectedValue(new Error("TypeSafe answered 500"));
+    vi.mocked(backend.typesafeAsk).mockRejectedValue(new Error("TypeSafe answered 500"));
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
     expect(get(commitCardLinks)[WS]).toEqual({ key: "abc", entry: { state: "read", link: null } });
   });
 
   it("reads a body this build cannot parse as no link", async () => {
-    vi.mocked(backend.typesafeVerdict).mockResolvedValue({ answers: { card: { choice: "card_77", confidence: 0.99 } } });
+    vi.mocked(backend.typesafeAsk).mockResolvedValue({ answers: { card: { choice: "card_77", confidence: 0.99 } } });
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
     expect(get(commitCardLinks)[WS]).toEqual({ key: "abc", entry: { state: "read", link: null } });
@@ -184,7 +184,7 @@ describe("askCommitCardLink", () => {
 
   it("clearing forgets the slot and drops the answer in flight", async () => {
     const d = deferred<unknown>();
-    vi.mocked(backend.typesafeVerdict).mockReturnValue(d.promise);
+    vi.mocked(backend.typesafeAsk).mockReturnValue(d.promise);
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
     clearCommitCardLink(WS);
@@ -195,7 +195,7 @@ describe("askCommitCardLink", () => {
   });
 
   it("keeps one slot per workspace", async () => {
-    vi.mocked(backend.typesafeVerdict).mockResolvedValue(body("card_01", 0.9, { card_01: 0.9, card_02: 0.1, none: 0 }));
+    vi.mocked(backend.typesafeAsk).mockResolvedValue(body("card_01", 0.9, { card_01: 0.9, card_02: 0.1, none: 0 }));
     askCommitCardLink("ws-1", "abc", COMMIT, CARDS);
     askCommitCardLink("ws-2", "abc", COMMIT, CARDS);
     await flush();
@@ -211,17 +211,17 @@ describe("askCardsByMeaning", () => {
   });
 
   it("waits for the typing to settle before asking, and asks the query as it settled", async () => {
-    vi.mocked(backend.typesafeVerdict).mockResolvedValue(body("card_01", 0.9, { card_01: 0.9, card_02: 0.1, none: 0 }));
+    vi.mocked(backend.typesafeAsk).mockResolvedValue(body("card_01", 0.9, { card_01: 0.9, card_02: 0.1, none: 0 }));
     askCardsByMeaning(WS, "histor", CARDS);
     vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS - 100);
     askCardsByMeaning(WS, "history of commits", CARDS);
     vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS - 1);
     await flush();
-    expect(backend.typesafeVerdict).not.toHaveBeenCalled();
+    expect(backend.typesafeAsk).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
     await flush();
-    expect(backend.typesafeVerdict).toHaveBeenCalledTimes(1);
-    const [request] = vi.mocked(backend.typesafeVerdict).mock.calls[0] as [Record<string, unknown>];
+    expect(backend.typesafeAsk).toHaveBeenCalledTimes(1);
+    const [request] = vi.mocked(backend.typesafeAsk).mock.calls[0] as [Record<string, unknown>];
     expect(request.state).toEqual({ search_query: "history of commits" });
     expect(get(cardsByMeaning)[WS]).toEqual({
       key: "history of commits",
@@ -235,24 +235,24 @@ describe("askCardsByMeaning", () => {
     clearCardsByMeaning(WS);
     vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS + 10);
     await flush();
-    expect(backend.typesafeVerdict).not.toHaveBeenCalled();
+    expect(backend.typesafeAsk).not.toHaveBeenCalled();
     expect(get(cardsByMeaning)).toEqual({});
   });
 
   it("asks a settled query once, not again on every re-render", async () => {
-    vi.mocked(backend.typesafeVerdict).mockResolvedValue(body("card_01", 0.9, { card_01: 0.9, card_02: 0.1, none: 0 }));
+    vi.mocked(backend.typesafeAsk).mockResolvedValue(body("card_01", 0.9, { card_01: 0.9, card_02: 0.1, none: 0 }));
     askCardsByMeaning(WS, "history", CARDS);
     vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
     await flush();
     askCardsByMeaning(WS, "history", CARDS);
     vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
     await flush();
-    expect(backend.typesafeVerdict).toHaveBeenCalledTimes(1);
+    expect(backend.typesafeAsk).toHaveBeenCalledTimes(1);
   });
 
   it("drops the answer to a query that was typed over", async () => {
     const first = deferred<unknown>();
-    vi.mocked(backend.typesafeVerdict)
+    vi.mocked(backend.typesafeAsk)
       .mockReturnValueOnce(first.promise)
       .mockResolvedValueOnce(body("card_02", 0.6, { card_01: 0.3, card_02: 0.6, none: 0.1 }));
     askCardsByMeaning(WS, "one", CARDS);
@@ -275,7 +275,7 @@ describe("askCardsByMeaning", () => {
     askCardsByMeaning(WS, "history", CARDS);
     vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
     await flush();
-    expect(backend.typesafeVerdict).not.toHaveBeenCalled();
+    expect(backend.typesafeAsk).not.toHaveBeenCalled();
     expect(get(cardsByMeaning)).toEqual({});
   });
 });

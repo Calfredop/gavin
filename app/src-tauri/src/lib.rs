@@ -105,6 +105,8 @@ pub fn run() {
             typesafe::set_typesafe_enabled,
             typesafe::set_typesafe_api_key,
             typesafe::typesafe_verdict,
+            typesafe::set_typesafe_change_attribution,
+            typesafe::typesafe_attribution,
             session::set_failure_patterns,
             session::get_workspaces_state,
             session::set_workspaces_state,

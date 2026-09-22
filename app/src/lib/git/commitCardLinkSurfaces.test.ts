@@ -96,7 +96,7 @@ describe("the driver", () => {
     const s = source("commitCardLinkState.ts");
     expect(s).toContain('from "$lib/agents/turnVerdictState"');
     expect(s).toContain("settings?.enabled === true && settings.hasKey === true");
-    expect(s).toContain("backend.typesafeVerdict(");
+    expect(s).toContain("backend.typesafeAsk(");
     expect(s).not.toMatch(/apiKey|api_key/);
   });
 
@@ -104,7 +104,7 @@ describe("the driver", () => {
     // Suggest, never record: the two stores are plain writables and no
     // backend write is reachable from here.
     const s = source("commitCardLinkState.ts");
-    expect(s).not.toMatch(/backend\.(?!typesafeVerdict\b)/);
+    expect(s).not.toMatch(/backend\.(?!typesafeAsk\b)/);
     expect(s).not.toMatch(/setPlanField|writePlan|persist/);
   });
 });

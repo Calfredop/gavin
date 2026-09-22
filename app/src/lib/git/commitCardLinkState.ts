@@ -126,7 +126,7 @@ function ask(
       if (!live()) return;
       store.update((m) => ({ ...m, [workspaceId]: { key, entry: { state: "pending" } } }));
       const options = cardOptions(cards);
-      const body = await backend.typesafeVerdict(build(options));
+      const body = await backend.typesafeAsk(build(options));
       if (!live()) return;
       const link = readCardLink(parseCardAnswer(body, options), options);
       store.update((m) => ({ ...m, [workspaceId]: { key, entry: { state: "read", link } } }));

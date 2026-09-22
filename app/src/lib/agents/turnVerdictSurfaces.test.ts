@@ -51,7 +51,7 @@ describe("the settings copy", () => {
     // The only reads of the key state are the two booleans the host
     // answers with.
     expect(s).not.toMatch(/\$typesafeSettings\??\.(apiKey|api_key|key)\b/);
-    expect(source("backend.ts")).toContain("typesafeSettings(): Promise<{ enabled: boolean; hasKey: boolean }>");
+    expect(source("backend.ts")).toContain("typesafeSettings(): Promise<{ enabled: boolean; hasKey: boolean; changeAttribution: boolean }>");
     expect(source("backend.ts")).not.toMatch(/get_typesafe_api_key|typesafeApiKey\(\)/);
   });
 });

@@ -1,9 +1,11 @@
-//! The one network call behind the turn verdict.
+//! The one network call behind gavin's TypeSafe features: the turn
+//! verdict and change attribution.
 //!
-//! The policy, the question set and the thresholds all live in
-//! `app/src/lib/agents/turnVerdict.ts`, where they can be argued with in
-//! a unit test. This module exists for the two things that CANNOT live
-//! there, and both are about the key:
+//! The policies, the question sets and the thresholds all live in
+//! `app/src/lib/agents/turnVerdict.ts` and
+//! `app/src/lib/cards/changeAttribution.ts`, where they can be argued
+//! with in a unit test. This module exists for the two things that
+//! CANNOT live there, and both are about the key:
 //!
 //! **The key never reaches the frontend.** It is read here, on demand,
 //! from `config.json` (which `config::save` writes 0600 for this
@@ -22,6 +24,13 @@
 //! wearing the costume of a parameter; the frontend chooses the
 //! QUESTIONS, and the host chooses where they go.
 //!
+//! **Each feature has its own switch, and the gate is per feature.** The
+//! verdict sends a screen tail; attribution sends SOURCE CODE (a diff
+//! excerpt per changed file) and card text. Consenting to one is not
+//! consenting to the other, so `Feature` names which switch a request
+//! stands behind and `admitted` reads that switch and no other. One
+//! client, two consents -- not two clients.
+//!
 //! curl rather than an HTTP crate, for the reason `agent_usage.rs` gives:
 //! the workspace has no TLS stack at all, and one authenticated POST does
 //! not justify pulling rustls into a Tauri host that already shells out
@@ -36,7 +45,8 @@ use crate::agent_usage::{run_curl, split_status};
 /// never sends it.
 const TYPESAFE_URL: &str = "https://api.typesafe.ai/v1/systemone";
 
-/// The whole budget for a verdict, retry included.
+/// The whole budget for one request, retry included -- a verdict or an
+/// attribution question alike.
 ///
 /// Two seconds against a measured ~0.7s p50. This is not a performance
 /// knob: the verdict is taken at the moment a quiet session would be
@@ -44,7 +54,9 @@ const TYPESAFE_URL: &str = "https://api.typesafe.ai/v1/systemone";
 /// promise is that it can only refine today's answer, and an answer that
 /// arrives after the rail has moved on refines nothing -- so the budget
 /// is what turns "slow" into "absent", which the caller already knows how
-/// to handle.
+/// to handle. Attribution holds nothing up, but a file's answer that
+/// arrives after the human has closed the view is worth as little, and
+/// one budget keeps one client.
 const TOTAL_BUDGET: Duration = Duration::from_millis(2_000);
 
 /// The least time worth starting a second attempt in. Below this the
@@ -66,6 +78,10 @@ pub struct TypeSafeSettings {
     /// party, so this cannot be something discovered after the fact.
     pub enabled: bool,
     pub has_key: bool,
+    /// Change attribution's own switch. Also false unless the human set
+    /// it, and independent of `enabled` in both directions -- see the
+    /// module note.
+    pub change_attribution: bool,
 }
 
 fn settings_from(config_dir: &std::path::Path) -> TypeSafeSettings {
@@ -76,6 +92,7 @@ fn settings_from(config_dir: &std::path::Path) -> TypeSafeSettings {
             .as_ref()
             .and_then(|t| t.api_key.as_deref())
             .is_some_and(|k| !k.trim().is_empty()),
+        change_attribution: cfg.as_ref().and_then(|t| t.change_attribution).unwrap_or(false),
     }
 }
 
@@ -94,6 +111,18 @@ pub fn set_typesafe_enabled(
 ) -> Result<TypeSafeSettings, String> {
     let dir = config_dir(&app_handle)?;
     write_typesafe(&dir, |t| t.enabled = Some(enabled))?;
+    Ok(settings_from(&dir))
+}
+
+/// Turn change attribution on or off. Its own command for its own
+/// switch, so no code path can flip one consent by writing the other.
+#[tauri::command]
+pub fn set_typesafe_change_attribution(
+    app_handle: tauri::AppHandle,
+    enabled: bool,
+) -> Result<TypeSafeSettings, String> {
+    let dir = config_dir(&app_handle)?;
+    write_typesafe(&dir, |t| t.change_attribution = Some(enabled))?;
     Ok(settings_from(&dir))
 }
 
@@ -176,21 +205,64 @@ pub async fn typesafe_verdict(
     request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let dir = config_dir(&app_handle)?;
-    tauri::async_runtime::spawn_blocking(move || verdict_blocking(&dir, &request))
+    tauri::async_runtime::spawn_blocking(move || judge_blocking(&dir, Feature::TurnVerdict, &request))
         .await
         .map_err(|e| format!("the verdict request did not run: {e}"))?
 }
 
-fn verdict_blocking(
-    config_dir: &std::path::Path,
-    request: &serde_json::Value,
+/// One change-attribution question: which card a changed file looks
+/// like. The same call as `typesafe_verdict` in every respect but the
+/// switch it stands behind -- `request` is the body
+/// `changeAttribution.ts` built, opaque here for the same reason.
+#[tauri::command]
+pub async fn typesafe_attribution(
+    app_handle: tauri::AppHandle,
+    request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    let dir = config_dir(&app_handle)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        judge_blocking(&dir, Feature::ChangeAttribution, &request)
+    })
+    .await
+    .map_err(|e| format!("the attribution request did not run: {e}"))?
+}
+
+/// Which consent a request stands behind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Feature {
+    TurnVerdict,
+    ChangeAttribution,
+}
+
+impl Feature {
+    /// Whether THIS feature's switch is on. Each reads its own field and
+    /// never the other's: that independence is the whole point of the
+    /// second switch.
+    fn on(self, cfg: &crate::config::TypeSafeConfig) -> bool {
+        match self {
+            Feature::TurnVerdict => cfg.enabled == Some(true),
+            Feature::ChangeAttribution => cfg.change_attribution == Some(true),
+        }
+    }
+
+    fn off_message(self) -> &'static str {
+        match self {
+            Feature::TurnVerdict => "the TypeSafe turn verdict is off",
+            Feature::ChangeAttribution => "TypeSafe change attribution is off",
+        }
+    }
+}
+
+/// What must be true before a byte leaves the machine for `feature`, and
+/// the key it may leave with. Separate from the call so the gate can be
+/// proved in a test that reaches no network.
+fn admitted(config_dir: &std::path::Path, feature: Feature) -> Result<String, String> {
     let cfg = crate::config::load(config_dir)
         .map_err(|e| e.to_string())?
         .typesafe
         .unwrap_or_default();
-    if cfg.enabled != Some(true) {
-        return Err("the TypeSafe turn verdict is off".into());
+    if !feature.on(&cfg) {
+        return Err(feature.off_message().into());
     }
     let key = cfg
         .api_key
@@ -199,6 +271,16 @@ fn verdict_blocking(
         .filter(|k| !k.is_empty())
         .ok_or("no TypeSafe API key is set")?;
     header_safe(key)?;
+    Ok(key.to_string())
+}
+
+fn judge_blocking(
+    config_dir: &std::path::Path,
+    feature: Feature,
+    request: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let key = admitted(config_dir, feature)?;
+    let key = key.as_str();
 
     let payload = serde_json::to_string(request).map_err(|e| e.to_string())?;
     let deadline = Instant::now() + TOTAL_BUDGET;
@@ -284,7 +366,7 @@ mod tests {
         // happens not to.
         let json = serde_json::to_string(&s).unwrap();
         assert!(!json.contains("sk-ts-secret"), "the key must not cross to the frontend: {json}");
-        assert_eq!(json, r#"{"enabled":true,"hasKey":true}"#);
+        assert_eq!(json, r#"{"enabled":true,"hasKey":true,"changeAttribution":false}"#);
     }
 
     #[test]
@@ -311,10 +393,10 @@ mod tests {
         let untouched = settings_from(dir.path());
         assert!(!untouched.enabled);
         assert!(!untouched.has_key);
-        assert!(verdict_blocking(dir.path(), &serde_json::json!({})).is_err());
+        assert!(admitted(dir.path(), Feature::TurnVerdict).is_err());
 
         write_typesafe(dir.path(), |t| t.api_key = Some("sk-ts-key".into())).unwrap();
-        let err = verdict_blocking(dir.path(), &serde_json::json!({})).unwrap_err();
+        let err = admitted(dir.path(), Feature::TurnVerdict).unwrap_err();
         assert!(err.contains("off"), "a key alone must not turn it on: {err}");
     }
 
@@ -322,8 +404,73 @@ mod tests {
     fn an_enabled_verdict_with_no_key_asks_for_one_rather_than_calling() {
         let dir = tempfile::tempdir().unwrap();
         write_typesafe(dir.path(), |t| t.enabled = Some(true)).unwrap();
-        let err = verdict_blocking(dir.path(), &serde_json::json!({})).unwrap_err();
+        let err = admitted(dir.path(), Feature::TurnVerdict).unwrap_err();
         assert!(err.contains("key"), "expected a missing-key error, got {err}");
+    }
+
+    /// Change attribution has a switch of its OWN. It sends source code --
+    /// a diff excerpt per file -- and the card titles and bodies, which the
+    /// turn verdict's consent (a screen tail) never covered; so neither
+    /// switch turns the other on, in either direction.
+    #[test]
+    fn change_attribution_has_its_own_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        write_typesafe(dir.path(), |t| {
+            t.enabled = Some(true);
+            t.api_key = Some("sk-ts-key".into());
+        })
+        .unwrap();
+        let s = settings_from(dir.path());
+        assert!(s.enabled && s.has_key && !s.change_attribution);
+        let err = admitted(dir.path(), Feature::ChangeAttribution).unwrap_err();
+        assert!(err.contains("off"), "the verdict's consent must not turn attribution on: {err}");
+
+        write_typesafe(dir.path(), |t| t.change_attribution = Some(true)).unwrap();
+        assert!(settings_from(dir.path()).change_attribution);
+        // On, with a key: the gate opens. The gate and not the call, so
+        // no test ever posts a made-up key to the real endpoint.
+        assert_eq!(admitted(dir.path(), Feature::ChangeAttribution).as_deref(), Ok("sk-ts-key"));
+
+        let other = tempfile::tempdir().unwrap();
+        write_typesafe(other.path(), |t| {
+            t.change_attribution = Some(true);
+            t.api_key = Some("sk-ts-key".into());
+        })
+        .unwrap();
+        let err = admitted(other.path(), Feature::TurnVerdict).unwrap_err();
+        assert!(err.contains("off"), "attribution's consent must not turn the verdict on: {err}");
+    }
+
+    #[test]
+    fn the_attribution_switch_survives_a_workspace_save_too() {
+        let dir = tempfile::tempdir().unwrap();
+        write_typesafe(dir.path(), |t| t.change_attribution = Some(true)).unwrap();
+        let data = crate::session::WorkspacesData {
+            workspaces: vec![],
+            active_workspace_id: None,
+            removed_workspaces: vec![],
+        };
+        crate::session::persist_workspaces(
+            dir.path(),
+            &data,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            None,
+            Default::default(),
+            None,
+            None,
+            None,
+            Default::default(),
+            crate::config::AgentDefaultsConfig::default(),
+            crate::config::GitTrackingDefault::default(),
+            crate::config::RequireReviewDefault::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(settings_from(dir.path()).change_attribution);
     }
 
     /// The settings survive an ordinary workspace save, which rebuilds

@@ -82,7 +82,7 @@ function body(verdict = "asking") {
 }
 
 function armed(): void {
-  typesafeSettings.set({ enabled: true, hasKey: true });
+  typesafeSettings.set({ enabled: true, hasKey: true, changeAttribution: false });
   daemonCompat.set({ daemonVersion: 39, appVersion: 39, degraded: false } as never);
 }
 
@@ -192,7 +192,7 @@ beforeEach(() => {
   daemonCompat.set({ daemonVersion: 39, appVersion: 39, degraded: false } as never);
   vi.mocked(backend.sessionScreen).mockResolvedValue(SCREEN);
   vi.mocked(backend.typesafeAsk).mockResolvedValue(body());
-  vi.mocked(backend.typesafeSettings).mockResolvedValue({ enabled: true, hasKey: true });
+  vi.mocked(backend.typesafeSettings).mockResolvedValue({ enabled: true, hasKey: true, changeAttribution: false });
 });
 
 afterEach(() => {
@@ -211,7 +211,7 @@ describe("the gates: whether a byte leaves the machine at all", () => {
   });
 
   it("a key alone is not consent", () => {
-    typesafeSettings.set({ enabled: false, hasKey: true });
+    typesafeSettings.set({ enabled: false, hasKey: true, changeAttribution: false });
     cardSession();
     noteQuietTransition("s1");
     expect(backend.sessionScreen).not.toHaveBeenCalled();
@@ -219,7 +219,7 @@ describe("the gates: whether a byte leaves the machine at all", () => {
   });
 
   it("sends nothing without a key to pay with", () => {
-    typesafeSettings.set({ enabled: true, hasKey: false });
+    typesafeSettings.set({ enabled: true, hasKey: false, changeAttribution: false });
     cardSession();
     noteQuietTransition("s1");
     expect(backend.sessionScreen).not.toHaveBeenCalled();
@@ -254,7 +254,7 @@ describe("the gates: whether a byte leaves the machine at all", () => {
     armed();
     cardSession();
     turnVerdictById.set({ s1: { state: "read", reading: { kind: "asking" } } });
-    typesafeSettings.set({ enabled: false, hasKey: true });
+    typesafeSettings.set({ enabled: false, hasKey: true, changeAttribution: false });
     noteQuietTransition("s1");
     expect(get(turnVerdictById)).toEqual({});
   });

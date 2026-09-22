@@ -60,7 +60,13 @@ export function runBaseline(
 /// The one line a loaded set of changes reduces to: "7 files · +240 −18
 /// · 2 commits". Null when there is nothing to say YET (still loading);
 /// a state with an explanation goes through `changesProblem` instead.
-export function changesSummary(changes: RunChanges | null): string | null {
+///
+/// `foreign` is how many of the files TypeSafe change attribution placed
+/// with ANOTHER card (`foreignFiles` in changeAttribution.ts) -- a
+/// count on the same line, because it qualifies the file count it sits
+/// beside. Zero, the default, says nothing: an unattributed list is
+/// today's list.
+export function changesSummary(changes: RunChanges | null, foreign: number = 0): string | null {
   if (!changes) return null;
   if (changes.notARepo || changes.baseMissing) return null;
   if (changes.files.length === 0 && changes.commits === 0) return "No changes yet";
@@ -71,6 +77,7 @@ export function changesSummary(changes: RunChanges | null): string | null {
     parts.push(`+${changes.added} −${changes.removed}`);
   }
   if (changes.commits > 0) parts.push(plural(changes.commits, "commit"));
+  if (foreign > 0) parts.push(`${foreign} ${foreign === 1 ? "looks" : "look"} like another card's`);
   return parts.join(" · ");
 }
 
@@ -135,7 +142,18 @@ export interface DiscardPrompt {
 /// of its own, and the commits and the new files are named separately
 /// because they are recoverable in completely different ways: a dropped
 /// commit is in the reflog, and a trashed file is in the Trash.
-export function discardPrompt(changes: RunChanges, cardTitle: string): DiscardPrompt {
+///
+/// `foreignLines` are the sentences change attribution wrote about the
+/// files that look like another card's (`foreignLine` in
+/// changeAttribution.ts), one card a line, placed ABOVE the co-tenancy
+/// warning: that warning could never name what goes with the reset, and
+/// these lines can. Nothing about the reset changes with them -- the
+/// untracked list, the label and what the backend is told are the same.
+export function discardPrompt(
+  changes: RunChanges,
+  cardTitle: string,
+  foreignLines: readonly string[] = []
+): DiscardPrompt {
   const untracked = untrackedPaths(changes);
   const tracked = trackedFiles(changes);
   const lines: string[] = [
@@ -162,6 +180,7 @@ export function discardPrompt(changes: RunChanges, cardTitle: string): DiscardPr
       } to the Trash: ${shown.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}.`
     );
   }
+  lines.push(...foreignLines);
   lines.push("Anything another run put in this checkout goes with it — the reset is the whole worktree, not this card's files.");
   return {
     title: `Discard everything this run did to ${cardTitle}?`,

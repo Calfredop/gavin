@@ -7,6 +7,7 @@ import {
   MAX_REMEMBERED_GROUPS,
   SAME_BASELINE_LABEL,
   RAIL_SUBJECT_PREFIX,
+  sameBaselineHint,
   criticalReviewOffer,
   everyGroupExpanded,
   fileLabel,
@@ -510,6 +511,7 @@ describe("group expansion", () => {
     files: [],
     label: id,
     hint: null,
+    setAside: 0,
     cards: [],
   });
 
@@ -750,5 +752,89 @@ describe("reviewSummary with rails", () => {
       candidate("C", null),
     ]);
     expect(reviewSummary(groups)).toBe("3 cards · 2 groups");
+  });
+});
+
+describe("groupCandidates with attribution", () => {
+  // The hint TypeSafe change attribution hands the tab: for each card's
+  // run, which card each confidently-placed file looks like. A card
+  // claims a file for clustering only when nobody else was named for it.
+  const FILES = ["f1.ts", "f2.ts", "f3.ts"];
+  const measured = { checkout: "/repo", baseSha: "abc" };
+  const id = (title: string): string => `/ws/.gavin-root/plans/${title.toLowerCase()}.md`;
+  const owned = (owners: Record<string, string>): ReadonlyMap<string, string> =>
+    new Map(Object.entries(owners));
+
+  it("does not bind two cards on a file that is confidently one of theirs", () => {
+    const owners = owned({ "f1.ts": id("Alpha"), "f2.ts": id("Beta") });
+    const a = { ...candidate("Alpha", FILES, {}, measured), owners };
+    const b = { ...candidate("Beta", FILES, {}, measured), owners };
+    const groups = groupCandidates([a, b]);
+    // f3 is nobody's, so it still binds them; f1 and f2 do not.
+    expect(groups).toHaveLength(1);
+    expect(groups[0].files[0]).toBe("f3.ts");
+    expect(groups[0].setAside).toBe(2);
+    expect(groups[0].hint).toContain("2 of the 3 files");
+    expect(groups[0].hint).toContain("not counted as collisions");
+  });
+
+  it("splits a same-baseline group once every shared file is placed", () => {
+    const owners = owned({ "f1.ts": id("Alpha"), "f2.ts": id("Beta") });
+    const a = { ...candidate("Alpha", ["f1.ts", "f2.ts"], {}, measured), owners };
+    const b = { ...candidate("Beta", ["f1.ts", "f2.ts"], {}, measured), owners };
+    const groups = groupCandidates([a, b]);
+    expect(groups.map((g) => g.cards.map((c) => c.card.title))).toEqual([["Alpha"], ["Beta"]]);
+    expect(groups.map((g) => g.files)).toEqual([["f1.ts"], ["f2.ts"]]);
+    expect(groups.map((g) => g.label)).toEqual(["f1.ts", "f2.ts"]);
+    expect(new Set(groups.map((g) => g.id)).size).toBe(2);
+  });
+
+  it("keeps a card whose every file looks like another card's in a group of its own, and says so", () => {
+    const owners = owned({ "f1.ts": id("Alpha"), "f2.ts": id("Alpha") });
+    const a = { ...candidate("Alpha", ["f1.ts", "f2.ts"], {}, measured), owners };
+    const g = { ...candidate("Gamma", ["f1.ts", "f2.ts"], {}, measured), owners };
+    const groups = groupCandidates([a, g]);
+    const gamma = groups.find((x) => x.cards[0].card.title === "Gamma");
+    const alpha = groups.find((x) => x.cards[0].card.title === "Alpha");
+    expect(gamma?.cards).toHaveLength(1);
+    // Still named in the header: the list is a hint, never a filter, and
+    // the card's own row says "2 files".
+    expect(gamma?.files).toEqual(["f1.ts", "f2.ts"]);
+    expect(gamma?.label).toBe("f1.ts, f2.ts");
+    expect(gamma?.setAside).toBe(2);
+    expect(gamma?.hint).toContain("look like another card's work");
+    expect(gamma?.id).not.toBe(alpha?.id);
+  });
+
+  it("is today's grouping when no card carries an attribution", () => {
+    const groups = groupCandidates([
+      candidate("Alpha", FILES, {}, measured),
+      candidate("Beta", FILES, {}, measured),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].label).toBe(SAME_BASELINE_LABEL);
+    expect(groups[0].setAside).toBe(0);
+    expect(groups[0].hint).toBe(sameBaselineHint(groups[0].cards));
+  });
+
+  it("combines the same-baseline sentence with what TypeSafe placed", () => {
+    const owners = owned({ "f1.ts": id("Alpha") });
+    const a = { ...candidate("Alpha", FILES, {}, measured), owners };
+    const b = { ...candidate("Beta", FILES, {}, measured), owners };
+    const [group] = groupCandidates([a, b]);
+    expect(group.label).toBe(SAME_BASELINE_LABEL);
+    expect(group.hint).toContain("launched from the same commit");
+    expect(group.hint).toContain("TypeSafe placed 1 of the 3 files");
+    expect(group.hint).toContain("the 2 it could not place still bind the group");
+  });
+
+  it("does not let a card lose a file to an owner only another card's run named", () => {
+    // Attribution landed for Alpha's run but not yet for Beta's. Beta
+    // still claims everything it lists, so the pair stays bound by f1.
+    const a = { ...candidate("Alpha", FILES, {}, measured), owners: owned({ "f2.ts": id("Beta") }) };
+    const b = candidate("Beta", FILES, {}, measured);
+    const groups = groupCandidates([a, b]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].setAside).toBe(1);
   });
 });

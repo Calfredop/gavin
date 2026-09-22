@@ -30,6 +30,10 @@ import type { TurnVerdictEntry } from "$lib/agents/turnVerdict";
 export interface TypeSafeSettings {
   enabled: boolean;
   hasKey: boolean;
+  /// Change attribution's own switch (`typesafe.rs`, `changeAttributionState.ts`).
+  /// It sends source code, which the verdict's consent never covered, so
+  /// neither switch turns the other on.
+  changeAttribution: boolean;
 }
 
 /// Null until the first read. Null is NOT "off": it is "nobody has
