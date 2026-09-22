@@ -433,6 +433,10 @@ describe("what the bars carry", () => {
     expect(button).toMatch(/icon=\{SkipForward\}[\s\S]*?onclick=\{jumpNext\}/);
     expect(button).toMatch(/icon=\{ChevronDown\}[\s\S]*?onclick=\{openMenu\}/);
     expect(button).toContain("void revealWaitingSession(target)");
+    // ⇧⌘A presses this same jump rather than working "next" out again,
+    // and the icon advertises it (tooltip and hold-⌘ badge).
+    expect(button).toContain("onMount(() => provideNextWaitingJump(nextJump));");
+    expect(button).toMatch(/icon=\{SkipForward\}[\s\S]*?shortcut="next-waiting"[\s\S]*?onclick=\{jumpNext\}/);
     expect(button.match(/disabled=\{blocked\}/g)).toHaveLength(2);
     // The open list follows the fleet: re-published in place while it is
     // still this button's menu, closed when nothing is left waiting.

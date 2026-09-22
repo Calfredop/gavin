@@ -9,6 +9,7 @@
   // and the chevron opens the list over the shared menu layer, the way
   // New page's does. nextWaiting.ts decides the target and builds the
   // menu; this is the template and the jumps.
+  import { onMount } from "svelte";
   import { get } from "svelte/store";
   import { SkipForward, ChevronDown } from "@lucide/svelte";
   import { layoutState, attentionState } from "$lib/core/layoutState";
@@ -34,6 +35,7 @@
     type ContextMenuEntry,
   } from "$lib/core/contextMenu";
   import { revealWaitingSession } from "$lib/cards/cardRunActions";
+  import { provideNextWaitingJump } from "$lib/agents/nextWaitingJump";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tooltip } from "$lib/core/tooltip";
 
@@ -73,10 +75,18 @@
   // Read at the click rather than kept in a derived: the list and the
   // place the human stands are both live stores, and the jump has to go
   // where the bubble said a moment ago.
-  function jumpNext(): void {
+  function nextJump(): (() => void) | null {
     const target = nextWaitingTarget(rows, current);
-    if (target) void revealWaitingSession(target);
+    return target ? () => void revealWaitingSession(target) : null;
   }
+
+  function jumpNext(): void {
+    nextJump()?.();
+  }
+
+  // ⇧⌘A presses this button rather than working "next" out again, so
+  // the key goes exactly where the bubble says a click would.
+  onMount(() => provideNextWaitingJump(nextJump));
 
   // NewPageButton's guard, for NewPageButton's reason: the menu layer
   // closes on any pointerdown outside itself, before the chevron's click
@@ -148,6 +158,7 @@
     tone={blocked ? "default" : "warning"}
     size={14}
     disabled={blocked}
+    shortcut="next-waiting"
     class="next-jump"
     onclick={jumpNext}
   />
