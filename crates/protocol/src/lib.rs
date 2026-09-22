@@ -18,6 +18,21 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v41 adds `RunGit` and `ListWorkspaceDir`: the Git tab's git subcommands
+/// and the Files tree's directory listing, run on a daemon on another
+/// machine (`2026-09-22-ssh-git-files-design.md`). Two new TYPES, gated by
+/// `min_version_for`; the app mirrors them as
+/// FEATURE_MIN_VERSION.sshGitFiles against the HOST's version.
+///
+/// v40 adds `ReadWorkspaceFile`, `WriteWorkspaceFile` and
+/// `StatWorkspacePaths`: the file access a desktop needs from a daemon on
+/// another machine to compose a card's prompt there and to write the
+/// agent-integration files where the agent runs
+/// (`2026-09-22-ssh-card-runs-design.md`). Three new TYPES, gated by
+/// `min_version_for`; the app mirrors them as
+/// FEATURE_MIN_VERSION.sshCardRuns, checked against the HOST daemon's
+/// version, never the local one's.
+///
 /// v39 added `Request::SessionScreen`: "what does this session's screen
 /// say right now", answered as PLAIN TEXT from the same per-session
 /// terminal parser `Snapshot` repaints from (`SessionScreen::contents`).
@@ -377,7 +392,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 39;
+pub const PROTOCOL_VERSION: u32 = 41;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -598,6 +613,56 @@ pub enum Request {
     },
     ReadPrd {
         root_path: String,
+    },
+    /// A file under a watched root, for a desktop driving this daemon from
+    /// another machine (ssh workspaces, v39,
+    /// `2026-09-22-ssh-card-runs-design.md`): the card a run is composed
+    /// from, the MCP config and instructions file agent integration merges
+    /// into. `path` is absolute or root-relative; anything that resolves
+    /// outside the root and its `extra_contexts` is refused. Capped at
+    /// `MAX_WORKSPACE_FILE_BYTES`, like the viewer.
+    ReadWorkspaceFile {
+        root_path: String,
+        path: String,
+    },
+    /// The write half: the files agent integration produces, on the
+    /// machine the agent runs on. Parents are created; the same
+    /// confinement as the read.
+    WriteWorkspaceFile {
+        root_path: String,
+        path: String,
+        content: String,
+    },
+    /// Where a card's attachments resolve on this machine, and whether
+    /// they exist -- the attachment classification the desktop's own
+    /// `attachment_status` does for a local root, answered here for a
+    /// remote one. Reports `outside` rather than refusing it: that is
+    /// what the classification means.
+    StatWorkspacePaths {
+        root_path: String,
+        paths: Vec<String>,
+    },
+    /// Runs a git subcommand in a cwd confined to a watched root, for the
+    /// Git tab of a workspace on another machine (v40,
+    /// `2026-09-22-ssh-git-files-design.md`). `args` is an argv the
+    /// desktop built, handed to `git` and to nothing else -- never a
+    /// shell -- so this is the app's existing local `run_git` reach, not
+    /// a new one. `stdin` is a commit message or a patch (text). The
+    /// desktop keeps the streaming network ops (fetch/pull/push) to
+    /// itself; this is the synchronous run layer.
+    RunGit {
+        root_path: String,
+        cwd: String,
+        args: Vec<String>,
+        stdin: Option<String>,
+    },
+    /// Lists a directory under a watched root, for the Files tree of a
+    /// workspace on another machine (v40). `path` is absolute or
+    /// root-relative; a symlink is refused rather than followed, as the
+    /// desktop's own `list_directory` refuses one.
+    ListWorkspaceDir {
+        root_path: String,
+        path: String,
     },
     /// Canonical plan authoring for agents. Validated daemon-side; never
     /// overwrites.
@@ -1109,6 +1174,22 @@ pub fn min_version_for(req: &Request) -> u32 {
         // wire at all.
         Request::DeleteToolByRoot { .. } | Request::SaveToolByRoot { .. } => 37,
 
+        // Workspace files for a desktop on another machine (v40, the ssh
+        // card-runs design). New TYPES, so this is the real wire gate: a
+        // v39 host daemon answers `Unsupported`, the app refuses locally
+        // through `gate_request`, and FEATURE_MIN_VERSION.sshCardRuns is
+        // how the Run pill on an ssh workspace's board says which
+        // version the HOST needs.
+        Request::ReadWorkspaceFile { .. }
+        | Request::WriteWorkspaceFile { .. }
+        | Request::StatWorkspacePaths { .. } => 40,
+
+        // The Git tab and Files tree over ssh (v41, the ssh git/files
+        // design). New TYPES, so this is the real wire gate; the app
+        // mirrors them as FEATURE_MIN_VERSION.sshGitFiles, checked
+        // against the HOST daemon's version.
+        Request::RunGit { .. } | Request::ListWorkspaceDir { .. } => 41,
+
         Request::Shutdown => 12,
 
         // Client identity on the local socket (phase 1 of the
@@ -1526,6 +1607,17 @@ pub enum Response {
     OrchestrationChanged { workspace_id: String, orchestration: Orchestration },
     GavinTreeScanned { tree: GavinTree },
     PrdContent { content: String },
+    /// `ReadWorkspaceFile`'s answer: `content` is None when there is no
+    /// such file, `truncated` when it was cut at the cap.
+    WorkspaceFile { content: Option<String>, truncated: bool },
+    /// `StatWorkspacePaths`'s answer, one per path asked, in order.
+    WorkspacePathStats { stats: Vec<WorkspacePathStat> },
+    /// `RunGit`'s answer: the git process's stdout bytes, its stderr, and
+    /// its exit code -- the same three the desktop's local `run_git`
+    /// produces, so the Git tab's parsing does not care which ran it.
+    GitRun { stdout: Vec<u8>, stderr: String, code: i32 },
+    /// `ListWorkspaceDir`'s answer, name-sorted like the local listing.
+    WorkspaceDir { entries: Vec<WorkspaceDirEntry> },
     PlanCreated { path: String },
     AgentSessionSpawned { workspace_id: String, session_id: String, cwd: String, command: String },
     /// Push: an agent renamed its own tab. The app applies it through the
@@ -2444,6 +2536,40 @@ pub fn usable_prd_path(value: &str) -> Option<String> {
 /// Lives here, beside `usable_prd_path`, because both clients need the
 /// same answer: the Tauri host stats these paths and the daemon parses
 /// them out of the frontmatter.
+/// Reads over `ReadWorkspaceFile` are cut here, the viewer's own cap.
+pub const MAX_WORKSPACE_FILE_BYTES: usize = 1024 * 1024;
+
+/// One entry of a `ListWorkspaceDir` reply -- the fields the file tree
+/// reads (`DirEntryInfo` on the desktop), in the same camelCase shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceDirEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub symlink: bool,
+}
+
+/// One attachment as it resolves on the daemon's machine (v39). The same
+/// facts the desktop's `attachment_status` establishes for a local root,
+/// in the same vocabulary: `location` is `root`, `extraContext`, `outside`
+/// or `refused`, and a refused entry carries its reason and no path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacePathStat {
+    pub path: String,
+    pub absolute_path: Option<String>,
+    /// A FILE exists there -- a directory does not count, since an
+    /// attachment names something to read.
+    pub exists: bool,
+    /// A directory is there instead. Answers the one question a caller
+    /// asks about a root rather than a file: whether it is one.
+    pub is_dir: bool,
+    pub size_bytes: Option<u64>,
+    pub location: String,
+    pub refused_reason: Option<String>,
+}
+
 pub fn usable_attachment_path(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -2890,6 +3016,50 @@ mod tests {
     /// Sweeps the gate against `min_version_for` over every daemon version
     /// in the real window: the predicate and the table must never disagree,
     /// for either client.
+    /// v40: the three workspace-file requests the desktop sends for an
+    /// ssh workspace (`2026-09-22-ssh-card-runs-design.md`) -- the card a
+    /// run is composed from, the files agent integration writes, the
+    /// attachments it classifies. New TYPES, so this match is the real
+    /// wire gate: against a v39 host daemon the app refuses locally, and
+    /// the Run pill names the version the host needs.
+    #[test]
+    fn workspace_file_requests_are_gated_at_40() {
+        let read = Request::ReadWorkspaceFile { root_path: "/r".into(), path: "a.md".into() };
+        let write = Request::WriteWorkspaceFile {
+            root_path: "/r".into(),
+            path: "a.md".into(),
+            content: "x".into(),
+        };
+        let stat = Request::StatWorkspacePaths { root_path: "/r".into(), paths: vec!["a.md".into()] };
+        for req in [&read, &write, &stat] {
+            assert_eq!(min_version_for(req), 40);
+            assert!(gate_request(req, 39).is_err());
+            assert!(gate_request(req, 40).is_ok());
+        }
+    }
+
+    /// v41: the Git tab and Files tree over ssh -- `RunGit` runs a git
+    /// subcommand in a confined cwd on the host, `ListWorkspaceDir` lists
+    /// a directory there. New TYPES, so this is the wire gate: a v40 host
+    /// daemon answers `Unsupported`, the app refuses locally, and the tab
+    /// says which version the host needs (`FEATURE_MIN_VERSION.sshGitFiles`).
+    #[test]
+    fn git_and_dir_requests_are_gated_at_41() {
+        assert_eq!(PROTOCOL_VERSION, 41);
+        let run = Request::RunGit {
+            root_path: "/r".into(),
+            cwd: "/r".into(),
+            args: vec!["status".into()],
+            stdin: None,
+        };
+        let list = Request::ListWorkspaceDir { root_path: "/r".into(), path: "/r".into() };
+        for req in [&run, &list] {
+            assert_eq!(min_version_for(req), 41);
+            assert!(gate_request(req, 40).is_err());
+            assert!(gate_request(req, 41).is_ok());
+        }
+    }
+
     #[test]
     fn the_gate_admits_exactly_what_the_table_says_it_should() {
         for daemon in MIN_COMPATIBLE_VERSION..=PROTOCOL_VERSION {
@@ -3727,7 +3897,13 @@ mod tests {
         // rendered screen as plain text, for the TypeSafe turn verdict.
         // A new request TYPE, so a pre-v39 daemon never receives it; the
         // app skips the verdict rather than judging an empty screen.
-        assert_eq!(PROTOCOL_VERSION, 39);
+        // v40: Read/WriteWorkspaceFile + StatWorkspacePaths -- the file
+        // access a desktop needs from a daemon on another machine (ssh
+        // workspaces) to compose a card run there and write the
+        // agent-integration files where the agent runs. Three new TYPES.
+        // v41: RunGit + ListWorkspaceDir -- the Git tab and Files tree
+        // over ssh. Two new TYPES.
+        assert_eq!(PROTOCOL_VERSION, 41);
     }
 
     #[test]
@@ -3970,6 +4146,11 @@ mod tests {
             Request::SetRootConfigField { root_path: "r".into(), key: "k".into(), value: "v".into() },
             Request::ScanGavinRoot { root_path: "r".into() },
             Request::ReadPrd { root_path: "r".into() },
+            Request::ReadWorkspaceFile { root_path: "r".into(), path: "a.md".into() },
+            Request::WriteWorkspaceFile { root_path: "r".into(), path: "a.md".into(), content: "c".into() },
+            Request::StatWorkspacePaths { root_path: "r".into(), paths: vec!["a.md".into()] },
+            Request::RunGit { root_path: "r".into(), cwd: "r".into(), args: vec!["status".into()], stdin: None },
+            Request::ListWorkspaceDir { root_path: "r".into(), path: "r".into() },
             Request::CreatePlan {
                 context_folder: "c".into(),
                 file_name: "f".into(),
@@ -4169,6 +4350,11 @@ mod tests {
         expected.insert(37, 2);
         // Request::SessionScreen -- the rendered screen as text.
         expected.insert(39, 1);
+        // Read/WriteWorkspaceFile + StatWorkspacePaths -- workspace files
+        // for a desktop on another machine (ssh card runs).
+        expected.insert(40, 3);
+        // RunGit + ListWorkspaceDir -- the Git tab and Files tree over ssh.
+        expected.insert(41, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

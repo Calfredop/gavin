@@ -360,6 +360,22 @@ export const FEATURE_MIN_VERSION = {
   // through `featureBlockedReason` so the switch says why it is dark
   // rather than silently doing nothing.
   turnVerdict: 39,
+  // Card runs on an ssh workspace: the three workspace-file requests the
+  // desktop sends the HOST's daemon to read the card, classify its
+  // attachments and write the agent-integration files there
+  // (`2026-09-22-ssh-card-runs-design.md`). Checked against the host
+  // daemon's version (`sshRunBlocked` in sshWorkspace.ts), never the
+  // local one's: the local verdict says nothing about the machine the
+  // run happens on. The consumer is the Run pill on an ssh workspace's
+  // board, and the launch seam behind it.
+  sshCardRuns: 40,
+  // The Git tab and Files tree on an ssh workspace: the host daemon's
+  // v41 `RunGit` and `ListWorkspaceDir`
+  // (`2026-09-22-ssh-git-files-design.md`). Checked against the HOST
+  // daemon's version (`sshTabBlocked` in sshWorkspace.ts); the consumers
+  // are the two hub views, which show the notice until the host is new
+  // enough.
+  sshGitFiles: 41,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

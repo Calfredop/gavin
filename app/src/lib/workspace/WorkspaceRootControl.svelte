@@ -17,6 +17,8 @@
   import { UNFILED_WORKSPACE_ID, type Workspace } from "$lib/core/workspace";
   import Modal from "$lib/core/Modal.svelte";
   import McpForeignChooser from "$lib/workspace/McpForeignChooser.svelte";
+  import { connectSshWorkspace, openSshForm, sshLinks } from "$lib/workspace/sshLinkState";
+  import { isSshWorkspace, sshBanner, SSH_LIMITATION } from "$lib/workspace/sshWorkspace";
 
   interface Props {
     workspace: Workspace;
@@ -38,6 +40,20 @@
 
   const tree = $derived($gavinTrees[workspace.id]);
   const rootMissing = $derived(Boolean(workspace.rootPath && tree?.rootMissing));
+
+  // The ssh link's state for this workspace: a banner while it is
+  // connecting or lost (with Reconnect), nothing while it is up -- the
+  // same "a healthy root is not news" rule the root itself follows.
+  const linkBanner = $derived(sshBanner(workspace, $sshLinks));
+  let reconnecting = $state(false);
+  async function reconnect(): Promise<void> {
+    if (!workspace.ssh?.host || reconnecting) return;
+    reconnecting = true;
+    // The outcome lands in the link store either way (ready event, or
+    // the lost message), which is what the banner reads.
+    await connectSshWorkspace(workspace.id, workspace.ssh.host);
+    reconnecting = false;
+  }
   const agent = $derived(
     resolveAgentConfig(
       $trustedAgentConfigs(workspace.id),
@@ -146,11 +162,41 @@
        the bound path is settings-only too (D64): a healthy root is not
        news, so the banner variant speaks only when the answer is bad, and
        then points at the panel that can fix it. -->
-  {#if !workspace.rootPath}
+  {#if isSshWorkspace(workspace)}
+    <!-- Another machine's folder. The link's state is the banner; the
+         host and the path are the chip; and the folder-on-this-disk
+         affordances (picker, agent integration) do not apply. -->
+    {#if linkBanner}
+      <div class="banner" class:warning={linkBanner.tone === "warning"}>
+        <span>{linkBanner.text}</span>
+        <button type="button" disabled={reconnecting} onclick={reconnect}>
+          {reconnecting ? "Connecting…" : "Reconnect"}
+        </button>
+        {#if variant === "settings"}
+          <button type="button" onclick={() => openSshForm(workspace.id)}>Edit…</button>
+        {:else}
+          <button type="button" onclick={openSettings}>Open settings</button>
+        {/if}
+      </div>
+    {/if}
+    {#if variant === "settings"}
+      <div class="chip" title="{workspace.ssh?.host}: {workspace.rootPath}">
+        <span class="host">ssh: {workspace.ssh?.host}</span>
+        <!-- The &lrm; bookends are load-bearing -- see .path below. -->
+        <span class="path">&lrm;{workspace.rootPath}&lrm;</span>
+        <button type="button" class="gear" onclick={() => openSshForm(workspace.id)} title="Change host or root">⚙</button>
+        {#if !linkBanner}
+          <button type="button" class="gear" disabled={reconnecting} onclick={reconnect} title="Reconnect">↻</button>
+        {/if}
+      </div>
+      <div class="banner"><span>{SSH_LIMITATION}</span></div>
+    {/if}
+  {:else if !workspace.rootPath}
     <div class="banner">
       <span>No root folder set — bind this workspace to a directory to enable gavin features.</span>
       {#if variant === "settings"}
         <button type="button" onclick={pickRoot}>Set root…</button>
+        <button type="button" onclick={() => openSshForm(workspace.id)}>Over ssh…</button>
       {:else}
         <button type="button" onclick={openSettings}>Open settings</button>
       {/if}
@@ -300,12 +346,20 @@
        stay where they were typed. */
     direction: rtl;
   }
+  .host {
+    flex: none;
+    color: var(--text);
+  }
   .gear {
     background: transparent;
     border: none;
     color: var(--text-subtle);
     cursor: pointer;
     padding: 0 2px;
+  }
+  .gear:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   .gear:hover {
     color: var(--text);

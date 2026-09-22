@@ -30,6 +30,7 @@
     trustedAgentConfigs,
   } from "$lib/core/layoutState";
   import { resolveAgentConfig } from "$lib/core/settings";
+  import { isSshWorkspace } from "$lib/workspace/sshWorkspace";
   import { reviewBlocker } from "$lib/review/codeReview";
   import { requestBranchReview } from "$lib/review/codeReviewActions";
   import { tooltip } from "$lib/core/tooltip";
@@ -50,6 +51,16 @@
   const locked = $derived(view == null || view.busy != null || view.op != null);
   const branch = $derived(view ? currentBranch(view) : null);
   const sync = $derived(view ? canSync(view) : { fetch: false, pull: false, push: false, reason: null });
+  // Fetch/pull/push are the streaming network ops the desktop keeps to
+  // itself; an ssh workspace's daemon does not run them yet (the sync
+  // follow-up), so they stay disabled even though the rest of the tab
+  // works. Everything else -- status, diff, stage, commit, branches,
+  // stash -- routes to the host through the daemon.
+  const syncBlocked = $derived(
+    isSshWorkspace($layoutState.workspaces.find((w) => w.id === workspaceId))
+      ? "Fetch, pull and push over ssh aren't available yet."
+      : null
+  );
   const remotes = $derived(view?.refs?.remotes ?? []);
   const remote = $derived(view ? effectiveRemote(view) : null);
   const pushText = $derived(view ? pushLabel(view) : "Push");
@@ -133,20 +144,20 @@
       icon={Download}
       label="Fetch"
       text="Fetch"
-      tip={tip(`Fetch from ${remote ?? "remote"}`, sync.fetch)}
+      tip={syncBlocked ?? tip(`Fetch from ${remote ?? "remote"}`, sync.fetch)}
       variant="outlined"
       size={13}
-      disabled={locked || !sync.fetch}
+      disabled={locked || !sync.fetch || syncBlocked !== null}
       onclick={() => fetch(workspaceId)}
     />
     <IconButton
       icon={ArrowDown}
       label="Pull"
       text="Pull"
-      tip={tip("Pull", sync.pull)}
+      tip={syncBlocked ?? tip("Pull", sync.pull)}
       variant="outlined"
       size={13}
-      disabled={locked || !sync.pull}
+      disabled={locked || !sync.pull || syncBlocked !== null}
       onclick={() => pull(workspaceId)}
     >
       {#if branch && branch.behind > 0}<span class="badge">↓{branch.behind}</span>{/if}
@@ -155,10 +166,10 @@
       icon={ArrowUp}
       label={pushText}
       text={pushText}
-      tip={tip(`${pushText} to ${remote ?? "remote"}`, sync.push)}
+      tip={syncBlocked ?? tip(`${pushText} to ${remote ?? "remote"}`, sync.push)}
       variant="outlined"
       size={13}
-      disabled={locked || !sync.push}
+      disabled={locked || !sync.push || syncBlocked !== null}
       onclick={() => push(workspaceId)}
     >
       {#if branch && branch.ahead > 0}<span class="badge">↑{branch.ahead}</span>{/if}

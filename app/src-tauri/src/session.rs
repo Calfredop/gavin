@@ -1043,6 +1043,7 @@ mod workspaces_data_tests {
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            ssh: None,
             action_prompt_overrides: HashMap::new(),
         };
         ws.complexity_agents.insert(
@@ -1283,6 +1284,7 @@ mod workspace_migration_tests {
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            ssh: None,
             action_prompt_overrides: HashMap::new(),
         }
     }
@@ -1433,6 +1435,43 @@ pub fn set_workspaces_state(
 pub struct WorkspacesSync {
     origin: String,
     data: WorkspacesData,
+}
+
+impl WorkspacesSync {
+    /// A write nobody's window made: a link resolving an ssh workspace's
+    /// sessions on its host (`remote.rs`). The origin names the host, so
+    /// no window mistakes it for its own echo and every window adopts it.
+    pub(crate) fn from_remote(host: &str, data: WorkspacesData) -> Self {
+        Self { origin: format!("remote:{host}"), data }
+    }
+}
+
+/// Persists `data` with every other managed setting as it currently is,
+/// for a writer that is not `set_workspaces_state`: a link that just
+/// resolved an ssh workspace's sessions (`remote.rs`). Reads the same
+/// states that command reads, so nothing beside the workspaces is reset
+/// by the save.
+pub(crate) fn persist_current(app_handle: &AppHandle, data: &WorkspacesData) -> anyhow::Result<()> {
+    let config_dir = app_handle.path().app_config_dir()?;
+    persist_workspaces(
+        &config_dir,
+        data,
+        app_handle.state::<SessionNames>().0.lock().unwrap().clone(),
+        app_handle.state::<FileTabs>().0.lock().unwrap().clone(),
+        app_handle.state::<BoardTabs>().0.lock().unwrap().clone(),
+        app_handle.state::<CardTabs>().0.lock().unwrap().clone(),
+        app_handle.state::<ThemePref>().0.lock().unwrap().clone(),
+        app_handle.state::<AgentModels>().0.lock().unwrap().clone(),
+        *app_handle.state::<TerminalFontSize>().0.lock().unwrap(),
+        *app_handle.state::<AutoCommit>().0.lock().unwrap(),
+        app_handle.state::<AgentPause>().0.lock().unwrap().clone(),
+        app_handle.state::<SuperpowersMarks>().0.lock().unwrap().clone(),
+        app_handle.state::<AgentDefaults>().0.lock().unwrap().clone(),
+        *app_handle.state::<GitTrackingDefaults>().0.lock().unwrap(),
+        *app_handle.state::<RequireReviewDefaults>().0.lock().unwrap(),
+        *app_handle.state::<LaunchSettings>().0.lock().unwrap(),
+        app_handle.state::<CustomResumeArgs>().0.lock().unwrap().clone(),
+    )
 }
 
 #[tauri::command]
@@ -2491,14 +2530,16 @@ fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
         stream_conn,
         attachable_session_ids(&data, &non_session_tab_ids),
         compat,
+        RelayOwner::Local,
     )?;
 
     // The daemon's gavin watchers were per-connection and died with it.
     // Re-armed here rather than from the frontend because this is where
     // the new connection exists: miss it and the Plans, Kanban and
     // Orchestration tabs go quietly dead after a restart -- the exact
-    // failure the fs-sync work just removed.
-    for ws in &data.workspaces {
+    // failure the fs-sync work just removed. An ssh workspace's watcher
+    // is on its host's daemon, which this restart never touched.
+    for ws in data.workspaces.iter().filter(|w| w.ssh.is_none()) {
         if let Some(root) = &ws.root_path {
             send_request(
                 &writer,
@@ -2525,13 +2566,43 @@ pub fn gate(req: &Request, compat: &DaemonCompat) -> Result<(), String> {
         .map_err(|gated| format!("this {gated} — restart the daemon to use it"))
 }
 
-fn send_request(
+pub(crate) fn send_request(
     writer: &Arc<Mutex<Stream>>,
     req: &Request,
     compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
     gate(req, compat).map_err(|e| anyhow::anyhow!(e))?;
     write_message(&mut *writer.lock().unwrap(), req)
+}
+
+/// Runs `f` against the command connection a route names: a link's, or
+/// the local daemon's with the local verdict. Every routed command goes
+/// through here or `with_writer`, so "which daemon" is decided in one
+/// place per command and the local path stays what it was.
+pub(crate) fn with_command<R>(
+    route: crate::remote::Route,
+    state: &CommandConnection,
+    compat: &DaemonCompatState,
+    f: impl FnOnce(&Mutex<Stream>, &DaemonCompat) -> R,
+) -> R {
+    match route {
+        crate::remote::Route::Remote(link) => f(&link.command, &link.compat),
+        crate::remote::Route::Local => f(&state.0, &current_compat(compat)),
+    }
+}
+
+/// `with_command` for the streaming connection's writer -- `Attach`,
+/// `WriteInput`, `ResizeSession`, `Snapshot`, `WatchGavinRoot`.
+pub(crate) fn with_writer<R>(
+    route: crate::remote::Route,
+    state: &DaemonConnection,
+    compat: &DaemonCompatState,
+    f: impl FnOnce(&Arc<Mutex<Stream>>, &DaemonCompat) -> R,
+) -> R {
+    match route {
+        crate::remote::Route::Remote(link) => f(&link.writer, &link.compat),
+        crate::remote::Route::Local => f(&state.writer, &current_compat(compat)),
+    }
 }
 
 /// A second, dedicated connection to the daemon, used only for one-shot
@@ -2573,7 +2644,7 @@ pub struct DaemonCompatState(pub Mutex<Option<DaemonCompat>>);
 /// should not be possible, and a command that does run never sees a
 /// verdict for a daemon other than the one its connection currently
 /// points at.
-fn current_compat(state: &DaemonCompatState) -> DaemonCompat {
+pub(crate) fn current_compat(state: &DaemonCompatState) -> DaemonCompat {
     state.0.lock().unwrap().expect("DaemonCompatState populated before any command runs")
 }
 
@@ -2607,7 +2678,7 @@ pub fn classify(daemon: u32, app: u32, floor: u32) -> Result<DaemonCompat, Strin
 /// parse the request and closes the connection, which must map to the
 /// same actionable message as an explicit lower version (this turned the
 /// 2026-08-07 stale-daemon incident's mystery close into a named state).
-fn verify_daemon_protocol(command_conn: &Mutex<Stream>) -> anyhow::Result<DaemonCompat> {
+pub(crate) fn verify_daemon_protocol(command_conn: &Mutex<Stream>) -> anyhow::Result<DaemonCompat> {
     const UNREACHABLE: &str = "the gavin daemon is too old to talk to this app — restart it (quit gavin, then relaunch)";
     match send_command(command_conn, &Request::GetProtocolVersion) {
         Ok(Response::ProtocolVersion { version }) => {
@@ -2721,15 +2792,28 @@ fn app_handshake(
     command_conn: &Mutex<Stream>,
     stream: &mut Stream,
 ) -> anyhow::Result<()> {
+    let Some(token) = read_daemon_token() else {
+        return Ok(());
+    };
+    app_handshake_with_token(compat, command_conn, stream, &token)
+}
+
+/// The handshake with the token supplied rather than read from this
+/// machine's token file: a link to a daemon on another host presents the
+/// token its bridge read THERE (`remote.rs`). Same gate on the daemon's
+/// version, same proof check, same two connections.
+pub(crate) fn app_handshake_with_token(
+    compat: &DaemonCompat,
+    command_conn: &Mutex<Stream>,
+    stream: &mut Stream,
+    token: &str,
+) -> anyhow::Result<()> {
     const HELLO_MIN_VERSION: u32 = 35;
     if compat.daemon_version < HELLO_MIN_VERSION {
         return Ok(());
     }
-    let Some(token) = read_daemon_token() else {
-        return Ok(());
-    };
-    app_handshake_command(command_conn, &token)?;
-    app_handshake_stream(stream, &token)?;
+    app_handshake_command(command_conn, token)?;
+    app_handshake_stream(stream, token)?;
     Ok(())
 }
 
@@ -2838,7 +2922,7 @@ fn send_command_reconnecting_at(
 /// an older daemon cannot PARSE a request it predates, and read_message
 /// propagates that parse error with `?`, dropping the connection and
 /// every push riding on it.
-fn send_command_reconnecting(
+pub(crate) fn send_command_reconnecting(
     conn: &Mutex<Stream>,
     compat: &DaemonCompat,
     req: &Request,
@@ -2865,13 +2949,17 @@ fn send_command_reconnecting(
 /// is for, which is why it comes from the saved layout rather than from
 /// the dead row's own recorded `workspace_path`: a row written before that
 /// field carried the workspace still names only a cwd.
-fn resolve_sessions(
+/// `home` is the cwd fallback for a fresh session -- this machine's home
+/// for the local daemon, the HOST's for a link (`remote.rs`), because a
+/// daemon on another machine cannot open the desktop's home directory.
+pub(crate) fn resolve_sessions(
     node: &mut LayoutNode,
     command_conn: &Mutex<Stream>,
     all_sessions: &HashMap<String, protocol::SessionSummary>,
     non_session_tab_ids: &HashSet<String>,
     compat: &DaemonCompat,
     workspace_root: Option<&str>,
+    home: &str,
 ) -> anyhow::Result<()> {
     match node {
         LayoutNode::Leaf { tabs, pinned, .. } => {
@@ -2882,8 +2970,14 @@ fn resolve_sessions(
                 let is_valid = all_sessions.get(id.as_str()).is_some_and(|s| s.status != "exited");
                 if !is_valid {
                     let last_known_cwd = all_sessions.get(id.as_str()).map(|s| s.cwd.as_str());
-                    let fresh =
-                        create_fresh_session(command_conn, last_known_cwd, workspace_root, None, compat)?;
+                    let fresh = create_fresh_session(
+                        command_conn,
+                        last_known_cwd,
+                        workspace_root,
+                        None,
+                        compat,
+                        home,
+                    )?;
                     // A pin belongs to the tab slot, not the dead process:
                     // carry it over so a daemon restart doesn't unpin it.
                     if let Some(pin) = pinned.iter_mut().find(|p| **p == *id) {
@@ -2903,6 +2997,7 @@ fn resolve_sessions(
                     non_session_tab_ids,
                     compat,
                     workspace_root,
+                    home,
                 )?;
             }
             Ok(())
@@ -2968,13 +3063,26 @@ pub struct SessionBaseline {
 /// scrollback -- this just reads the registry instead. `ListSessions` has
 /// been in the protocol since v1, so nothing here needs a compat gate of
 /// its own beyond the one `send_command_reconnecting` already applies.
+///
+/// Every daemon the app is talking to: the local one and each linked
+/// host. The frontend closes any layout tab whose session this list does
+/// not name, so a link's sessions missing here would close every remote
+/// tab on the next reload. A link that cannot answer contributes
+/// nothing -- its relay reports it lost -- rather than failing the read
+/// for the local sessions too.
 #[tauri::command]
 pub fn get_session_baselines(
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<Vec<SessionBaseline>, String> {
-    let sessions =
+    let mut sessions =
         list_valid_session_ids(&state.0, &current_compat(&compat)).map_err(|e| e.to_string())?;
+    for link in crate::remote::every_link(&app_handle) {
+        if let Ok(more) = list_valid_session_ids(&link.command, &link.compat) {
+            sessions.extend(more);
+        }
+    }
     Ok(sessions
         .into_values()
         .filter(|s| s.status != "exited")
@@ -3004,15 +3112,15 @@ pub fn get_session_baselines(
 /// while both false means it had already gone.
 #[tauri::command]
 pub fn end_orphan(
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
     session_id: String,
 ) -> Result<OrphanEndResult, String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::EndOrphan { id: session_id },
-    )
+    let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::EndOrphan { id: session_id })
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::OrphanEnded { ended, still_running, .. } => {
@@ -3089,13 +3197,11 @@ pub struct ManagedSessions {
 /// A gated-out metrics request degrades rather than fails: an older
 /// daemon still gets a working list of sessions to jump to and kill,
 /// which is most of the panel.
-#[tauri::command]
-pub fn list_managed_sessions(
-    state: State<CommandConnection>,
-    compat: State<DaemonCompatState>,
-) -> Result<ManagedSessions, String> {
-    let compat = current_compat(&compat);
-    let resp = send_command_reconnecting(&state.0, &compat, &Request::ListSessions)
+///
+/// One daemon's rows; `list_managed_sessions` joins the local daemon's
+/// with every linked host's.
+fn managed_sessions_on(conn: &Mutex<Stream>, compat: &DaemonCompat) -> Result<ManagedSessions, String> {
+    let resp = send_command_reconnecting(conn, compat, &Request::ListSessions)
         .map_err(|e| e.to_string())?;
     let sessions = match resp {
         Response::SessionList { sessions } => sessions,
@@ -3110,7 +3216,7 @@ pub fn list_managed_sessions(
     let processes: HashMap<String, protocol::SessionProcess> = if !metrics {
         HashMap::new()
     } else {
-        match send_command_reconnecting(&state.0, &compat, &Request::SessionProcesses)
+        match send_command_reconnecting(conn, compat, &Request::SessionProcesses)
             .map_err(|e| e.to_string())?
         {
             Response::SessionProcessList { processes } => {
@@ -3147,7 +3253,27 @@ pub fn list_managed_sessions(
     })
 }
 
-fn list_valid_session_ids(
+/// Every session on every daemon the app is talking to. A linked host's
+/// rows are added when it answers; `metrics` is true only when every
+/// daemon that contributed rows measured them, so a panel never draws a
+/// zero one daemon invented next to a figure another one measured.
+#[tauri::command]
+pub fn list_managed_sessions(
+    app_handle: AppHandle,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<ManagedSessions, String> {
+    let mut all = managed_sessions_on(&state.0, &current_compat(&compat))?;
+    for link in crate::remote::every_link(&app_handle) {
+        if let Ok(theirs) = managed_sessions_on(&link.command, &link.compat) {
+            all.metrics = all.metrics && theirs.metrics;
+            all.sessions.extend(theirs.sessions);
+        }
+    }
+    Ok(all)
+}
+
+pub(crate) fn list_valid_session_ids(
     command_conn: &Mutex<Stream>,
     compat: &DaemonCompat,
 ) -> anyhow::Result<HashMap<String, protocol::SessionSummary>> {
@@ -3186,7 +3312,11 @@ fn resolve_workspaces(
         return Ok(());
     }
     let all_sessions = list_valid_session_ids(command_conn, compat)?;
-    for workspace in workspaces.iter_mut() {
+    let home = local_home();
+    // An ssh workspace's sessions are another daemon's: this one has
+    // never heard of their ids and would replace every one with a fresh
+    // local shell. They are resolved on their link (`remote::link_workspace`).
+    for workspace in workspaces.iter_mut().filter(|w| w.ssh.is_none()) {
         let workspace_root = workspace.root_path.clone();
         for page in workspace.pages.iter_mut() {
             resolve_sessions(
@@ -3196,6 +3326,7 @@ fn resolve_workspaces(
                 non_session_tab_ids,
                 compat,
                 workspace_root.as_deref(),
+                &home,
             )?;
         }
     }
@@ -3491,6 +3622,7 @@ mod resolve_workspaces_tests {
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            ssh: None,
             action_prompt_overrides: HashMap::new(),
         }
     }
@@ -3756,7 +3888,7 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = Mutex::new(client);
 
-        create_fresh_session(&conn, Some("/tmp"), None, None, &parity_compat()).unwrap();
+        create_fresh_session(&conn, Some("/tmp"), None, None, &parity_compat(), "/home/t").unwrap();
 
 
         let requests = captured.lock().unwrap();
@@ -3772,7 +3904,7 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = Mutex::new(client);
 
-        create_fresh_session(&conn, Some("/tmp"), None, Some("npm test"), &parity_compat())
+        create_fresh_session(&conn, Some("/tmp"), None, Some("npm test"), &parity_compat(), "/home/t")
             .unwrap();
 
         let requests = captured.lock().unwrap();
@@ -3799,6 +3931,7 @@ mod resolve_workspaces_tests {
             Some("/Users/alice/project"),
             None,
             &parity_compat(),
+            "/Users/alice",
         )
         .unwrap();
 
@@ -3820,7 +3953,7 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = Mutex::new(client);
 
-        create_fresh_session(&conn, Some("/tmp/loose"), None, None, &parity_compat()).unwrap();
+        create_fresh_session(&conn, Some("/tmp/loose"), None, None, &parity_compat(), "/home/t").unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
@@ -3890,7 +4023,9 @@ fn reconcile_main_sessions(
         return Ok(());
     }
     let sessions = list_valid_session_ids(command_conn, compat)?;
-    for workspace in workspaces.iter_mut() {
+    // An ssh workspace's main agent runs on its host; `remote::link_workspace`
+    // reconciles it against that daemon's list.
+    for workspace in workspaces.iter_mut().filter(|w| w.ssh.is_none()) {
         let Some(id) = workspace.main_session_id.clone() else { continue };
         let alive = sessions.get(id.as_str()).is_some_and(|s| s.status != "exited");
         if !alive {
@@ -3905,7 +4040,7 @@ fn reconcile_main_sessions(
 /// heard of them -- attaching one would fail for an id that was never a
 /// session, and `resolve_sessions` would replace it with a freshly
 /// spawned shell on every launch.
-fn non_session_tab_ids(
+pub(crate) fn non_session_tab_ids(
     file_tabs: &HashMap<String, String>,
     board_tabs: &HashMap<String, crate::config::BoardTabRecord>,
     card_tabs: &HashMap<String, crate::config::CardTabRecord>,
@@ -3927,12 +4062,21 @@ fn attachable_session_ids(
     data: &WorkspacesData,
     non_session_tab_ids: &HashSet<String>,
 ) -> Vec<String> {
+    // Local workspaces only: an ssh workspace's sessions are attached on
+    // its link, and asking this daemon for them would be answered with
+    // an error per id.
     data.workspaces
         .iter()
+        .filter(|w| w.ssh.is_none())
         .flat_map(|w| w.pages.iter())
         .flat_map(|p| p.layout.all_session_ids())
         .filter(|id| !non_session_tab_ids.contains(id))
-        .chain(data.workspaces.iter().filter_map(|w| w.main_session_id.clone()))
+        .chain(
+            data.workspaces
+                .iter()
+                .filter(|w| w.ssh.is_none())
+                .filter_map(|w| w.main_session_id.clone()),
+        )
         .collect()
 }
 
@@ -3952,7 +4096,30 @@ fn report_disconnect(app_handle: &AppHandle, epoch: u64, message: String) {
 /// events. Shared by the cold path (`bootstrap`) and the reconnect path
 /// (`reconnect`) so the two can never drift on what gets attached or
 /// which pushes are forwarded.
-fn attach_and_relay(
+/// Whose streaming connection a relay thread reads, which decides what
+/// the connection ending means.
+pub(crate) enum RelayOwner {
+    /// The local daemon: the connection the whole window rests on, so its
+    /// end is `daemon-error` -- the overlay.
+    Local,
+    /// One host's link (`remote.rs`): only that host's workspaces are
+    /// affected, so its end is `remote-link-lost` for that host and the
+    /// rest of the app keeps working.
+    Remote { host: String, link_id: u64 },
+}
+
+impl RelayOwner {
+    fn lost(&self, app_handle: &AppHandle, epoch: u64, message: String) {
+        match self {
+            RelayOwner::Local => report_disconnect(app_handle, epoch, message),
+            RelayOwner::Remote { host, link_id } => {
+                crate::remote::link_lost(app_handle, host, *link_id, message)
+            }
+        }
+    }
+}
+
+pub(crate) fn attach_and_relay(
     app_handle: &AppHandle,
     writer: &Arc<Mutex<Stream>>,
     reader_stream: Stream,
@@ -3961,6 +4128,7 @@ fn attach_and_relay(
     // spawned below needs its own owned copy to move into the `'static`
     // closure -- there is no `AppHandle`-free way to borrow it instead.
     compat: DaemonCompat,
+    owner: RelayOwner,
 ) -> anyhow::Result<()> {
     for id in session_ids {
         send_request(writer, &Request::Attach { id }, &compat)?;
@@ -3999,16 +4167,12 @@ fn attach_and_relay(
             let resp: Option<Response> = match read_message(&mut reader) {
                 Ok(r) => r,
                 Err(e) => {
-                    report_disconnect(&reader_app_handle, epoch, e.to_string());
+                    owner.lost(&reader_app_handle, epoch, e.to_string());
                     break;
                 }
             };
             let Some(resp) = resp else {
-                report_disconnect(
-                    &reader_app_handle,
-                    epoch,
-                    "daemon closed the connection".to_string(),
-                );
+                owner.lost(&reader_app_handle, epoch, "daemon closed the connection".to_string());
                 break;
             };
             match resp {
@@ -4197,6 +4361,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            ssh: None,
             action_prompt_overrides: HashMap::new(),
             },
         );
@@ -4267,7 +4432,10 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(CustomResumeArgs(Mutex::new(config.custom_resume_args)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
 
-    attach_and_relay(&app_handle, &writer, reader_stream, session_ids, compat)?;
+    attach_and_relay(&app_handle, &writer, reader_stream, session_ids, compat, RelayOwner::Local)?;
+    // The ssh workspaces, after the window is up: each host on its own
+    // thread, a host that is down costing only its own workspaces.
+    crate::remote::link_all(app_handle.clone());
     Ok(())
 }
 
@@ -4275,14 +4443,14 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
 pub fn write_input(
     session_id: String,
     data: String,
+    app_handle: AppHandle,
     state: State<DaemonConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    send_request(
-        &state.writer,
-        &Request::WriteInput { id: session_id, data },
-        &current_compat(&compat),
-    )
+    let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    with_writer(route, &state, &compat, |writer, compat| {
+        send_request(writer, &Request::WriteInput { id: session_id, data }, compat)
+    })
     .map_err(|e| e.to_string())
 }
 
@@ -4297,10 +4465,10 @@ pub fn write_input(
 /// session's queue learns about a change it did not make.
 fn queued_inputs_request(
     conn: &Mutex<Stream>,
-    compat: &DaemonCompatState,
+    compat: &DaemonCompat,
     req: &Request,
 ) -> Result<Vec<protocol::QueuedInput>, String> {
-    match send_command_reconnecting(conn, &current_compat(compat), req).map_err(|e| e.to_string())? {
+    match send_command_reconnecting(conn, compat, req).map_err(|e| e.to_string())? {
         Response::QueuedInputs { queued } => Ok(queued),
         Response::Error { message } => Err(message),
         other => Err(format!("expected QueuedInputs, got {other:?}")),
@@ -4312,15 +4480,20 @@ fn queued_inputs_request(
 /// know a session's status to queue for it.
 #[tauri::command]
 pub fn queue_input(
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
     session_id: String,
     text: String,
 ) -> Result<Vec<protocol::QueuedInput>, String> {
-    queued_inputs_request(&state.0, &compat, &Request::QueueInput { id: session_id, text })
+    let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    with_command(route, &state, &compat, |conn, compat| {
+        queued_inputs_request(conn, compat, &Request::QueueInput { id: session_id, text })
+    })
 }
 
-/// Every session's pending follow-ups.
+/// Every session's pending follow-ups, on every daemon the app is
+/// talking to.
 ///
 /// The read-back for a push-fed map. `QueuedInputsChanged` reaches only
 /// whoever is attached to a session, so a frontend that reloaded has
@@ -4328,41 +4501,50 @@ pub fn queue_input(
 /// left the git chip blank after a reload.
 #[tauri::command]
 pub fn list_queued_inputs(
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<Vec<protocol::QueuedInput>, String> {
-    queued_inputs_request(&state.0, &compat, &Request::ListQueuedInputs)
+    let mut queued = queued_inputs_request(&state.0, &current_compat(&compat), &Request::ListQueuedInputs)?;
+    for link in crate::remote::every_link(&app_handle) {
+        // A link that cannot answer is reported as lost by its relay;
+        // the local queue is still worth returning.
+        if let Ok(more) = queued_inputs_request(&link.command, &link.compat, &Request::ListQueuedInputs) {
+            queued.extend(more);
+        }
+    }
+    Ok(queued)
 }
 
 /// The queue this session should have from now on, in order. One writer
 /// for reorder, cancel and clear.
 #[tauri::command]
 pub fn set_queued_inputs(
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
     session_id: String,
     queued_ids: Vec<String>,
 ) -> Result<Vec<protocol::QueuedInput>, String> {
-    queued_inputs_request(
-        &state.0,
-        &compat,
-        &Request::SetQueuedInputs { id: session_id, queued_ids },
-    )
+    let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    with_command(route, &state, &compat, |conn, compat| {
+        queued_inputs_request(conn, compat, &Request::SetQueuedInputs { id: session_id, queued_ids })
+    })
 }
 
 /// Deliver one queued follow-up now, whatever the session is doing.
 #[tauri::command]
 pub fn send_queued_input(
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
     session_id: String,
     queued_id: String,
 ) -> Result<Vec<protocol::QueuedInput>, String> {
-    queued_inputs_request(
-        &state.0,
-        &compat,
-        &Request::SendQueuedInput { id: session_id, queued_id },
-    )
+    let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    with_command(route, &state, &compat, |conn, compat| {
+        queued_inputs_request(conn, compat, &Request::SendQueuedInput { id: session_id, queued_id })
+    })
 }
 
 #[tauri::command]
@@ -4370,14 +4552,14 @@ pub fn resize_session(
     session_id: String,
     cols: u16,
     rows: u16,
+    app_handle: AppHandle,
     state: State<DaemonConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    send_request(
-        &state.writer,
-        &Request::ResizeSession { id: session_id, cols, rows },
-        &current_compat(&compat),
-    )
+    let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    with_writer(route, &state, &compat, |writer, compat| {
+        send_request(writer, &Request::ResizeSession { id: session_id, cols, rows }, compat)
+    })
     .map_err(|e| e.to_string())
 }
 
@@ -4407,18 +4589,27 @@ pub fn resize_session(
 ///
 /// `None` means the caller has no workspace to name (a bare terminal, a
 /// tool run outside any root), and keeps the cwd in both fields.
-fn create_fresh_session(
+/// This machine's home, for the local daemon's sessions. "/" only when
+/// there is no home at all: the point of the fallback is a directory that
+/// certainly exists, and every OS has that one.
+pub(crate) fn local_home() -> String {
+    crate::home::home_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "/".to_string())
+}
+
+/// `home` is the fallback cwd, and it belongs to the machine the daemon
+/// is on: `local_home()` for the local daemon, the banner's `home` for a
+/// link (`remote.rs`).
+pub(crate) fn create_fresh_session(
     command_conn: &Mutex<Stream>,
     cwd: Option<&str>,
     workspace_root: Option<&str>,
     command: Option<&str>,
     compat: &DaemonCompat,
+    home: &str,
 ) -> anyhow::Result<String> {
-    // "/" only when there is no home at all: the point of the fallback
-    // is a directory that certainly exists, and every OS has that one.
-    let home = crate::home::home_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "/".to_string());
+    let home = home.to_string();
     let target = cwd.map(str::to_string).unwrap_or_else(|| home.clone());
     let workspace = workspace_root.map(str::to_string).unwrap_or_else(|| target.clone());
     let command = command.map(str::to_string);
@@ -4452,15 +4643,37 @@ fn create_fresh_session(
     }
 }
 
+/// Routed by `workspace_root`: a root that belongs to an ssh workspace
+/// creates the session on that host's daemon, in that host's home when
+/// the cwd is gone, and records the id as the link's so every later
+/// command on it (`write_input`, `kill_session`, …) finds the same link.
 #[tauri::command]
 pub fn create_session(
     cwd: Option<String>,
     workspace_root: Option<String>,
     command: Option<String>,
+    app_handle: AppHandle,
     command_state: State<CommandConnection>,
     daemon_state: State<DaemonConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
+    if let crate::remote::Route::Remote(link) =
+        crate::remote::route_for_root(&app_handle, workspace_root.as_deref())?
+    {
+        let id = create_fresh_session(
+            &link.command,
+            cwd.as_deref(),
+            workspace_root.as_deref(),
+            command.as_deref(),
+            &link.compat,
+            &link.home,
+        )
+        .map_err(|e| e.to_string())?;
+        crate::remote::remember_session(&app_handle, &id, &link.host);
+        send_request(&link.writer, &Request::Attach { id: id.clone() }, &link.compat)
+            .map_err(|e| e.to_string())?;
+        return Ok(id);
+    }
     let compat = current_compat(&compat);
     let id = create_fresh_session(
         &command_state.0,
@@ -4468,6 +4681,7 @@ pub fn create_session(
         workspace_root.as_deref(),
         command.as_deref(),
         &compat,
+        &local_home(),
     )
     .map_err(|e| e.to_string())?;
 
@@ -4500,14 +4714,14 @@ pub fn create_session(
 #[tauri::command]
 pub fn snapshot_session(
     session_id: String,
+    app_handle: AppHandle,
     daemon_state: State<DaemonConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    send_request(
-        &daemon_state.writer,
-        &Request::Snapshot { id: session_id },
-        &current_compat(&compat),
-    )
+    let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    with_writer(route, &daemon_state, &compat, |writer, compat| {
+        send_request(writer, &Request::Snapshot { id: session_id }, compat)
+    })
     .map_err(|e| e.to_string())
 }
 
@@ -4569,14 +4783,14 @@ pub fn session_screen(
 pub fn set_failure_patterns(
     session_id: String,
     patterns: Vec<String>,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::SetFailurePatterns { id: session_id, patterns },
-    )
+    let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::SetFailurePatterns { id: session_id, patterns })
+    })
     .map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
@@ -4584,11 +4798,15 @@ pub fn set_failure_patterns(
 #[tauri::command]
 pub fn kill_session(
     session_id: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::KillSession { id: session_id })
-        .map_err(|e| e.to_string())?;
+    let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::KillSession { id: session_id })
+    })
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -4633,17 +4851,24 @@ fn adopt_session_impl(
 #[tauri::command]
 pub fn adopt_session(
     session_id: String,
+    app_handle: AppHandle,
     command_state: State<CommandConnection>,
     daemon_state: State<DaemonConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<bool, String> {
-    adopt_session_impl(
-        &command_state.0,
-        &daemon_state.writer,
-        session_id,
-        &current_compat(&compat),
-    )
-    .map_err(|e| e.to_string())
+    match crate::remote::route_for_session(&app_handle, &session_id)? {
+        crate::remote::Route::Remote(link) => {
+            adopt_session_impl(&link.command, &link.writer, session_id, &link.compat)
+                .map_err(|e| e.to_string())
+        }
+        crate::remote::Route::Local => adopt_session_impl(
+            &command_state.0,
+            &daemon_state.writer,
+            session_id,
+            &current_compat(&compat),
+        )
+        .map_err(|e| e.to_string()),
+    }
 }
 
 fn get_board_impl(
@@ -4661,10 +4886,13 @@ fn get_board_impl(
 #[tauri::command]
 pub fn get_board(
     workspace_id: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<Board, String> {
-    get_board_impl(&state.0, workspace_id, &current_compat(&compat)).map_err(|e| e.to_string())
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    with_command(route, &state, &compat, |conn, compat| get_board_impl(conn, workspace_id, compat))
+        .map_err(|e| e.to_string())
 }
 
 /// A card's run history (v27). Gated by `min_version_for` on the way
@@ -4689,10 +4917,15 @@ fn card_runs_impl(
 pub fn card_runs(
     workspace_id: String,
     path: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<Vec<CardRun>, String> {
-    card_runs_impl(&state.0, workspace_id, path, &current_compat(&compat)).map_err(|e| e.to_string())
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    with_command(route, &state, &compat, |conn, compat| {
+        card_runs_impl(conn, workspace_id, path, compat)
+    })
+    .map_err(|e| e.to_string())
 }
 
 fn set_board_impl(
@@ -4715,10 +4948,15 @@ pub fn set_board(
     workspace_id: String,
     columns: Vec<Column>,
     labels: Vec<Label>,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    set_board_impl(&state.0, workspace_id, columns, labels, &current_compat(&compat)).map_err(|e| e.to_string())
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    with_command(route, &state, &compat, |conn, compat| {
+        set_board_impl(conn, workspace_id, columns, labels, compat)
+    })
+    .map_err(|e| e.to_string())
 }
 
 // --- Orchestration (SP1) ----------------------------------------------------
@@ -4743,16 +4981,21 @@ fn get_orchestration_impl(
 #[tauri::command]
 pub fn get_orchestration(
     workspace_id: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<Orchestration, String> {
-    get_orchestration_impl(&state.0, workspace_id, &current_compat(&compat)).map_err(|e| e.to_string())
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    with_command(route, &state, &compat, |conn, compat| {
+        get_orchestration_impl(conn, workspace_id, compat)
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// A refused write (the running-step guard) comes back as
 /// Response::Error and must reach the caller verbatim -- the board's
 /// save-error strip shows it, so it has to name the step.
-fn expect_ok(resp: Response) -> Result<(), String> {
+pub(crate) fn expect_ok(resp: Response) -> Result<(), String> {
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -4765,16 +5008,31 @@ pub fn set_orchestration(
     workspace_id: String,
     rails: Vec<Rail>,
     conflict_notes: Vec<ConflictNote>,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::SetOrchestration { workspace_id, rails, conflict_notes },
-    )
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::SetOrchestration { workspace_id, rails, conflict_notes })
+    })
     .map_err(|e| e.to_string())?;
     expect_ok(resp)
+}
+
+/// The rail-, step-, tool- and template-id writes carry no workspace on
+/// the wire, so nothing here can tell whose daemon holds the id. The
+/// caller may say (`workspaceId`), and an ssh workspace's scheduler must;
+/// absent, the id is taken to be the local daemon's -- which is every
+/// caller that predates ssh workspaces.
+fn route_for_optional_workspace(
+    app_handle: &AppHandle,
+    workspace_id: Option<&str>,
+) -> Result<crate::remote::Route, String> {
+    match workspace_id {
+        Some(id) => crate::remote::route_for_workspace(app_handle, id),
+        None => Ok(crate::remote::Route::Local),
+    }
 }
 
 #[tauri::command]
@@ -4782,14 +5040,15 @@ pub fn set_rail_run(
     rail_id: String,
     state_value: String,
     current_stage_id: Option<String>,
+    workspace_id: Option<String>,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::SetRailRun { rail_id, state: state_value, current_stage_id },
-    )
+    let route = route_for_optional_workspace(&app_handle, workspace_id.as_deref())?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::SetRailRun { rail_id, state: state_value, current_stage_id })
+    })
     .map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
@@ -4803,22 +5062,27 @@ pub fn set_step_run(
     conversation_id: Option<String>,
     launch_cwd: Option<String>,
     resume_attempts: Option<u32>,
+    workspace_id: Option<String>,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::SetStepRun {
-            step_id,
-            state: state_value,
-            session_id,
-            reason,
-            conversation_id,
-            launch_cwd,
-            resume_attempts,
-        },
-    )
+    let route = route_for_optional_workspace(&app_handle, workspace_id.as_deref())?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(
+            conn,
+            compat,
+            &Request::SetStepRun {
+                step_id,
+                state: state_value,
+                session_id,
+                reason,
+                conversation_id,
+                launch_cwd,
+                resume_attempts,
+            },
+        )
+    })
     .map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
@@ -4833,14 +5097,14 @@ pub fn set_step_run(
 #[tauri::command]
 pub fn get_tools(
     workspace_id: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<Vec<ToolDef>, String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::GetTools { workspace_id },
-    )
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::GetTools { workspace_id })
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::Tools { tools } => Ok(tools),
@@ -4851,27 +5115,36 @@ pub fn get_tools(
 
 /// The daemon's validation (unknown kind, a built-in id, an empty name)
 /// comes back as Response::Error and reaches the dialog verbatim.
+/// Routed by the tool's own `workspace_id`; a global tool (none) is the
+/// local daemon's.
 #[tauri::command]
 pub fn save_tool(
     tool: ToolDef,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp =
-        send_command_reconnecting(&state.0, &current_compat(&compat), &Request::SaveTool { tool })
-            .map_err(|e| e.to_string())?;
+    let route = route_for_optional_workspace(&app_handle, tool.workspace_id.as_deref())?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::SaveTool { tool })
+    })
+    .map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
 
 #[tauri::command]
 pub fn delete_tool(
     id: String,
+    workspace_id: Option<String>,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp =
-        send_command_reconnecting(&state.0, &current_compat(&compat), &Request::DeleteTool { id })
-            .map_err(|e| e.to_string())?;
+    let route = route_for_optional_workspace(&app_handle, workspace_id.as_deref())?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::DeleteTool { id })
+    })
+    .map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
 
@@ -4891,21 +5164,25 @@ pub fn start_tool_run(
     command: Option<String>,
     launch_cwd: Option<String>,
     conversation_id: Option<String>,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::StartToolRun {
-            workspace_id,
-            tool_id,
-            session_id,
-            command,
-            launch_cwd,
-            conversation_id,
-        },
-    )
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(
+            conn,
+            compat,
+            &Request::StartToolRun {
+                workspace_id,
+                tool_id,
+                session_id,
+                command,
+                launch_cwd,
+                conversation_id,
+            },
+        )
+    })
     .map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
@@ -4915,14 +5192,14 @@ pub fn set_tool_run_outcome(
     session_id: String,
     outcome: String,
     exit_code: Option<i32>,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::SetToolRunOutcome { session_id, outcome, exit_code },
-    )
+    let route = crate::remote::route_for_session(&app_handle, &session_id)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::SetToolRunOutcome { session_id, outcome, exit_code })
+    })
     .map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
@@ -4942,10 +5219,13 @@ fn tool_runs_impl(
 #[tauri::command]
 pub fn tool_runs(
     workspace_id: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<Vec<ToolRun>, String> {
-    tool_runs_impl(&state.0, workspace_id, &current_compat(&compat)).map_err(|e| e.to_string())
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    with_command(route, &state, &compat, |conn, compat| tool_runs_impl(conn, workspace_id, compat))
+        .map_err(|e| e.to_string())
 }
 
 // --- Group templates --------------------------------------------------------
@@ -4958,14 +5238,14 @@ pub fn tool_runs(
 #[tauri::command]
 pub fn get_group_templates(
     workspace_id: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<Vec<GroupTemplate>, String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::GetGroupTemplates { workspace_id },
-    )
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::GetGroupTemplates { workspace_id })
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::GroupTemplates { templates } => Ok(templates),
@@ -4974,17 +5254,18 @@ pub fn get_group_templates(
     }
 }
 
+/// Routed by the template's own `workspace_id`, like `save_tool`.
 #[tauri::command]
 pub fn save_group_template(
     template: GroupTemplate,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::SaveGroupTemplate { template },
-    )
+    let route = route_for_optional_workspace(&app_handle, template.workspace_id.as_deref())?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::SaveGroupTemplate { template })
+    })
     .map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
@@ -4992,14 +5273,15 @@ pub fn save_group_template(
 #[tauri::command]
 pub fn delete_group_template(
     id: String,
+    workspace_id: Option<String>,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::DeleteGroupTemplate { id },
-    )
+    let route = route_for_optional_workspace(&app_handle, workspace_id.as_deref())?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::DeleteGroupTemplate { id })
+    })
     .map_err(|e| e.to_string())?;
     expect_ok(resp)
 }
@@ -5019,10 +5301,13 @@ fn delete_board_impl(
 #[tauri::command]
 pub fn delete_board(
     workspace_id: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    delete_board_impl(&state.0, workspace_id, &current_compat(&compat)).map_err(|e| e.to_string())
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    with_command(route, &state, &compat, |conn, compat| delete_board_impl(conn, workspace_id, compat))
+        .map_err(|e| e.to_string())
 }
 
 /// Rides the STREAMING connection (fire-and-forget, mirroring
@@ -5033,25 +5318,29 @@ pub fn delete_board(
 pub fn watch_gavin_root(
     workspace_id: String,
     root_path: String,
+    app_handle: AppHandle,
     conn: State<DaemonConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    send_request(
-        &conn.writer,
-        &Request::WatchGavinRoot { workspace_id, root_path },
-        &current_compat(&compat),
-    )
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    with_writer(route, &conn, &compat, |writer, compat| {
+        send_request(writer, &Request::WatchGavinRoot { workspace_id, root_path }, compat)
+    })
     .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn unwatch_gavin_root(
     workspace_id: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::UnwatchGavinRoot { workspace_id })
-        .map_err(|e| e.to_string())?;
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::UnwatchGavinRoot { workspace_id })
+    })
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -5062,11 +5351,15 @@ pub fn unwatch_gavin_root(
 #[tauri::command]
 pub fn get_gavin_tree(
     workspace_id: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<protocol::GavinTree, String> {
-    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::GetGavinTree { workspace_id })
-        .map_err(|e| e.to_string())?;
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::GetGavinTree { workspace_id })
+    })
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::GavinTreeSnapshot { tree, .. } => Ok(tree),
         Response::Error { message } => Err(message),
@@ -5078,14 +5371,14 @@ pub fn get_gavin_tree(
 pub fn init_gavin_root(
     root_path: String,
     workspace_name: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::InitGavinRoot { root_path, workspace_name },
-    )
+    let route = crate::remote::route_for_root(&app_handle, Some(&root_path))?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::InitGavinRoot { root_path, workspace_name })
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -5097,11 +5390,15 @@ pub fn init_gavin_root(
 #[tauri::command]
 pub fn create_gavin_context(
     parent_folder: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::CreateGavinContext { parent_folder })
-        .map_err(|e| e.to_string())?;
+    let route = crate::remote::route_for_path(&app_handle, &parent_folder)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::CreateGavinContext { parent_folder })
+    })
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -5113,14 +5410,14 @@ pub fn create_gavin_context(
 pub fn add_external_gavin_context(
     root_path: String,
     folder: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::AddExternalGavinContext { root_path, folder },
-    )
+    let route = crate::remote::route_for_root(&app_handle, Some(&root_path))?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::AddExternalGavinContext { root_path, folder })
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -5133,14 +5430,14 @@ pub fn add_external_gavin_context(
 pub fn remove_external_gavin_context(
     root_path: String,
     folder: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::RemoveExternalGavinContext { root_path, folder },
-    )
+    let route = crate::remote::route_for_root(&app_handle, Some(&root_path))?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::RemoveExternalGavinContext { root_path, folder })
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -5149,12 +5446,35 @@ pub fn remove_external_gavin_context(
     }
 }
 
-/// Local fs probe for the set-root flow's init-vs-bind fork (spec §2) --
-/// the frontend can't stat the disk itself, and watching hasn't started
-/// yet at the moment the picker returns.
+/// The set-root flow's init-vs-bind fork (spec §2) -- the frontend can't
+/// stat the disk itself, and watching hasn't started yet at the moment
+/// the picker returns.
+///
+/// A local root is a local `is_dir`. A root that belongs to an ssh
+/// workspace is on another disk, so the question goes to that host's
+/// daemon: `ScanGavinRoot` reports `root_missing` when there is no
+/// `.gavin-root` there. Asked of the wrong disk this would answer
+/// "not initialised" for every remote repo and offer to init it locally.
 #[tauri::command]
-pub fn gavin_root_exists(root_path: String) -> bool {
-    std::path::Path::new(&root_path).join(".gavin-root").is_dir()
+pub fn gavin_root_exists(root_path: String, app_handle: AppHandle) -> Result<bool, String> {
+    match crate::remote::route_for_root(&app_handle, Some(&root_path))? {
+        crate::remote::Route::Remote(link) => {
+            let resp = send_command_reconnecting(
+                &link.command,
+                &link.compat,
+                &Request::ScanGavinRoot { root_path },
+            )
+            .map_err(|e| e.to_string())?;
+            match resp {
+                Response::GavinTreeScanned { tree } => Ok(!tree.root_missing),
+                Response::Error { message } => Err(message),
+                other => Err(format!("unexpected response: {other:?}")),
+            }
+        }
+        crate::remote::Route::Local => {
+            Ok(std::path::Path::new(&root_path).join(".gavin-root").is_dir())
+        }
+    }
 }
 
 /// `token` is the grant `confirm_gate` minted for THIS card path when
@@ -5165,13 +5485,17 @@ pub fn gavin_root_exists(root_path: String) -> bool {
 pub fn delete_card_file(
     path: String,
     token: String,
+    app_handle: AppHandle,
     gate: State<crate::confirm_gate::ConfirmGate>,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
     crate::confirm_gate::spend(&gate, &token, "delete_card_file", &path)?;
-    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::DeleteCardFile { path })
-        .map_err(|e| e.to_string())?;
+    let route = crate::remote::route_for_path(&app_handle, &path)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::DeleteCardFile { path })
+    })
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
         Response::Error { message } => Err(message),
@@ -5190,24 +5514,28 @@ pub fn link_card_session(
     launch_cwd: Option<String>,
     resume_attempts: Option<u32>,
     base_sha: Option<String>,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::LinkCardSession {
-            workspace_id,
-            path,
-            session_id,
-            cwd,
-            command,
-            conversation_id,
-            launch_cwd,
-            resume_attempts,
-            base_sha,
-        },
-    )
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(
+            conn,
+            compat,
+            &Request::LinkCardSession {
+                workspace_id,
+                path,
+                session_id,
+                cwd,
+                command,
+                conversation_id,
+                launch_cwd,
+                resume_attempts,
+                base_sha,
+            },
+        )
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -5220,14 +5548,14 @@ pub fn link_card_session(
 pub fn unlink_card_session(
     workspace_id: String,
     path: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::UnlinkCardSession { workspace_id, path },
-    )
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::UnlinkCardSession { workspace_id, path })
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -5242,14 +5570,18 @@ pub fn set_checklist_item(
     line_index: u32,
     expected_text: String,
     checked: bool,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::SetChecklistItem { path, line_index, expected_text, checked },
-    )
+    let route = crate::remote::route_for_path(&app_handle, &path)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(
+            conn,
+            compat,
+            &Request::SetChecklistItem { path, line_index, expected_text, checked },
+        )
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -5263,14 +5595,14 @@ pub fn set_checklist_item(
 pub fn promote_checklist_item(
     plan_path: String,
     item: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::PromoteChecklistItem { plan_path, item },
-    )
+    let route = crate::remote::route_for_path(&app_handle, &plan_path)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::PromoteChecklistItem { plan_path, item })
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::TaskPromoted { path } => Ok(path),
@@ -5295,25 +5627,29 @@ pub fn create_plan(
     parent: Option<String>,
     attachments: Option<String>,
     complexity: Option<String>,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::CreatePlan {
-            context_folder,
-            file_name,
-            title,
-            status,
-            priority,
-            body,
-            kind,
-            parent,
-            attachments,
-            complexity,
-        },
-    )
+    let route = crate::remote::route_for_path(&app_handle, &context_folder)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(
+            conn,
+            compat,
+            &Request::CreatePlan {
+                context_folder,
+                file_name,
+                title,
+                status,
+                priority,
+                body,
+                kind,
+                parent,
+                attachments,
+                complexity,
+            },
+        )
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::PlanCreated { path } => Ok(path),
@@ -5329,14 +5665,14 @@ pub fn set_plan_frontmatter_field(
     path: String,
     key: String,
     value: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::SetPlanFrontmatterField { path, key, value },
-    )
+    let route = crate::remote::route_for_path(&app_handle, &path)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::SetPlanFrontmatterField { path, key, value })
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::PlanFieldSet { path } => Ok(path),
@@ -5351,12 +5687,15 @@ pub fn set_plan_frontmatter_field(
 #[tauri::command]
 pub fn archive_card(
     path: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
-    let resp =
-        send_command_reconnecting(&state.0, &current_compat(&compat), &Request::ArchiveCard { path })
-            .map_err(|e| e.to_string())?;
+    let route = crate::remote::route_for_path(&app_handle, &path)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::ArchiveCard { path })
+    })
+    .map_err(|e| e.to_string())?;
     match resp {
         Response::CardMoved { path } => Ok(path),
         Response::Error { message } => Err(message),
@@ -5369,14 +5708,14 @@ pub fn archive_card(
 #[tauri::command]
 pub fn unarchive_card(
     path: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<String, String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::UnarchiveCard { path },
-    )
+    let route = crate::remote::route_for_path(&app_handle, &path)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::UnarchiveCard { path })
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::CardMoved { path } => Ok(path),
@@ -5390,14 +5729,14 @@ pub fn set_root_config_field(
     root_path: String,
     key: String,
     value: String,
+    app_handle: AppHandle,
     state: State<CommandConnection>,
     compat: State<DaemonCompatState>,
 ) -> Result<(), String> {
-    let resp = send_command_reconnecting(
-        &state.0,
-        &current_compat(&compat),
-        &Request::SetRootConfigField { root_path, key, value },
-    )
+    let route = crate::remote::route_for_root(&app_handle, Some(&root_path))?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(conn, compat, &Request::SetRootConfigField { root_path, key, value })
+    })
     .map_err(|e| e.to_string())?;
     match resp {
         Response::Ok => Ok(()),
@@ -5577,6 +5916,7 @@ mod main_session_tests {
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            ssh: None,
             action_prompt_overrides: HashMap::new(),
         }
     }
@@ -6146,6 +6486,7 @@ mod attach_target_tests {
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            ssh: None,
             action_prompt_overrides: HashMap::new(),
         }
     }

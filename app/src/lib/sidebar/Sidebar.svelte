@@ -1,6 +1,9 @@
 <script lang="ts">
   import { accentVar } from "$lib/core/settings";
   import AgentArmWizard from "$lib/workspace/AgentArmWizard.svelte";
+  import SshWorkspaceModal from "$lib/workspace/SshWorkspaceModal.svelte";
+  import { sshForm, sshLinks } from "$lib/workspace/sshLinkState";
+  import { isSshWorkspace, sshBadge } from "$lib/workspace/sshWorkspace";
   import SessionsManagerModal from "$lib/sessions/SessionsManagerModal.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import AgentUsageModal from "$lib/agents/AgentUsageModal.svelte";
@@ -82,6 +85,7 @@
     AppWindow,
     Search,
     Pin,
+    Server,
   } from "@lucide/svelte";
   import { themeState } from "$lib/ui/themeState.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
@@ -1515,6 +1519,16 @@
               {#if hint}<ShortcutHint text={hint} />{/if}
             {/if}
             <span class="workspace-name" onclick={() => switchWorkspace(ws.id)}>{ws.name}</span>
+            {#if isSshWorkspace(ws)}
+              {@const badge = sshBadge(ws, $sshLinks)}
+              {#if badge}
+                <!-- A mark, like in-window below: it answers "where is it",
+                     which is not one of ui/indicators.ts's axes. -->
+                <span class="ssh-mark state-{badge.status}" use:tooltip={badge.tip} aria-label={badge.tip}>
+                  <Server size={11} />
+                </span>
+              {/if}
+            {/if}
             {#if workspaceWaitingCount(ws) > 0}
               {@const waiting = workspaceWaitingCount(ws)}
               <StatusBadge
@@ -1597,6 +1611,14 @@
                 ondblclick={() => startEditingWorkspace(ws.id, ws.name)}
                 onclick={() => switchWorkspace(ws.id)}
               >{ws.name}</span>
+            {/if}
+            {#if isSshWorkspace(ws)}
+              {@const badge = sshBadge(ws, $sshLinks)}
+              {#if badge}
+                <span class="ssh-mark state-{badge.status}" use:tooltip={badge.tip} aria-label={badge.tip}>
+                  <Server size={11} />
+                </span>
+              {/if}
             {/if}
             {#if inAnotherWindow(ws)}
               <!-- A mark, not a badge: this answers "where is it", which is
@@ -1823,6 +1845,16 @@
     onClose={dismissArmRequest}
     onArmed={() => void completeArmRequest()}
   />
+{/if}
+
+<!-- The ssh workspace form, reached from the corner's "Open workspace
+     over ssh…", the root control and a lost banner. Mounted here because
+     the sidebar is always on screen; keyed so a form reopened on another
+     workspace starts from that workspace's values. -->
+{#if $sshForm}
+  {#key $sshForm.workspaceId}
+    <SshWorkspaceModal workspaceId={$sshForm.workspaceId} />
+  {/key}
 {/if}
 
 <style>
@@ -2149,6 +2181,21 @@
     align-items: center;
     flex: none;
     color: var(--text-dim);
+  }
+  /* Where the workspace lives, when it is another machine: dim while
+     the link is up, dimmer while it is connecting, and the warning tone
+     once it is lost -- the same amber the root banner wears. */
+  .ssh-mark {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    color: var(--text-dim);
+  }
+  .ssh-mark.state-connecting {
+    opacity: 0.5;
+  }
+  .ssh-mark.state-lost {
+    color: var(--warning-text);
   }
   /* The Scratchpad's own row. Named for what it is rather than for
      being first: a workspace the human PINNED is first too now, and one

@@ -2185,6 +2185,334 @@ impl GavinWatcher {
     }
 }
 
+// --- Workspace files (v39) --------------------------------------------------
+//
+// The file access a desktop on ANOTHER machine needs from this daemon
+// (`docs/superpowers/specs/2026-09-22-ssh-card-runs-design.md`): the card a
+// run is composed from, the agent-integration files it writes, the
+// attachments it classifies. Three functions, one confinement rule: a
+// path is inside the workspace root or one of the outside contexts the
+// root config names, or it is refused. The rule is the same one the
+// desktop's own file viewer applies to a local root (`fileviewer.rs`),
+// spelled here because this is the machine whose disk it is.
+
+/// The roots a workspace's files may live under: the root itself, then
+/// every `extra_contexts` folder its config names -- canonical, so a
+/// symlinked checkout compares by where it is.
+fn workspace_roots(root: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(canonical) = protocol::canonical_path(root) {
+        roots.push(canonical);
+    }
+    for extra in parse_extra_contexts(&root.join(".gavin-root").join("config.toml")) {
+        if let Ok(canonical) = protocol::canonical_path(Path::new(&extra)) {
+            roots.push(canonical);
+        }
+    }
+    roots
+}
+
+/// A path as it will be compared: the longest existing prefix
+/// canonicalised (symlinks followed) and the rest appended. A symlink
+/// inside the root that points outside resolves to where it leads, and a
+/// file that does not exist yet -- the one a write is about to make --
+/// still has a place to be judged by. Absolute only.
+fn resolve_for_containment(path: &Path) -> anyhow::Result<PathBuf> {
+    if !path.is_absolute() {
+        anyhow::bail!("{} is not an absolute path", path.display());
+    }
+    let mut existing = path;
+    let mut suffix: Vec<&std::ffi::OsStr> = Vec::new();
+    while !existing.exists() {
+        let name = existing
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("{} could not be resolved", path.display()))?;
+        suffix.push(name);
+        existing = existing
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("{} could not be resolved", path.display()))?;
+    }
+    let mut canonical = protocol::canonical_path(existing)?;
+    for name in suffix.into_iter().rev() {
+        canonical.push(name);
+    }
+    Ok(canonical)
+}
+
+fn inside_root(root: &Path, path: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
+/// `path` as a request carries it -- absolute, or relative to the root.
+fn absolute_in(root: &Path, path: &str) -> PathBuf {
+    let candidate = Path::new(path);
+    if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    }
+}
+
+/// Where `path` is, when that is inside the workspace; an error naming
+/// the refusal otherwise. A `..` component is refused before anything is
+/// resolved, as `usable_attachment_path` refuses it for attachments.
+fn confined(root: &Path, path: &str) -> anyhow::Result<PathBuf> {
+    if Path::new(path).components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        anyhow::bail!("{path} contains a `..` component");
+    }
+    let resolved = resolve_for_containment(&absolute_in(root, path))?;
+    if workspace_roots(root).iter().any(|r| inside_root(r, &resolved)) {
+        Ok(resolved)
+    } else {
+        anyhow::bail!("{path} is outside the workspace root {}", root.display())
+    }
+}
+
+/// `ReadWorkspaceFile`: the file's text, or `None` when there is no such
+/// file, and whether it was cut at `MAX_WORKSPACE_FILE_BYTES`. A cut
+/// that lands inside a multi-byte character backs off to the last whole
+/// one; a file that is not UTF-8 at all is an error, as it is for the
+/// viewer.
+pub fn read_workspace_file(root: &Path, path: &str) -> anyhow::Result<(Option<String>, bool)> {
+    let resolved = confined(root, path)?;
+    let bytes = match std::fs::read(&resolved) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((None, false)),
+        Err(e) => return Err(e.into()),
+    };
+    let truncated = bytes.len() > protocol::MAX_WORKSPACE_FILE_BYTES;
+    let slice = if truncated { &bytes[..protocol::MAX_WORKSPACE_FILE_BYTES] } else { &bytes[..] };
+    let text = match std::str::from_utf8(slice) {
+        Ok(text) => text,
+        Err(e) if truncated => std::str::from_utf8(&slice[..e.valid_up_to()])
+            .map_err(|_| anyhow::anyhow!("{path} is not valid UTF-8 text"))?,
+        Err(_) => anyhow::bail!("{path} is not valid UTF-8 text"),
+    };
+    Ok((Some(text.to_string()), truncated))
+}
+
+/// `WriteWorkspaceFile`: parents created, the file written whole. Plain
+/// `fs::write`, the convention `write_plan_field` set.
+pub fn write_workspace_file(root: &Path, path: &str, content: &str) -> anyhow::Result<()> {
+    let resolved = confined(root, path)?;
+    if let Some(parent) = resolved.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&resolved, content)?;
+    Ok(())
+}
+
+/// Directories under this user's home that no attachment may name, by
+/// name; the desktop keeps the same list for a local root. Checked HERE
+/// against THIS machine's home because the agent that would be handed
+/// the file runs here.
+const SENSITIVE_HOME_DIRS: &[&str] = &["Library", ".ssh", ".aws", ".config"];
+
+/// This user's home on this machine: `HOME` on unix, `USERPROFILE` on
+/// Windows. `None` when the environment names none, which refuses
+/// nothing rather than everything.
+fn home_dir() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+fn sensitive_home_roots() -> Vec<(&'static str, PathBuf)> {
+    let Some(home) = home_dir() else { return Vec::new() };
+    SENSITIVE_HOME_DIRS
+        .iter()
+        .filter_map(|name| resolve_for_containment(&home.join(name)).ok().map(|p| (*name, p)))
+        .collect()
+}
+
+/// `StatWorkspacePaths`: each attachment as it resolves on this machine
+/// -- the desktop's `attachment_status` classification, answered for a
+/// remote root. `outside` is reported, not refused: that is what the
+/// classification means, and the desktop decides what to do with it.
+pub fn stat_workspace_paths(root: &Path, paths: &[String]) -> Vec<protocol::WorkspacePathStat> {
+    let roots = workspace_roots(root);
+    let root_canonical = roots.first().cloned().unwrap_or_else(|| root.to_path_buf());
+    let sensitive = sensitive_home_roots();
+    paths
+        .iter()
+        .map(|raw| {
+            let refused = |reason: String| protocol::WorkspacePathStat {
+                path: raw.clone(),
+                absolute_path: None,
+                exists: false,
+                is_dir: false,
+                size_bytes: None,
+                location: "refused".to_string(),
+                refused_reason: Some(reason),
+            };
+            let Some(usable) = protocol::usable_attachment_path(raw) else {
+                return refused("contains a `..` component".to_string());
+            };
+            let absolute = absolute_in(root, &usable);
+            let resolved = resolve_for_containment(&absolute).unwrap_or(absolute);
+            if let Some((name, _)) = sensitive.iter().find(|(_, s)| inside_root(s, &resolved)) {
+                return refused(format!("lies inside ~/{name}, which gavin refuses to hand an agent"));
+            }
+            // is_file, not exists: an attachment names a file to read, and
+            // one stat answers both `exists` and the size the review sheet
+            // quotes, so the two can never describe different files.
+            let all = resolved.metadata().ok();
+            let is_dir = all.as_ref().is_some_and(|m| m.is_dir());
+            let metadata = all.filter(|m| m.is_file());
+            let location = if inside_root(&root_canonical, &resolved) {
+                "root"
+            } else if roots.iter().skip(1).any(|r| inside_root(r, &resolved)) {
+                "extraContext"
+            } else {
+                "outside"
+            };
+            protocol::WorkspacePathStat {
+                path: raw.clone(),
+                absolute_path: Some(protocol::wire_path(&resolved)),
+                exists: metadata.is_some(),
+                is_dir,
+                size_bytes: metadata.map(|m| m.len()),
+                location: location.to_string(),
+                refused_reason: None,
+            }
+        })
+        .collect()
+}
+
+/// How long a single `RunGit` subprocess may run. The desktop's own
+/// `run_git` uses ten seconds for the synchronous commands the Git tab
+/// routes here; the network ops it keeps to itself have their own longer
+/// ceiling, and none of them reach this.
+const GIT_RUN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A directory a `cwd` must be inside for `RunGit` to run there. Same
+/// tree as the workspace files: the root and the outside contexts its
+/// config names, plus the root itself. A `..` is refused before anything
+/// resolves.
+fn confined_dir(root: &Path, cwd: &str) -> anyhow::Result<PathBuf> {
+    if Path::new(cwd).components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        anyhow::bail!("{cwd} contains a `..` component");
+    }
+    let resolved = resolve_for_containment(&absolute_in(root, cwd))?;
+    if workspace_roots(root).iter().any(|r| inside_root(r, &resolved)) {
+        Ok(resolved)
+    } else {
+        anyhow::bail!("{cwd} is outside the workspace root {}", root.display())
+    }
+}
+
+/// `RunGit`: runs `git <args>` in a cwd confined to the root, returning
+/// `(stdout, stderr, code)` -- the three the desktop's local `run_git`
+/// produces, so the Git tab does not care which ran it.
+///
+/// The binary is fixed as `git` and `args` is an argv: never a shell,
+/// never interpolated, so `["status; rm -rf /"]` is one bogus subcommand
+/// git rejects, not a pipeline. This is the app role's existing reach --
+/// the desktop already spawns shells here through `CreateSession` -- so it
+/// widens nothing; the gate denies it to `agent` and `remote`, which have
+/// no business running a process on this machine. `GIT_TERMINAL_PROMPT=0`,
+/// like the desktop's runner, so a credential prompt fails instead of
+/// hanging a request.
+pub fn run_git(
+    root: &Path,
+    cwd: &str,
+    args: &[String],
+    stdin: Option<&str>,
+) -> anyhow::Result<(Vec<u8>, String, i32)> {
+    use std::io::{Read, Write};
+    let resolved = confined_dir(root, cwd)?;
+    let mut child = crate::program::command("git")
+        .args(args)
+        .current_dir(&resolved)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!("git was not found on the host's PATH")
+            } else {
+                anyhow::anyhow!("failed to run git: {e}")
+            }
+        })?;
+    if let Some(bytes) = stdin {
+        if let Some(mut pipe) = child.stdin.take() {
+            let bytes = bytes.as_bytes().to_vec();
+            std::thread::spawn(move || {
+                let _ = pipe.write_all(&bytes);
+            });
+        }
+    }
+    let mut out = child.stdout.take().ok_or_else(|| anyhow::anyhow!("git stdout unavailable"))?;
+    let mut err = child.stderr.take().ok_or_else(|| anyhow::anyhow!("git stderr unavailable"))?;
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    let (err_tx, err_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = out.read_to_end(&mut buf);
+        let _ = out_tx.send(buf);
+    });
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = err.read_to_string(&mut buf);
+        let _ = err_tx.send(buf);
+    });
+    let deadline = Instant::now() + GIT_RUN_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    anyhow::bail!("git {} timed out after {}s", args.join(" "), GIT_RUN_TIMEOUT.as_secs());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => anyhow::bail!("failed waiting for git: {e}"),
+        }
+    };
+    let stdout = out_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    let stderr = err_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    Ok((stdout, stderr, status.code().unwrap_or(-1)))
+}
+
+/// `ListWorkspaceDir`: the immediate children of a directory confined to
+/// the root, name-sorted, in the shape the file tree reads. A symlinked
+/// directory is refused rather than listed through, so the tree cannot
+/// leave the root by a link -- the same rule the desktop's `list_directory`
+/// applies to a local root.
+pub fn list_workspace_dir(root: &Path, path: &str) -> anyhow::Result<Vec<protocol::WorkspaceDirEntry>> {
+    let resolved = confined_dir(root, path)?;
+    let meta = std::fs::symlink_metadata(&resolved)
+        .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+    if meta.file_type().is_symlink() {
+        anyhow::bail!("{path} is a symlink; the file tree does not follow links");
+    }
+    if !resolved.is_dir() {
+        anyhow::bail!("{path} is not a directory");
+    }
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&resolved).map_err(|e| anyhow::anyhow!("{path}: {e}"))? {
+        let entry = entry.map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        // symlink_metadata: a link to a directory must not read as one, and
+        // a file that vanished mid-scan is skipped, not an error -- an
+        // agent writing here is the normal case.
+        let Ok(meta) = entry.path().symlink_metadata() else { continue };
+        let file_type = meta.file_type();
+        let is_dir = file_type.is_dir();
+        entries.push(protocol::WorkspaceDirEntry {
+            name,
+            is_dir,
+            size: if is_dir { 0 } else { meta.len() },
+            symlink: file_type.is_symlink(),
+        });
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(entries)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4457,5 +4785,245 @@ mod tests {
 
         let stale = card_paths(dir.path(), &["fs-sync.md", "fs-sync.md"]);
         assert_eq!(recover_moved_card_paths(&scan_root(dir.path()), &stale).len(), 1);
+    }
+
+    // --- Workspace files (v39) ------------------------------------------
+
+    fn workspace_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        dir
+    }
+
+    fn lossy(path: &Path) -> String {
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn read_workspace_file_takes_a_root_relative_or_an_absolute_path_inside_the_root() {
+        let dir = workspace_root();
+        std::fs::write(dir.path().join(".gavin-root/plans/a.md"), "---\ntitle: A\n---\nbody\n").unwrap();
+        let (content, truncated) = read_workspace_file(dir.path(), ".gavin-root/plans/a.md").unwrap();
+        assert_eq!(content.as_deref(), Some("---\ntitle: A\n---\nbody\n"));
+        assert!(!truncated);
+        let absolute = dir.path().join(".gavin-root").join("plans").join("a.md");
+        let (content, _) = read_workspace_file(dir.path(), &lossy(&absolute)).unwrap();
+        assert!(content.is_some());
+    }
+
+    #[test]
+    fn read_workspace_file_answers_none_for_a_missing_file_and_refuses_outside_the_root() {
+        let dir = workspace_root();
+        let (content, truncated) = read_workspace_file(dir.path(), "nope.md").unwrap();
+        assert_eq!(content, None);
+        assert!(!truncated);
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), "s").unwrap();
+        let err = read_workspace_file(dir.path(), &lossy(&outside.path().join("secret")))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("outside"), "{err}");
+        assert!(read_workspace_file(dir.path(), "../secret").is_err());
+    }
+
+    #[test]
+    fn read_workspace_file_truncates_at_the_cap() {
+        let dir = workspace_root();
+        let big = "x".repeat(protocol::MAX_WORKSPACE_FILE_BYTES + 10);
+        std::fs::write(dir.path().join("big.txt"), &big).unwrap();
+        let (content, truncated) = read_workspace_file(dir.path(), "big.txt").unwrap();
+        assert!(truncated);
+        assert_eq!(content.unwrap().len(), protocol::MAX_WORKSPACE_FILE_BYTES);
+    }
+
+    #[test]
+    fn write_workspace_file_creates_parents_inside_the_root_and_refuses_outside() {
+        let dir = workspace_root();
+        write_workspace_file(dir.path(), "deep/er/file.json", "{}\n").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("deep/er/file.json")).unwrap(), "{}\n");
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("planted");
+        assert!(write_workspace_file(dir.path(), &lossy(&target), "x").is_err());
+        assert!(!target.exists());
+        assert!(write_workspace_file(dir.path(), "../planted", "x").is_err());
+    }
+
+    /// A card in an outside context the root config names is the
+    /// workspace's too, exactly as the tree says it is.
+    #[test]
+    fn workspace_files_reach_an_extra_context_the_root_config_names() {
+        let dir = workspace_root();
+        let extra = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(extra.path().join(".gavin").join("plans")).unwrap();
+        add_external_context(dir.path(), extra.path()).unwrap();
+        let card = extra.path().join(".gavin").join("plans").join("x.md");
+        std::fs::write(&card, "x").unwrap();
+        assert!(read_workspace_file(dir.path(), &lossy(&card)).unwrap().0.is_some());
+        write_workspace_file(dir.path(), &lossy(&extra.path().join("note.md")), "n").unwrap();
+        assert!(extra.path().join("note.md").is_file());
+    }
+
+    #[test]
+    fn stat_workspace_paths_classifies_like_the_attachment_gate() {
+        let dir = workspace_root();
+        std::fs::write(dir.path().join("spec.md"), "12345").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("o.txt"), "o").unwrap();
+        let stats = stat_workspace_paths(
+            dir.path(),
+            &[
+                "spec.md".to_string(),
+                "missing.md".to_string(),
+                lossy(&outside.path().join("o.txt")),
+                "../escape.md".to_string(),
+                lossy(dir.path()),
+            ],
+        );
+        assert_eq!(stats.len(), 5);
+        assert_eq!(stats[0].location, "root");
+        assert!(stats[0].exists);
+        assert_eq!(stats[0].size_bytes, Some(5));
+        let absolute = stats[0].absolute_path.as_deref().unwrap();
+        assert!(absolute.ends_with("spec.md"), "{absolute}");
+        assert!(!absolute.contains('\\'), "wire paths use forward slashes: {absolute}");
+        assert_eq!(stats[1].location, "root");
+        assert!(!stats[1].exists);
+        assert_eq!(stats[1].size_bytes, None);
+        assert_eq!(stats[2].location, "outside");
+        assert!(stats[2].exists);
+        assert_eq!(stats[3].location, "refused");
+        assert!(stats[3].refused_reason.as_deref().unwrap().contains(".."));
+        assert_eq!(stats[3].absolute_path, None);
+        assert!(!stats[4].exists, "a directory is not a file to read");
+        assert!(stats[4].is_dir);
+        assert!(!stats[0].is_dir && !stats[1].is_dir);
+    }
+
+    /// The refusal is about THIS machine's home: the agent that would be
+    /// handed the file runs here.
+    #[test]
+    fn stat_workspace_paths_refuses_a_sensitive_home_directory() {
+        let dir = workspace_root();
+        let Some(home) = home_dir() else { return };
+        let key = home.join(".ssh").join("id_rsa");
+        let stats = stat_workspace_paths(dir.path(), &[lossy(&key)]);
+        assert_eq!(stats[0].location, "refused");
+        assert!(stats[0].refused_reason.as_deref().unwrap().contains(".ssh"));
+    }
+
+    // --- Git and directory listing (v40) --------------------------------
+
+    fn init_repo(root: &Path) {
+        // A real repo so `run_git` has something to answer about; identity
+        // set so `commit` works without global config.
+        let cwd = lossy(root);
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.email", "t@example.com"][..],
+            &["config", "user.name", "T"][..],
+        ] {
+            let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            let out = run_git(root, &cwd, &argv, None).unwrap();
+            assert_eq!(out.2, 0, "git {args:?}: {}", out.1);
+        }
+    }
+
+    #[test]
+    fn run_git_runs_a_subcommand_in_the_confined_cwd() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+        let (stdout, _stderr, code) = run_git(
+            dir.path(),
+            &lossy(dir.path()),
+            &["status".to_string(), "--porcelain".to_string()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        assert!(String::from_utf8_lossy(&stdout).contains("a.txt"));
+    }
+
+    #[test]
+    fn run_git_reports_a_non_zero_exit_rather_than_erroring() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        // A bad subcommand exits non-zero; that is data, not an Err.
+        let (_out, stderr, code) = run_git(
+            dir.path(),
+            &lossy(dir.path()),
+            &["not-a-subcommand".to_string()],
+            None,
+        )
+        .unwrap();
+        assert_ne!(code, 0);
+        assert!(stderr.contains("not-a-subcommand"), "{stderr}");
+    }
+
+    #[test]
+    fn run_git_passes_stdin_and_refuses_a_cwd_outside_the_root() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        // stripspace echoes stdin normalised -- a stdin round-trip.
+        let (stdout, _stderr, code) = run_git(
+            dir.path(),
+            &lossy(dir.path()),
+            &["stripspace".to_string()],
+            Some("hello   \n\n\n"),
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(String::from_utf8_lossy(&stdout), "hello\n");
+        let outside = tempfile::tempdir().unwrap();
+        assert!(run_git(dir.path(), &lossy(outside.path()), &["status".to_string()], None).is_err());
+        assert!(run_git(dir.path(), "..", &["status".to_string()], None).is_err());
+    }
+
+    #[test]
+    fn run_git_never_runs_a_shell_even_when_args_look_like_one() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        // The argv reaches `git` verbatim: git treats this as one bogus
+        // subcommand, not a shell pipeline, and exits non-zero.
+        let (_out, _stderr, code) = run_git(
+            dir.path(),
+            &lossy(dir.path()),
+            &["status; rm -rf /".to_string()],
+            None,
+        )
+        .unwrap();
+        assert_ne!(code, 0);
+    }
+
+    #[test]
+    fn list_workspace_dir_lists_children_inside_the_root() {
+        let dir = workspace_root();
+        std::fs::write(dir.path().join("b.txt"), "x").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let entries = list_workspace_dir(dir.path(), &lossy(dir.path())).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"b.txt"));
+        assert!(names.contains(&"sub"));
+        // Name-sorted, so a folder and a file keep a stable order.
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted);
+        let sub = entries.iter().find(|e| e.name == "sub").unwrap();
+        assert!(sub.is_dir);
+        let file = entries.iter().find(|e| e.name == "b.txt").unwrap();
+        assert!(!file.is_dir && file.size == 1);
+    }
+
+    #[test]
+    fn list_workspace_dir_refuses_outside_the_root_and_a_symlinked_dir() {
+        let dir = workspace_root();
+        let outside = tempfile::tempdir().unwrap();
+        assert!(list_workspace_dir(dir.path(), &lossy(outside.path())).is_err());
+        assert!(list_workspace_dir(dir.path(), "../..").is_err());
+        // A symlinked directory inside the root is refused, not listed
+        // through -- the tree must not leave the root by a link.
+        if try_symlink(outside.path(), &dir.path().join("link")) {
+            assert!(list_workspace_dir(dir.path(), &lossy(&dir.path().join("link"))).is_err());
+        }
     }
 }

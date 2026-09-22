@@ -26,18 +26,23 @@ export interface FileTreeMenuCallbacks {
   onOpenInTab: ((node: FileNode) => void) | null;
   onCopyPath: (node: FileNode) => void;
   onRevealInFinder: (node: FileNode) => void;
-  onNewFile: (dir: FileNode) => void;
-  onNewFolder: (dir: FileNode) => void;
-  onRename: (node: FileNode) => void;
-  onTrash: (node: FileNode) => void;
+  /// The four that WRITE, and `onIgnore`, are null when this tree may not
+  /// mutate its files -- an ssh workspace, whose creates, renames, trashes
+  /// and .gitignore edits happen on the host and are a follow-up. Each
+  /// entry is then omitted rather than shown dead, the way `onOpenInTab`
+  /// is omitted with no session to anchor to.
+  onNewFile: ((dir: FileNode) => void) | null;
+  onNewFolder: ((dir: FileNode) => void) | null;
+  onRename: ((node: FileNode) => void) | null;
+  onTrash: ((node: FileNode) => void) | null;
   /// Re-reads one directory. The tree has no watcher on the repo -- see
   /// fileTree.ts -- so this is how a folder changed by an agent or a
   /// terminal catches up.
   onRefresh: (dir: FileNode) => void;
   /// Appends a pattern to .gitignore or .git/info/exclude (gitIgnore.ts
   /// computes it from the row's own path). The write, the dedup and the
-  /// refresh are the caller's.
-  onIgnore: (kind: IgnoreKind, pattern: string) => void;
+  /// refresh are the caller's. Null omits the ignore items (see above).
+  onIgnore: ((kind: IgnoreKind, pattern: string) => void) | null;
 }
 
 export interface RowMenuContext {
@@ -91,11 +96,14 @@ export function fileMenuItems(
   }
   items.push(
     { label: "Copy path", onPick: () => cb.onCopyPath(node) },
-    { label: "Reveal in Finder", onPick: () => cb.onRevealInFinder(node) },
-    ...ignoreMenuItems(relativeToRoot(ctx.root, node.path), false, (kind, pattern) => cb.onIgnore(kind, pattern)),
-    { label: "Rename…", onPick: () => cb.onRename(node) },
-    { label: "Move to Trash", danger: true, onPick: () => cb.onTrash(node) }
+    { label: "Reveal in Finder", onPick: () => cb.onRevealInFinder(node) }
   );
+  const { onIgnore, onRename, onTrash } = cb;
+  if (onIgnore) {
+    items.push(...ignoreMenuItems(relativeToRoot(ctx.root, node.path), false, (kind, pattern) => onIgnore(kind, pattern)));
+  }
+  if (onRename) items.push({ label: "Rename…", onPick: () => onRename(node) });
+  if (onTrash) items.push({ label: "Move to Trash", danger: true, onPick: () => onTrash(node) });
   return items;
 }
 
@@ -104,19 +112,21 @@ export function directoryMenuItems(
   ctx: RowMenuContext,
   cb: FileTreeMenuCallbacks
 ): FileTreeMenuItem[] {
-  const items: FileTreeMenuItem[] = [
-    { label: "New file…", onPick: () => cb.onNewFile(node) },
-    { label: "New folder…", onPick: () => cb.onNewFolder(node) },
+  const items: FileTreeMenuItem[] = [];
+  const { onNewFile, onNewFolder, onIgnore, onRename, onTrash } = cb;
+  if (onNewFile) items.push({ label: "New file…", onPick: () => onNewFile(node) });
+  if (onNewFolder) items.push({ label: "New folder…", onPick: () => onNewFolder(node) });
+  items.push(
     { label: "Refresh", onPick: () => cb.onRefresh(node) },
     { label: "Copy path", onPick: () => cb.onCopyPath(node) },
-    { label: "Reveal in Finder", onPick: () => cb.onRevealInFinder(node) },
-  ];
+    { label: "Reveal in Finder", onPick: () => cb.onRevealInFinder(node) }
+  );
   if (!ctx.isRoot) {
-    items.push(
-      ...ignoreMenuItems(relativeToRoot(ctx.root, node.path), true, (kind, pattern) => cb.onIgnore(kind, pattern)),
-      { label: "Rename…", onPick: () => cb.onRename(node) },
-      { label: "Move to Trash", danger: true, onPick: () => cb.onTrash(node) }
-    );
+    if (onIgnore) {
+      items.push(...ignoreMenuItems(relativeToRoot(ctx.root, node.path), true, (kind, pattern) => onIgnore(kind, pattern)));
+    }
+    if (onRename) items.push({ label: "Rename…", onPick: () => onRename(node) });
+    if (onTrash) items.push({ label: "Move to Trash", danger: true, onPick: () => onTrash(node) });
   }
   return items;
 }

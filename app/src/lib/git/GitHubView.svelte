@@ -22,6 +22,8 @@
   import GitCommitDetail from "$lib/git/GitCommitDetail.svelte";
   import GitIgnoreEditor from "$lib/git/GitIgnoreEditor.svelte";
   import type { IgnoreKind } from "$lib/git/gitIgnore";
+  import { sshTabBlocked } from "$lib/workspace/sshWorkspace";
+  import { sshLinks } from "$lib/workspace/sshLinkState";
 
   interface Props {
     workspaceId: string;
@@ -35,7 +37,13 @@
   const MIN_WIDTH = 120;
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
-  const root = $derived(ws?.rootPath ?? null);
+  // An ssh workspace's git runs on the host through the daemon (v40).
+  // The tab works once the link is up and the host is new enough; until
+  // then it is "no root" (nothing ensured, watched or refreshed) and the
+  // empty state names why. The network sync buttons are the follow-up and
+  // stay disabled even when the tab works (GitToolbar).
+  const sshBlocked = $derived(sshTabBlocked(ws, $sshLinks));
+  const root = $derived(sshBlocked ? null : (ws?.rootPath ?? null));
   // SP3: the tab may be pointed at a linked worktree; the selection is
   // persisted and reapplied on mount (falls back to the root if it's gone).
   const cwdTarget = $derived(ws?.gitView?.worktree ?? root);
@@ -106,7 +114,9 @@
   }
 </script>
 
-{#if !root}
+{#if sshBlocked}
+  <div class="empty">{sshBlocked}</div>
+{:else if !root}
   <div class="empty">No root folder set for this workspace.</div>
 {:else if !view || (!view.repo && !view.gitMissing && !view.error)}
   <div class="empty">Loading…</div>

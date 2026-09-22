@@ -87,6 +87,8 @@ vi.mock("$lib/board/kanbanState", () => ({
 vi.mock("$lib/board/columnRunAction", () => ({ cardSessionState: vi.fn(() => "none") }));
 vi.mock("$lib/cards/cardRunActions", () => ({
   resolveAttachmentsForRun: vi.fn(async () => ({ paths: [], withheld: [], statuses: [] })),
+  // A local workspace: the ssh gate never fires here.
+  sshLaunchBlocker: vi.fn(() => null),
 }));
 // The first-Run review, as the launcher reaches it. A real one raises
 // the app's dialog and waits; this is the seam the answer is driven

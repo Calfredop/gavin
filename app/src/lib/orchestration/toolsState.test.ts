@@ -164,7 +164,7 @@ describe("deleteToolAction", () => {
   it("deletes and refreshes", async () => {
     toolRecords.set({ "ws-1": [record()] });
     expect(await deleteToolAction("ws-1", "u1")).toBeNull();
-    expect(backend.deleteTool).toHaveBeenCalledWith("u1");
+    expect(backend.deleteTool).toHaveBeenCalledWith("u1", "ws-1");
     expect(backend.getTools).toHaveBeenCalledWith("ws-1");
   });
 

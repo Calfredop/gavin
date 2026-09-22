@@ -27,6 +27,8 @@
   import { tooltip } from "$lib/core/tooltip";
   import { layoutState, resolvedAgents, attentionStatusById } from "$lib/core/layoutState";
   import { agentPromptBlocker } from "$lib/cards/cardRun";
+  import { sshRunBlocked } from "$lib/workspace/sshWorkspace";
+  import { sshLinks } from "$lib/workspace/sshLinkState";
   import { jumpToBoundSession, revealDevelopingCard } from "$lib/cards/cardRunActions";
   import { developingRunIn, DEVELOPING_BLOCK } from "$lib/cards/developingCards";
   // Svelte 5 self-import for the nested-children recursion.
@@ -88,7 +90,8 @@
   const runBlocked = $derived(
     workspaceId === null
       ? null
-      : agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label)
+      : (sshRunBlocked($layoutState.workspaces.find((w) => w.id === workspaceId), $sshLinks) ??
+        agentPromptBlocker($resolvedAgents(workspaceId).promptArgs, $resolvedAgents(workspaceId).label))
   );
 
   // Live session binding (card-model spec §3) -- the shared agent

@@ -117,6 +117,12 @@ where
 
 #[tauri::command]
 pub fn git_watch(cwd: String, app_handle: AppHandle, state: State<GitWatchers>) -> Result<(), String> {
+    // An ssh workspace's repo is on the host; this filesystem watcher has
+    // no path here to watch. A no-op, not an error -- the tab's manual
+    // Refresh still works; live git refresh over ssh is a follow-up.
+    if crate::remote::is_remote_cwd(&cwd) {
+        return Ok(());
+    }
     let mut watchers = state.0.lock().unwrap();
     if let Some(entry) = watchers.get_mut(&cwd) {
         entry.1 += 1;
@@ -134,6 +140,9 @@ pub fn git_watch(cwd: String, app_handle: AppHandle, state: State<GitWatchers>) 
 
 #[tauri::command]
 pub fn git_unwatch(cwd: String, state: State<GitWatchers>) -> Result<(), String> {
+    if crate::remote::is_remote_cwd(&cwd) {
+        return Ok(());
+    }
     let mut watchers = state.0.lock().unwrap();
     let remove = match watchers.get_mut(&cwd) {
         Some(entry) => {

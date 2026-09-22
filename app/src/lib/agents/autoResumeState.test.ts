@@ -61,6 +61,8 @@ vi.mock("$lib/orchestration/orchestrationState", async () => {
 
 vi.mock("$lib/cards/cardRunActions", () => ({
   resumeCard: vi.fn().mockResolvedValue(null),
+  // A local workspace: the ssh gate orchestrationState consults never fires.
+  sshLaunchBlocker: vi.fn(() => null),
 }));
 
 vi.mock("$lib/agents/autoResumeNotify", () => ({

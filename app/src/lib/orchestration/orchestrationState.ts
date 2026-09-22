@@ -169,6 +169,7 @@ import {
   pasteToMainAgent,
   resolveAttachmentsForRun,
   revealSession,
+  sshLaunchBlocker,
 } from "$lib/cards/cardRunActions";
 import { mayStartWork, nowStore, pausedWorkspaceKey, launchDecision } from "$lib/agents/agentPauseState";
 import { fallbackBlockedReason } from "$lib/agents/agentFallback";
@@ -495,7 +496,7 @@ export function setRailRunAction(
         { railId, state, currentStageId },
       ],
     }),
-    () => backend.setRailRun(railId, state, currentStageId)
+    () => backend.setRailRun(railId, state, currentStageId, workspaceId)
   );
 }
 
@@ -551,7 +552,16 @@ export function setStepRunAction(
       };
     },
     () =>
-      backend.setStepRun(stepId, state, sessionId, reason, conversationId, launchCwd, resumeAttempts)
+      backend.setStepRun(
+        stepId,
+        state,
+        sessionId,
+        reason,
+        conversationId,
+        launchCwd,
+        resumeAttempts,
+        workspaceId
+      )
   );
 }
 
@@ -690,6 +700,12 @@ export async function runOnRailPage(
 }
 
 export async function startRail(workspaceId: string, railId: string): Promise<void> {
+  // A rail's card steps launch through the same composition every board
+  // Run does, reading card files from this machine; on an ssh workspace
+  // they are on the host. Arming would run the rail into a stall on its
+  // first step, so it is not armed (the Start button is disabled with
+  // the same words).
+  if (sshLaunchBlocker(workspaceId)) return;
   const orch = get(orchestrations)[workspaceId];
   const rail = orch?.rails.find((r) => r.id === railId);
   if (!rail) return;
@@ -809,7 +825,7 @@ export async function resumeStep(
   // launch has to be refused HERE rather than by the CLI's own error in
   // a tab nobody is looking at. Retry is the way on, for the same reason
   // it is below: a fresh run is the honest answer to no conversation.
-  const log = await conversationLogFor(agent, run.conversationId);
+  const log = await conversationLogFor(agent, run.conversationId, workspaceId);
   const unresumable = unresumableConversationReason(log, "Use Retry to start it again.");
   if (unresumable) return unresumable;
   const command = buildResumeCommand(agent.launchCommand, agent.resumeArgs, run.conversationId, log);
@@ -2811,6 +2827,11 @@ async function launchOrchestrationAgent(
   // would rewrite somebody else's board.
   const root = ws.rootPath || null;
   if (!root) return "This workspace has no root folder — set one on the Settings tab first";
+  // The organize agent's gavin tools need `gavin-mcp` configured in the
+  // checkout it runs in, which on an ssh workspace is the host's -- not
+  // written there yet (the card-runs card).
+  const remote = sshLaunchBlocker(workspaceId);
+  if (remote) return remote;
 
   // The launch wall. Generate and Reorganize are ordinary agent runs
   // with an ordinary process tree, so they queue like one -- checked

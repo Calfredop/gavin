@@ -152,7 +152,7 @@ describe("deleteGroupTemplateAction", () => {
   it("deletes and refreshes", async () => {
     groupTemplateRecords.set({ "ws-1": [record()] });
     expect(await deleteGroupTemplateAction("ws-1", "g1")).toBeNull();
-    expect(backend.deleteGroupTemplate).toHaveBeenCalledWith("g1");
+    expect(backend.deleteGroupTemplate).toHaveBeenCalledWith("g1", "ws-1");
     expect(backend.getGroupTemplates).toHaveBeenCalledWith("ws-1");
   });
 

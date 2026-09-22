@@ -21,10 +21,11 @@
   // stays on it. The corner widens by one IconButton for it
   // (--window-corner-min on .app.sidebar-collapsed).
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { PanelLeftClose, PanelLeftOpen, Search, FolderOpen } from "@lucide/svelte";
+  import { PanelLeftClose, PanelLeftOpen, Search, FolderOpen, Server } from "@lucide/svelte";
   import { sidebarCollapsed, toggleSidebarCollapsed } from "$lib/sidebar/sidebarPrefs";
   import { sidebarSearchOpen, toggleSidebarSearch } from "$lib/sidebar/sidebarSearch";
   import { openWorkspaceFolder } from "$lib/workspace/workspaceOpen";
+  import { openSshForm } from "$lib/workspace/sshLinkState";
   import { layoutState } from "$lib/core/layoutState";
 
   // Keyed off the preference rather than off sidebarShowsRail: a peek is
@@ -48,6 +49,15 @@
       label="Open workspace…"
       size={14}
       onclick={() => void openWorkspaceFolder()}
+    />
+    <!-- The same action for a folder on another machine: no picker can
+         browse a remote disk, so this opens the form that names the host
+         and the path instead (SshWorkspaceModal). -->
+    <IconButton
+      icon={Server}
+      label="Open workspace over ssh…"
+      size={14}
+      onclick={() => openSshForm(null)}
     />
     <IconButton
       icon={Search}

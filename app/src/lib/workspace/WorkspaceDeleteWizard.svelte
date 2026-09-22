@@ -24,6 +24,7 @@
   } from "$lib/workspace/workspaceDelete";
   import { executeWorkspaceDelete, type DeleteResult } from "$lib/workspace/workspaceDeleteActions";
   import { grantForAnsweredPrompt } from "$lib/core/confirmGate";
+  import { sshLimitation } from "$lib/workspace/sshWorkspace";
 
   interface Props {
     workspaceId: string;
@@ -32,6 +33,7 @@
   let { workspaceId, onClose }: Props = $props();
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
+  const sshBlocked = $derived(sshLimitation(ws));
   const sessionCount = $derived(
     ws
       ? sessionTabsOnly(
@@ -107,6 +109,13 @@
 </script>
 
 <Modal onClose={running ? () => {} : onClose}>
+  {#if sshBlocked}
+    <!-- The wizard scans and trashes gavin's files on this machine's
+         disk; an ssh workspace's are on the host. Closing the workspace
+         (the sidebar's menu) still works: that removes only the row. -->
+    <p class="ssh-notice">{sshBlocked}</p>
+    <div class="ssh-actions"><button type="button" onclick={onClose}>Close</button></div>
+  {:else}
   <div class="head">
     <span class="title">Delete workspace</span>
     <!-- `steps` is derived from the footprint, so a step exists only
@@ -263,9 +272,31 @@
       <button type="button" onclick={() => (index += 1)}>Next</button>
     </div>
   {/if}
+  {/if}
 </Modal>
 
 <style>
+  /* The one sentence shown in place of a surface an ssh workspace cannot
+     use yet (sshWorkspace.ts's SSH_LIMITATION). */
+  .ssh-notice {
+    margin: 0 0 12px;
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--text-subtle);
+  }
+  .ssh-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .ssh-actions button {
+    background: var(--surface-overlay);
+    border: none;
+    color: var(--text);
+    padding: 5px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+  }
   .head {
     display: flex;
     align-items: baseline;

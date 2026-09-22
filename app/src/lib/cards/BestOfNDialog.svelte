@@ -7,7 +7,8 @@
   // refusal all come from the pure module, so what this dialog previews
   // is literally what startBestOfN is handed.
   import Modal from "$lib/core/Modal.svelte";
-  import { agentProfilesStore, configTrusts, resolvedAgents } from "$lib/core/layoutState";
+  import { agentProfilesStore, configTrusts, layoutState, resolvedAgents } from "$lib/core/layoutState";
+  import { sshLimitation } from "$lib/workspace/sshWorkspace";
   import { gitStore, ensureGitView, refresh as refreshGit, rootPathOf } from "$lib/git/gitState";
   import { gavinTrees, worktreeSetups } from "$lib/core/gavinState";
   import ConfigTrustNotice from "$lib/workspace/ConfigTrustNotice.svelte";
@@ -91,7 +92,10 @@
     const label = labels.get(blocked.profileId) ?? blocked.profileId;
     return `${label} takes no prompt on its command line, so it cannot run a card.`;
   });
-  const error = $derived(rootError ?? setError ?? promptError);
+  // First, because it is the whole answer: N worktrees would be forked on
+  // this machine for a repository on the host.
+  const sshError = $derived(sshLimitation($layoutState.workspaces.find((w) => w.id === workspaceId)));
+  const error = $derived(sshError ?? rootError ?? setError ?? promptError);
 
   /// The line one candidate's session runs, for the preview. Every
   /// candidate's differs only in its agent command, so the notice is

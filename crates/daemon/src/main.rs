@@ -1,3 +1,4 @@
+mod bridge;
 mod gavin;
 mod git_status;
 mod kanban;
@@ -50,7 +51,26 @@ fn orchestration_db_path() -> anyhow::Result<PathBuf> {
 }
 
 fn main() -> anyhow::Result<()> {
+    // The one subcommand. `gavin-daemon` alone serves, as it always has;
+    // `gavin-daemon bridge` is what the desktop runs over ssh on a host
+    // whose workspace it wants (`bridge.rs`). Anything else is refused
+    // by name rather than ignored: an argument silently dropped is a
+    // daemon started where a bridge was meant.
+    let mut args = std::env::args().skip(1);
+    if let Some(first) = args.next() {
+        if first == "bridge" {
+            return bridge::run(bridge::parse_args(args)?);
+        }
+        anyhow::bail!(
+            "gavin-daemon: unknown argument {first:?} -- run it with no arguments to serve, or `gavin-daemon bridge` on an ssh host"
+        );
+    }
+    serve()
+}
+
+fn serve() -> anyhow::Result<()> {
     let dir = protocol::app_support_dir()?;
+
     std::fs::create_dir_all(&dir)?;
     // Owner-only, where the OS says that with a mode. On Windows the
     // directory sits under %LOCALAPPDATA%, which is already inside the

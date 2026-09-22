@@ -88,6 +88,8 @@ vi.mock("$lib/core/layoutState", () => ({
 vi.mock("$lib/cards/cardRunActions", () => ({
   resolveAttachmentsForRun: vi.fn(async () => ({ paths: [] })),
   revealSession: vi.fn(async () => true),
+  // A local workspace: the ssh gate never fires here.
+  sshLaunchBlocker: vi.fn(() => null),
 }));
 vi.mock("$lib/board/kanbanState", () => ({
   kanbanState: writable<Record<string, unknown>>({}),

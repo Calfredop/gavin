@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Files larger than this are truncated rather than rendered whole --
 /// generous for source/markdown, small enough to never freeze the
@@ -157,13 +157,42 @@ pub fn viewable_extensions() -> Vec<String> {
 /// unsupported extension and offers to open externally instead.
 ///
 /// Refuses a path outside every open workspace (AS-04) before reading.
+///
+/// A path inside an ssh workspace is on the host: the read goes to that
+/// host's daemon (`ReadWorkspaceFile`, v39) and answers in the same
+/// shape, so every reader of this command -- the card modal, a card run's
+/// composition, the editor -- works there unchanged.
 #[tauri::command]
 pub fn read_file_for_viewer(
     path: String,
+    app_handle: AppHandle,
     workspaces: State<WorkspacesState>,
 ) -> Result<FileContent, String> {
+    if let crate::remote::Route::Remote(link) = crate::remote::route_for_path(&app_handle, &path)? {
+        let root = remote_root_for(&app_handle, &path)?;
+        let (content, truncated) = link.read_file(&root, &path).map_err(|e| e.to_string())?;
+        return Ok(match content {
+            Some(content) => FileContent { content, truncated, exists: true },
+            None => FileContent { content: String::new(), truncated: false, exists: false },
+        });
+    }
     let roots = allowed_roots(&workspaces.0.lock().unwrap());
     read_file_for_viewer_impl(&path, &roots)
+}
+
+/// The ssh workspace root a path belongs to, for the request's
+/// `root_path`. Only ever asked after `route_for_path` found a link, so
+/// the absence is a bug rather than a case.
+fn remote_root_for(app_handle: &AppHandle, path: &str) -> Result<String, String> {
+    let workspaces = app_handle.state::<WorkspacesState>();
+    let workspaces = workspaces.0.lock().unwrap();
+    workspaces
+        .workspaces
+        .iter()
+        .filter(|w| w.ssh.is_some())
+        .find(|w| w.root_path.as_deref().is_some_and(|root| crate::remote::path_is_under(root, path)))
+        .and_then(|w| w.root_path.clone())
+        .ok_or_else(|| format!("{path} is not inside an ssh workspace"))
 }
 
 fn read_file_for_viewer_impl(path: &str, roots: &[PathBuf]) -> Result<FileContent, String> {
@@ -202,8 +231,13 @@ fn read_file_for_viewer_impl(path: &str, roots: &[PathBuf]) -> Result<FileConten
 pub fn write_file_for_editor(
     path: String,
     content: String,
+    app_handle: AppHandle,
     workspaces: State<WorkspacesState>,
 ) -> Result<(), String> {
+    if let crate::remote::Route::Remote(link) = crate::remote::route_for_path(&app_handle, &path)? {
+        let root = remote_root_for(&app_handle, &path)?;
+        return link.write_file(&root, &path, &content).map_err(|e| e.to_string());
+    }
     let roots = allowed_roots(&workspaces.0.lock().unwrap());
     write_file_for_editor_impl(&path, content, &roots)
 }
@@ -352,6 +386,13 @@ pub fn watch_file_for_viewer(
     state: State<FileWatchers>,
     workspaces: State<WorkspacesState>,
 ) -> Result<(), String> {
+    // A file on the host has no watcher here; the host daemon's tree
+    // watcher still pushes a card's changes through gavin-tree-changed.
+    // Not an error: the caller's read already worked, and a watch that
+    // cannot be armed is a missed refresh, not a broken viewer.
+    if matches!(crate::remote::route_for_path(&app_handle, &path)?, crate::remote::Route::Remote(_)) {
+        return Ok(());
+    }
     let roots = allowed_roots(&workspaces.0.lock().unwrap());
     ensure_within_open_workspaces(&path, &roots)?;
     let mut watchers = state.0.lock().unwrap();
@@ -376,9 +417,13 @@ pub fn watch_file_for_viewer(
 #[tauri::command]
 pub fn unwatch_file_for_viewer(
     path: String,
+    app_handle: AppHandle,
     state: State<FileWatchers>,
     workspaces: State<WorkspacesState>,
 ) -> Result<(), String> {
+    if matches!(crate::remote::route_for_path(&app_handle, &path)?, crate::remote::Route::Remote(_)) {
+        return Ok(());
+    }
     let roots = allowed_roots(&workspaces.0.lock().unwrap());
     ensure_within_open_workspaces(&path, &roots)?;
     let mut watchers = state.0.lock().unwrap();
@@ -498,13 +543,63 @@ fn sensitive_home_roots() -> Vec<(&'static str, PathBuf)> {
 /// Called on demand -- the modal opening, the run gate just before
 /// spawning -- never on scan: the daemon does not stat attachments, so
 /// the board card face can only ever show a count.
+///
+/// For an ssh workspace's root the classification is the host daemon's
+/// (`StatWorkspacePaths`, v39): the same facts, established where the
+/// files are -- and where the agent that would read them runs, which is
+/// what makes the host's sensitive-home refusal the right one. A host
+/// that cannot be asked answers every entry as refused, naming why, so
+/// the run gate blocks rather than handing the agent paths nobody
+/// checked.
 #[tauri::command]
-pub fn attachment_status(root: String, paths: Vec<String>) -> Vec<AttachmentStatus> {
+pub fn attachment_status(root: String, paths: Vec<String>, app_handle: AppHandle) -> Vec<AttachmentStatus> {
+    if let Ok(crate::remote::Route::Remote(link)) = crate::remote::route_for_root(&app_handle, Some(&root)) {
+        return match link.stat_paths(&root, &paths) {
+            Ok(stats) => stats.into_iter().map(attachment_status_from_stat).collect(),
+            Err(e) => paths
+                .into_iter()
+                .map(|path| AttachmentStatus {
+                    path,
+                    absolute_path: None,
+                    exists: false,
+                    location: AttachmentLocation::Refused,
+                    refused_reason: Some(format!("the host could not be asked: {e}")),
+                    size_bytes: None,
+                })
+                .collect(),
+        };
+    }
     let root = PathBuf::from(root);
     let root_canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
     let extra_roots = extra_context_roots(&root_canonical);
     let sensitive_roots = sensitive_home_roots();
     attachment_status_impl(&root_canonical, paths, &extra_roots, &sensitive_roots)
+}
+
+/// One host-side stat in this command's own shape. The vocabulary is
+/// shared by construction (`protocol::WorkspacePathStat` documents the
+/// four words); anything else the host says is refused rather than
+/// guessed at.
+fn attachment_status_from_stat(stat: protocol::WorkspacePathStat) -> AttachmentStatus {
+    let location = match stat.location.as_str() {
+        "root" => AttachmentLocation::Root,
+        "extraContext" => AttachmentLocation::ExtraContext,
+        "outside" => AttachmentLocation::Outside,
+        _ => AttachmentLocation::Refused,
+    };
+    let refused = location == AttachmentLocation::Refused;
+    AttachmentStatus {
+        path: stat.path,
+        absolute_path: if refused { None } else { stat.absolute_path },
+        exists: stat.exists && !refused,
+        location,
+        refused_reason: if refused {
+            Some(stat.refused_reason.unwrap_or_else(|| "the host refused it".to_string()))
+        } else {
+            None
+        },
+        size_bytes: if refused { None } else { stat.size_bytes },
+    }
 }
 
 fn attachment_status_impl(
@@ -690,8 +785,29 @@ fn resolve_new(root: &Path, path: &str) -> Result<PathBuf, String> {
 ///
 /// Refuses a symlinked directory rather than listing through it, so the
 /// tree can never leave the root by following a link.
+///
+/// For an ssh workspace's root the listing is the host daemon's
+/// (`ListWorkspaceDir`, v40): the same fields, from the machine the files
+/// are on, so the Files tree renders there unchanged.
 #[tauri::command]
-pub fn list_directory(root: String, path: String) -> Result<Vec<DirEntryInfo>, String> {
+pub fn list_directory(root: String, path: String, app_handle: AppHandle) -> Result<Vec<DirEntryInfo>, String> {
+    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+        return link
+            .list_dir(&root, &path)
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|e| DirEntryInfo { name: e.name, is_dir: e.is_dir, size: e.size, symlink: e.symlink })
+                    .collect()
+            })
+            .map_err(|e| e.to_string());
+    }
+    list_directory_impl(root, path)
+}
+
+/// The local listing, split out so the tests exercise the confinement
+/// without an `AppHandle` -- the command adds only the ssh route above.
+fn list_directory_impl(root: String, path: String) -> Result<Vec<DirEntryInfo>, String> {
     let root = canonical_root(&root)?;
     let meta = std::fs::symlink_metadata(&path).map_err(|e| format!("{path}: {e}"))?;
     if meta.file_type().is_symlink() {
@@ -1467,7 +1583,7 @@ mod tests {
         std::os::unix::fs::symlink(dir.path().join("Cargo.toml"), dir.path().join("link.toml"))
             .unwrap();
 
-        let entries = list_directory(root_of(&dir), root_of(&dir)).unwrap();
+        let entries = list_directory_impl(root_of(&dir), root_of(&dir)).unwrap();
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         // Sorted by name, so the same folder never comes back shuffled.
         #[cfg(unix)]
@@ -1502,7 +1618,7 @@ mod tests {
         // "there was nothing there".
         std::fs::write(dir.path().join("secret.txt"), "s").unwrap();
 
-        let outside = list_directory(
+        let outside = list_directory_impl(
             root.to_string_lossy().to_string(),
             dir.path().to_string_lossy().to_string(),
         );
@@ -1510,7 +1626,7 @@ mod tests {
 
         // The classic traversal spelling, which canonicalize collapses
         // before the containment check ever runs.
-        let traversal = list_directory(
+        let traversal = list_directory_impl(
             root.to_string_lossy().to_string(),
             root.join("..").to_string_lossy().to_string(),
         );
@@ -1534,7 +1650,7 @@ mod tests {
         std::os::unix::fs::symlink(root.join("real"), root.join("inward")).unwrap();
 
         for link in ["escape", "inward"] {
-            let err = list_directory(
+            let err = list_directory_impl(
                 root.to_string_lossy().to_string(),
                 root.join(link).to_string_lossy().to_string(),
             )
@@ -1544,7 +1660,7 @@ mod tests {
 
         // The link is still LISTED in its parent -- as a leaf, so the
         // tree shows it without offering to open it.
-        let entries = list_directory(
+        let entries = list_directory_impl(
             root.to_string_lossy().to_string(),
             root.to_string_lossy().to_string(),
         )
@@ -1559,10 +1675,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "a").unwrap();
 
-        assert!(list_directory(root_of(&dir), under(&dir, "a.txt"))
+        assert!(list_directory_impl(root_of(&dir), under(&dir, "a.txt"))
             .unwrap_err()
             .contains("not a directory"));
-        assert!(list_directory(root_of(&dir), under(&dir, "nope")).is_err());
+        assert!(list_directory_impl(root_of(&dir), under(&dir, "nope")).is_err());
     }
 
     #[test]

@@ -82,6 +82,10 @@ export function watchRootedWorkspaces(workspaces: Workspace[]): void {
   if (watchedOnce) return;
   watchedOnce = true;
   for (const ws of workspaces) {
+    // An ssh workspace's root is watched by the host that links it
+    // (remote.rs), on the daemon that can see it; and its worktree setup
+    // is a file on that machine, not this one.
+    if (ws.ssh?.host) continue;
     // Best-effort: a failed watch shows as a missing tree, never blocks
     // startup.
     if (ws.rootPath) void backend.watchGavinRoot(ws.id, ws.rootPath).catch(() => {});

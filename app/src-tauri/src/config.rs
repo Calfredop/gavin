@@ -183,6 +183,24 @@ pub struct DevelopingCardRecord {
     pub session_id: String,
 }
 
+/// How the desktop reaches a workspace that lives on another machine
+/// (`docs/superpowers/specs/2026-09-22-ssh-workspaces-design.md`): the
+/// ssh host -- anything `ssh <host>` accepts, an alias from
+/// `~/.ssh/config` included -- and, when `gavin-daemon` is not on that
+/// host's PATH, where it is. The workspace's root stays in
+/// `Workspace::root_path`, as a path ON THE HOST with forward slashes.
+///
+/// Machine-local (D35) like `color`: how this desktop reaches the host is
+/// not a fact about the project. Absent means the workspace is on this
+/// machine, which is what every workspace that predates the field is.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SshConfig {
+    pub host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_path: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
@@ -201,6 +219,11 @@ pub struct Workspace {
     /// stale value so a remounted volume heals without user action.
     #[serde(default)]
     pub root_path: Option<String>,
+    /// Present when the workspace lives on another machine; see
+    /// `SshConfig`. Every request for this workspace then goes to that
+    /// host's daemon (`remote.rs`), never to the local one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<SshConfig>,
     /// The workspace's running main agent session, deliberately OUTSIDE
     /// every page tree (D12). Cleared -- never replaced -- when it turns
     /// out to be dead, so an agent is only ever started deliberately.
@@ -1090,6 +1113,7 @@ mod tests {
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            ssh: None,
             action_prompt_overrides: HashMap::new(),
         }
     }
@@ -2052,6 +2076,44 @@ mod tests {
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
+    }
+
+    /// An ssh workspace names the host the desktop reaches its daemon
+    /// through, and optionally where the daemon binary is there. The
+    /// workspace's root stays in `root_path`, as a path ON THE HOST.
+    #[test]
+    fn ssh_roundtrips_in_the_camel_case_shape_the_frontend_expects() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = sample_workspace();
+        ws.root_path = Some("/home/me/repo".to_string());
+        ws.ssh = Some(SshConfig {
+            host: "box".to_string(),
+            daemon_path: Some("/opt/gavin/gavin-daemon".to_string()),
+        });
+        let value = serde_json::to_value(&ws).unwrap();
+        assert_eq!(value["ssh"]["host"], "box");
+        assert_eq!(value["ssh"]["daemonPath"], "/opt/gavin/gavin-daemon");
+        let config = AppConfig { workspaces: vec![ws], ..AppConfig::default() };
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), config);
+    }
+
+    /// A local workspace -- every workspace there has ever been -- writes
+    /// no `ssh` key at all, and one saved before the field loads as local.
+    #[test]
+    fn ssh_is_absent_for_a_local_workspace_and_defaults_to_absent() {
+        let value = serde_json::to_value(&sample_workspace()).unwrap();
+        assert!(value.get("ssh").is_none(), "{value}");
+        let default_path =
+            serde_json::to_value(&SshConfig { host: "box".to_string(), daemon_path: None }).unwrap();
+        assert!(default_path.get("daemonPath").is_none(), "{default_path}");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces": [{"id": "ws-1", "name": "A", "pages": [], "activePageId": null}]}"#,
+        )
+        .unwrap();
+        assert_eq!(load(dir.path()).unwrap().workspaces[0].ssh, None);
     }
 
     #[test]

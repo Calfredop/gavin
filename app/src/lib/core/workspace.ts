@@ -94,6 +94,21 @@ export interface OrchestrationAgentRecord {
   label: string;
 }
 
+/// How the desktop reaches a workspace that lives on another machine
+/// (`docs/superpowers/specs/2026-09-22-ssh-workspaces-design.md`): the ssh
+/// host -- anything `ssh <host>` accepts, an alias from `~/.ssh/config`
+/// included -- and, when `gavin-daemon` is not on that host's PATH, where
+/// it is. The workspace's root stays in `rootPath`, as a path ON THE HOST
+/// with forward slashes (`C:/Users/me/repo` for a Windows host).
+///
+/// Machine-local like `color`: how this desktop reaches the host is not a
+/// fact about the project. Absent means the workspace is on this machine,
+/// which is what every workspace that predates the field is.
+export interface SshConfig {
+  host: string;
+  daemonPath?: string;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -108,6 +123,8 @@ export interface Workspace {
   /// The workspace's bound root directory (agent-orchestration phase).
   /// Optional; never auto-cleared when the directory goes missing on disk.
   rootPath?: string;
+  /// Present when the workspace lives on another machine; see SshConfig.
+  ssh?: SshConfig;
   /// The running main agent session (D12) -- outside every page tree.
   mainSessionId?: string;
   /// The orchestration agent run (an Organize, or one rail's Reorganize)
@@ -874,11 +891,20 @@ export function sessionLiveness(
 export function staleLayoutTabIds(
   state: WorkspacesData,
   liveSessionIds: ReadonlySet<string>,
-  nonSessionTabIds: ReadonlySet<string>
+  nonSessionTabIds: ReadonlySet<string>,
+  // The ssh hosts whose link is up. An ssh workspace's sessions belong
+  // to that host's daemon, and `liveSessionIds` can only name them once
+  // the link exists -- before that, every one of them would read as
+  // stale and be closed at startup. So a workspace whose host is not
+  // in the set is skipped, and with no set given, every ssh workspace
+  // is: a caller that has not thought about links must not close tabs
+  // on their behalf.
+  readyHosts?: ReadonlySet<string>
 ): string[] {
   if (liveSessionIds.size === 0) return [];
   const stale: string[] = [];
   for (const ws of state.workspaces) {
+    if (ws.ssh?.host && !readyHosts?.has(ws.ssh.host)) continue;
     for (const page of ws.pages) {
       for (const id of allSessionIds(page.layout)) {
         if (nonSessionTabIds.has(id) || liveSessionIds.has(id)) continue;

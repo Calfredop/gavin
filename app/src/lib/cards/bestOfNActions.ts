@@ -43,6 +43,8 @@ import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { developingBlocker } from "$lib/cards/developingCardsState";
 import { resolveAttachmentsForRun } from "$lib/cards/cardRunActions";
+import { sshLimitation } from "$lib/workspace/sshWorkspace";
+import { layoutState as layoutStore } from "$lib/core/layoutState";
 import { cardSessionState } from "$lib/board/columnRunAction";
 import { discardWorktrees, forkWorktree } from "$lib/git/gitState";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
@@ -91,6 +93,11 @@ export async function startBestOfN(
   // at once, so a file mid-rewrite would be copied into all of them.
   const developing = developingBlocker(workspaceId, card.id);
   if (developing) return developing;
+  // And N worktrees forked on this machine's disk, for a repo on another:
+  // the whole limitation, not the run gate, because the fork is this
+  // machine's git whatever the host's daemon can do.
+  const remote = sshLimitation(get(layoutStore).workspaces.find((w) => w.id === workspaceId));
+  if (remote) return remote;
 
   // Every candidate's agent is resolved and gated BEFORE anything is
   // created: an agent that takes no prompt refuses the whole run, and

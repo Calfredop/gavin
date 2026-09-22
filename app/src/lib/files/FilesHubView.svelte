@@ -50,13 +50,25 @@
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tooltip } from "$lib/core/tooltip";
+  import { sshTabBlocked, isSshWorkspace } from "$lib/workspace/sshWorkspace";
+  import { sshLinks } from "$lib/workspace/sshLinkState";
 
   interface Props {
     workspaceId: string;
   }
   let { workspaceId }: Props = $props();
 
-  const root = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath ?? null);
+  // The tree lists and files open through the host daemon (v40) for an
+  // ssh workspace; the tab works once the link is up and the host is new
+  // enough, and the empty state names why until then. Creating, renaming
+  // and trashing in the tree stay off for ssh (the follow-up) -- read and
+  // write of a file's content is what this covers.
+  const wsForSsh = $derived($layoutState.workspaces.find((w) => w.id === workspaceId));
+  const sshBlocked = $derived(sshTabBlocked(wsForSsh, $sshLinks));
+  const sshReadOnly = $derived(isSshWorkspace(wsForSsh));
+  const root = $derived(
+    sshBlocked ? null : ($layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath ?? null)
+  );
 
   let tree = $state<FileTreeState>(emptyTree(""));
   let selection = $state<string | null>(null);
@@ -365,21 +377,31 @@
     onOpenInTab: anchorSessionId ? (node) => void openInTab(node) : null,
     onCopyPath: (node) => void copyPath(node),
     onRevealInFinder: (node) => void revealInFinder(node),
-    onNewFile: (dir) => {
-      renaming = null;
-      composer = { dir: dir.path, kind: "file" };
-    },
-    onNewFolder: (dir) => {
-      renaming = null;
-      composer = { dir: dir.path, kind: "folder" };
-    },
-    onRename: (node) => {
-      composer = null;
-      renaming = node.path;
-    },
-    onTrash: (node) => void trashEntry(node),
+    // Creating, renaming, trashing and editing .gitignore all write on
+    // the host, which this card does not do yet -- null omits the menu
+    // items for an ssh workspace (the null-means-omit shape onOpenInTab
+    // uses). Listing, opening and editing a file's content still work.
+    onNewFile: sshReadOnly
+      ? null
+      : (dir) => {
+          renaming = null;
+          composer = { dir: dir.path, kind: "file" };
+        },
+    onNewFolder: sshReadOnly
+      ? null
+      : (dir) => {
+          renaming = null;
+          composer = { dir: dir.path, kind: "folder" };
+        },
+    onRename: sshReadOnly
+      ? null
+      : (node) => {
+          composer = null;
+          renaming = node.path;
+        },
+    onTrash: sshReadOnly ? null : (node) => void trashEntry(node),
     onRefresh: (dir) => void refresh(dir.path),
-    onIgnore: (kind, pattern) => void ignore(kind, pattern),
+    onIgnore: sshReadOnly ? null : (kind, pattern) => void ignore(kind, pattern),
   });
 
   // ---- the divider -----------------------------------------------------
@@ -424,7 +446,9 @@
   }
 </script>
 
-{#if !root}
+{#if sshBlocked}
+  <div class="empty">{sshBlocked}</div>
+{:else if !root}
   <div class="empty">No root folder set for this workspace.</div>
 {:else}
   <div class="files" style:grid-template-columns={filesGridColumns(share)}>
