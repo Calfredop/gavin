@@ -170,9 +170,14 @@ jobs:
           # when the two match. A universal build would need the sidecars
           # lipo'd under a fourth name; two runners cost less than that
           # machinery and produce the same two downloads.
+          #
+          # `macos-15-intel`, not `macos-13`: GitHub retired the macOS 13
+          # image on 2025-12-04, so that label no longer gets a runner. 15
+          # rather than `macos-26-intel` to keep this leg on the same OS and
+          # SDK as the aarch64 one; move the two together.
           - runner: macos-15
             arch: aarch64
-          - runner: macos-13
+          - runner: macos-15-intel
             arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
