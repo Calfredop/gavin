@@ -1,7 +1,7 @@
 ---
 order: 2048
 title: [feat] linux port — the half that needs a Linux machine
-status: To Do
+status: In Progress
 ---
 Everything in [feat-linux-port.md](./done/feat-linux-port.md) that could be
 done from a mac is done and green: nine commits on `feat/multi-os-support`,
