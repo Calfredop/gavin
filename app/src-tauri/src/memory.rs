@@ -212,6 +212,13 @@ pub fn system_memory() -> SystemMemory {
 /// `~/.local/state`. The `<user>-state` directory name is watchman's own
 /// convention and the reason this cannot simply glob for a file called
 /// `pid`.
+///
+/// macOS only, like its one caller. `USER` and `HOME` are the unix
+/// spellings -- Windows sets `USERNAME` and `USERPROFILE` and neither of
+/// these -- so off macOS this can only ever answer `None`, and gating it
+/// says so once here instead of leaving a function that looks portable
+/// and is not.
+#[cfg(target_os = "macos")]
 fn watchman_pid_file() -> Option<PathBuf> {
     let user = std::env::var("USER").ok().filter(|u| !u.is_empty())?;
     let state = match std::env::var("XDG_STATE_HOME") {
@@ -483,6 +490,12 @@ mod tests {
     /// The pidfile lives under the state directory, in watchman's own
     /// `<user>-state` folder -- the reason this cannot just look for a
     /// file called `pid`.
+    ///
+    /// Gated with the function it exercises: `USER`/`HOME` are unix
+    /// variables and the asserted `-state/pid` is a forward slash
+    /// `PathBuf::join` never produces on Windows, so this describes a
+    /// macOS path and nothing else.
+    #[cfg(target_os = "macos")]
     #[test]
     fn pid_file_sits_under_the_user_state_directory() {
         let path = watchman_pid_file().expect("USER and HOME are set in a test run");
