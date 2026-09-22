@@ -24,7 +24,7 @@ use crate::session::{
     BoardTabs, CardTabs, DaemonCompat, FileTabs, RelayOwner, WorkspacesState,
 };
 use protocol::transport::Stream;
-use protocol::Request;
+use protocol::{Request, Response};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
@@ -48,6 +48,10 @@ pub struct Banner {
     /// The user's home ON THE HOST, the cwd a session there falls back to.
     #[serde(default)]
     pub home: Option<String>,
+    /// The `gavin-mcp` beside the host's daemon, for the MCP config agent
+    /// integration writes there; `None` when the host has none.
+    #[serde(default)]
+    pub mcp_path: Option<String>,
 }
 
 impl Banner {
@@ -296,11 +300,53 @@ pub struct RemoteLink {
     /// The user's home on the host: the cwd fallback for sessions there.
     pub home: String,
     pub host_os: String,
+    /// The host's `gavin-mcp`, from the banner; what an ssh workspace's
+    /// MCP config names so the agent running there finds its tools.
+    pub mcp_path: Option<String>,
     children: Mutex<Vec<Child>>,
     stderr: Vec<Arc<Mutex<String>>>,
 }
 
 impl RemoteLink {
+    /// One request/reply on the command connection, gated on THIS daemon's
+    /// version like every command the app sends it.
+    fn ask(&self, req: &Request) -> anyhow::Result<Response> {
+        crate::session::send_command_reconnecting(&self.command, &self.compat, req)
+    }
+
+    /// `ReadWorkspaceFile` (v39): the file's text under `root` on the
+    /// host, or `None` when there is none, and whether it was cut at the
+    /// cap.
+    pub fn read_file(&self, root: &str, path: &str) -> anyhow::Result<(Option<String>, bool)> {
+        match self.ask(&Request::ReadWorkspaceFile { root_path: root.to_string(), path: path.to_string() })? {
+            Response::WorkspaceFile { content, truncated } => Ok((content, truncated)),
+            Response::Error { message } => anyhow::bail!("{message}"),
+            other => anyhow::bail!("expected WorkspaceFile, got {other:?}"),
+        }
+    }
+
+    /// `WriteWorkspaceFile` (v39).
+    pub fn write_file(&self, root: &str, path: &str, content: &str) -> anyhow::Result<()> {
+        match self.ask(&Request::WriteWorkspaceFile {
+            root_path: root.to_string(),
+            path: path.to_string(),
+            content: content.to_string(),
+        })? {
+            Response::Ok => Ok(()),
+            Response::Error { message } => anyhow::bail!("{message}"),
+            other => anyhow::bail!("expected Ok, got {other:?}"),
+        }
+    }
+
+    /// `StatWorkspacePaths` (v39): where each path resolves on the host.
+    pub fn stat_paths(&self, root: &str, paths: &[String]) -> anyhow::Result<Vec<protocol::WorkspacePathStat>> {
+        match self.ask(&Request::StatWorkspacePaths { root_path: root.to_string(), paths: paths.to_vec() })? {
+            Response::WorkspacePathStats { stats } => Ok(stats),
+            Response::Error { message } => anyhow::bail!("{message}"),
+            other => anyhow::bail!("expected WorkspacePathStats, got {other:?}"),
+        }
+    }
+
     /// The last thing ssh said on either connection, for a dropped link's
     /// message.
     pub fn last_words(&self) -> String {
@@ -321,6 +367,60 @@ impl Drop for RemoteLink {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+}
+
+/// Agent integration's files on the host, through the link
+/// (`agent_setup::WorkspaceFiles`). Every path is absolute on the host;
+/// it crosses the wire forward-slashed like every other path, so a root
+/// joined on a Windows desktop reaches a Linux host spelled the way that
+/// host reads it.
+pub struct RemoteFiles {
+    pub link: Arc<RemoteLink>,
+    pub root: String,
+}
+
+impl RemoteFiles {
+    fn wire(path: &std::path::Path) -> String {
+        protocol::wire_path(path)
+    }
+}
+
+impl crate::agent_setup::WorkspaceFiles for RemoteFiles {
+    fn read_bytes(&self, path: &std::path::Path) -> anyhow::Result<Option<Vec<u8>>> {
+        let (content, truncated) = self.link.read_file(&self.root, &Self::wire(path))?;
+        if truncated {
+            anyhow::bail!("{} is larger than the 1 MB the host will send", path.display());
+        }
+        Ok(content.map(String::into_bytes))
+    }
+
+    fn write_bytes(&self, path: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> {
+        let text = std::str::from_utf8(contents)
+            .map_err(|_| anyhow::anyhow!("{} is not UTF-8 text, which is all the host takes", path.display()))?;
+        self.link.write_file(&self.root, &Self::wire(path), text)
+    }
+
+    fn is_dir(&self, path: &std::path::Path) -> bool {
+        self.link
+            .stat_paths(&self.root, &[Self::wire(path)])
+            .ok()
+            .and_then(|stats| stats.into_iter().next())
+            .is_some_and(|s| s.is_dir)
+    }
+
+    fn is_file(&self, path: &std::path::Path) -> bool {
+        self.link
+            .stat_paths(&self.root, &[Self::wire(path)])
+            .ok()
+            .and_then(|stats| stats.into_iter().next())
+            .is_some_and(|s| s.exists)
+    }
+
+    /// The daemon confines every write to the root, so the path is its
+    /// own answer here.
+    fn canonical_dir(&self, path: &std::path::Path) -> Option<std::path::PathBuf> {
+        Some(path.to_path_buf())
     }
 }
 
@@ -372,6 +472,7 @@ pub fn open_link(cfg: &SshConfig) -> anyhow::Result<(Arc<RemoteLink>, Stream)> {
         writer,
         home,
         host_os,
+        mcp_path: banner.mcp_path.clone(),
         children: Mutex::new(vec![streaming_child, command_child]),
         stderr: vec![streaming_stderr, command_stderr],
     });
@@ -392,6 +493,11 @@ pub struct RemoteLinkEvent {
     /// on a ready event: the badge can say it, and a path typed for the
     /// wrong OS is the first thing to check when a root is missing.
     pub host_os: Option<String>,
+    /// The host daemon's protocol version, on a ready event. The frontend
+    /// gates what needs a newer HOST daemon (card runs, v39) on this, not
+    /// on the local daemon's verdict, which says nothing about the
+    /// machine the run happens on.
+    pub daemon_version: Option<u32>,
 }
 
 /// Connects a workspace to its host: opens the host's link if this is
@@ -511,6 +617,7 @@ pub fn link_workspace(app: &AppHandle, workspace_id: &str) -> anyhow::Result<()>
             workspace_id: Some(workspace_id.to_string()),
             message: None,
             host_os: Some(link.host_os.clone()),
+            daemon_version: Some(link.compat.daemon_version),
         },
     );
     Ok(())
@@ -539,6 +646,7 @@ pub fn link_all(app: AppHandle) {
                             workspace_id: Some(workspace_id),
                             message: Some(e.to_string()),
                             host_os: None,
+                            daemon_version: None,
                         },
                     );
                 }
@@ -563,7 +671,13 @@ pub fn link_lost(app: &AppHandle, host: &str, link_id: u64, message: String) {
     let message = if said.is_empty() { message } else { format!("{message} ({said})") };
     let _ = app.emit(
         "remote-link-lost",
-        RemoteLinkEvent { host: host.to_string(), workspace_id: None, message: Some(message), host_os: None },
+        RemoteLinkEvent {
+            host: host.to_string(),
+            workspace_id: None,
+            message: Some(message),
+            host_os: None,
+            daemon_version: None,
+        },
     );
 }
 
@@ -815,6 +929,7 @@ mod tests {
             daemon_token: token.map(str::to_string),
             host_os: "linux".to_string(),
             home: Some("/home/me".to_string()),
+            mcp_path: None,
         }
     }
 

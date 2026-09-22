@@ -140,6 +140,69 @@ impl From<&McpLayout> for ResolvedMcp {
 /// box can never become a writer into someone's home directory. Relative
 /// subpaths are allowed -- unlike the agent file, an MCP config usually
 /// lives in a dot-directory.
+/// Where agent integration reads and writes: this machine's disk for a
+/// local workspace, the host's -- through its daemon -- for an ssh one
+/// (`docs/superpowers/specs/2026-09-22-ssh-card-runs-design.md`).
+///
+/// Everything below that produces a file goes through this and nothing
+/// else, so the merge logic (foreign MCP servers, the `### Learned`
+/// section, the `.replaced` backup) runs once, identically, for both.
+/// Paths are absolute on the machine the implementation writes to; a
+/// write creates the parents.
+pub trait WorkspaceFiles {
+    /// The file's bytes, or `None` when there is no such file.
+    fn read_bytes(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>>;
+    fn write_bytes(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()>;
+    fn is_dir(&self, path: &Path) -> bool;
+    fn is_file(&self, path: &Path) -> bool;
+    /// The directory's canonical path, for the one check that compares
+    /// canonical paths (`validate_agent_file_path`). A remote
+    /// implementation answers the path itself: the daemon on the host
+    /// confines every write to the root, so the check is its.
+    fn canonical_dir(&self, path: &Path) -> Option<PathBuf>;
+
+    fn read_to_string(&self, path: &Path) -> anyhow::Result<Option<String>> {
+        match self.read_bytes(path)? {
+            Some(bytes) => Ok(Some(String::from_utf8(bytes).map_err(|_| {
+                anyhow::anyhow!("{} is not valid UTF-8 text", path.display())
+            })?)),
+            None => Ok(None),
+        }
+    }
+}
+
+/// This machine's disk: byte for byte what the integration always did.
+pub struct LocalFiles;
+
+impl WorkspaceFiles for LocalFiles {
+    fn read_bytes(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+        match std::fs::read(path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn write_bytes(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        Ok(std::fs::write(path, contents)?)
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        path.is_dir()
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+
+    fn canonical_dir(&self, path: &Path) -> Option<PathBuf> {
+        std::fs::canonicalize(path).ok()
+    }
+}
+
 fn usable_mcp_path(value: &str) -> Option<String> {
     let trimmed = value.trim();
     let path = Path::new(trimmed);
@@ -166,7 +229,7 @@ fn usable_mcp_path(value: &str) -> Option<String> {
 /// literal `..`. Safe to canonicalize eagerly here -- unlike an MCP
 /// config's directory, this write never creates the parent, so it must
 /// already exist for a valid value.
-fn validate_agent_file_path(root: &Path, value: &str) -> Result<(), String> {
+fn validate_agent_file_path(fs: &dyn WorkspaceFiles, root: &Path, value: &str) -> Result<(), String> {
     let trimmed = value.trim();
     let path = Path::new(trimmed);
     let outside = || format!("[agent] file {trimmed:?} would write outside the workspace root");
@@ -178,11 +241,12 @@ fn validate_agent_file_path(root: &Path, value: &str) -> Result<(), String> {
     if !path.components().all(|c| matches!(c, std::path::Component::Normal(_))) {
         return Err(outside());
     }
-    let root_canonical = std::fs::canonicalize(root)
-        .map_err(|e| format!("workspace root {} is unreadable: {e}", root.display()))?;
+    let root_canonical = fs
+        .canonical_dir(root)
+        .ok_or_else(|| format!("workspace root {} is unreadable", root.display()))?;
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
     let canonical_parent = match parent {
-        Some(p) => std::fs::canonicalize(root_canonical.join(p)).map_err(|_| outside())?,
+        Some(p) => fs.canonical_dir(&root_canonical.join(p)).ok_or_else(outside)?,
         None => root_canonical.clone(),
     };
     if canonical_parent == root_canonical || canonical_parent.starts_with(&root_canonical) {
@@ -196,15 +260,15 @@ fn validate_agent_file_path(root: &Path, value: &str) -> Result<(), String> {
 /// `custom`, which has none -- the one its config describes. None when
 /// `custom` has not been pointed at a file yet, which is what leaves MCP
 /// config named as skipped.
-fn resolved_mcp(root: &Path, profile: &AgentProfile) -> Option<ResolvedMcp> {
+fn resolved_mcp(fs: &dyn WorkspaceFiles, root: &Path, profile: &AgentProfile) -> Option<ResolvedMcp> {
     if let Some(layout) = profile.mcp.as_ref() {
         return Some(layout.into());
     }
-    let config_file = usable_mcp_path(&root_agent_key(root, "mcp_file")?)?;
+    let config_file = usable_mcp_path(&root_agent_key_in(fs, root, "mcp_file")?)?;
     Some(ResolvedMcp {
         config_file,
         server_key: "gavin",
-        format: McpFormat::from_id(root_agent_key(root, "mcp_format").as_deref()),
+        format: McpFormat::from_id(root_agent_key_in(fs, root, "mcp_format").as_deref()),
         // Nothing to install: gavin knows no skill convention for an
         // agent it has never heard of, so the guidance goes inline.
         skills: &[],
@@ -1156,19 +1220,29 @@ pub fn profile_by_id(id: &str) -> &'static AgentProfile {
 /// one-shot read on a user-initiated action, and agent_setup already
 /// touches the root's files directly.
 pub fn read_profile_id(root: &Path) -> String {
-    root_agent_key(root, "profile").unwrap_or_else(|| "claude-code".to_string())
+    read_profile_id_in(&LocalFiles, root)
+}
+
+/// `read_profile_id`, on whichever disk the workspace is.
+pub fn read_profile_id_in(fs: &dyn WorkspaceFiles, root: &Path) -> String {
+    root_agent_key_in(fs, root, "profile").unwrap_or_else(|| "claude-code".to_string())
 }
 
 /// config.toml's explicit `file`, else the profile's default.
-fn resolved_instructions_file(root: &Path, profile: &AgentProfile) -> String {
-    root_agent_key(root, "file")
+fn resolved_instructions_file(fs: &dyn WorkspaceFiles, root: &Path, profile: &AgentProfile) -> String {
+    root_agent_key_in(fs, root, "file")
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| profile.instructions_file.to_string())
 }
 
 pub fn root_agent_key(root: &Path, key: &str) -> Option<String> {
+    root_agent_key_in(&LocalFiles, root, key)
+}
+
+/// `root_agent_key`, on whichever disk the workspace is.
+pub fn root_agent_key_in(fs: &dyn WorkspaceFiles, root: &Path, key: &str) -> Option<String> {
     let path = root.join(".gavin-root").join("config.toml");
-    let content = std::fs::read_to_string(path).ok()?;
+    let content = fs.read_to_string(&path).ok()??;
     let table = content.parse::<toml::Table>().ok()?;
     table.get("agent")?.as_table()?.get(key)?.as_str().map(|s| s.to_string())
 }
@@ -1181,9 +1255,14 @@ pub fn root_agent_key(root: &Path, key: &str) -> Option<String> {
 /// validator and the fallback both come from `protocol`, so the two
 /// readers cannot disagree about what the path IS.
 pub fn prd_relative_path(root: &Path) -> String {
+    prd_relative_path_in(&LocalFiles, root)
+}
+
+/// `prd_relative_path`, on whichever disk the workspace is.
+pub fn prd_relative_path_in(fs: &dyn WorkspaceFiles, root: &Path) -> String {
     let read = || -> Option<String> {
         let path = root.join(".gavin-root").join("config.toml");
-        let content = std::fs::read_to_string(path).ok()?;
+        let content = fs.read_to_string(&path).ok()??;
         let table = content.parse::<toml::Table>().ok()?;
         protocol::usable_prd_path(table.get("prd")?.as_str()?)
     };
@@ -1347,25 +1426,30 @@ impl McpFormat {
 /// server entry, and every other byte of an existing file survives -- other
 /// servers, unrelated settings, and (in TOML) comments and key order. A
 /// file that does not parse errors out rather than being clobbered.
-fn write_mcp_config(root: &Path, layout: &ResolvedMcp, binary: &Path) -> anyhow::Result<PathBuf> {
+fn write_mcp_config(
+    fs: &dyn WorkspaceFiles,
+    root: &Path,
+    layout: &ResolvedMcp,
+    binary: &Path,
+) -> anyhow::Result<PathBuf> {
     let path = root.join(&layout.config_file);
-    // .gemini/, .cursor/ and .codex/ need not exist yet; .mcp.json and
-    // opencode.json sit at the root, where this is a no-op.
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     match layout.format {
-        McpFormat::TomlServers => write_mcp_config_toml(&path, layout, binary)?,
+        McpFormat::TomlServers => write_mcp_config_toml(fs, &path, layout, binary)?,
         McpFormat::JsonServers | McpFormat::JsonServersStdio | McpFormat::JsonLocal => {
-            write_mcp_config_json(&path, layout, binary)?
+            write_mcp_config_json(fs, &path, layout, binary)?
         }
     }
     Ok(path)
 }
 
-fn write_mcp_config_json(path: &Path, layout: &ResolvedMcp, binary: &Path) -> anyhow::Result<()> {
-    let mut doc: serde_json::Value = if path.exists() {
-        serde_json::from_str(&std::fs::read_to_string(path)?).map_err(|_| {
+fn write_mcp_config_json(
+    fs: &dyn WorkspaceFiles,
+    path: &Path,
+    layout: &ResolvedMcp,
+    binary: &Path,
+) -> anyhow::Result<()> {
+    let mut doc: serde_json::Value = if let Some(existing) = fs.read_to_string(path)? {
+        serde_json::from_str(&existing).map_err(|_| {
             anyhow::anyhow!("existing {} is not valid JSON — fix or remove it first", path.display())
         })?
     } else {
@@ -1381,17 +1465,22 @@ fn write_mcp_config_json(path: &Path, layout: &ResolvedMcp, binary: &Path) -> an
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("{container} is not a JSON object"))?;
     servers.insert(layout.server_key.to_string(), layout.format.json_entry(binary));
-    std::fs::write(path, format!("{}\n", serde_json::to_string_pretty(&doc)?))?;
+    fs.write_bytes(path, format!("{}\n", serde_json::to_string_pretty(&doc)?).as_bytes())?;
     Ok(())
 }
 
 /// Codex's `.codex/config.toml`, written with toml_edit so a hand-edited
 /// file keeps its comments, key order and formatting -- the same reason
 /// set_root_config_field uses it for gavin's own config.
-fn write_mcp_config_toml(path: &Path, layout: &ResolvedMcp, binary: &Path) -> anyhow::Result<()> {
+fn write_mcp_config_toml(
+    fs: &dyn WorkspaceFiles,
+    path: &Path,
+    layout: &ResolvedMcp,
+    binary: &Path,
+) -> anyhow::Result<()> {
     // Absent is empty; unreadable-but-present is an error, not a reason to
     // overwrite it -- the same promise the JSON writer makes.
-    let existing = if path.exists() { std::fs::read_to_string(path)? } else { String::new() };
+    let existing = fs.read_to_string(path)?.unwrap_or_default();
     let mut doc = existing.parse::<toml_edit::DocumentMut>().map_err(|_| {
         anyhow::anyhow!("existing {} is not valid TOML — fix or remove it first", path.display())
     })?;
@@ -1404,7 +1493,7 @@ fn write_mcp_config_toml(path: &Path, layout: &ResolvedMcp, binary: &Path) -> an
     let server = &mut doc["mcp_servers"][layout.server_key];
     server["command"] = toml_edit::value(binary.to_string_lossy().as_ref());
     server["args"] = toml_edit::value(toml_edit::Array::new());
-    std::fs::write(path, doc.to_string())?;
+    fs.write_bytes(path, doc.to_string().as_bytes())?;
     Ok(())
 }
 
@@ -1441,25 +1530,22 @@ const REPLACED_SUFFIX: &str = ".replaced";
 /// One backup per file, holding the bytes displaced MOST recently: a
 /// per-run history would pile up inside a directory an agent reads, and
 /// the displacement worth showing is the one the human is looking at.
-fn write_owned(path: &Path, contents: &str) -> anyhow::Result<Option<PathBuf>> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
+fn write_owned(fs: &dyn WorkspaceFiles, path: &Path, contents: &str) -> anyhow::Result<Option<PathBuf>> {
     // Bytes, not a string: a file that is not UTF-8 has no business in a
     // skill directory, but destroying it silently because it would not
     // decode is exactly the failure this function exists to stop.
-    let displaced = std::fs::read(path).ok().filter(|existing| existing != contents.as_bytes());
+    let displaced = fs.read_bytes(path).ok().flatten().filter(|existing| existing != contents.as_bytes());
     let replaced = match displaced {
         Some(existing) => {
             let mut name = path.as_os_str().to_os_string();
             name.push(REPLACED_SUFFIX);
             let backup = PathBuf::from(name);
-            std::fs::write(&backup, existing)?;
+            fs.write_bytes(&backup, &existing)?;
             Some(backup)
         }
         None => None,
     };
-    std::fs::write(path, contents)?;
+    fs.write_bytes(path, contents.as_bytes())?;
     Ok(replaced)
 }
 
@@ -1467,14 +1553,24 @@ fn write_owned(path: &Path, contents: &str) -> anyhow::Result<Option<PathBuf>> {
 /// file is. Substitution runs for every one of them, not just the ones
 /// that mention the PRD today: a document that grows a `{prd}` later
 /// needs no change here, and one that has none is unaffected.
-fn write_managed_file(root: &Path, file: &ManagedFile, prd: &str) -> anyhow::Result<ManagedWrite> {
+fn write_managed_file(
+    fs: &dyn WorkspaceFiles,
+    root: &Path,
+    file: &ManagedFile,
+    prd: &str,
+) -> anyhow::Result<ManagedWrite> {
     let path = root.join(file.dir).join(file.file);
-    let replaced = write_owned(&path, &with_prd_path(file.contents, prd))?;
+    let replaced = write_owned(fs, &path, &with_prd_path(file.contents, prd))?;
     Ok(ManagedWrite { path, replaced })
 }
 
-fn write_skills(root: &Path, layout: &ResolvedMcp, prd: &str) -> anyhow::Result<Vec<ManagedWrite>> {
-    layout.skills.iter().map(|skill| write_managed_file(root, skill, prd)).collect()
+fn write_skills(
+    fs: &dyn WorkspaceFiles,
+    root: &Path,
+    layout: &ResolvedMcp,
+    prd: &str,
+) -> anyhow::Result<Vec<ManagedWrite>> {
+    layout.skills.iter().map(|skill| write_managed_file(fs, root, skill, prd)).collect()
 }
 
 /// The heading that opens the memories the human has adopted off
@@ -1509,14 +1605,14 @@ fn learned_section(block_body: &str) -> Option<&str> {
 /// one thing INSIDE them that gavin does not author -- the `### Learned`
 /// section -- is carried over verbatim.
 fn write_instructions_block(
+    fs: &dyn WorkspaceFiles,
     root: &Path,
     instructions_file: &str,
     block_body: &str,
 ) -> anyhow::Result<PathBuf> {
-    validate_agent_file_path(root, instructions_file).map_err(|e| anyhow::anyhow!(e))?;
+    validate_agent_file_path(fs, root, instructions_file).map_err(|e| anyhow::anyhow!(e))?;
     let path = root.join(instructions_file);
-    let content = if path.exists() {
-        let existing = std::fs::read_to_string(&path)?;
+    let content = if let Some(existing) = fs.read_to_string(&path)? {
         match (existing.find(MARKER_START), existing.find(MARKER_END)) {
             (Some(start), Some(end)) if end >= start => {
                 let after = existing[end + MARKER_END.len()..].trim_start_matches('\n');
@@ -1538,7 +1634,7 @@ fn write_instructions_block(
     } else {
         block_with(block_body, None)
     };
-    std::fs::write(&path, content)?;
+    fs.write_bytes(&path, content.as_bytes())?;
     Ok(path)
 }
 
@@ -1615,23 +1711,28 @@ impl McpForeignChoice {
 /// disclose about a file gavin is about to create -- and an unparsable
 /// one errors the same way `write_mcp_config` does, so a scan never
 /// reports "nothing here" about a file it could not actually read.
-fn foreign_mcp_servers(path: &Path, layout: &ResolvedMcp) -> anyhow::Result<Vec<ForeignMcpServer>> {
-    if !path.exists() {
+fn foreign_mcp_servers(
+    fs: &dyn WorkspaceFiles,
+    path: &Path,
+    layout: &ResolvedMcp,
+) -> anyhow::Result<Vec<ForeignMcpServer>> {
+    if !fs.is_file(path) {
         return Ok(Vec::new());
     }
     match layout.format {
-        McpFormat::TomlServers => foreign_mcp_servers_toml(path, layout.server_key),
+        McpFormat::TomlServers => foreign_mcp_servers_toml(fs, path, layout.server_key),
         McpFormat::JsonServers | McpFormat::JsonServersStdio | McpFormat::JsonLocal => {
-            foreign_mcp_servers_json(path, layout)
+            foreign_mcp_servers_json(fs, path, layout)
         }
     }
 }
 
 fn foreign_mcp_servers_json(
+    fs: &dyn WorkspaceFiles,
     path: &Path,
     layout: &ResolvedMcp,
 ) -> anyhow::Result<Vec<ForeignMcpServer>> {
-    let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)
+    let doc: serde_json::Value = serde_json::from_str(&fs.read_to_string(path)?.unwrap_or_default())
         .map_err(|_| {
             anyhow::anyhow!("existing {} is not valid JSON — fix or remove it first", path.display())
         })?;
@@ -1669,8 +1770,12 @@ fn json_foreign_entry(name: &str, entry: &serde_json::Value, format: McpFormat) 
     ForeignMcpServer { name: name.to_string(), command, args: json_string_array(entry.get("args")) }
 }
 
-fn foreign_mcp_servers_toml(path: &Path, server_key: &str) -> anyhow::Result<Vec<ForeignMcpServer>> {
-    let doc = std::fs::read_to_string(path)?.parse::<toml_edit::DocumentMut>().map_err(|_| {
+fn foreign_mcp_servers_toml(
+    fs: &dyn WorkspaceFiles,
+    path: &Path,
+    server_key: &str,
+) -> anyhow::Result<Vec<ForeignMcpServer>> {
+    let doc = fs.read_to_string(path)?.unwrap_or_default().parse::<toml_edit::DocumentMut>().map_err(|_| {
         anyhow::anyhow!("existing {} is not valid TOML — fix or remove it first", path.display())
     })?;
     let Some(table) = doc.get("mcp_servers").and_then(|i| i.as_table_like()) else {
@@ -1749,17 +1854,46 @@ pub struct IntegrationResult {
 /// the frontend (`mcpServerTrust.ts`) and replayed here so the question
 /// is asked once per distinct set (AG-07). Meaningless, and ignored,
 /// when there is nothing foreign to ask about.
+///
+/// For an ssh workspace the files are on the host and so is the
+/// `gavin-mcp` the config must name: both come through the link
+/// (`remote::RemoteFiles`, the banner's `mcpPath`). A host with no
+/// `gavin-mcp` beside its daemon is reported, not written around.
 pub fn setup_agent_integration(
     root_path: String,
     instructions_file: Option<String>,
     mcp_foreign_choice: Option<String>,
     profile_id: Option<String>,
+    app_handle: tauri::AppHandle,
 ) -> Result<IntegrationResult, String> {
+    let choice = McpForeignChoice::from_str(mcp_foreign_choice.as_deref());
+    if let crate::remote::Route::Remote(link) =
+        crate::remote::route_for_root(&app_handle, Some(&root_path))?
+    {
+        let host = link.host.clone();
+        let mcp = link.mcp_path.clone();
+        let files = crate::remote::RemoteFiles { link, root: root_path.clone() };
+        return run_integration(
+            &files,
+            Path::new(&root_path),
+            move || {
+                mcp.clone().map(PathBuf::from).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "gavin-mcp is not beside gavin-daemon on {host} — install it there and reconnect"
+                    )
+                })
+            },
+            instructions_file.as_deref(),
+            choice,
+            profile_id.as_deref(),
+        );
+    }
     run_integration(
+        &LocalFiles,
         Path::new(&root_path),
         resolve_mcp_binary_path,
         instructions_file.as_deref(),
-        McpForeignChoice::from_str(mcp_foreign_choice.as_deref()),
+        choice,
         profile_id.as_deref(),
     )
 }
@@ -1770,28 +1904,29 @@ pub fn setup_agent_integration(
 /// than a parameter so that a profile with no MCP config still succeeds
 /// without one having to exist.
 fn run_integration(
+    fs: &dyn WorkspaceFiles,
     root: &Path,
     resolve_binary: impl Fn() -> anyhow::Result<PathBuf>,
     instructions_file: Option<&str>,
     mcp_choice: Option<McpForeignChoice>,
     profile_id: Option<&str>,
 ) -> Result<IntegrationResult, String> {
-    if !root.is_dir() {
+    if !fs.is_dir(root) {
         return Err(format!("root does not exist: {}", root.display()));
     }
     let profile_id = profile_id
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| read_profile_id(root));
+        .unwrap_or_else(|| read_profile_id_in(fs, root));
     let profile = profile_by_id(&profile_id);
     let instructions_file = instructions_file
         .map(str::trim)
         .filter(|f| !f.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| resolved_instructions_file(root, profile));
-    let mcp = resolved_mcp(root, profile);
-    let prd = prd_relative_path(root);
+        .unwrap_or_else(|| resolved_instructions_file(fs, root, profile));
+    let mcp = resolved_mcp(fs, root, profile);
+    let prd = prd_relative_path_in(fs, root);
     let mut written = Vec::new();
     let mut skipped = Vec::new();
     let mut replaced = Vec::new();
@@ -1801,6 +1936,7 @@ fn run_integration(
     // profile without an McpLayout errored out and got nothing at all.
     written.push(
         write_instructions_block(
+            fs,
             root,
             &instructions_file,
             &instructions_block_for(mcp.as_ref(), &prd),
@@ -1829,7 +1965,7 @@ fn run_integration(
             if layout.skills.is_empty() {
                 skipped.push(no_skill_file());
             } else {
-                for write in write_skills(root, layout, &prd).map_err(|e| e.to_string())? {
+                for write in write_skills(fs, root, layout, &prd).map_err(|e| e.to_string())? {
                     written.push(write.path.to_string_lossy().to_string());
                     if let Some(backup) = write.replaced {
                         replaced.push((
@@ -1840,10 +1976,10 @@ fn run_integration(
                 }
             }
             let mcp_path = root.join(&layout.config_file);
-            let foreign = foreign_mcp_servers(&mcp_path, layout).map_err(|e| e.to_string())?;
+            let foreign = foreign_mcp_servers(fs, &mcp_path, layout).map_err(|e| e.to_string())?;
             if foreign.is_empty() {
                 written.push(
-                    write_mcp_config(root, layout, &binary)
+                    write_mcp_config(fs, root, layout, &binary)
                         .map_err(|e| e.to_string())?
                         .to_string_lossy()
                         .to_string(),
@@ -1852,7 +1988,7 @@ fn run_integration(
                 match mcp_choice {
                     Some(McpForeignChoice::Keep) => {
                         written.push(
-                            write_mcp_config(root, layout, &binary)
+                            write_mcp_config(fs, root, layout, &binary)
                                 .map_err(|e| e.to_string())?
                                 .to_string_lossy()
                                 .to_string(),
@@ -1900,7 +2036,7 @@ fn run_integration(
     // headless run names it by `--agent`. Written last so the wizard's
     // list reads outward from the instructions file.
     if let Some(file) = profile.agent_file.as_ref() {
-        let write = write_managed_file(root, file, &prd).map_err(|e| e.to_string())?;
+        let write = write_managed_file(fs, root, file, &prd).map_err(|e| e.to_string())?;
         written.push(write.path.to_string_lossy().to_string());
         if let Some(backup) = write.replaced {
             replaced
@@ -1945,8 +2081,8 @@ pub struct GavinInstall {
 
 pub fn gavin_install(root: &Path) -> GavinInstall {
     let profile = profile_by_id(&read_profile_id(root));
-    let instructions = root.join(resolved_instructions_file(root, profile));
-    let mcp = resolved_mcp(root, profile);
+    let instructions = root.join(resolved_instructions_file(&LocalFiles, root, profile));
+    let mcp = resolved_mcp(&LocalFiles, root, profile);
     let skills = mcp
         .as_ref()
         .map(|m| m.skills.iter().map(|s| root.join(s.dir)).collect())
@@ -1968,7 +2104,7 @@ pub fn gavin_install(root: &Path) -> GavinInstall {
 /// a file it would have to clobber to edit.
 pub fn mcp_entry_present(root: &Path) -> bool {
     let profile = profile_by_id(&read_profile_id(root));
-    let Some(layout) = resolved_mcp(root, profile) else { return false };
+    let Some(layout) = resolved_mcp(&LocalFiles, root, profile) else { return false };
     let path = root.join(&layout.config_file);
     let Ok(content) = std::fs::read_to_string(&path) else { return false };
     match layout.format {
@@ -1998,7 +2134,7 @@ pub fn mcp_entry_present(root: &Path) -> bool {
 /// out rather than being rewritten, the same promise the writer makes.
 pub fn remove_mcp_entry(root: &Path) -> anyhow::Result<bool> {
     let profile = profile_by_id(&read_profile_id(root));
-    let Some(layout) = resolved_mcp(root, profile) else { return Ok(false) };
+    let Some(layout) = resolved_mcp(&LocalFiles, root, profile) else { return Ok(false) };
     let path = root.join(&layout.config_file);
     if !path.exists() {
         return Ok(false);
@@ -2112,7 +2248,7 @@ pub fn compose_agent_prompt(root_path: String, flow: String) -> Result<String, S
     }
     let skill = step_skill(&flow).ok_or_else(|| format!("unknown flow: {flow}"))?;
     let profile = profile_by_id(&read_profile_id(root));
-    let instructions_file = resolved_instructions_file(root, profile);
+    let instructions_file = resolved_instructions_file(&LocalFiles, root, profile);
     let prd = prd_relative_path(root);
     let target = match flow.as_str() {
         "prd" => prd.clone(),
@@ -2125,7 +2261,7 @@ pub fn compose_agent_prompt(root_path: String, flow: String) -> Result<String, S
     // Keyed on the skill slot, not on MCP: a profile can have an MCP
     // config and still have nowhere to put a skill file (unconfigured
     // custom, or custom with mcp_file but no known skill root).
-    match resolved_mcp(root, profile).as_ref().and_then(ResolvedMcp::skill_slot) {
+    match resolved_mcp(&LocalFiles, root, profile).as_ref().and_then(ResolvedMcp::skill_slot) {
         Some((parent, file)) => {
             // The step skill sits beside the gavin-managed ones: same
             // parent directory, one directory per skill, matching the
@@ -2137,7 +2273,7 @@ pub fn compose_agent_prompt(root_path: String, flow: String) -> Result<String, S
             // whole of the record -- which is why preserving the bytes
             // matters more here, not less.
             let dir = root.join(parent).join(skill.name);
-            write_owned(&dir.join(file), &document).map_err(|e| e.to_string())?;
+            write_owned(&LocalFiles, &dir.join(file), &document).map_err(|e| e.to_string())?;
             Ok(format!(
                 "Use the {} skill to write {target} for this repo. Interview me first.",
                 skill.name
@@ -2901,8 +3037,11 @@ mod tests {
     // The surviving refusal is a root that is not there at all.
     #[test]
     fn setup_refuses_a_root_that_does_not_exist() {
-        let err =
-            setup_agent_integration("/no/such/root".to_string(), None, None, None).unwrap_err();
+        // Through `run_integration` rather than the command, which now
+        // takes the app handle it routes an ssh root by; the refusal is
+        // the run's, on whichever disk it is asked about.
+        let err = run_integration(&LocalFiles, Path::new("/no/such/root"), fake_binary(), None, None, None)
+            .unwrap_err();
         assert!(err.contains("root does not exist"), "got: {err}");
     }
 
@@ -2920,6 +3059,63 @@ mod tests {
         || Ok(PathBuf::from("/apps/gavin-mcp"))
     }
 
+    /// A workspace that exists only in memory -- what the host's disk is
+    /// to the desktop. Every read and write goes through the trait, and
+    /// the test below proves the integration never reaches past it.
+    #[derive(Default)]
+    struct MemoryFiles {
+        files: std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<u8>>>,
+        dirs: Vec<PathBuf>,
+    }
+
+    impl WorkspaceFiles for MemoryFiles {
+        fn read_bytes(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+            Ok(self.files.lock().unwrap().get(path).cloned())
+        }
+        fn write_bytes(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+            self.files.lock().unwrap().insert(path.to_path_buf(), contents.to_vec());
+            Ok(())
+        }
+        fn is_dir(&self, path: &Path) -> bool {
+            self.dirs.iter().any(|d| d == path)
+        }
+        fn is_file(&self, path: &Path) -> bool {
+            self.files.lock().unwrap().contains_key(path)
+        }
+        fn canonical_dir(&self, path: &Path) -> Option<PathBuf> {
+            Some(path.to_path_buf())
+        }
+    }
+
+    /// The ssh case, end to end through the trait: a root that does not
+    /// exist on this machine gets its instructions block, skill files and
+    /// MCP config -- naming the HOST's gavin-mcp -- written where the
+    /// implementation puts them, and nothing appears on this disk.
+    #[test]
+    fn integration_on_a_remote_root_touches_only_the_files_it_was_given() {
+        let root = PathBuf::from("/remote/repo");
+        let fs = MemoryFiles { files: Default::default(), dirs: vec![root.clone()] };
+        fs.write_bytes(&root.join(".gavin-root").join("config.toml"), b"[agent]\nprofile = \"claude-code\"\n")
+            .unwrap();
+        let result = run_integration(
+            &fs,
+            &root,
+            || Ok(PathBuf::from("/opt/gavin/gavin-mcp")),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let files = fs.files.lock().unwrap();
+        let instructions = files.get(&root.join("CLAUDE.md")).expect("instructions block written");
+        assert!(String::from_utf8_lossy(instructions).contains(MARKER_START));
+        let mcp = files.get(&root.join(".mcp.json")).expect("MCP config written");
+        assert!(String::from_utf8_lossy(mcp).contains("/opt/gavin/gavin-mcp"), "the host's gavin-mcp");
+        assert!(result.written.iter().any(|w| w.ends_with(".mcp.json")));
+        assert!(!Path::new("/remote").exists() && !Path::new("C:/remote").exists(), "nothing on this disk");
+    }
+
     /// The shrink sub-project B is for: custom can name an MCP config
     /// without a skill root, so only the skill file is still skipped.
     #[test]
@@ -2930,7 +3126,7 @@ mod tests {
             "mcp_file = \"agent.json\"\nmcp_format = \"json-servers\"\n",
         );
 
-        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
 
         assert!(dir.path().join("RULES.md").is_file());
         assert!(result.written.iter().any(|w| w.ends_with("RULES.md")));
@@ -2949,7 +3145,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "claude-code");
 
-        let result = run_integration(dir.path(), fake_binary(), None, None, Some("codex")).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, Some("codex")).unwrap();
 
         assert!(dir.path().join("AGENTS.md").is_file());
         assert!(dir.path().join(".codex/config.toml").is_file());
@@ -2970,7 +3166,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "claude-code");
 
-        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
 
         assert!(dir.path().join(".mcp.json").is_file());
         assert!(result.written.iter().any(|w| w.ends_with(".mcp.json")));
@@ -2992,7 +3188,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
@@ -3020,7 +3216,7 @@ mod tests {
 
         // No decision yet -> the write is held back and the foreign
         // entry is reported, verbatim.
-        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
         assert!(!result.written.iter().any(|w| w.ends_with(".mcp.json")));
         let foreign = result.mcp_foreign.expect("a foreign server was present");
         assert!(foreign.file.ends_with(".mcp.json"));
@@ -3045,7 +3241,7 @@ mod tests {
 
         // "keep": merges beside it, same as every run before this fix.
         let result =
-            run_integration(dir.path(), fake_binary(), None, Some(McpForeignChoice::Keep), None).unwrap();
+            run_integration(&LocalFiles, dir.path(), fake_binary(), None, Some(McpForeignChoice::Keep), None).unwrap();
         assert!(result.written.iter().any(|w| w.ends_with(".mcp.json")));
         assert!(result.mcp_foreign.is_none());
         let v: serde_json::Value =
@@ -3061,7 +3257,7 @@ mod tests {
             r#"{ "mcpServers": { "evil": { "command": "/bin/sh" } } }"#,
         )
         .unwrap();
-        let result = run_integration(dir.path(), fake_binary(), None, Some(McpForeignChoice::Isolate), None)
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, Some(McpForeignChoice::Isolate), None)
             .unwrap();
         assert!(!result.written.iter().any(|w| w.ends_with(".mcp.json")));
         let reason = result
@@ -3095,7 +3291,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = run_integration(dir.path(), fake_binary(), Some("CLAUDE.md"), None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), Some("CLAUDE.md"), None, None).unwrap();
 
         assert!(dir.path().join("CLAUDE.md").is_file());
         assert!(!dir.path().join("REPO_CHOSE_THIS.md").exists());
@@ -3110,7 +3306,7 @@ mod tests {
             "[agent]\nprofile = \"claude-code\"\nfile = \"REPO_CHOSE_THIS.md\"\n",
         )
         .unwrap();
-        run_integration(other.path(), fake_binary(), None, None, None).unwrap();
+        run_integration(&LocalFiles, other.path(), fake_binary(), None, None, None).unwrap();
         assert!(other.path().join("REPO_CHOSE_THIS.md").is_file());
     }
 
@@ -3125,7 +3321,7 @@ mod tests {
         let base = "[agent]\nprofile = \"custom\"\nfile = \"RULES.md\"\n";
         std::fs::write(g.join("config.toml"), base).unwrap();
 
-        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
 
         assert!(dir.path().join("RULES.md").is_file());
         let skipped: Vec<&str> = result.skipped.iter().map(|(what, _)| what.as_str()).collect();
@@ -3140,7 +3336,7 @@ mod tests {
             "mcp_file = \"agent.json\"\nmcp_format = \"json-servers\"\n",
         );
 
-        run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
 
         let body = std::fs::read_to_string(dir.path().join("RULES.md")).unwrap();
         assert!(body.contains(MARKER_START) && body.contains(MARKER_END));
@@ -3175,7 +3371,7 @@ mod tests {
                 &format!("mcp_file = \"{config_file}\"\nmcp_format = \"{format}\"\n"),
             );
 
-            let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+            let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
 
             let written = dir.path().join(config_file);
             assert!(written.is_file(), "{format} did not write {config_file}");
@@ -3194,7 +3390,7 @@ mod tests {
             dir.path(),
             "mcp_file = \".myagent/config.toml\"\nmcp_format = \"toml-servers\"\n",
         );
-        run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
         let text = std::fs::read_to_string(dir.path().join(".myagent/config.toml")).unwrap();
         let parsed = text.parse::<toml::Table>().unwrap();
         assert_eq!(parsed["mcp_servers"]["gavin"]["command"].as_str().unwrap(), "/apps/gavin-mcp");
@@ -3209,7 +3405,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             custom_rooted(dir.path(), extra);
-            run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+            run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
             let written = std::fs::read_to_string(dir.path().join("agent.json")).unwrap();
             let v: serde_json::Value = serde_json::from_str(&written).unwrap();
             assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
@@ -3228,7 +3424,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         custom_rooted(dir.path(), "mcp_file = \"../escaped.json\"\n");
-        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
         let skipped: Vec<&str> = result.skipped.iter().map(|(w, _)| w.as_str()).collect();
         assert_eq!(skipped, ["skill file", "MCP config"]);
         assert!(!dir.path().parent().unwrap().join("escaped.json").exists());
@@ -3251,7 +3447,7 @@ mod tests {
             )
             .unwrap();
 
-            let err = run_integration(dir.path(), fake_binary(), None, None, None).unwrap_err();
+            let err = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap_err();
 
             assert!(err.contains(escape), "error should name the value {escape}: {err}");
             assert!(
@@ -3308,7 +3504,7 @@ mod tests {
         // The workflow skill, which repeats the path for the agent that
         // would rather read the file than call the tool.
         let writes =
-            write_skills(dir.path(), &claude_layout(), &prd_relative_path(dir.path())).unwrap();
+            write_skills(&LocalFiles, dir.path(), &claude_layout(), &prd_relative_path(dir.path())).unwrap();
         let workflow = std::fs::read_to_string(&writes[0].path).unwrap();
         assert!(workflow.contains("read `docs/PRD.md`"), "{workflow}");
 
@@ -3457,16 +3653,16 @@ mod tests {
     fn a_run_that_displaces_an_edited_skill_keeps_it_and_reports_it() {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "claude-code");
-        run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
 
         // A re-run that changes nothing must say nothing, or the report
         // cries wolf on every setup the human runs twice.
-        let quiet = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        let quiet = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
         assert!(quiet.replaced.is_empty(), "{:?}", quiet.replaced);
 
         let skill = dir.path().join(".claude/skills/gavin-develop/SKILL.md");
         std::fs::write(&skill, "### Rate it: `complexity:`\nmy own words\n").unwrap();
-        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
 
         let (reported, backup) = result
             .replaced
@@ -3497,7 +3693,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "opencode");
 
-        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -3532,7 +3728,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "cursor");
 
-        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -3568,7 +3764,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "codex");
 
-        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -3605,7 +3801,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "gemini");
 
-        let result = run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        let result = run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
 
         let rel: Vec<String> = result
             .written
@@ -3642,7 +3838,7 @@ mod tests {
     fn the_opencode_agent_file_carries_the_git_only_grant() {
         let dir = tempfile::tempdir().unwrap();
         rooted_with_profile(dir.path(), "opencode");
-        run_integration(dir.path(), fake_binary(), None, None, None).unwrap();
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
 
         let body =
             std::fs::read_to_string(dir.path().join(".opencode/agent/gavin-commit.md")).unwrap();
@@ -3695,11 +3891,11 @@ mod tests {
         std::fs::create_dir_all(&g).unwrap();
 
         std::fs::write(g.join("config.toml"), "[agent]\nprofile = \"codex\"\n").unwrap();
-        assert_eq!(resolved_instructions_file(dir.path(), profile_by_id("codex")), "AGENTS.md");
+        assert_eq!(resolved_instructions_file(&LocalFiles, dir.path(), profile_by_id("codex")), "AGENTS.md");
 
         std::fs::write(g.join("config.toml"), "[agent]\nprofile = \"codex\"\nfile = \"NOTES.md\"\n")
             .unwrap();
-        assert_eq!(resolved_instructions_file(dir.path(), profile_by_id("codex")), "NOTES.md");
+        assert_eq!(resolved_instructions_file(&LocalFiles, dir.path(), profile_by_id("codex")), "NOTES.md");
     }
 
     #[test]
@@ -3713,7 +3909,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let binary = Path::new("/apps/gavin-mcp");
         // Absent → created.
-        let p = write_mcp_config(dir.path(), &claude_layout(), binary).unwrap();
+        let p = write_mcp_config(&LocalFiles, dir.path(), &claude_layout(), binary).unwrap();
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
@@ -3723,7 +3919,7 @@ mod tests {
             r#"{ "mcpServers": { "other": { "command": "/bin/other" }, "gavin": { "command": "/old" } }, "unrelated": true }"#,
         )
         .unwrap();
-        write_mcp_config(dir.path(), &claude_layout(), binary).unwrap();
+        write_mcp_config(&LocalFiles, dir.path(), &claude_layout(), binary).unwrap();
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v.pointer("/mcpServers/other/command").unwrap(), "/bin/other");
@@ -3731,7 +3927,7 @@ mod tests {
         assert_eq!(v.pointer("/unrelated").unwrap(), true);
         // Unparseable → error, file untouched.
         std::fs::write(&p, "{not json").unwrap();
-        assert!(write_mcp_config(dir.path(), &claude_layout(), binary).is_err());
+        assert!(write_mcp_config(&LocalFiles, dir.path(), &claude_layout(), binary).is_err());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "{not json");
     }
 
@@ -3748,7 +3944,7 @@ mod tests {
         let binary = Path::new("/apps/gavin-mcp");
 
         // Neither .gemini/ nor .cursor/ exists yet: the writer creates them.
-        let g = write_mcp_config(dir.path(), &layout("gemini"), binary).unwrap();
+        let g = write_mcp_config(&LocalFiles, dir.path(), &layout("gemini"), binary).unwrap();
         assert!(g.ends_with(".gemini/settings.json"), "{g:?}");
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&g).unwrap()).unwrap();
@@ -3757,7 +3953,7 @@ mod tests {
         assert!(v.pointer("/mcpServers/gavin/type").is_none(), "not a documented Gemini field");
         assert!(v.pointer("/mcpServers/gavin/env").is_none(), "Gemini inherits the PTY env");
 
-        let c = write_mcp_config(dir.path(), &layout("cursor"), binary).unwrap();
+        let c = write_mcp_config(&LocalFiles, dir.path(), &layout("cursor"), binary).unwrap();
         assert!(c.ends_with(".cursor/mcp.json"), "{c:?}");
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&c).unwrap()).unwrap();
@@ -3793,7 +3989,7 @@ mod tests {
         )
         .unwrap();
 
-        let p = write_mcp_config(dir.path(), &layout("opencode"), binary).unwrap();
+        let p = write_mcp_config(&LocalFiles, dir.path(), &layout("opencode"), binary).unwrap();
         assert!(p.ends_with("opencode.json"), "{p:?}");
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
@@ -3817,7 +4013,7 @@ mod tests {
         let binary = Path::new("/apps/gavin-mcp");
 
         // Absent → created, with .codex/ made on the way.
-        let p = write_mcp_config(dir.path(), &layout("codex"), binary).unwrap();
+        let p = write_mcp_config(&LocalFiles, dir.path(), &layout("codex"), binary).unwrap();
         assert!(p.ends_with(".codex/config.toml"), "{p:?}");
         let parsed = std::fs::read_to_string(&p).unwrap().parse::<toml::Table>().unwrap();
         let gavin = parsed["mcp_servers"]["gavin"].as_table().unwrap();
@@ -3833,7 +4029,7 @@ mod tests {
              [mcp_servers.gavin]\ncommand = \"/old/gavin-mcp\"\nargs = [\"--stale\"]\n",
         )
         .unwrap();
-        write_mcp_config(dir.path(), &layout("codex"), binary).unwrap();
+        write_mcp_config(&LocalFiles, dir.path(), &layout("codex"), binary).unwrap();
 
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains("# my codex config"), "{text}");
@@ -3847,7 +4043,7 @@ mod tests {
 
         // Unparseable → error, file untouched.
         std::fs::write(&p, "[[[not toml").unwrap();
-        assert!(write_mcp_config(dir.path(), &layout("codex"), binary).is_err());
+        assert!(write_mcp_config(&LocalFiles, dir.path(), &layout("codex"), binary).is_err());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "[[[not toml");
     }
 
@@ -3864,7 +4060,7 @@ mod tests {
                           "other": { "type": "local", "command": ["/bin/other", "--flag"] } } }"#,
         )
         .unwrap();
-        let found = foreign_mcp_servers(&dir.path().join("opencode.json"), &layout("opencode")).unwrap();
+        let found = foreign_mcp_servers(&LocalFiles, &dir.path().join("opencode.json"), &layout("opencode")).unwrap();
         assert_eq!(
             found,
             vec![ForeignMcpServer {
@@ -3882,7 +4078,7 @@ mod tests {
              [mcp_servers.linty]\ncommand = \"/bin/linty\"\nargs = [\"--fix\"]\n",
         )
         .unwrap();
-        let found = foreign_mcp_servers(&codex_path, &layout("codex")).unwrap();
+        let found = foreign_mcp_servers(&LocalFiles, &codex_path, &layout("codex")).unwrap();
         assert_eq!(
             found,
             vec![ForeignMcpServer {
@@ -3895,26 +4091,26 @@ mod tests {
         // Unparsable -> an error, the same as the writer gives, never a
         // silent "nothing foreign here".
         std::fs::write(&codex_path, "[[[not toml").unwrap();
-        assert!(foreign_mcp_servers(&codex_path, &layout("codex")).is_err());
+        assert!(foreign_mcp_servers(&LocalFiles, &codex_path, &layout("codex")).is_err());
     }
 
     #[test]
     fn instructions_block_appends_replaces_and_never_touches_the_rest() {
         let dir = tempfile::tempdir().unwrap();
         // Absent → created with just the block.
-        let p = write_instructions_block(dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
+        let p = write_instructions_block(&LocalFiles, dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
         let first = std::fs::read_to_string(&p).unwrap();
         assert!(first.starts_with(MARKER_START));
         // Existing content → appended after it.
         std::fs::write(&p, "# My rules\n\nKeep tests green.\n").unwrap();
-        write_instructions_block(dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
+        write_instructions_block(&LocalFiles, dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
         let appended = std::fs::read_to_string(&p).unwrap();
         assert!(appended.starts_with("# My rules"));
         assert!(appended.contains(MARKER_START));
         // Re-run → block replaced in place, custom content above AND below intact.
         let with_tail = format!("{appended}## After\n\ntail text\n");
         std::fs::write(&p, &with_tail).unwrap();
-        write_instructions_block(dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
+        write_instructions_block(&LocalFiles, dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
         let replaced = std::fs::read_to_string(&p).unwrap();
         assert!(replaced.starts_with("# My rules"));
         assert!(replaced.contains("tail text"));
@@ -3941,7 +4137,7 @@ mod tests {
         )
         .unwrap();
 
-        write_instructions_block(dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
+        write_instructions_block(&LocalFiles, dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
         let merged = std::fs::read_to_string(&p).unwrap();
         assert!(merged.contains(learned), "the adopted section survived unchanged: {merged}");
         assert!(!merged.contains("old guidance"), "gavin's own half WAS rewritten: {merged}");
@@ -3955,7 +4151,7 @@ mod tests {
 
         // Idempotent: a second run must not drift the bytes, or every
         // setup would add another blank line to the file forever.
-        write_instructions_block(dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
+        write_instructions_block(&LocalFiles, dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), merged);
     }
 
@@ -3970,7 +4166,7 @@ mod tests {
             format!("{MARKER_START}\nold\n{MARKER_END}\n\n### Learned\n\n- mine, not gavin's\n"),
         )
         .unwrap();
-        write_instructions_block(dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
+        write_instructions_block(&LocalFiles, dir.path(), "CLAUDE.md", BLOCK_WITH_SKILL).unwrap();
         let merged = std::fs::read_to_string(&p).unwrap();
         let inner = &merged[..merged.find(MARKER_END).unwrap()];
         assert!(!inner.contains(LEARNED_HEADING), "not pulled into the block: {merged}");
@@ -3980,7 +4176,7 @@ mod tests {
     #[test]
     fn every_skill_is_written_and_overwritten() {
         let dir = tempfile::tempdir().unwrap();
-        let writes = write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
+        let writes = write_skills(&LocalFiles, dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
         assert_eq!(writes.len(), 4, "workflow skill plus orchestrate, resume and develop");
         let paths: Vec<PathBuf> = writes.iter().map(|w| w.path.clone()).collect();
         // Nothing was there to displace, so nothing was preserved.
@@ -4021,7 +4217,7 @@ mod tests {
         for p in &paths {
             std::fs::write(p, "mangled").unwrap();
         }
-        let writes = write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
+        let writes = write_skills(&LocalFiles, dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
         assert!(std::fs::read_to_string(&paths[0]).unwrap().contains("gavin_create_plan"));
         assert!(std::fs::read_to_string(&paths[1]).unwrap().contains("gavin_get_orchestration"));
         assert!(std::fs::read_to_string(&paths[2]).unwrap().contains("Finished work stays finished"));
@@ -4037,7 +4233,7 @@ mod tests {
         // And a third run, over gavin's own bytes, displaces nothing --
         // the report has to stay empty when a re-run changes nothing, or
         // it reads as a loss every time.
-        let writes = write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
+        let writes = write_skills(&LocalFiles, dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH).unwrap();
         assert!(writes.iter().all(|w| w.replaced.is_none()), "an idempotent re-run reports nothing");
         // The kept edit is still there, untouched by the run that
         // displaced nothing.
@@ -4164,7 +4360,7 @@ mod tests {
     #[test]
     fn every_skill_lands_in_its_own_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let paths: Vec<PathBuf> = write_skills(dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH)
+        let paths: Vec<PathBuf> = write_skills(&LocalFiles, dir.path(), &claude_layout(), protocol::DEFAULT_PRD_PATH)
             .unwrap()
             .into_iter()
             .map(|w| w.path)

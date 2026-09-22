@@ -208,12 +208,10 @@ mistake:
 - **Frontend**: creating an ssh workspace (host, root on the host, optional
   daemon path), the remote badge on the sidebar and tab strip, Reconnect,
   the `remote-link-*` events, and the gating above.
-- **Card runs**: `compose_agent_prompt` reads the card from the desktop's
-  disk and `setup_agent_integration` writes MCP config into the desktop's
-  copy of the repo. For an ssh workspace both must happen on the host, where
-  the agent and its `gavin-mcp` run. The daemon there already has the card
-  bodies and the root config; the prompt composition moves behind a request,
-  or the app composes from the tree it already receives.
+- **Card runs**: landed as `2026-09-22-ssh-card-runs-design.md` -- three
+  workspace-file requests (v39) the host's daemon answers, and the Tauri
+  host's own file commands routed to the link, so composition and agent
+  integration read and write on the host without the frontend knowing.
 - **Git tab and Files tab** over ssh: either daemon requests or `ssh` exec
   per operation. The Git tab's 60 commands are the largest surface in the
   app; it is a card of its own.

@@ -74,13 +74,17 @@ live in the desktop's `config.json`, never in the repository).
 ## What works over ssh today, and what does not yet
 
 Works: terminals, the board, the plan tree and PRD, orchestration and tools,
-git status in the tab strip — everything the host's daemon does.
+git status in the tab strip — everything the host's daemon does. Card runs
+too, when the host's daemon is v39 or newer: the card and its attachments
+are read from the host, and "Set up / update" agent integration writes the
+MCP config, skills and instructions block there, naming the `gavin-mcp`
+that sits beside the host's `gavin-daemon` (install both). The Run pill
+says which version the host needs when it is older.
 
 Not yet (each refused with a message naming this, never run against the
-desktop's own disk by mistake): the Git tab, the Files tab and file viewer,
-running a card (the prompt is composed and the MCP config written on the
-desktop today), worktree setup, the delete wizard. See the ssh card's
-checklist for the follow-ups.
+desktop's own disk by mistake): the Git tab, the Files tab, worktrees
+(best-of-N, rail binding), the setup wizard's PRD and git steps, the delete
+wizard. See the ssh card's checklist for the follow-ups.
 
 ## When it fails
 

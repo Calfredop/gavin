@@ -223,7 +223,7 @@
   <!-- Settings-only (D56), and gated on there being an MCP layout to
        write: without one the run would report MCP config as skipped, so
        the button would half-work rather than work. -->
-  {#if variant === "settings" && workspace.rootPath && !rootMissing && agent.mcpSupported && !isSshWorkspace(workspace)}
+  {#if variant === "settings" && workspace.rootPath && !rootMissing && agent.mcpSupported}
     <div class="banner seed">
       <span
         >Agent integration — write {agent.mcpConfigFile} and a gavin section in {agent.file} into

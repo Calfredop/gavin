@@ -49,7 +49,8 @@ import { queueFollowUp, queueTargetFor } from "$lib/agents/queuedInputActions";
 import { cardViewForPath, type CardView } from "$lib/core/planBoard";
 import { holdOrQueue, type CardIntent } from "$lib/agents/launchQueue";
 import { launchDecision } from "$lib/agents/agentPauseState";
-import { sshLimitation } from "$lib/workspace/sshWorkspace";
+import { isSshWorkspace, sshRunBlocked } from "$lib/workspace/sshWorkspace";
+import { sshLinks } from "$lib/workspace/sshLinkState";
 import { fallbackBlockedReason } from "$lib/agents/agentFallback";
 import { requestArm } from "$lib/agents/agentFallbackState";
 
@@ -168,10 +169,18 @@ export async function resolveAttachmentsForRun(
 /// checker.
 export async function conversationLogFor(
   agent: { profileId: string; resumeArgs: string },
-  conversationId: string | null | undefined
+  conversationId: string | null | undefined,
+  /// The workspace the conversation belongs to, when the caller has it.
+  /// An ssh workspace's agent wrote its log on the HOST, which this
+  /// machine's checker cannot see -- so the answer is `unknown` without
+  /// a call, and the CLI there decides, exactly as a failed check would.
+  workspaceId?: string
 ): Promise<ConversationLog> {
   const id = conversationId?.trim();
   if (!agent.resumeArgs.trim() || !id) return "unknown";
+  if (workspaceId !== undefined && isSshWorkspace(get(layoutState).workspaces.find((w) => w.id === workspaceId))) {
+    return "unknown";
+  }
   try {
     const log = await backend.conversationLog(agent.profileId, id);
     return log === "present" || log === "missing" ? log : "unknown";
@@ -238,14 +247,16 @@ export async function jumpToBoundSession(
 }
 
 // Returns an error string for the board's error strip, or null.
-/// Every launch below reads the card from this machine's disk and
-/// composes for an agent whose MCP config was written into this
-/// checkout; on an ssh workspace both are on the host, where the agent
-/// runs. Refused here, before any status write, until the card-runs
-/// card lands -- the board's pill says the same thing, but a queued
-/// intent or a rail step never saw a pill.
+/// Whether a launch on this workspace can happen right now: for an ssh
+/// workspace, the link must be up and the host's daemon new enough to
+/// serve the card and the attachments the launch reads there
+/// (`sshRunBlocked`). Asked here, before any status write, as well as on
+/// the Run pill -- a queued intent or a rail step never saw a pill.
 export function sshLaunchBlocker(workspaceId: string): string | null {
-  return sshLimitation(get(layoutState).workspaces.find((w) => w.id === workspaceId));
+  return sshRunBlocked(
+    get(layoutState).workspaces.find((w) => w.id === workspaceId),
+    get(sshLinks)
+  );
 }
 
 export function runCard(workspaceId: string, card: CardView): Promise<string | null> {
@@ -505,7 +516,7 @@ async function launchCard(
   // so a refused card is exactly the card that was there.
   const conversationLog =
     mode === "resume" || mode === "review"
-      ? await conversationLogFor(agent, binding?.conversationId)
+      ? await conversationLogFor(agent, binding?.conversationId, workspaceId)
       : "unknown";
   if (mode === "resume") {
     const unresumable = unresumableConversationReason(conversationLog, RELAUNCH_WAY_FORWARD);

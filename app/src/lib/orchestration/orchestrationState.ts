@@ -808,7 +808,7 @@ export async function resumeStep(
   // launch has to be refused HERE rather than by the CLI's own error in
   // a tab nobody is looking at. Retry is the way on, for the same reason
   // it is below: a fresh run is the honest answer to no conversation.
-  const log = await conversationLogFor(agent, run.conversationId);
+  const log = await conversationLogFor(agent, run.conversationId, workspaceId);
   const unresumable = unresumableConversationReason(log, "Use Retry to start it again.");
   if (unresumable) return unresumable;
   const command = buildResumeCommand(agent.launchCommand, agent.resumeArgs, run.conversationId, log);

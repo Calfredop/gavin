@@ -32,10 +32,12 @@ export interface RemoteLinkEvent {
   workspaceId?: string | null;
   message?: string | null;
   hostOs?: string | null;
+  /// The host daemon's protocol version, on a ready event.
+  daemonVersion?: number | null;
 }
 
 export function handleRemoteLinkReady(event: RemoteLinkEvent): void {
-  sshLinks.update((links) => markReady(links, event.host, event.hostOs));
+  sshLinks.update((links) => markReady(links, event.host, event.hostOs, event.daemonVersion));
 }
 
 export function handleRemoteLinkLost(event: RemoteLinkEvent): void {

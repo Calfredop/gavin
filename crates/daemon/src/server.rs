@@ -3605,6 +3605,20 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         }),
         Request::ReadPrd { root_path } => crate::gavin::read_prd(std::path::Path::new(&root_path))
             .map(|content| Response::PrdContent { content }),
+        // Workspace files for a desktop on another machine (v39). Confined
+        // to the root and its extra contexts inside `gavin`, so this
+        // dispatch decides nothing about paths.
+        Request::ReadWorkspaceFile { root_path, path } => {
+            crate::gavin::read_workspace_file(std::path::Path::new(&root_path), &path)
+                .map(|(content, truncated)| Response::WorkspaceFile { content, truncated })
+        }
+        Request::WriteWorkspaceFile { root_path, path, content } => {
+            crate::gavin::write_workspace_file(std::path::Path::new(&root_path), &path, &content)
+                .map(|_| Response::Ok)
+        }
+        Request::StatWorkspacePaths { root_path, paths } => Ok(Response::WorkspacePathStats {
+            stats: crate::gavin::stat_workspace_paths(std::path::Path::new(&root_path), &paths),
+        }),
         Request::CreatePlan {
             context_folder,
             file_name,
@@ -4020,6 +4034,13 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::SaveGroupTemplate { .. }
         | Request::DeleteGroupTemplate { .. }
         | Request::Shutdown
+        // Workspace files (v39) are the desktop's, for a root on THIS
+        // machine that the desktop cannot read itself. An agent has its
+        // own filesystem and no business reading or writing through the
+        // daemon.
+        | Request::ReadWorkspaceFile { .. }
+        | Request::WriteWorkspaceFile { .. }
+        | Request::StatWorkspacePaths { .. }
         | Request::Unknown => false,
     }
 }
@@ -4038,6 +4059,9 @@ fn is_privileged(req: &Request) -> bool {
             | Request::Shutdown
             | Request::EndOrphan { .. }
             | Request::SetRootConfigField { .. }
+            // Writes the MCP config that decides what the next agent
+            // runs, which is the same reach `SetRootConfigField` has.
+            | Request::WriteWorkspaceFile { .. }
     )
 }
 
@@ -4951,6 +4975,9 @@ mod tests {
             Request::SetRootConfigField { root_path: "/x".into(), key: "k".into(), value: "v".into() },
             Request::ScanGavinRoot { root_path: "/x".into() },
             Request::ReadPrd { root_path: "/x".into() },
+            Request::ReadWorkspaceFile { root_path: "/x".into(), path: "a.md".into() },
+            Request::WriteWorkspaceFile { root_path: "/x".into(), path: "a.md".into(), content: "c".into() },
+            Request::StatWorkspacePaths { root_path: "/x".into(), paths: vec!["a.md".into()] },
             Request::GetBoardByRoot { root_path: "/x".into() },
             Request::PromoteChecklistItem { plan_path: "/x/a.md".into(), item: "i".into() },
             Request::SetChecklistItem { path: "/x/a.md".into(), line_index: 0, expected_text: "i".into(), checked: true },

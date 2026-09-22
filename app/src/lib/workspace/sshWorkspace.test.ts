@@ -12,6 +12,7 @@ import {
   sshBadge,
   sshBanner,
   sshLimitation,
+  sshRunBlocked,
   validateSshInput,
   type SshLinks,
 } from "$lib/workspace/sshWorkspace";
@@ -64,6 +65,20 @@ describe("link state reducers", () => {
     expect([...readyHosts(links)]).toEqual(["a"]);
   });
 
+  it("ready records the host daemon's version, and the other states carry it", () => {
+    const ready = markReady({}, "box", "linux", 39);
+    expect(ready.box).toEqual({ status: "ready", hostOs: "linux", daemonVersion: 39 });
+    expect(markLost(ready, "box", "gone").box).toEqual({
+      status: "lost",
+      hostOs: "linux",
+      daemonVersion: 39,
+      message: "gone",
+    });
+    expect(markConnecting(ready, "box").box).toEqual({ status: "connecting", hostOs: "linux", daemonVersion: 39 });
+    // A ready event with no version leaves an earlier answer standing.
+    expect(markReady(ready, "box", null, null).box.daemonVersion).toBe(39);
+  });
+
   it("reducers return new objects and leave the input alone", () => {
     const before: SshLinks = {};
     const after = markConnecting(before, "box");
@@ -113,6 +128,33 @@ describe("linkFor / sshBadge / sshBanner", () => {
       tone: "muted",
       text: "Connecting to elsewhere over ssh…",
     });
+  });
+});
+
+describe("sshRunBlocked", () => {
+  it("never blocks a local workspace", () => {
+    expect(sshRunBlocked(ws("near"), {})).toBeNull();
+    expect(sshRunBlocked(null, {})).toBeNull();
+  });
+
+  it("blocks while the host is connecting or lost, naming the host", () => {
+    expect(sshRunBlocked(ws("a", "box"), {})).toMatch(/Connecting to box/);
+    expect(sshRunBlocked(ws("a", "box"), markConnecting({}, "box"))).toMatch(/Connecting to box/);
+    expect(sshRunBlocked(ws("a", "box"), markLost({}, "box", "x"))).toMatch(/Not connected to box/);
+  });
+
+  it("blocks on a host daemon older than the workspace-file requests, against the HOST's version", () => {
+    const old = markReady({}, "box", "linux", 38);
+    const blocked = sshRunBlocked(ws("a", "box"), old);
+    expect(blocked).toMatch(/v39 on box/);
+    expect(blocked).toMatch(/v38/);
+    const unknown = markReady({}, "box", "linux");
+    expect(sshRunBlocked(ws("a", "box"), unknown)).toMatch(/v39 on box/);
+  });
+
+  it("lets a run through once the host's daemon is new enough", () => {
+    expect(sshRunBlocked(ws("a", "box"), markReady({}, "box", "linux", 39))).toBeNull();
+    expect(sshRunBlocked(ws("a", "box"), markReady({}, "box", "linux", 40))).toBeNull();
   });
 });
 

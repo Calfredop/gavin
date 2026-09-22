@@ -30,7 +30,7 @@ import {
   sshLinks,
   type RemoteLinkEvent,
 } from "$lib/workspace/sshLinkState";
-import { isSshWorkspace, readyHosts, SSH_LIMITATION } from "$lib/workspace/sshWorkspace";
+import { isSshWorkspace, readyHosts } from "$lib/workspace/sshWorkspace";
 import { followMovedCardPath, followRenamedContext } from "$lib/files/planExplorer";
 import { retargetPath } from "$lib/files/fileTree";
 import {
@@ -3011,14 +3011,6 @@ export async function openFileInSplit(anchorSessionId: string, path: string): Pr
   const state = get(layoutState);
   const location = activePageLocation(state);
   if (!location) return;
-  // The viewer reads through this machine's filesystem; a path in an ssh
-  // workspace is on the host. Said here, at the one door every "open
-  // this file" affordance comes through, rather than as a read error in
-  // a blank pane.
-  if (isSshWorkspace(state.workspaces.find((w) => w.id === location.workspaceId))) {
-    await showAlert({ title: "That file is on the other machine", lines: [SSH_LIMITATION] });
-    return;
-  }
   const tabId = crypto.randomUUID();
   const newTree = layout.splitLeaf(location.tree, anchorSessionId, "row", tabId);
   const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);

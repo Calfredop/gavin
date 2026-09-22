@@ -181,6 +181,17 @@ fn bridge_prints_the_banner_then_relays_both_ways_until_stdin_closes() {
     let home_on_wire = banner["home"].as_str().expect("home is a string");
     assert!(!home_on_wire.is_empty());
     assert!(!home_on_wire.contains('\\'), "paths cross the wire with forward slashes: {home_on_wire}");
+    // The `gavin-mcp` beside the daemon binary, or null when this build
+    // has not produced one -- `cargo test -p gavin-daemon` does not build
+    // the sibling, so either answer is honest here; a named one must be
+    // the sibling and on the wire's slashes.
+    match banner["mcpPath"].as_str() {
+        None => assert!(banner["mcpPath"].is_null(), "{}", banner["mcpPath"]),
+        Some(mcp) => {
+            assert!(mcp.ends_with("gavin-mcp") || mcp.ends_with("gavin-mcp.exe"), "{mcp}");
+            assert!(!mcp.contains('\\'), "{mcp}");
+        }
+    }
 
     write_message(&mut stdin, &Request::GetProtocolVersion).unwrap();
     let reply: Option<Response> = read_message(&mut stdout).unwrap();

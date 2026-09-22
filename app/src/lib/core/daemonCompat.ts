@@ -342,6 +342,15 @@ export const FEATURE_MIN_VERSION = {
   // surface that can produce the payload, and it is disabled with this
   // reason rather than offering a choice that goes nowhere.
   railTrigger: 36,
+  // Card runs on an ssh workspace: the three workspace-file requests the
+  // desktop sends the HOST's daemon to read the card, classify its
+  // attachments and write the agent-integration files there
+  // (`2026-09-22-ssh-card-runs-design.md`). Checked against the host
+  // daemon's version (`sshRunBlocked` in sshWorkspace.ts), never the
+  // local one's: the local verdict says nothing about the machine the
+  // run happens on. The consumer is the Run pill on an ssh workspace's
+  // board, and the launch seam behind it.
+  sshCardRuns: 39,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

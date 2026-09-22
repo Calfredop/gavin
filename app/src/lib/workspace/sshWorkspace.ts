@@ -9,6 +9,7 @@
 // `docs/superpowers/specs/2026-09-22-ssh-workspaces-design.md` §4.
 
 import type { SshConfig, Workspace } from "$lib/core/workspace";
+import { FEATURE_MIN_VERSION } from "$lib/core/daemonCompat";
 
 /// A workspace that lives on another machine, reached over ssh.
 export function isSshWorkspace(ws: Workspace | null | undefined): ws is Workspace & { ssh: SshConfig } {
@@ -22,7 +23,7 @@ export function isSshWorkspace(ws: Workspace | null | undefined): ws is Workspac
 /// machine's disk: the card-runs and git/files follow-up cards remove
 /// them one by one.
 export const SSH_LIMITATION =
-  "Not available for ssh workspaces yet — the Git tab, Files tab and card runs work on this machine's disk, and this workspace lives on another.";
+  "Not available for ssh workspaces yet — the Git tab, Files tab, worktrees and the setup wizard work on this machine's disk, and this workspace lives on another.";
 
 /// The limitation for a workspace, or null when there is none: a local
 /// workspace has every surface.
@@ -37,6 +38,10 @@ export interface SshLink {
   /// What the host runs, from the bridge's banner, once a link has been
   /// up. Kept across a reconnect so a badge does not blink blank.
   hostOs?: string;
+  /// The HOST daemon's protocol version, once a link has been up. What
+  /// anything needing a newer daemon on the host gates on -- the local
+  /// verdict says nothing about the machine the run happens on.
+  daemonVersion?: number;
   /// Why the link is lost, in ssh's or the app's words. Only ever set
   /// with `lost`.
   message?: string;
@@ -61,22 +66,59 @@ export function seedConnecting(links: SshLinks, workspaces: Workspace[]): SshLin
   return next ?? links;
 }
 
-export function markConnecting(links: SshLinks, host: string): SshLinks {
-  const previous = links[host];
-  return { ...links, [host]: previous?.hostOs ? { status: "connecting", hostOs: previous.hostOs } : { status: "connecting" } };
+/// What a link keeps across its states: the facts the last ready event
+/// established about the host.
+function carried(previous: SshLink | undefined): Pick<SshLink, "hostOs" | "daemonVersion"> {
+  const kept: Pick<SshLink, "hostOs" | "daemonVersion"> = {};
+  if (previous?.hostOs) kept.hostOs = previous.hostOs;
+  if (previous?.daemonVersion !== undefined) kept.daemonVersion = previous.daemonVersion;
+  return kept;
 }
 
-export function markReady(links: SshLinks, host: string, hostOs: string | null | undefined): SshLinks {
-  const os = hostOs ?? links[host]?.hostOs;
-  return { ...links, [host]: os ? { status: "ready", hostOs: os } : { status: "ready" } };
+export function markConnecting(links: SshLinks, host: string): SshLinks {
+  return { ...links, [host]: { status: "connecting", ...carried(links[host]) } };
+}
+
+export function markReady(
+  links: SshLinks,
+  host: string,
+  hostOs: string | null | undefined,
+  daemonVersion?: number | null
+): SshLinks {
+  const link: SshLink = { status: "ready", ...carried(links[host]) };
+  if (hostOs) link.hostOs = hostOs;
+  if (daemonVersion !== null && daemonVersion !== undefined) link.daemonVersion = daemonVersion;
+  return { ...links, [host]: link };
 }
 
 export function markLost(links: SshLinks, host: string, message: string | null | undefined): SshLinks {
-  const previous = links[host];
-  const link: SshLink = { status: "lost" };
-  if (previous?.hostOs) link.hostOs = previous.hostOs;
+  const link: SshLink = { status: "lost", ...carried(links[host]) };
   if (message) link.message = message;
   return { ...links, [host]: link };
+}
+
+/// Whether a card can be run on this workspace right now, and if not,
+/// why -- null for a local workspace, whose gates are elsewhere.
+///
+/// Three answers for an ssh workspace, in the order they are checked:
+/// the link is not up (nothing can be composed or launched), the host's
+/// daemon predates the workspace-file requests a run there needs
+/// (`FEATURE_MIN_VERSION.sshCardRuns`, checked against the HOST's version
+/// and never the local daemon's), or nothing -- the run goes ahead. The
+/// launch seam asks the same question as the Run pill, so a queued intent
+/// and a rail step refuse on the same evidence the pill shows.
+export function sshRunBlocked(ws: Workspace | null | undefined, links: SshLinks): string | null {
+  if (!isSshWorkspace(ws)) return null;
+  const host = ws.ssh.host;
+  const link = linkFor(links, ws);
+  if (!link || link.status === "connecting") return `Connecting to ${host} over ssh — try again in a moment.`;
+  if (link.status === "lost") return `Not connected to ${host} — reconnect the workspace to run cards there.`;
+  const needed = FEATURE_MIN_VERSION.sshCardRuns;
+  if (link.daemonVersion === undefined || link.daemonVersion < needed) {
+    const running = link.daemonVersion === undefined ? "an older version" : `v${link.daemonVersion}`;
+    return `Needs gavin-daemon v${needed} on ${host}; the daemon there is ${running}. Update it on the host and reconnect.`;
+  }
+  return null;
 }
 
 /// The hosts whose link is up -- what `staleLayoutTabIds` needs to know

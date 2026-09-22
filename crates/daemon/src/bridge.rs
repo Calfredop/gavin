@@ -69,6 +69,12 @@ struct Banner {
     daemon_token: Option<String>,
     host_os: &'static str,
     home: Option<String>,
+    /// The `gavin-mcp` beside this binary, when there is one: the path
+    /// the desktop writes into an ssh workspace's MCP config, so the
+    /// agent that runs here finds its tools here. `None` says the host
+    /// has none installed, which the desktop reports rather than writing
+    /// a path that is not there.
+    mcp_path: Option<String>,
 }
 
 pub fn run(opts: Options) -> anyhow::Result<()> {
@@ -80,6 +86,7 @@ pub fn run(opts: Options) -> anyhow::Result<()> {
         daemon_token: read_daemon_token(),
         host_os: std::env::consts::OS,
         home: home_dir(),
+        mcp_path: mcp_beside_this_binary(),
     };
     let stdout = std::io::stdout();
     protocol::write_message(&mut stdout.lock(), &banner)?;
@@ -248,6 +255,16 @@ fn read_daemon_token() -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// `gavin-mcp` next to this executable, the way the desktop app resolves
+/// its own (`resolve_mcp_binary_path`): the three binaries of a build are
+/// siblings by construction, so beside the daemon is where an install
+/// puts it. Forward-slashed for the wire.
+fn mcp_beside_this_binary() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let path = exe.parent()?.join(format!("gavin-mcp{}", std::env::consts::EXE_SUFFIX));
+    path.is_file().then(|| protocol::wire_path(&path))
 }
 
 /// This user's home on this host, forward-slashed like every path on the
