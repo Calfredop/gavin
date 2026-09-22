@@ -201,6 +201,8 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   superpowers_install: ["ordinary"],
   setup_agent_integration: ["ordinary"],
   agent_profiles: ["ordinary"],
+  // A read: which agent CLIs resolve on PATH. It spawns none of them.
+  detect_agent_binaries: ["ordinary"],
   agent_model_catalog: ["ordinary"],
   agent_usage: ["ordinary"],
   pr_status: ["ordinary"],
