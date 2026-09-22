@@ -67,6 +67,13 @@ export interface RunChanges {
   /// Changes view asks. Pass it back to `gitDiffSince` so a file's diff
   /// covers exactly what its row counted.
   untilSha: string | null;
+  /// Every peer baseline that descends from this one -- the runs launched
+  /// in this checkout after this run, nearest first, each once. Empty for
+  /// the unbounded question. TypeSafe change attribution reads it to leave
+  /// those runs out of a bounded window's co-tenants (`coTenants` in
+  /// changeAttribution.ts). Optional because a fixture built before it
+  /// existed has no opinion about it; the host always sends it.
+  laterBaselines?: string[];
 }
 
 export interface DiscardReport {

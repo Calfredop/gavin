@@ -64,6 +64,14 @@ pub struct RunChanges {
     /// resolved twice is a bound that can differ between the list and
     /// the diff under it.
     pub until_sha: Option<String>,
+    /// Every peer baseline that DESCENDS from this one -- the runs
+    /// launched in this checkout after this run -- nearest first, each
+    /// once. Empty for the unbounded question. The nearest is the bound
+    /// above; the whole set is what change attribution needs: a peer
+    /// launched after the bound is no co-tenant of a bounded window
+    /// either, and only git can say which peers those are, because
+    /// ancestry is not a string comparison the frontend could make.
+    pub later_baselines: Vec<String>,
 }
 
 /// What a discard actually did. Shaped like `RemovalReport` in
@@ -152,8 +160,10 @@ pub fn head_sha(cwd: &str) -> Result<Option<String>, String> {
     Ok((sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())).then_some(sha))
 }
 
-/// The nearest baseline in `peers` that comes AFTER `base` in this
-/// checkout's history, or `None` when nothing was launched here later.
+/// Every baseline in `peers` that comes AFTER `base` in this checkout's
+/// history, nearest first, each once -- empty when nothing was launched
+/// here later. The first is the window's bound (`until_sha`); the rest
+/// are the runs a bounded window also leaves out (`later_baselines`).
 ///
 /// This is what makes a run's changes the RUN's. `git diff <base>` in a
 /// checkout several agents share answers "what does this tree look like
@@ -174,10 +184,13 @@ pub fn head_sha(cwd: &str) -> Result<Option<String>, String> {
 /// same commit are measured identically, and that is the truth about
 /// them: nothing here can say which of them wrote what, and a
 /// zero-length window would say they wrote nothing.
-fn next_baseline(root: &str, base: &str, peers: &[String]) -> Result<Option<String>, String> {
-    let mut best: Option<(u32, String)> = None;
+fn later_baselines(root: &str, base: &str, peers: &[String]) -> Result<Vec<String>, String> {
+    let mut later: Vec<(u32, String)> = Vec::new();
     for peer in peers {
         if peer.is_empty() || peer == base || !commit_exists(root, peer)? {
+            continue;
+        }
+        if later.iter().any(|(_, seen)| seen == peer) {
             continue;
         }
         if run_git_ro(root, &["merge-base", "--is-ancestor", base, peer])?.code != 0 {
@@ -191,20 +204,13 @@ fn next_baseline(root: &str, base: &str, peers: &[String]) -> Result<Option<Stri
         if distance == 0 {
             continue;
         }
-        // Ties broken by the sha itself, so two peers the same distance
-        // away do not make the answer depend on the order the app
-        // happened to send them in.
-        let closer = match &best {
-            None => true,
-            Some((best_distance, best_sha)) => {
-                distance < *best_distance || (distance == *best_distance && peer < best_sha)
-            }
-        };
-        if closer {
-            best = Some((distance, peer.clone()));
-        }
+        later.push((distance, peer.clone()));
     }
-    Ok(best.map(|(_, sha)| sha))
+    // Ties broken by the sha itself, so two peers the same distance away
+    // do not make the answer depend on the order the app happened to
+    // send them in.
+    later.sort();
+    Ok(later.into_iter().map(|(_, sha)| sha).collect())
 }
 
 /// `peers` is every OTHER baseline recorded against the same checkout,
@@ -227,7 +233,8 @@ pub fn run_changes(cwd: &str, base_sha: &str, peers: &[String]) -> Result<RunCha
         ok(run_git_ro(&root, &["log", "-1", "--format=%s", base_sha])?)?.stdout_str().trim().to_string(),
     );
 
-    out.until_sha = next_baseline(&root, base_sha, peers)?;
+    out.later_baselines = later_baselines(&root, base_sha, peers)?;
+    out.until_sha = out.later_baselines.first().cloned();
     let until = out.until_sha.clone();
 
     // The worktree against the baseline, staged and unstaged together:
@@ -515,6 +522,41 @@ mod tests {
         let changes = run_changes(cwd(&dir), &base, &[far, near.clone()]).unwrap();
         assert_eq!(changes.until_sha.as_deref(), Some(near.as_str()));
         assert_eq!(changes.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["mine.txt"]);
+    }
+
+    /// Attribution's co-tenant rule needs EVERY later run, not only the
+    /// nearest: a peer launched after the bound is no co-tenant of this
+    /// window either, and only git can say which peers those are. Sent
+    /// in a scrambled order with this run's own commit and an older peer
+    /// mixed in, so the answer cannot come from the order or from a
+    /// string comparison.
+    #[test]
+    fn every_later_baseline_is_reported_nearest_first() {
+        let dir = temp_repo();
+        let older = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        write(&dir, "before.txt", "zero\n");
+        git(cwd(&dir), &["add", "-A"]);
+        git(cwd(&dir), &["commit", "-qm", "before this run"]);
+        let base = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        write(&dir, "mine.txt", "one\n");
+        git(cwd(&dir), &["add", "-A"]);
+        git(cwd(&dir), &["commit", "-qm", "this run"]);
+        let near = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        write(&dir, "next.txt", "two\n");
+        git(cwd(&dir), &["add", "-A"]);
+        git(cwd(&dir), &["commit", "-qm", "the run after that"]);
+        let far = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+
+        let peers = [far.clone(), older, base.clone(), near.clone(), far.clone()];
+        let changes = run_changes(cwd(&dir), &base, &peers).unwrap();
+        assert_eq!(changes.until_sha.as_deref(), Some(near.as_str()));
+        assert_eq!(
+            changes.later_baselines,
+            vec![near, far],
+            "nearest first, each once; the older peer and this run's own commit are not later"
+        );
+        // The unbounded question has no later peers by construction.
+        assert!(run_changes(cwd(&dir), &base, &[]).unwrap().later_baselines.is_empty());
     }
 
     /// A run launched on a branch this one never touched is not "after"
