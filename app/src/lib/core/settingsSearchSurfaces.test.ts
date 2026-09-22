@@ -92,3 +92,53 @@ describe("settings search stays in lockstep with its panels", () => {
     checkFile("GlobalSettingsView.svelte");
   });
 });
+
+// The by-meaning fallback (settingsSearchFallback.ts), as the strings a
+// panel needs for it to run at all. The logic is proven in its own test;
+// this is the static pre-flight over the two templates and the copy that
+// says what leaves the machine -- the rendered pass is the owner's.
+describe("the by-meaning fallback", () => {
+  it.each(["SettingsHubView.svelte", "GlobalSettingsView.svelte"])("is wired into %s", (file) => {
+    const text = source(file);
+    expect(text).toMatch(
+      /import \{\s*createSettingsSearchFallback,\s*fallbackAllowed,\s*withClosestMatch,\s*type ClosestMatch,\s*\} from "\$lib\/core\/settingsSearchFallback";/
+    );
+    // The literal search feeds the box's count, so it keeps reading what
+    // the matcher found; the projected one feeds every section's hidden=.
+    expect(text).toContain("const literalFilter = $derived(searchSettings(SECTIONS, settingsQuery));");
+    expect(text).toContain("matches={literalFilter.filtering ? literalFilter : null}");
+    expect(text).toContain(
+      "const settingsFilter = $derived(withClosestMatch(literalFilter, closestMatch, settingsQuery));"
+    );
+    expect(text).toContain("searchFallback.note(SECTIONS, settingsQuery, literalFilter);");
+    expect(text).toContain("searchFallback.dispose()");
+    // Gated on the turn verdict's toggle and key, through the host command
+    // that holds the key.
+    expect(text).toContain("ask: backend.typesafeAsk,");
+    expect(text).toContain("allowed: () => fallbackAllowed($typesafeSettings),");
+    expect(text).toMatch(/import \{ typesafeSettings \} from "\$lib\/agents\/turnVerdictState";/);
+    // The line that says it was not a hit.
+    expect(text).toContain("{#if settingsFilter.closest}");
+    expect(text).toContain(">Closest match<");
+    expect(text).toContain(".nav-closest {");
+  });
+
+  it("is named in the Turn verdict section's what-leaves-this-machine copy", () => {
+    const text = source("GlobalSettingsView.svelte");
+    expect(text).toContain("asks the same service when");
+    expect(text).toContain("it sends the words in the box and the sections' own keyword");
+    expect(text).toContain("nothing from any workspace");
+    expect(text).toContain('"Closest match" line, never as a hit');
+    // And the section is findable by what it now also governs.
+    expect(text).toContain('"settings search",');
+    expect(text).toContain('"closest match",');
+  });
+
+  it("freezes the question, pins the model and keeps the measured floor", () => {
+    const text = source("settingsSearchFallback.ts");
+    expect(text).toContain('import { TYPESAFE_MODEL } from "$lib/agents/turnVerdict";');
+    expect(text).not.toContain("jev-latest");
+    expect(text).toContain("export const FALLBACK_MIN_CONFIDENCE = 0.5;");
+    expect(source("backend.ts")).toContain("export function typesafeAsk(request: unknown): Promise<unknown>");
+  });
+});

@@ -49,6 +49,12 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { searchSettings, type SettingsSection } from "$lib/core/settingsSearch";
+  import {
+    createSettingsSearchFallback,
+    fallbackAllowed,
+    withClosestMatch,
+    type ClosestMatch,
+  } from "$lib/core/settingsSearchFallback";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, type PauseCycle, validateCycle } from "$lib/agents/agentPause";
   import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "$lib/core/confirmGate";
@@ -410,6 +416,8 @@
         "asking",
         "failure cause",
         "jev",
+        "settings search",
+        "closest match",
       ],
     },
     {
@@ -447,7 +455,27 @@
     },
   ];
   let settingsQuery = $state("");
-  const settingsFilter = $derived(searchSettings(SECTIONS, settingsQuery));
+  const literalFilter = $derived(searchSettings(SECTIONS, settingsQuery));
+  /// When the matcher finds nothing: the by-meaning fallback's answer for
+  /// the settled query, or null. See settingsSearchFallback.ts for the
+  /// four promises it keeps. Behind the turn verdict's toggle and key
+  /// below -- the one consent that covers every TypeSafe request the app
+  /// makes, and whose copy names what this one sends.
+  let closestMatch = $state<ClosestMatch | null>(null);
+  const searchFallback = createSettingsSearchFallback({
+    ask: backend.typesafeAsk,
+    allowed: () => fallbackAllowed($typesafeSettings),
+    onClosest: (c) => (closestMatch = c),
+  });
+  $effect(() => {
+    searchFallback.note(SECTIONS, settingsQuery, literalFilter);
+  });
+  $effect(() => () => searchFallback.dispose());
+  /// What the panel shows: the literal result, or under an empty one the
+  /// closest section, marked. Every `hidden=` below reads this; the box's
+  /// own count reads the literal result, so it keeps saying what the
+  /// matcher found.
+  const settingsFilter = $derived(withClosestMatch(literalFilter, closestMatch, settingsQuery));
   let selectedSection = $state(SECTIONS[0].id);
   $effect(() => {
     if (settingsFilter.visible(selectedSection)) return;
@@ -467,10 +495,13 @@
         class="settings-search"
         label="Search settings"
         placeholder="Search settings…"
-        matches={settingsFilter.filtering ? settingsFilter : null}
+        matches={literalFilter.filtering ? literalFilter : null}
       />
     </div>
     <nav class="nav-list" aria-label="Settings sections">
+      {#if settingsFilter.closest}
+        <span class="nav-closest">Closest match</span>
+      {/if}
       {#each SECTIONS as section (section.id)}
         <button
           type="button"
@@ -850,7 +881,11 @@
         for no other, gavin sends the last 40 rows of that terminal — the agent's output as it
         appears on screen, which can include file contents, paths and anything else it printed — to
         <code>api.typesafe.ai</code>, once each time that session goes quiet. Nothing is sent for a
-        terminal you opened yourself. It costs about $0.00007 a turn, on your key.
+        terminal you opened yourself. It costs about $0.00007 a turn, on your key. The settings
+        search box — this page's and each workspace's Settings tab's — asks the same service when
+        nothing matches what you typed: it sends the words in the box and the sections' own keyword
+        lists, and nothing from any workspace, for about $0.00004 a query. The answer is shown under
+        a "Closest match" line, never as a hit.
       </p>
       <div class="row">
         <span>Second opinion</span>
@@ -1141,6 +1176,13 @@
     padding: 6px;
     overflow-y: auto;
     min-height: 0;
+  }
+  /* The line over a section the by-meaning fallback picked: it is not a
+     hit, and the box's count above still says zero. */
+  .nav-closest {
+    padding: 4px 8px 2px;
+    color: var(--text-subtle);
+    font-size: 0.72rem;
   }
   .nav-item {
     display: block;

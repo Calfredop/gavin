@@ -72,6 +72,13 @@
   import ColourPicker from "$lib/core/ColourPicker.svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import { searchSettings, type SettingsSection } from "$lib/core/settingsSearch";
+  import {
+    createSettingsSearchFallback,
+    fallbackAllowed,
+    withClosestMatch,
+    type ClosestMatch,
+  } from "$lib/core/settingsSearchFallback";
+  import { typesafeSettings } from "$lib/agents/turnVerdictState";
   import Modal from "$lib/core/Modal.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import AgentChangeWizard from "$lib/workspace/AgentChangeWizard.svelte";
@@ -227,7 +234,28 @@
     { id: "danger-zone", keywords: ["Danger zone", "Delete workspace", "delete"] },
   ];
   let settingsQuery = $state("");
-  const settingsFilter = $derived(searchSettings(SECTIONS, settingsQuery));
+  const literalFilter = $derived(searchSettings(SECTIONS, settingsQuery));
+  /// When the matcher finds nothing: the by-meaning fallback's answer for
+  /// the settled query, or null. See settingsSearchFallback.ts for the
+  /// four promises it keeps. Behind the turn verdict's toggle and key on
+  /// the app-wide Settings page -- the one consent that covers every
+  /// TypeSafe request the app makes, and whose copy names what this one
+  /// sends.
+  let closestMatch = $state<ClosestMatch | null>(null);
+  const searchFallback = createSettingsSearchFallback({
+    ask: backend.typesafeAsk,
+    allowed: () => fallbackAllowed($typesafeSettings),
+    onClosest: (c) => (closestMatch = c),
+  });
+  $effect(() => {
+    searchFallback.note(SECTIONS, settingsQuery, literalFilter);
+  });
+  $effect(() => () => searchFallback.dispose());
+  /// What the panel shows: the literal result, or under an empty one the
+  /// closest section, marked. Every `hidden=` below reads this; the box's
+  /// own count reads the literal result, so it keeps saying what the
+  /// matcher found.
+  const settingsFilter = $derived(withClosestMatch(literalFilter, closestMatch, settingsQuery));
   /// Which section the left navigator has selected. Search still hides
   /// unmatched sections; the nav only offers the ones that remain, and
   /// the content pane shows the selection rather than every match at
@@ -609,10 +637,13 @@
           class="settings-search"
           label="Search settings"
           placeholder="Search settings…"
-          matches={settingsFilter.filtering ? settingsFilter : null}
+          matches={literalFilter.filtering ? literalFilter : null}
         />
       </div>
       <nav class="nav-list" aria-label="Settings sections">
+        {#if settingsFilter.closest}
+          <span class="nav-closest">Closest match</span>
+        {/if}
         {#each SECTIONS as section (section.id)}
           <button
             type="button"
@@ -1390,6 +1421,13 @@
     padding: 6px;
     overflow-y: auto;
     min-height: 0;
+  }
+  /* The line over a section the by-meaning fallback picked: it is not a
+     hit, and the box's count above still says zero. */
+  .nav-closest {
+    padding: 4px 8px 2px;
+    color: var(--text-subtle);
+    font-size: 0.72rem;
   }
   .nav-item {
     display: block;
