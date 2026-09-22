@@ -52,7 +52,7 @@ beforeEach(() => {
   __resetForTesting();
   vi.mocked(backend.typesafeAsk).mockReset();
   vi.mocked(backend.typesafeSettings).mockReset();
-  typesafeSettings.set({ enabled: true, hasKey: true });
+  typesafeSettings.set({ enabled: true, hasKey: true, changeAttribution: false });
 });
 
 afterEach(() => {
@@ -61,7 +61,7 @@ afterEach(() => {
 
 describe("askCommitCardLink", () => {
   it("asks nothing while the switch is off, and leaves no slot behind", async () => {
-    typesafeSettings.set({ enabled: false, hasKey: true });
+    typesafeSettings.set({ enabled: false, hasKey: true, changeAttribution: false });
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
     expect(backend.typesafeAsk).not.toHaveBeenCalled();
@@ -71,7 +71,7 @@ describe("askCommitCardLink", () => {
   });
 
   it("asks nothing without a key", async () => {
-    typesafeSettings.set({ enabled: true, hasKey: false });
+    typesafeSettings.set({ enabled: true, hasKey: false, changeAttribution: false });
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
     expect(backend.typesafeAsk).not.toHaveBeenCalled();
@@ -83,7 +83,7 @@ describe("askCommitCardLink", () => {
     // tab can be the first thing opened. Null must not mean "off" for
     // ever; it means "ask the host".
     typesafeSettings.set(null);
-    vi.mocked(backend.typesafeSettings).mockResolvedValue({ enabled: true, hasKey: true });
+    vi.mocked(backend.typesafeSettings).mockResolvedValue({ enabled: true, hasKey: true, changeAttribution: false });
     vi.mocked(backend.typesafeAsk).mockResolvedValue(body("card_01", 0.9, { card_01: 0.9, card_02: 0.1, none: 0 }));
     askCommitCardLink(WS, "abc", COMMIT, CARDS);
     await flush();
@@ -271,7 +271,7 @@ describe("askCardsByMeaning", () => {
   });
 
   it("asks nothing while the switch is off", async () => {
-    typesafeSettings.set({ enabled: false, hasKey: false });
+    typesafeSettings.set({ enabled: false, hasKey: false, changeAttribution: false });
     askCardsByMeaning(WS, "history", CARDS);
     vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
     await flush();

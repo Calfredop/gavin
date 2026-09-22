@@ -175,6 +175,12 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   add_external_gavin_context: ["ordinary"],
   remove_external_gavin_context: ["ordinary"],
   gavin_root_exists: ["ordinary"],
+  // Opens the ssh connection to the host a workspace already names --
+  // the Reconnect button, and the first connect after a workspace is made
+  // an ssh one. Ordinary: the host it reaches is the one already in the
+  // workspace list, put there through the ssh modal, and a failed connect
+  // removes nothing. It is not a way to name a NEW host.
+  connect_remote_workspace: ["ordinary"],
   get_board_tabs: ["ordinary"],
   get_card_tabs: ["ordinary"],
   get_session_baselines: ["ordinary"],

@@ -145,31 +145,31 @@ describe("sshRunBlocked", () => {
   });
 
   it("blocks on a host daemon older than the workspace-file requests, against the HOST's version", () => {
-    const old = markReady({}, "box", "linux", 38);
+    const old = markReady({}, "box", "linux", 39);
     const blocked = sshRunBlocked(ws("a", "box"), old);
-    expect(blocked).toMatch(/v39 on box/);
-    expect(blocked).toMatch(/v38/);
+    expect(blocked).toMatch(/v40 on box/);
+    expect(blocked).toMatch(/v39/);
     const unknown = markReady({}, "box", "linux");
-    expect(sshRunBlocked(ws("a", "box"), unknown)).toMatch(/v39 on box/);
+    expect(sshRunBlocked(ws("a", "box"), unknown)).toMatch(/v40 on box/);
   });
 
   it("lets a run through once the host's daemon is new enough", () => {
-    expect(sshRunBlocked(ws("a", "box"), markReady({}, "box", "linux", 39))).toBeNull();
     expect(sshRunBlocked(ws("a", "box"), markReady({}, "box", "linux", 40))).toBeNull();
+    expect(sshRunBlocked(ws("a", "box"), markReady({}, "box", "linux", 41))).toBeNull();
   });
 });
 
 describe("sshTabBlocked", () => {
-  it("never blocks a local workspace, and opens the tabs once the host is v40", () => {
+  it("never blocks a local workspace, and opens the tabs once the host is v41", () => {
     expect(sshTabBlocked(ws("near"), {})).toBeNull();
-    expect(sshTabBlocked(ws("a", "box"), markReady({}, "box", "linux", 40))).toBeNull();
+    expect(sshTabBlocked(ws("a", "box"), markReady({}, "box", "linux", 41))).toBeNull();
   });
 
-  it("blocks while connecting or lost, and on a host older than v40", () => {
+  it("blocks while connecting or lost, and on a host older than v41", () => {
     expect(sshTabBlocked(ws("a", "box"), {})).toMatch(/Connecting to box/);
     expect(sshTabBlocked(ws("a", "box"), markLost({}, "box", "x"))).toMatch(/Not connected to box/);
-    // The Git tab needs v40 even though card runs (v39) are fine.
-    expect(sshTabBlocked(ws("a", "box"), markReady({}, "box", "linux", 39))).toMatch(/v40 on box/);
+    // The Git tab needs v41 even though card runs (v40) are fine.
+    expect(sshTabBlocked(ws("a", "box"), markReady({}, "box", "linux", 40))).toMatch(/v41 on box/);
   });
 });
 
