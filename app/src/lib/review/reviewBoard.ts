@@ -49,6 +49,15 @@ export interface ReviewCandidate {
   /// The baseline the files were measured from. Two cards that share one
   /// share their whole measurement; see `sameBaselineHint`.
   baseSha: string | null;
+  /// Which card each of this run's files looks like, for the files
+  /// TypeSafe change attribution placed confidently (root-relative path
+  /// -> card id; `changeAttribution.ts`). A card CLAIMS a file for the
+  /// clustering only when nobody else was named for it, so two cards
+  /// that were measured identically stop colliding on the files that
+  /// are plainly one of theirs. Absent or empty is today's reading:
+  /// every listed file is claimed. Never read by anything that decides
+  /// what a card touched -- `files` stays the whole measured list.
+  owners?: ReadonlyMap<string, string>;
 }
 
 /// One cluster in the left list.
@@ -68,6 +77,10 @@ export interface ReviewGroup {
   /// the list, so what a group means and what it is called cannot drift
   /// apart.
   hint: string | null;
+  /// How many of the files these cards list were taken out of the
+  /// clustering because attribution placed them with one card. Zero
+  /// without attribution, and then the group is exactly today's.
+  setAside: number;
   cards: ReviewCandidate[];
 }
 
@@ -383,6 +396,19 @@ export function criticalReviewOffer(
 
 // ---- Grouping ---------------------------------------------------------------
 
+/// The files this card claims for the clustering: everything it lists,
+/// minus the files attribution placed with another card. Without an
+/// `owners` map it is the list itself.
+function claimedFiles(candidate: ReviewCandidate): string[] {
+  const files = candidate.files ?? [];
+  const owners = candidate.owners;
+  if (!owners || owners.size === 0) return [...files];
+  return files.filter((file) => {
+    const owner = owners.get(file);
+    return owner === undefined || owner === candidate.card.id;
+  });
+}
+
 /// Union-find over the candidates: two cards join when they share a
 /// file, and joining is transitive, so A-B and B-C put all three in one
 /// group even though A and C touched nothing in common. That is the
@@ -420,7 +446,7 @@ function clusterIndexes(candidates: ReviewCandidate[]): Map<number, number[]> {
   // project's cards in this one's group.
   const owner = new Map<string, number>();
   candidates.forEach((candidate, i) => {
-    for (const file of candidate.files ?? []) {
+    for (const file of claimedFiles(candidate)) {
       const key = `${candidate.checkout ?? ""}\0${file}`;
       const first = owner.get(key);
       if (first === undefined) owner.set(key, i);
@@ -441,10 +467,13 @@ function clusterIndexes(candidates: ReviewCandidate[]): Map<number, number[]> {
 /// The cluster's files, most-shared first and alphabetical within a
 /// tie. The files several of these cards wrote to are the reason the
 /// cluster exists, so they are what the header should name.
-function rankFiles(cards: ReviewCandidate[]): string[] {
+function rankFiles(
+  cards: ReviewCandidate[],
+  filesOf: (candidate: ReviewCandidate) => readonly string[]
+): string[] {
   const counts = new Map<string, number>();
   for (const candidate of cards) {
-    for (const file of candidate.files ?? []) {
+    for (const file of filesOf(candidate)) {
       counts.set(file, (counts.get(file) ?? 0) + 1);
     }
   }
@@ -489,16 +518,42 @@ export function groupCandidates(candidates: ReviewCandidate[]): ReviewGroup[] {
   const groups: ReviewGroup[] = [];
   for (const indexes of clusterIndexes(withFiles).values()) {
     const cards = indexes.sort((a, b) => a - b).map((i) => withFiles[i]);
-    const files = rankFiles(cards);
+    const claimedBy = new Map(cards.map((c) => [c, new Set(claimedFiles(c))] as const));
+    const claimed = rankFiles(cards, (c) => [...(claimedBy.get(c) ?? [])]);
+    const listed = rankFiles(cards, (c) => c.files ?? []);
+    // What attribution took out of the clustering: a file some card here
+    // lists and does not claim. Zero without attribution, and then
+    // everything below is exactly today's grouping.
+    const setAside = listed.filter((file) =>
+      cards.some((c) => (c.files ?? []).includes(file) && !claimedBy.get(c)?.has(file))
+    ).length;
+    // ...and what still holds the group together: a file two or more of
+    // its cards claim.
+    const binding = claimed.filter(
+      (file) => cards.filter((c) => claimedBy.get(c)?.has(file)).length >= 2
+    ).length;
+    // The header names the files that bind the group. A card whose every
+    // file was placed with somebody else claims nothing, and its header
+    // still names what it lists: the list is a hint, never a filter, and
+    // the card's own row already says how many files it has.
+    const files = claimed.length > 0 ? claimed : listed;
     const shared = sharesOneBaseline(cards);
     groups.push({
       // The checkout is in the id for the same reason it keys the
       // clustering: two worktrees with the same files are two groups,
-      // and one id for both would fold and unfold them together.
-      id: digest(`${cards[0].checkout ?? ""}\n${files.join("\n")}`),
+      // and one id for both would fold and unfold them together. Two
+      // cards that claim nothing and list the same files would share an
+      // id too, so the card ids keep those apart -- and only those, so
+      // every id a board had before attribution stays what it was.
+      id: digest(
+        `${cards[0].checkout ?? ""}\n${files.join("\n")}${
+          claimed.length === 0 ? `\n${cards.map((c) => c.card.id).join("\n")}` : ""
+        }`
+      ),
       files,
       label: shared ? SAME_BASELINE_LABEL : groupLabel(files),
-      hint: shared ? sameBaselineHint(cards) : null,
+      hint: groupHint(cards, shared, setAside, listed.length, binding),
+      setAside,
       cards,
     });
   }
@@ -510,6 +565,7 @@ export function groupCandidates(candidates: ReviewCandidate[]): ReviewGroup[] {
       files: [],
       label: NO_FILES_LABEL,
       hint: noFilesHint(withoutFiles),
+      setAside: 0,
       cards: withoutFiles,
     });
   }
@@ -541,6 +597,55 @@ export function sameBaselineHint(cards: ReviewCandidate[]): string {
     `so gavin measured one set of changes and it belongs to all of them. ` +
     `It can't say which card made what.`
   );
+}
+
+/// The sentence under a group where attribution placed some of the files
+/// with one card. Numbers rather than names, because the names are on
+/// the rows: what the reader needs here is why two cards that list the
+/// same files are not in one group -- or why they still are.
+///
+/// `listed` is every distinct file the group's cards list, `setAside`
+/// how many of those were placed with one card and taken out of the
+/// clustering, and `binding` how many are still claimed by two or more
+/// cards. A lone card gets the singular reading: its files look like
+/// somebody else's, and that is why it sits by itself.
+export function attributionHint(
+  cards: number,
+  setAside: number,
+  listed: number,
+  binding: number
+): string {
+  if (cards === 1) {
+    if (setAside === listed) {
+      return listed === 1
+        ? "The one file this card lists looks like another card's work, so it was not counted as a collision."
+        : `All ${listed} files this card lists look like another card's work, so none of them was counted as a collision.`;
+    }
+    return setAside === 1
+      ? `1 of the ${listed} files this card lists looks like another card's work, so it was not counted as a collision.`
+      : `${setAside} of the ${listed} files this card lists look like another card's work, so they were not counted as collisions.`;
+  }
+  return (
+    `TypeSafe placed ${setAside} of the ${listed} files these cards list with one card each, ` +
+    `so those were not counted as collisions; the ${binding} it could not place still ` +
+    `${binding === 1 ? "binds" : "bind"} the group.`
+  );
+}
+
+/// What a cluster's header says underneath: the same-baseline sentence
+/// where it applies, the attribution sentence where files were placed,
+/// both where both, and nothing where neither -- the files say it all.
+function groupHint(
+  cards: ReviewCandidate[],
+  shared: boolean,
+  setAside: number,
+  listed: number,
+  binding: number
+): string | null {
+  const base = shared ? sameBaselineHint(cards) : null;
+  if (setAside === 0) return base;
+  const placed = attributionHint(cards.length, setAside, listed, binding);
+  return base ? `${base} ${placed}` : placed;
 }
 
 /// What the list says under a group with no baseline behind it. A

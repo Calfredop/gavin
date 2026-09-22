@@ -27,6 +27,7 @@ import * as backend from "$lib/core/backend";
 import type { FileDiff, RunChanges } from "$lib/git/git";
 import { changesProblem } from "$lib/cards/runChanges";
 import { isRailSubjectId, railReviewBaseline, railSubjectId } from "$lib/review/reviewBoard";
+import { attributeRun } from "$lib/cards/changeAttributionState";
 
 /// How many `git diff`s may be in flight at once. Four rather than one
 /// because the tab is unusable until they all land, and rather than
@@ -45,6 +46,9 @@ export const FETCH_CONCURRENCY = 4;
 /// card's window ends.
 export interface TouchRequest {
   path: string;
+  /// The card's title, for the attribution question the fetch goes on
+  /// to ask. Not part of the cache key: a renamed card is the same run.
+  title?: string;
   cwd: string;
   baseSha: string;
   peers: string[];
@@ -176,6 +180,19 @@ async function fetchOne(workspaceId: string, request: TouchRequest, token: numbe
       problem,
       error: null,
     });
+    // The hint beside the files: which card each one looks like, when
+    // another card ran in this checkout and the switch is on. Cards
+    // only -- a rail is one checkout as a whole and has no co-tenant
+    // question. Fire-and-forget into its own store; the grouper reads
+    // it through `ownersOf`, and a failure there is today's grouping.
+    if (!problem && !isRailSubjectId(request.path)) {
+      void attributeRun({
+        cardPath: request.path,
+        cardTitle: request.title ?? request.path.slice(request.path.lastIndexOf("/") + 1),
+        cwd: request.cwd,
+        changes,
+      });
+    }
   } catch (e) {
     const whose = isRailSubjectId(request.path) ? "rail's" : "card's";
     store(workspaceId, request, token, {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { attributionKey, attributionStore, ownersOf } from "$lib/cards/changeAttributionState";
   // The Review tab: finished work, read beside the agent that produced
   // it.
   //
@@ -194,10 +195,10 @@
         .map((card) => {
           const baseline = baselineFor(card);
           return baseline.kind === "ready"
-            ? { path: card.id, cwd: baseline.cwd, baseSha: baseline.baseSha }
+            ? { path: card.id, title: card.title, cwd: baseline.cwd, baseSha: baseline.baseSha }
             : null;
         })
-        .filter((r): r is { path: string; cwd: string; baseSha: string } => r !== null)
+        .filter((r): r is { path: string; title: string; cwd: string; baseSha: string } => r !== null)
     )
   );
   const railRequests = $derived<TouchRequest[]>(
@@ -265,6 +266,13 @@
         files: run?.files ?? null,
         checkout: run ? (run.changes?.root ?? run.cwd) : null,
         baseSha: run?.baseSha ?? null,
+        // Which card each file looks like, from TypeSafe change
+        // attribution, under the same bound the files were measured
+        // under. Undefined until it has answered, which the grouper reads
+        // as today's answer: every file claimed.
+        owners: ownersOf(
+          run ? $attributionStore[attributionKey(card.id, run.baseSha, run.untilSha)] : undefined
+        ),
       };
     })
   );
