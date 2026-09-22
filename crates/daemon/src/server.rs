@@ -4587,7 +4587,7 @@ mod tests {
             }
         }
         match handle_request(&manager, Request::GetTools { workspace_id: "ws-1".into() }) {
-            Response::Tools { tools } => assert_eq!(tools.len(), 7),
+            Response::Tools { tools } => assert_eq!(tools.len(), 8),
             other => panic!("wrong response: {other:?}"),
         }
     }
