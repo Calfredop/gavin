@@ -510,13 +510,22 @@ mod tests {
         assert_eq!(f.skills.len(), 5, "four table skills plus the step skill: {:?}", f.skills);
         assert!(f.skills.iter().all(|s| s.contains(".opencode/skills/gavin")));
         assert!(f.agent_file.as_ref().unwrap().ends_with(".opencode/agent/gavin-commit.md"));
-        assert_eq!(f.mcp.as_ref().unwrap().path, dir.path().join("opencode.json").to_string_lossy());
+        // Wire shape, not `display()`: every path the scan reports goes
+        // through `protocol::wire_path`, because the frontend splits
+        // these on `/`.
+        assert_eq!(
+            f.mcp.as_ref().unwrap().path,
+            protocol::wire_path(&dir.path().join("opencode.json"))
+        );
         assert!(f.instructions.as_ref().unwrap().ends_with("AGENTS.md"));
         // Nothing of Claude Code's was invented, and nothing of the
         // user's was claimed.
         assert!(!f.skills.iter().any(|s| s.contains(".claude")));
         assert!(!f.skills.iter().any(|s| s.ends_with("my-own")));
-        assert_ne!(f.agent_file.as_ref().unwrap(), &dir.path().join(".opencode/agent/mine.md").to_string_lossy().to_string());
+        assert_ne!(
+            f.agent_file.as_ref().unwrap(),
+            &protocol::wire_path(&dir.path().join(".opencode/agent/mine.md"))
+        );
     }
 
     /// The agent file is removable BECAUSE the scan reported it -- the
@@ -531,10 +540,16 @@ mod tests {
         let agent_file = dir.path().join(".opencode/agent/gavin-commit.md");
         std::fs::write(dir.path().join(".opencode/agent/mine.md"), "mine").unwrap();
 
+        // Spelled the way `buildPlan` spells it in production, where
+        // `trash` is filled from `footprint.agentFile` -- i.e. from the
+        // scan's own output, which is wire-pathed. Building it here with
+        // `to_string_lossy` is the one place the two spellings can
+        // diverge, and the intersection in `remove` then drops the file
+        // the plan named.
         let report = remove(
             dir.path(),
             &RemovalPlan {
-                trash: vec![agent_file.to_string_lossy().to_string()],
+                trash: vec![protocol::wire_path(&agent_file)],
                 strip_mcp_key: vec![],
                 cut_block: vec![],
             },
@@ -582,9 +597,17 @@ mod tests {
         workspace(dir.path());
         std::fs::create_dir_all(dir.path().join("api").join(GAVIN_DIR)).unwrap();
         std::fs::create_dir_all(outside.path().join(GAVIN_DIR)).unwrap();
+        // Serialised, not `format!`ed into quotes: see the same fixture
+        // in fileviewer's tests. `C:\Users\…` inside a hand-written TOML
+        // literal is `\U`, not a legal escape, and the unparseable
+        // config makes `outside_contexts` return nothing -- which reads
+        // here like the scan missing a context it can see.
         std::fs::write(
             dir.path().join(GAVIN_ROOT_DIR).join("config.toml"),
-            format!("name = \"Test\"\nextra_contexts = [\"{}\"]\n", outside.path().display()),
+            format!(
+                "name = \"Test\"\nextra_contexts = [{}]\n",
+                toml::Value::String(outside.path().to_string_lossy().into_owned()),
+            ),
         )
         .unwrap();
 
@@ -595,7 +618,9 @@ mod tests {
         assert_eq!(inside.len(), 1);
         assert!(inside[0].path.ends_with("api/.gavin"));
         assert_eq!(beyond.len(), 1);
-        assert!(beyond[0].path.starts_with(outside.path().to_string_lossy().as_ref()));
+        // The scan reports wire paths, so the prefix has to be spelled
+        // the same way -- `display()` is backslashes on Windows.
+        assert!(beyond[0].path.starts_with(&protocol::wire_path(outside.path())));
     }
 
     /// Mirrors gavin::scan_root: excluded and dot-prefixed directories
