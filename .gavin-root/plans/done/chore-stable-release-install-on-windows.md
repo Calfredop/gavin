@@ -2,7 +2,7 @@
 order: 3072
 title: [chore] a stable release install beside the dev tree on Windows
 labels: windows
-status: In Progress
+status: Done
 priority: high
 complexity: moderate
 ---
@@ -37,16 +37,28 @@ sessions only ever happens when the human chooses to upgrade.
    That is the reason a stable build is cut from a worktree and not from
    the tree agents are typing in. Once the Windows work lands, moving the
    stable forward is `git checkout <commit>` in that worktree and nothing
-   else.
+   else. Since 2026-09-15 (71b4944) `scripts\start-stable-win.ps1` with no
+   flags does that move itself, to this checkout's `main` tip with
+   `git checkout -m --detach`, and rebuilds before it launches; `-SkipBuild`
+   launches what is already there.
 2. `cd gavin-stable\app && npm ci && npm run bundle`. The installer lands in
    `target\release\bundle\nsis\`. `app/src-tauri/BUNDLING.md` says why the
    `--config` flag in that script must not be dropped.
+   Since 2026-09-16 (214935d) `scripts\build-windows-installer.ps1` runs
+   the same bundle and opens Explorer on the setup exe. It builds THIS
+   checkout by default, so a local fix lands in the installer you are about
+   to run, and `-Stable` builds the worktree instead, re-cutting it to
+   `main` first. The default trades the pinning above for immediacy:
+   whatever is uncommitted in the shared tree at build time goes in.
 3. Install it, choosing `%LOCALAPPDATA%\Programs\Gavin` as the folder. The
    installer's default is `%LOCALAPPDATA%\Gavin`, which is the daemon's own
    state directory under another case: the binaries would sit beside
    `daemon.log` and the SQLite files. Harmless (Tauri's uninstaller deletes
    only the files it installed and removes the folder only when empty) but
-   confusing, and the launch script looks in `Programs\Gavin` first.
+   confusing, and the launch script looks in `Programs\Gavin` first, then
+   in the default folder, then in the worktree's `target\release`. The
+   collision itself has its own card,
+   [fix-windows-installer-collides-with-the-daemon.md](./fix-windows-installer-collides-with-the-daemon.md).
    Then run `scripts\start-stable-win.ps1` or the Start menu entry. Launch
    it from your own terminal or the shell, never from inside `tauri dev`:
    the packaged app spawns its daemon detached and outside any hostile
@@ -54,17 +66,22 @@ sessions only ever happens when the human chooses to upgrade.
 4. To upgrade: rebuild in the worktree, quit Gavin, stop the daemon, run the
    installer, relaunch. A PTY cannot outlive its process, so the sessions end
    with the daemon in every version; the installer cannot overwrite a running
-   `gavin-daemon.exe` either.
+   `gavin-daemon.exe` either. The rebuild half is scripted (steps 1 and 2
+   above); running the setup exe is not, and stays the human's.
 
 ## What it does not do
 
-- Isolate state. Both apps share the pipe and databases under
-  `%LOCALAPPDATA%\gavin` and `config.json` under `%APPDATA%\com.gavin.app`,
-  so the dev app adopts the stable daemon (the launcher already leaves an
-  existing daemon alone) and its newer features grey out through
-  `featureBlockedReason`. Restart daemon in EITHER app kills by process
-  name, sessions included. See
-  [issue-stable-and-dev-apps-share-one-state-dir.md](./issue-stable-and-dev-apps-share-one-state-dir.md).
+- Isolate state, and by design only halfway. As first written here both
+  apps shared the pipe, so the dev app adopted the stable daemon and
+  Restart daemon in either killed by process name. Settled 2026-09-11 on
+  [issue-stable-and-dev-apps-share-one-state-dir.md](./issue-stable-and-dev-apps-share-one-state-dir.md):
+  a debug build binds `daemon-dev.sock` with its own token, log and
+  `registry.sqlite`, so neither app can adopt the other's daemon and
+  Restart daemon kills only the pid owning the endpoint it connected to.
+  `kanban.sqlite`, `orchestration.sqlite` and `config.json` under
+  `%APPDATA%\com.gavin.app` stay shared on purpose: one board, one set of
+  rails, one workspace list, and a build that widens `config.json` writes a
+  shape the other then reads.
 - Silence the updater. A release build asks the GitHub endpoint once at
   launch and only reports; installing is behind a confirm. Do not accept an
   upstream release over the local build.
@@ -184,3 +201,46 @@ Pre-flight for the install item, checked against the running system:
   `CLAUDE_*` environment to every tab
   ([issue-launcher-env-leaks-into-sessions.md](./issue-launcher-env-leaks-into-sessions.md)),
   and the rebuild it would confirm restarts an app on the desktop.
+
+## Status, 2026-09-22 11:30
+
+Every step above re-checked against the running machine and holding.
+Nothing on this card is open; what is still open lives on the cards named
+at the end, so this one is filed done.
+
+- Installed: `%LOCALAPPDATA%\Gavin`, the installer's default rather than
+  `Programs\Gavin` (the uninstall key's `InstallLocation` says so), with
+  `Gavin.exe` 0.1.0 and both sidecars beside it. Built today 08:40 to
+  08:43 from the DEV checkout's `target\release`, i.e. through
+  `scripts\build-windows-installer.ps1`'s default tree: the installed
+  `gavin-daemon.exe` hashes identical to `gavin\target\release\`'s, and
+  `gavin-mcp.exe` to the 2026-09-15 17:06 one still sitting there (cargo
+  found nothing to relink). So the running stable is `main` 662e977 plus
+  whatever was uncommitted in the shared tree at 08:40. Installed 08:44,
+  launched 08:47.
+- Running: `Gavin.exe` pid 23424 and `gavin-daemon.exe` pid 21616, both
+  from the install folder. `IsProcessInJob` is false for the daemon, which
+  is the one that has to break away, and true for the app, which does not
+  matter. One pipe, `gavin-daemon-sock-…`, and no dev pipe. `.mcp.json`
+  points every agent at the installed `gavin-mcp.exe` (b8ba17c).
+- `scripts\start-stable-win.ps1 -DryRun` passes: finds the install, both
+  sidecars present, reports the release daemon as already listening,
+  would start it.
+- The worktree is detached at 8271956 (2026-09-17), clean (`Cargo.toml`
+  lists as modified with an empty diff, the CRLF phantom), 12 commits
+  behind `main`. Its binaries are from 2026-09-15 (`Gavin.exe` 21:42,
+  cut at 71b4944), OLDER than its HEAD: the reflog shows the launcher's
+  full mode moved it to 8271956 on 2026-09-21 at 14:00:01, and the bundle
+  stopped eight seconds in (`deps\gavin_daemon.d` at 14:00:09 is the only
+  artefact newer than `Gavin.exe`; no exe was relinked). Nothing records
+  why; the next `scripts\build-windows-installer.ps1 -Stable` will say.
+  Not retried today: two other sessions' cargo builds were running with
+  about 2 GB free, and a release rebuild of the workspace on top of them
+  is how builds get killed for memory on this machine.
+- Open elsewhere: the default-folder collision and the daemon-unaware
+  installer on
+  [fix-windows-installer-collides-with-the-daemon.md](./fix-windows-installer-collides-with-the-daemon.md)
+  (In Progress, four items); the owner's two-daemons check on
+  [issue-stable-and-dev-apps-share-one-state-dir.md](./issue-stable-and-dev-apps-share-one-state-dir.md)
+  (one item); §1's install-and-check items on
+  [feat-windows-port-on-a-windows-machine.md](./feat-windows-port-on-a-windows-machine.md).

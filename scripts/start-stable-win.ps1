@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     The counterpart of start-dev-win.ps1 for the release install described
-    in .gavin-root/plans/chore-stable-release-install-on-windows.md: a
+    in .gavin-root/plans/done/chore-stable-release-install-on-windows.md: a
     Gavin built in the sibling gavin-stable worktree, kept isolated from the
     dev tree, so that no edit and no `cargo build` here can reach it or the
     daemon it owns.
@@ -76,7 +76,7 @@ function Die($m) { Write-Host "error: $m" -ForegroundColor Red; exit 1 }
 
 # A stable app that never advances is as useless as one dev edits can reach.
 # So this script re-cuts the sibling gavin-stable worktree (recipe:
-# .gavin-root/plans/chore-stable-release-install-on-windows.md) to wherever
+# .gavin-root/plans/done/chore-stable-release-install-on-windows.md) to wherever
 # THIS checkout's `main` points right now, and rebuilds every part -- daemon,
 # mcp, and the app together, via the same `npm run bundle` the recipe uses --
 # before it ever looks for something to launch. `git checkout -m --detach`
@@ -94,7 +94,7 @@ elseif ($SkipBuild) {
     Say 'skipping the worktree refresh (-SkipBuild); launching whatever was last built or installed'
 }
 elseif (-not (Test-Path (Join-Path $StableRoot '.git'))) {
-    Warn "no worktree at $StableRoot; nothing to rebuild. See the recipe in .gavin-root/plans/chore-stable-release-install-on-windows.md."
+    Warn "no worktree at $StableRoot; nothing to rebuild. See the recipe in .gavin-root/plans/done/chore-stable-release-install-on-windows.md."
 }
 else {
     # A rebuild can't relink over its own last output. Only ever stops

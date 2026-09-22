@@ -3,7 +3,7 @@ order: 4096
 kind: task
 title: [issue] the stable and dev apps share one daemon and one config.json
 labels: windows
-status: In Progress
+status: Done
 ---
 Every Gavin on this machine resolves the same state: the pipe name is hashed
 from `%LOCALAPPDATA%\gavin` (`protocol::resolve_app_support_dir`, no
@@ -106,6 +106,53 @@ Plan: `docs/superpowers/plans/2026-09-11-per-build-daemon-isolation.md`
 - [x] Launcher scripts probe their own pipe tag
       (`gavin-daemon-dev-sock` is not matched by `*gavin-daemon-sock*`,
       but the reverse would be); CLAUDE.md amended
-- [ ] Owner, in the running app: quit the release app, run
+- [x] Owner, in the running app: quit the release app, run
       `scripts/start-dev-win.ps1`, confirm two daemons on two pipes with
-      the release one's sessions intact
+      the release one's sessions intact -- CLOSED 2026-09-22 at the
+      owner's direction, on the probe evidence below rather than on a
+      run of this step. The app-level flow was NOT exercised: an agent
+      in a gavin tab cannot quit the release app without killing the
+      session doing it. So if the dev app ever fails to adopt the dev
+      daemon, or a release session dies beside it, the fault to look
+      for is integration -- the naming split itself is proven.
+
+## Pre-flight 2026-09-22: the split is real, on this machine
+
+The six code steps above are in committed source (`BuildProfile` landed in
+a145b77, 2026-09-11) and were re-checked string by string rather than
+taken from their ticks. Beyond that static pass, the mechanism was
+demonstrated live, without touching the release daemon or any session:
+`target/debug/gavin-daemon.exe` was started with `%LOCALAPPDATA%` pointed
+at a throwaway directory, then stopped **by its own pid** (never by name).
+
+- **Two daemons, two pipes, at the same time.** The debug build bound
+  `\\.\pipe\gavin-daemon-dev-sock-4e7d7a32fc8273ba` while the release
+  install stayed on `\\.\pipe\gavin-daemon-sock-700ae9dea73ff7a7`. Both
+  were listed together. Its own stdout named the endpoint:
+  `listening on ...\gavin\daemon-dev.sock`.
+- **The release pipe was unchanged across the dev daemon's start and its
+  stop** — which is bullet 2 going by construction: neither app can see
+  the other's endpoint, so neither Restart can reach it.
+- **The file split is exactly the settled one.** The isolated state dir
+  came out holding `daemon-dev.token` and `registry-dev.sqlite` beside an
+  unsuffixed `kanban.sqlite` and `orchestration.sqlite` — the board and
+  the rails keeping the one spelling both builds resolve, which is what
+  "nothing is duplicated, therefore nothing needs syncing" means on disk.
+- `daemon-dev.log` is absent from that listing and that is correct, not a
+  gap: the daemon does not open its own log. The app does, in
+  `daemon_log_path` (`app/src-tauri/src/daemon.rs:211`), and this probe
+  launched the binary directly.
+- The four naming tests in `crates/protocol` pass
+  (`the_release_names_are_the_ones_already_on_disk`,
+  `a_dev_build_names_every_per_daemon_file_apart`,
+  `the_two_builds_hash_to_different_pipes`,
+  `the_state_directory_itself_never_splits`).
+
+What this does **not** cover, and why the last step stays the owner's:
+the app-level flow. Quitting the release app and running
+`scripts/start-dev-win.ps1` is the one thing an agent in a gavin tab
+cannot do — the tab shell is a child of the installed daemon, so the
+session running the check is the session the check would kill. The
+remaining risk is therefore integration, not design: whether the dev app
+adopts the dev daemon and whether the release app's sessions survive being
+left running beside it.

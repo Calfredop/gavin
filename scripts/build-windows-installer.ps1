@@ -13,7 +13,7 @@
     Defaults to THIS checkout so a local fix (MCP env passthrough, Cursor
     flags, ...) lands in the installer you are about to run. Pass -Stable
     to rebuild the sibling gavin-stable worktree instead (the recipe in
-    .gavin-root/plans/chore-stable-release-install-on-windows.md).
+    .gavin-root/plans/done/chore-stable-release-install-on-windows.md).
 
     Stops only Gavin / gavin-daemon / gavin-mcp processes whose Path is
     under this build's target\release\, so the linker can replace them.

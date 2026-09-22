@@ -2,7 +2,7 @@
 order: 9216
 title: [fix] The Windows installer installs into the daemon's state directory, and never stops the daemon
 labels: windows
-status: To Do
+status: In Progress
 priority: high
 complexity: medium
 ---
@@ -63,21 +63,87 @@ installing rather than by not rebuilding.
 
 ## Fix
 
-- [ ] Decide the install directory. Either move the state directory off
+Done 2026-09-22 on branch `win/installer-state-dir` (worktree
+`gavin-win-installer-state-dir`), uncommitted: `app/src-tauri/nsis/hooks.nsh`
+(new), `tauri.windows.conf.json` (`bundle.windows.nsis.installerHooks`),
+`BUNDLING.md` (a "Windows: the install directory and the daemon" section),
+the doc comment on `protocol::resolve_app_support_dir`, and the tips and
+comments in `scripts/build-windows-installer.ps1` and
+`scripts/start-stable-win.ps1`. The state directory did not move; the
+installer did.
+
+- [x] Decide the install directory. Either move the state directory off
       `%LOCALAPPDATA%\gavin` (expensive — it is in `protocol`, three
       databases, and every existing install would need migrating), or
       give the installer a `$INSTDIR` that is not it. The second is much
       the smaller change, and `nsis.installerHooks` / an `installMode`
       override in `tauri.windows.conf.json` is where it goes.
-- [ ] Make the uninstaller's "Delete app data" checkbox mean the real
+      **Decided: the installer moves, `protocol` stays.** `installerHooks`
+      only, no custom template (850 lines to own for one line's change).
+      Tauri's `.onInit` picks the default and then restores a previous
+      install's folder from the registry; the hooks file is `!include`d
+      before `MUI_LANGUAGE`, so it can define `MUI_CUSTOMFUNCTION_GUIINIT`
+      and swap `$LOCALAPPDATA\Gavin` for `$LOCALAPPDATA\Programs\Gavin`
+      (the per-user Program Files, and what `start-stable-win.ps1` already
+      looks in first) after both. `.onVerifyInstDir` greys Install on the
+      state directory, the directory page's text says why, and the
+      pre-install hook redirects a silent `/S` or `/D=` install that names
+      it. An install whose registered predecessor lives in the state
+      directory (this machine's) stops that daemon, deletes its four
+      binaries by name — never the folder — and retargets the Start menu
+      and desktop shortcuts, which the template only retargets within one
+      folder and never in `/UPDATE` mode.
+- [x] Make the uninstaller's "Delete app data" checkbox mean the real
       directory, or remove it. A checkbox that deletes nothing is worse
       than no checkbox.
-- [ ] Stop the daemon before install and uninstall. It answers
+      **Meant.** `NSIS_HOOK_POSTUNINSTALL` adds `RMDir /r` of the state
+      directory when the box is ticked and the run is not `/UPDATE`. (§1
+      overstates one thing: the template's two `com.gavin.app` folders do
+      exist — WebView2's profile and `config.json` — what it missed was the
+      databases.) A dev-tree daemon holding its `-dev` files keeps those.
+- [x] Stop the daemon before install and uninstall. It answers
       `Request::Shutdown` over the transport, and `taskkill /F /IM
       gavin-daemon.exe` is the fallback the Settings restart already
       uses — an NSIS `preInstall` hook is the place.
+      **Stopped, by image path, never by name** (a name reaches the dev
+      daemon too). `Request::Shutdown` needs a client — token plus pipe
+      name — so the hooks go straight to TerminateProcess the way
+      `stop_running_daemon`'s fallback does; the daemon answers Shutdown
+      with `exit` anyway. PowerShell + CIM, `Win32_Process.ExecutablePath`
+      compared case-insensitively to `$INSTDIR\gavin-daemon.exe`, the path
+      handed over in the environment (an apostrophe in a user name ends a
+      quoted argument). Interactive runs get OK / Cancel like the
+      template's own Gavin.exe prompt; `/S` and `/P` (the updater) stop it
+      without asking. The template's app check is inserted ahead of the
+      daemon stop so the app cannot respawn the daemon from its connection
+      overlay while the prompt waits. Found on the way: a 32-bit installer
+      launches the SysWOW64 PowerShell, which took 3.7 s to start and blew
+      a 30 s timeout enumerating processes; the hooks disable FS
+      redirection and run `$SYSDIR`'s native one (0.8 s / 1.7 s). Proven:
+      `makensis` compiles the stable build's generated script with the
+      hooks, zero warnings; a throwaway silent installer running the real
+      macro stopped three fake `gavin-daemon.exe` (a renamed `ping.exe`) in
+      12 s and left the live daemon, pid 21616, alone.
 - [ ] Then run the install end to end and confirm §1's remaining items on
       [the windows port card](./feat-windows-port-on-a-windows-machine.md).
+      **The human's, and it cannot be otherwise:** this agent's shell is a
+      child of the installed daemon (`Gavin.exe → gavin-daemon.exe → sh.exe
+      → claude.exe`), so a setup run from an agent tab kills the tab.
+      Built 2026-09-22 by `scripts\build-windows-installer.ps1` from this worktree:
+      `C:\Users\calfr\coding\gavin-win-installer-state-dir\target\release\bundle\nsis\Gavin_0.1.0_x64-setup.exe`
+      (release build 13 m 55 s, makensis clean). The generated
+      `target\release\nsis\x64\installer.nsi` there `!include`s the hooks
+      by plain path at line 31 and inserts all four at the template's points.
+      To run it: quit Gavin, start the setup from a plain terminal. Expect
+      the daemon prompt, `%LOCALAPPDATA%\Programs\Gavin` as the default,
+      the old `Gavin.exe` / `gavin-daemon.exe` / `gavin-mcp.exe` /
+      `uninstall.exe` gone from `%LOCALAPPDATA%\gavin` with the databases,
+      token and log untouched, and `Gavin.exe` under `Programs\Gavin`
+      launching and reaching a daemon that runs from there. Then re-run
+      "Set up / update" for each workspace's agents: their MCP config still
+      names the old `gavin-mcp.exe` path. The stable-install card's recipe
+      steps 3 and 4 (choose the folder by hand, stop the daemon by hand)
+      are obsolete once this lands.
 
 **Out of scope:** code signing; the machine-wide install path, which has
 neither problem.
