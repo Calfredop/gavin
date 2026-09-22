@@ -159,7 +159,7 @@ export function noteQuietTransition(sessionId: string): void {
       if (tokens.get(sessionId) !== token) return;
       const owner = ownerOf(sessionId);
       const agentCli = owner ? agentCliFor(owner) : "unknown";
-      const body = await backend.typesafeVerdict(verdictRequest(agentCli, screen));
+      const body = await backend.typesafeAsk(verdictRequest(agentCli, screen));
       settle(sessionId, token, readTurn(parseVerdictAnswers(body), screenTail(screen)));
     } catch {
       // Every failure is one failure: an older daemon, a dead socket, a

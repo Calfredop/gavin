@@ -550,10 +550,12 @@ export function setTypesafeApiKey(key: string): Promise<{ enabled: boolean; hasK
   return invoke("set_typesafe_api_key", { key });
 }
 
-/// One turn verdict. The host adds the key and chooses the address; this
-/// side chooses the questions. Rejects on every failure, which the caller
-/// reads as "today's answer" without distinguishing them.
-export function typesafeVerdict(request: unknown): Promise<unknown> {
+/// One TypeSafe request: a turn verdict, or the settings search's
+/// closest-section question. The host adds the key and chooses the
+/// address; this side chooses the questions. Rejects on every failure,
+/// which the caller reads as "today's answer" without distinguishing
+/// them. The command keeps the name of its first consumer.
+export function typesafeAsk(request: unknown): Promise<unknown> {
   return invoke("typesafe_verdict", { request });
 }
 
