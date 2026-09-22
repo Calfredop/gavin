@@ -29,16 +29,16 @@ afterEach(() => {
 
 describe("loadTypesafeSettings", () => {
   it("mirrors what the host reports, and nothing more", async () => {
-    vi.mocked(backend.typesafeSettings).mockResolvedValue({ enabled: true, hasKey: true });
+    vi.mocked(backend.typesafeSettings).mockResolvedValue({ enabled: true, hasKey: true, changeAttribution: false });
     await loadTypesafeSettings();
-    expect(get(typesafeSettings)).toEqual({ enabled: true, hasKey: true });
+    expect(get(typesafeSettings)).toEqual({ enabled: true, hasKey: true, changeAttribution: false });
   });
 
   it("leaves the setting unknown when the host cannot answer", async () => {
     // Unknown gates OFF in the driver, so an unreadable config is never
     // read as consent.
     vi.mocked(backend.typesafeSettings).mockRejectedValue(new Error("no config"));
-    typesafeSettings.set({ enabled: true, hasKey: true });
+    typesafeSettings.set({ enabled: true, hasKey: true, changeAttribution: false });
     await loadTypesafeSettings();
     expect(get(typesafeSettings)).toBeNull();
   });

@@ -238,6 +238,17 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   mcp_formats: ["ordinary"],
   move_agent_file: ["ordinary"],
   compose_agent_prompt: ["ordinary"],
+  // TypeSafe: the session screen as text (a read), the two switches and
+  // the key (settings writes -- the key never comes back), and two
+  // outbound questions the host adds the key to. None touches the
+  // checkout or the daemon's state.
+  session_screen: ["ordinary"],
+  typesafe_settings: ["ordinary"],
+  set_typesafe_enabled: ["ordinary"],
+  set_typesafe_api_key: ["ordinary"],
+  typesafe_verdict: ["ordinary"],
+  set_typesafe_change_attribution: ["ordinary"],
+  typesafe_attribution: ["ordinary"],
   open_workspace_window: ["ordinary"],
   workspace_windows: ["ordinary"],
   claim_workspace_window: ["ordinary"],

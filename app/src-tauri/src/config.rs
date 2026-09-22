@@ -900,7 +900,8 @@ pub struct AppConfig {
     pub typesafe: Option<TypeSafeConfig>,
 }
 
-/// The TypeSafe turn verdict's two settings.
+/// The TypeSafe features' settings: the turn verdict's switch, change
+/// attribution's switch, and the one key both spend.
 ///
 /// Both `Option`, on this file's usual "absence is a real answer"
 /// convention: no key and never-asked are the same state here, and the
@@ -921,6 +922,13 @@ pub struct TypeSafeConfig {
     /// string itself only ever travels from here into curl's stdin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    /// Change attribution's OWN switch. Absent means off, like `enabled`,
+    /// and it is a separate consent: attribution sends source code (a
+    /// diff excerpt per changed file) and card titles and bodies, which
+    /// agreeing to send a screen tail never covered. `typesafe.rs` gates
+    /// each request on the switch for its feature and never on the other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_attribution: Option<bool>,
 }
 
 /// The app-wide require-review default, wrapped in a type of its own for

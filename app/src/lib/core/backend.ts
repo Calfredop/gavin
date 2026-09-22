@@ -536,17 +536,17 @@ export function sessionScreen(sessionId: string): Promise<string> {
 
 /// Whether the TypeSafe turn verdict is on, and whether it has a key to
 /// pay with. Never the key itself -- see `typesafe.rs`.
-export function typesafeSettings(): Promise<{ enabled: boolean; hasKey: boolean }> {
+export function typesafeSettings(): Promise<{ enabled: boolean; hasKey: boolean; changeAttribution: boolean }> {
   return invoke("typesafe_settings");
 }
 
-export function setTypesafeEnabled(enabled: boolean): Promise<{ enabled: boolean; hasKey: boolean }> {
+export function setTypesafeEnabled(enabled: boolean): Promise<{ enabled: boolean; hasKey: boolean; changeAttribution: boolean }> {
   return invoke("set_typesafe_enabled", { enabled });
 }
 
 /// Stores a key, or clears it when `key` is blank. One-way: there is no
 /// command that reads it back.
-export function setTypesafeApiKey(key: string): Promise<{ enabled: boolean; hasKey: boolean }> {
+export function setTypesafeApiKey(key: string): Promise<{ enabled: boolean; hasKey: boolean; changeAttribution: boolean }> {
   return invoke("set_typesafe_api_key", { key });
 }
 
@@ -555,6 +555,25 @@ export function setTypesafeApiKey(key: string): Promise<{ enabled: boolean; hasK
 /// reads as "today's answer" without distinguishing them.
 export function typesafeVerdict(request: unknown): Promise<unknown> {
   return invoke("typesafe_verdict", { request });
+}
+
+/// Turn TypeSafe change attribution on or off. Its OWN switch, beside the
+/// verdict's and not under it: attribution sends source code -- a diff
+/// excerpt per changed file -- and card titles and bodies, which the
+/// verdict's consent (a screen tail) never covered. See `typesafe.rs`.
+export function setTypesafeChangeAttribution(
+  enabled: boolean
+): Promise<{ enabled: boolean; hasKey: boolean; changeAttribution: boolean }> {
+  return invoke("set_typesafe_change_attribution", { enabled });
+}
+
+/// One change-attribution question: which card a changed file looks
+/// like. The same contract as `typesafeVerdict` -- the host adds the key
+/// and chooses the address, this side chooses the question, and every
+/// failure rejects -- behind the attribution switch rather than the
+/// verdict's.
+export function typesafeAttribution(request: unknown): Promise<unknown> {
+  return invoke("typesafe_attribution", { request });
 }
 
 export function getSessionNames(): Promise<Record<string, string>> {
