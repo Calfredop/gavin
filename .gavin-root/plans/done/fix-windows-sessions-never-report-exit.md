@@ -2,7 +2,7 @@
 order: 10240
 title: [fix] On Windows a session that exits is never reported as exited
 labels: windows
-status: To Do
+status: Done
 priority: high
 complexity: complex
 ---
@@ -93,7 +93,7 @@ sooner: the interactive paths a human exercises all end in a kill.
 
 ## Fix
 
-- [ ] Decide the mechanism. Two shapes, and the second is probably
+- [x] Decide the mechanism. Two shapes, and the second is probably
       right:
       - Close the pseudoconsole when the child exits, so the existing
         EOF arrives. portable-pty owns the `HPCON`; this may not be
@@ -104,16 +104,56 @@ sooner: the interactive paths a human exercises all end in a kill.
         underneath it, so it already tolerates being ended from outside.
         This is also the portable answer: it behaves identically on unix
         rather than adding a `cfg`.
-- [ ] Whichever it is, drain what is already buffered before ending the
+      **Decided: both halves.** The wait is shape 2 -- a thread per
+      session polls `try_wait` every 100ms, the same code on every
+      platform -- and what it does on exit is shape 1: drop the pty
+      master, which is `ClosePseudoConsole` (portable-pty issues it
+      from the master's `Drop`, so "owning the HPCON" was never needed).
+      Closing the console is what makes conhost flush and exit, and
+      that is the EOF the pump already ends on -- so the drain is
+      conhost's, not ours, and no second signal has to be reconciled
+      with the first. The master lives in an `Arc<Mutex<Master>>` shared
+      with the watcher, and a `Closed` state keeps one reader back for a
+      client that attaches after the exit. See `watch_for_exit` in
+      `crates/daemon/src/pty.rs`.
+- [x] Whichever it is, drain what is already buffered before ending the
       pump. A session's last output — the `[gavin] <tool> exited with
       code N` epilogue, which is the whole point of that epilogue — must
       not be cut off by the exit that produced it.
-- [ ] `a_readers_stream_ends_when_the_command_does` is the gate. It
+      **Done, by conhost:** `ClosePseudoConsole` has it flush what it
+      holds into the pipe before it exits, and its exit is what closes
+      the pipe. Proven by
+      `the_last_line_before_the_exit_reaches_the_reader_before_end_of_stream`
+      (400 lines, then the epilogue, then `exit 7`; read to EOF; the
+      epilogue is there and `try_wait` says 7), and by
+      `a_reader_taken_after_the_exit_still_reads_the_output_to_its_end`
+      for a client that attaches after the process is already gone.
+- [x] `a_readers_stream_ends_when_the_command_does` is the gate. It
       should pass on Windows without a `cfg` carve-out; if the fix needs
       one, the test should assert the signal the fix uses rather than
       being weakened.
-- [ ] Then re-run `cargo test -p gavin-daemon` on Windows and see how
+      **Passes on Windows, no `cfg`, test untouched.** Ten runs in a
+      row green (2026-09-22). The four `spawn_*` tests that read an
+      interactive shell with a 3s timeout fail under the module-wide
+      parallel run on the ORIGINAL file too -- a pre-existing flake of
+      `sh.exe` startup under load, green in isolation, not this card.
+- [x] Then re-run `cargo test -p gavin-daemon` on Windows and see how
       much of
       [fix-daemon-suite-deadlocks-on-windows](./fix-daemon-suite-deadlocks-on-windows.md)
       goes with it. The 22 `server::tests` failures may be a separate
       problem or may be this one; do not assume either.
+      **Re-run 2026-09-22** at `--test-threads=4 --skip gavin:: --skip
+      git_status --skip repo`, from `win/session-exit-reporting`: the suite
+      FINISHES -- 382 passed, 22 failed, 144s -- where before it stalled
+      after the same 22 with
+      `attach_never_sends_a_baseline_status_changed_for_an_exited_session`
+      left running. Every one of the 22 is in `server::tests`, and every
+      one was run in isolation against the prebuilt binary in the main
+      checkout, which carries none of this change: 20 fail there too,
+      deterministically (16 at once; the four `recover_*` after
+      `PROCESS_BUDGET`'s 30s, a recovered shell that never echoes on
+      Windows), and the other 2 are timing flakes that pass in isolation
+      on both binaries and fail about one run in ten on either. So the
+      hang was this card and the 22 are not: nothing of the sibling card
+      went with it except the ability to finish, which is what it needed
+      first. The names are filed on that card.

@@ -2,7 +2,7 @@
 order: 6144
 title: [fix] cargo test -p app is nine red on Windows, in six unrelated ways
 labels: windows
-status: To Do
+status: Done
 priority: medium
 complexity: medium
 ---
@@ -17,6 +17,38 @@ and the rest are tests asserting the wrong shape. Diagnosed 2026-09-11 from
 §1. Nothing below is flaky: the same nine, every run.
 
 Sorted by what has to change, not by test name.
+
+## Closed 2026-09-22 — 501 passed / 0 failed
+
+Stable over three consecutive full parallel runs. The other crates are
+unmoved at their own baselines (`protocol` 3 red, the Linux `XDG`/`HOME`
+tests; `gavin-mcp` 1 red, the path-separator assumption).
+
+The nine had become eleven — B, C and E were one test each as described,
+but A cost four `agent_setup` tests rather than one once Codex, Cursor
+and Gemini grew skill files too, and D had already gone green on its own
+when `.gitattributes` pinned the tree to LF.
+
+Two corrections to the diagnosis below, so neither is re-derived from a
+wrong premise.
+
+**§A was a live user-facing bug, not a latent one**, and this card's
+opening sentence is wrong to say none of them was. It named the wrong
+surface: `workspace_delete::scan` already puts every path it reports
+through `protocol::wire_path`, so the DELETE wizard was never showing a
+mixed path. The one that was is the SETUP wizard's Integration step,
+whose `agent_setup::IntegrationResult` stringified with
+`to_string_lossy`. And it cost more than an ugly spelling there.
+`IntegrationStep.svelte`'s `short()` trims a row down to a relative path
+with `path.replace(ws.rootPath + "/", "")` — a forward slash, against a
+`rootPath` the daemon has already wire-pathed (`gavin::scan_root`). A
+backslash after the root never matched it, so on Windows **every row of
+that list rendered as a full absolute path** instead of the relative one
+the step is written to show. Fixed by normalising where the string is
+made, which is what §A's item asked for.
+
+**§G's premise was wrong too**, and usefully so: the error never came
+from a read. See the classification in that section.
 
 ## A. gavin emits MIXED separators (latent, not a live bug)
 
@@ -53,10 +85,10 @@ card ids being compared and split as strings. It is also already visible,
 in the wizard's own confirmation list: `Move to Trash:
 C:\…\.opencode/agent\gavin-commit.md`.
 
-- [ ] Normalise to forward slashes where these relative paths are built,
+- [x] Normalise to forward slashes where these relative paths are built,
       not at each comparison. `protocol::normalize_separators` already
       exists and is what the daemon boundary uses.
-- [ ] Then check every other producer of a relative path the UI or a plan
+- [x] Then check every other producer of a relative path the UI or a plan
       compares — the join-behind-a-literal shape is what to grep for.
 
 ## B. Tests hand-write Windows paths into TOML
@@ -76,7 +108,7 @@ empty by design, and the assertion reads like a lookup bug. **The product
 is correct here**: `gavin::add_external_context` writes the array through
 `toml_edit`, which escapes properly.
 
-- [ ] Build the fixture the way the product does rather than by
+- [x] Build the fixture the way the product does rather than by
       `format!` — `toml::Value::String(..).to_string()` emits the escaped
       literal — so the test cannot drift from the writer again.
 
@@ -92,7 +124,7 @@ right: "C:\\Users\\calfr\\AppData\\Local\\Temp\\.tmpQyVdgs\\opencode.json" ← w
 The product is doing the right thing and the expectation is the wrong
 shape.
 
-- [ ] Expect the normalised spelling.
+- [x] Expect the normalised spelling.
 
 ## D. CRLF in `include_str!`'d markdown
 
@@ -115,7 +147,7 @@ the `expect`. `watchman_pid_file`'s only non-test caller is
 unreachable off macOS — and the test also asserts `ends_with("-state/pid")`,
 a forward slash a `PathBuf::join` never produces on Windows.
 
-- [ ] Gate the test (and the function) to where it is actually used.
+- [x] Gate the test (and the function) to where it is actually used.
 
 ## F. One parallelism artifact
 
@@ -125,7 +157,7 @@ the full parallel run and passes serially — it inspects
 are also attached to. It is the 9th failure in a parallel run and absent
 from a serial one, which is why the recorded baseline says "8 or 9".
 
-- [ ] Either make it not depend on what else is running, or mark it
+- [x] Either make it not depend on what else is running, or mark it
       `#[serial]`-equivalent. Do not "fix" it by weakening the assertion:
       it is the guard against the console-flash bug coming back.
 
@@ -146,6 +178,38 @@ own shutdown, it is a test fix; if `transport`'s Windows arm reports an
 error where the unix arm reports end-of-stream, every caller that treats
 EOF as "the daemon went away" behaves differently on Windows.
 
-- [ ] Decide which it is before touching it, and if it is the transport,
+**Classified 2026-09-22: the transport.** And not where this section
+guessed — the 232 never came from a read at all. `session.rs:3320:42` is
+`listener.accept().unwrap()`, so the failing call was **`accept`**. The
+reads were already right: `read_ref` maps `ERROR_BROKEN_PIPE` and
+`ERROR_PIPE_NOT_CONNECTED` to `Ok(0)`.
+
+What happens is that the client connects, the compat gate declines to
+send anything, and the client closes — all before the server thread
+reaches `accept`. Windows then completes `ConnectNamedPipe` with
+`ERROR_NO_DATA`, and `connect_instance` handled only
+`ERROR_PIPE_CONNECTED`, so a hung-up client surfaced as a failed accept.
+Unix `accept` hands back a good fd in exactly this case and lets the
+first read report EOF, which is what every connection loop here is
+written against. So on Windows alone, `run_server` logs a transport fault
+for a client that merely had nothing to send — and every compat-gated
+request takes that path by construction.
+
+Proved before it was touched, with a transport-level repro that fails
+with the same code 232 and needs no session machinery: bind, connect and
+drop, then accept. Two earlier hypotheses were refuted first and are
+worth not re-running — the 512-entry `GetConsoleProcessList`-style buffer
+theory (n was 7), and "the read was in flight when the peer closed"
+(passes either way).
+
+- [x] Decide which it is before touching it, and if it is the transport,
       say so on the windows-port card — it would be the second structural
       finding of that pass.
+      Fixed in `transport::connect_instance`, both on the synchronous
+      return and on the overlapped completion, since which one carries it
+      depends on how the client's close races the accept. Guarded by
+      `transport::tests::a_client_that_hangs_up_before_accept_is_still_accepted`,
+      which also asserts the accepted handle then reads `Ok(0)` — the
+      unix shape end to end. Recorded on
+      [feat-windows-port-on-a-windows-machine](./feat-windows-port-on-a-windows-machine.md)
+      §1 as that pass's third structural finding.

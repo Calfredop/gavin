@@ -2,7 +2,7 @@
 order: 8192
 title: [fix] Source-grep tests fail on a CRLF checkout
 labels: windows
-status: To Do
+status: Done
 priority: medium
 complexity: simple
 ---
@@ -71,7 +71,7 @@ Two consequences:
 
 ## Fix
 
-- [ ] Decide where the normalisation belongs. Either every `source()`
+- [x] Decide where the normalisation belongs. Either every `source()`
       helper in the test files does `.replace(/\r\n/g, "\n")` once
       (the tests are the thing that assumes LF, so they own the
       assumption), or the repo pins LF on checkout with a
@@ -79,8 +79,81 @@ Two consequences:
       CRLF. The second also protects the Rust string literals and the
       skill markdown that `complexitySurfaces` reads; the first is a
       smaller change and does not touch every developer's checkout.
-- [ ] Apply it and run `cd app && npm test` on a CRLF checkout: the ten
+      **Decided: `.gitattributes`**, 2026-09-22 — the section above
+      leaves no real choice, since only the repo pin reaches the
+      `include_str!`'d markdown. The tests are left as they are: they
+      assume LF, and LF is now what every checkout has.
+- [x] Apply it and run `cd app && npm test` on a CRLF checkout: the ten
       above pass, nothing else changes.
+      Done 2026-09-22 in the `gavin-win-crlf-and-app-crate` worktree —
+      the before/after runs are in the section below. Nine of the ten
+      went green; the tenth (`orchestrationClearDone`) was already green
+      at this baseline, so there was nothing left of it to fix.
 - [ ] Tick the app checks line on
       [the windows port card](./feat-windows-port-on-a-windows-machine.md)
       only after this lands; before it, `npm test` cannot be green there.
+      **Left open on purpose**: "lands" means merged to `main`, and the
+      merge is the human's. Once it is in, the root checkout and every
+      worktree cut before it still need the one-time refresh below
+      before `npm test` can be green there — and that line then reads
+      12 red for reasons that are not this card's (below).
+
+## Applied, 2026-09-22
+
+**One new file.** The index was already LF in every text file
+(`git ls-files --eol`: 1257 `i/lf`, 56 `i/-text`, 9 empty), so
+`* text=auto eol=lf` renormalises nothing — the commit adds
+`.gitattributes` and rewrites no tracked file. The orchestration note
+that worried this route "renormalises every CRLF file in the repo" and
+would conflict with the seven live branches does not apply: CRLF only
+ever existed on disk, put there by `core.autocrlf=true` at checkout,
+never in a blob. Explicit `binary` lines cover `png`/`ico`/`icns` and
+the daemon's `.raw` PTY capture, which must stay byte-exact.
+
+**The pin changes nothing on disk by itself.** A checkout made before
+it keeps CRLF, and `git status` stays clean because the index's stat
+cache still matches. Refreshing means re-checking out the CLEAN files —
+`checkout-index` skips a file whose stat matches, so delete first, and
+`-u` writes the new stat back so the refresh does not show up as the
+phantom modification `git-status-crlf-phantom-modifications` describes.
+The recipe is in CLAUDE.md (Traps); this worktree's 1256 files were
+refreshed with it, leaving `git status` exactly as it was.
+
+**`cd app && npm test`, same worktree, before and after the refresh:**
+
+```
+before  21 failed / 5730 passed, 13 files red   (the main baseline)
+after   12 failed / 5739 passed,  8 files red
+```
+
+Gone, and nothing newly red: the nine of the ten that were still
+failing — `autoCommitSurfaces` ×1, `cardTabSurfaces` ×1,
+`complexitySurfaces` ×2, `orchestrationGavinTool` ×3, `reviewSurfaces`
+×1, `toolLibraryLayout` ×1. The 12 that remain are the baseline
+everyone has on `main`, and none is about line endings:
+`workspaceToolsActions` ×8 (a `layoutState` mock with no `workspaces`),
+`bestOfNActions` / `codeReviewActions` / `criticalReviewActions` (a
+`vi.mock` missing `agentDefaultsStore`), and one source-grep drift each
+in `commandGate`, `orchestrationGavinTool`, `toolPlatformGate` and
+`indicatorSurfaces`.
+
+**`cargo test -p app agent_setup`:** `must open with frontmatter` is
+gone — `the_opencode_agent_file_carries_the_git_only_grant` passes and
+`opencode_commit_agent.md` now compiles in as `---\n`. 61 pass, 4 fail,
+and the four are the `\` vs `/` skill-path assertions that
+[fix-app-crate-windows-path-shape-failures](./fix-app-crate-windows-path-shape-failures.md)
+owns: `a_{cursor,gemini,codex}_root_…` and
+`an_opencode_root_gets_its_skills_agent_file_and_mcp_entry`, which used
+to die at the frontmatter check before reaching its path assertion.
+
+**Also on the branch:** the Windows CI job's `npm test` comment no
+longer names this card as the reason it reports instead of gating — the
+reason now is the 12-red baseline, none of it platform-specific, and
+the step stays a report until the app suite is green on `main`.
+CLAUDE.md gained the line-ending trap with the refresh recipe.
+
+**Side observation, not acted on:** git classes
+`app/src/lib/cards/bestOfN.ts` and `app/src/lib/review/reviewBoard.ts`
+as binary because each carries a literal NUL as a map-key separator.
+`text=auto` leaves them alone and they contain no CR, so the pin does
+not touch them — but `git diff` on them says "Binary files differ".
