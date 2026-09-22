@@ -8,6 +8,9 @@ vi.mock("$lib/core/backend", () => ({
   gitRefs: vi.fn(),
 }));
 vi.mock("$lib/core/layoutState", () => ({
+  // Both read by actionPromptsState: the launch prompts resolve through it.
+  layoutState: writable({ workspaces: [] }),
+  agentDefaultsStore: writable({ actionPromptOverrides: {} }),
   resolvedAgentFor: vi.fn(),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   handleAgentSessionSpawned: vi.fn(),

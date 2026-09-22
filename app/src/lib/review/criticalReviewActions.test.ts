@@ -23,6 +23,8 @@ const createTiledPage = vi.fn(
 
 vi.mock("$lib/core/layoutState", () => ({
   layoutState: writable({ workspaces: [], sessionStatusById: {}, interruptedSessionIds: new Set(), failureReasonById: {} }),
+  // Read by actionPromptsState: the launch prompts resolve through it.
+  agentDefaultsStore: writable({ actionPromptOverrides: {} }),
   agentProfilesStore: writable([
     { id: "claude-code", label: "Claude Code", models: ["sonnet", "opus"], promptArgs: "" },
     { id: "codex", label: "Codex", models: ["gpt"], promptArgs: "" },

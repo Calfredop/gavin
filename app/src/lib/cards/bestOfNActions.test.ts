@@ -31,6 +31,8 @@ const createTiledPage = vi.fn(async (_ws: string, _name: string, specs: { cwd: s
 
 vi.mock("$lib/core/layoutState", () => ({
   layoutState: writable({ workspaces: [], sessionStatusById: {}, interruptedSessionIds: new Set(), failureReasonById: {} }),
+  // Read by actionPromptsState: the launch prompts resolve through it.
+  agentDefaultsStore: writable({ actionPromptOverrides: {} }),
   createTiledPage: (...args: Parameters<typeof createTiledPage>) => createTiledPage(...args),
   candidateAgentFor: vi.fn((_ws: string, c: { profileId: string; model: string }) => ({
     profileId: c.profileId,
