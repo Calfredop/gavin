@@ -51,6 +51,8 @@
   import { featureBlockedReason } from "$lib/core/daemonCompat";
   import { filterBoard, hiddenAcross, AUTO_KEY_PREFIX } from "$lib/board/boardSearch";
   import { isSearching } from "$lib/core/search";
+  import { linkableCards, linkedCards } from "$lib/git/commitCardLink";
+  import { askCardsByMeaning, cardsByMeaning, clearCardsByMeaning } from "$lib/git/commitCardLinkState";
   import { railIndex } from "$lib/board/planFilter";
   import { dropAgainstWholeBoard } from "$lib/board/pageBoard";
   import {
@@ -170,6 +172,31 @@
   // board obeyed it would be two answers to one question.
   let showingArchive = $state(false);
   const archive = $derived(archiveView(filterCards(merged?.archived ?? [], facets, rails), search));
+
+  // --- closest by meaning (commitCardLink.ts) ----------------------------
+  // Only when the SEARCH emptied the board: never beside a literal hit,
+  // which stays the first and only answer whenever there is one, and
+  // never for a board the facets had already emptied before the query
+  // got a look -- there the meaning of the words is not the problem.
+  // Never over the archive either: archived cards are off the option
+  // list by design, so an answer there could only name a card the human
+  // is not looking at. The driver waits for the typing to settle and
+  // asks each settled query once; clearing cancels a wait as well.
+  const emptiedBySearch = $derived(
+    !showingArchive && searching && view !== null && view.shown === 0 && (faceted?.shown ?? 0) > 0
+  );
+  $effect(() => {
+    if (emptiedBySearch) askCardsByMeaning(workspaceId, search, untrack(() => linkableCards(tree)));
+    else clearCardsByMeaning(workspaceId);
+  });
+  // Shown only for the query on screen: a slot about the query before
+  // it is not an answer to this one.
+  const meaningSlot = $derived($cardsByMeaning[workspaceId] ?? null);
+  const byMeaning = $derived(
+    emptiedBySearch && meaningSlot?.key === search && meaningSlot.entry.state === "read"
+      ? linkedCards(meaningSlot.entry.link)
+      : []
+  );
   const archiveBlocked = $derived(featureBlockedReason($daemonCompat, "archive"));
 
   // Select mode, the Delete dropdown's "selected" route. Not a store:
@@ -584,6 +611,21 @@
       />
     {/if}
   </div>
+  {#if byMeaning.length > 0}
+    <!-- Under the empty board's bar, not in place of the columns: they
+         stay, so the "0 / 11" counts keep saying what the query did. -->
+    <div class="by-meaning" role="note" aria-label="Cards closest in meaning to your search">
+      <span class="by-meaning-label">Closest by meaning:</span>
+      {#each byMeaning as c (c.path)}
+        <button
+          type="button"
+          class="by-meaning-card"
+          use:tooltip={"No card matches your words; this one is closest in meaning. Open it"}
+          onclick={() => (openPlanPath = c.path)}>{c.title}</button
+        >
+      {/each}
+    </div>
+  {/if}
   {#if showingArchive}
     <ArchiveGrid
       {workspaceId}
@@ -731,6 +773,35 @@
   }
   .facets :global(.facet-link) {
     flex: 0 0 auto;
+  }
+  .by-meaning {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    padding: 6px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.8em;
+    flex: 0 0 auto;
+  }
+  .by-meaning-label {
+    color: var(--text-subtle);
+  }
+  .by-meaning-card {
+    background: transparent;
+    border: 1px solid var(--border-accent);
+    border-radius: 8px;
+    color: var(--accent-text);
+    font: inherit;
+    padding: 0 8px;
+    cursor: pointer;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .by-meaning-card:hover {
+    border-color: var(--border-strong);
   }
   .facet-count {
     flex: 0 0 auto;
