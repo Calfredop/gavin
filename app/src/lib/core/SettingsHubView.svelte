@@ -188,8 +188,11 @@
   const SECTIONS: SettingsSection[] = [
     { id: "workspace", keywords: ["Workspace", "Name", "rename", "Colour", "Color", "accent", "Root", "folder"] },
     { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
-    { id: "terminal", keywords: ["Terminal", "Font size", "font"] },
-    { id: "cards", keywords: ["Cards", "Auto commit", "commit", "Require review", "review"] },
+    { id: "terminal", keywords: ["Terminal", "Font size", "font", "text size", "zoom"] },
+    {
+      id: "cards",
+      keywords: ["Cards", "Auto commit", "auto-commit", "commit", "Require review", "review"],
+    },
     { id: "git", keywords: ["Git", "Track", "tracking", "gitignore", "repository"] },
     {
       id: "agent",
@@ -207,10 +210,13 @@
       ],
     },
     { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
-    { id: "agent-pause", keywords: ["Agent pause", "pause", "cycle", "limit", "usage"] },
+    {
+      id: "agent-pause",
+      keywords: ["Agent pause", "pause", "cycle", "limit", "usage", "quota", "rate limit"],
+    },
     {
       id: "fallback-agent",
-      keywords: ["Fallback agent", "fallback chain", "usage limit", "arm"],
+      keywords: ["Fallback agent", "fallback chain", "usage limit", "quota", "rate limit", "arm"],
     },
     {
       id: "unattended-recovery",

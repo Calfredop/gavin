@@ -362,11 +362,17 @@
   /// access are app-wide infrastructure that used to live on each
   /// workspace's Settings tab by mistake.
   const SECTIONS: SettingsSection[] = [
-    { id: "appearance", keywords: ["Appearance", "Theme", "Light", "Dark", "system"] },
+    {
+      id: "appearance",
+      keywords: ["Appearance", "Theme", "Light", "Dark", "system", "dark mode", "colour scheme", "color scheme"],
+    },
     { id: "sidebar", keywords: ["Sidebar", "Scratchpad", "Hover to expand", "hover", "peek"] },
     { id: "hub-tabs", keywords: ["Hub tabs", "Sections", "tab row", "hidden"] },
-    { id: "terminal", keywords: ["Terminal", "Font size", "font"] },
-    { id: "cards", keywords: ["Cards", "Auto commit", "commit", "Require review", "review"] },
+    { id: "terminal", keywords: ["Terminal", "Font size", "font", "text size", "zoom"] },
+    {
+      id: "cards",
+      keywords: ["Cards", "Auto commit", "auto-commit", "commit", "Require review", "review"],
+    },
     {
       id: "git",
       keywords: ["Git", "Track gavin's files", "tracking", "gitignore", "initialize"],
@@ -387,9 +393,12 @@
     { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
     {
       id: "fallback-agent",
-      keywords: ["Fallback agent", "fallback chain", "usage limit", "arm"],
+      keywords: ["Fallback agent", "fallback chain", "usage limit", "quota", "rate limit", "arm"],
     },
-    { id: "agent-pause", keywords: ["Agent pause", "pause", "cycle", "limit", "schedule", "usage"] },
+    {
+      id: "agent-pause",
+      keywords: ["Agent pause", "pause", "cycle", "limit", "schedule", "usage", "quota", "rate limit"],
+    },
     {
       id: "turn-verdict",
       keywords: [
@@ -405,14 +414,37 @@
     },
     {
       id: "memory-wall",
-      keywords: ["Memory wall", "memory", "RAM", "pressure", "ceiling", "agents running at once"],
+      keywords: [
+        "Memory wall",
+        "memory",
+        "RAM",
+        "pressure",
+        "ceiling",
+        "agents running at once",
+        "max agents",
+        "concurrent",
+        "limit agents",
+      ],
     },
     {
       id: "updates",
-      keywords: ["Updates", "Check for updates", "Install", "Endpoint", "update channel", "version"],
+      keywords: [
+        "Updates",
+        "Check for updates",
+        "Install",
+        "Endpoint",
+        "update channel",
+        "version",
+        "upgrade",
+        "new version",
+        "beta",
+      ],
     },
     { id: "daemon", keywords: ["Daemon", "Restart daemon", "gavin-daemon"] },
-    { id: "remote-access", keywords: ["Remote access", "token", "local access", "pairing"] },
+    {
+      id: "remote-access",
+      keywords: ["Remote access", "token", "local access", "pairing", "phone", "device"],
+    },
   ];
   let settingsQuery = $state("");
   const settingsFilter = $derived(searchSettings(SECTIONS, settingsQuery));
