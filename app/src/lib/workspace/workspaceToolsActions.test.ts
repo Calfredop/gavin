@@ -9,7 +9,10 @@ vi.mock("$lib/core/backend", () => ({
   getTools: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("$lib/core/layoutState", () => ({
-  layoutState: writable({ sessionStatusById: {} as Record<string, string> }),
+  // `workspaces` is not optional: the tool-verdict watch renders the
+  // library through workspacePromptOverrides, which reads
+  // get(layoutState).workspaces on every tick.
+  layoutState: writable({ sessionStatusById: {} as Record<string, string>, workspaces: [] as unknown[] }),
   daemonCompat: writable({ daemonVersion: 30, appVersion: 30, degraded: false }),
   sessionExits: writable(new Map<string, number>()),
   resolvedAgentFor: vi.fn(),
@@ -100,7 +103,7 @@ beforeEach(() => {
   vi.mocked(backend.createSession).mockResolvedValue("sess-1");
   vi.mocked(backend.toolRuns).mockResolvedValue([]);
   daemonCompat.set({ daemonVersion: 30, appVersion: 30, degraded: false });
-  layoutState.set({ sessionStatusById: {} } as never);
+  layoutState.set({ workspaces: [], sessionStatusById: {} } as never);
 });
 
 describe("requestToolRun", () => {
@@ -298,7 +301,7 @@ describe("an agent tool's verdict", () => {
   // watches would ever close the row. Its turn ending IS its completion
   // -- the same rule a rail's agent tool step runs on.
   it("passes when the session's turn ends", async () => {
-    layoutState.set({
+    layoutState.set({ workspaces: [],
       sessionStatusById: { "sess-1": "idle" },
       sessionsSeenWorking: new Set(["sess-1"]),
     } as never);
@@ -309,29 +312,29 @@ describe("an agent tool's verdict", () => {
   // A broken agent and a finished one are byte-identical to the daemon's
   // quiet-period heuristic; failure detection is what tells them apart.
   it("fails when failure detection fires", async () => {
-    layoutState.set({ sessionStatusById: { "sess-1": "failed" } } as never);
+    layoutState.set({ workspaces: [], sessionStatusById: { "sess-1": "failed" } } as never);
     await Promise.resolve();
     expect(backend.setToolRunOutcome).toHaveBeenCalledWith("sess-1", "failed");
   });
 
   it("says nothing while the agent is still working", async () => {
-    layoutState.set({ sessionStatusById: { "sess-1": "working" } } as never);
+    layoutState.set({ workspaces: [], sessionStatusById: { "sess-1": "working" } } as never);
     await Promise.resolve();
     expect(backend.setToolRunOutcome).not.toHaveBeenCalled();
   });
 
   // A status that flickers idle → working → idle must not file twice.
   it("files one verdict per session", async () => {
-    layoutState.set({
+    layoutState.set({ workspaces: [],
       sessionStatusById: { "sess-1": "idle" },
       sessionsSeenWorking: new Set(["sess-1"]),
     } as never);
     await Promise.resolve();
-    layoutState.set({
+    layoutState.set({ workspaces: [],
       sessionStatusById: { "sess-1": "working" },
       sessionsSeenWorking: new Set(["sess-1"]),
     } as never);
-    layoutState.set({
+    layoutState.set({ workspaces: [],
       sessionStatusById: { "sess-1": "idle" },
       sessionsSeenWorking: new Set(["sess-1"]),
     } as never);
@@ -340,7 +343,7 @@ describe("an agent tool's verdict", () => {
   });
 
   it("leaves the first idle alone, before the agent has worked", async () => {
-    layoutState.set({
+    layoutState.set({ workspaces: [],
       sessionStatusById: { "sess-1": "idle" },
       sessionsSeenWorking: new Set(),
     } as never);
@@ -353,7 +356,7 @@ describe("an agent tool's verdict", () => {
   // second opinion about the same run.
   it("leaves a command tool's run to the daemon", async () => {
     toolRecords.set({ "ws-1": [{ ...agentTool, kind: "command" }] });
-    layoutState.set({ sessionStatusById: { "sess-1": "idle" } } as never);
+    layoutState.set({ workspaces: [], sessionStatusById: { "sess-1": "idle" } } as never);
     await Promise.resolve();
     expect(backend.setToolRunOutcome).not.toHaveBeenCalled();
   });
@@ -362,14 +365,14 @@ describe("an agent tool's verdict", () => {
   // guess is what "the run keeps waiting for its session to end" avoids.
   it("waits rather than guessing when the tool is not in the library", async () => {
     toolRecords.set({ "ws-1": [] });
-    layoutState.set({ sessionStatusById: { "sess-1": "idle" } } as never);
+    layoutState.set({ workspaces: [], sessionStatusById: { "sess-1": "idle" } } as never);
     await Promise.resolve();
     expect(backend.setToolRunOutcome).not.toHaveBeenCalled();
   });
 
   it("files nothing against a daemon that keeps no runs", async () => {
     daemonCompat.set({ daemonVersion: 29, appVersion: 30, degraded: true });
-    layoutState.set({ sessionStatusById: { "sess-1": "idle" } } as never);
+    layoutState.set({ workspaces: [], sessionStatusById: { "sess-1": "idle" } } as never);
     await Promise.resolve();
     expect(backend.setToolRunOutcome).not.toHaveBeenCalled();
   });

@@ -152,11 +152,16 @@ export const CONTEXT_MENU_SELECTOR = `[${CONTEXT_MENU_ATTR}]`;
 
 /// Duck-typed: the suite has no DOM, and a mousedown target is often a
 /// text node whose parent is the one that can answer `closest`.
-export function isInsideContextMenu(target: EventTarget | null | undefined): boolean {
-  let node = target as
-    | { closest?: (s: string) => unknown; parentElement?: unknown }
-    | null
-    | undefined;
+/// What this actually needs off a target: something that can answer
+/// `closest`, or point at a parent that can. Declared rather than cast
+/// in silence, so a caller -- or a test -- can hand it the duck without
+/// pretending to be a whole EventTarget.
+type ClosestNode = { closest?: (s: string) => unknown; parentElement?: unknown };
+
+export function isInsideContextMenu(
+  target: EventTarget | ClosestNode | null | undefined
+): boolean {
+  let node = target as ClosestNode | null | undefined;
   if (!node || typeof node !== "object") return false;
   if (typeof node.closest !== "function") {
     node = node.parentElement as typeof node;

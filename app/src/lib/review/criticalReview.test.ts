@@ -14,8 +14,10 @@ import {
   alsoBuildFindingsRailParam,
   critiqueSessionsComplete,
 } from "$lib/review/criticalReview";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+// The house helper rather than node:fs — it keys every source by
+// basename through import.meta.glob, so this file needs no node types
+// (which the svelte-check tsconfig does not carry) and no dirname.
+import { source } from "$lib/sources";
 
 const BASE = {
   base: "main",
@@ -121,10 +123,7 @@ describe("criticalReviewDialogSeedKey", () => {
   });
 
   it("the dialog seeds on that key, never on request-object identity", () => {
-    const dialog = readFileSync(
-      join(import.meta.dirname, "CriticalReviewDialog.svelte"),
-      "utf8"
-    );
+    const dialog = source("CriticalReviewDialog.svelte");
     expect(dialog).toContain("criticalReviewDialogSeedKey");
     expect(dialog).not.toMatch(/request\s*===\s*seededFor/);
   });

@@ -23,6 +23,11 @@ const createTiledPage = vi.fn(
 
 vi.mock("$lib/core/layoutState", () => ({
   layoutState: writable({ workspaces: [], sessionStatusById: {}, interruptedSessionIds: new Set(), failureReasonById: {} }),
+  // actionPromptsState derives appPromptOverrides from this at MODULE
+  // scope, so a mock without it fails the whole file at import rather
+  // than in the test that needs it.
+  agentDefaultsStore: writable({ actionPromptOverrides: {} }),
+  setAgentDefaults: vi.fn().mockResolvedValue(undefined),
   agentProfilesStore: writable([
     { id: "claude-code", label: "Claude Code", models: ["sonnet", "opus"], promptArgs: "" },
     { id: "codex", label: "Codex", models: ["gpt"], promptArgs: "" },

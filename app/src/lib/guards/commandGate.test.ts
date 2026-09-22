@@ -201,6 +201,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   superpowers_install: ["ordinary"],
   setup_agent_integration: ["ordinary"],
   agent_profiles: ["ordinary"],
+  detect_agent_binaries: ["ordinary"],
   agent_model_catalog: ["ordinary"],
   agent_usage: ["ordinary"],
   pr_status: ["ordinary"],

@@ -8,6 +8,13 @@ vi.mock("$lib/core/backend", () => ({
   gitRefs: vi.fn(),
 }));
 vi.mock("$lib/core/layoutState", () => ({
+  // actionPromptsState derives appPromptOverrides from this at MODULE
+  // scope, so a mock without it fails the whole file at import rather
+  // than in the test that needs it. `layoutState` is the same story one
+  // call deeper: workspacePromptOverrides reads it per launch.
+  agentDefaultsStore: writable({ actionPromptOverrides: {} }),
+  setAgentDefaults: vi.fn().mockResolvedValue(undefined),
+  layoutState: writable({ workspaces: [], sessionStatusById: {}, interruptedSessionIds: new Set(), failureReasonById: {} }),
   resolvedAgentFor: vi.fn(),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   handleAgentSessionSpawned: vi.fn(),

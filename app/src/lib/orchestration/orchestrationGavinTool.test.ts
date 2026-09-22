@@ -31,7 +31,10 @@ describe("the gavin tool kind", () => {
     "OrchestrationDrawer.svelte",
     "ToolLibraryDialog.svelte",
     "OrchestrationStepChip.svelte",
-    "WorkspaceToolsHubView.svelte",
+    // The Tools tab's drawing moved out of WorkspaceToolsHubView, which
+    // is now a thin wrapper, into the explorer it delegates to. Naming
+    // the wrapper asserted nothing about the surface that draws.
+    "ToolsExplorerView.svelte",
   ];
 
   for (const path of ICON_SITES) {
