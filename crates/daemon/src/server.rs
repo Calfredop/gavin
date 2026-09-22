@@ -4078,21 +4078,47 @@ pub fn authorize(
     }
 }
 
-/// The peer-uid floor (`getpeereid`, §4): confirm the connecting process
-/// runs as this daemon's own uid. The socket is `0600` in a `0700` dir, so
-/// this only ever fires if the socket escapes that dir -- defence in depth,
-/// not identity. Fails closed: a peer whose uid cannot be read is refused.
+/// The peer-uid floor (§4): confirm the connecting process runs as this
+/// daemon's own uid. The socket is `0600` in a `0700` dir, so this only
+/// ever fires if the socket escapes that dir -- defence in depth, not
+/// identity. Fails closed: a peer whose uid cannot be read is refused.
 #[cfg(unix)]
 fn peer_uid_ok(fd: std::os::unix::io::RawFd) -> bool {
+    peer_uid(fd).is_some_and(|uid| uid == unsafe { libc::getuid() })
+}
+
+/// The connected peer's uid, via `getpeereid` -- the BSD call, which is
+/// what macOS has. glibc and musl never grew it, so Linux reads the same
+/// answer through `SO_PEERCRED` below instead.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+fn peer_uid(fd: std::os::unix::io::RawFd) -> Option<libc::uid_t> {
     let mut uid: libc::uid_t = 0;
     let mut gid: libc::gid_t = 0;
     // SAFETY: `fd` is a live, connected Unix-domain socket for the
     // duration of this call; getpeereid only reads through it.
     let rc = unsafe { libc::getpeereid(fd, &mut uid, &mut gid) };
-    if rc != 0 {
-        return false;
-    }
-    uid == unsafe { libc::getuid() }
+    (rc == 0).then_some(uid)
+}
+
+/// The connected peer's uid on Linux: the credentials the kernel recorded
+/// at `connect()`, which is what `getpeereid` returns elsewhere.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn peer_uid(fd: std::os::unix::io::RawFd) -> Option<libc::uid_t> {
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `fd` is a live, connected Unix-domain socket for the
+    // duration of this call, and `cred`/`len` describe a buffer of
+    // exactly the size SO_PEERCRED writes.
+    let rc = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut cred as *mut libc::ucred).cast(),
+            &mut len,
+        )
+    };
+    (rc == 0 && len as usize == std::mem::size_of::<libc::ucred>()).then_some(cred.uid)
 }
 
 /// Whether an untokened local connection is narrowed. Absent marker file
@@ -10574,6 +10600,27 @@ mod tests {
                 Ok(None) | Err(_) => break,
             }
         }
+    }
+
+    /// Both halves of a socketpair belong to this process, so the peer
+    /// uid each side reads is our own and the floor lets it through. The
+    /// point is that it READS one: `peer_uid` has a different body on
+    /// Linux than on macOS, and a Linux body that fails would refuse
+    /// every connection the daemon ever gets.
+    #[cfg(unix)]
+    #[test]
+    fn peer_uid_reads_this_process_uid_across_a_socketpair() {
+        use std::os::unix::io::AsRawFd;
+
+        let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let me = unsafe { libc::getuid() };
+        assert_eq!(peer_uid(a.as_raw_fd()), Some(me));
+        assert_eq!(peer_uid(b.as_raw_fd()), Some(me));
+        assert!(peer_uid_ok(a.as_raw_fd()));
+
+        // Fails closed: no socket, no uid, no connection.
+        assert_eq!(peer_uid(-1), None);
+        assert!(!peer_uid_ok(-1));
     }
 
     /// unix only, because the SUBJECT is: the failure being provoked is
