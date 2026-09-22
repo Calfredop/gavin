@@ -1,17 +1,16 @@
 import { describe, it, expect } from "vitest";
 import {
   layoutNodeGraph,
+  orderRails,
   railColour,
-  NODE_W,
-  NODE_H,
-  STAGE_GAP,
-  MEMBER_GAP,
-  PARALLEL_GAP,
-  LANE_HEAD_W,
-  LANE_PAD_X,
+  laneX,
+  rowY,
+  ARRIVE,
+  LANE_W,
+  ROW_H,
   RAIL_COLOURS,
   type GraphEdge,
-  type GraphRect,
+  type GraphRow,
 } from "$lib/orchestration/orchestrationNodes";
 import type { Orchestration, Rail, Stage, StageMode, Step } from "$lib/orchestration/orchestration";
 import { BUILTIN_TOOLS } from "$lib/orchestration/orchestrationTools";
@@ -46,141 +45,159 @@ function orch(rails: Rail[]): Orchestration {
   };
 }
 
-function centreY(r: GraphRect): number {
-  return r.y + r.h / 2;
+type StepRow = Extract<GraphRow, { kind: "step" }>;
+type RailRow = Extract<GraphRow, { kind: "rail" }>;
+function stepRows(rows: GraphRow[]): StepRow[] {
+  return rows.filter((r): r is StepRow => r.kind === "step");
 }
-function contains(outer: GraphRect, inner: GraphRect): boolean {
-  return (
-    inner.x >= outer.x &&
-    inner.y >= outer.y &&
-    inner.x + inner.w <= outer.x + outer.w &&
-    inner.y + inner.h <= outer.y + outer.h
-  );
+function railRows(rows: GraphRow[]): RailRow[] {
+  return rows.filter((r): r is RailRow => r.kind === "rail");
 }
 function ofKind(edges: GraphEdge[], kind: GraphEdge["kind"]): GraphEdge[] {
   return edges.filter((e) => e.kind === kind);
 }
+function dot(row: { row: number; lane: number }): string {
+  return `${laneX(row.lane)} ${rowY(row.row)}`;
+}
 
-// One node per step, one lane per rail, laid out by arithmetic alone --
-// no DOM measuring -- so the component is a template over rectangles
-// and the edges are strings it never has to compute.
+// One row per step, one lane per rail, the commit graph's own geometry:
+// a dot's centre is a function of (row, lane) and nothing is measured.
 describe("the node graph layout", () => {
-  it("lays an empty plan out as nothing, with room for the lane head", () => {
+  it("lays an empty plan out as no rows", () => {
     const g = layoutNodeGraph(orch([]), BUILTIN_TOOLS);
-    expect(g.lanes).toEqual([]);
-    expect(g.nodes).toEqual([]);
+    expect(g.rows).toEqual([]);
     expect(g.edges).toEqual([]);
     expect(g.height).toBe(0);
-    expect(g.width).toBeGreaterThanOrEqual(LANE_HEAD_W + LANE_PAD_X);
+    expect(g.lanes).toBe(0);
+    expect(g.width).toBe(LANE_W);
   });
 
-  it("flows a rail's stages left to right on one lane, an arrow between each pair", () => {
+  it("gives a rail a head row and one row per step, down its own lane", () => {
     const [a, b, c] = [step(), step(), step()];
     const g = layoutNodeGraph(orch([rail("Build", [stage([a]), stage([b]), stage([c])])]), BUILTIN_TOOLS);
-    expect(g.lanes).toHaveLength(1);
-    expect(g.nodes.map((n) => n.stepId)).toEqual([a.id, b.id, c.id]);
-    const [na, nb, nc] = g.nodes;
-    // Past the lane head, then one node width plus one arrow apart.
-    expect(na.x).toBe(LANE_HEAD_W + LANE_PAD_X);
-    expect(nb.x).toBe(na.x + NODE_W + STAGE_GAP);
-    expect(nc.x).toBe(nb.x + NODE_W + STAGE_GAP);
-    // Every node sits on the lane's centre line, so the arrows are level.
-    for (const n of g.nodes) expect(centreY(n)).toBe(centreY(g.lanes[0]));
-    const flows = ofKind(g.edges, "flow");
-    expect(flows).toHaveLength(2);
-    for (const e of flows) {
-      expect(e.arrow).not.toBeNull();
-      expect(e.colour).toBe(g.lanes[0].colour);
-    }
-    expect(flows[0].d).toBe(`M ${na.x + NODE_W} ${centreY(na)} L ${nb.x} ${centreY(nb)}`);
+    expect(g.rows.map((r) => r.kind)).toEqual(["rail", "step", "step", "step"]);
+    expect(g.rows.map((r) => r.row)).toEqual([0, 1, 2, 3]);
+    expect(g.rows.every((r) => r.lane === 0)).toBe(true);
+    expect(stepRows(g.rows).map((r) => r.stepId)).toEqual([a.id, b.id, c.id]);
+    expect(g.height).toBe(4 * ROW_H);
+    expect(g.lanes).toBe(1);
+    // The line joins the head to the last dot on the lane, and nothing
+    // else is drawn: order is the line, and needs no arrowheads.
+    expect(g.edges).toHaveLength(1);
+    const line = g.edges[0];
+    expect(line.kind).toBe("rail");
+    expect(line.colour).toBe(g.rows[0].colour);
+    expect(line.d).toBe(`M ${laneX(0)} ${rowY(0)} L ${laneX(0)} ${rowY(3)}`);
   });
 
-  // The rail's own rule (orchestration.ts isGroup): a single-step stage
-  // draws bare. Its box IS the node's box, and it wears no mode.
-  it("draws a single-step stage as the bare node", () => {
-    const s = step();
-    const g = layoutNodeGraph(orch([rail("Build", [stage([s], "parallel", "Named")])]), BUILTIN_TOOLS);
-    expect(g.stages).toHaveLength(1);
-    expect(g.stages[0].mode).toBeNull();
-    expect(g.stages[0].label).toBeNull();
-    const { x, y, w, h } = g.nodes[0];
-    expect(g.stages[0]).toMatchObject({ x, y, w, h });
+  it("draws a rail with no steps as its head alone", () => {
+    const g = layoutNodeGraph(orch([rail("Empty", [])]), BUILTIN_TOOLS);
+    expect(g.rows.map((r) => r.kind)).toEqual(["rail"]);
+    expect(g.edges).toEqual([]);
   });
 
-  // Sequence is drawn with the geometry the strip already uses for
-  // order: a connector between members (grouping spec §4.1). Members
-  // form a chain, and each link is an arrow.
-  it("chains a sequence group's members left to right inside its box", () => {
+  // The strip's own rule (isGroup): a single-step stage is not a group,
+  // whatever mode it was written with.
+  it("marks a single-step stage with no group", () => {
+    const g = layoutNodeGraph(orch([rail("Build", [stage([step()], "parallel", "Named")])]), BUILTIN_TOOLS);
+    expect(stepRows(g.rows)[0].group).toBeNull();
+  });
+
+  // Sequence is the straight run: the same line, the members one row
+  // after another on the rail's lane, and the group only named.
+  it("runs a sequence group straight down the lane, its rows marked", () => {
     const [a, b, c] = [step(), step(), step()];
     const g = layoutNodeGraph(
       orch([rail("Build", [stage([a, b, c], "sequence", "Prep")])]),
       BUILTIN_TOOLS
     );
-    const box = g.stages[0];
-    expect(box.mode).toBe("sequence");
-    expect(box.label).toBe("Prep");
-    const [na, nb, nc] = g.nodes;
-    expect(na.y).toBe(nb.y);
-    expect(nb.y).toBe(nc.y);
-    expect(nb.x).toBe(na.x + NODE_W + MEMBER_GAP);
-    expect(nc.x).toBe(nb.x + NODE_W + MEMBER_GAP);
-    for (const n of g.nodes) expect(contains(box, n)).toBe(true);
-    const flows = ofKind(g.edges, "flow");
-    expect(flows).toHaveLength(2);
-    expect(flows.every((e) => e.arrow !== null)).toBe(true);
-    // The members sit on the lane's centre line too: the arrow INTO the
-    // group meets the chain without a kink.
-    expect(centreY(na)).toBe(centreY(g.lanes[0]));
+    const members = stepRows(g.rows);
+    expect(members.map((r) => r.lane)).toEqual([0, 0, 0]);
+    expect(members.map((r) => r.row)).toEqual([1, 2, 3]);
+    expect(members.map((r) => r.group?.mode)).toEqual(["sequence", "sequence", "sequence"]);
+    expect(members.map((r) => r.group?.label)).toEqual(["Prep", "Prep", "Prep"]);
+    expect(members.map((r) => r.group?.first)).toEqual([true, false, false]);
+    expect(members.map((r) => r.group?.last)).toEqual([false, false, true]);
+    expect(ofKind(g.edges, "fork")).toEqual([]);
+    expect(ofKind(g.edges, "join")).toEqual([]);
+    expect(g.lanes).toBe(1);
   });
 
-  // Parallel is the enclosure, not the chain: members stack, and one
-  // fan -- a bus with a stub to each member, no arrowheads -- says they
-  // start together.
-  it("stacks a parallel group's members behind one fan", () => {
+  // Parallel is the fork: the first member stays on the lane, every
+  // other takes the lane beside it -- one row each -- and each leaves
+  // the line at the row before the group and rejoins it at the next
+  // stage, the shape a branch and its merge have in the commit graph.
+  it("forks a parallel group into the lanes beside the rail's and merges it back", () => {
+    const before = step();
     const [a, b, c] = [step(), step(), step()];
-    const g = layoutNodeGraph(orch([rail("Build", [stage([a, b, c], "parallel")])]), BUILTIN_TOOLS);
-    const box = g.stages[0];
-    expect(box.mode).toBe("parallel");
+    const after = step();
+    const g = layoutNodeGraph(
+      orch([rail("Build", [stage([before]), stage([a, b, c], "parallel"), stage([after])])]),
+      BUILTIN_TOOLS
+    );
+    const rows = stepRows(g.rows);
+    const [rb, ra, rb2, rc, rAfter] = rows;
+    expect(rb.lane).toBe(0);
+    expect([ra.lane, rb2.lane, rc.lane]).toEqual([0, 1, 2]);
+    expect([ra.row, rb2.row, rc.row]).toEqual([2, 3, 4]);
+    expect(rAfter.lane).toBe(0);
+    expect(rAfter.row).toBe(5);
     // Positional fallback, exactly the strip's `stage N`.
-    expect(box.label).toBe("stage 1");
-    const [na, nb, nc] = g.nodes;
-    expect(na.x).toBe(nb.x);
-    expect(nb.x).toBe(nc.x);
-    expect(nb.y).toBe(na.y + NODE_H + PARALLEL_GAP);
-    expect(nc.y).toBe(nb.y + NODE_H + PARALLEL_GAP);
-    for (const n of g.nodes) expect(contains(box, n)).toBe(true);
-    expect(ofKind(g.edges, "flow")).toEqual([]);
-    const fans = ofKind(g.edges, "fan");
-    expect(fans).toHaveLength(1);
-    expect(fans[0].arrow).toBeNull();
-    // The middle member is on the lane's centre line: the stack is
-    // centred on the flow, not hung below it.
-    expect(centreY(nb)).toBe(centreY(g.lanes[0]));
+    expect(ra.group?.label).toBe("stage 2");
+    expect(g.lanes).toBe(3);
+    expect(g.width).toBe(3 * LANE_W);
+    const forks = ofKind(g.edges, "fork");
+    expect(forks.map((e) => e.id).sort()).toEqual([`fork:${b.id}`, `fork:${c.id}`].sort());
+    // From the last dot on the lane before the group...
+    for (const fork of forks) expect(fork.d.startsWith(`M ${dot(rb)}`)).toBe(true);
+    expect(forks.find((e) => e.id === `fork:${c.id}`)?.d.endsWith(dot(rc))).toBe(true);
+    // ...and back into the next stage's dot.
+    const joins = ofKind(g.edges, "join");
+    expect(joins).toHaveLength(2);
+    for (const join of joins) expect(join.d.endsWith(dot(rAfter))).toBe(true);
+    expect(joins.find((e) => e.id === `join:${c.id}`)?.d.startsWith(`M ${dot(rc)}`)).toBe(true);
+    // The rail's own line runs through to the stage after the fork.
+    expect(ofKind(g.edges, "rail")[0].d.endsWith(`${laneX(0)} ${rowY(5)}`)).toBe(true);
+    // No arrowheads inside a rail: forks and merges are lines.
+    expect(g.edges.filter((e) => e.kind !== "starts" && e.kind !== "waits").every((e) => e.arrow === null)).toBe(true);
+  });
+
+  it("ends a rail's line at its last dot on the lane when a fork is last", () => {
+    const [a, b] = [step(), step()];
+    const g = layoutNodeGraph(orch([rail("Build", [stage([a, b], "parallel")])]), BUILTIN_TOOLS);
+    const [ra] = stepRows(g.rows);
+    expect(ofKind(g.edges, "join")).toEqual([]);
+    expect(ofKind(g.edges, "rail")[0].d.endsWith(`${laneX(0)} ${rowY(ra.row)}`)).toBe(true);
   });
 
   // A stage written before groups existed has no mode and reads as
   // parallel, the way stageMode() reads it everywhere else.
   it("reads a mode-less group as parallel", () => {
     const g = layoutNodeGraph(orch([rail("Build", [stage([step(), step()])])]), BUILTIN_TOOLS);
-    expect(g.stages[0].mode).toBe("parallel");
+    expect(stepRows(g.rows)[0].group?.mode).toBe("parallel");
+    expect(g.lanes).toBe(2);
   });
 
-  it("stacks lanes top to bottom in rail order, none overlapping", () => {
+  // Rails follow one another down the page, each on lanes of its own,
+  // wide enough for its widest fork -- so a fork never lands on the
+  // next rail's line.
+  it("gives each rail its own lanes, as many as its widest fork", () => {
     const g = layoutNodeGraph(
-      orch([rail("One", [stage([step()])]), rail("Two", [stage([step(), step()], "parallel")]), rail("Three", [])]),
+      orch([
+        rail("One", [stage([step()])]),
+        rail("Two", [stage([step(), step(), step()], "parallel")]),
+        rail("Three", []),
+      ]),
       BUILTIN_TOOLS
     );
-    expect(g.lanes.map((l) => l.rail.name)).toEqual(["One", "Two", "Three"]);
-    for (let i = 1; i < g.lanes.length; i++) {
-      expect(g.lanes[i].y).toBeGreaterThanOrEqual(g.lanes[i - 1].y + g.lanes[i - 1].h);
-    }
-    // An empty rail still gets a lane -- it is a rail the human can see
-    // and start filling -- and every rect is inside the canvas.
-    const all: GraphRect[] = [...g.lanes, ...g.stages, ...g.nodes];
-    for (const r of all) {
-      expect(r.x + r.w).toBeLessThanOrEqual(g.width);
-      expect(r.y + r.h).toBeLessThanOrEqual(g.height);
-    }
+    expect(railRows(g.rows).map((r) => [r.rail.name, r.lane])).toEqual([
+      ["One", 0],
+      ["Two", 1],
+      ["Three", 4],
+    ]);
+    expect(g.lanes).toBe(5);
+    expect(g.rows.map((r) => r.row)).toEqual(g.rows.map((_, i) => i));
+    expect(g.height).toBe(g.rows.length * ROW_H);
   });
 
   // Categorical, not semantic: the palette exists so adjacent lanes
@@ -191,7 +208,10 @@ describe("the node graph layout", () => {
     expect(railColour(RAIL_COLOURS)).toBe(1);
     const rails = Array.from({ length: RAIL_COLOURS + 1 }, (_, i) => rail(`R${i}`, []));
     const g = layoutNodeGraph(orch(rails), BUILTIN_TOOLS);
-    expect(g.lanes.map((l) => l.colour)).toEqual([...Array.from({ length: RAIL_COLOURS }, (_, i) => i + 1), 1]);
+    expect(railRows(g.rows).map((r) => r.colour)).toEqual([
+      ...Array.from({ length: RAIL_COLOURS }, (_, i) => i + 1),
+      1,
+    ]);
   });
 
   // The search lens takes rails out of the strip; it takes them out of
@@ -201,9 +221,48 @@ describe("the node graph layout", () => {
     const hidden = rail("Hidden", [stage([step()])]);
     const kept = rail("Kept", [stage([step()])]);
     const g = layoutNodeGraph(orch([hidden, kept]), BUILTIN_TOOLS, (id) => id !== hidden.id);
-    expect(g.lanes.map((l) => l.railId)).toEqual([kept.id]);
-    expect(g.lanes[0].colour).toBe(2);
-    expect(g.nodes.every((n) => n.railId === kept.id)).toBe(true);
+    expect(railRows(g.rows).map((r) => r.railId)).toEqual([kept.id]);
+    expect(railRows(g.rows)[0].colour).toBe(2);
+    expect(railRows(g.rows)[0].lane).toBe(0);
+    expect(g.rows.every((r) => r.railId === kept.id)).toBe(true);
+  });
+});
+
+// Reading order: a rail another rail starts comes after it, so the curve
+// between them runs down the page. Position breaks every tie.
+describe("the rail order", () => {
+  const START = "builtin:start-rail";
+
+  it("keeps position order when nothing starts anything", () => {
+    const o = orch([rail("B", []), rail("A", [])]);
+    expect(orderRails(o, BUILTIN_TOOLS).map((r) => r.name)).toEqual(["B", "A"]);
+  });
+
+  it("puts a rail after the rail whose step starts it", () => {
+    const o = orch([rail("Deploy", []), rail("Build", [stage([toolStep(START, { rail: "Deploy" })])])]);
+    expect(orderRails(o, BUILTIN_TOOLS).map((r) => r.name)).toEqual(["Build", "Deploy"]);
+  });
+
+  it("puts a rail after the rail it waits for", () => {
+    const o = orch([rail("Deploy", [], { trigger: { kind: "rail-done", rail: "build" } }), rail("Build", [])]);
+    expect(orderRails(o, BUILTIN_TOOLS).map((r) => r.name)).toEqual(["Build", "Deploy"]);
+  });
+
+  it("falls back to position on a cycle", () => {
+    const o = orch([
+      rail("A", [stage([toolStep(START, { rail: "B" })])]),
+      rail("B", [stage([toolStep(START, { rail: "A" })])]),
+      rail("C", []),
+    ]);
+    expect(orderRails(o, BUILTIN_TOOLS).map((r) => r.name)).toEqual(["A", "B", "C"]);
+  });
+
+  it("orders the graph's rows the same way", () => {
+    const o = orch([rail("Deploy", []), rail("Build", [stage([toolStep(START, { rail: "Deploy" })])])]);
+    const g = layoutNodeGraph(o, BUILTIN_TOOLS);
+    expect(railRows(g.rows).map((r) => r.rail.name)).toEqual(["Build", "Deploy"]);
+    // Colour still follows POSITION, not reading order.
+    expect(railRows(g.rows).map((r) => r.colour)).toEqual([2, 1]);
   });
 });
 
@@ -214,7 +273,7 @@ describe("the node graph layout", () => {
 describe("start-rail arrows", () => {
   const START = "builtin:start-rail";
 
-  it("draws an arrow from the step to the rail it names", () => {
+  it("curves from the step's dot down to the head of the rail it names", () => {
     const starter = toolStep(START, { rail: " deploy " });
     const from = rail("Build", [stage([step()]), stage([starter])]);
     const to = rail("Deploy", [stage([step()])]);
@@ -222,22 +281,23 @@ describe("start-rail arrows", () => {
     const starts = ofKind(g.edges, "starts");
     expect(starts).toHaveLength(1);
     const edge = starts[0];
+    const source = stepRows(g.rows).find((r) => r.stepId === starter.id) as StepRow;
+    const head = railRows(g.rows).find((r) => r.railId === to.id) as RailRow;
     // The SOURCE rail's colour: the arrow says who fires whom.
-    expect(edge.colour).toBe(g.lanes[0].colour);
+    expect(edge.colour).toBe(source.colour);
+    expect(edge.d.startsWith(`M ${dot(source)}`)).toBe(true);
+    // Stops short of the head dot, so the arrowhead is not under it.
+    expect(edge.d.endsWith(`${laneX(head.lane)} ${rowY(head.row) - ARRIVE}`)).toBe(true);
     expect(edge.arrow).not.toBeNull();
-    // Lands on the target rail's first stage, on its centre line.
-    const target = g.stages.find((s) => s.railId === to.id) as GraphRect;
-    expect(edge.d.endsWith(`${target.x} ${centreY(target)}`)).toBe(true);
     // Nothing to say in words when the arrow says it.
-    expect(g.nodes.find((n) => n.stepId === starter.id)?.note).toBeNull();
+    expect(source.note).toBeNull();
   });
 
-  it("lands on the lane's head when the target rail has no stages yet", () => {
+  it("points at the head even when the target rail has no steps", () => {
     const starter = toolStep(START, { rail: "Deploy" });
     const g = layoutNodeGraph(orch([rail("Build", [stage([starter])]), rail("Deploy", [])]), BUILTIN_TOOLS);
-    const edge = ofKind(g.edges, "starts")[0];
-    const lane = g.lanes[1];
-    expect(edge.d.endsWith(`${LANE_HEAD_W + LANE_PAD_X} ${centreY(lane)}`)).toBe(true);
+    const head = railRows(g.rows)[1];
+    expect(ofKind(g.edges, "starts")[0].d.endsWith(`${laneX(head.lane)} ${rowY(head.row) - ARRIVE}`)).toBe(true);
   });
 
   it.each([
@@ -245,14 +305,14 @@ describe("start-rail arrows", () => {
     ["a rail that does not exist", { rail: "Ship" }, /no rail called “Ship”/],
     ["a name two rails share", { rail: "Twin" }, /names 2 rails/],
     ["its own rail", { rail: "Build" }, /cannot start itself/],
-  ])("warns on the step instead of drawing, for %s", (_, params, reason) => {
+  ])("warns on the row instead of drawing, for %s", (_, params, reason) => {
     const starter = toolStep(START, params);
     const g = layoutNodeGraph(
       orch([rail("Build", [stage([starter])]), rail("Twin", []), rail("Twin", [])]),
       BUILTIN_TOOLS
     );
     expect(ofKind(g.edges, "starts")).toEqual([]);
-    const note = g.nodes.find((n) => n.stepId === starter.id)?.note;
+    const note = stepRows(g.rows).find((r) => r.stepId === starter.id)?.note;
     expect(note?.warn).toBe(true);
     expect(note?.tip).toMatch(reason);
   });
@@ -264,18 +324,18 @@ describe("start-rail arrows", () => {
     const starter = toolStep(START, { rail: "Deploy", workspace: "ws-other" });
     const g = layoutNodeGraph(orch([rail("Build", [stage([starter])])]), BUILTIN_TOOLS);
     expect(ofKind(g.edges, "starts")).toEqual([]);
-    const note = g.nodes[0].note;
+    const note = stepRows(g.rows)[0].note;
     expect(note?.warn).toBe(false);
     expect(note?.text).toMatch(/another workspace/);
   });
 
-  it("names the target in words when the lens has hidden its lane", () => {
+  it("names the target in words when the lens has hidden it", () => {
     const starter = toolStep(START, { rail: "Deploy" });
     const to = rail("Deploy", [stage([step()])]);
     const g = layoutNodeGraph(orch([rail("Build", [stage([starter])]), to]), BUILTIN_TOOLS, (id) => id !== to.id);
     expect(ofKind(g.edges, "starts")).toEqual([]);
-    expect(g.nodes[0].note?.text).toBe("starts “Deploy”");
-    expect(g.nodes[0].note?.warn).toBe(false);
+    expect(stepRows(g.rows)[0].note?.text).toBe("starts “Deploy”");
+    expect(stepRows(g.rows)[0].note?.warn).toBe(false);
   });
 
   it("draws nothing for a tool step that is not a start-rail", () => {
@@ -284,7 +344,7 @@ describe("start-rail arrows", () => {
       BUILTIN_TOOLS
     );
     expect(ofKind(g.edges, "starts")).toEqual([]);
-    expect(g.nodes[0].note).toBeNull();
+    expect(stepRows(g.rows)[0].note).toBeNull();
   });
 });
 
@@ -292,22 +352,22 @@ describe("start-rail arrows", () => {
 // says what IT waits for. Drawn dashed, in the waiting rail's colour,
 // because the wait belongs to the rail that declared it.
 describe("trigger arrows", () => {
-  it("draws a dashed arrow from the named rail's end to the waiting rail's start", () => {
+  it("curves dashed from the end of the named rail to the waiting rail's head", () => {
     const first = rail("Build", [stage([step()]), stage([step()])]);
     const waits = rail("Deploy", [stage([step()])], { trigger: { kind: "rail-done", rail: "build" } });
     const g = layoutNodeGraph(orch([first, waits]), BUILTIN_TOOLS);
     const edges = ofKind(g.edges, "waits");
     expect(edges).toHaveLength(1);
     const edge = edges[0];
-    expect(edge.colour).toBe(g.lanes[1].colour);
+    const head = railRows(g.rows).find((r) => r.railId === waits.id) as RailRow;
+    const last = stepRows(g.rows).filter((r) => r.railId === first.id).at(-1) as StepRow;
+    expect(edge.colour).toBe(head.colour);
     expect(edge.dashed).toBe(true);
     expect(edge.arrow).not.toBeNull();
-    const last = g.stages.filter((s) => s.railId === first.id).at(-1) as GraphRect;
-    const target = g.stages.find((s) => s.railId === waits.id) as GraphRect;
-    expect(edge.d.startsWith(`M ${last.x + last.w} ${centreY(last)}`)).toBe(true);
-    expect(edge.d.endsWith(`${target.x} ${centreY(target)}`)).toBe(true);
-    // The lane says the same in the chip's own words.
-    expect(g.lanes[1].note).toEqual({ text: "after “build”", warn: false, tip: expect.stringMatching(/waiting for/) });
+    expect(edge.d.startsWith(`M ${dot(last)}`)).toBe(true);
+    expect(edge.d.endsWith(`${laneX(head.lane)} ${rowY(head.row) - ARRIVE}`)).toBe(true);
+    // The head row says the same in the chip's own words.
+    expect(head.note).toEqual({ text: "after “build”", warn: false, tip: expect.stringMatching(/waiting for/) });
   });
 
   // Fan-in from every rail is a sentence, not N arrows.
@@ -317,18 +377,18 @@ describe("trigger arrows", () => {
       BUILTIN_TOOLS
     );
     expect(ofKind(g.edges, "waits")).toEqual([]);
-    expect(g.lanes[1].note?.text).toBe("after all rails");
-    expect(g.lanes[1].note?.warn).toBe(false);
+    expect(railRows(g.rows)[1].note?.text).toBe("after all rails");
+    expect(railRows(g.rows)[1].note?.warn).toBe(false);
   });
 
-  it("warns on the lane for a trigger that can never fire", () => {
+  it("warns on the head row for a trigger that can never fire", () => {
     const g = layoutNodeGraph(
       orch([rail("A", [], { trigger: { kind: "rail-done", rail: "A" } })]),
       BUILTIN_TOOLS
     );
     expect(ofKind(g.edges, "waits")).toEqual([]);
-    expect(g.lanes[0].note?.warn).toBe(true);
-    expect(g.lanes[0].note?.tip).toMatch(/cannot wait for itself/);
+    expect(railRows(g.rows)[0].note?.warn).toBe(true);
+    expect(railRows(g.rows)[0].note?.tip).toMatch(/cannot wait for itself/);
   });
 
   it("keeps the label but drops the arrow when the lens hides the named rail", () => {
@@ -336,6 +396,6 @@ describe("trigger arrows", () => {
     const waits = rail("Deploy", [], { trigger: { kind: "rail-done", rail: "Build" } });
     const g = layoutNodeGraph(orch([first, waits]), BUILTIN_TOOLS, (id) => id !== first.id);
     expect(ofKind(g.edges, "waits")).toEqual([]);
-    expect(g.lanes[0].note?.text).toBe("after “Build”");
+    expect(railRows(g.rows)[0].note?.text).toBe("after “Build”");
   });
 });

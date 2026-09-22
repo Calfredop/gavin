@@ -1,41 +1,42 @@
 // The Orchestration tab's second view: the plan as a node graph
 // (orchestrationViewMode.ts picks between this and the rail strip).
 //
-// One lane per rail, one node per step, laid out by ARITHMETIC over
-// fixed node sizes rather than by measuring the DOM. That is what makes
-// this a pure module the component can be a template over: every
-// rectangle and every edge path is decided here, unit-tested here, and
-// the Svelte file only positions what it is handed. It is also why the
-// nodes are one fixed size -- a title that has to fit a known box is a
-// title the layout can place before it is drawn.
+// Drawn the way the Git tab draws commits (GitGraphRow.svelte): one ROW
+// per step, a gutter of lanes on the left with a dot on the row's lane,
+// and one line of text beside it. Rails are lanes. A rail's rows run top
+// to bottom in stage order, its head row wearing the rail's name the way
+// a branch ref sits on its tip commit, and the rail's line joins its dots
+// the way a branch line joins commits. A single-step stage is a dot on
+// the line; a SEQUENCE group is a straight run of dots (the strip says
+// "ordered" with a connector, and a straight line is the same statement,
+// grouping spec §4.1); a PARALLEL group FORKS -- its members take the
+// lanes beside the rail's, one row each, and merge back into the line at
+// the next stage -- because a fork and a merge are what "these happen
+// at once" already looks like in the graph next door.
 //
-// What the graph says, and what it does not. Time runs left to right
-// inside a lane, exactly as it runs top to bottom inside a rail: stage
-// after stage, an arrow between each pair. A single-step stage is the
-// bare node (the strip's own rule, isGroup). A sequence group is a chain
-// -- members joined by the same arrow the stages are, because the strip
-// says "ordered" with a connector and this view should not invent a
-// second way (grouping spec §4.1). A parallel group is a stack behind
-// one fan: a bus with a stub to each member and no arrowheads, so the
-// enclosure reads as "these start together". Lanes are independent of
-// each other, and nothing about their vertical stacking is a timeline
-// (orchestration spec O8): the only lines that cross lanes are the two
-// facts the plan can actually state -- a `builtin:start-rail` step
-// naming the rail it arms, drawn solid from the step in its own rail's
+// Laid out by ARITHMETIC: every row is ROW_H tall and every lane LANE_W
+// wide, so a dot's centre is a function of (row, lane), a curve is a
+// string, and the component is a template over rows -- no DOM measuring,
+// and the geometry is unit-tested here. Rails follow one another down
+// the page rather than sharing rows, ordered so that a rail another rail
+// starts comes after it (orderRails); their vertical stacking is not a
+// timeline (orchestration spec O8), it is reading order.
+//
+// The only lines that cross lanes are the two facts the plan can state
+// between rails: a `builtin:start-rail` step naming the rail it arms,
+// drawn from the step's dot to that rail's head in the step's rail's
 // colour, and a rail's `rail-done` trigger, drawn dashed in the waiting
 // rail's colour from the end of the rail it waits for. A general
 // dependency DAG is out of scope by the tab spec's preamble, and the
 // graph draws no edge the scheduler would not act on.
 //
 // Colour. Each rail takes one of the eight `--lane-*` colours by its
-// position -- the palette theme.css keeps for the commit graph, and for
-// the same reason it fits here: it is categorical, not semantic, and its
-// one job is that adjacent lanes look different. It marks the lane's
-// stripe, its name, its edges and each node's rail bar; it is always
-// beside the rail's name and never the only thing saying which rail a
-// node is on. Run state and conflict severity keep the axes they own on
-// the strip (a badge and a fill), so a colour that answered "which
-// rail" is not also asked to answer "what state".
+// position -- the palette theme.css keeps for the commit graph, fitting
+// here for the same reason: categorical, not semantic, its one job being
+// that adjacent lanes look different. It marks the rail's line, its
+// dots and the chip carrying its name, and is always beside that name;
+// run state and conflict severity keep the badges they wear on the
+// strip, so no colour answers two questions.
 
 import type { Orchestration, Rail, Stage, StageMode, Step } from "$lib/orchestration/orchestration";
 import {
@@ -50,90 +51,88 @@ import {
 import { findTool, gavinActionOf, type Tool } from "$lib/orchestration/orchestrationTools";
 
 // ---- Geometry, in CSS pixels -----------------------------------------------
-// Exported so the component and the tests read the same numbers. The
-// node is wide enough for an icon, a few words of title and two badges
-// (the chip's own row, at chip size); the gaps are the arrows' lengths.
+// The commit graph's own numbers (GitGraphRow.svelte), so the two graphs
+// read as one family.
 
-export const NODE_W = 200;
-export const NODE_H = 38;
-/// Between stages: the flow arrow.
-export const STAGE_GAP = 44;
-/// Between a sequence group's members: a shorter arrow, so the chain
-/// reads as tighter than the stage flow around it.
-export const MEMBER_GAP = 28;
-/// Between a parallel group's stacked members.
-export const PARALLEL_GAP = 8;
-export const GROUP_PAD = 8;
-/// The group's label row, above its members.
-export const GROUP_HEAD = 20;
-/// Room for the fan's bus on each side of a parallel stack.
-export const FAN_W = 16;
-/// The lane head: rail name, state, controls. Content starts past it.
-export const LANE_HEAD_W = 176;
-export const LANE_PAD_X = 16;
-export const LANE_PAD_Y = 12;
-export const LANE_GAP = 8;
-export const LANE_MIN_H = 64;
+export const ROW_H = 22;
+export const LANE_W = 14;
+/// How far short of a head dot's centre a cross-rail arrow stops, so the
+/// arrowhead is not buried under the dot.
+export const ARRIVE = 8;
 /// Arrowhead: length along the edge and half its width.
-const ARROW_LEN = 7;
-const ARROW_HALF = 4;
-/// How far a curved edge's control points reach.
-const CURVE = 56;
+const ARROW_LEN = 6;
+const ARROW_HALF = 3.5;
 
 /// How many `--lane-N` colours theme.css defines.
 export const RAIL_COLOURS = 8;
 
-export interface GraphRect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
+/// The centre of a lane's column.
+export function laneX(lane: number): number {
+  return lane * LANE_W + LANE_W / 2;
 }
 
-/// A sentence the graph cannot draw as a line, hung on a node or a lane.
-/// `warn` is the strip's own rule for a trigger chip: a condition that
-/// can never fire is drawn as a warning, a wait quietly.
+/// The centre of a row.
+export function rowY(row: number): number {
+  return row * ROW_H + ROW_H / 2;
+}
+
+/// A sentence the graph cannot draw as a line, hung on a row. `warn` is
+/// the strip's own rule for a trigger chip: a condition that can never
+/// fire is drawn as a warning, a wait quietly.
 export interface GraphNote {
   text: string;
   warn: boolean;
   tip: string | null;
 }
 
-export interface GraphLane extends GraphRect {
-  railId: string;
-  rail: Rail;
-  /// 1..RAIL_COLOURS, the N of `--lane-N`.
-  colour: number;
-  /// The rail's trigger, in the header chip's words, or null when it
-  /// starts by hand.
-  note: GraphNote | null;
+/// Which group a step row belongs to, for the chip on the group's first
+/// row and the bracket the rows share.
+export interface GroupMark {
+  stageId: string;
+  mode: StageMode;
+  label: string;
+  first: boolean;
+  last: boolean;
+  size: number;
 }
 
-export interface GraphStage extends GraphRect {
-  stageId: string;
-  railId: string;
-  /// Null for a single-step stage, which draws bare (isGroup).
-  mode: StageMode | null;
-  /// The group's label (stageLabel); null when `mode` is.
-  label: string | null;
-}
-
-export interface GraphNode extends GraphRect {
-  stepId: string;
-  railId: string;
-  stageId: string;
-  step: Step;
-  /// What a start-rail step could not draw an arrow for, or null.
-  note: GraphNote | null;
-}
+export type GraphRow =
+  | {
+      kind: "rail";
+      row: number;
+      railId: string;
+      rail: Rail;
+      /// The rail's own lane: where its line and its single-step dots sit.
+      lane: number;
+      /// 1..RAIL_COLOURS, the N of `--lane-N`.
+      colour: number;
+      /// The rail's trigger, in the header chip's words, or null when it
+      /// starts by hand.
+      note: GraphNote | null;
+    }
+  | {
+      kind: "step";
+      row: number;
+      railId: string;
+      stageId: string;
+      stepId: string;
+      step: Step;
+      /// The rail's lane, or a lane beside it for a parallel member.
+      lane: number;
+      colour: number;
+      group: GroupMark | null;
+      /// What a start-rail step could not draw an arrow for, or null.
+      note: GraphNote | null;
+    };
 
 export type GraphEdgeKind =
-  /// Stage to stage, or member to member inside a sequence: an arrow.
-  | "flow"
-  /// A parallel group's bus and stubs, and the short stubs that join a
-  /// group's border to its first and last member: lines, no arrowhead.
-  | "fan"
-  /// A `builtin:start-rail` step to the rail it arms.
+  /// A rail's line, down its own lane from its head to its last dot there.
+  | "rail"
+  /// A parallel member leaving the rail's lane for its own.
+  | "fork"
+  /// A parallel member rejoining the rail's lane at the next stage.
+  | "join"
+  /// A `builtin:start-rail` step to the head of the rail it arms.
   | "starts"
   /// A `rail-done` trigger: from the rail waited for to the rail waiting.
   | "waits";
@@ -145,104 +144,27 @@ export interface GraphEdge {
   colour: number;
   /// SVG path data.
   d: string;
-  /// SVG polygon points for the arrowhead, or null for a line.
+  /// SVG polygon points for the arrowhead, or null for a bare line.
   arrow: string | null;
   dashed: boolean;
 }
 
 export interface NodeGraph {
-  lanes: GraphLane[];
-  stages: GraphStage[];
-  nodes: GraphNode[];
+  rows: GraphRow[];
   edges: GraphEdge[];
+  /// How many lanes the gutter holds.
+  lanes: number;
+  /// The gutter's width and the rows' total height.
   width: number;
   height: number;
 }
 
-/// The `--lane-N` a rail at this index (in position order, over EVERY
-/// rail, hidden or not) is drawn in. Keyed to the full list so the
-/// search lens, which takes rails out, does not recolour the rest.
+/// The `--lane-N` a rail at this index (in POSITION order, over every
+/// rail, hidden or not) is drawn in. Keyed to position rather than to
+/// reading order so neither the search lens taking rails out nor a
+/// start-rail step reordering them recolours what is left.
 export function railColour(index: number): number {
   return (index % RAIL_COLOURS) + 1;
-}
-
-// ---- Edges -----------------------------------------------------------------
-
-/// An arrowhead pointing right with its tip at (x, y). Every edge in the
-/// graph arrives horizontally -- the flow is left to right, and the two
-/// curved kinds end with a horizontal tangent -- so one orientation is
-/// all the drawing needs.
-function arrowRight(x: number, y: number): string {
-  return `${x},${y} ${x - ARROW_LEN},${y - ARROW_HALF} ${x - ARROW_LEN},${y + ARROW_HALF}`;
-}
-
-function line(id: string, kind: GraphEdgeKind, colour: number, x1: number, y1: number, x2: number, y2: number, arrow: boolean): GraphEdge {
-  return {
-    id,
-    kind,
-    colour,
-    d: `M ${x1} ${y1} L ${x2} ${y2}`,
-    arrow: arrow ? arrowRight(x2, y2) : null,
-    dashed: false,
-  };
-}
-
-// ---- Stages ----------------------------------------------------------------
-
-/// A stage measured on its own, before it knows where it stands: its box
-/// and its members' boxes relative to the box's origin, plus the y of its
-/// PORT -- the line the flow enters and leaves on. Placing the stage is
-/// then a matter of putting its port on the lane's centre line, which is
-/// what keeps every arrow in a lane level however tall its groups are.
-interface MeasuredStage {
-  stage: Stage;
-  w: number;
-  h: number;
-  port: number;
-  mode: StageMode | null;
-  label: string | null;
-  members: { step: Step; x: number; y: number }[];
-}
-
-function measureStage(stage: Stage, index: number): MeasuredStage {
-  const steps = [...stage.steps].sort((a, b) => a.position - b.position);
-  if (!isGroup(stage)) {
-    return {
-      stage,
-      w: NODE_W,
-      h: NODE_H,
-      port: NODE_H / 2,
-      mode: null,
-      label: null,
-      members: steps.map((step) => ({ step, x: 0, y: 0 })),
-    };
-  }
-  const mode = stageMode(stage);
-  const label = stageLabel(stage, index);
-  const n = steps.length;
-  if (mode === "sequence") {
-    const top = GROUP_HEAD + GROUP_PAD;
-    return {
-      stage,
-      w: 2 * GROUP_PAD + n * NODE_W + (n - 1) * MEMBER_GAP,
-      h: GROUP_HEAD + 2 * GROUP_PAD + NODE_H,
-      port: top + NODE_H / 2,
-      mode,
-      label,
-      members: steps.map((step, i) => ({ step, x: GROUP_PAD + i * (NODE_W + MEMBER_GAP), y: top })),
-    };
-  }
-  const stackH = n * NODE_H + (n - 1) * PARALLEL_GAP;
-  const top = GROUP_HEAD + GROUP_PAD;
-  return {
-    stage,
-    w: 2 * GROUP_PAD + 2 * FAN_W + NODE_W,
-    h: GROUP_HEAD + 2 * GROUP_PAD + stackH,
-    port: top + stackH / 2,
-    mode,
-    label,
-    members: steps.map((step, i) => ({ step, x: GROUP_PAD + FAN_W, y: top + i * (NODE_H + PARALLEL_GAP) })),
-  };
 }
 
 // ---- Cross-rail facts ------------------------------------------------------
@@ -262,7 +184,7 @@ type StartLink =
 
 /// What a step's `builtin:start-rail` points at, in the same words
 /// `startRailVerdict` refuses with -- the human reads that refusal on the
-/// stalled step, and the note on the node should not say it differently.
+/// stalled step, and the note on the row should not say it differently.
 /// A PAUSED target is still a target here: the verdict refuses to arm
 /// one, but the arrow says what the step names, not whether the press
 /// would land.
@@ -285,10 +207,20 @@ function startLink(orch: Orchestration, fromRailId: string, step: Step, tools: T
   return { kind: "rail", rail: matches[0] };
 }
 
-/// A rail's trigger as the lane's note: the chip's own label, warned
+/// The rail a `rail-done` trigger resolves to, or null when the verdict
+/// would call it broken (no name, no such rail, two of them, itself).
+function waitsOn(orch: Orchestration, rail: Rail): Rail | null {
+  const trigger = rail.trigger;
+  if (!trigger || trigger.kind !== "rail-done") return null;
+  const matches = railsNamed(orch, trigger.rail ?? "");
+  if (matches.length !== 1 || matches[0].id === rail.id) return null;
+  return matches[0];
+}
+
+/// A rail's trigger as its head row's note: the chip's own label, warned
 /// when the verdict says it can never fire, with the verdict's sentence
 /// as the tip. Null for a rail that starts by hand.
-function laneNote(orch: Orchestration, rail: Rail): GraphNote | null {
+function railNote(orch: Orchestration, rail: Rail): GraphNote | null {
   if (!rail.trigger) return null;
   const verdict = railTriggerVerdict(orch, rail);
   return {
@@ -298,15 +230,82 @@ function laneNote(orch: Orchestration, rail: Rail): GraphNote | null {
   };
 }
 
+/// Reading order for the rails: a rail that another rail starts (by a
+/// start-rail step, or by waiting on it) comes after that rail, and
+/// otherwise rails keep their position order. That is what makes the
+/// cross-rail curves run DOWN the page, the way a merge's parent sits
+/// below it in the commit graph, instead of doubling back. A cycle --
+/// two rails each starting the other -- cannot be honoured at all, and
+/// honouring the rest of the plan around it would move rails for a
+/// reason the reader cannot see, so the whole order falls back to
+/// position, which is the order the strip shows.
+export function orderRails(orch: Orchestration, tools: Tool[]): Rail[] {
+  const byPosition = [...orch.rails].sort((a, b) => a.position - b.position);
+  const before = new Map<string, Set<string>>(byPosition.map((r) => [r.id, new Set<string>()]));
+  const after = new Map<string, Set<string>>(byPosition.map((r) => [r.id, new Set<string>()]));
+  function depends(first: string, then: string): void {
+    if (first === then) return;
+    before.get(then)?.add(first);
+    after.get(first)?.add(then);
+  }
+  for (const rail of byPosition) {
+    for (const stage of rail.stages) {
+      for (const step of stage.steps) {
+        const link = startLink(orch, rail.id, step, tools);
+        if (link.kind === "rail") depends(rail.id, link.rail.id);
+      }
+    }
+    const waited = waitsOn(orch, rail);
+    if (waited) depends(waited.id, rail.id);
+  }
+  const ordered: Rail[] = [];
+  const pending = new Set(byPosition.map((r) => r.id));
+  const inDegree = new Map([...before].map(([id, deps]) => [id, deps.size]));
+  while (pending.size > 0) {
+    // The lowest-positioned rail with nothing left before it. None
+    // ready with rails still pending is a cycle.
+    const ready = byPosition.find((r) => pending.has(r.id) && inDegree.get(r.id) === 0);
+    if (!ready) return byPosition;
+    pending.delete(ready.id);
+    ordered.push(ready);
+    for (const next of after.get(ready.id) ?? []) {
+      inDegree.set(next, Math.max(0, (inDegree.get(next) ?? 0) - 1));
+    }
+  }
+  return ordered;
+}
+
+// ---- Edges -----------------------------------------------------------------
+
+/// A curve between two dots with VERTICAL tangents at both ends, the
+/// shape the commit graph's forks and merges have (GitGraphRow's curveIn
+/// and curveOut), stretched over however many rows it spans.
+function curve(x0: number, y0: number, x1: number, y1: number): string {
+  const mid = (y0 + y1) / 2;
+  return `M ${x0} ${y0} C ${x0} ${mid}, ${x1} ${mid}, ${x1} ${y1}`;
+}
+
+/// An arrowhead with its tip at (x, y), pointing down when the edge
+/// arrived from above and up otherwise.
+function arrowVertical(x: number, y: number, down: boolean): string {
+  const back = down ? y - ARROW_LEN : y + ARROW_LEN;
+  return `${x},${y} ${x - ARROW_HALF},${back} ${x + ARROW_HALF},${back}`;
+}
+
 // ---- The layout ------------------------------------------------------------
 
-/// Where a lane's flow begins and ends: the left edge of its first stage
-/// and the right edge of its last, on the centre line -- or, for a rail
-/// with no stages, the point just past the lane head, so an arrow still
-/// has somewhere to land.
-interface LanePorts {
-  start: { x: number; y: number };
-  end: { x: number; y: number };
+/// How many lanes a rail needs: its own, plus one for each parallel
+/// member beyond the first in its widest group.
+function lanesFor(rail: Rail): number {
+  let widest = 1;
+  for (const stage of rail.stages) {
+    if (isGroup(stage) && stageMode(stage) === "parallel") widest = Math.max(widest, stage.steps.length);
+  }
+  return widest;
+}
+
+function sortedStages(rail: Rail): Stage[] {
+  return [...rail.stages].sort((a, b) => a.position - b.position).filter((s) => s.steps.length > 0);
 }
 
 export function layoutNodeGraph(
@@ -314,187 +313,164 @@ export function layoutNodeGraph(
   tools: Tool[],
   railShown: (railId: string) => boolean = () => true
 ): NodeGraph {
-  const lanes: GraphLane[] = [];
-  const stages: GraphStage[] = [];
-  const nodes: GraphNode[] = [];
+  const rows: GraphRow[] = [];
   const edges: GraphEdge[] = [];
-  const ports = new Map<string, LanePorts>();
-  const laneById = new Map<string, GraphLane>();
-  const contentX = LANE_HEAD_W + LANE_PAD_X;
+  const colourOf = new Map<string, number>();
+  [...orch.rails]
+    .sort((a, b) => a.position - b.position)
+    .forEach((rail, index) => colourOf.set(rail.id, railColour(index)));
 
-  const sorted = [...orch.rails].sort((a, b) => a.position - b.position);
-  let y = 0;
-  let right = contentX;
+  /// Where each drawn rail's head sits and where its line ends, for the
+  /// cross-rail curves once every rail is placed.
+  const heads = new Map<string, { row: number; lane: number }>();
+  const tails = new Map<string, { row: number; lane: number }>();
+  const stepRows = new Map<string, Extract<GraphRow, { kind: "step" }>>();
 
-  sorted.forEach((rail, index) => {
-    if (!railShown(rail.id)) return;
-    const colour = railColour(index);
-    const measured = [...rail.stages]
-      .sort((a, b) => a.position - b.position)
-      .filter((s) => s.steps.length > 0)
-      .map((s, i) => measureStage(s, i));
-    // Tallest reach above and below the port line, so the lane holds
-    // every group with its port on the centre.
-    let above = NODE_H / 2;
-    let below = NODE_H / 2;
-    for (const m of measured) {
-      above = Math.max(above, m.port);
-      below = Math.max(below, m.h - m.port);
-    }
-    const laneH = Math.max(LANE_MIN_H, above + below + 2 * LANE_PAD_Y);
-    const cy = y + laneH / 2;
+  let lane = 0;
+  for (const rail of orderRails(orch, tools)) {
+    if (!railShown(rail.id)) continue;
+    const colour = colourOf.get(rail.id) ?? 1;
+    const base = lane;
+    lane += lanesFor(rail);
 
-    let x = contentX;
-    let prev: GraphStage | null = null;
-    for (const m of measured) {
-      const box: GraphStage = {
-        stageId: m.stage.id,
-        railId: rail.id,
-        x,
-        y: cy - m.port,
-        w: m.w,
-        h: m.h,
-        mode: m.mode,
-        label: m.label,
-      };
-      stages.push(box);
-      if (prev) {
-        edges.push(line(`flow:${prev.stageId}>${box.stageId}`, "flow", colour, prev.x + prev.w, cy, box.x, cy, true));
-      }
-      const placed = m.members.map(({ step, x: mx, y: my }) => ({
-        step,
-        rect: { x: box.x + mx, y: box.y + my, w: NODE_W, h: NODE_H },
-      }));
-      for (const { step, rect } of placed) {
-        nodes.push({ ...rect, stepId: step.id, railId: rail.id, stageId: m.stage.id, step, note: null });
-      }
-      if (m.mode === "sequence") {
-        // The border-to-member stubs, then the chain.
-        const first = placed[0].rect;
-        const last = placed[placed.length - 1].rect;
+    const headRow = rows.length;
+    rows.push({ kind: "rail", row: headRow, railId: rail.id, rail, lane: base, colour, note: railNote(orch, rail) });
+    heads.set(rail.id, { row: headRow, lane: base });
+
+    // The row the line last touched on the rail's own lane: the fork
+    // point for the next parallel group, and where the line ends.
+    let onBase = headRow;
+    let tail = { row: headRow, lane: base };
+    // Members waiting to merge back at the next stage's first row.
+    let joining: { stepId: string; row: number; lane: number }[] = [];
+
+    sortedStages(rail).forEach((stage, index) => {
+      const steps = [...stage.steps].sort((a, b) => a.position - b.position);
+      const group = isGroup(stage);
+      const mode = group ? stageMode(stage) : null;
+      const label = group ? stageLabel(stage, index) : null;
+      const parallel = mode === "parallel";
+      const firstRow = rows.length;
+      // Every member of a fork leaves the line at the row BEFORE the
+      // group -- the previous stage's dot, or the head -- and not at the
+      // first member's, which would draw "a, then b and c" for three
+      // steps that start together.
+      const forkFrom = onBase;
+      for (const joined of joining) {
         edges.push({
-          id: `fan:${m.stage.id}`,
-          kind: "fan",
+          id: `join:${joined.stepId}`,
+          kind: "join",
           colour,
-          d: `M ${box.x} ${cy} L ${first.x} ${cy} M ${last.x + last.w} ${cy} L ${box.x + box.w} ${cy}`,
+          d: curve(laneX(joined.lane), rowY(joined.row), laneX(base), rowY(firstRow)),
           arrow: null,
           dashed: false,
         });
-        for (let i = 1; i < placed.length; i++) {
-          const a = placed[i - 1];
-          const b = placed[i];
-          edges.push(
-            line(`flow:${a.step.id}>${b.step.id}`, "flow", colour, a.rect.x + a.rect.w, cy, b.rect.x, cy, true)
-          );
-        }
-      } else if (m.mode === "parallel") {
-        // One fan: entry stub, left bus with a stub to each member, the
-        // same on the right, exit stub.
-        const first = placed[0].rect;
-        const busL = box.x + GROUP_PAD + FAN_W / 2;
-        const busR = first.x + NODE_W + FAN_W / 2;
-        const centres = placed.map(({ rect }) => rect.y + rect.h / 2);
-        const top = Math.min(cy, ...centres);
-        const bottom = Math.max(cy, ...centres);
-        const parts = [
-          `M ${box.x} ${cy} L ${busL} ${cy}`,
-          `M ${busL} ${top} L ${busL} ${bottom}`,
-          ...centres.map((my) => `M ${busL} ${my} L ${first.x} ${my}`),
-          ...centres.map((my) => `M ${first.x + NODE_W} ${my} L ${busR} ${my}`),
-          `M ${busR} ${top} L ${busR} ${bottom}`,
-          `M ${busR} ${cy} L ${box.x + box.w} ${cy}`,
-        ];
-        edges.push({ id: `fan:${m.stage.id}`, kind: "fan", colour, d: parts.join(" "), arrow: null, dashed: false });
       }
-      prev = box;
-      x += m.w + STAGE_GAP;
-      right = Math.max(right, box.x + box.w);
-    }
-
-    const firstBox = measured.length > 0 ? stages[stages.length - measured.length] : null;
-    const lastBox = prev;
-    ports.set(rail.id, {
-      start: { x: firstBox ? firstBox.x : contentX, y: cy },
-      end: { x: lastBox ? lastBox.x + lastBox.w : contentX, y: cy },
+      joining = [];
+      steps.forEach((step, i) => {
+        const row = rows.length;
+        const stepLane = parallel ? base + i : base;
+        const entry: Extract<GraphRow, { kind: "step" }> = {
+          kind: "step",
+          row,
+          railId: rail.id,
+          stageId: stage.id,
+          stepId: step.id,
+          step,
+          lane: stepLane,
+          colour,
+          group:
+            group && mode && label
+              ? { stageId: stage.id, mode, label, first: i === 0, last: i === steps.length - 1, size: steps.length }
+              : null,
+          note: null,
+        };
+        rows.push(entry);
+        stepRows.set(step.id, entry);
+        tail = { row, lane: stepLane };
+        if (stepLane === base) {
+          onBase = row;
+        } else {
+          edges.push({
+            id: `fork:${step.id}`,
+            kind: "fork",
+            colour,
+            d: curve(laneX(base), rowY(forkFrom), laneX(stepLane), rowY(row)),
+            arrow: null,
+            dashed: false,
+          });
+          joining.push({ stepId: step.id, row, lane: stepLane });
+        }
+      });
     });
 
-    const lane: GraphLane = {
-      railId: rail.id,
-      rail,
-      x: 0,
-      y,
-      w: 0, // the canvas width, filled in once it is known
-      h: laneH,
-      colour,
-      note: laneNote(orch, rail),
-    };
-    lanes.push(lane);
-    laneById.set(rail.id, lane);
-    y += laneH + LANE_GAP;
-  });
+    if (onBase > headRow) {
+      edges.push({
+        id: `rail:${rail.id}`,
+        kind: "rail",
+        colour,
+        d: `M ${laneX(base)} ${rowY(headRow)} L ${laneX(base)} ${rowY(onBase)}`,
+        arrow: null,
+        dashed: false,
+      });
+    }
+    tails.set(rail.id, tail);
+  }
 
-  const width = right + LANE_PAD_X;
-  const height = lanes.length > 0 ? y - LANE_GAP : 0;
-  for (const lane of lanes) lane.w = width;
-
-  // Cross-rail edges, once every lane has its ports. A step whose target
-  // is not drawn -- another workspace, a lens that hid it, a name that
-  // resolves to nothing -- says so on the node instead.
-  for (const node of nodes) {
-    const link = startLink(orch, node.railId, node.step, tools);
+  // Cross-rail edges, once every head is placed. A step whose target is
+  // not drawn -- another workspace, a lens that hid it, a name that
+  // resolves to nothing -- says so on its row instead.
+  for (const entry of stepRows.values()) {
+    const link = startLink(orch, entry.railId, entry.step, tools);
     if (link.kind === "none") continue;
     if (link.kind === "external") {
-      node.note = { text: "starts a rail in another workspace", warn: false, tip: null };
+      entry.note = { text: "starts a rail in another workspace", warn: false, tip: null };
       continue;
     }
     if (link.kind === "broken") {
-      node.note = { text: "no rail to start", warn: true, tip: link.reason };
+      entry.note = { text: "no rail to start", warn: true, tip: link.reason };
       continue;
     }
-    const target = ports.get(link.rail.id);
-    if (!target) {
-      node.note = { text: `starts “${link.rail.name}”`, warn: false, tip: null };
+    const head = heads.get(link.rail.id);
+    if (!head) {
+      entry.note = { text: `starts “${link.rail.name}”`, warn: false, tip: null };
       continue;
     }
-    const colour = laneById.get(node.railId)?.colour ?? 1;
-    const sx = node.x + node.w / 2;
-    const tx = target.start.x;
-    const ty = target.start.y;
-    // Leaves from the node's bottom when the target lane is below, its
-    // top when above, and arrives horizontally: the same tangent every
-    // flow arrow has, so the arrowhead is the same shape.
-    const down = ty >= node.y + node.h;
-    const sy = down ? node.y + node.h : node.y;
-    const c1y = sy + (down ? CURVE : -CURVE);
+    const down = head.row > entry.row;
+    const ty = rowY(head.row) + (down ? -ARRIVE : ARRIVE);
     edges.push({
-      id: `starts:${node.stepId}`,
+      id: `starts:${entry.stepId}`,
       kind: "starts",
-      colour,
-      d: `M ${sx} ${sy} C ${sx} ${c1y}, ${tx - CURVE} ${ty}, ${tx} ${ty}`,
-      arrow: arrowRight(tx, ty),
+      colour: entry.colour,
+      d: curve(laneX(entry.lane), rowY(entry.row), laneX(head.lane), ty),
+      arrow: arrowVertical(laneX(head.lane), ty, down),
       dashed: false,
     });
   }
 
-  for (const lane of lanes) {
-    const trigger = lane.rail.trigger;
-    if (!trigger || trigger.kind !== "rail-done" || lane.note?.warn) continue;
-    const matches = railsNamed(orch, trigger.rail ?? "");
-    if (matches.length !== 1) continue;
-    const source = ports.get(matches[0].id);
-    const target = ports.get(lane.railId);
-    if (!source || !target) continue;
-    const { x: sx, y: sy } = source.end;
-    const { x: tx, y: ty } = target.start;
+  for (const entry of rows) {
+    if (entry.kind !== "rail") continue;
+    const waited = waitsOn(orch, entry.rail);
+    if (!waited) continue;
+    const source = tails.get(waited.id);
+    if (!source) continue;
+    const down = entry.row > source.row;
+    const ty = rowY(entry.row) + (down ? -ARRIVE : ARRIVE);
     edges.push({
-      id: `waits:${lane.railId}`,
+      id: `waits:${entry.railId}`,
       kind: "waits",
-      colour: lane.colour,
-      d: `M ${sx} ${sy} C ${sx + CURVE} ${sy}, ${tx - CURVE} ${ty}, ${tx} ${ty}`,
-      arrow: arrowRight(tx, ty),
+      colour: entry.colour,
+      d: curve(laneX(source.lane), rowY(source.row), laneX(entry.lane), ty),
+      arrow: arrowVertical(laneX(entry.lane), ty, down),
       dashed: true,
     });
   }
 
-  return { lanes, stages, nodes, edges, width, height };
+  return {
+    rows,
+    edges,
+    lanes: lane,
+    width: Math.max(1, lane) * LANE_W,
+    height: rows.length * ROW_H,
+  };
 }
