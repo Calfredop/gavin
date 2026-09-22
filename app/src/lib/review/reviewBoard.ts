@@ -421,7 +421,7 @@ function clusterIndexes(candidates: ReviewCandidate[]): Map<number, number[]> {
   const owner = new Map<string, number>();
   candidates.forEach((candidate, i) => {
     for (const file of candidate.files ?? []) {
-      const key = `${candidate.checkout ?? ""} ${file}`;
+      const key = `${candidate.checkout ?? ""}\0${file}`;
       const first = owner.get(key);
       if (first === undefined) owner.set(key, i);
       else union(first, i);
