@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import type { TurnReading, TurnVerdictEntry } from "$lib/agents/turnVerdict";
 import {
   emptyOrchestration,
   doneColumn,
@@ -4872,5 +4873,145 @@ describe("conflictSummaryLines", () => {
 
   it("is empty when there is nothing to report", () => {
     expect(conflictSummaryLines([], cardIndex(CARDS), orch, TOOLS)).toEqual([]);
+  });
+});
+
+// The TypeSafe turn verdict: a second opinion on what an agent's quiet
+// turn came to, and the one input that can take a completion BACK. Every
+// rule above is today's answer and is unchanged; an absent map is the
+// scheduler that shipped before any of this existed.
+describe("nextActions — an agent tool step's turn, second-guessed", () => {
+  const agentRail = toolRail("r1", [[["t1", "builtin:commit"]]]);
+  const runs: Orchestration["stepRuns"] = [
+    { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+  ];
+  const live = new Set(["s1"]);
+  const idle = new Map([["s1", "idle" as const]]);
+  const worked = new Set(["s1"]);
+  const read = (reading: TurnReading | null): TurnVerdictEntry => ({ state: "read", reading });
+  const verdict = (entry: TurnVerdictEntry) => new Map([["s1", entry]]);
+  const actions = (orch: Orchestration, verdicts: ReadonlyMap<string, TurnVerdictEntry>) =>
+    nextActions(
+      orch, BOARD, CARDS, [], live, TOOLS, new Map(), idle, new Set(), new Map(), {}, 0, worked,
+      new Map(), verdicts
+    );
+  const done = [{ kind: "markDone", stepId: "t1" }, { kind: "complete", railId: "r1" }];
+
+  it("completes exactly as before when no verdict was taken", () => {
+    expect(actions(running(agentRail, "r1-s0", runs), new Map())).toEqual(done);
+  });
+
+  it("holds the step while the verdict is pending", () => {
+    // "Waits for the verdict (or its timeout)". Without this the request
+    // and the rail's next step race, and the rail wins every time.
+    expect(actions(running(agentRail, "r1-s0", runs), verdict({ state: "pending" }))).toEqual([]);
+  });
+
+  it("holds the step on a turn read as asking, working or failed", () => {
+    // The prose question, the retry countdown, and the cut-off turn: all
+    // three are `idle` to the daemon and none is a finished turn.
+    for (const reading of [
+      { kind: "asking" } as const,
+      { kind: "working" } as const,
+      { kind: "failed", cause: "network" } as const,
+    ]) {
+      expect(actions(running(agentRail, "r1-s0", runs), verdict(read(reading)))).toEqual([]);
+    }
+  });
+
+  it("completes on finished, and on a verdict with no opinion", () => {
+    // Null is today's answer -- a timeout, a refused key, a low
+    // confidence -- and today's answer is that the turn ended.
+    expect(actions(running(agentRail, "r1-s0", runs), verdict(read({ kind: "finished" })))).toEqual(done);
+    expect(actions(running(agentRail, "r1-s0", runs), verdict(read(null)))).toEqual(done);
+  });
+
+  it("stalls a blocked turn with the agent's own sentence", () => {
+    // The agent gave up and said why. Nothing broke and nothing was
+    // killed, so the recovery is to read what it said -- not to resume,
+    // which would walk it into the same wall.
+    const blocked = read({ kind: "blocked", said: "the migration file is missing" });
+    expect(actions(running(agentRail, "r1-s0", runs), verdict(blocked))).toEqual([
+      {
+        kind: "stall",
+        stepId: "t1",
+        reason: "the agent stopped without finishing — the migration file is missing",
+      },
+    ]);
+  });
+
+  it("the reconciliation pass honours the verdict too", () => {
+    // A step left `running` on a paused rail is corrected by the same
+    // rule, and the rule reads the same map.
+    const paused: Orchestration = {
+      rails: [agentRail],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "paused", currentStageId: null }],
+      stepRuns: runs,
+    };
+    expect(actions(paused, verdict({ state: "pending" }))).toEqual([]);
+    expect(actions(paused, verdict(read({ kind: "asking" })))).toEqual([]);
+    expect(actions(paused, verdict(read({ kind: "finished" })))).toEqual([{ kind: "markDone", stepId: "t1" }]);
+  });
+
+  it("never stalls a CARD step on a verdict: its column is its rule", () => {
+    // A card step is done when its card reaches the done column and
+    // stalls when its session dies -- rule 1 and rule 3 own it, and a
+    // second opinion on its agent's prose has no rule to change.
+    const cardRail = rail("r1", [[["t1", A]]]);
+    const blocked = read({ kind: "blocked", said: "no" });
+    expect(actions(running(cardRail, "r1-s0", runs), verdict(blocked))).toEqual([]);
+    expect(actions(running(cardRail, "r1-s0", runs), verdict(read({ kind: "asking" })))).toEqual([]);
+  });
+});
+
+describe("stepAttentions — the turn verdict", () => {
+  const cardRail = rail("r1", [[["t1", A]]]);
+  const agentRail = toolRail("r1", [[["t1", "builtin:commit"]]]);
+  const runs: Orchestration["stepRuns"] = [
+    { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+  ];
+  const statuses = (s: SessionStatus) => new Map([["s1", s]]);
+  const read = (reading: TurnReading | null): TurnVerdictEntry => ({ state: "read", reading });
+  const attn = (orch: Orchestration, s: Map<string, SessionStatus>, entry?: TurnVerdictEntry) =>
+    stepAttentions(
+      orch, BOARD, CARDS, TOOLS, s, new Set(), new Map(), 0,
+      entry ? new Map([["s1", entry]]) : new Map()
+    );
+
+  it("marks an idle card step `asking` when the verdict read a question", () => {
+    // Today's mark is `turn-ended`: "stopped without finishing", about an
+    // agent that is waiting for an answer. Both say the rail is not
+    // moving; only this one tells the human it is their move.
+    const orch = running(cardRail, "r1-s0", runs);
+    expect(attn(orch, statuses("idle")).get("t1")).toBe("turn-ended");
+    expect(attn(orch, statuses("idle"), read({ kind: "asking" })).get("t1")).toBe("asking");
+  });
+
+  it("marks an idle agent tool step `asking` too, which no other mark covers", () => {
+    // `turn-ended` skips tool steps because agentTurnEnded marks them
+    // done on the same tick -- and now declines to, which would leave
+    // the step running with no mark at all.
+    const orch = running(agentRail, "r1-s0", runs);
+    expect(attn(orch, statuses("idle")).get("t1")).toBeUndefined();
+    expect(attn(orch, statuses("idle"), read({ kind: "asking" })).get("t1")).toBe("asking");
+  });
+
+  it("leaves the mark alone while the verdict is pending or read as anything else", () => {
+    const orch = running(cardRail, "r1-s0", runs);
+    expect(attn(orch, statuses("idle"), { state: "pending" }).get("t1")).toBe("turn-ended");
+    expect(attn(orch, statuses("idle"), read(null)).get("t1")).toBe("turn-ended");
+    expect(attn(orch, statuses("idle"), read({ kind: "finished" })).get("t1")).toBe("turn-ended");
+    expect(attn(running(agentRail, "r1-s0", runs), statuses("idle"), { state: "pending" }).get("t1")).toBeUndefined();
+  });
+
+  it("a failed session still outranks the verdict", () => {
+    const orch = running(cardRail, "r1-s0", runs);
+    expect(attn(orch, statuses("failed"), read({ kind: "asking" })).get("t1")).toBe("failed");
+  });
+
+  it("only speaks about an IDLE session: a stale entry on a working one is ignored", () => {
+    const orch = running(cardRail, "r1-s0", runs);
+    expect(attn(orch, statuses("working"), read({ kind: "asking" })).get("t1")).toBeUndefined();
   });
 });

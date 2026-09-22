@@ -26,6 +26,7 @@ import {
   type QueueTarget,
   type QueuedInput,
 } from "$lib/agents/queuedInput";
+import type { TurnVerdictEntry } from "$lib/agents/turnVerdict";
 
 /// What the app knows about a session's fitness to be queued for,
 /// assembled from the stores. The view reads this once and hands it to
@@ -33,12 +34,27 @@ import {
 /// the line that explains can never be answering different questions.
 export function queueTargetFor(
   status: QueueTarget["status"],
-  interrupted: boolean
+  interrupted: boolean,
+  /// This session's turn verdict (`turnVerdictById`), when the caller
+  /// has one. OPTIONAL, and its absence is a real answer rather than an
+  /// oversight: a caller that passes nothing gets exactly the pre-verdict
+  /// behaviour, which is what a build with the feature off, an older
+  /// daemon and a terminal the human opened all have to produce.
+  ///
+  /// PASSED IN, unlike the blocked reason below, and the difference is
+  /// reactivity: the verdict lands a second or so AFTER the status change
+  /// that provoked it. A Svelte view that read it through `get()` in here
+  /// would compute its target on the status emission, see `pending`, and
+  /// never re-run when the answer arrived -- the compose box would go on
+  /// accepting a follow-up into a turn the verdict had since called a
+  /// question. Reading `$turnVerdictById` in the view subscribes it.
+  verdict?: TurnVerdictEntry | null
 ): QueueTarget {
   return {
     status,
     interrupted,
     blockedReason: featureBlockedReason(get(daemonCompat), "queuedFollowUps"),
+    verdict: verdict ?? null,
   };
 }
 

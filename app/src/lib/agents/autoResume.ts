@@ -204,6 +204,24 @@ export interface AutoResumeInput {
   reason: string | null;
   /// The failing profile's cause table.
   causes: readonly FailureCausePattern[];
+  /// What the TypeSafe turn verdict made of the same screen, already
+  /// through its own confidence gate (`refineCause` in turnVerdict.ts).
+  ///
+  /// Used ONLY where the table above said `unknown`, which is every
+  /// failure of codex, gemini, cursor, opencode and custom -- they have
+  /// no table at all, so today every broken turn of theirs is a cause
+  /// gavin cannot name, and `unknown` never resumes. The table wins
+  /// wherever it matched: it is ordered, measured and local, and a
+  /// remote judgement must not override a local one that is already
+  /// right.
+  ///
+  /// Passed as a plain `FailureCause` rather than as the verdict, on
+  /// purpose: this module knows nothing about TypeSafe, and a
+  /// low-confidence cause has ALREADY become `unknown` by the time it
+  /// gets here -- so "unknown never resumes" covers the whole feature
+  /// without a second rule anywhere in this file. Absent reads as
+  /// `unknown`, which is the pre-verdict behaviour exactly.
+  verdictCause?: FailureCause;
   /// What the session was doing immediately BEFORE it failed. A session
   /// that was `waiting_for_input` was asking a human a question, and it
   /// still is -- resuming answers it by walking away.
@@ -241,7 +259,10 @@ export type AutoResumeDecision =
 /// failure to recover from whatever killed the process -- it is work to
 /// file, and the caller does that instead.
 export function autoResumeDecision(input: AutoResumeInput): AutoResumeDecision {
-  const cause = classifyFailure(input.reason, input.causes);
+  const matched = classifyFailure(input.reason, input.causes);
+  // The table first, the verdict only in the hole it left. See
+  // `verdictCause` on the input for why that order is not negotiable.
+  const cause = matched === "unknown" ? (input.verdictCause ?? "unknown") : matched;
   const skip = (why: string): AutoResumeDecision => ({ kind: "skip", cause, why });
 
   if (!input.consented) return skip("auto-resume is off here");

@@ -37,6 +37,7 @@ import type { LayoutNode } from "$lib/panes/layout";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/core/gavin";
+import { verdictIsAsking, type TurnVerdictEntry } from "$lib/agents/turnVerdict";
 
 /// Why a row is in the inbox. The rails' own answers, reused rather than
 /// re-spelled: a running step marked `asking` and a bare terminal
@@ -55,6 +56,11 @@ import type { GavinTree } from "$lib/core/gavin";
 /// have gone quiet. It shows where a rail gate shows -- the step's chip,
 /// the rail header, the sidebar recap and the hub's attention count.
 export type AttentionReason = Exclude<StepAttention, "review" | "unreviewed">;
+
+/// One session's TypeSafe turn verdict, when one was taken. Structural
+/// like everything else this module reads, so a test reaches the rule
+/// without building a store.
+export type VerdictsBySession = ReadonlyMap<string, TurnVerdictEntry>;
 
 /// When a session entered the status it currently holds.
 ///
@@ -93,6 +99,11 @@ export interface AttentionInboxInput {
   /// anything to say", which is also what a workspace whose
   /// orchestration has not loaded looks like.
   stepAttentions?: Record<string, ReadonlyMap<string, StepAttention>>;
+  /// The turn verdicts, by session id (`turnVerdictById`). Absent reads
+  /// as "nobody asked", which is also what the feature switched off, an
+  /// older daemon and a terminal the human opened all look like -- and
+  /// all four must produce exactly today's list.
+  verdicts?: VerdictsBySession;
 }
 
 /// One session waiting on a human.
@@ -147,6 +158,10 @@ export const REASON_LABEL: Record<AttentionReason, string> = {
   "decoy-edit": "Edited the worktree's copy of the card",
 };
 
+/// Shared empty map, so an input with no `verdicts` allocates nothing
+/// per session per render -- this runs on every layoutState emission.
+const NO_VERDICTS: ReadonlyMap<string, TurnVerdictEntry> = new Map();
+
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -199,7 +214,12 @@ export function attentionInbox(input: AttentionInboxInput, now: number): Attenti
   for (const ws of input.state.workspaces) {
     for (const location of sessionLocations(ws)) {
       if (seen.has(location.sessionId)) continue;
-      const reason = reasonFor(input.state, location.sessionId, marks);
+      const reason = reasonFor(
+        input.state,
+        location.sessionId,
+        marks,
+        input.verdicts ?? NO_VERDICTS
+      );
       if (!reason) continue;
       seen.add(location.sessionId);
       rows.push(row(input, ws, location, reason, bindings, now));
@@ -264,7 +284,8 @@ function allTabIds(node: LayoutNode): string[] {
 function reasonFor(
   state: AttentionState,
   sessionId: string,
-  marks: Map<string, StepAttention>
+  marks: Map<string, StepAttention>,
+  verdicts: VerdictsBySession
 ): AttentionReason | null {
   if (state.interruptedSessionIds.has(sessionId)) return null;
   if (state.fileTabsById[sessionId] || state.boardTabsById[sessionId] || state.cardTabsById[sessionId])
@@ -272,6 +293,17 @@ function reasonFor(
   const status = state.sessionStatusById[sessionId];
   const mark = marks.get(sessionId);
   if (status === "failed") return "failed";
+  // The prose question, which is the whole reason the verdict exists:
+  // `waiting_for_input` below is the BELL, and an agent that asks in a
+  // sentence rings none -- 0 of 16 on this repository's own turns. The
+  // daemon calls it idle and today's list leaves the human with no sign
+  // that anything is waiting on them.
+  //
+  // Placed after `failed` and before `decoy-edit` rather than beside
+  // `waiting_for_input`, so that ATTENTION_RANK's order is preserved: a
+  // broken agent still outranks a question, and a rail that cannot reach
+  // its card is still worth saying before one that is merely waiting.
+  if (status === "idle" && verdictIsAsking(verdicts.get(sessionId))) return "asking";
   // Before `asking`, and without consulting the status at all: the write
   // has already happened, so an agent still talking -- or still asking
   // about the card it cannot reach -- is no less stuck for it. This is
