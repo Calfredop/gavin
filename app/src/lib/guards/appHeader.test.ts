@@ -420,6 +420,25 @@ describe("what the bars carry", () => {
     expect(source("NewPageButton.svelte")).not.toContain('text="New page"');
   });
 
+  // The way to the sessions waiting on you sits immediately before New
+  // page, behind the same rule, on both rows: the two are the only
+  // controls on either row that reach past the workspace or pane they
+  // sit on.
+  it("offers the next waiting session from both rows, just before New page", () => {
+    for (const text of [PAGE, PANE]) {
+      expect(text).toMatch(/<span class="divider"><\/span>\s*<NextWaitingButton \/>\s*<NewPageButton \/>/);
+    }
+    // Built like New page: an icon and a chevron over the shared menu,
+    // disabled -- with its reason on the wrapper -- when nothing waits.
+    const button = source("NextWaitingButton.svelte");
+    expect(button).toContain("<ChevronDown size={12} />");
+    expect(button).toContain("disabled={allClear}");
+    expect(button).toContain("use:tooltip={allClear ? ALL_CLEAR_TIP : \"\"}");
+    // The hub's list, not a second definition of "waiting on you".
+    expect(button).toContain("attentionInbox(input, Date.now())");
+    expect(button).toContain("state: $attentionState");
+  });
+
   // What the window lost with the full-width strip: room to grab it.
   // Every row that can be the window's top edge hands its leftover back,
   // a page's tab row included -- press the bar right of the last tab and

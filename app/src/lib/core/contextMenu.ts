@@ -30,6 +30,13 @@ export interface ContextMenuItem {
     active?: boolean;
     onPick: () => void;
   };
+  // A muted second column at the row's end: a fact ABOUT the choice (how
+  // long a session has waited) rather than its name. It never truncates;
+  // the label gives way first, since a cut-off fact is a wrong one.
+  detail?: string;
+  // The row's bubble, for when the menu's width has cut the label short
+  // or the row stands for more than it can say.
+  tip?: string;
   onPick: () => void;
 }
 
