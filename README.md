@@ -129,4 +129,4 @@ Free for personal and other noncommercial use under the
 [PolyForm Noncommercial License 1.0.0](LICENSE).
 
 Commercial use needs a separate licence — email
-[calfredop@gmail.com](mailto:calfredop@gmail.com).
+[calfredop@gmail.com](mailto:contact@cosimoalfredopinalari.me).
