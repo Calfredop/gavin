@@ -94,6 +94,21 @@ export interface OrchestrationAgentRecord {
   label: string;
 }
 
+/// How the desktop reaches a workspace that lives on another machine
+/// (`docs/superpowers/specs/2026-09-22-ssh-workspaces-design.md`): the ssh
+/// host -- anything `ssh <host>` accepts, an alias from `~/.ssh/config`
+/// included -- and, when `gavin-daemon` is not on that host's PATH, where
+/// it is. The workspace's root stays in `rootPath`, as a path ON THE HOST
+/// with forward slashes (`C:/Users/me/repo` for a Windows host).
+///
+/// Machine-local like `color`: how this desktop reaches the host is not a
+/// fact about the project. Absent means the workspace is on this machine,
+/// which is what every workspace that predates the field is.
+export interface SshConfig {
+  host: string;
+  daemonPath?: string;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -108,6 +123,8 @@ export interface Workspace {
   /// The workspace's bound root directory (agent-orchestration phase).
   /// Optional; never auto-cleared when the directory goes missing on disk.
   rootPath?: string;
+  /// Present when the workspace lives on another machine; see SshConfig.
+  ssh?: SshConfig;
   /// The running main agent session (D12) -- outside every page tree.
   mainSessionId?: string;
   /// The orchestration agent run (an Organize, or one rail's Reorganize)

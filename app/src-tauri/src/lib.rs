@@ -14,6 +14,7 @@ mod mac_window;
 mod memory;
 mod program;
 mod pull_request;
+mod remote;
 mod session;
 mod superpowers;
 mod trash;
@@ -75,6 +76,8 @@ pub fn run() {
         .manage(pull_request::PrCache::new())
         .manage(agent_tokens::TokenCache::new())
         .manage(workspace_window::WorkspaceWindows::default())
+        .manage(remote::RemoteLinks::default())
+        .manage(remote::SessionHosts::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -165,6 +168,7 @@ pub fn run() {
             session::add_external_gavin_context,
             session::remove_external_gavin_context,
             session::gavin_root_exists,
+            remote::connect_remote_workspace,
             session::get_board_tabs,
             session::get_card_tabs,
             session::get_session_baselines,
