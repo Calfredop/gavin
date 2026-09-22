@@ -1,4 +1,5 @@
 ---
+status: To Do
 kind: task
 title: Verify ssh workspaces from macOS against a Linux host and a Windows host
 parent: feat-ssh-support.md
