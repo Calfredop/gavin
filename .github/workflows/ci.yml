@@ -183,12 +183,16 @@ jobs:
         # plain scalar can't end in a bare colon, and this one does.
         run: "cargo test --workspace --locked -- --skip gavin::"
 
-      # Still reporting: ten source-grep tests assert against a bare `\n`
-      # and fail on a CRLF checkout, which is what `core.autocrlf` gives
-      # this runner. Not a port defect and not this job's to fix --
-      # `fix-source-grep-tests-on-crlf-checkouts` owns it, and promoting
-      # this to a gate before it lands would block every push on a line
-      # ending. 5229 of 5239 pass.
+      # Still reporting, for a different reason than before. The ten
+      # source-grep tests that failed here on a CRLF checkout pass now
+      # that `.gitattributes` pins every text file to LF on every OS
+      # (`fix-source-grep-tests-on-crlf-checkouts`), so a line ending no
+      # longer separates this runner from the Linux one. What keeps it a
+      # report is the suite's own baseline: 12 tests in 8 files were red
+      # on a clean checkout on 2026-09-22 -- mock shape and source-grep
+      # drift, none of it about line endings or this platform -- and a
+      # gate here would block every push on failures this job did not
+      # cause. Promote it once the app suite is green on main.
       - name: npm test
         continue-on-error: true
         working-directory: app
