@@ -342,6 +342,24 @@ export const FEATURE_MIN_VERSION = {
   // surface that can produce the payload, and it is disabled with this
   // reason rather than offering a choice that goes nowhere.
   railTrigger: 36,
+  // The rendered screen as TEXT (`Request::SessionScreen`, v39), which
+  // the TypeSafe turn verdict is judged on. A new request TYPE, so
+  // `min_version_for` already refuses it against an older daemon and
+  // nothing can be silently dropped -- this entry is not guarding a
+  // widened payload.
+  //
+  // It earns its place because refusing to SEND decides nothing about
+  // what to do INSTEAD, and here the wrong answer is available and
+  // plausible: a driver that asked for a screen, took the version error
+  // and judged the turn on the empty string it was left holding would
+  // be passing a confident verdict on a blank terminal -- and a blank
+  // terminal reads as a finished turn. So the consumer skips the
+  // request outright and keeps today's answer, which is exactly what
+  // every other fallback in this feature does (`turnVerdictSkip` in
+  // turnVerdictState.ts), and the Settings toggle reads the same entry
+  // through `featureBlockedReason` so the switch says why it is dark
+  // rather than silently doing nothing.
+  turnVerdict: 39,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

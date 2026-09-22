@@ -3292,6 +3292,19 @@ export function handleSessionStatusChanged(sessionId: string, rawStatus: string)
   const status = parseSessionStatus(rawStatus);
   const state = get(layoutState);
   const previousStatus = state.sessionStatusById[sessionId];
+  // BEFORE the store update, and the order is load-bearing. The
+  // scheduler subscribes to `layoutState` and reads every store it needs
+  // synchronously on the emission below -- the turn verdict map among
+  // them, which the hook's owner (turnVerdictDriver.ts) marks pending
+  // for a session that has just gone quiet. Fired after the update, the
+  // hook would lose that race on every transition: the tick would see
+  // `idle` and no verdict, complete the agent's step, and the answer
+  // would land on a rail that had already moved on. Fired here, the
+  // entry exists before any subscriber sees the status it is about.
+  //
+  // Every report, not only a change: the hook is handed `previousStatus`
+  // and owns the decision, the way the failure hook does.
+  sessionStatusHook?.(sessionId, status, previousStatus);
   layoutState.update((s) => {
     // Any status but `failed` clears the reason with it, matching what
     // the daemon does to the row: a session that started talking again,
@@ -3415,6 +3428,31 @@ let sessionFailureHook: SessionFailureHook | null = null;
 
 export function setSessionFailureHook(hook: SessionFailureHook | null): void {
   sessionFailureHook = hook;
+}
+
+/// The status counterpart of `SessionFailureHook`: every status the
+/// daemon reports for a session, with what it reported last. Fired from
+/// `handleSessionStatusChanged` BEFORE the store update (see there for
+/// why), and on every report rather than only on a change -- the hook is
+/// handed `previousStatus` and decides for itself, exactly as the
+/// failure hook does.
+///
+/// A hook rather than an import for the reason the failure hook is one:
+/// its owner (turnVerdictDriver.ts) reads `orchestrations` and
+/// `kanbanState`, and both of those read THIS module, so a static import
+/// here would close a cycle. One hook, not a list -- the same shape as
+/// its sibling, to be widened when a second listener exists rather than
+/// before.
+export type SessionStatusHook = (
+  sessionId: string,
+  status: SessionStatus,
+  previousStatus: SessionStatus | undefined
+) => void;
+
+let sessionStatusHook: SessionStatusHook | null = null;
+
+export function setSessionStatusHook(hook: SessionStatusHook | null): void {
+  sessionStatusHook = hook;
 }
 
 /// @internal - for testing only

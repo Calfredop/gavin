@@ -106,6 +106,9 @@ vi.mock("$lib/core/layoutState", () => ({
   // initOrchestrationListeners now starts auto-resume beside the
   // scheduler, and auto-resume registers itself through this seam.
   setSessionFailureHook: vi.fn(),
+  // The turn verdict's driver is started beside auto-resume's and hands
+  // layoutState a hook the same way.
+  setSessionStatusHook: vi.fn(),
   daemonCompat: writable(null),
 }));
 // A REAL store, left empty by default: tick() bails early without a

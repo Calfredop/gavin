@@ -13,6 +13,7 @@ import { pauseFor } from "$lib/agents/agentPauseState";
 import { mayLaunch } from "$lib/agents/launchQueue";
 import {
   autoResumeDecision,
+  classifyFailure,
   isImmediateRefailure,
   resumeNotificationBody,
   resumeSkippedBody,
@@ -30,6 +31,8 @@ import {
 } from "$lib/core/layoutState";
 import { sessionLabel } from "$lib/core/paths";
 import { kanbanState } from "$lib/board/kanbanState";
+import { refineCause } from "$lib/agents/turnVerdict";
+import { turnVerdictById, whenTurnVerdictSettles } from "$lib/agents/turnVerdictState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { orchestrations, resumeStep } from "$lib/orchestration/orchestrationState";
 import { resumeCard } from "$lib/cards/cardRunActions";
@@ -194,6 +197,7 @@ function decide(
       consented: owner.rail.autoResume === true,
       reason,
       causes: agent.failureCauses,
+      verdictCause: refineCause("unknown", get(turnVerdictById)[sessionId]),
       previousStatus,
       attempts: run?.resumeAttempts,
       conversationId: run?.conversationId,
@@ -209,6 +213,7 @@ function decide(
     consented: workspace?.autoResumeRuns === true,
     reason,
     causes: agent.failureCauses,
+    verdictCause: refineCause("unknown", get(turnVerdictById)[sessionId]),
     previousStatus,
     attempts: binding?.resumeAttempts,
     conversationId: binding?.conversationId,
@@ -422,6 +427,36 @@ function onSessionFailed(
 
   const owner = ownerOf(sessionId);
   if (!owner) return;
+  // A failure the profile's own table cannot name is the one case the
+  // turn verdict changes here (`verdictCause` in autoResume.ts) -- and
+  // this hook fires straight after the `failed` status that asked for
+  // it, while the answer is still in flight. Deciding now would read
+  // every such verdict as pending, `unknown` would never resume, and the
+  // consumer would be dead code with a wire to it. So this one case waits
+  // for the entry to settle, bounded by the driver's own backstop; every
+  // other failure decides synchronously as it always did, and the
+  // sibling-abort above has already run either way.
+  if (tableCannotName(owner, sessionId) && get(turnVerdictById)[sessionId]?.state === "pending") {
+    void whenTurnVerdictSettles(sessionId).then(() => act(owner, sessionId, previousStatus));
+    return;
+  }
+  act(owner, sessionId, previousStatus);
+}
+
+/// Whether the profile's failure table leaves this session's reason
+/// `unknown` -- the hole the verdict's cause is allowed to fill, and the
+/// only one.
+function tableCannotName(owner: NonNullable<Owner>, sessionId: string): boolean {
+  const reason = get(layoutState).failureReasonById[sessionId] ?? null;
+  return classifyFailure(reason, resolvedAgentFor(owner.workspaceId).failureCauses) === "unknown";
+}
+
+/// The decision and the arming, once every input is there.
+function act(
+  owner: NonNullable<Owner>,
+  sessionId: string,
+  previousStatus: SessionStatus | undefined
+): void {
   const decision = decide(owner, sessionId, previousStatus);
   if (decision.kind !== "resume") {
     // Silence unless the human asked gavin to act here. A workspace that

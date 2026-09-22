@@ -51,6 +51,7 @@ import { holdOrQueue, type CardIntent } from "$lib/agents/launchQueue";
 import { launchDecision } from "$lib/agents/agentPauseState";
 import { fallbackBlockedReason } from "$lib/agents/agentFallback";
 import { requestArm } from "$lib/agents/agentFallbackState";
+import { turnVerdictById } from "$lib/agents/turnVerdictState";
 
 function agentForNewLaunch(
   workspaceId: string,
@@ -842,7 +843,8 @@ export async function pasteToMainAgent(
   const state = get(layoutState);
   const target = queueTargetFor(
     state.sessionStatusById[mainSessionId],
-    state.interruptedSessionIds.has(mainSessionId)
+    state.interruptedSessionIds.has(mainSessionId),
+    get(turnVerdictById)[mainSessionId] ?? null
   );
   // Refused outright rather than pasted OR queued: what is in an
   // interrupted tab is a bare shell, so the paste would run the prompt as
