@@ -56,8 +56,14 @@ function bareColouredDots(css: string): string[] {
 /// already carries its own icon, its own label, an aria-label and a
 /// tooltip, all of which name the fact in words. Nothing there rests on
 /// the colour alone.
+///
+/// The collapsed sidebar's waiting pip is the same case: it is
+/// `aria-hidden` on a workspace initial whose button's tooltip and
+/// aria-label both name the wait and its count, and a 36px row has no
+/// room for StatusBadge's icon-and-count.
 const ALLOWED_DOTS: Record<string, number> = {
   "+page.svelte": 1,
+  "Sidebar.svelte": 1,
 };
 
 describe("no surface hand-rolls an indicator", () => {
