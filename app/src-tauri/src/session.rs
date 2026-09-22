@@ -54,7 +54,9 @@ pub struct SessionNames(pub Mutex<HashMap<String, String>>);
 /// rule (see SessionNames's doc comment) structural rather than just
 /// documented: every save site funnels through here instead of each
 /// independently reconstructing the AppConfig literal.
-fn persist_workspaces(
+/// `pub(crate)` so `typesafe.rs` can prove the one thing this function
+/// does NOT take as an argument survives it (`AppConfig::typesafe`).
+pub(crate) fn persist_workspaces(
     config_dir: &std::path::Path,
     data: &WorkspacesData,
     session_names: HashMap<String, String>,
@@ -104,9 +106,22 @@ fn persist_workspaces(
     // bound long before this parameter).
     custom_resume_args: Option<String>,
 ) -> anyhow::Result<()> {
+    // The thirteenth app-wide field, and the one that is NOT a parameter
+    // above: the TypeSafe key and toggle are read back off the file and
+    // written straight through. See `AppConfig::typesafe` for why a
+    // secret stays out of the in-memory mirror every window saves from,
+    // and why a thirteenth same-shaped positional on this particular
+    // argument list was the worse of the two risks.
+    //
+    // A config that will not parse yields `None` here -- but that save
+    // was going to overwrite every other field with defaults anyway, so
+    // this loses nothing the rest of the function was not already
+    // losing.
+    let typesafe = crate::config::load(config_dir).ok().and_then(|c| c.typesafe);
     crate::config::save(
         config_dir,
         &crate::config::AppConfig {
+            typesafe,
             workspaces: data.workspaces.clone(),
             active_workspace_id: data.active_workspace_id.clone(),
             session_names,
