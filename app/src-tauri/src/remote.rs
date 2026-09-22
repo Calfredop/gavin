@@ -347,6 +347,37 @@ impl RemoteLink {
         }
     }
 
+    /// `RunGit` (v40): a git subcommand in `cwd` on the host, its stdout,
+    /// stderr and exit code -- the three the desktop's local `run_git`
+    /// returns, so the Git tab's parsing is unchanged.
+    pub fn run_git(
+        &self,
+        root: &str,
+        cwd: &str,
+        args: &[String],
+        stdin: Option<&str>,
+    ) -> anyhow::Result<(Vec<u8>, String, i32)> {
+        match self.ask(&Request::RunGit {
+            root_path: root.to_string(),
+            cwd: cwd.to_string(),
+            args: args.to_vec(),
+            stdin: stdin.map(str::to_string),
+        })? {
+            Response::GitRun { stdout, stderr, code } => Ok((stdout, stderr, code)),
+            Response::Error { message } => anyhow::bail!("{message}"),
+            other => anyhow::bail!("expected GitRun, got {other:?}"),
+        }
+    }
+
+    /// `ListWorkspaceDir` (v40): a directory's children on the host.
+    pub fn list_dir(&self, root: &str, path: &str) -> anyhow::Result<Vec<protocol::WorkspaceDirEntry>> {
+        match self.ask(&Request::ListWorkspaceDir { root_path: root.to_string(), path: path.to_string() })? {
+            Response::WorkspaceDir { entries } => Ok(entries),
+            Response::Error { message } => anyhow::bail!("{message}"),
+            other => anyhow::bail!("expected WorkspaceDir, got {other:?}"),
+        }
+    }
+
     /// The last thing ssh said on either connection, for a dropped link's
     /// message.
     pub fn last_words(&self) -> String {
@@ -368,6 +399,79 @@ impl Drop for RemoteLink {
             let _ = child.wait();
         }
     }
+}
+
+// --- The git router ---------------------------------------------------------
+//
+// The Git tab's subprocess runner (`git::run`) takes a bare `cwd` and no
+// AppHandle, so it cannot reach `RemoteLinks` state to decide whether a
+// cwd is on a host. This process-global registry closes that gap: a link
+// registers its workspace root here when it comes up, clears it when it
+// drops, and `git::run` asks `git_link_for_cwd` which link -- if any --
+// owns a cwd. Keyed by root so a cwd is matched by prefix, the same way
+// `path_is_under` matches a card path.
+
+/// root (trimmed of a trailing slash) -> the link that serves it.
+static GIT_ROUTER: std::sync::OnceLock<Mutex<Vec<(String, Arc<RemoteLink>)>>> =
+    std::sync::OnceLock::new();
+
+fn git_router() -> &'static Mutex<Vec<(String, Arc<RemoteLink>)>> {
+    GIT_ROUTER.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Records that `root` is served by `link`, replacing any earlier entry
+/// for the same root (a Reconnect makes a new link for the same root).
+fn register_git_root(root: &str, link: Arc<RemoteLink>) {
+    let key = trim_root(root).to_string();
+    let mut router = git_router().lock().unwrap();
+    router.retain(|(r, _)| r != &key);
+    router.push((key, link));
+}
+
+/// Drops every root a host served, when its link is lost.
+fn clear_git_host(host: &str) {
+    git_router().lock().unwrap().retain(|(_, link)| link.host != host);
+}
+
+/// The link whose workspace root contains `cwd`, and that root -- what
+/// `git::run` needs to send a `RunGit`. `None` for a local cwd.
+pub fn git_link_for_cwd(cwd: &str) -> Option<(Arc<RemoteLink>, String)> {
+    let cwd = protocol::wire_path_str(cwd);
+    git_router()
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(root, _)| path_is_under(root, &cwd))
+        .map(|(root, link)| (Arc::clone(link), root.clone()))
+}
+
+/// Runs a git subcommand on the host that owns `cwd`, or `None` when the
+/// cwd is local (the caller then runs git itself). The Git tab's runner
+/// (`git::run::run_git`) calls this first, so every synchronous git
+/// command it issues works on an ssh workspace with no change at the call
+/// site -- exactly the "change only where the process runs" the card asks
+/// for. The network ops it keeps to itself go through `run_git_streaming`,
+/// which does not call this.
+pub fn run_git_over_link(
+    cwd: &str,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+) -> Option<Result<(Vec<u8>, String, i32), String>> {
+    let (link, root) = git_link_for_cwd(cwd)?;
+    let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    // git's stdin here is a commit message or a patch -- text; a non-UTF-8
+    // patch is a case gavin does not produce.
+    let stdin = stdin.map(|b| String::from_utf8_lossy(b).into_owned());
+    Some(
+        link.run_git(&root, &protocol::wire_path_str(cwd), &argv, stdin.as_deref())
+            .map_err(|e| e.to_string()),
+    )
+}
+
+/// Whether a cwd is on a host -- for the git watcher, which has no remote
+/// equivalent yet and no-ops rather than watching a path that is not here.
+pub fn is_remote_cwd(cwd: &str) -> bool {
+    git_link_for_cwd(cwd).is_some()
 }
 
 /// Agent integration's files on the host, through the link
@@ -539,6 +643,9 @@ pub fn link_workspace(app: &AppHandle, workspace_id: &str) -> anyhow::Result<()>
             (link, Some(reader))
         }
     };
+    // The git router keys on the workspace root so `git::run` can find
+    // this link from a bare cwd, with no AppHandle to reach state through.
+    register_git_root(&root, Arc::clone(&link));
 
     let non_session = non_session_tab_ids(
         &app.state::<FileTabs>().0.lock().unwrap(),
@@ -667,6 +774,11 @@ pub fn link_lost(app: &AppHandle, host: &str, link_id: u64, message: String) {
             _ => None,
         }
     };
+    // Drop this host's git-router entries too, so `git::run` stops routing
+    // a cwd whose link is gone and falls back to the local error path.
+    if removed.is_some() {
+        clear_git_host(host);
+    }
     let said = removed.as_ref().map(|l| l.last_words()).unwrap_or_default();
     let message = if said.is_empty() { message } else { format!("{message} ({said})") };
     let _ = app.emit(

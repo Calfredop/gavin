@@ -58,6 +58,15 @@ describe("a file row's menu", () => {
     expect(items.filter((i) => i.danger).map((i) => i.label)).toEqual(["Move to Trash"]);
   });
 
+  it("omits the write actions when their callbacks are null (an ssh workspace)", () => {
+    const items = fileMenuItems(
+      node(),
+      ctx({ isRoot: false, viewable: true }),
+      callbacks({ onNewFile: null, onNewFolder: null, onRename: null, onTrash: null, onIgnore: null })
+    );
+    expect(labels(items)).toEqual(["Open", "Open in a tab", "Copy path", "Reveal in Finder"]);
+  });
+
   it("builds the ignore patterns from the path with the workspace root stripped off", () => {
     const cb = callbacks();
     const items = fileMenuItems(node(), ctx({ isRoot: false, viewable: true }), cb);

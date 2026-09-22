@@ -35,6 +35,16 @@ impl GitOutput {
 /// (missing binary → GIT_NOT_FOUND, bad cwd, …) or times out; a non-zero
 /// exit is reported through `GitOutput::code` so callers decide.
 pub fn run_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>) -> Result<GitOutput, String> {
+    // An ssh workspace's repo is on the host: the daemon there runs git
+    // and returns the same three fields. Every synchronous Git-tab command
+    // funnels through here (and through `run_git_ro`, which calls this), so
+    // routing this one function is the whole "change only where the process
+    // runs" for the tab -- `commands.rs` never learns which machine ran it.
+    // The network ops the desktop keeps use `run_git_streaming`, which does
+    // not route.
+    if let Some(result) = crate::remote::run_git_over_link(cwd, args, stdin) {
+        return result.map(|(stdout, stderr, code)| GitOutput { stdout, stderr, code });
+    }
     // A missing cwd also surfaces as ErrorKind::NotFound from spawn; check it
     // first so that case is never misreported as a missing git binary.
     if !std::path::Path::new(cwd).is_dir() {

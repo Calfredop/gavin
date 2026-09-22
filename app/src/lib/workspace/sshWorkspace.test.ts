@@ -13,6 +13,7 @@ import {
   sshBanner,
   sshLimitation,
   sshRunBlocked,
+  sshTabBlocked,
   validateSshInput,
   type SshLinks,
 } from "$lib/workspace/sshWorkspace";
@@ -155,6 +156,20 @@ describe("sshRunBlocked", () => {
   it("lets a run through once the host's daemon is new enough", () => {
     expect(sshRunBlocked(ws("a", "box"), markReady({}, "box", "linux", 39))).toBeNull();
     expect(sshRunBlocked(ws("a", "box"), markReady({}, "box", "linux", 40))).toBeNull();
+  });
+});
+
+describe("sshTabBlocked", () => {
+  it("never blocks a local workspace, and opens the tabs once the host is v40", () => {
+    expect(sshTabBlocked(ws("near"), {})).toBeNull();
+    expect(sshTabBlocked(ws("a", "box"), markReady({}, "box", "linux", 40))).toBeNull();
+  });
+
+  it("blocks while connecting or lost, and on a host older than v40", () => {
+    expect(sshTabBlocked(ws("a", "box"), {})).toMatch(/Connecting to box/);
+    expect(sshTabBlocked(ws("a", "box"), markLost({}, "box", "x"))).toMatch(/Not connected to box/);
+    // The Git tab needs v40 even though card runs (v39) are fine.
+    expect(sshTabBlocked(ws("a", "box"), markReady({}, "box", "linux", 39))).toMatch(/v40 on box/);
   });
 });
 

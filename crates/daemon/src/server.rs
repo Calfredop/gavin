@@ -3619,6 +3619,17 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::StatWorkspacePaths { root_path, paths } => Ok(Response::WorkspacePathStats {
             stats: crate::gavin::stat_workspace_paths(std::path::Path::new(&root_path), &paths),
         }),
+        // The Git tab and Files tree of a workspace on another machine
+        // (v40). Confined to the root; `RunGit` runs only `git`, never a
+        // shell.
+        Request::RunGit { root_path, cwd, args, stdin } => {
+            crate::gavin::run_git(std::path::Path::new(&root_path), &cwd, &args, stdin.as_deref())
+                .map(|(stdout, stderr, code)| Response::GitRun { stdout, stderr, code })
+        }
+        Request::ListWorkspaceDir { root_path, path } => {
+            crate::gavin::list_workspace_dir(std::path::Path::new(&root_path), &path)
+                .map(|entries| Response::WorkspaceDir { entries })
+        }
         Request::CreatePlan {
             context_folder,
             file_name,
@@ -4041,6 +4052,11 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::ReadWorkspaceFile { .. }
         | Request::WriteWorkspaceFile { .. }
         | Request::StatWorkspacePaths { .. }
+        // The Git tab and Files tree over ssh (v40), likewise the
+        // desktop's: `RunGit` runs a process here, which an agent (own
+        // fs) and a remote (names no path) must never do.
+        | Request::RunGit { .. }
+        | Request::ListWorkspaceDir { .. }
         | Request::Unknown => false,
     }
 }
@@ -4062,6 +4078,11 @@ fn is_privileged(req: &Request) -> bool {
             // Writes the MCP config that decides what the next agent
             // runs, which is the same reach `SetRootConfigField` has.
             | Request::WriteWorkspaceFile { .. }
+            // Runs `git`, which mutates the working tree and -- via a
+            // config an argv could set -- can run a program, the same
+            // reach as the shell `CreateSession` starts. Behind the
+            // require_local_token narrowing with the rest.
+            | Request::RunGit { .. }
     )
 }
 
@@ -4978,6 +4999,8 @@ mod tests {
             Request::ReadWorkspaceFile { root_path: "/x".into(), path: "a.md".into() },
             Request::WriteWorkspaceFile { root_path: "/x".into(), path: "a.md".into(), content: "c".into() },
             Request::StatWorkspacePaths { root_path: "/x".into(), paths: vec!["a.md".into()] },
+            Request::RunGit { root_path: "/x".into(), cwd: "/x".into(), args: vec!["status".into()], stdin: None },
+            Request::ListWorkspaceDir { root_path: "/x".into(), path: "/x".into() },
             Request::GetBoardByRoot { root_path: "/x".into() },
             Request::PromoteChecklistItem { plan_path: "/x/a.md".into(), item: "i".into() },
             Request::SetChecklistItem { path: "/x/a.md".into(), line_index: 0, expected_text: "i".into(), checked: true },

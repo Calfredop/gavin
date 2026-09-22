@@ -97,28 +97,46 @@ export function markLost(links: SshLinks, host: string, message: string | null |
   return { ...links, [host]: link };
 }
 
-/// Whether a card can be run on this workspace right now, and if not,
-/// why -- null for a local workspace, whose gates are elsewhere.
+/// Whether an ssh workspace can do a thing that needs its host daemon at
+/// version `needed` right now, and if not, why -- null for a local
+/// workspace, whose gates are elsewhere.
 ///
-/// Three answers for an ssh workspace, in the order they are checked:
-/// the link is not up (nothing can be composed or launched), the host's
-/// daemon predates the workspace-file requests a run there needs
-/// (`FEATURE_MIN_VERSION.sshCardRuns`, checked against the HOST's version
-/// and never the local daemon's), or nothing -- the run goes ahead. The
-/// launch seam asks the same question as the Run pill, so a queued intent
-/// and a rail step refuse on the same evidence the pill shows.
-export function sshRunBlocked(ws: Workspace | null | undefined, links: SshLinks): string | null {
+/// The order is the order a human fixes it in: the link is not up
+/// (`reconnectVerb` says what to do), then the host's daemon is too old
+/// (checked against the HOST's version, never the local daemon's), then
+/// nothing. Shared by the card-run gate and the tab gate so they answer
+/// on the same evidence.
+function sshFeatureBlocked(
+  ws: Workspace | null | undefined,
+  links: SshLinks,
+  needed: number,
+  reconnectVerb: string
+): string | null {
   if (!isSshWorkspace(ws)) return null;
   const host = ws.ssh.host;
   const link = linkFor(links, ws);
   if (!link || link.status === "connecting") return `Connecting to ${host} over ssh — try again in a moment.`;
-  if (link.status === "lost") return `Not connected to ${host} — reconnect the workspace to run cards there.`;
-  const needed = FEATURE_MIN_VERSION.sshCardRuns;
+  if (link.status === "lost") return `Not connected to ${host} — reconnect the workspace ${reconnectVerb}.`;
   if (link.daemonVersion === undefined || link.daemonVersion < needed) {
     const running = link.daemonVersion === undefined ? "an older version" : `v${link.daemonVersion}`;
     return `Needs gavin-daemon v${needed} on ${host}; the daemon there is ${running}. Update it on the host and reconnect.`;
   }
   return null;
+}
+
+/// Whether a card can be run on this workspace right now (see
+/// `sshFeatureBlocked`). The launch seam asks the same question as the Run
+/// pill, so a queued intent and a rail step refuse on the same evidence.
+export function sshRunBlocked(ws: Workspace | null | undefined, links: SshLinks): string | null {
+  return sshFeatureBlocked(ws, links, FEATURE_MIN_VERSION.sshCardRuns, "to run cards there");
+}
+
+/// Whether the Git tab and Files tree can serve this workspace right now.
+/// Their operations need the host daemon's v40 file and git requests, so
+/// this is what the two hub views gate on -- rendering their content when
+/// it is null and the notice otherwise.
+export function sshTabBlocked(ws: Workspace | null | undefined, links: SshLinks): string | null {
+  return sshFeatureBlocked(ws, links, FEATURE_MIN_VERSION.sshGitFiles, "to use these tabs there");
 }
 
 /// The hosts whose link is up -- what `staleLayoutTabIds` needs to know

@@ -785,8 +785,29 @@ fn resolve_new(root: &Path, path: &str) -> Result<PathBuf, String> {
 ///
 /// Refuses a symlinked directory rather than listing through it, so the
 /// tree can never leave the root by following a link.
+///
+/// For an ssh workspace's root the listing is the host daemon's
+/// (`ListWorkspaceDir`, v40): the same fields, from the machine the files
+/// are on, so the Files tree renders there unchanged.
 #[tauri::command]
-pub fn list_directory(root: String, path: String) -> Result<Vec<DirEntryInfo>, String> {
+pub fn list_directory(root: String, path: String, app_handle: AppHandle) -> Result<Vec<DirEntryInfo>, String> {
+    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+        return link
+            .list_dir(&root, &path)
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|e| DirEntryInfo { name: e.name, is_dir: e.is_dir, size: e.size, symlink: e.symlink })
+                    .collect()
+            })
+            .map_err(|e| e.to_string());
+    }
+    list_directory_impl(root, path)
+}
+
+/// The local listing, split out so the tests exercise the confinement
+/// without an `AppHandle` -- the command adds only the ssh route above.
+fn list_directory_impl(root: String, path: String) -> Result<Vec<DirEntryInfo>, String> {
     let root = canonical_root(&root)?;
     let meta = std::fs::symlink_metadata(&path).map_err(|e| format!("{path}: {e}"))?;
     if meta.file_type().is_symlink() {
@@ -1555,7 +1576,7 @@ mod tests {
         std::os::unix::fs::symlink(dir.path().join("Cargo.toml"), dir.path().join("link.toml"))
             .unwrap();
 
-        let entries = list_directory(root_of(&dir), root_of(&dir)).unwrap();
+        let entries = list_directory_impl(root_of(&dir), root_of(&dir)).unwrap();
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         // Sorted by name, so the same folder never comes back shuffled.
         #[cfg(unix)]
@@ -1590,7 +1611,7 @@ mod tests {
         // "there was nothing there".
         std::fs::write(dir.path().join("secret.txt"), "s").unwrap();
 
-        let outside = list_directory(
+        let outside = list_directory_impl(
             root.to_string_lossy().to_string(),
             dir.path().to_string_lossy().to_string(),
         );
@@ -1598,7 +1619,7 @@ mod tests {
 
         // The classic traversal spelling, which canonicalize collapses
         // before the containment check ever runs.
-        let traversal = list_directory(
+        let traversal = list_directory_impl(
             root.to_string_lossy().to_string(),
             root.join("..").to_string_lossy().to_string(),
         );
@@ -1622,7 +1643,7 @@ mod tests {
         std::os::unix::fs::symlink(root.join("real"), root.join("inward")).unwrap();
 
         for link in ["escape", "inward"] {
-            let err = list_directory(
+            let err = list_directory_impl(
                 root.to_string_lossy().to_string(),
                 root.join(link).to_string_lossy().to_string(),
             )
@@ -1632,7 +1653,7 @@ mod tests {
 
         // The link is still LISTED in its parent -- as a leaf, so the
         // tree shows it without offering to open it.
-        let entries = list_directory(
+        let entries = list_directory_impl(
             root.to_string_lossy().to_string(),
             root.to_string_lossy().to_string(),
         )
@@ -1647,10 +1668,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "a").unwrap();
 
-        assert!(list_directory(root_of(&dir), under(&dir, "a.txt"))
+        assert!(list_directory_impl(root_of(&dir), under(&dir, "a.txt"))
             .unwrap_err()
             .contains("not a directory"));
-        assert!(list_directory(root_of(&dir), under(&dir, "nope")).is_err());
+        assert!(list_directory_impl(root_of(&dir), under(&dir, "nope")).is_err());
     }
 
     #[test]

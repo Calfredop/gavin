@@ -351,6 +351,13 @@ export const FEATURE_MIN_VERSION = {
   // run happens on. The consumer is the Run pill on an ssh workspace's
   // board, and the launch seam behind it.
   sshCardRuns: 39,
+  // The Git tab and Files tree on an ssh workspace: the host daemon's
+  // v40 `RunGit` and `ListWorkspaceDir`
+  // (`2026-09-22-ssh-git-files-design.md`). Checked against the HOST
+  // daemon's version (`sshTabBlocked` in sshWorkspace.ts); the consumers
+  // are the two hub views, which show the notice until the host is new
+  // enough.
+  sshGitFiles: 40,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

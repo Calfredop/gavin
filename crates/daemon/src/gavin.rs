@@ -2367,6 +2367,141 @@ pub fn stat_workspace_paths(root: &Path, paths: &[String]) -> Vec<protocol::Work
         .collect()
 }
 
+/// How long a single `RunGit` subprocess may run. The desktop's own
+/// `run_git` uses ten seconds for the synchronous commands the Git tab
+/// routes here; the network ops it keeps to itself have their own longer
+/// ceiling, and none of them reach this.
+const GIT_RUN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A directory a `cwd` must be inside for `RunGit` to run there. Same
+/// tree as the workspace files: the root and the outside contexts its
+/// config names, plus the root itself. A `..` is refused before anything
+/// resolves.
+fn confined_dir(root: &Path, cwd: &str) -> anyhow::Result<PathBuf> {
+    if Path::new(cwd).components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        anyhow::bail!("{cwd} contains a `..` component");
+    }
+    let resolved = resolve_for_containment(&absolute_in(root, cwd))?;
+    if workspace_roots(root).iter().any(|r| inside_root(r, &resolved)) {
+        Ok(resolved)
+    } else {
+        anyhow::bail!("{cwd} is outside the workspace root {}", root.display())
+    }
+}
+
+/// `RunGit`: runs `git <args>` in a cwd confined to the root, returning
+/// `(stdout, stderr, code)` -- the three the desktop's local `run_git`
+/// produces, so the Git tab does not care which ran it.
+///
+/// The binary is fixed as `git` and `args` is an argv: never a shell,
+/// never interpolated, so `["status; rm -rf /"]` is one bogus subcommand
+/// git rejects, not a pipeline. This is the app role's existing reach --
+/// the desktop already spawns shells here through `CreateSession` -- so it
+/// widens nothing; the gate denies it to `agent` and `remote`, which have
+/// no business running a process on this machine. `GIT_TERMINAL_PROMPT=0`,
+/// like the desktop's runner, so a credential prompt fails instead of
+/// hanging a request.
+pub fn run_git(
+    root: &Path,
+    cwd: &str,
+    args: &[String],
+    stdin: Option<&str>,
+) -> anyhow::Result<(Vec<u8>, String, i32)> {
+    use std::io::{Read, Write};
+    let resolved = confined_dir(root, cwd)?;
+    let mut child = crate::program::command("git")
+        .args(args)
+        .current_dir(&resolved)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!("git was not found on the host's PATH")
+            } else {
+                anyhow::anyhow!("failed to run git: {e}")
+            }
+        })?;
+    if let Some(bytes) = stdin {
+        if let Some(mut pipe) = child.stdin.take() {
+            let bytes = bytes.as_bytes().to_vec();
+            std::thread::spawn(move || {
+                let _ = pipe.write_all(&bytes);
+            });
+        }
+    }
+    let mut out = child.stdout.take().ok_or_else(|| anyhow::anyhow!("git stdout unavailable"))?;
+    let mut err = child.stderr.take().ok_or_else(|| anyhow::anyhow!("git stderr unavailable"))?;
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    let (err_tx, err_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = out.read_to_end(&mut buf);
+        let _ = out_tx.send(buf);
+    });
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = err.read_to_string(&mut buf);
+        let _ = err_tx.send(buf);
+    });
+    let deadline = Instant::now() + GIT_RUN_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    anyhow::bail!("git {} timed out after {}s", args.join(" "), GIT_RUN_TIMEOUT.as_secs());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => anyhow::bail!("failed waiting for git: {e}"),
+        }
+    };
+    let stdout = out_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    let stderr = err_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    Ok((stdout, stderr, status.code().unwrap_or(-1)))
+}
+
+/// `ListWorkspaceDir`: the immediate children of a directory confined to
+/// the root, name-sorted, in the shape the file tree reads. A symlinked
+/// directory is refused rather than listed through, so the tree cannot
+/// leave the root by a link -- the same rule the desktop's `list_directory`
+/// applies to a local root.
+pub fn list_workspace_dir(root: &Path, path: &str) -> anyhow::Result<Vec<protocol::WorkspaceDirEntry>> {
+    let resolved = confined_dir(root, path)?;
+    let meta = std::fs::symlink_metadata(&resolved)
+        .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+    if meta.file_type().is_symlink() {
+        anyhow::bail!("{path} is a symlink; the file tree does not follow links");
+    }
+    if !resolved.is_dir() {
+        anyhow::bail!("{path} is not a directory");
+    }
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&resolved).map_err(|e| anyhow::anyhow!("{path}: {e}"))? {
+        let entry = entry.map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        // symlink_metadata: a link to a directory must not read as one, and
+        // a file that vanished mid-scan is skipped, not an error -- an
+        // agent writing here is the normal case.
+        let Ok(meta) = entry.path().symlink_metadata() else { continue };
+        let file_type = meta.file_type();
+        let is_dir = file_type.is_dir();
+        entries.push(protocol::WorkspaceDirEntry {
+            name,
+            is_dir,
+            size: if is_dir { 0 } else { meta.len() },
+            symlink: file_type.is_symlink(),
+        });
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(entries)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4757,5 +4892,121 @@ mod tests {
         let stats = stat_workspace_paths(dir.path(), &[lossy(&key)]);
         assert_eq!(stats[0].location, "refused");
         assert!(stats[0].refused_reason.as_deref().unwrap().contains(".ssh"));
+    }
+
+    // --- Git and directory listing (v40) --------------------------------
+
+    fn init_repo(root: &Path) {
+        // A real repo so `run_git` has something to answer about; identity
+        // set so `commit` works without global config.
+        let cwd = lossy(root);
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.email", "t@example.com"][..],
+            &["config", "user.name", "T"][..],
+        ] {
+            let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            let out = run_git(root, &cwd, &argv, None).unwrap();
+            assert_eq!(out.2, 0, "git {args:?}: {}", out.1);
+        }
+    }
+
+    #[test]
+    fn run_git_runs_a_subcommand_in_the_confined_cwd() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+        let (stdout, _stderr, code) = run_git(
+            dir.path(),
+            &lossy(dir.path()),
+            &["status".to_string(), "--porcelain".to_string()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        assert!(String::from_utf8_lossy(&stdout).contains("a.txt"));
+    }
+
+    #[test]
+    fn run_git_reports_a_non_zero_exit_rather_than_erroring() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        // A bad subcommand exits non-zero; that is data, not an Err.
+        let (_out, stderr, code) = run_git(
+            dir.path(),
+            &lossy(dir.path()),
+            &["not-a-subcommand".to_string()],
+            None,
+        )
+        .unwrap();
+        assert_ne!(code, 0);
+        assert!(stderr.contains("not-a-subcommand"), "{stderr}");
+    }
+
+    #[test]
+    fn run_git_passes_stdin_and_refuses_a_cwd_outside_the_root() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        // stripspace echoes stdin normalised -- a stdin round-trip.
+        let (stdout, _stderr, code) = run_git(
+            dir.path(),
+            &lossy(dir.path()),
+            &["stripspace".to_string()],
+            Some("hello   \n\n\n"),
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(String::from_utf8_lossy(&stdout), "hello\n");
+        let outside = tempfile::tempdir().unwrap();
+        assert!(run_git(dir.path(), &lossy(outside.path()), &["status".to_string()], None).is_err());
+        assert!(run_git(dir.path(), "..", &["status".to_string()], None).is_err());
+    }
+
+    #[test]
+    fn run_git_never_runs_a_shell_even_when_args_look_like_one() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        // The argv reaches `git` verbatim: git treats this as one bogus
+        // subcommand, not a shell pipeline, and exits non-zero.
+        let (_out, _stderr, code) = run_git(
+            dir.path(),
+            &lossy(dir.path()),
+            &["status; rm -rf /".to_string()],
+            None,
+        )
+        .unwrap();
+        assert_ne!(code, 0);
+    }
+
+    #[test]
+    fn list_workspace_dir_lists_children_inside_the_root() {
+        let dir = workspace_root();
+        std::fs::write(dir.path().join("b.txt"), "x").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let entries = list_workspace_dir(dir.path(), &lossy(dir.path())).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"b.txt"));
+        assert!(names.contains(&"sub"));
+        // Name-sorted, so a folder and a file keep a stable order.
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted);
+        let sub = entries.iter().find(|e| e.name == "sub").unwrap();
+        assert!(sub.is_dir);
+        let file = entries.iter().find(|e| e.name == "b.txt").unwrap();
+        assert!(!file.is_dir && file.size == 1);
+    }
+
+    #[test]
+    fn list_workspace_dir_refuses_outside_the_root_and_a_symlinked_dir() {
+        let dir = workspace_root();
+        let outside = tempfile::tempdir().unwrap();
+        assert!(list_workspace_dir(dir.path(), &lossy(outside.path())).is_err());
+        assert!(list_workspace_dir(dir.path(), "../..").is_err());
+        // A symlinked directory inside the root is refused, not listed
+        // through -- the tree must not leave the root by a link.
+        if try_symlink(outside.path(), &dir.path().join("link")) {
+            assert!(list_workspace_dir(dir.path(), &lossy(&dir.path().join("link"))).is_err());
+        }
     }
 }
