@@ -1325,7 +1325,18 @@ pub fn confine_root_path(path: &Path, watched_roots: &[PathBuf]) -> anyhow::Resu
     if !path.is_dir() {
         anyhow::bail!("not an existing directory: {}", path.display());
     }
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    // `protocol::canonical_path`, not `Path::canonicalize`, because the
+    // other side of the comparison below was built with it: a watcher
+    // stores `protocol::canonical_path(root)`, which on Windows has the
+    // `\\?\` verbatim prefix stripped and its separators normalised.
+    // Raw canonicalisation here hands `starts_with` a path whose very
+    // first component is `Prefix::VerbatimDisk` against a root whose
+    // first component is `Prefix::Disk` -- never equal, whatever the
+    // rest of the path says. That refused every CreateGavinContext and
+    // AddExternalGavinContext inside a watched workspace on Windows,
+    // which is precisely the failure `canonical_path`'s own comment
+    // exists to describe.
+    let canonical = protocol::canonical_path(path).unwrap_or_else(|_| path.to_path_buf());
     let confined =
         watched_roots.iter().any(|root| canonical.starts_with(root) || root.starts_with(&canonical));
     if !confined {
@@ -2888,7 +2899,13 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         let unrelated = tempfile::tempdir().unwrap();
 
-        let roots = vec![watched_root.clone()];
+        // Built the way `SessionManager::watched_roots` builds it -- a
+        // `GavinWatcher` stores `protocol::canonical_path(root)`, not
+        // `root.canonicalize()`. Spelling the list with raw
+        // canonicalisation instead made both sides of the comparison
+        // verbatim by construction on Windows, and hid the mismatch
+        // that refused every context creation there.
+        let roots = vec![protocol::canonical_path(watched.path()).unwrap()];
 
         // The watched root itself:
         assert_eq!(confine_root_path(&watched_root, &roots).unwrap(), watched_root);

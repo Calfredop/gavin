@@ -1,11 +1,76 @@
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// How often the exit watcher asks whether the child is still there.
+///
+/// A poll rather than a blocking wait, and the same poll on every
+/// platform, deliberately. The blocking wait would be `Child::wait`,
+/// which needs the child exclusively for as long as it blocks -- and
+/// `kill` needs that same child for its SIGHUP grace loop, so a process
+/// that ignored the SIGHUP could never be escalated to SIGKILL. A
+/// Windows-only `WaitForSingleObject` would avoid that, at the price of
+/// being code that only ever runs on the port, where no suite exercises
+/// it day to day. One poll per live session at this interval costs
+/// nothing measurable -- the heuristic idle timer already polls every
+/// session at 250ms -- and reports an exit at most a tenth of a second
+/// after it happened.
+const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 pub struct PtySession {
-    master: Box<dyn MasterPty + Send>,
+    /// The master end of the pty, until the child exits. Shared with the
+    /// exit watcher, which is what closes it -- see `watch_for_exit`.
+    master: Arc<Mutex<Master>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    child: Box<dyn Child + Send + Sync>,
+    /// Shared with the exit watcher too: `Child::try_wait` takes the
+    /// child mutably, and the watcher is a second caller of it.
+    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
+}
+
+/// What a session holds of its pty's master end.
+///
+/// Two states rather than an `Option`, because a closed master still
+/// owes something: a reader for a client that attaches after the process
+/// has already ended. That client's pump must see the output the process
+/// left behind and then END OF STREAM, exactly like one that was attached
+/// all along -- so one reader is cloned before the master goes and set
+/// aside for it. Readers and the writer are handles of their own (dups
+/// of the read side on Windows, of the master fd on unix), so they
+/// outlive the master they were cloned from.
+enum Master {
+    Open(Box<dyn MasterPty + Send>),
+    /// The process has ended and the master has been dropped. On Windows
+    /// dropping it is `ClosePseudoConsole`, and that is what ends the
+    /// output stream -- see `watch_for_exit`.
+    Closed {
+        spare_reader: Option<Box<dyn Read + Send>>,
+    },
+}
+
+impl Master {
+    /// Drops the master, first setting one reader aside for a late
+    /// attach when `keep_a_reader`. A no-op once closed, so the exit
+    /// watcher and `Drop` can each call it, in either order.
+    ///
+    /// The master is moved OUT under the lock and dropped after the lock
+    /// is released. On Windows the drop is `ClosePseudoConsole`, which
+    /// has conhost flush what it still holds into the output pipe before
+    /// it exits -- a flush that goes only as fast as the pump drains the
+    /// pipe, so it must not run while holding a lock that every other
+    /// caller of this session waits on.
+    fn close(master: &Mutex<Master>, keep_a_reader: bool) {
+        let mut guard = master.lock().unwrap();
+        let Master::Open(open) = &*guard else { return };
+        let spare_reader = if keep_a_reader {
+            open.try_clone_reader().ok()
+        } else {
+            None
+        };
+        let closed = std::mem::replace(&mut *guard, Master::Closed { spare_reader });
+        drop(guard);
+        drop(closed);
+    }
 }
 
 impl PtySession {
@@ -269,15 +334,33 @@ impl PtySession {
         let child = pair.slave.spawn_command(cmd)?;
         let writer = pair.master.take_writer()?;
 
+        let master = Arc::new(Mutex::new(Master::Open(pair.master)));
+        let child = Arc::new(Mutex::new(child));
+        watch_for_exit(Arc::clone(&child), Arc::clone(&master));
+
         Ok(Self {
-            master: pair.master,
+            master,
             writer: Arc::new(Mutex::new(writer)),
             child,
         })
     }
 
-    pub fn reader(&self) -> anyhow::Result<Box<dyn std::io::Read + Send>> {
-        Ok(self.master.try_clone_reader()?)
+    /// A reader over this session's output.
+    ///
+    /// While the process is running, a fresh clone of the master's read
+    /// side, as many times as asked. Once the process has ended and the
+    /// master is gone, the one reader that was set aside for exactly
+    /// this case (see `Master`), so a client that attaches after the
+    /// fact still gets everything the process left behind, followed by
+    /// end of stream. Asking again after that is an error: there is
+    /// nothing left to hand out, and no process left to write more.
+    pub fn reader(&self) -> anyhow::Result<Box<dyn Read + Send>> {
+        match &mut *self.master.lock().unwrap() {
+            Master::Open(master) => Ok(master.try_clone_reader()?),
+            Master::Closed { spare_reader } => spare_reader.take().ok_or_else(|| {
+                anyhow::anyhow!("the session has ended and its output has already been read")
+            }),
+        }
     }
 
     /// A clonable handle to the PTY's input side, so a caller can write to it
@@ -297,13 +380,20 @@ impl PtySession {
         Ok(())
     }
 
+    /// Nothing to do once the process has ended: the master is gone, and
+    /// the exit that took it is about to be reported. A resize that races
+    /// that report is answered rather than refused -- an error here would
+    /// reach the client as a failure on a session it has every reason to
+    /// believe is still there.
     pub fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {
-        self.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
+        if let Master::Open(master) = &*self.master.lock().unwrap() {
+            master.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })?;
+        }
         Ok(())
     }
 
@@ -323,18 +413,19 @@ impl PtySession {
     /// here offers; it needs the entire pid space to wrap inside a few
     /// microseconds, and the same uid to win the race.
     pub fn process_handle(&self) -> Option<crate::proc::ProcessHandle> {
-        crate::proc::identify(self.child.process_id()?)
+        let pid = self.child.lock().unwrap().process_id()?;
+        crate::proc::identify(pid)
     }
 
     pub fn try_wait(&mut self) -> anyhow::Result<Option<i32>> {
-        match self.child.try_wait()? {
+        match self.child.lock().unwrap().try_wait()? {
             Some(status) => Ok(Some(status.exit_code() as i32)),
             None => Ok(None),
         }
     }
 
     pub fn kill(&mut self) -> anyhow::Result<()> {
-        self.child.kill()?;
+        self.child.lock().unwrap().kill()?;
         Ok(())
     }
 
@@ -387,8 +478,58 @@ impl PtySession {
     /// a process that already acted on the first one is gone, and one
     /// that ignored it ignores the second too.
     fn hangup(&self) {
-        let _ = self.child.clone_killer().kill();
+        let mut killer = self.child.lock().unwrap().clone_killer();
+        let _ = killer.kill();
     }
+}
+
+/// Ends a session's output stream once the process in it has exited.
+///
+/// On unix nobody has to: the child's exit closes its end of the pty and
+/// the master reads end of stream. A ConPTY has no such moment. Its
+/// output pipe is written by conhost, not by the child, and conhost
+/// keeps it open until the pseudoconsole is closed -- which is
+/// `ClosePseudoConsole`, which portable-pty issues from the master's
+/// `Drop` and from nowhere else. So on Windows a reader whose process
+/// had exited blocked forever, and everything the daemon does on end of
+/// stream -- the exit code becoming a tool's verdict, `SessionExited`
+/// reaching the rail step waiting on it, the session's screen being
+/// dropped -- never happened for a session that ended by itself. Only a
+/// kill, which drops the master, ever gave a reader its zero.
+///
+/// So once the child has gone, this drops the master itself. Closing
+/// the pseudoconsole makes conhost flush whatever it still holds into
+/// the pipe and then exit, and its exit is what closes the pipe's last
+/// write handle: a reader gets everything the process wrote, THEN end of
+/// stream, in that order, so the epilogue a tool prints right before
+/// exiting is not cut off by the exit that caused it. That is the signal
+/// the pump has always ended on -- it is what a kill produces -- now
+/// delivered for a natural exit too, rather than a second signal beside
+/// it that would have to drain the first one by hand.
+///
+/// The same thread runs on unix, where it reaps the child a little
+/// earlier and drops a master fd nothing reads through (readers and the
+/// writer are dups of it): no observable change, and the platform the
+/// maintainers run every day exercises the code the port depends on. A
+/// session retired or dropped before its child exits closes the master
+/// itself, and the watcher notices and stops rather than polling a
+/// process nothing is going to end.
+fn watch_for_exit(child: Arc<Mutex<Box<dyn Child + Send + Sync>>>, master: Arc<Mutex<Master>>) {
+    std::thread::spawn(move || {
+        loop {
+            // `Err` counts as gone: it is what asking about a child that
+            // has already been reaped answers, and either way there is
+            // no process left whose output could still be on its way.
+            if !matches!(child.lock().unwrap().try_wait(), Ok(None)) {
+                break;
+            }
+            if matches!(*master.lock().unwrap(), Master::Closed { .. }) {
+                return;
+            }
+            std::thread::sleep(EXIT_POLL_INTERVAL);
+        }
+        Master::close(&master, true);
+    });
 }
 
 impl Drop for PtySession {
@@ -396,7 +537,13 @@ impl Drop for PtySession {
         // Best-effort: don't leave an orphaned/zombie child behind when a
         // session is dropped without an explicit kill() (e.g. create_session
         // failing after spawn, or a session replaced during recover()).
-        let _ = self.child.kill();
+        let _ = self.child.lock().unwrap().kill();
+        // The master is shared with the exit watcher, so it does not go
+        // with this struct by itself -- and its going is what gives the
+        // pump its end of stream on the kill path (see `retire`). Closed
+        // here explicitly, with no reader kept back: a dropped session is
+        // not one anything attaches to again.
+        Master::close(&self.master, false);
     }
 }
 
@@ -1058,6 +1205,105 @@ mod tests {
             .expect("reading the pty to the end failed");
         assert!(text.contains("EOFMARK-probe"), "got: {text}");
     }
+
+    /// The epilogue survives the exit that produced it, at volume.
+    ///
+    /// `a_readers_stream_ends_when_the_command_does` proves one line
+    /// makes it out before end of stream. This is the shape a tool run
+    /// actually has: a screen's worth of output many times over, then
+    /// the `[gavin] <tool> exited with code N` line, then the exit --
+    /// and the whole point of that line is to be the last thing on the
+    /// screen. On Windows the output stream ends because the
+    /// pseudoconsole is closed after the child has gone
+    /// (`watch_for_exit`), so the question is whether conhost hands
+    /// over what it still holds before it lets go of the pipe, or drops
+    /// it. Read to the end and look for the last line: if closing cut
+    /// anything off, that is the line it cut.
+    #[test]
+    fn the_last_line_before_the_exit_reaches_the_reader_before_end_of_stream() {
+        let command = [
+            "i=0",
+            "while [ $i -lt 400 ]; do echo \"line $i of a long run\"; i=$((i+1)); done",
+            r#"printf '\n[gavin] %s exited with code %s\n' 'my tool' 7"#,
+            "exit 7",
+        ]
+        .join("\n");
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session =
+            PtySession::spawn(&cwd, Some(&command), "test-session", None).unwrap();
+        let mut reader = session.reader().unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut sink = Vec::new();
+            let outcome = reader.read_to_end(&mut sink);
+            let _ = tx.send(outcome.map(|_| String::from_utf8_lossy(&sink).into_owned()));
+        });
+
+        let arrived = rx.recv_timeout(Duration::from_secs(30));
+        session.kill().unwrap();
+        let text = arrived
+            .expect("the reader never reached end of stream after the command exited")
+            .expect("reading the pty to the end failed");
+        assert!(
+            text.contains("line 399 of a long run"),
+            "the run's last line is missing; got: {text}"
+        );
+        assert!(
+            text.contains("[gavin] my tool exited with code 7"),
+            "the epilogue was cut off by the exit that produced it; got: {text}"
+        );
+        assert_eq!(session.try_wait().unwrap(), Some(7));
+    }
+
+
+    /// A client that attaches AFTER the process has ended -- a tool that
+    /// finished in the milliseconds between `create_session` and the
+    /// app's Attach, say -- still gets what the process wrote, and then
+    /// end of stream. The master is gone by then (`watch_for_exit` has
+    /// dropped it), so this is the reader `Master::Closed` keeps back,
+    /// and it has to carry the output the process left behind as well
+    /// as the EOF. Without it a late attach would fail outright, which
+    /// the pump reports as an exit with no output and the wrong code.
+    #[test]
+    fn a_reader_taken_after_the_exit_still_reads_the_output_to_its_end() {
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let mut session = PtySession::spawn(
+            &cwd,
+            Some(r#"printf 'LATE%s-probe\n' MARK"#),
+            "test-session",
+            None,
+        )
+        .unwrap();
+
+        // First the process has to be gone, then the watcher has to
+        // have acted on that; the second is what puts the session in
+        // the state this test is about.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while session.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "command did not exit");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while matches!(*session.master.lock().unwrap(), Master::Open(_)) {
+            assert!(Instant::now() < deadline, "the exit watcher never closed the master");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let mut reader = session.reader().expect("no reader for a session that has ended");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut sink = Vec::new();
+            let outcome = reader.read_to_end(&mut sink);
+            let _ = tx.send(outcome.map(|_| String::from_utf8_lossy(&sink).into_owned()));
+        });
+        let text = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the late reader never reached end of stream")
+            .expect("reading the pty to the end failed");
+        assert!(text.contains("LATEMARK-probe"), "got: {text}");
+    }
+
 
     #[test]
     fn resize_does_not_error() {

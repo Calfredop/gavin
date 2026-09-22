@@ -4587,7 +4587,7 @@ mod tests {
             }
         }
         match handle_request(&manager, Request::GetTools { workspace_id: "ws-1".into() }) {
-            Response::Tools { tools } => assert_eq!(tools.len(), 7),
+            Response::Tools { tools } => assert_eq!(tools.len(), 8),
             other => panic!("wrong response: {other:?}"),
         }
     }
@@ -4669,6 +4669,98 @@ mod tests {
     /// short messages read a few dozen at a time.
     fn line_reader<R: std::io::Read>(inner: R) -> BufReader<R> {
         BufReader::with_capacity(1, inner)
+    }
+
+    /// Ends every read on `stream` after `PROCESS_BUDGET`, by shutting
+    /// its read half down from a watchdog thread.
+    ///
+    /// For the loops that wait on something other than session output,
+    /// where `await_output` does not fit. `read_message` blocks with no
+    /// timeout, so a loop that consults its deadline only BETWEEN reads
+    /// bounds a connection that is still talking and nothing else --
+    /// which is how a handful of tests here sat for ever on Windows
+    /// instead of failing, taking the whole suite's summary with them.
+    /// A loop behind this must break on the `Ok(None)` the shutdown
+    /// produces and let its own assertion do the complaining.
+    ///
+    /// A shutdown rather than `set_read_timeout` for the reason
+    /// `failure_test_session` gives: these messages arrive in
+    /// fragments, and a timeout that lands mid-message consumes half a
+    /// line and desynchronises everything after it, while a shutdown
+    /// can only ever end the stream cleanly.
+    fn bound_reads(stream: &Stream) {
+        let guard = stream.try_clone().unwrap();
+        std::thread::spawn(move || {
+            std::thread::sleep(PROCESS_BUDGET);
+            let _ = guard.shutdown(std::net::Shutdown::Read);
+        });
+    }
+
+    /// The PATH component of the `file://` URI a shell's OSC 7 carries,
+    /// for a real directory on this machine.
+    ///
+    /// A file URI's path always begins with `/`, which is why Git Bash
+    /// reports a Windows cwd as `file://HOST/C:/Users/ada` -- the
+    /// leading slash and the forward separators belong to the URI, not
+    /// to the path, and `strip_uri_drive_slash` exists to take the
+    /// slash back off. A test that interpolated the native spelling
+    /// instead produced `file://hostC:\Users\ada`, which
+    /// `OscCwdScanner` rightly refuses: there is no path component in
+    /// it at all. The session then never reported a cwd, never got a
+    /// repo mapping, and the test waited out eternity for a git status
+    /// nothing was ever going to send.
+    fn osc7_path(path: &str) -> String {
+        let text = path.replace('\\', "/");
+        if text.starts_with('/') { text } else { format!("/{text}") }
+    }
+
+    /// Reads `stream` until a session's OUTPUT contains `needle`, and
+    /// fails the test -- rather than the suite -- if it never does.
+    ///
+    /// The bound is a watchdog that shuts the read half down after
+    /// `PROCESS_BUDGET`, not a deadline checked between reads. That
+    /// distinction is the whole point: `read_message` on a socket
+    /// blocks with no timeout, so a loop that consults its deadline
+    /// AFTER the read bounds only a connection that is still talking --
+    /// and the case worth bounding is the one where the daemon sends
+    /// nothing at all. Written that way,
+    /// `reattaching_after_detach_delivers_output_to_the_new_connection_only`
+    /// hung on Windows for ever and took `cargo test -p gavin-daemon`
+    /// with it: 156 results printed and no summary, which reads exactly
+    /// like a deadlocked daemon and is not one.
+    ///
+    /// A shutdown rather than `set_read_timeout` for the reason
+    /// `failure_test_session` gives: these messages arrive in
+    /// fragments, and a timeout that lands mid-message consumes half a
+    /// line and desynchronises everything after it, while a shutdown
+    /// can only ever end the stream cleanly.
+    fn await_output(stream: &Stream, needle: &str) {
+        bound_reads(stream);
+        let mut reader = line_reader(stream.try_clone().unwrap());
+        let mut collected = String::new();
+        // Everything that was NOT output, kept for the failure message:
+        // "no output arrived" and "the session errored, exited, or was
+        // never attached at all" look identical without it, and they
+        // want opposite investigations.
+        let mut others: Vec<String> = Vec::new();
+        loop {
+            match read_message::<_, Response>(&mut reader) {
+                Ok(Some(Response::Output { data, .. })) => {
+                    collected.push_str(&data);
+                    if collected.contains(needle) {
+                        return;
+                    }
+                }
+                Ok(Some(other)) => others.push(format!("{other:?}")),
+                Ok(None) => {
+                    panic!("never saw {needle:?}; got: {collected:?}; also received: {others:?}")
+                }
+                Err(e) => panic!(
+                    "reading while waiting for {needle:?}: {e}; got: {collected:?}; \
+                     also received: {others:?}"
+                ),
+            }
+        }
     }
 
     /// How long a test waits on a real OS process -- a fork, an exec, a
@@ -6039,6 +6131,24 @@ mod tests {
         assert!(matches!(resp, Response::Ok));
     }
 
+    /// Unix only, and the reason is the OS rather than anything gavin
+    /// does. Windows refuses to rename a directory while ANY handle is
+    /// open anywhere inside it -- measured 2026-09-22: the refusal
+    /// survives opening that inner handle with FILE_SHARE_DELETE, which
+    /// only ever licensed deleting the file itself, never moving one of
+    /// its ancestors. `watch_targets` registers a watch per scanned
+    /// directory on every platform but macOS, so `.gavin-root` alone is
+    /// enough to make `fs::rename(&root, &away)` here fail
+    /// `PermissionDenied` before the assertion under test is reached.
+    ///
+    /// Worth knowing beyond this test: a Windows user cannot rename or
+    /// move a workspace folder while gavin has it open. Only a single
+    /// recursive watch on the root would leave the tree movable, and on
+    /// Windows that is not a free swap -- `ReadDirectoryChangesW` with
+    /// `bWatchSubtree` would pull `target/`, `node_modules/` and `.git/`
+    /// churn into the daemon, which is exactly what the per-directory
+    /// set exists to keep out.
+    #[cfg(unix)]
     #[test]
     fn renaming_the_root_away_pushes_root_missing_and_renaming_back_heals() {
         let (socket_path, _dir) = start_test_server();
@@ -6402,7 +6512,7 @@ mod tests {
 
         let (_client, server) = Stream::pair().unwrap();
         manager.attach("orphan-kept", Arc::new(Mutex::new(server)));
-        manager.write_input("orphan-kept", b"exit\n").unwrap();
+        type_line(&manager, "orphan-kept", "exit");
 
         // Waits for the status rather than for the row to vanish, because
         // not vanishing is the whole assertion.
@@ -6621,19 +6731,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut reader = line_reader(stream2.try_clone().unwrap());
-        let mut collected = String::new();
-        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
-        loop {
-            let resp: Response = read_message(&mut reader).unwrap().unwrap();
-            if let Response::Output { data, .. } = resp {
-                collected.push_str(&data);
-                if collected.contains("attached_ok") {
-                    break;
-                }
-            }
-            assert!(std::time::Instant::now() < deadline, "got: {collected}");
-        }
+        await_output(&stream2, "attached_ok");
     }
 
     #[test]
@@ -6677,19 +6775,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut reader = line_reader(stream3.try_clone().unwrap());
-        let mut collected = String::new();
-        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
-        loop {
-            let resp: Response = read_message(&mut reader).unwrap().unwrap();
-            if let Response::Output { data, .. } = resp {
-                collected.push_str(&data);
-                if collected.contains("reattached_ok") {
-                    break;
-                }
-            }
-            assert!(std::time::Instant::now() < deadline, "got: {collected}");
-        }
+        await_output(&stream3, "reattached_ok");
     }
 
     #[test]
@@ -6738,19 +6824,7 @@ mod tests {
         let mut stream3 = Stream::connect(&socket_path).unwrap();
         write_message(&mut stream3, &Request::Attach { id: id.clone() }).unwrap();
 
-        let mut reader = line_reader(stream3.try_clone().unwrap());
-        let mut collected = String::new();
-        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
-        loop {
-            let resp: Response = read_message(&mut reader).unwrap().unwrap();
-            if let Response::Output { data, .. } = resp {
-                collected.push_str(&data);
-                if collected.contains("while_detached") {
-                    break;
-                }
-            }
-            assert!(std::time::Instant::now() < deadline, "got: {collected}");
-        }
+        await_output(&stream3, "while_detached");
     }
 
     #[test]
@@ -6921,7 +6995,33 @@ mod tests {
             &root.to_string_lossy(),
             Arc::new(Mutex::new(theirs)),
         );
-        (manager, root.to_string_lossy().to_string(), card.to_string_lossy().to_string())
+        (manager, wire_spelling(&root), wire_spelling(&card))
+    }
+
+    /// A path on disk in the spelling gavin puts on the wire: resolved,
+    /// forward slashes, and on Windows with the `\\?\` verbatim prefix
+    /// gone.
+    ///
+    /// Spelled out here rather than handed to `protocol::wire_path`, so
+    /// a test comparing a REPORTED path against this is comparing two
+    /// independent derivations rather than the implementation with
+    /// itself.
+    ///
+    /// Why a test needs it at all: `Path::canonicalize` on Windows
+    /// answers `\\?\C:\Users\x`, and nothing in gavin ever reports a
+    /// path in that shape -- a watcher stores
+    /// `protocol::canonical_path(root)` and every card id the board,
+    /// the orchestration store and the MCP hand around came out of that
+    /// scan. A test that keyed a binding on the raw canonical spelling
+    /// created a row nothing could ever look up, and then asserted
+    /// against a path the daemon does not use.
+    fn wire_spelling(path: &std::path::Path) -> String {
+        let resolved = path.canonicalize().unwrap();
+        let text = resolved.to_string_lossy().to_string();
+        if !cfg!(windows) {
+            return text;
+        }
+        text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/")
     }
 
     /// A live session in the registry AND in the pty map, which is what
@@ -7313,7 +7413,7 @@ mod tests {
         let plans = root.join(".gavin-root").join("plans");
         let card = plans.join("ship.md");
         std::fs::write(&card, "---\ntitle: Ship\nstatus: Done\n---\n").unwrap();
-        let before = card.to_string_lossy().to_string();
+        let before = wire_spelling(&card);
 
         manager.link_card_session("ws-1", &before, "s-1", "/p", None, None, None, None, None).unwrap();
         manager
@@ -7325,7 +7425,7 @@ mod tests {
         std::fs::create_dir_all(plans.join("done")).unwrap();
         let after = plans.join("done").join("ship.md");
         std::fs::rename(&card, &after).unwrap();
-        let after = after.to_string_lossy().to_string();
+        let after = wire_spelling(&after);
 
         let (ours, theirs) = Stream::pair().unwrap();
         ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
@@ -7504,7 +7604,10 @@ mod tests {
         crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
         let card = ws.path().join(".gavin-root").join("plans").join("ship.md");
         std::fs::write(&card, "---\ntitle: Ship\n---\n").unwrap();
-        let path = card.to_string_lossy().to_string();
+        // The spelling the scan reports, or the step below looks to the
+        // re-key like a card that has MOVED -- and the push this test
+        // exists to rule out is exactly what a move produces.
+        let path = wire_spelling(&card);
         manager.set_orchestration("ws-1", vec![orch_rail_at("r1", "t1", &path)], vec![]).unwrap();
 
         let (ours, theirs) = Stream::pair().unwrap();
@@ -8501,8 +8604,40 @@ mod tests {
     /// refit used to read as work. `read` rather than `sleep` in the
     /// loop so the trap runs the instant SIGWINCH lands instead of at
     /// the end of the current second.
+    #[cfg(unix)]
     const REPAINTS_ON_RESIZE: &str =
         "trap 'printf gavin_redraw' WINCH; printf gavin_painted; while :; do read _unused; done";
+
+    /// The same fixture with the trap gone, because there is no signal
+    /// to trap: ConPTY resizes the console and raises nothing, and Git
+    /// for Windows' `sh.exe` synthesises nothing either -- measured
+    /// 2026-09-22, where `trap … WINCH` never fired once and all three
+    /// resize tests failed on "the session never repainted" rather than
+    /// on anything they were written to catch.
+    ///
+    /// Polling `stty size` was tried and is worse than useless here:
+    /// each poll spawns a process on the console and ConPTY answers
+    /// that with a full repaint of its own, so the session is never
+    /// quiet -- and "this session is quiet until the resize" is the one
+    /// premise every assertion in these tests rests on. The console's
+    /// OWN answer to a resize is what `is_repaint` reads instead.
+    #[cfg(windows)]
+    const REPAINTS_ON_RESIZE: &str = "printf gavin_painted; while :; do read _unused; done";
+
+    /// Whether a chunk of session output is a repaint the test provoked.
+    ///
+    /// The unix fixtures print their own marker from a SIGWINCH trap.
+    /// ConPTY has no signal to give them, so on Windows the console's
+    /// own answer counts too: a resize makes it emit the window-size
+    /// report `ESC [ 8 ; rows ; cols t` before repainting the screen.
+    /// That is genuinely provoked output arriving inside the grace
+    /// window -- exactly the thing these tests exist to prove is
+    /// forgiven -- so accepting it keeps the marker doing its job
+    /// (ruling out a vacuous pass where the resize never landed at all)
+    /// rather than weakening it to "something arrived".
+    fn is_repaint(data: &str) -> bool {
+        data.contains("gavin_redraw") || (cfg!(windows) && data.contains("\u{1b}[8;"))
+    }
 
     fn create_session_with(socket_path: &std::path::Path, command: &str) -> String {
         let mut stream = Stream::connect(socket_path).unwrap();
@@ -8539,9 +8674,7 @@ mod tests {
                 Ok(Some(Response::StatusChanged { id: rid, status })) if rid == id => {
                     statuses.push(status)
                 }
-                Ok(Some(Response::Output { id: rid, data }))
-                    if rid == id && data.contains("gavin_redraw") =>
-                {
+                Ok(Some(Response::Output { id: rid, data })) if rid == id && is_repaint(&data) => {
                     repainted = true
                 }
                 Ok(_) => {}
@@ -8623,12 +8756,30 @@ mod tests {
     #[test]
     fn a_resize_never_answers_a_question_the_agent_asked() {
         let (socket_path, _dir) = start_test_server();
-        let id = create_session_with(
-            &socket_path,
-            "trap 'printf gavin_redraw' WINCH; \
+        // Rings the bell, then sits quiet -- with the SIGWINCH trap only
+        // where there is a SIGWINCH to trap (see REPAINTS_ON_RESIZE).
+        #[cfg(unix)]
+        let command = "trap 'printf gavin_redraw' WINCH; \
              printf '\\033]777;notify;Claude Code;needs your permission\\007'; \
-             while :; do read _unused; done",
-        );
+             while :; do read _unused; done";
+        // The paint-then-wait before the bell is not padding. ConPTY
+        // answers a session's FIRST output with a repaint of its own --
+        // hide cursor, clear, home, set the window title -- and whether
+        // that lands in the same read as the output that provoked it or
+        // in a separate one behind it is a coin toss: measured
+        // 2026-09-22, one chunk in the runs that passed and two in the
+        // ones that failed, where the second chunk was read as the agent
+        // working and cleared `waiting_for_input` before the resize
+        // under test had happened at all. So something else provokes
+        // that repaint first and the bell rings into a console that has
+        // already settled, which is the premise every assertion below
+        // rests on. A plain `sleep` at the front would not do: the
+        // repaint follows the first WRITE, not the spawn.
+        #[cfg(windows)]
+        let command = "printf gavin_painted; sleep 1; \
+             printf '\\033]777;notify;Claude Code;needs your permission\\007'; \
+             while :; do read _unused; done";
+        let id = create_session_with(&socket_path, command);
 
         let mut attached = attach_reader(&socket_path, &id);
         wait_for_status(&mut attached, &id, "waiting_for_input");
@@ -8699,6 +8850,10 @@ mod tests {
     /// 1004 at startup; verified against the real CLI). `stty raw -echo`
     /// so the tty itself does not echo the report back, exactly as a TUI
     /// in raw mode leaves it: the only output is the program's own.
+    /// Unix only, with its one caller: on Windows ConPTY swallows the
+    /// focus report before any program can read it (see
+    /// `a_focus_report_is_not_the_agent_working`).
+    #[cfg(unix)]
     const REPAINTS_ON_FOCUS: &str = "printf gavin_painted; stty raw -echo; \
          while head -c 3 >/dev/null; do printf gavin_redraw; done";
 
@@ -8707,6 +8862,20 @@ mod tests {
     /// repaint each program answers with used to read as that agent
     /// starting work. Nothing had happened but a change of keyboard
     /// focus.
+    ///
+    /// Unix only, because on Windows there is no repaint to provoke:
+    /// ConPTY takes a focus report out of the input stream and turns it
+    /// into a console FOCUS_EVENT, which an ordinary read never sees, so
+    /// the program is never told and never answers. Measured 2026-09-22
+    /// by writing three PLAIN bytes into the same fixture instead --
+    /// `head -c 3` returned and the marker was printed, which is what
+    /// rules out the other suspect, `stty raw -echo` failing to take on a
+    /// console. Nothing to fix and nothing gavin can assert: the half of
+    /// the rule that DOES bite on Windows -- a focus report must not
+    /// dismiss the restored badge -- is
+    /// `a_focus_report_does_not_dismiss_the_restored_badge`, which needs
+    /// no answer from the program and runs everywhere.
+    #[cfg(unix)]
     #[test]
     fn a_focus_report_is_not_the_agent_working() {
         let (socket_path, _dir) = start_test_server();
@@ -8967,9 +9136,23 @@ mod tests {
         // a program (e.g. a confirmation prompt) that dings a bell and
         // then sits fully silent waiting on stdin, with no shell prompt
         // reappearing until the user responds.
+        //
+        // The leading `sleep` on Windows is what keeps "the bell is the
+        // last thing this session prints" true there. ConPTY does not
+        // finish echoing a submitted line before that line runs:
+        // measured 2026-09-22, the order on the wire is the typed text,
+        // then `ESC[?2004l`, then the BEL, and only THEN the `\r\n` --
+        // so the echo of the Enter key landed BEHIND the bell and was
+        // read as renewed output activity, which correctly ends the wait
+        // and is exactly what the assertion at the bottom forbids.
+        // Ringing a moment later puts the echo back in front of it.
+        #[cfg(windows)]
+        let command = "sleep 0.3; printf '\\007'; read _unused\n";
+        #[cfg(unix)]
+        let command = "printf '\\007'; read _unused\n";
         write_message(
             &mut stream2,
-            &Request::WriteInput { id: id.clone(), data: "printf '\\007'; read _unused\n".to_string() },
+            &Request::WriteInput { id: id.clone(), data: command.to_string() },
         )
         .unwrap();
 
@@ -9043,16 +9226,15 @@ mod tests {
             &mut stream2,
             &Request::WriteInput {
                 id: id.clone(),
-                data: format!("printf '\\033]7;file://host{repo_path}\\007'\n"),
+                data: format!("printf '\\033]7;file://host{}\\007'\n", osc7_path(&repo_path)),
             },
         )
         .unwrap();
 
+        bound_reads(&stream2);
         let mut reader = line_reader(stream2.try_clone().unwrap());
-        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut found = false;
-        while std::time::Instant::now() < deadline {
-            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+        while let Ok(Some(resp)) = read_message::<_, Response>(&mut reader) {
             if let Response::GitStatusChanged { id: rid, status: Some(status) } = resp {
                 if rid == id && status.branch == "main" {
                     found = true;
@@ -9108,7 +9290,7 @@ mod tests {
                 &mut stream,
                 &Request::WriteInput {
                     id: id.to_string(),
-                    data: format!("printf '\\033]7;file://host{repo_path}\\007'\n"),
+                    data: format!("printf '\\033]7;file://host{}\\007'\n", osc7_path(&repo_path)),
                 },
             )
             .unwrap();
@@ -9118,10 +9300,9 @@ mod tests {
         let mut stream_b = attach_and_report_cwd(&id_b);
 
         let wait_for_git_status = |stream: &mut Stream, expected_id: &str| {
+            bound_reads(stream);
             let mut reader = line_reader(stream.try_clone().unwrap());
-            let deadline = std::time::Instant::now() + PROCESS_BUDGET;
-            while std::time::Instant::now() < deadline {
-                let resp: Response = read_message(&mut reader).unwrap().unwrap();
+            while let Ok(Some(resp)) = read_message::<_, Response>(&mut reader) {
                 if let Response::GitStatusChanged { id: rid, status: Some(status) } = resp {
                     if rid == expected_id {
                         return status;
@@ -9292,9 +9473,7 @@ mod tests {
         assert_eq!(sessions[0].restored, true);
 
         // The recovered session must have a real, live PTY behind it.
-        manager
-            .write_input("leftover-1", b"echo recovered_ok\n")
-            .unwrap();
+        type_line(&manager, "leftover-1", "echo recovered_ok");
         // Through pty_reads_until, not a bare read loop: the deadline has
         // to bound the READ, not merely the gap between two of them.
         let collected = pty_reads_until(&manager, "leftover-1", |c| {
@@ -9390,6 +9569,24 @@ mod tests {
         rx.recv_timeout(PROCESS_BUDGET).unwrap_or_default()
     }
 
+    /// Types one line into a session, the way a terminal types it.
+    ///
+    /// Enter is a CARRIAGE RETURN on the wire -- that is what xterm.js
+    /// sends and what the daemon therefore passes through untranslated.
+    /// A bare `\n` is Ctrl-J, and the only reason so much of this suite
+    /// gets away with sending one is that its sessions run an emitted
+    /// command line through Git for Windows' `sh.exe`, whose MSYS tty
+    /// layer accepts it. A session with NO command gets
+    /// `interactive_shell()` instead -- `cmd.exe` on Windows -- and that
+    /// is a console reading real key events: `\n` is not Enter, so the
+    /// line is typed, never run, and the test waits out its whole budget
+    /// for output from a command that was never submitted. Every
+    /// recovered session is one of those, since recovery replaces the
+    /// command with a bare shell.
+    fn type_line(manager: &SessionManager, id: &str, line: &str) {
+        manager.write_input(id, format!("{line}\r").as_bytes()).unwrap();
+    }
+
     /// Reads from a recovered session until `needle` shows up, or gives
     /// up. Proves there is a real interactive shell behind the id rather
     /// than merely a registry row.
@@ -9400,7 +9597,7 @@ mod tests {
     /// unchanged; a needle the shell expands (`$PWD`) can only ever
     /// appear once, in the echo.
     fn shell_echoes(manager: &SessionManager, id: &str, needle: &str) -> bool {
-        manager.write_input(id, format!("echo {needle}\n").as_bytes()).unwrap();
+        type_line(manager, id, &format!("echo {needle}"));
         // The echo of the typed line carries the needle too, so what
         // proves a shell ran the command is the SECOND occurrence.
         let wanted = needle.to_string();
@@ -9525,11 +9722,20 @@ mod tests {
             shell_echoes(&manager, "moved-1", "recovered_shell_ok"),
             "the recovered shell should answer at all"
         );
-        manager.write_input("moved-1", b"case \"$PWD\" in *elsewhere) echo CWDMARK_yes;; *) echo CWDMARK_no;; esac\n").unwrap();
-        let collected =
-            pty_reads_until(&manager, "moved-1", |seen| seen.matches("CWDMARK_").count() >= 2);
+        // The shell PRINTS its own directory and this test does the
+        // deciding, rather than typing a `case` the shell decides for
+        // itself: a recovered session runs `interactive_shell()`, so on
+        // Windows the thing reading this line is `cmd.exe` and POSIX
+        // source is not a language it speaks. Both spellings expand a
+        // variable, which is what keeps the answer out of the echo the
+        // tty makes of the typed line: the line carries no directory
+        // name, so a match can only have come from the shell -- its own
+        // expansion, or the prompt `cmd.exe` draws out of the very
+        // directory under test.
+        type_line(&manager, "moved-1", if cfg!(windows) { "echo %CD%" } else { "echo \"$PWD\"" });
+        let collected = pty_reads_until(&manager, "moved-1", |seen| seen.contains("elsewhere"));
         assert!(
-            collected.contains("CWDMARK_yes"),
+            collected.contains("elsewhere"),
             "recovery must land in the session's own cwd, got: {collected}"
         );
     }
@@ -9564,8 +9770,27 @@ mod tests {
     /// of the test: dropping it leaks the process, and this suite would
     /// then strew `sleep`s across the developer's machine.
     fn spawn_survivor() -> (std::process::Child, crate::proc::ProcessHandle) {
+        // Two spellings, the way `proc::tests::spawn_leaf` has them, and
+        // for the same reason: `/bin/sh` is a path only unix has, so
+        // `Command::new("/bin/sh")` on Windows fails the spawn outright
+        // ("The system cannot find the path specified") and the test
+        // dies before it has said anything about orphans. What the tests
+        // need from this process is that it outlives the PTY that would
+        // have been its daemon's, and on Windows nothing arrives to kill
+        // it in the first place -- there is no SIGHUP to ignore, so
+        // `ping` (the same stand-in `proc`'s own tests use, because
+        // `timeout` refuses to run with redirected input) is the whole
+        // of it.
+        #[cfg(unix)]
         let child = std::process::Command::new("/bin/sh")
             .args(["-c", "trap '' HUP; sleep 30"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        #[cfg(windows)]
+        let child = std::process::Command::new("ping")
+            .args(["-n", "31", "127.0.0.1"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -10231,17 +10456,19 @@ mod tests {
             &mut stream2,
             &Request::WriteInput {
                 id: id.clone(),
-                data: format!("printf '\\033]7;file://host{repo_path}\\007'\n"),
+                data: format!("printf '\\033]7;file://host{}\\007'\n", osc7_path(&repo_path)),
             },
         )
         .unwrap();
 
         // First get into the repo, so there is a stale indicator to clear.
+        // One watchdog for both waits below, which is why it is armed
+        // here: `PROCESS_BUDGET` bounds the test, not each loop in it.
+        bound_reads(&stream2);
         let mut reader = line_reader(stream2.try_clone().unwrap());
-        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut in_repo = false;
-        while std::time::Instant::now() < deadline && !in_repo {
-            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+        while !in_repo {
+            let Ok(Some(resp)) = read_message::<_, Response>(&mut reader) else { break };
             if let Response::GitStatusChanged { id: rid, status: Some(_) } = resp {
                 in_repo = rid == id;
             }
@@ -10253,15 +10480,14 @@ mod tests {
             &mut stream2,
             &Request::WriteInput {
                 id: id.clone(),
-                data: format!("printf '\\033]7;file://host{plain_path}\\007'\n"),
+                data: format!("printf '\\033]7;file://host{}\\007'\n", osc7_path(&plain_path)),
             },
         )
         .unwrap();
 
-        let deadline = std::time::Instant::now() + PROCESS_BUDGET;
         let mut cleared = false;
-        while std::time::Instant::now() < deadline && !cleared {
-            let resp: Response = read_message(&mut reader).unwrap().unwrap();
+        while !cleared {
+            let Ok(Some(resp)) = read_message::<_, Response>(&mut reader) else { break };
             if let Response::GitStatusChanged { id: rid, status: None } = resp {
                 cleared = rid == id;
             }
@@ -10441,6 +10667,7 @@ mod tests {
         let attach = |id: &str| {
             let stream = Stream::connect(&socket_path).unwrap();
             write_message(&mut &stream, &Request::Attach { id: id.to_string() }).unwrap();
+            bound_reads(&stream);
             stream
         };
         let report_cwd = |stream: &Stream, id: &str, path: &str| {
@@ -10448,16 +10675,14 @@ mod tests {
                 &mut &*stream,
                 &Request::WriteInput {
                     id: id.to_string(),
-                    data: format!("printf '\\033]7;file://host{path}\\007'\n"),
+                    data: format!("printf '\\033]7;file://host{}\\007'\n", osc7_path(path)),
                 },
             )
             .unwrap();
         };
         let wait_for_status_in = |reader: &mut BufReader<Stream>, id: &str, root: &std::path::Path| {
             let want = std::fs::canonicalize(root).unwrap();
-            let deadline = std::time::Instant::now() + PROCESS_BUDGET;
-            while std::time::Instant::now() < deadline {
-                let resp: Response = read_message(reader).unwrap().unwrap();
+            while let Ok(Some(resp)) = read_message::<_, Response>(reader) {
                 if let Response::GitStatusChanged { id: rid, status: Some(status) } = resp {
                     if rid == id && std::fs::canonicalize(&status.repo_root).unwrap() == want {
                         return;
