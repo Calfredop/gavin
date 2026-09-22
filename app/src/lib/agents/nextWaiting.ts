@@ -1,13 +1,21 @@
-// The top bar's "next" button: every session waiting on a human, one
-// click from wherever the human happens to be. NextWaitingButton.svelte
-// is a thin template over this.
+// The top bar's "next" button: the sessions in THIS workspace that are
+// waiting on a human, one click from anywhere in it.
+// NextWaitingButton.svelte is a thin template over this.
 //
-// It lists the hub's "Waiting on you" inbox (attentionInbox.ts), in the
-// inbox's own order, rather than a list of its own making. The hub and
-// this menu are two doors onto one question, so a session the hub says
-// is waiting has to be one this button can reach -- and a button that
-// greys out while the hub still lists something would be the one place
-// the app contradicts itself about whether it needs you.
+// Workspace-bound the way New page is. The button sits on the workspace's
+// own rows -- the hub tab row and a terminal page's actions row -- and
+// everything on those rows acts on the workspace they belong to. A list
+// that reached into other workspaces would make the one control on the
+// row that yanks you out of the workspace you are working in; the whole
+// fleet's waits already have a place, the app hub's inbox.
+//
+// It lists that inbox (attentionInbox.ts), narrowed to this workspace
+// and in the inbox's own order, rather than a list of its own making.
+// The hub and this menu are two doors onto one question, so a session
+// the hub lists under this workspace has to be one this button can reach
+// -- a button that greyed out while the hub still showed a wait here
+// would be the one place the app contradicts itself about whether it
+// needs you.
 //
 // Longest wait first is also what makes it a NEXT button rather than a
 // list: the top row is the one that has waited longest, which is the one
@@ -26,9 +34,9 @@ export const NEXT_WAITING_TITLE = "Waiting on you";
 /// newPage.ts), so they live here, in its aria-label and its bubble.
 export const NEXT_WAITING_LABEL = "Go to a session waiting on you";
 
-/// The bubble on the button while it is disabled -- the hub's quiet line
-/// for an empty inbox, word for word.
-export const ALL_CLEAR_TIP = "Nothing is waiting on you";
+/// Why the button is disabled with no workspace open -- New page's own
+/// reason, for the same missing workspace.
+export const NO_WORKSPACE_TIP = "Open a workspace to see what in it is waiting on you";
 
 /// Each reason in a word or two, for the row's muted right-hand column.
 ///
@@ -44,22 +52,35 @@ export const REASON_WORD: Record<AttentionReason, string> = {
   "decoy-edit": "wrong copy",
 };
 
-/// The button's bubble while something is waiting: how much, so the
-/// count is readable without opening the menu. Not drawn on the button
-/// itself -- a number that comes and goes would reflow the row of tabs
-/// beside it, which is why New page lost its words too.
-export function nextWaitingTip(rows: readonly AttentionRow[]): string {
-  if (rows.length === 0) return ALL_CLEAR_TIP;
-  return rows.length === 1 ? "1 session waiting on you" : `${rows.length} sessions waiting on you`;
+/// The rows of the inbox whose TAB is in this workspace -- the tab, not
+/// the card, because the tab is where the jump lands, and a tab dragged
+/// in from another workspace is waiting here now. Nothing for no
+/// workspace at all.
+export function workspaceWaiting(rows: readonly AttentionRow[], workspaceId: string | null): AttentionRow[] {
+  return workspaceId === null ? [] : rows.filter((row) => row.workspaceId === workspaceId);
+}
+
+/// The button's bubble: why it is disabled, or how much is waiting.
+///
+/// The count lives here and not on the button: a number that comes and
+/// goes would reflow the row of tabs beside it, which is why New page
+/// lost its words too. The empty case echoes the hub's quiet line for an
+/// empty inbox, narrowed to the workspace it is about.
+export function nextWaitingTip(ws: Pick<Workspace, "name"> | null, rows: readonly AttentionRow[]): string {
+  if (!ws) return NO_WORKSPACE_TIP;
+  if (rows.length === 0) return `Nothing in ${ws.name} is waiting on you`;
+  const sessions = rows.length === 1 ? "1 session" : `${rows.length} sessions`;
+  return `${sessions} in ${ws.name} waiting on you`;
 }
 
 /// The dropdown: the heading, then one row per waiting session in inbox
 /// order.
 ///
-/// A row is named by its tab, and by its workspace too only when the
-/// list spans more than one. Most of the time every waiting session is
-/// in the one workspace on screen, and repeating its name on each row
-/// would spend the menu's width on the one word they all share.
+/// A row is named by its tab, and by its page too only when the list
+/// spans more than one. Every row is in the one workspace, so its name
+/// would be the word they all share; the page is the next thing that
+/// tells two rows apart, and most of the time they are all on one.
+/// The workspace's Home agent counts as its own page ("Home").
 ///
 /// `currentSessionId` is the session already on screen. Its row keeps
 /// its place -- the order is the inbox's, and a row that jumped around
@@ -71,11 +92,11 @@ export function nextWaitingEntries(
   currentSessionId: string | null,
   onPick: (row: AttentionRow) => void
 ): ContextMenuEntry[] {
-  const spansWorkspaces = new Set(rows.map((row) => row.workspaceId)).size > 1;
+  const spansPages = new Set(rows.map((row) => row.pageId)).size > 1;
   return [
     { heading: NEXT_WAITING_TITLE },
     ...rows.map((row) => ({
-      label: spansWorkspaces ? `${row.workspaceName} · ${row.tabName}` : row.tabName,
+      label: spansPages ? `${row.pageName} · ${row.tabName}` : row.tabName,
       detail: `${REASON_WORD[row.reason]} · ${waitLabel(row.waitedMs, row.watched)}`,
       tip: rowTip(row),
       active: row.sessionId === currentSessionId,

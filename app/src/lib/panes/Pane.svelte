@@ -755,10 +755,11 @@
         <IconButton icon={Rows2} label="Split Down" size={14} shortcut="split-down" onclick={() => split("column")} />
         <IconButton icon={X} label="Close Pane" size={14} onclick={handleClosePane} />
         <!-- Last, and behind a rule: the only controls here that are not
-             about this pane. One goes to the sessions waiting on you,
-             wherever they are; the other adds a PAGE. They ride on this
-             row because this row is the top of the window on a terminal
-             page, exactly as the hub tab row is on every other tab. -->
+             about this pane but about its workspace. One goes to the
+             workspace's sessions waiting on you; the other adds a PAGE.
+             They ride on this row because this row is the top of the
+             window on a terminal page, exactly as the hub tab row is on
+             every other tab. -->
         <span class="divider"></span>
         <NextWaitingButton />
         <NewPageButton />

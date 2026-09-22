@@ -576,9 +576,9 @@
                        it. -->
                   <OpenInWindowButton />
                   <!-- Behind a rule, like the pane row's own: everything
-                       left of it acts on THIS workspace, and what follows
-                       reaches past it -- the sessions waiting on you,
-                       wherever they are, then a page to add. -->
+                       left of it acts on THIS workspace as a whole, and
+                       what follows goes into it -- to its sessions waiting
+                       on you, or to a page added to it. -->
                   <span class="divider"></span>
                   <NextWaitingButton />
                   <NewPageButton />

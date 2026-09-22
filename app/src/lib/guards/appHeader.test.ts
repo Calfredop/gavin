@@ -420,10 +420,8 @@ describe("what the bars carry", () => {
     expect(source("NewPageButton.svelte")).not.toContain('text="New page"');
   });
 
-  // The way to the sessions waiting on you sits immediately before New
-  // page, behind the same rule, on both rows: the two are the only
-  // controls on either row that reach past the workspace or pane they
-  // sit on.
+  // The way to the workspace's sessions waiting on you sits immediately
+  // before New page, behind the same rule, on both rows.
   it("offers the next waiting session from both rows, just before New page", () => {
     for (const text of [PAGE, PANE]) {
       expect(text).toMatch(/<span class="divider"><\/span>\s*<NextWaitingButton \/>\s*<NewPageButton \/>/);
@@ -432,11 +430,17 @@ describe("what the bars carry", () => {
     // disabled -- with its reason on the wrapper -- when nothing waits.
     const button = source("NextWaitingButton.svelte");
     expect(button).toContain("<ChevronDown size={12} />");
-    expect(button).toContain("disabled={allClear}");
-    expect(button).toContain("use:tooltip={allClear ? ALL_CLEAR_TIP : \"\"}");
+    expect(button).toContain("disabled={blocked}");
+    expect(button).toContain('use:tooltip={blocked ? tip : ""}');
     // The hub's list, not a second definition of "waiting on you".
-    expect(button).toContain("attentionInbox(input, Date.now())");
     expect(button).toContain("state: $attentionState");
+    // Bound to the active workspace, like New page: both the list the
+    // button counts and the one its menu shows are narrowed to it.
+    expect(button).toContain("getActiveWorkspace($layoutState)");
+    expect(button).toContain(
+      "workspaceWaiting(attentionInbox(input, Date.now()), activeWorkspace?.id ?? null)"
+    );
+    expect(button).toContain("workspaceWaiting(attentionInbox(input, Date.now()), ws.id)");
   });
 
   // What the window lost with the full-width strip: room to grab it.
