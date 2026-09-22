@@ -1,4 +1,5 @@
 ---
+status: Done
 kind: task
 title: Git tab and Files tab over ssh
 parent: feat-ssh-support.md

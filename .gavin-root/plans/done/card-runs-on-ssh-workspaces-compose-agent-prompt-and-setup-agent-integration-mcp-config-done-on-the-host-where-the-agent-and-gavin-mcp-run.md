@@ -1,5 +1,5 @@
 ---
-status: In Progress
+status: Done
 kind: task
 title: Card runs on ssh workspaces (prompt composed and MCP config written on the host)
 parent: feat-ssh-support.md
