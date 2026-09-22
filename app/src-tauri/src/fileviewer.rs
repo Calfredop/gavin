@@ -1254,12 +1254,19 @@ mod tests {
         let registered = dir.path().join("registered");
         std::fs::create_dir(&registered).unwrap();
         let gone = dir.path().join("gone");
+        // Serialised, not `format!`ed into quotes. On Windows a path is
+        // `C:\Users\…`, and `\U` is not a legal TOML escape: the whole
+        // config then fails to parse, `extra_context_roots` returns
+        // empty by design, and the assertion below reads like a lookup
+        // bug in a function that is working. `add_external_context`
+        // writes this array through `toml_edit`, which escapes; so does
+        // this.
         std::fs::write(
             root.join(".gavin-root").join("config.toml"),
             format!(
-                "name = \"ws\"\nextra_contexts = [\"{}\", \"{}\"]\n",
-                registered.display(),
-                gone.display(),
+                "name = \"ws\"\nextra_contexts = [{}, {}]\n",
+                toml::Value::String(registered.to_string_lossy().into_owned()),
+                toml::Value::String(gone.to_string_lossy().into_owned()),
             ),
         )
         .unwrap();

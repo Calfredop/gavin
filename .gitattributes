@@ -1,0 +1,18 @@
+# Every text file is LF in the repository and LF on disk, on every OS.
+#
+# Without this, a Windows checkout with core.autocrlf=true (the Git for
+# Windows default) writes CRLF, and that reaches two things that read
+# source files as bytes: the markdown that app/src-tauri include_str!s
+# and ships as the skills and agent files gavin writes into a user's
+# repo, and the app tests that grep component source. A release built
+# on Windows must not carry different bytes from one built on a mac.
+#
+# A checkout made before this file existed keeps CRLF on disk until
+# its files are re-checked out; see CLAUDE.md.
+* text=auto eol=lf
+
+# Byte-exact, never converted.
+*.png binary
+*.ico binary
+*.icns binary
+*.raw binary

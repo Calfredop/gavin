@@ -455,10 +455,30 @@ mod imp {
     fn connect_instance(handle: HANDLE) -> io::Result<()> {
         let mut op = Op::new()?;
         let started = unsafe { ConnectNamedPipe(handle, Some(op.ptr())) };
-        if started.is_err() && last_error() == ERROR_PIPE_CONNECTED {
-            return Ok(());
+        if started.is_err() {
+            match last_error() {
+                // A client is already attached. Nothing was queued, so
+                // there is nothing to wait for.
+                ERROR_PIPE_CONNECTED => return Ok(()),
+                // A client attached and has ALREADY hung up -- it
+                // connected and closed before this call got to it. Still
+                // an accepted connection: unix hands `accept` a good fd
+                // in exactly this case and lets the first read report
+                // EOF, which is the contract every connection loop here
+                // is written against. Reporting it as a failed accept
+                // instead makes `run_server` log a transport fault for a
+                // client that merely decided it had nothing to send.
+                ERROR_NO_DATA => return Ok(()),
+                _ => {}
+            }
         }
-        complete(handle, &mut op, started, INFINITE).map(|_| ())
+        match complete(handle, &mut op, started, INFINITE) {
+            // The same hang-up, arriving on the completion rather than on
+            // the call itself -- which of the two it is depends on how
+            // the client's close raced this thread.
+            Err(e) if code_of(&e) == ERROR_NO_DATA => Ok(()),
+            other => other.map(|_| ()),
+        }
     }
 
     /// A pipe handle and the state a Unix socket keeps inside the kernel.
@@ -1110,6 +1130,42 @@ mod tests {
         drop(b);
         let mut buf = [0u8; 8];
         assert_eq!(a.read(&mut buf).unwrap(), 0, "read_message turns this into Ok(None)");
+    }
+
+    /// A client that connects and hangs up before the server gets to
+    /// `accept` is still a connection, and its end-of-stream belongs to
+    /// the READ -- not to `accept` reporting a failure.
+    ///
+    /// On unix `accept` hands back a perfectly good fd here and the
+    /// first read is EOF, which is the contract every connection loop in
+    /// gavin is written against: accept, then read until `Ok(None)`.
+    /// Windows completes `ConnectNamedPipe` with `ERROR_NO_DATA` ("the
+    /// pipe is being closed") instead, and reporting THAT as an accept
+    /// failure is a difference no caller is written for -- `run_server`
+    /// logs a failed accept, and a client that merely decided it had
+    /// nothing to send looks like a transport fault.
+    ///
+    /// `Listener::bind` has an instance waiting before any `accept`
+    /// call, which is what lets the client come and go first and makes
+    /// this deterministic rather than a race.
+    #[test]
+    fn a_client_that_hangs_up_before_accept_is_still_accepted() {
+        let dir = std::env::temp_dir().join(format!("gavin-transport-eof-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let endpoint = Endpoint::new(dir.join("eof.sock"));
+        let listener = Listener::bind(&endpoint).unwrap();
+
+        // Connected and gone before anybody accepts.
+        drop(Stream::connect(&endpoint).unwrap());
+
+        let mut server = listener.accept().expect("a hung-up client is still a connection");
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            server.read(&mut buf).unwrap(),
+            0,
+            "and its disconnect is end-of-stream on the read, which is what read_message turns into Ok(None)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

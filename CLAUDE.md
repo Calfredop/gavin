@@ -44,6 +44,25 @@ once, and `main` usually carries a large dirty tree spanning all of them.
   detached worktree.
 - Commits and merges happen when the human asks for them.
 
+**Line endings are LF on disk on every OS**, pinned by `.gitattributes`
+(`* text=auto eol=lf`), because two things read source files as bytes: the
+markdown `app/src-tauri` embeds with `include_str!` and ships as skills, and
+the app tests that grep component source. A checkout made before the pin
+landed still has CRLF on disk and stays that way — git's stat cache keeps
+`git status` clean, so nothing warns — until its files are re-checked out.
+Refresh only the CLEAN files, never a dirty one:
+
+```
+git ls-files --eol -z | tr '\0' '\n' | awk '$2=="w/crlf"{sub(/^[^\t]*\t/,""); print}' > /tmp/crlf
+git diff --name-only > /tmp/dirty
+grep -vxFf /tmp/dirty /tmp/crlf | tr '\n' '\0' | xargs -0 rm -f
+grep -vxFf /tmp/dirty /tmp/crlf | tr '\n' '\0' | git checkout-index -u -f -z --stdin
+```
+
+The `rm` comes first because `checkout-index` skips a file whose stat still
+matches the index, and `-u` writes the new stat back so the refresh does not
+surface as a phantom modification.
+
 **The daemon is shared and long-lived.** Never `pkill gavin-daemon`: a name
 reaches every daemon on the machine, and a release install and the dev tree now
 run one each. They no longer collide — a debug build binds `daemon-dev.sock`
