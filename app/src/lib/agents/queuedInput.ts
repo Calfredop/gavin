@@ -19,6 +19,7 @@
 // compose box before it takes a message that can never arrive.
 
 import type { SessionStatus } from "$lib/core/notifications";
+import { verdictIsAsking, type TurnVerdictEntry } from "$lib/agents/turnVerdict";
 
 /// One pending follow-up, exactly as `protocol::QueuedInput` crosses the
 /// wire.
@@ -102,7 +103,33 @@ export interface QueueTarget {
   /// `featureBlockedReason(compat, "queuedFollowUps")` -- null when the
   /// daemon speaks v29.
   blockedReason: string | null;
+  /// This session's TypeSafe turn verdict, when one was taken. Absent is
+  /// what the feature switched off, an older daemon, a terminal the
+  /// human opened and a request still in flight all look like -- and all
+  /// four have to behave exactly as this module did before the verdict
+  /// existed.
+  verdict?: TurnVerdictEntry | null;
 }
+
+/// The one sentence for a session whose turn ended on a QUESTION the
+/// daemon could not see.
+///
+/// The failure it prevents is specific and silent. `status` here is
+/// `idle`, because the agent asked in prose and rang no bell, so the
+/// daemon hands over the head of the queue the instant it goes quiet --
+/// and the human's follow-up is pasted at a prompt that is waiting for
+/// the answer to something else entirely. They wrote it precisely
+/// because they were walking away, so nobody sees it happen.
+///
+/// Which is also the limit of what this can fix, and it is worth being
+/// exact about: the DAEMON owns automatic delivery
+/// (`persist_and_emit_status` -> `deliver_next_queued`), and it acts on
+/// the idle transition before any verdict could have come back. So a
+/// follow-up queued BEFORE the turn ended is still delivered. What this
+/// refuses is the one the human is about to write while the question is
+/// on screen -- which is the case the compose box can actually see.
+export const ASKING_REASON =
+  "This agent has a question on screen that it is waiting for you to answer — a follow-up sent now would be filed as the answer to it. Reply to the agent first.";
 
 /// The one sentence for an interrupted session, shared by the compose
 /// refusal and the delivery hold because they are the same fact told to
@@ -133,6 +160,11 @@ export const INTERRUPTED_REASON =
 export function queueBlockedReason(target: QueueTarget): string | null {
   if (target.blockedReason) return target.blockedReason;
   if (target.interrupted) return INTERRUPTED_REASON;
+  // Last of the three, and the only one that is temporary: answering the
+  // agent clears it, where a version gate needs a daemon restart and an
+  // interrupted session never clears at all. Ordered by which answer is
+  // most useful when several are true, like the two above it.
+  if (verdictIsAsking(target.verdict)) return ASKING_REASON;
   return null;
 }
 
@@ -161,6 +193,12 @@ export function composeRefusal(target: QueueTarget, text: string): string | null
 export function deliveryHold(target: QueueTarget, queued: number): string | null {
   if (queued === 0) return null;
   if (target.interrupted) return INTERRUPTED_REASON;
+  // Before the status switch, because the status is the thing that is
+  // wrong here: the daemon says `idle` and the agent has a question on
+  // screen. Saying "Delivering now" under a queue that is about to be
+  // filed as the answer to that question is the most misleading line
+  // this view could show.
+  if (verdictIsAsking(target.verdict)) return ASKING_REASON;
   switch (target.status) {
     case "working":
       // The ordinary case, and the whole point of the feature.

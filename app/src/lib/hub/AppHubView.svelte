@@ -33,6 +33,7 @@
     attentionState,
   } from "$lib/core/layoutState";
   import { featureBlockedReason } from "$lib/core/daemonCompat";
+  import { turnVerdictById, verdictsOf } from "$lib/agents/turnVerdictState";
   import { workspaceAgentsSummary, kanbanColumnChips, railStripStats, showGitChip } from "$lib/sidebar/sidebarSummary";
   import type { FleetSummary, RunningTask, TaskPhase, WorkspaceRunning } from "$lib/hub/appHub";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
@@ -183,6 +184,9 @@
         trees: $gavinTrees,
         orchestrations: $orchestrations,
         stepAttentions: $stepAttentionsByWorkspace,
+        // The turn verdicts, so a prose question -- no bell, `idle` to
+        // the daemon -- lists the way a `waiting_for_input` one does.
+        verdicts: verdictsOf($turnVerdictById),
       },
       now
     )

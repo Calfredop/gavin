@@ -238,6 +238,34 @@ describe("autoResumeDecision", () => {
     });
   });
 
+  // The turn verdict's cause, which exists for the profiles whose table
+  // is EMPTY -- codex, gemini, cursor, opencode, custom -- and for the
+  // Claude Code lines the table has never seen.
+  it("takes the verdict's cause where the table says unknown", () => {
+    const d = autoResumeDecision(
+      input({ reason: "stream disconnected", causes: [], verdictCause: "network" })
+    );
+    expect(d).toMatchObject({ kind: "resume", cause: "network" });
+  });
+
+  it("lets the table win over the verdict wherever it matched", () => {
+    // The table is ordered, measured and local. A remote judgement must
+    // not override a local one that is already right.
+    const d = autoResumeDecision(
+      input({ reason: "Please run /login · API Error: 401", verdictCause: "network" })
+    );
+    expect(d).toMatchObject({ kind: "skip", cause: "auth" });
+  });
+
+  it("still never resumes an unknown cause, verdict or no verdict", () => {
+    // A low-confidence cause has already become `unknown` by the time it
+    // gets here, so this one rule covers the whole feature.
+    for (const verdictCause of [undefined, "unknown" as const]) {
+      const d = autoResumeDecision(input({ reason: "something new", causes: [], verdictCause }));
+      expect(d).toMatchObject({ kind: "skip", cause: "unknown" });
+    }
+  });
+
   it("carries the cause through a skip, so a hold reads differently from a refusal", () => {
     const limit = autoResumeDecision(
       input({ reason: "API Error: You have exceeded your usage limit." })

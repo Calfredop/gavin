@@ -13,6 +13,12 @@ import { isUnreviewedStall } from "$lib/cards/cardReview";
 import { prKey, prRequirement, prWaitVerdict } from "$lib/git/pullRequest";
 import type { PrReport } from "$lib/git/pullRequest";
 import { critiqueSessionsComplete } from "$lib/review/criticalReview";
+import {
+  verdictCompletesTurn,
+  verdictIsAsking,
+  verdictStallReason,
+  type TurnVerdictEntry,
+} from "$lib/agents/turnVerdict";
 
 export interface Step {
   id: string;
@@ -956,7 +962,8 @@ function agentTurnEnded(
   sessionId: string | null,
   toolKinds: Map<string, ToolSummary["kind"]>,
   sessionStatuses: Map<string, SessionStatus>,
-  sessionsSeenWorking: ReadonlySet<string>
+  sessionsSeenWorking: ReadonlySet<string>,
+  verdicts: VerdictsBySession = NO_VERDICTS
 ): boolean {
   if (!sessionId || !isToolStep(step)) return false;
   // An unknown tool cannot be known to be an agent -- a deleted one, or
@@ -966,7 +973,20 @@ function agentTurnEnded(
   if (sessionStatuses.get(sessionId) !== "idle") return false;
   // The shell's first prompt is idle too. Without this, a rail that
   // reached an agent-prompt tool marked it done before the agent ran.
-  return sessionsSeenWorking.has(sessionId);
+  if (!sessionsSeenWorking.has(sessionId)) return false;
+  // LAST, and only ever able to say no. Everything above is today's
+  // answer and is unchanged; this is the second opinion, and the four
+  // states it can be in collapse to two: an absent entry, a failed
+  // request and a low-confidence answer all leave the completion exactly
+  // as it was, while `asking`, `blocked`, `failed` and `working` take it
+  // back -- and `pending` holds the step for the length of the budget
+  // rather than racing the request it is waiting on.
+  //
+  // This is the rule the whole card exists for. An agent that asked the
+  // human a question in PROSE rings no bell, so every line above reads
+  // it as a finished turn, the step completes, and the rail walks past
+  // the question -- answering it by walking away.
+  return verdictCompletesTurn(verdicts.get(sessionId));
 }
 
 /// The stall reason for a step whose session was interrupted. A distinct
@@ -1094,6 +1114,15 @@ function deadSessionAction(
 ///   behind it and never was -- and unlike every other mark here it is
 ///   read off a STALLED step rather than a running one, because the
 ///   whole point is that it never started.
+/// One session's TypeSafe turn verdict, when one was taken. Structural,
+/// like every other input this module takes: a test reaches these rules
+/// without building a store.
+export type VerdictsBySession = ReadonlyMap<string, TurnVerdictEntry>;
+
+/// Shared empty map. `stepAttentions` runs on every layoutState
+/// emission, for every workspace at once.
+const NO_VERDICTS: VerdictsBySession = new Map();
+
 export type StepAttention =
   | "asking"
   | "turn-ended"
@@ -1190,7 +1219,10 @@ export function stepAttentions(
   /// STALE_AFTER_MS). A session with no stamp never goes stale: an
   /// unmeasured wait is not a long one.
   statusSince: ReadonlyMap<string, number> = new Map(),
-  now: number = Date.now()
+  now: number = Date.now(),
+  /// The TypeSafe turn verdicts, by session id. Empty by default, for
+  /// the reason `nextActions`' own parameter gives.
+  verdicts: VerdictsBySession = NO_VERDICTS
 ): Map<string, StepAttention> {
   const marks = new Map<string, StepAttention>();
   // Before the tree walk. This runs on every layoutState emission -- a
@@ -1255,9 +1287,23 @@ export function stepAttentions(
         // is about to be shown a paused rail that owes them a reason.
         // `turn-ended` skips tool steps below precisely because their
         // rules speak for them; here the rule and the mark agree.
+        const verdict = sessionId ? verdicts.get(sessionId) : undefined;
         if (status === "failed") {
           candidates.push("failed");
         } else if (status === "waiting_for_input") {
+          candidates.push("asking");
+        } else if (status === "idle" && verdictIsAsking(verdict)) {
+          // The prose question. `waiting_for_input` above is the BELL,
+          // and an agent that asks in a sentence rings none -- so the
+          // daemon calls this idle and the branch below would mark it
+          // `turn-ended`: "stopped without finishing", about an agent
+          // that is waiting for an answer. Both say the rail is not
+          // moving; only this one tells the human it is their move.
+          //
+          // Tool steps included, unlike `turn-ended` below. An `agent`
+          // tool step is exactly the case this exists for: today it is
+          // marked DONE on this tick, and `agentTurnEnded` now declines
+          // to -- which would leave it running with no mark at all.
           candidates.push("asking");
           // An idle TOOL step is never this. An `agent` tool's step is
           // marked done by agentTurnEnded on this very tick -- from the
@@ -1441,7 +1487,15 @@ export function nextActions(
   /// caller that does not know leaves every critique step waiting
   /// (never completes on a guess, never stalls for missing sessions
   /// that simply were not passed in).
-  critiqueSessionIdsByStep: ReadonlyMap<string, readonly string[]> = new Map()
+  critiqueSessionIdsByStep: ReadonlyMap<string, readonly string[]> = new Map(),
+  /// The TypeSafe turn verdicts, by session id (`turnVerdictById`).
+  ///
+  /// Empty by default, and that default is the feature's safety
+  /// guarantee rather than a convenience: every caller that does not
+  /// know -- every test that is not about this, an app with the feature
+  /// off, one talking to a pre-v39 daemon, one whose key is missing --
+  /// gets exactly the scheduler that shipped before any of this existed.
+  verdicts: VerdictsBySession = NO_VERDICTS
 ): Action[] {
   const actions: Action[] = [];
   const cards = cardIndex(tree);
@@ -1589,7 +1643,16 @@ export function nextActions(
             // finished (agentTurnEnded). That is the same stale
             // `running` row this pass exists for, and leaving it would
             // keep the rail uneditable and undeletable.
-            if (agentTurnEnded(step, sessionId, toolKind, sessionStatuses, sessionsSeenWorking)) {
+            if (
+              agentTurnEnded(
+                step,
+                sessionId,
+                toolKind,
+                sessionStatuses,
+                sessionsSeenWorking,
+                verdicts
+              )
+            ) {
               actions.push({ kind: "markDone", stepId: step.id });
             }
             continue;
@@ -1982,10 +2045,39 @@ export function nextActions(
           // Rule 3b -- an agent tool step whose session is still LIVE but
           // whose turn is over. Checked first: its session will never
           // die, so the dead-session branch below can never speak for it.
-          if (agentTurnEnded(step, sessionId, toolKind, sessionStatuses, sessionsSeenWorking)) {
+          if (
+            agentTurnEnded(
+              step,
+              sessionId,
+              toolKind,
+              sessionStatuses,
+              sessionsSeenWorking,
+              verdicts
+            )
+          ) {
             actions.push({ kind: "markDone", stepId: step.id });
             simulated.set(step.id, "done");
             break stepBody;
+          }
+          // The agent tool step whose turn ended BADLY. `agentTurnEnded`
+          // above only declines to complete it; this is what turns a
+          // `blocked` verdict into a stall carrying the agent's own
+          // sentence, which is the part a human acts on.
+          //
+          // Only `blocked`. A `failed` verdict is rule 3d's to stall --
+          // the daemon witnessed that one and its reason is the agent's
+          // own error text -- and `asking` is a WAIT rather than a
+          // fault: the rail is right to hold, `StepAttention` says so,
+          // and persisting a stall would be a verdict the human's next
+          // keystroke makes wrong.
+          if (sessionId && isToolStep(step) && toolKind.get(step.toolId as string) === "agent") {
+            const blocked = verdictStallReason(verdicts.get(sessionId));
+            if (blocked) {
+              actions.push({ kind: "stall", stepId: step.id, reason: blocked });
+              simulated.set(step.id, "stalled");
+              stalled = true;
+              break stepBody;
+            }
           }
           // Rule 3e -- an `until` step whose check has finished. The one
           // rule that can move a rail BACKWARDS, so it is checked before

@@ -523,6 +523,40 @@ export function snapshotSession(sessionId: string): Promise<void> {
   return invoke("snapshot_session", { sessionId });
 }
 
+/// This session's screen as plain TEXT -- the same model `snapshotSession`
+/// repaints from, read rather than replayed.
+///
+/// Rejects rather than resolving to "" when the daemon cannot answer (an
+/// older daemon, an unknown session, a dead socket). The distinction is
+/// the point: an empty screen is a finished turn to any reader, so a
+/// failed read must never arrive here wearing one.
+export function sessionScreen(sessionId: string): Promise<string> {
+  return invoke("session_screen", { sessionId });
+}
+
+/// Whether the TypeSafe turn verdict is on, and whether it has a key to
+/// pay with. Never the key itself -- see `typesafe.rs`.
+export function typesafeSettings(): Promise<{ enabled: boolean; hasKey: boolean }> {
+  return invoke("typesafe_settings");
+}
+
+export function setTypesafeEnabled(enabled: boolean): Promise<{ enabled: boolean; hasKey: boolean }> {
+  return invoke("set_typesafe_enabled", { enabled });
+}
+
+/// Stores a key, or clears it when `key` is blank. One-way: there is no
+/// command that reads it back.
+export function setTypesafeApiKey(key: string): Promise<{ enabled: boolean; hasKey: boolean }> {
+  return invoke("set_typesafe_api_key", { key });
+}
+
+/// One turn verdict. The host adds the key and chooses the address; this
+/// side chooses the questions. Rejects on every failure, which the caller
+/// reads as "today's answer" without distinguishing them.
+export function typesafeVerdict(request: unknown): Promise<unknown> {
+  return invoke("typesafe_verdict", { request });
+}
+
 export function getSessionNames(): Promise<Record<string, string>> {
   return invoke("get_session_names");
 }

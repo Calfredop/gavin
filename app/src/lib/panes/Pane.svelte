@@ -25,6 +25,7 @@
     terminalFontSize,
     attentionStatusById,
   } from "$lib/core/layoutState";
+  import { turnVerdictById } from "$lib/agents/turnVerdictState";
   import { gavinTrees } from "$lib/core/gavinState";
   import { kanbanState, cardSessionFor, fetchBoard } from "$lib/board/kanbanState";
   import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
@@ -718,7 +719,8 @@
           {@const blocked = queueBlockedReason(
             queueTargetFor(
               $layoutState.sessionStatusById[active],
-              $layoutState.interruptedSessionIds.has(active)
+              $layoutState.interruptedSessionIds.has(active),
+              $turnVerdictById[active] ?? null
             )
           )}
           {@const queued = $queuedInputsById[active] ?? []}

@@ -74,6 +74,7 @@ import { orchestrations, resumeStep } from "$lib/orchestration/orchestrationStat
 import { resumeCard } from "$lib/cards/cardRunActions";
 import { sendAutoResumeNotice } from "$lib/agents/autoResumeNotify";
 import { __resetAutoResume, __setAutoResumeClock, resumeTrail, startAutoResume } from "$lib/agents/autoResumeState";
+import { PENDING_BACKSTOP_MS, turnVerdictById } from "$lib/agents/turnVerdictState";
 import { STAGGER_SPREAD_MS, WAVE_ABORT_WINDOW_MS } from "$lib/agents/autoResume";
 
 const NETWORK = "API Error: Connection dropped (ECONNRESET)";
@@ -209,6 +210,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   __resetAutoResume();
+  turnVerdictById.set({});
   orchestrations.set({} as never);
   kanbanState.set({} as never);
   gavinTrees.set({} as never);
@@ -243,6 +245,51 @@ describe("a standalone card run", () => {
   // decision that was mine". Without it, nothing happens AND nothing is
   // said -- a workspace that never asked must not be nagged about a
   // choice it never made.
+  // The profiles with no failure table -- and the Claude Code lines the
+  // table has never seen. Their failure is `unknown` to the table, and
+  // the turn verdict is what can name it; but the verdict lands a second
+  // after the failure does, and this hook fires on the failure.
+  it("waits for a pending verdict to name a cause the table cannot", async () => {
+    cardRun();
+    layoutState.update((s) => ({ ...s, failureReasonById: { "sess-1": "stream disconnected" } }) as never);
+    turnVerdictById.set({ "sess-1": { state: "pending" } });
+    fail("sess-1");
+    // Short of the wait's own give-up, which is the driver's backstop
+    // plus a margin: within it, neither resumed nor declined.
+    await vi.advanceTimersByTimeAsync(PENDING_BACKSTOP_MS);
+    expect(resumeCard).not.toHaveBeenCalled();
+    expect(sendAutoResumeNotice).not.toHaveBeenCalled();
+    turnVerdictById.set({
+      "sess-1": { state: "read", reading: { kind: "failed", cause: "network" } },
+    });
+    await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
+    expect(resumeCard).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({ id: "/ws/.gavin-root/plans/a.md" }),
+      { automatic: true }
+    );
+  });
+
+  it("decides at once when the table can name the cause, whatever the verdict is doing", async () => {
+    // The table wins wherever it matched, so there is nothing to wait for.
+    cardRun();
+    turnVerdictById.set({ "sess-1": { state: "pending" } });
+    fail("sess-1");
+    await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
+    expect(resumeCard).toHaveBeenCalled();
+  });
+
+  it("stops waiting when the verdict never settles, and declines as it would have", async () => {
+    cardRun();
+    layoutState.update((s) => ({ ...s, failureReasonById: { "sess-1": "stream disconnected" } }) as never);
+    turnVerdictById.set({ "sess-1": { state: "pending" } });
+    fail("sess-1");
+    await vi.advanceTimersByTimeAsync(PENDING_BACKSTOP_MS + 500 + STAGGER_SPREAD_MS);
+    expect(resumeCard).not.toHaveBeenCalled();
+    // Unknown never resumes, and the workspace opted in, so it hears why.
+    expect(sendAutoResumeNotice).toHaveBeenCalled();
+  });
+
   it("is left alone, silently, when the workspace never opted in", async () => {
     cardRun({ consented: false });
     fail("sess-1");

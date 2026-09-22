@@ -553,3 +553,58 @@ describe("rowTip", () => {
     expect(rowTip(aRow({ pageId: null, pageName: "Home" }))).toContain("open the Home tab");
   });
 });
+
+describe("attentionInbox — the turn verdict", () => {
+  const asking = { state: "read", reading: { kind: "asking" } } as const;
+
+  // The whole reason the verdict exists here: `waiting_for_input` is the
+  // BELL, and an agent that asks in a sentence rings none -- 0 of 16 on
+  // this repository's own turns. The daemon calls it idle.
+  it("lists an idle session whose turn the verdict read as a question", () => {
+    const state = inboxState([wsWith("a", [page("p1", ["s1"])])], {
+      sessionStatusById: { s1: "idle" },
+      statusSinceById: { s1: since(2) },
+    });
+    const rows = attentionInbox(input(state, { verdicts: new Map([["s1", asking]]) }), NOW);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ sessionId: "s1", reason: "asking", waitedMs: 2 * MINUTE });
+  });
+
+  it("lists nothing while the verdict is pending, absent, or read as anything else", () => {
+    const state = inboxState([wsWith("a", [page("p1", ["s1"])])], {
+      sessionStatusById: { s1: "idle" },
+      statusSinceById: { s1: since(2) },
+    });
+    for (const entry of [
+      { state: "pending" } as const,
+      { state: "read", reading: null } as const,
+      { state: "read", reading: { kind: "finished" } } as const,
+      { state: "read", reading: { kind: "blocked", said: "no disk" } } as const,
+    ]) {
+      expect(attentionInbox(input(state, { verdicts: new Map([["s1", entry]]) }), NOW)).toEqual([]);
+    }
+    expect(attentionInbox(input(state, { verdicts: new Map() }), NOW)).toEqual([]);
+    expect(attentionInbox(input(state), NOW)).toEqual([]);
+  });
+
+  it("a broken agent still outranks its own question", () => {
+    // ATTENTION_RANK's order is preserved: `failed` is checked first.
+    const state = inboxState([wsWith("a", [page("p1", ["s1"])])], {
+      sessionStatusById: { s1: "failed" },
+      statusSinceById: { s1: since(2) },
+      failureReasonById: { s1: "API Error: 529 Overloaded" },
+    });
+    const rows = attentionInbox(input(state, { verdicts: new Map([["s1", asking]]) }), NOW);
+    expect(rows.map((r) => r.reason)).toEqual(["failed"]);
+  });
+
+  it("does not list a verdict for a session that is no longer idle", () => {
+    // A stale entry the driver has not cleared yet must not put a row
+    // in front of somebody about a turn that is over.
+    const state = inboxState([wsWith("a", [page("p1", ["s1"])])], {
+      sessionStatusById: { s1: "working" },
+      statusSinceById: { s1: since(2) },
+    });
+    expect(attentionInbox(input(state, { verdicts: new Map([["s1", asking]]) }), NOW)).toEqual([]);
+  });
+});

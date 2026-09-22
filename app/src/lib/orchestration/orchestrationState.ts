@@ -172,6 +172,7 @@ import {
 } from "$lib/cards/cardRunActions";
 import { mayStartWork, nowStore, pausedWorkspaceKey, launchDecision } from "$lib/agents/agentPauseState";
 import { fallbackBlockedReason } from "$lib/agents/agentFallback";
+import { turnVerdictById, verdictsOf } from "$lib/agents/turnVerdictState";
 import { requestArm } from "$lib/agents/agentFallbackState";
 import {
   holdOrQueue,
@@ -230,9 +231,24 @@ const EMPTY_DECOYS: ReadonlySet<string> = new Set<string>();
 /// looking at is exactly the one you would otherwise miss.
 export const stepAttentionsByWorkspace: Readable<Record<string, Map<string, StepAttention>>> =
   derived(
-    [orchestrations, kanbanState, gavinTrees, toolRecords, layoutState, decoyEditsByWorkspace, nowStore],
-    ([$orchestrations, $kanban, $trees, $tools, $layout, $decoys, $now]) => {
+    [
+      orchestrations,
+      kanbanState,
+      gavinTrees,
+      toolRecords,
+      layoutState,
+      decoyEditsByWorkspace,
+      nowStore,
+      turnVerdictById,
+    ],
+    ([$orchestrations, $kanban, $trees, $tools, $layout, $decoys, $now, $verdicts]) => {
       const statuses = new Map(Object.entries($layout.sessionStatusById));
+      // A store input rather than a read, for the reason `nowStore` is
+      // one: a derived store re-runs when an input changes and at no
+      // other time, so a verdict that landed after the last status
+      // change would never reach a chip until something unrelated
+      // happened to move.
+      const verdicts = verdictsOf($verdicts);
       // `stale` is a function of the clock, so the clock has to be an
       // input: a derived store re-runs on a store change and never on
       // the passage of time. nowStore is the app's ONE ticker (30s) --
@@ -253,7 +269,8 @@ export const stepAttentionsByWorkspace: Readable<Record<string, Map<string, Step
           statuses,
           $decoys[workspaceId] ?? EMPTY_DECOYS,
           since,
-          $now
+          $now,
+          verdicts
         );
       }
       return out;
@@ -2010,7 +2027,8 @@ async function runTick(workspaceId: string): Promise<boolean> {
       currentPrReports(),
       Math.floor(Date.now() / 1000),
       get(layoutState).sessionsSeenWorking ?? new Set(),
-      critiqueSessionsMap(get(criticalReviewRuns)[workspaceId])
+      critiqueSessionsMap(get(criticalReviewRuns)[workspaceId]),
+      verdictsOf(get(turnVerdictById))
     )
   );
 }
@@ -2072,6 +2090,12 @@ function tickInputStores(): Readable<unknown>[] {
     // hold -- once when starts stop, once when they may resume.
     launchHolding,
     prReports,
+    // How a turn VERDICT arrives, and for the same reason `sessionExits`
+    // and `prReports` are here: it lands a second or so after the status
+    // change that provoked it, so a rail whose step is held pending
+    // would sit until something unrelated ticked -- which is exactly the
+    // bug this module-level scheduler exists to fix, in a new place.
+    turnVerdictById,
   ];
 }
 
@@ -2253,12 +2277,22 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   // import here would close a cycle.
   const { startAutoResume } = await import("$lib/agents/autoResumeState");
   const stopAutoResume = startAutoResume();
+  // The turn verdict's driver, on the same terms and by the same route:
+  // it reads this module's `orchestrations` to tell a rail step's
+  // session from a terminal the human opened, and layoutState's
+  // `daemonCompat` to know whether the daemon can hand over a screen at
+  // all -- so it starts here, once both exist, and is never imported
+  // statically. (The map it WRITES lives in turnVerdictState.ts, which
+  // this module does import statically; that file imports nothing back.)
+  const { startTurnVerdict } = await import("$lib/agents/turnVerdictDriver");
+  const stopTurnVerdict = startTurnVerdict();
   return () => {
     stop();
     stopPolling();
     stopDecoys();
     stopAgents();
     stopAutoResume();
+    stopTurnVerdict();
     setRailNotificationVoice(null);
     unlisten();
   };

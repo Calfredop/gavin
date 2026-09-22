@@ -13,6 +13,7 @@
     resolvedAgentFor,
     terminalFontSizeDefault,
   } from "$lib/core/layoutState";
+  import { turnVerdictById } from "$lib/agents/turnVerdictState";
   import { gavinTrees } from "$lib/core/gavinState";
   import { resolveTerminalFontSize } from "$lib/terminal/terminalFont";
   import { queueBlockedReason, queueTip } from "$lib/agents/queuedInput";
@@ -69,7 +70,8 @@
       ? queueBlockedReason(
           queueTargetFor(
             $layoutState.sessionStatusById[sessionId],
-            $layoutState.interruptedSessionIds.has(sessionId)
+            $layoutState.interruptedSessionIds.has(sessionId),
+            $turnVerdictById[sessionId] ?? null
           )
         )
       : null

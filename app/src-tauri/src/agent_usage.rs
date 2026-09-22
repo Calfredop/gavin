@@ -379,7 +379,11 @@ fn anthropic_usage(now: i64) -> (UsageReport, Option<i64>) {
     }
 }
 
-fn run_curl(config: &str) -> Result<String, String> {
+/// `pub(crate)` for `typesafe.rs`, which POSTs a credential the same way
+/// and must not grow a second copy of the stdin-config discipline: the
+/// rule that no secret ever reaches argv is only a rule while there is
+/// exactly one place that runs curl.
+pub(crate) fn run_curl(config: &str) -> Result<String, String> {
     // curl is a real executable on every platform gavin runs on --
     // /usr/bin/curl on unix, and shipped in System32 since Windows 10
     // 1803 -- so the only thing `resolve_or_name` adds here is the
@@ -410,7 +414,7 @@ fn run_curl(config: &str) -> Result<String, String> {
 
 /// `write-out` appends the status on its own last line, so the body is
 /// everything before it.
-fn split_status(output: &str) -> (&str, u16) {
+pub(crate) fn split_status(output: &str) -> (&str, u16) {
     match output.rsplit_once('\n') {
         Some((body, code)) => (body, code.trim().parse().unwrap_or(0)),
         None => (output, 0),

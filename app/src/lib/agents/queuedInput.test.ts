@@ -5,6 +5,7 @@ import {
   withoutQueued,
   composeRefusal,
   queueBlockedReason,
+  ASKING_REASON,
   INTERRUPTED_REASON,
   deliveryHold,
   queueCountLabel,
@@ -257,5 +258,52 @@ describe("shouldQueueForMainAgent", () => {
     expect(shouldQueueForMainAgent("failed")).toBe(false);
     expect(shouldQueueForMainAgent("unknown")).toBe(false);
     expect(shouldQueueForMainAgent(undefined)).toBe(false);
+  });
+});
+
+describe("the turn verdict", () => {
+  const asking = { state: "read", reading: { kind: "asking" } } as const;
+
+  // `status` is `idle` in every case below, because that is what the
+  // daemon says about an agent that asked in prose and rang no bell --
+  // and `idle` is exactly what the queue delivers into.
+  it("refuses a follow-up into a turn the verdict read as a question", () => {
+    expect(queueBlockedReason(target({ status: "idle", verdict: asking }))).toBe(ASKING_REASON);
+    expect(composeRefusal(target({ status: "idle", verdict: asking }), "carry on")).toBe(ASKING_REASON);
+  });
+
+  it("holds delivery with the same sentence, above the status", () => {
+    // "Delivering now." under a queue about to be filed as the answer to
+    // a question is the most misleading line this view could show.
+    expect(deliveryHold(target({ status: "idle", verdict: asking }), 1)).toBe(ASKING_REASON);
+    expect(deliveryHold(target({ status: "idle", verdict: asking }), 3)).toBe(ASKING_REASON);
+    expect(deliveryHold(target({ status: "idle", verdict: asking }), 0)).toBeNull();
+  });
+
+  it("stays on today's answer while the verdict is pending, absent, or anything else", () => {
+    for (const verdict of [
+      undefined,
+      null,
+      { state: "pending" } as const,
+      { state: "read", reading: null } as const,
+      { state: "read", reading: { kind: "finished" } } as const,
+      { state: "read", reading: { kind: "blocked", said: "no" } } as const,
+    ]) {
+      expect(queueBlockedReason(target({ status: "idle", verdict }))).toBeNull();
+      expect(composeRefusal(target({ status: "idle", verdict }), "carry on")).toBeNull();
+      expect(deliveryHold(target({ status: "idle", verdict }), 1)).toBe("Delivering now.");
+    }
+  });
+
+  it("ranks below the version gate and the interrupted tab", () => {
+    // Ordered by which answer is most useful when several are true: the
+    // question clears itself when the human answers; the other two do not.
+    expect(queueBlockedReason(target({ blockedReason: "Needs daemon v29.", verdict: asking }))).toContain("v29");
+    expect(queueBlockedReason(target({ interrupted: true, verdict: asking }))).toBe(INTERRUPTED_REASON);
+    expect(deliveryHold(target({ interrupted: true, verdict: asking }), 1)).toBe(INTERRUPTED_REASON);
+  });
+
+  it("tells the human to reply to the agent, not to wait", () => {
+    expect(ASKING_REASON).toContain("Reply to the agent first");
   });
 });

@@ -54,6 +54,7 @@
   import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "$lib/core/confirmGate";
   import { featureBlockedReason, restartOutcome, restartConfirmLines } from "$lib/core/daemonCompat";
   import * as backend from "$lib/core/backend";
+  import { typesafeSettings } from "$lib/agents/turnVerdictState";
   import { tooltip } from "$lib/core/tooltip";
   import {
     availableUpdate,
@@ -304,6 +305,33 @@
   /// with the version it needs rather than writing a setting the daemon
   /// would not honour.
   const clientIdentityBlocked = $derived(featureBlockedReason($daemonCompat, "clientIdentity"));
+
+  // The turn verdict. `turnVerdictBlocked` is the daemon gate: without
+  // `Request::SessionScreen` (v39) there is no screen to judge, so the
+  // switch is dark and says why rather than turning on a feature that
+  // would skip every session anyway.
+  const turnVerdictBlocked = $derived(featureBlockedReason($daemonCompat, "turnVerdict"));
+  // Never the key itself -- the host answers with a boolean, and there is
+  // no command that reads one back. The field below writes only.
+  let typesafeKeyDraft = $state("");
+  let typesafeKeyError = $state<string | null>(null);
+  async function saveTypesafeKey() {
+    typesafeKeyError = null;
+    try {
+      typesafeSettings.set(await backend.setTypesafeApiKey(typesafeKeyDraft));
+      typesafeKeyDraft = "";
+    } catch (e) {
+      typesafeKeyError = String(e);
+    }
+  }
+  async function setTypesafeOn(on: boolean) {
+    typesafeKeyError = null;
+    try {
+      typesafeSettings.set(await backend.setTypesafeEnabled(on));
+    } catch (e) {
+      typesafeKeyError = String(e);
+    }
+  }
   /// `require_local_token` is a daemon-GLOBAL setting -- a marker file the
   /// daemon reads per request -- not a per-workspace one.
   let requireLocalToken = $state(false);
@@ -362,6 +390,19 @@
       keywords: ["Fallback agent", "fallback chain", "usage limit", "arm"],
     },
     { id: "agent-pause", keywords: ["Agent pause", "pause", "cycle", "limit", "schedule", "usage"] },
+    {
+      id: "turn-verdict",
+      keywords: [
+        "Turn verdict",
+        "TypeSafe",
+        "second opinion",
+        "API key",
+        "question",
+        "asking",
+        "failure cause",
+        "jev",
+      ],
+    },
     {
       id: "memory-wall",
       keywords: ["Memory wall", "memory", "RAM", "pressure", "ceiling", "agents running at once"],
@@ -762,6 +803,67 @@
           applies.
         </p>
       {/if}
+    </section>
+
+    <section hidden={!settingsFilter.visible("turn-verdict") || selectedSection !== "turn-verdict"}>
+      <h3>Turn verdict</h3>
+      <p class="hint">
+        When an agent goes quiet, gavin decides its turn ended from two seconds of silence and one
+        error string — which only Claude Code has. An agent that asks you something in a sentence
+        rings no bell, so a rail walks past the question; an agent of any other CLI that breaks
+        reads as one that finished. Switching this on takes a second opinion.
+      </p>
+      <p class="hint warn">
+        <strong>What leaves this machine.</strong> For a session running a card or a rail step, and
+        for no other, gavin sends the last 40 rows of that terminal — the agent's output as it
+        appears on screen, which can include file contents, paths and anything else it printed — to
+        <code>api.typesafe.ai</code>, once each time that session goes quiet. Nothing is sent for a
+        terminal you opened yourself. It costs about $0.00007 a turn, on your key.
+      </p>
+      <div class="row">
+        <span>Second opinion</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={$typesafeSettings?.enabled ?? false}
+            disabled={turnVerdictBlocked !== null}
+            onchange={(e) => void setTypesafeOn(e.currentTarget.checked)}
+          />
+          <span>Ask TypeSafe what a quiet turn came to</span>
+        </label>
+      </div>
+      {#if turnVerdictBlocked}
+        <p class="hint warn">{turnVerdictBlocked}</p>
+      {/if}
+      <div class="row">
+        <span>API key</span>
+        <input
+          type="password"
+          autocomplete="off"
+          placeholder={$typesafeSettings?.hasKey ? "A key is set — type a new one to replace it" : "sk-ts-…"}
+          bind:value={typesafeKeyDraft}
+          onkeydown={(e) => {
+            if (e.key === "Enter") void saveTypesafeKey();
+          }}
+        />
+        <button onclick={() => void saveTypesafeKey()}>
+          {typesafeKeyDraft.trim() === "" && $typesafeSettings?.hasKey ? "Clear" : "Save"}
+        </button>
+      </div>
+      {#if typesafeKeyError}
+        <p class="hint warn">{typesafeKeyError}</p>
+      {/if}
+      <p class="hint">
+        Kept in gavin's <code>config.json</code>, which is readable only by you. It never reaches
+        this window — gavin can tell you whether a key is set, not what it is — and it is passed to
+        the request on standard input, so it never appears in a process list. Saving an empty field
+        clears it.
+      </p>
+      <p class="hint">
+        A second opinion and never a replacement: the daemon's own verdict is untouched, and a
+        timeout, an error, a missing key or an answer gavin is not confident in all fall back to
+        exactly what it does today. Turning this on can sharpen a verdict; it cannot make one worse.
+      </p>
     </section>
 
     <section hidden={!settingsFilter.visible("memory-wall") || selectedSection !== "memory-wall"}>

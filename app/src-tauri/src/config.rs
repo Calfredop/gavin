@@ -872,6 +872,55 @@ pub struct AppConfig {
     /// the next save.
     #[serde(default)]
     pub custom_resume_args: Option<String>,
+    /// The TypeSafe turn verdict's settings, including the API key.
+    ///
+    /// The ONE field in this struct that `persist_workspaces` does not
+    /// take as an argument, and the exception is deliberate. Every other
+    /// app-wide setting is mirrored in Tauri-managed state and handed
+    /// back on every save, which is what the twelve warnings above are
+    /// about: a save site that forgets one wipes it. This field is
+    /// carried FORWARD FROM DISK instead (see `persist_workspaces`), for
+    /// two reasons that point the same way.
+    ///
+    /// It holds a SECRET. The whole contract of the key is that it never
+    /// reaches the frontend and never enters argv; keeping it out of the
+    /// in-memory mirror that every window's save reads from is the same
+    /// discipline one step further back. Nothing that does not need the
+    /// key ever holds it.
+    ///
+    /// And a thirteenth positional is a real hazard on this particular
+    /// function, not a theoretical one -- its own argument list carries
+    /// three separate comments about same-shaped parameters being
+    /// transposable without the compiler noticing. Carrying a field
+    /// forward from the file cannot be transposed with anything.
+    ///
+    /// Written only by `typesafe.rs`'s own read-modify-write, which is
+    /// also the one seam a later move to the OS keychain would touch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typesafe: Option<TypeSafeConfig>,
+}
+
+/// The TypeSafe turn verdict's two settings.
+///
+/// Both `Option`, on this file's usual "absence is a real answer"
+/// convention: no key and never-asked are the same state here, and the
+/// feature is OFF unless somebody said otherwise. That default is the
+/// design rule, not a preference -- the verdict sends a session's screen
+/// tail to a third party, so it cannot be something a user discovers
+/// having already happened.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TypeSafeConfig {
+    /// Absent means off. See above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// The API key, in plaintext, in a file written 0600.
+    ///
+    /// NEVER serialised towards the frontend: `typesafe.rs` answers the
+    /// Settings panel with a boolean saying whether one is set, and the
+    /// string itself only ever travels from here into curl's stdin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
 }
 
 /// The app-wide require-review default, wrapped in a type of its own for
@@ -940,8 +989,39 @@ pub fn save(config_dir: &Path, config: &AppConfig) -> anyhow::Result<()> {
     std::fs::create_dir_all(config_dir)?;
     let path = config_path(config_dir);
     let contents = serde_json::to_string_pretty(config)?;
-    std::fs::write(path, contents)?;
+    std::fs::write(&path, contents)?;
+    restrict_to_owner(&path);
     Ok(())
+}
+
+/// Narrows config.json to its owner, because it now holds a credential
+/// (`TypeSafeConfig::api_key`).
+///
+/// Unix: 0600, set after every write rather than once at creation. A file
+/// that already existed keeps whatever mode it was created with, and this
+/// is the only moment gavin is guaranteed to be looking at it.
+///
+/// Windows: nothing to do, and that is a measured answer rather than a
+/// gap. The config directory is under the user's own profile
+/// (`%APPDATA%\gavin`), whose inherited ACL already grants the owning
+/// user, SYSTEM and Administrators and nobody else -- the same protection
+/// the agent CLIs' own credential files rely on, which `agent_usage.rs`
+/// reads from exactly those paths. Writing an explicit DACL here would
+/// mean a new dependency to restate a rule Windows already applies.
+///
+/// Best-effort on purpose: a config that saved but could not be chmodded
+/// is still a config that saved, and failing the write would lose the
+/// user's layout over a permission bit.
+fn restrict_to_owner(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 }
 
 #[cfg(test)]
@@ -1177,6 +1257,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -1208,6 +1289,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -1253,6 +1335,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -1404,6 +1487,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1455,6 +1539,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1491,6 +1576,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1530,6 +1616,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1583,6 +1670,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1611,6 +1699,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(&nested, &config).unwrap();
 
@@ -1647,6 +1736,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(dir.path(), &config).unwrap();
 
@@ -1794,6 +1884,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1840,6 +1931,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1881,6 +1973,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);
@@ -1947,6 +2040,7 @@ mod tests {
             require_review: RequireReviewDefault::default(),
             launch: None,
             custom_resume_args: None,
+            typesafe: None,
         };
         save(dir.path(), &config).unwrap();
         assert_eq!(load(dir.path()).unwrap(), config);

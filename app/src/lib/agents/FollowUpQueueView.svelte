@@ -20,6 +20,7 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tooltip } from "$lib/core/tooltip";
   import { layoutState, queuedInputsById } from "$lib/core/layoutState";
+  import { turnVerdictById } from "$lib/agents/turnVerdictState";
   import {
     composeRefusal,
     deliveryHold,
@@ -70,7 +71,10 @@
   const target = $derived(
     queueTargetFor(
       $layoutState.sessionStatusById[sessionId],
-      $layoutState.interruptedSessionIds.has(sessionId)
+      $layoutState.interruptedSessionIds.has(sessionId),
+      // Through the store, so a verdict that lands after the status
+      // re-derives the target -- see queueTargetFor.
+      $turnVerdictById[sessionId] ?? null
     )
   );
   const hold = $derived(deliveryHold(target, queued.length));

@@ -17,6 +17,7 @@ mod pull_request;
 mod session;
 mod superpowers;
 mod trash;
+mod typesafe;
 mod updater;
 mod workspace_delete;
 mod workspace_window;
@@ -99,6 +100,11 @@ pub fn run() {
             session::kill_session,
             session::adopt_session,
             session::snapshot_session,
+            session::session_screen,
+            typesafe::typesafe_settings,
+            typesafe::set_typesafe_enabled,
+            typesafe::set_typesafe_api_key,
+            typesafe::typesafe_verdict,
             session::set_failure_patterns,
             session::get_workspaces_state,
             session::set_workspaces_state,

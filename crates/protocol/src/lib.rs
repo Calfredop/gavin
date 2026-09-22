@@ -18,6 +18,32 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v39 added `Request::SessionScreen`: "what does this session's screen
+/// say right now", answered as PLAIN TEXT from the same per-session
+/// terminal parser `Snapshot` repaints from (`SessionScreen::contents`).
+///
+/// `Snapshot` already reaches that model and cannot serve this: it
+/// answers in ESCAPE SEQUENCES aimed at a terminal, and it writes them
+/// to the session's attached writer rather than replying to the caller
+/// -- it exists to repaint a reconnected xterm. A reader that wants the
+/// TEXT of a turn that has just gone quiet has nowhere to get it, and
+/// the sessions that need it most are precisely the ones with no
+/// terminal attached: a rail step in a background pane, a card run
+/// nobody is looking at.
+///
+/// Visible rows only, never the scrollback, for the reason
+/// `SessionScreen::contents` already gives: a verdict is about the turn
+/// that just ended, and history is what must not condemn it.
+///
+/// A new request TYPE, so `min_version_for` gates it and an older daemon
+/// never receives it. `daemonCompat.ts` owes a `turnVerdict: 39` entry
+/// all the same, and for a sharper reason than "say why the button is
+/// grey": refusing to SEND decides nothing about what to do instead. An
+/// app that asked for a screen, got a version error and then judged the
+/// turn on the empty string would be inventing a verdict out of a
+/// failed read. The entry's consumer skips the verdict outright and
+/// keeps today's answer.
+///
 /// v38 widens `NameSession` with `agent_conversation_id`: an agent whose
 /// CLI mints its OWN conversation id (codex, gemini, opencode -- unlike
 /// Claude Code, which gavin mints one for at launch) self-reports it once
@@ -351,7 +377,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 38;
+pub const PROTOCOL_VERSION: u32 = 39;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -465,6 +491,23 @@ pub enum Request {
     /// notification for every session that happens to be waiting on the
     /// human.
     Snapshot {
+        id: String,
+    },
+    /// This session's screen as PLAIN TEXT -- the visible grid, one line
+    /// per row, no escape sequences. Answered with
+    /// `Response::SessionScreen`.
+    ///
+    /// The read half of the same model `Snapshot` repaints from, and a
+    /// separate request rather than a flag on it because the two answer
+    /// different questions to different audiences: `Snapshot` writes
+    /// bytes to whatever terminal is ATTACHED, so it cannot serve a
+    /// caller that wants the text and has no terminal -- which is every
+    /// caller this variant exists for.
+    ///
+    /// No scrollback, because `SessionScreen::contents` has none to
+    /// give and that is deliberate: this is read to judge the turn that
+    /// just ended, and the previous one must not condemn it.
+    SessionScreen {
         id: String,
     },
     /// The text this session's agent prints when it has STOPPED because
@@ -1104,6 +1147,20 @@ pub fn min_version_for(req: &Request) -> u32 {
         // what it did before any of this existed.
         Request::Snapshot { .. } => 18,
 
+        // The rendered screen as text (v39), for the TypeSafe turn
+        // verdict. A new request TYPE, so this match is the real wire
+        // gate: a daemon older than 39 has no such request and the app
+        // never sends it.
+        //
+        // It is NOT the whole gate, and the other half is the one that
+        // matters. Refusing to send leaves the CALLER holding a version
+        // error where it expected a screen, and a verdict judged on the
+        // empty string is a worse answer than no verdict at all. So
+        // daemonCompat.ts carries `turnVerdict: 39` and its consumer
+        // skips the request entirely, keeping today's answer -- which is
+        // exactly what the whole feature promises to fall back to.
+        Request::SessionScreen { .. } => 39,
+
         // One sample of what every session costs. A new request TYPE, so
         // this match is the whole gate -- there is no widened payload
         // riding along, which is exactly why the command line and the
@@ -1355,6 +1412,19 @@ pub enum Response {
     StatusChanged { id: String, status: String },
     GitStatusChanged { id: String, status: Option<GitStatus> },
     SessionRestored { id: String },
+    /// The answer to `Request::SessionScreen`: the session's visible grid
+    /// rendered as plain text.
+    ///
+    /// Carries the `id` back rather than relying on the caller to
+    /// remember what it asked about -- every other id-addressed response
+    /// here does, and a screen attributed to the wrong session is a
+    /// verdict passed on the wrong agent.
+    ///
+    /// An empty string is a real answer: a session that has never had a
+    /// pump has produced nothing to render. The daemon answers `Error`
+    /// for a session it does not know, so absence and emptiness stay
+    /// distinguishable.
+    SessionScreen { id: String, contents: String },
     /// The stronger half of `SessionRestored`: this session came back
     /// from a previous daemon lifetime AND the command it was launched
     /// with was not re-run, so the tab holds a bare shell rather than the
@@ -3653,7 +3723,11 @@ mod tests {
         // daemon answers Unsupported and every client reads "no identity
         // yet"; nothing is silently dropped. The same version also widened
         // Rail with `trigger`, which is a field and so invisible here.
-        assert_eq!(PROTOCOL_VERSION, 38);
+        // v39: Request::SessionScreen + Response::SessionScreen -- the
+        // rendered screen as plain text, for the TypeSafe turn verdict.
+        // A new request TYPE, so a pre-v39 daemon never receives it; the
+        // app skips the verdict rather than judging an empty screen.
+        assert_eq!(PROTOCOL_VERSION, 39);
     }
 
     #[test]
@@ -3668,6 +3742,15 @@ mod tests {
     #[test]
     fn malformed_json_is_still_an_error() {
         assert!(serde_json::from_str::<Request>("{not json").is_err());
+    }
+
+    #[test]
+    fn session_screen_is_a_v39_request() {
+        // The gate is half the compatibility story here, and the app
+        // owns the other half: a daemon with no such request must never
+        // be sent it, AND the app must skip the verdict rather than
+        // judge a turn on the empty string it would be left holding.
+        assert_eq!(min_version_for(&Request::SessionScreen { id: "s".into() }), 39);
     }
 
     #[test]
@@ -3866,6 +3949,7 @@ mod tests {
             Request::WatchGavinRoot { workspace_id: "w".into(), root_path: "r".into() },
             Request::UnwatchGavinRoot { workspace_id: "w".into() },
             Request::Snapshot { id: "s".into() },
+            Request::SessionScreen { id: "s".into() },
             Request::SessionProcesses,
             Request::EndOrphan { id: "s".into() },
             // v26's follow-up queue. Four variants, listed here as well
@@ -4049,7 +4133,7 @@ mod tests {
     /// v27=1 (CardRuns), v28=1 (SetRailRunByRoot), v29=4 (the
     /// follow-up queue), v30=3 (standalone tool runs), v35=1 (Hello --
     /// client identity), v37=2 (an agent authoring its own workspace's
-    /// tools), plus Unknown.
+    /// tools), v39=1 (SessionScreen), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -4083,6 +4167,8 @@ mod tests {
         expected.insert(35, 1); // Request::Hello -- client identity
         // Save/DeleteToolByRoot -- agent-authored workspace tools.
         expected.insert(37, 2);
+        // Request::SessionScreen -- the rendered screen as text.
+        expected.insert(39, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

@@ -68,6 +68,15 @@ describe("queueTargetFor", () => {
     daemonCompat.set({ daemonVersion: 25, appVersion: 29, degraded: true });
     expect(queueTargetFor("working", false).blockedReason).toContain("v29");
   });
+
+  it("carries the verdict it is handed, and none when it is handed none", () => {
+    // Handed in rather than read here, so a view that subscribes to the
+    // store re-derives when the answer lands (see queueTargetFor).
+    const asking = { state: "read", reading: { kind: "asking" } } as const;
+    expect(queueTargetFor("idle", false, asking).verdict).toEqual(asking);
+    expect(queueTargetFor("idle", false).verdict).toBeNull();
+    expect(queueTargetFor("idle", false, null).verdict).toBeNull();
+  });
 });
 
 describe("queueFor", () => {
