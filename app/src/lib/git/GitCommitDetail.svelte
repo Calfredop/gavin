@@ -1,7 +1,16 @@
 <script lang="ts">
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+  import { untrack } from "svelte";
   import { gitStore, selectDetailFile } from "$lib/git/gitState";
   import { layoutState, setGitViewPrefs } from "$lib/core/layoutState";
+  import { gavinTrees } from "$lib/core/gavinState";
+  import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
+  import { flattenCardViews, mergePlanCards, type CardView } from "$lib/core/planBoard";
+  import { commitState, linkableCards, linkedCards } from "$lib/git/commitCardLink";
+  import { askCommitCardLink, clearCommitCardLink, commitCardLinks } from "$lib/git/commitCardLinkState";
+  import CardDetailModal from "$lib/cards/CardDetailModal.svelte";
+  import { linkForCardPath, openLinkedCard } from "$lib/cards/cardTabLink";
+  import { orchestrations } from "$lib/orchestration/orchestrationState";
   import { shortSha, LARGE_HUNK_LINES, type DiffLayout } from "$lib/git/git";
   import { toUnifiedRows, toSplitRows } from "$lib/git/diffRows";
   import { tooltip } from "$lib/core/tooltip";
@@ -43,6 +52,49 @@
     copied = true;
     setTimeout(() => (copied = false), 1200);
   }
+
+  // --- the card this commit served (commitCardLink.ts) --------------------
+  // Asked when a commit is SELECTED and its detail has loaded -- the
+  // message and file list are the state -- and never for the log as a
+  // whole: the graph draws hundreds of commits, and a request per row
+  // would be a request for nothing the human is looking at. The driver
+  // asks once per sha, so the re-renders this pane goes through while
+  // the diff loads cost nothing. The cards are read untracked: a card
+  // edited while the same commit is selected is not a reason to ask
+  // again.
+  const tree = $derived($gavinTrees[workspaceId]);
+  $effect(() => {
+    if (sha && commit && detail) {
+      const state = commitState(commit.subject, detail.body, detail.files.map((f) => f.path));
+      askCommitCardLink(workspaceId, sha, state, untrack(() => linkableCards(tree)));
+    } else {
+      clearCommitCardLink(workspaceId);
+    }
+  });
+  $effect(() => {
+    const id = workspaceId;
+    return () => clearCommitCardLink(id);
+  });
+  // Shown only for the commit on screen: a slot about the previous one
+  // is not an answer about this one, and a pending slot shows nothing.
+  const linkSlot = $derived($commitCardLinks[workspaceId] ?? null);
+  const link = $derived(
+    linkSlot && linkSlot.key === sha && linkSlot.entry.state === "read" ? linkSlot.entry.link : null
+  );
+  const linkCards = $derived(linkedCards(link));
+
+  // Opening a card from here goes through the same detail modal the
+  // board opens, over the same projection, so what the human sees is
+  // the card and not a copy of it. The board is fetched on mount because
+  // this tab can be the first one opened in a workspace.
+  let openCardPath = $state<string | null>(null);
+  const board = $derived($kanbanState[workspaceId] ?? null);
+  const merged = $derived(board ? mergePlanCards(board, tree) : null);
+  const allCards = $derived<CardView[]>(merged ? flattenCardViews(merged) : []);
+  const openCard = $derived(openCardPath ? (allCards.find((c) => c.id === openCardPath) ?? null) : null);
+  $effect(() => {
+    void fetchBoard(workspaceId);
+  });
 </script>
 
 <div class="detail">
@@ -65,6 +117,25 @@
       </div>
     {/if}
     <pre class="message">{detail?.body ?? commit.subject}</pre>
+    {#if linkCards.length > 0}
+      <!-- A suggestion, never a record: nothing here is written to the
+           card or the commit, and closing the tab forgets it. -->
+      <div
+        class="card-link"
+        role="note"
+        aria-label={link?.kind === "card" ? "The card this commit was made for" : "Cards this commit may have been made for"}
+      >
+        <span class="card-link-label">{link?.kind === "card" ? "Card:" : "Possibly:"}</span>
+        {#each linkCards as c (c.path)}
+          <button
+            type="button"
+            class="card-link-card"
+            use:tooltip={"Suggested from the commit message and its file list. Open the card"}
+            onclick={() => (openCardPath = c.path)}>{c.title}</button
+          >
+        {/each}
+      </div>
+    {/if}
     <div class="files" role="listbox" aria-label="Changed files">
       {#if !detail}
         <div class="none">Loading…</div>
@@ -103,6 +174,28 @@
     </div>
   {/if}
 </div>
+
+{#if openCard && board}
+  <CardDetailModal
+    card={openCard}
+    {workspaceId}
+    columns={board.columns}
+    labels={board.labels}
+    {allCards}
+    onClose={() => (openCardPath = null)}
+    onOpenCard={(path) => (openCardPath = path)}
+    onPathChange={(path) => (openCardPath = path)}
+    onGoToBoard={() => {
+      // This pane is not the board, so the modal's jump is offered here
+      // the way the card tab pane offers it: the board (or the rail the
+      // card sits on) opens the card, and this copy of it closes.
+      const path = openCardPath;
+      if (!path) return;
+      openCardPath = null;
+      void openLinkedCard(workspaceId, linkForCardPath($orchestrations[workspaceId], tree, path));
+    }}
+  />
+{/if}
 
 <style>
   .detail {
@@ -192,6 +285,35 @@
     max-height: 30%;
     overflow: auto;
     border-bottom: 1px solid var(--border);
+  }
+  .card-link {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.78em;
+  }
+  .card-link-label {
+    color: var(--text-subtle);
+  }
+  .card-link-card {
+    background: transparent;
+    border: 1px solid var(--border-accent);
+    border-radius: 8px;
+    color: var(--accent-text);
+    font-family: monospace;
+    font-size: 1em;
+    padding: 0 7px;
+    cursor: pointer;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .card-link-card:hover {
+    border-color: var(--border-strong);
   }
   .files {
     flex: 0 1 auto;
