@@ -162,7 +162,7 @@ fn spawn_detached(
     build: impl Fn(&mut Command) -> anyhow::Result<()>,
 ) -> anyhow::Result<std::process::Child> {
     use std::os::unix::process::CommandExt;
-    let mut command = Command::new(exe);
+    let mut command = crate::program::command(exe);
     build(&mut command)?;
     // SAFETY: `setsid` is async-signal-safe and touches nothing the
     // parent shares; the closure allocates nothing.
@@ -196,7 +196,6 @@ fn spawn_detached(
 ) -> anyhow::Result<std::process::Child> {
     use std::os::windows::process::CommandExt;
 
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
     /// How a job that forbids breakaway answers.
@@ -205,12 +204,12 @@ fn spawn_detached(
     stop_inheriting_stdio();
 
     let attempt = |flags: u32| -> anyhow::Result<std::process::Child> {
-        let mut command = Command::new(exe);
+        let mut command = crate::program::command(exe);
         build(&mut command)?;
         command.creation_flags(flags);
         Ok(command.spawn()?)
     };
-    let base = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+    let base = crate::program::CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
     match attempt(base | CREATE_BREAKAWAY_FROM_JOB) {
         Ok(child) => Ok(child),
         Err(e)
