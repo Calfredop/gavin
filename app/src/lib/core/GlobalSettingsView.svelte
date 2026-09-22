@@ -332,6 +332,17 @@
       typesafeKeyError = String(e);
     }
   }
+  // Change attribution's own switch. Not gated on the daemon: it reads
+  // the bindings and runs git through the host, and needs no request an
+  // older daemon lacks.
+  async function setChangeAttributionOn(on: boolean) {
+    typesafeKeyError = null;
+    try {
+      typesafeSettings.set(await backend.setTypesafeChangeAttribution(on));
+    } catch (e) {
+      typesafeKeyError = String(e);
+    }
+  }
   /// `require_local_token` is a daemon-GLOBAL setting -- a marker file the
   /// daemon reads per request -- not a per-workspace one.
   let requireLocalToken = $state(false);
@@ -391,15 +402,19 @@
     },
     { id: "agent-pause", keywords: ["Agent pause", "pause", "cycle", "limit", "schedule", "usage"] },
     {
-      id: "turn-verdict",
+      id: "typesafe",
       keywords: [
-        "Turn verdict",
         "TypeSafe",
+        "Turn verdict",
+        "Change attribution",
         "second opinion",
         "API key",
         "question",
         "asking",
         "failure cause",
+        "whose change",
+        "attribution",
+        "shared checkout",
         "jev",
       ],
     },
@@ -805,10 +820,14 @@
       {/if}
     </section>
 
-    <section hidden={!settingsFilter.visible("turn-verdict") || selectedSection !== "turn-verdict"}>
-      <h3>Turn verdict</h3>
+    <section hidden={!settingsFilter.visible("typesafe") || selectedSection !== "typesafe"}>
+      <h3>TypeSafe</h3>
       <p class="hint">
-        When an agent goes quiet, gavin decides its turn ended from two seconds of silence and one
+        Two features take a second opinion from TypeSafe, each behind a switch of its own, both on the
+        one key below. Each one says what it sends; neither sends anything until you turn it on.
+      </p>
+      <p class="hint">
+        <strong>Turn verdict.</strong> When an agent goes quiet, gavin decides its turn ended from two seconds of silence and one
         error string — which only Claude Code has. An agent that asks you something in a sentence
         rings no bell, so a rail walks past the question; an agent of any other CLI that breaks
         reads as one that finished. Switching this on takes a second opinion.
@@ -835,6 +854,35 @@
       {#if turnVerdictBlocked}
         <p class="hint warn">{turnVerdictBlocked}</p>
       {/if}
+      <p class="hint">
+        <strong>Change attribution.</strong> Gavin attributes a change to a card by the commit its run
+        started on. In a checkout several cards share, that makes every file every card's: a run's
+        Changes view lists other sessions' files as its own, the Review tab groups cards that only
+        shared a folder, and the discard prompt cannot say what else goes with the reset. Switching this
+        on asks TypeSafe, one changed file at a time, which of the cards that ran in that checkout the
+        change belongs to, and shows the answer as a hint: a chip on the file, a line in the discard
+        prompt, a collision the Review tab sets aside. It never removes a file from a list and never
+        changes what a discard resets.
+      </p>
+      <p class="hint warn">
+        <strong>A separate switch, because more leaves this machine.</strong> Only when another card has
+        run in the same checkout, and only when you open a run's changes or the Review tab, gavin sends
+        <code>api.typesafe.ai</code> a diff excerpt of each changed file — up to 70 changed lines of your
+        source code — together with the card titles and bodies of the cards that ran there. Lockfiles
+        and images are skipped. About $0.0001 a file, on your key; nothing is sent for a run alone in
+        its worktree.
+      </p>
+      <div class="row">
+        <span>Change attribution</span>
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={$typesafeSettings?.changeAttribution ?? false}
+            onchange={(e) => void setChangeAttributionOn(e.currentTarget.checked)}
+          />
+          <span>Ask TypeSafe which card a changed file belongs to</span>
+        </label>
+      </div>
       <div class="row">
         <span>API key</span>
         <input
