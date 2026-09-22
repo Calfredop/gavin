@@ -93,7 +93,9 @@
             onclick={() => pick(entry)}
             use:tooltip={entry.tip}
           >
-            <span class="marker">{entry.checked ? "✓" : entry.active ? "•" : ""}</span>
+            <span class="marker" style:color={entry.markerColor}
+              >{entry.checked ? "✓" : entry.active ? "•" : ""}</span
+            >
             <span class="item-label">{entry.label}</span>
             {#if entry.detail}<span class="item-detail">{entry.detail}</span>{/if}
           </button>

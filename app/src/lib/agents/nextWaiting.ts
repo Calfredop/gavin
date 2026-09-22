@@ -17,9 +17,10 @@
 // would be the one place the app contradicts itself about whether it
 // needs you.
 //
-// Longest wait first is also what makes it a NEXT button rather than a
-// list: the top row is the one that has waited longest, which is the one
-// to go to next.
+// The button is split. Its icon jumps straight to the next session
+// (nextWaitingTarget) -- the one action the human wants nearly every
+// time, at one click rather than two -- and its chevron opens the list,
+// for the time they want a particular one.
 
 import type { ContextMenuEntry } from "$lib/core/contextMenu";
 import type { Workspace } from "$lib/core/workspace";
@@ -30,13 +31,22 @@ import { rowTip, waitLabel, type AttentionReason, type AttentionRow } from "$lib
 /// is the same list.
 export const NEXT_WAITING_TITLE = "Waiting on you";
 
-/// The button's name. An icon on a tab row has no room for words (see
-/// newPage.ts), so they live here, in its aria-label and its bubble.
-export const NEXT_WAITING_LABEL = "Go to a session waiting on you";
+/// The two halves' names. An icon on a tab row has no room for words
+/// (see newPage.ts), so they live here, in aria-labels and bubbles.
+export const NEXT_WAITING_LABEL = "Go to the next session waiting on you";
+export const WAITING_LIST_LABEL = "List the sessions waiting on you";
 
 /// Why the button is disabled with no workspace open -- New page's own
 /// reason, for the same missing workspace.
 export const NO_WORKSPACE_TIP = "Open a workspace to see what in it is waiting on you";
+
+/// The colour of the "you are here" dot: the active workspace's own
+/// accent, read exactly as a page's focused tab reads it for its
+/// underline (Pane.svelte's `.tab.focused`) -- the amber fallback for a
+/// workspace with no colour included -- so the dot on the session in the
+/// menu and the mark on its tab are one colour. `--ws-accent` is set on
+/// the app's root, which the menu layer is mounted inside.
+export const CURRENT_DOT_COLOR = "var(--ws-accent, #d9a648)";
 
 /// Each reason in a word or two, for the row's muted right-hand column.
 ///
@@ -60,17 +70,45 @@ export function workspaceWaiting(rows: readonly AttentionRow[], workspaceId: str
   return workspaceId === null ? [] : rows.filter((row) => row.workspaceId === workspaceId);
 }
 
-/// The button's bubble: why it is disabled, or how much is waiting.
+/// Where the icon's click goes: the waiting session AFTER the one on
+/// screen, in inbox order, wrapping round to the top -- or the longest
+/// wait when the human is on none of them. Null when nothing is waiting.
+///
+/// After, not simply the first row: a session stays in the list until
+/// its agent prints something, so the moment the human has jumped to the
+/// longest wait it is still the first row, and a button that always went
+/// there would go nowhere from the second click on. Stepping from where
+/// they stand walks every wait in turn instead. With one wait, and the
+/// human already on it, the target is that same session; the bubble says
+/// so (see nextWaitingTip).
+export function nextWaitingTarget(
+  rows: readonly AttentionRow[],
+  currentSessionId: string | null
+): AttentionRow | null {
+  if (rows.length === 0) return null;
+  const at = rows.findIndex((row) => row.sessionId === currentSessionId);
+  return rows[(at + 1) % rows.length];
+}
+
+/// The icon's bubble: why it is disabled, or where the click goes and
+/// how much is waiting.
 ///
 /// The count lives here and not on the button: a number that comes and
 /// goes would reflow the row of tabs beside it, which is why New page
 /// lost its words too. The empty case echoes the hub's quiet line for an
 /// empty inbox, narrowed to the workspace it is about.
-export function nextWaitingTip(ws: Pick<Workspace, "name"> | null, rows: readonly AttentionRow[]): string {
+export function nextWaitingTip(
+  ws: Pick<Workspace, "name"> | null,
+  rows: readonly AttentionRow[],
+  currentSessionId: string | null
+): string {
   if (!ws) return NO_WORKSPACE_TIP;
-  if (rows.length === 0) return `Nothing in ${ws.name} is waiting on you`;
+  const target = nextWaitingTarget(rows, currentSessionId);
+  if (!target) return `Nothing in ${ws.name} is waiting on you`;
+  if (target.sessionId === currentSessionId) return `The only session waiting in ${ws.name} is this one`;
   const sessions = rows.length === 1 ? "1 session" : `${rows.length} sessions`;
-  return `${sessions} in ${ws.name} waiting on you`;
+  const label = rowLabel(target, spansPages(rows));
+  return `Go to ${label} (${REASON_WORD[target.reason]}) — ${sessions} in ${ws.name} waiting on you`;
 }
 
 /// The dropdown: the heading, then one row per waiting session in inbox
@@ -85,24 +123,36 @@ export function nextWaitingTip(ws: Pick<Workspace, "name"> | null, rows: readonl
 /// `currentSessionId` is the session already on screen. Its row keeps
 /// its place -- the order is the inbox's, and a row that jumped around
 /// depending on where the human stood would be a different list each
-/// time -- but carries the menu's "you are here" dot, so the pick that
-/// goes nowhere is visibly that one.
+/// time -- but carries the menu's "you are here" dot, in the workspace's
+/// colour, so the pick that goes nowhere is visibly that one, and the
+/// icon's next is visibly the row under it.
 export function nextWaitingEntries(
   rows: readonly AttentionRow[],
   currentSessionId: string | null,
   onPick: (row: AttentionRow) => void
 ): ContextMenuEntry[] {
-  const spansPages = new Set(rows.map((row) => row.pageId)).size > 1;
+  const withPage = spansPages(rows);
   return [
     { heading: NEXT_WAITING_TITLE },
     ...rows.map((row) => ({
-      label: spansPages ? `${row.pageName} · ${row.tabName}` : row.tabName,
+      label: rowLabel(row, withPage),
       detail: `${REASON_WORD[row.reason]} · ${waitLabel(row.waitedMs, row.watched)}`,
       tip: rowTip(row),
       active: row.sessionId === currentSessionId,
+      markerColor: row.sessionId === currentSessionId ? CURRENT_DOT_COLOR : undefined,
       onPick: () => onPick(row),
     })),
   ];
+}
+
+function spansPages(rows: readonly AttentionRow[]): boolean {
+  return new Set(rows.map((row) => row.pageId)).size > 1;
+}
+
+/// A row's name in the menu and in the icon's bubble -- one spelling for
+/// both, so the bubble names the row the human will find in the list.
+function rowLabel(row: AttentionRow, withPage: boolean): string {
+  return withPage ? `${row.pageName} · ${row.tabName}` : row.tabName;
 }
 
 /// The session the human is looking at right now, or null.

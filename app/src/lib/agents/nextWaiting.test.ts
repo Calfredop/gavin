@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
+  CURRENT_DOT_COLOR,
   NEXT_WAITING_TITLE,
   NO_WORKSPACE_TIP,
   REASON_WORD,
   nextWaitingEntries,
+  nextWaitingTarget,
   nextWaitingTip,
   sessionOnScreen,
   workspaceWaiting,
@@ -109,6 +111,15 @@ describe("nextWaitingEntries", () => {
     ]);
   });
 
+  // The dot is the workspace's colour, read the way a page's focused tab
+  // reads it for its underline -- one colour for the session in the menu
+  // and the mark on its tab -- and only on the row that carries a dot.
+  it("draws the you-are-here dot in the workspace's accent", () => {
+    expect(CURRENT_DOT_COLOR).toBe("var(--ws-accent, #d9a648)");
+    const entries = nextWaitingEntries([row("a"), row("b")], "b", () => {});
+    expect(items(entries).map((i) => i.markerColor)).toEqual([undefined, CURRENT_DOT_COLOR]);
+  });
+
   // openContextMenu refuses a menu of nothing but a heading, so an empty
   // inbox cannot open an empty menu even if the button were not
   // disabled.
@@ -154,18 +165,55 @@ describe("workspaceWaiting", () => {
   });
 });
 
+describe("nextWaitingTarget", () => {
+  const rows = [row("a"), row("b"), row("c")];
+
+  it("is the longest wait when the human is on none of them", () => {
+    expect(nextWaitingTarget(rows, null)?.sessionId).toBe("a");
+    expect(nextWaitingTarget(rows, "elsewhere")?.sessionId).toBe("a");
+  });
+
+  // A session stays waiting until its agent prints something, so the one
+  // the human just jumped to is still in the list. Counting from it is
+  // what lets repeated clicks walk every wait instead of going nowhere.
+  it("steps to the wait after the one on screen, wrapping round", () => {
+    expect(nextWaitingTarget(rows, "a")?.sessionId).toBe("b");
+    expect(nextWaitingTarget(rows, "b")?.sessionId).toBe("c");
+    expect(nextWaitingTarget(rows, "c")?.sessionId).toBe("a");
+  });
+
+  it("stays on the only wait, and is nothing when none is left", () => {
+    expect(nextWaitingTarget([row("a")], "a")?.sessionId).toBe("a");
+    expect(nextWaitingTarget([], "a")).toBeNull();
+    expect(nextWaitingTarget([], null)).toBeNull();
+  });
+});
+
 describe("nextWaitingTip", () => {
   const ws = { name: "gavin" };
 
-  it("counts what is waiting in the workspace", () => {
-    expect(nextWaitingTip(ws, [row("a")])).toBe("1 session in gavin waiting on you");
-    expect(nextWaitingTip(ws, [row("a"), row("b")])).toBe("2 sessions in gavin waiting on you");
+  // The bubble names the row the click will land on, in the menu's own
+  // spelling, so the human can find it in the list.
+  it("names where the click goes, and counts what is waiting", () => {
+    expect(nextWaitingTip(ws, [row("a")], null)).toBe("Go to tab a (asking) — 1 session in gavin waiting on you");
+    expect(nextWaitingTip(ws, [row("a"), row("b", { reason: "failed" })], "a")).toBe(
+      "Go to tab b (failed) — 2 sessions in gavin waiting on you"
+    );
+    expect(
+      nextWaitingTip(ws, [row("a"), row("b", { pageId: "p2", pageName: "Page 2" })], "a")
+    ).toBe("Go to Page 2 · tab b (asking) — 2 sessions in gavin waiting on you");
+  });
+
+  // Clicking would go nowhere; saying "go to" it would be a promise the
+  // click cannot keep.
+  it("says so when the only wait is the one on screen", () => {
+    expect(nextWaitingTip(ws, [row("a")], "a")).toBe("The only session waiting in gavin is this one");
   });
 
   // The two reasons the button is disabled, each said on its wrapper.
   it("says why the button is disabled", () => {
-    expect(nextWaitingTip(ws, [])).toBe("Nothing in gavin is waiting on you");
-    expect(nextWaitingTip(null, [])).toBe(NO_WORKSPACE_TIP);
+    expect(nextWaitingTip(ws, [], null)).toBe("Nothing in gavin is waiting on you");
+    expect(nextWaitingTip(null, [], null)).toBe(NO_WORKSPACE_TIP);
   });
 });
 
