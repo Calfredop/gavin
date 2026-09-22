@@ -172,10 +172,14 @@ foreach ($side in @('gavin-daemon.exe', 'gavin-mcp.exe', 'Gavin.exe')) {
 }
 
 Say ("installer: " + $setup.FullName)
-Say 'Install tip: quit Gavin, stop its daemon if needed, run the setup,'
+# The setup stops the daemon itself (app/src-tauri/nsis/hooks.nsh), and
+# every session the daemon holds ends with it -- including any agent
+# session that launched this script. Run it from a plain terminal.
 $programs = Join-Path $env:LOCALAPPDATA 'Programs\Gavin'
-$defaultInst = Join-Path $env:LOCALAPPDATA 'Gavin'
-Say ("  and choose $programs (not the default $defaultInst).")
+$stateDir = Join-Path $env:LOCALAPPDATA 'gavin'
+Say 'Install tip: quit Gavin and run the setup from a plain terminal, not an agent tab.'
+Say ("  It stops the daemon itself (every open session ends with it), installs to")
+Say ("  $programs, and refuses $stateDir, the daemon's data folder.")
 Say 'Then: scripts\start-stable-win.ps1 -SkipBuild   (or the Start menu entry)'
 
 if (-not $NoOpen) {

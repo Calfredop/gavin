@@ -144,15 +144,17 @@ if ($Path) {
     $candidates += $Path
 }
 else {
-    # The folder to choose in the installer, then the installer's own
-    # default, then the stable worktree's release output, which is also
-    # outside the dev checkout and therefore also safe from its builds.
+    # The installer's default, then where installs made before
+    # app/src-tauri/nsis/hooks.nsh landed, then the stable worktree's
+    # release output, which is also outside the dev checkout and
+    # therefore also safe from its builds.
     #
-    # The installer defaults to %LOCALAPPDATA%\Gavin, and that is the
-    # daemon's state directory (%LOCALAPPDATA%\gavin, case-insensitively):
-    # the binaries land beside daemon.log and the three SQLite files. It
-    # works -- the uninstaller deletes only what it installed and removes
-    # the folder only when empty -- but Programs\Gavin keeps them apart.
+    # Tauri's own default was %LOCALAPPDATA%\Gavin, which is the daemon's
+    # state directory (%LOCALAPPDATA%\gavin, case-insensitively): the
+    # binaries landed beside daemon.log and the three SQLite files. The
+    # hooks move the default to Programs\Gavin and refuse the state
+    # directory; an install still sitting there predates them, and the
+    # next setup run retires it.
     $candidates += (Join-Path $env:LOCALAPPDATA 'Programs\Gavin\Gavin.exe')
     $candidates += (Join-Path $env:LOCALAPPDATA 'Gavin\Gavin.exe')
     $candidates += (Join-Path (Split-Path -Parent $Root) 'gavin-stable\target\release\Gavin.exe')
