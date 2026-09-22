@@ -130,7 +130,7 @@ export async function saveToolAction(workspaceId: string, tool: Tool): Promise<s
 export async function deleteToolAction(workspaceId: string, toolId: string): Promise<string | null> {
   if (isBuiltinId(toolId)) return "Built-in tools cannot be deleted.";
   try {
-    await backend.deleteTool(toolId);
+    await backend.deleteTool(toolId, workspaceId);
   } catch (e) {
     return String(e instanceof Error ? e.message : e);
   }

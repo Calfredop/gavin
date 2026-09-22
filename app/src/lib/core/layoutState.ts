@@ -23,6 +23,14 @@ import { buildRunCommand, mintConversationId, noPromptReason } from "$lib/cards/
 import { workspaceIdForSession } from "$lib/core/workspace";
 import { maybeNotifyStatusChange, parseSessionStatus, type SessionStatus } from "$lib/core/notifications";
 import { initGavinListeners, watchRootedWorkspaces, gavinTrees, worktreeSetups } from "$lib/core/gavinState";
+import {
+  handleRemoteLinkLost,
+  handleRemoteLinkReady,
+  seedSshLinks,
+  sshLinks,
+  type RemoteLinkEvent,
+} from "$lib/workspace/sshLinkState";
+import { isSshWorkspace, readyHosts, SSH_LIMITATION } from "$lib/workspace/sshWorkspace";
 import { followMovedCardPath, followRenamedContext } from "$lib/files/planExplorer";
 import { retargetPath } from "$lib/files/fileTree";
 import {
@@ -488,6 +496,10 @@ function adoptWorkspaces(data: WorkspacesData): void {
   // owes the daemon too: gavin trees arrive per window, and a workspace
   // whose root this window never armed would render an empty board.
   watchRootedWorkspaces(data.workspaces);
+  // An ssh workspace made in the other window is one this window has no
+  // link state for yet; connecting is the honest default until its host
+  // reports in (the events reach every window).
+  seedSshLinks(data.workspaces);
 }
 
 /// Makes a workspace the active one: stamps it as last used, and takes
@@ -1154,7 +1166,11 @@ export async function reconcileLayoutSessions(): Promise<void> {
       ...Object.keys(before.fileTabsById),
       ...Object.keys(before.boardTabsById),
       ...Object.keys(before.cardTabsById),
-    ])
+    ]),
+    // The baselines name a linked host's sessions and nothing of a host
+    // still connecting or lost; an ssh workspace is swept only once its
+    // host is up.
+    readyHosts(get(sshLinks))
   );
   // handleSessionExited searches the CURRENT trees and is a no-op for an
   // id no longer in one, so a tab closed in the meantime needs no guard.
@@ -1204,8 +1220,29 @@ export async function bootstrap(): Promise<void> {
         };
       });
       watchRootedWorkspaces(event.payload.workspaces);
+      // The host links each ssh workspace right after this event; until
+      // a link reports in, its workspaces read as connecting -- which is
+      // what keeps reconcileLayoutSessions from closing their tabs.
+      seedSshLinks(event.payload.workspaces);
       void refreshDaemonCompat();
       void reconcileLayoutSessions();
+    })
+  );
+  // One ssh host's link came up for a workspace, or went away. Neither is
+  // `setError`: only that host's workspaces are affected, and the rest of
+  // the app keeps working (the lost banner and the badge carry the
+  // message). The resolved layout itself arrives on `workspaces-synced`
+  // with origin `remote:<host>`, which the listener above adopts like any
+  // other window's write.
+  unlisteners.push(
+    await listen<RemoteLinkEvent>("remote-link-ready", (event) => {
+      handleRemoteLinkReady(event.payload);
+      void reconcileLayoutSessions();
+    })
+  );
+  unlisteners.push(
+    await listen<RemoteLinkEvent>("remote-link-lost", (event) => {
+      handleRemoteLinkLost(event.payload);
     })
   );
   // Another window's save of the shared workspaces file. Its own echo is
@@ -1609,6 +1646,7 @@ async function pollForStartupState(): Promise<void> {
         };
       });
       watchRootedWorkspaces(data.workspaces);
+      seedSshLinks(data.workspaces);
       void refreshDaemonCompat();
       void reconcileLayoutSessions();
       return;
@@ -1705,14 +1743,53 @@ export async function setWorkspaceRoot(workspaceId: string, rootPath: string): P
     const dropped = workspace.forgetTombstone(state, tombstone.id);
     layoutState.update((s) => ({ ...s, removedWorkspaces: dropped.removedWorkspaces ?? [] }));
   }
-  const previous = state.workspaces.find((w) => w.id === workspaceId)?.rootPath;
-  const workspaces = state.workspaces.map((w) => (w.id === workspaceId ? { ...w, rootPath } : w));
+  const before = state.workspaces.find((w) => w.id === workspaceId);
+  const previous = before?.rootPath;
+  // A folder picked on THIS machine makes an ssh workspace local again,
+  // so its watcher on the host has to go first: the unwatch is routed by
+  // the workspace's ssh setting, and once that is cleared it would reach
+  // the local daemon, which never watched the old root.
+  if (isSshWorkspace(before)) {
+    await backend.unwatchGavinRoot(workspaceId).catch(() => {});
+  }
+  const workspaces = state.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, rootPath, ssh: undefined } : w
+  );
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
-  if (previous && previous !== rootPath) {
+  if (previous && previous !== rootPath && !isSshWorkspace(before)) {
     await backend.unwatchGavinRoot(workspaceId).catch(() => {});
   }
   void backend.watchGavinRoot(workspaceId, rootPath).catch(() => {});
+}
+
+/// Makes a workspace an ssh one: a host, and its root ON THAT HOST. The
+/// two are written together because neither means anything alone -- a
+/// remote root with no host would be read as a local path, and a host
+/// with no root has nothing to link. Nothing is watched here: the Tauri
+/// host watches the root when it links the workspace
+/// (`connectSshWorkspace`), on the daemon that can see it.
+///
+/// No tombstone reclaim, unlike `setWorkspaceRoot`: a removed
+/// workspace's board and rails were on whichever daemon it lived on, and
+/// offering to restore local ones onto a host would be a promise the
+/// data cannot keep.
+export async function setWorkspaceSsh(
+  workspaceId: string,
+  ssh: workspace.SshConfig,
+  rootPath: string
+): Promise<void> {
+  const state = get(layoutState);
+  const before = state.workspaces.find((w) => w.id === workspaceId);
+  // The local watcher on the old root (or the old host's, on a host
+  // change) goes before the setting flips, while the routing still
+  // reaches the daemon that holds it.
+  if (before?.rootPath) {
+    await backend.unwatchGavinRoot(workspaceId).catch(() => {});
+  }
+  const workspaces = state.workspaces.map((w) => (w.id === workspaceId ? { ...w, rootPath, ssh } : w));
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
 /// The Rust profile table, fetched once at bootstrap. Empty until then;
@@ -2934,6 +3011,14 @@ export async function openFileInSplit(anchorSessionId: string, path: string): Pr
   const state = get(layoutState);
   const location = activePageLocation(state);
   if (!location) return;
+  // The viewer reads through this machine's filesystem; a path in an ssh
+  // workspace is on the host. Said here, at the one door every "open
+  // this file" affordance comes through, rather than as a read error in
+  // a blank pane.
+  if (isSshWorkspace(state.workspaces.find((w) => w.id === location.workspaceId))) {
+    await showAlert({ title: "That file is on the other machine", lines: [SSH_LIMITATION] });
+    return;
+  }
   const tabId = crypto.randomUUID();
   const newTree = layout.splitLeaf(location.tree, anchorSessionId, "row", tabId);
   const withTree = workspace.updatePageLayout(state, location.workspaceId, location.pageId, newTree);

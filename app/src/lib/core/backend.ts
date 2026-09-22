@@ -629,8 +629,21 @@ export function removeExternalGavinContext(rootPath: string, folder: string): Pr
   return invoke("remove_external_gavin_context", { rootPath, folder });
 }
 
+/// Answers for the host when the root belongs to an ssh workspace, and
+/// rejects when that host is not linked -- there is no disk to ask.
 export function gavinRootExists(rootPath: string): Promise<boolean> {
   return invoke("gavin_root_exists", { rootPath });
+}
+
+/// Links an ssh workspace to its host: opens the host's link if this is
+/// the first workspace on it, resolves the workspace's sessions on that
+/// daemon, attaches them, watches the root, and emits `workspaces-synced`
+/// (origin `remote:<host>`) with the resolved layout plus
+/// `remote-link-ready`. Rejects with ssh's own words when the host cannot
+/// be reached or has no `gavin-daemon`. Up to ten seconds on a dead host
+/// (`ConnectTimeout`); the host runs it off the main thread.
+export function connectRemoteWorkspace(workspaceId: string): Promise<void> {
+  return invoke("connect_remote_workspace", { workspaceId });
 }
 
 export function getBoardTabs(): Promise<Record<string, BoardTab>> {
@@ -1362,12 +1375,17 @@ export function setOrchestration(
   return invoke("set_orchestration", { workspaceId, rails, conflictNotes });
 }
 
+/// `workspaceId` says whose daemon holds the rail: a rail id carries no
+/// workspace on the wire, so without it the host writes to the local
+/// daemon -- wrong for an ssh workspace. Every caller has one and passes
+/// it; it is optional only so an older call shape still type-checks.
 export function setRailRun(
   railId: string,
   state: RailState,
-  currentStageId: string | null
+  currentStageId: string | null,
+  workspaceId?: string
 ): Promise<void> {
-  return invoke("set_rail_run", { railId, stateValue: state, currentStageId });
+  return invoke("set_rail_run", { railId, stateValue: state, currentStageId, workspaceId });
 }
 
 export function setStepRun(
@@ -1385,7 +1403,9 @@ export function setStepRun(
   /// transitions with nothing to say about the budget -- a stall, a
   /// done, a rail reset -- do not have to carry it. A launch passes 0
   /// explicitly: a new conversation is a new run with a fresh budget.
-  resumeAttempts: number | null = null
+  resumeAttempts: number | null = null,
+  /// Whose daemon holds the step; see setRailRun.
+  workspaceId?: string
 ): Promise<void> {
   return invoke("set_step_run", {
     stepId,
@@ -1395,6 +1415,7 @@ export function setStepRun(
     conversationId,
     launchCwd,
     resumeAttempts,
+    workspaceId,
   });
 }
 
@@ -1408,8 +1429,10 @@ export function saveTool(tool: ToolRecord): Promise<void> {
   return invoke("save_tool", { tool });
 }
 
-export function deleteTool(id: string): Promise<void> {
-  return invoke("delete_tool", { id });
+/// `workspaceId` routes the delete to the daemon that holds the tool
+/// (see setRailRun); a global tool's is the local daemon's either way.
+export function deleteTool(id: string, workspaceId?: string): Promise<void> {
+  return invoke("delete_tool", { id, workspaceId });
 }
 
 // --- Standalone tool runs (v30) ---------------------------------------------
@@ -1460,6 +1483,6 @@ export function saveGroupTemplate(template: GroupTemplateRecord): Promise<void> 
   return invoke("save_group_template", { template });
 }
 
-export function deleteGroupTemplate(id: string): Promise<void> {
-  return invoke("delete_group_template", { id });
+export function deleteGroupTemplate(id: string, workspaceId?: string): Promise<void> {
+  return invoke("delete_group_template", { id, workspaceId });
 }

@@ -21,6 +21,7 @@
     type SuperpowersStatus,
   } from "$lib/agents/superpowers";
   import { AGENT_ARM_STEPS, nextAgentArmStep, type AgentArmStep } from "$lib/workspace/agentArm";
+  import { sshLimitation } from "$lib/workspace/sshWorkspace";
 
   interface Props {
     workspaceId: string;
@@ -52,6 +53,7 @@
   let superpowers = $state<SuperpowersStatus | undefined>(undefined);
   let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
+  const sshBlocked = $derived(sshLimitation(ws));
 
   async function refreshSuperpowers(): Promise<void> {
     const root = ws?.rootPath;
@@ -82,6 +84,14 @@
 </script>
 
 <Modal wide onClose={onClose}>
+  {#if sshBlocked}
+    <!-- Arming writes MCP config and skills into the checkout on this
+         machine; an ssh workspace's checkout is on the host. -->
+    <div class="wizard">
+      <p class="ssh-notice">{sshBlocked}</p>
+      <div class="ssh-actions"><button type="button" onclick={onClose}>Close</button></div>
+    </div>
+  {:else}
   <div class="wizard">
     <header>
       <h2>Set up {toLabel} as a fallback</h2>
@@ -127,9 +137,31 @@
       {/if}
     </div>
   </div>
+  {/if}
 </Modal>
 
 <style>
+  /* The one sentence shown in place of a surface an ssh workspace cannot
+     use yet (sshWorkspace.ts's SSH_LIMITATION). */
+  .ssh-notice {
+    margin: 0 0 12px;
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--text-subtle);
+  }
+  .ssh-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .ssh-actions button {
+    background: var(--surface-overlay);
+    border: none;
+    color: var(--text);
+    padding: 5px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+  }
   .wizard {
     width: 640px;
     max-width: 100%;

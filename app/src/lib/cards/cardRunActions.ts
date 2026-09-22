@@ -49,6 +49,7 @@ import { queueFollowUp, queueTargetFor } from "$lib/agents/queuedInputActions";
 import { cardViewForPath, type CardView } from "$lib/core/planBoard";
 import { holdOrQueue, type CardIntent } from "$lib/agents/launchQueue";
 import { launchDecision } from "$lib/agents/agentPauseState";
+import { sshLimitation } from "$lib/workspace/sshWorkspace";
 import { fallbackBlockedReason } from "$lib/agents/agentFallback";
 import { requestArm } from "$lib/agents/agentFallbackState";
 
@@ -237,6 +238,16 @@ export async function jumpToBoundSession(
 }
 
 // Returns an error string for the board's error strip, or null.
+/// Every launch below reads the card from this machine's disk and
+/// composes for an agent whose MCP config was written into this
+/// checkout; on an ssh workspace both are on the host, where the agent
+/// runs. Refused here, before any status write, until the card-runs
+/// card lands -- the board's pill says the same thing, but a queued
+/// intent or a rail step never saw a pill.
+export function sshLaunchBlocker(workspaceId: string): string | null {
+  return sshLimitation(get(layoutState).workspaces.find((w) => w.id === workspaceId));
+}
+
 export function runCard(workspaceId: string, card: CardView): Promise<string | null> {
   return launchCard(workspaceId, card, "run");
 }
@@ -313,6 +324,8 @@ export async function developCard(
   if (cardSessionState(get(layoutState), binding) === "live") {
     return "This card has a live agent — jump to it instead of developing under it";
   }
+  const remote = sshLaunchBlocker(workspaceId);
+  if (remote) return remote;
   // A develop run already on this card is the worst version of the same
   // conflict -- BOTH agents rewrite the whole file -- so a second press
   // lands the human in the first run's tab instead of starting one. Read
@@ -463,6 +476,8 @@ async function launchCard(
   // button, which cannot see a run another window started.
   const developing = developingBlocker(workspaceId, card.id);
   if (developing) return developing;
+  const remote = sshLaunchBlocker(workspaceId);
+  if (remote) return remote;
 
   // The agent gate needs nothing from the card: an agent that takes no
   // prompt refuses every card, so resolving attachments for one is work
@@ -882,6 +897,8 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
   // be handed the body of a file being rewritten as it read it.
   const developing = developingBlocker(workspaceId, card.id);
   if (developing) return developing;
+  const remote = sshLaunchBlocker(workspaceId);
+  if (remote) return remote;
   // Same gate, same reason, and again before the status write: handing
   // the main agent a card whose attachments have gone is the same wasted
   // session as spawning a dedicated one for it.
@@ -968,6 +985,8 @@ export async function relaunchCard(
   // and none of it is going anywhere.
   const developing = developingBlocker(workspaceId, path);
   if (developing) return developing;
+  const remote = sshLaunchBlocker(workspaceId);
+  if (remote) return remote;
   // The launch wall, before anything is spawned and before the binding
   // is replaced: a re-launch that queued after rewriting the binding
   // would leave the card pointing at a session that never started.

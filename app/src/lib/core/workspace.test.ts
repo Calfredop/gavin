@@ -402,6 +402,43 @@ describe("staleLayoutTabIds", () => {
   });
 });
 
+// An ssh workspace's sessions live on another daemon. Until that host's
+// link is up the baselines cannot name them, and treating them as stale
+// would close every remote tab at startup -- so a workspace whose host is
+// not in `readyHosts` is skipped, and with no set given at all every ssh
+// workspace is.
+describe("staleLayoutTabIds and ssh workspaces", () => {
+  const mixed = {
+    workspaces: [
+      { id: "near", name: "A", pages: [page("p1", leaf(["s1", "ghost"]))], activePageId: "p1" },
+      {
+        id: "far",
+        name: "B",
+        pages: [page("p2", leaf(["r1", "r-ghost"]))],
+        activePageId: "p2",
+        rootPath: "/home/me/repo",
+        ssh: { host: "box" },
+      },
+    ],
+    activeWorkspaceId: "near",
+  };
+
+  it("skips an ssh workspace whose host is not ready", () => {
+    expect(staleLayoutTabIds(mixed, new Set(["s1"]), new Set(), new Set())).toEqual(["ghost"]);
+  });
+
+  it("skips every ssh workspace when no ready set is given", () => {
+    expect(staleLayoutTabIds(mixed, new Set(["s1"]), new Set())).toEqual(["ghost"]);
+  });
+
+  it("sweeps an ssh workspace once its host is ready", () => {
+    expect(staleLayoutTabIds(mixed, new Set(["s1", "r1"]), new Set(), new Set(["box"]))).toEqual([
+      "ghost",
+      "r-ghost",
+    ]);
+  });
+});
+
 describe("resolveFocusForPage / setPageFocus / resolveActiveFocus", () => {
   it("resolveFocusForPage prefers the page's own remembered focus when it's still valid", () => {
     const p: Page = { id: "page-1", name: "Page 1", layout: leaf(["a", "b"]), focusedSessionId: "b" };

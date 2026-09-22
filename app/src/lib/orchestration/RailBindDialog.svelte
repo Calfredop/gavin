@@ -13,6 +13,7 @@
   import { presetSingle } from "$lib/panes/layout";
   import { freeBranchNameFrom, validateBranchName } from "$lib/git/git";
   import { featureBlockedReason } from "$lib/core/daemonCompat";
+  import { sshLimitation } from "$lib/workspace/sshWorkspace";
   import {
     RAIL_BIND_TABS,
     railBindChip,
@@ -37,6 +38,7 @@
     onClose: () => void;
   }
   let { workspaceId, rail, initialTab = "worktree", onClose }: Props = $props();
+  const sshBlocked = $derived(sshLimitation($layoutState.workspaces.find((w) => w.id === workspaceId)));
 
   /// Which rail this dialog is for, read ONCE. `rail` is a lazy prop over
   /// the hub view's `{@const bindingRail = orch.rails.find(r => r.id ===
@@ -252,6 +254,14 @@
   />
 {:else}
   <Modal {onClose}>
+    {#if sshBlocked}
+      <!-- A worktree is forked and a branch made by this machine's git;
+           an ssh workspace's repository is on the host. -->
+      <div class="bind">
+        <p class="ssh-notice">{sshBlocked}</p>
+        <div class="ssh-actions"><button type="button" onclick={onClose}>Close</button></div>
+      </div>
+    {:else}
     <div class="bind">
       <!-- The dialog names all four settings before the strip does, so
            a human who opened it from the worktree chip learns here that
@@ -536,10 +546,32 @@
         <button type="button" onclick={onClose}>Done</button>
       </div>
     </div>
+    {/if}
   </Modal>
 {/if}
 
 <style>
+  /* The one sentence shown in place of a surface an ssh workspace cannot
+     use yet (sshWorkspace.ts's SSH_LIMITATION). */
+  .ssh-notice {
+    margin: 0 0 12px;
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--text-subtle);
+  }
+  .ssh-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .ssh-actions button {
+    background: var(--surface-overlay);
+    border: none;
+    color: var(--text);
+    padding: 5px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+  }
   .bind {
     display: flex;
     flex-direction: column;

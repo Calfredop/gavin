@@ -101,7 +101,7 @@ export async function deleteGroupTemplateAction(
   templateId: string
 ): Promise<string | null> {
   try {
-    await backend.deleteGroupTemplate(templateId);
+    await backend.deleteGroupTemplate(templateId, workspaceId);
   } catch (e) {
     return String(e instanceof Error ? e.message : e);
   }

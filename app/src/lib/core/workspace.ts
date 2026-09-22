@@ -891,11 +891,20 @@ export function sessionLiveness(
 export function staleLayoutTabIds(
   state: WorkspacesData,
   liveSessionIds: ReadonlySet<string>,
-  nonSessionTabIds: ReadonlySet<string>
+  nonSessionTabIds: ReadonlySet<string>,
+  // The ssh hosts whose link is up. An ssh workspace's sessions belong
+  // to that host's daemon, and `liveSessionIds` can only name them once
+  // the link exists -- before that, every one of them would read as
+  // stale and be closed at startup. So a workspace whose host is not
+  // in the set is skipped, and with no set given, every ssh workspace
+  // is: a caller that has not thought about links must not close tabs
+  // on their behalf.
+  readyHosts?: ReadonlySet<string>
 ): string[] {
   if (liveSessionIds.size === 0) return [];
   const stale: string[] = [];
   for (const ws of state.workspaces) {
+    if (ws.ssh?.host && !readyHosts?.has(ws.ssh.host)) continue;
     for (const page of ws.pages) {
       for (const id of allSessionIds(page.layout)) {
         if (nonSessionTabIds.has(id) || liveSessionIds.has(id)) continue;

@@ -22,6 +22,7 @@
   import GitCommitDetail from "$lib/git/GitCommitDetail.svelte";
   import GitIgnoreEditor from "$lib/git/GitIgnoreEditor.svelte";
   import type { IgnoreKind } from "$lib/git/gitIgnore";
+  import { sshLimitation } from "$lib/workspace/sshWorkspace";
 
   interface Props {
     workspaceId: string;
@@ -35,7 +36,12 @@
   const MIN_WIDTH = 120;
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
-  const root = $derived(ws?.rootPath ?? null);
+  // Every command below runs the system git against a local path; an
+  // ssh workspace's root is on the host. Treated as "no root" for the
+  // effects (nothing is ensured, watched or refreshed) and named in the
+  // empty state, so the tab explains itself instead of erroring.
+  const sshBlocked = $derived(sshLimitation(ws));
+  const root = $derived(sshBlocked ? null : (ws?.rootPath ?? null));
   // SP3: the tab may be pointed at a linked worktree; the selection is
   // persisted and reapplied on mount (falls back to the root if it's gone).
   const cwdTarget = $derived(ws?.gitView?.worktree ?? root);
@@ -106,7 +112,9 @@
   }
 </script>
 
-{#if !root}
+{#if sshBlocked}
+  <div class="empty">{sshBlocked}</div>
+{:else if !root}
   <div class="empty">No root folder set for this workspace.</div>
 {:else if !view || (!view.repo && !view.gitMissing && !view.error)}
   <div class="empty">Loading…</div>

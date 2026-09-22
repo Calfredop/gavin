@@ -71,7 +71,7 @@ async function clearDaemonRows(
   try {
     const tools = await backend.getTools(workspaceId);
     for (const tool of tools.filter((t) => t.workspaceId === workspaceId)) {
-      await attempt(`Deleted the tool "${tool.name}"`, () => backend.deleteTool(tool.id));
+      await attempt(`Deleted the tool "${tool.name}"`, () => backend.deleteTool(tool.id, workspaceId));
     }
   } catch (e) {
     failed.push(["workspace tools", String(e instanceof Error ? e.message : e)]);
@@ -81,7 +81,7 @@ async function clearDaemonRows(
     const templates = await backend.getGroupTemplates(workspaceId);
     for (const t of templates.filter((t) => t.workspaceId === workspaceId)) {
       await attempt(`Deleted the group template "${t.name}"`, () =>
-        backend.deleteGroupTemplate(t.id)
+        backend.deleteGroupTemplate(t.id, workspaceId)
       );
     }
   } catch (e) {

@@ -25,6 +25,7 @@
     attentionStatusById,
     requireReviewDefault,
   } from "$lib/core/layoutState";
+  import { sshLimitation } from "$lib/workspace/sshWorkspace";
   import {
     COMPLEXITY_LABELS,
     COMPLEXITY_LEVELS,
@@ -166,6 +167,10 @@
   // in another editor, and a stale body preview is worse than no modal.
   // The Rust-side watch is refcounted, so watching a file an editor tab
   // already holds open leaves that tab's watch intact when this closes.
+  // The card's body is read from this machine's disk; an ssh workspace's
+  // cards are on the host. One sentence in the body's place, and no read.
+  const sshBlocked = $derived(sshLimitation($layoutState.workspaces.find((w) => w.id === workspaceId)));
+
   $effect(() => {
     const path = card.id;
     // The Tasks list and "Part of" repoint this modal at another card
@@ -179,10 +184,14 @@
     autoCommitError = null;
     let unlisten: UnlistenFn | null = null;
     let closed = false;
-    const read = () =>
+    const read = () => {
+      // The card file is on the host for an ssh workspace; the notice in
+      // the body's place says so until the card-runs card lands.
+      if (sshBlocked) return;
       void backend.readFileForViewer(path).then((r) => {
         if (!closed) content = r.exists ? r.content : null;
       });
+    };
     read();
     void backend.watchFileForViewer(path).catch(() => {});
     void listen<string>("file-changed", (event) => {
@@ -1442,7 +1451,12 @@
         </div>
       {/if}
 
-      {#if card.kind === "task" && bodyHtml !== null}
+      {#if sshBlocked}
+        <div class="section">
+          <div class="section-title">{card.kind === "task" ? "Prompt" : "Body"}</div>
+          <p class="ssh-notice">{sshBlocked}</p>
+        </div>
+      {:else if card.kind === "task" && bodyHtml !== null}
         <div class="section">
           <div class="section-title">Prompt</div>
           <pre class="prompt">{stripFrontmatter(content ?? "").trim()}</pre>
@@ -1761,6 +1775,27 @@
 {/if}
 
 <style>
+  /* The one sentence shown in place of a surface an ssh workspace cannot
+     use yet (sshWorkspace.ts's SSH_LIMITATION). */
+  .ssh-notice {
+    margin: 0 0 12px;
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--text-subtle);
+  }
+  .ssh-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .ssh-actions button {
+    background: var(--surface-overlay);
+    border: none;
+    color: var(--text);
+    padding: 5px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+  }
   /* Three bands: a head that never scrolls, a middle that does, a foot
      that never does. Modal's `innerScroll` makes the panel the flex
      column and hands the scrolling down here. */

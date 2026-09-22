@@ -8,6 +8,7 @@
   } from "$lib/core/layoutState";
   import { gavinTrees } from "$lib/core/gavinState";
   import { resolveAgentConfig, resolvePrdPath } from "$lib/core/settings";
+  import { sshLimitation } from "$lib/workspace/sshWorkspace";
   import { setupProgress, type SetupStep } from "$lib/workspace/setupWizard";
   import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
   import * as backend from "$lib/core/backend";
@@ -36,6 +37,7 @@
   ];
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
+  const sshBlocked = $derived(sshLimitation(ws));
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
   const agentCfg = $derived(
@@ -130,6 +132,14 @@
        cap win on a narrow window -- a min-width above the cap is how it
        used to scroll sideways inside the modal. -->
   <Modal wide onClose={closeWizard}>
+    {#if sshBlocked}
+      <!-- Every step writes into the checkout or runs git in it, on this
+           machine; an ssh workspace's is on the host. -->
+      <div class="wizard">
+        <p class="ssh-notice">{sshBlocked}</p>
+        <div class="ssh-actions"><button type="button" onclick={closeWizard}>Close</button></div>
+      </div>
+    {:else}
     <div class="wizard">
       <ol class="steps">
         {#each STEPS as step, i (step.id)}
@@ -173,10 +183,32 @@
         {/if}
       </div>
     </div>
+    {/if}
   </Modal>
 {/if}
 
 <style>
+  /* The one sentence shown in place of a surface an ssh workspace cannot
+     use yet (sshWorkspace.ts's SSH_LIMITATION). */
+  .ssh-notice {
+    margin: 0 0 12px;
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--text-subtle);
+  }
+  .ssh-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .ssh-actions button {
+    background: var(--surface-overlay);
+    border: none;
+    color: var(--text);
+    padding: 5px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+  }
   .wizard {
     width: 640px;
     max-width: 100%;

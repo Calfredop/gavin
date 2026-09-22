@@ -42,7 +42,7 @@ import { buildRunCommand, composePlanPrompt, composeTaskPrompt, noPromptReason, 
 import { mustPromptBody } from "$lib/agents/actionPromptsState";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { developingBlocker } from "$lib/cards/developingCardsState";
-import { resolveAttachmentsForRun } from "$lib/cards/cardRunActions";
+import { resolveAttachmentsForRun, sshLaunchBlocker } from "$lib/cards/cardRunActions";
 import { cardSessionState } from "$lib/board/columnRunAction";
 import { discardWorktrees, forkWorktree } from "$lib/git/gitState";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
@@ -91,6 +91,9 @@ export async function startBestOfN(
   // at once, so a file mid-rewrite would be copied into all of them.
   const developing = developingBlocker(workspaceId, card.id);
   if (developing) return developing;
+  // And N worktrees forked on this machine's disk, for a repo on another.
+  const remote = sshLaunchBlocker(workspaceId);
+  if (remote) return remote;
 
   // Every candidate's agent is resolved and gated BEFORE anything is
   // created: an agent that takes no prompt refuses the whole run, and

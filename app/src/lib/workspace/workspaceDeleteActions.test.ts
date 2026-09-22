@@ -136,10 +136,10 @@ describe("executeWorkspaceDelete", () => {
 
     await executeWorkspaceDelete("ws-1", bare, defaultAnswers(bare), "grant");
 
-    expect(backend.deleteTool).toHaveBeenCalledWith("t1");
-    expect(backend.deleteTool).not.toHaveBeenCalledWith("t2");
-    expect(backend.deleteGroupTemplate).toHaveBeenCalledWith("g1");
-    expect(backend.deleteGroupTemplate).not.toHaveBeenCalledWith("g2");
+    expect(backend.deleteTool).toHaveBeenCalledWith("t1", "ws-1");
+    expect(backend.deleteTool).not.toHaveBeenCalledWith("t2", "ws-1");
+    expect(backend.deleteGroupTemplate).toHaveBeenCalledWith("g1", "ws-1");
+    expect(backend.deleteGroupTemplate).not.toHaveBeenCalledWith("g2", "ws-1");
   });
 
   it("touches no daemon row when that screen was declined", async () => {

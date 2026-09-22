@@ -50,13 +50,20 @@
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tooltip } from "$lib/core/tooltip";
+  import { sshLimitation } from "$lib/workspace/sshWorkspace";
 
   interface Props {
     workspaceId: string;
   }
   let { workspaceId }: Props = $props();
 
-  const root = $derived($layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath ?? null);
+  // The tree and the editor read this machine's disk; an ssh workspace's
+  // files are on the host. "No root" for everything below, and the
+  // limitation named in the empty state.
+  const sshBlocked = $derived(sshLimitation($layoutState.workspaces.find((w) => w.id === workspaceId)));
+  const root = $derived(
+    sshBlocked ? null : ($layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath ?? null)
+  );
 
   let tree = $state<FileTreeState>(emptyTree(""));
   let selection = $state<string | null>(null);
@@ -424,7 +431,9 @@
   }
 </script>
 
-{#if !root}
+{#if sshBlocked}
+  <div class="empty">{sshBlocked}</div>
+{:else if !root}
   <div class="empty">No root folder set for this workspace.</div>
 {:else}
   <div class="files" style:grid-template-columns={filesGridColumns(share)}>
