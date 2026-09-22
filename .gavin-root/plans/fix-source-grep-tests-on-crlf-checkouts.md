@@ -2,7 +2,7 @@
 order: 8192
 title: [fix] Source-grep tests fail on a CRLF checkout
 labels: windows
-status: To Do
+status: In Progress
 priority: medium
 complexity: simple
 ---
@@ -71,7 +71,7 @@ Two consequences:
 
 ## Fix
 
-- [ ] Decide where the normalisation belongs. Either every `source()`
+- [x] Decide where the normalisation belongs. Either every `source()`
       helper in the test files does `.replace(/\r\n/g, "\n")` once
       (the tests are the thing that assumes LF, so they own the
       assumption), or the repo pins LF on checkout with a
@@ -79,8 +79,49 @@ Two consequences:
       CRLF. The second also protects the Rust string literals and the
       skill markdown that `complexitySurfaces` reads; the first is a
       smaller change and does not touch every developer's checkout.
-- [ ] Apply it and run `cd app && npm test` on a CRLF checkout: the ten
+      Decided 2026-09-22: `.gitattributes`, for the reason already
+      written above — a `source()` fix cannot reach `include_str!`,
+      which happens at compile time in another crate. Added
+      `* text=auto eol=lf`, plus one explicit `binary` override for
+      `crates/daemon/tests/fixtures/claude-code-tui.raw`: that fixture
+      has real `\r\n` bytes as captured PTY content (22 pairs), not a
+      checkout artifact, and `text=auto` would otherwise treat it as
+      text (no NUL byte) and launder them away on the next renormalize.
+      `git grep -Il $'\r' HEAD` found no other tracked blob with real
+      CR bytes, and `git add --renormalize .` against a throwaway clone
+      confirmed it: zero content changes once `.gitattributes` landed,
+      so this is purely a checkout-time fix, nothing to re-add.
+- [x] Apply it and run `cd app && npm test` on a CRLF checkout: the ten
       above pass, nothing else changes.
+      Verified 2026-09-22 from a macOS checkout (no Windows machine at
+      hand): cloned with `-c core.autocrlf=true` after committing
+      `.gitattributes` in a throwaway clone — the same mechanism that
+      put CRLF on disk in the first place, per this card's own opening
+      line. `gavin_skill.md` / `opencode_commit_agent.md` came out at
+      0 CR (were 134/23 of 134/23 lines CRLF); the PTY fixture kept its
+      22 real CRLF pairs. All ten named tests pass; `npx vitest run` on
+      each of the six files confirms it by name, including the three
+      `orchestrationGavinTool.test.ts` cases and both
+      `complexitySurfaces.test.ts` ones. Full `npm test` in that same
+      CRLF clone: 12 red of 5750 remain, and it is the *same* 8
+      files/12 tests as `npm test` on this (LF) worktree at the same
+      commit, unrelated to line endings (`bestOfNActions`,
+      `commandGate`, the `WorkspaceToolsHubView.svelte` icon gap also
+      hit while running the six above, `toolPlatformGate`,
+      `codeReviewActions`, `criticalReviewActions`,
+      `indicatorSurfaces`, `workspaceToolsActions` x8) — pre-existing,
+      not this card's to fix. Did not rebuild `cargo test -p app` (a
+      from-scratch build of the whole crate graph in a throwaway clone
+      dwarfs what this check needs); confirmed instead at the byte
+      level, which is what `include_str!` actually embeds: `head -c 12`
+      on both markdown files in the CRLF clone reads `2d2d 2d0a` —
+      `---\n`, the exact bytes `starts_with("---\n")` checks.
+      `.gitattributes` (untracked) and the verification clones (now
+      removed) are in this worktree, not yet committed.
 - [ ] Tick the app checks line on
       [the windows port card](./feat-windows-port-on-a-windows-machine.md)
       only after this lands; before it, `npm test` cannot be green there.
+      Left unticked: the fix above is verified but still an uncommitted
+      `.gitattributes` in a worktree, so it has not landed by this
+      item's own condition yet. Tick both this and that line together
+      once it merges.
