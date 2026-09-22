@@ -14,8 +14,7 @@ import {
   alsoBuildFindingsRailParam,
   critiqueSessionsComplete,
 } from "$lib/review/criticalReview";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { source } from "$lib/sources";
 
 const BASE = {
   base: "main",
@@ -121,10 +120,7 @@ describe("criticalReviewDialogSeedKey", () => {
   });
 
   it("the dialog seeds on that key, never on request-object identity", () => {
-    const dialog = readFileSync(
-      join(import.meta.dirname, "CriticalReviewDialog.svelte"),
-      "utf8"
-    );
+    const dialog = source("CriticalReviewDialog.svelte");
     expect(dialog).toContain("criticalReviewDialogSeedKey");
     expect(dialog).not.toMatch(/request\s*===\s*seededFor/);
   });
