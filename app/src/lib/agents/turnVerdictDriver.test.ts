@@ -13,7 +13,7 @@ const captured = vi.hoisted(() => ({
 
 vi.mock("$lib/core/backend", () => ({
   sessionScreen: vi.fn(),
-  typesafeVerdict: vi.fn(),
+  typesafeAsk: vi.fn(),
   typesafeSettings: vi.fn(),
 }));
 
@@ -191,7 +191,7 @@ beforeEach(() => {
   gavinTrees.set({} as never);
   daemonCompat.set({ daemonVersion: 39, appVersion: 39, degraded: false } as never);
   vi.mocked(backend.sessionScreen).mockResolvedValue(SCREEN);
-  vi.mocked(backend.typesafeVerdict).mockResolvedValue(body());
+  vi.mocked(backend.typesafeAsk).mockResolvedValue(body());
   vi.mocked(backend.typesafeSettings).mockResolvedValue({ enabled: true, hasKey: true });
 });
 
@@ -278,7 +278,7 @@ describe("a quiet transition", () => {
     noteQuietTransition("s1");
     await flush();
     expect(backend.sessionScreen).toHaveBeenCalledWith("s1");
-    expect(backend.typesafeVerdict).toHaveBeenCalledWith(
+    expect(backend.typesafeAsk).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "jev-1.13.0",
         // The card's own agent, not the workspace's: this card names
@@ -294,7 +294,7 @@ describe("a quiet transition", () => {
     stepSession("s1", null);
     noteQuietTransition("s1");
     await flush();
-    expect(backend.typesafeVerdict).toHaveBeenCalledWith(
+    expect(backend.typesafeAsk).toHaveBeenCalledWith(
       expect.objectContaining({ state: { agent_cli: "claude-code", screen: SCREEN } })
     );
   });
@@ -311,7 +311,7 @@ describe("a quiet transition", () => {
   it("every failure is today's answer, and they are indistinguishable", async () => {
     armed();
     cardSession();
-    vi.mocked(backend.typesafeVerdict).mockRejectedValue(new Error("TypeSafe answered 401"));
+    vi.mocked(backend.typesafeAsk).mockRejectedValue(new Error("TypeSafe answered 401"));
     noteQuietTransition("s1");
     await flush();
     expect(get(turnVerdictById).s1).toEqual({ state: "read", reading: null });
@@ -326,7 +326,7 @@ describe("a quiet transition", () => {
     __resetForTesting();
     armed();
     vi.mocked(backend.sessionScreen).mockResolvedValue(SCREEN);
-    vi.mocked(backend.typesafeVerdict).mockResolvedValue("upstream connect error");
+    vi.mocked(backend.typesafeAsk).mockResolvedValue("upstream connect error");
     noteQuietTransition("s1");
     await flush();
     expect(get(turnVerdictById).s1).toEqual({ state: "read", reading: null });
@@ -352,7 +352,7 @@ describe("a quiet transition", () => {
     armed();
     cardSession();
     const late = deferred<unknown>();
-    vi.mocked(backend.typesafeVerdict).mockReturnValue(late.promise);
+    vi.mocked(backend.typesafeAsk).mockReturnValue(late.promise);
     noteQuietTransition("s1");
     await flush();
     expect(get(turnVerdictById).s1).toEqual({ state: "pending" });
@@ -369,7 +369,7 @@ describe("a quiet transition", () => {
     armed();
     cardSession();
     const first = deferred<unknown>();
-    vi.mocked(backend.typesafeVerdict)
+    vi.mocked(backend.typesafeAsk)
       .mockReturnValueOnce(first.promise)
       .mockResolvedValueOnce(body("finished"));
     noteQuietTransition("s1");
@@ -421,7 +421,7 @@ describe("the status hook", () => {
 
   it("any other status clears the entry and drops the answer in flight", async () => {
     const late = deferred<unknown>();
-    vi.mocked(backend.typesafeVerdict).mockReturnValue(late.promise);
+    vi.mocked(backend.typesafeAsk).mockReturnValue(late.promise);
     captured.hook?.("s1", "idle", "working");
     await flush();
     expect(get(turnVerdictById).s1).toEqual({ state: "pending" });
