@@ -15,12 +15,16 @@ import { get, writable } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import type { FileDiff, RunChanges } from "$lib/git/git";
 import { untrackedPaths } from "$lib/cards/runChanges";
+import { attributeRun } from "$lib/cards/changeAttributionState";
 
 export interface RunChangesView {
   /// The run this view is of -- carried so a card whose binding was
   /// replaced under an open modal cannot render the old run's diff.
   cwd: string;
   baseSha: string;
+  /// The card's title, for the attribution question: the run's own card
+  /// is always one of the options, and this is what it is called.
+  title: string;
   changes: RunChanges | null;
   loading: boolean;
   error: string | null;
@@ -51,7 +55,12 @@ export function viewFor(path: string): RunChangesView | undefined {
 /// drops everything the previous run had: a re-launch gives the card a
 /// new baseline, and showing the old diff under the new sha would be a
 /// view of a run that no longer exists.
-export async function openRunChanges(path: string, cwd: string, baseSha: string): Promise<void> {
+export async function openRunChanges(
+  path: string,
+  cwd: string,
+  baseSha: string,
+  title?: string
+): Promise<void> {
   const existing = get(runChangesStore)[path];
   const same = existing && existing.cwd === cwd && existing.baseSha === baseSha;
   runChangesStore.update((all) => ({
@@ -59,6 +68,7 @@ export async function openRunChanges(path: string, cwd: string, baseSha: string)
     [path]: {
       cwd,
       baseSha,
+      title: title ?? existing?.title ?? path.slice(path.lastIndexOf("/") + 1),
       changes: same ? existing.changes : null,
       loading: true,
       error: null,
@@ -81,6 +91,12 @@ export async function refreshRunChanges(path: string): Promise<void> {
   try {
     const changes = await backend.gitRunChanges(view.cwd, view.baseSha);
     update(path, (v) => (v.token === token ? { ...v, changes, loading: false } : v));
+    // The hint BESIDE the list, never in it: which card each file looks
+    // like, when another card has run in this checkout and the switch is
+    // on. Fire-and-forget into its own store -- a failure there is
+    // today's answer, not this view's error -- and re-asked on every
+    // load and Refresh, where an unchanged file's answer is cached.
+    void attributeRun({ cardPath: path, cardTitle: view.title, cwd: view.cwd, changes });
     // A selection that survived the refresh is re-read, because the
     // agent has almost certainly written to it since -- that is why
     // anyone pressed Refresh.

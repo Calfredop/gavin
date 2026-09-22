@@ -209,3 +209,51 @@ describe("helpers", () => {
     expect(chipTooltip(BASE)).toBe(`See what this run changed since ${shortSha(BASE)}`);
   });
 });
+
+describe("changesSummary with attribution", () => {
+  const three = changes({
+    files: [
+      { path: "a.ts", status: "M" },
+      { path: "b.ts", status: "M" },
+      { path: "c.ts", status: "M" },
+    ],
+    added: 4,
+    removed: 1,
+  });
+
+  it("counts the files that look like another card's", () => {
+    expect(changesSummary(three, 2)).toBe("3 files · +4 −1 · 2 look like another card's");
+    expect(changesSummary(three, 1)).toBe("3 files · +4 −1 · 1 looks like another card's");
+  });
+
+  it("says nothing about attribution when there is none", () => {
+    const one = changes({ files: [{ path: "a.ts", status: "M" }] });
+    expect(changesSummary(one, 0)).toBe("1 file");
+    expect(changesSummary(one)).toBe("1 file");
+  });
+});
+
+describe("discardPrompt with attribution", () => {
+  const two = changes({
+    files: [
+      { path: "a.ts", status: "M" },
+      { path: "b.ts", status: "M" },
+    ],
+  });
+
+  it("names the other cards' files in lines of their own, above the co-tenancy warning", () => {
+    const line = "2 of these look like Theirs's work: a.ts, b.ts";
+    const prompt = discardPrompt(two, "Mine", [line]);
+    const at = prompt.lines.indexOf(line);
+    expect(at).toBeGreaterThan(0);
+    expect(prompt.lines[at + 1]).toContain("Anything another run put in this checkout goes with it");
+    // The reset itself is unchanged: same untracked list, same button.
+    expect(prompt.untracked).toEqual([]);
+    expect(prompt.confirmLabel).toBe("Discard this run");
+    expect(prompt.title).toBe("Discard everything this run did to Mine?");
+  });
+
+  it("adds nothing when nothing looks foreign", () => {
+    expect(discardPrompt(two, "Mine", []).lines).toEqual(discardPrompt(two, "Mine").lines);
+  });
+});

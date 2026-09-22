@@ -20,6 +20,8 @@
     runChangesStore,
     selectRunFile,
   } from "$lib/cards/runChangesState";
+  import { foreignFiles, foreignLine } from "$lib/cards/changeAttribution";
+  import { attributionKey, attributionStore } from "$lib/cards/changeAttributionState";
   import { askConfirm } from "$lib/core/dialog";
   import { tooltip } from "$lib/core/tooltip";
 
@@ -44,12 +46,25 @@
   // Re-runs when the card or the run changes, which is what re-points an
   // already-open modal (a re-launch mints a new baseline).
   $effect(() => {
-    void openRunChanges(path, cwd, baseSha);
+    void openRunChanges(path, cwd, baseSha, title);
   });
 
   const view = $derived($runChangesStore[path] ?? null);
   const changes = $derived(view?.changes ?? null);
-  const summary = $derived(changesSummary(changes));
+  // What TypeSafe change attribution says about this run's files, when
+  // its switch is on and there was a question to ask. Keyed by the
+  // unbounded window this view shows (`untilSha` null); the Review tab's
+  // bounded answer for the same card is a different entry. A hint and
+  // never a filter: it adds a chip, a count and a line to the prompt,
+  // and the list, the diff and the discard read none of it.
+  const attribution = $derived($attributionStore[attributionKey(path, baseSha, null)] ?? null);
+  const readings = $derived(attribution && attribution.state !== "skipped" ? attribution.attribution : null);
+  const foreign = $derived(foreignFiles(readings, path));
+  const foreignCount = $derived(foreign.reduce((n, g) => n + g.paths.length, 0));
+  const ownerTitleByPath = $derived(
+    new Map(foreign.flatMap((g) => g.paths.map((p) => [p, g.title] as const)))
+  );
+  const summary = $derived(changesSummary(changes, foreignCount));
   const problem = $derived(changesProblem(changes));
   const blocked = $derived(discardBlockedReason(changes, sessionIsLive));
   const diff = $derived(view?.diff ?? null);
@@ -83,7 +98,7 @@
 
   async function handleDiscard(): Promise<void> {
     if (!changes || blocked) return;
-    const prompt = discardPrompt(changes, title);
+    const prompt = discardPrompt(changes, title, foreign.map(foreignLine));
     const confirmed = await askConfirm({
       title: prompt.title,
       lines: prompt.lines,
@@ -147,6 +162,7 @@
               selected={view?.selected === entry.path}
               disabled={true}
               readonly={true}
+              note={ownerTitleByPath.get(entry.path) ?? null}
               onSelect={() => void selectRunFile(path, entry.path)}
               onToggle={noop}
             />

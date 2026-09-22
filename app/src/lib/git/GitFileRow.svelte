@@ -19,8 +19,12 @@
     onContextMenu?: (e: MouseEvent) => void;
     /// Stash contents (SP2): no hover actions at all.
     readonly?: boolean;
+    /// A muted chip after the path -- the per-run Changes view puts the
+    /// title of the card a file looks like it belongs to here. Absent or
+    /// null draws nothing.
+    note?: string | null;
   }
-  let { entry, area, selected, disabled, onSelect, onToggle, onDiscard, onContextMenu, readonly = false }: Props = $props();
+  let { entry, area, selected, disabled, onSelect, onToggle, onDiscard, onContextMenu, readonly = false, note = null }: Props = $props();
 
   const parts = $derived(splitPath(entry.path));
   const toggleLabel = $derived(entry.status === "U" ? "Mark resolved" : area === "unstaged" ? "Stage" : "Unstage");
@@ -36,6 +40,7 @@
     {#if entry.oldPath}<span class="dir">{entry.oldPath} → </span>{/if}
     <span class="dir">{parts.dir}</span><span class="name">{parts.name}</span>
   </span>
+  {#if note}<span class="note" title={note}>{note}</span>{/if}
   <span class="actions" class:hidden={readonly}>
     {#if onDiscard}
       <IconButton
@@ -69,6 +74,18 @@
   }
   .row.selected {
     background: var(--surface-accent);
+  }
+  .note {
+    flex: none;
+    max-width: 38%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.92em;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0 6px;
   }
   .badge {
     width: 14px;
