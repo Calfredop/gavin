@@ -523,6 +523,17 @@ export function snapshotSession(sessionId: string): Promise<void> {
   return invoke("snapshot_session", { sessionId });
 }
 
+/// This session's screen as plain TEXT -- the same model `snapshotSession`
+/// repaints from, read rather than replayed.
+///
+/// Rejects rather than resolving to "" when the daemon cannot answer (an
+/// older daemon, an unknown session, a dead socket). The distinction is
+/// the point: an empty screen is a finished turn to any reader, so a
+/// failed read must never arrive here wearing one.
+export function sessionScreen(sessionId: string): Promise<string> {
+  return invoke("session_screen", { sessionId });
+}
+
 export function getSessionNames(): Promise<Record<string, string>> {
   return invoke("get_session_names");
 }

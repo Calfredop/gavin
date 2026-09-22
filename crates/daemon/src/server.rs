@@ -3550,6 +3550,38 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::Snapshot { .. } => {
             unreachable!("Snapshot is intercepted in handle_connection")
         }
+        // NOT intercepted, unlike `Snapshot` directly above it, and the
+        // difference is the whole reason this variant exists. `Snapshot`
+        // writes escape sequences to whatever terminal is ATTACHED, so
+        // it has to be handled where the attached writer is reachable
+        // and answers the caller nothing. This one answers the CALLER,
+        // with text, which is what a reader with no terminal needs.
+        Request::SessionScreen { id } => {
+            let known = manager.registry.lock().unwrap().get(&id);
+            match known {
+                Ok(Some(_)) => {
+                    // The Arc is cloned out from under the map's lock
+                    // before the screen's own lock is taken -- the same
+                    // order `failure_on_screen` uses, and the reason it
+                    // does: the pump holds the screen lock across
+                    // feed-then-forward, so holding the map lock while
+                    // waiting for it would block every other session's
+                    // output behind one busy agent.
+                    let screen = manager.screens.lock().unwrap().get(&id).cloned();
+                    // A session with no screen has never had a pump, so
+                    // it has produced nothing to render. Empty is the
+                    // honest answer and the caller can tell it from a
+                    // session that does not exist, which is an Error.
+                    let contents =
+                        screen.map(|s| s.lock().unwrap().contents()).unwrap_or_default();
+                    Ok(Response::SessionScreen { id, contents })
+                }
+                Ok(None) => Ok(Response::Error { message: format!("unknown session: {id}") }),
+                Err(e) => {
+                    Ok(Response::Error { message: format!("couldn't read session {id}: {e}") })
+                }
+            }
+        }
         Request::WatchGavinRoot { .. } => {
             unreachable!("WatchGavinRoot is intercepted in handle_connection")
         }
@@ -3990,6 +4022,12 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::KillSession { .. }
         | Request::Attach { .. }
         | Request::Snapshot { .. }
+        // Reading another session's rendered screen is reading its PTY,
+        // one frame at a time. The TypeSafe turn verdict that motivated
+        // the variant runs in the APP, over sessions the app already
+        // hosts; an agent asking what another agent has on screen is the
+        // surveillance this list exists to refuse.
+        | Request::SessionScreen { .. }
         | Request::SetFailurePatterns { .. }
         | Request::GetBoard { .. }
         | Request::SetBoard { .. }
@@ -6567,6 +6605,126 @@ mod tests {
             baselines.is_empty(),
             "Snapshot must send the screen and nothing else, also got: {baselines:?}"
         );
+    }
+
+    /// A screen read is answered for a session the daemon knows, and
+    /// REFUSED for one it does not -- because the caller acts on the
+    /// difference.
+    ///
+    /// The app asks for a screen in order to judge a turn that has just
+    /// gone quiet. Answering a stale or mistyped id with an empty string
+    /// would hand it a blank screen to pass judgement on, and a blank
+    /// screen is a finished turn to any reader. An error is a verdict
+    /// nobody takes.
+    #[test]
+    fn a_screen_read_for_an_unknown_session_is_an_error_not_a_blank_screen() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let resp =
+            handle_request(&manager, Request::SessionScreen { id: "never-existed".into() });
+        match resp {
+            Response::Error { message } => assert!(
+                message.contains("never-existed"),
+                "the error must name the session asked about: {message:?}"
+            ),
+            other => panic!("expected an Error for an unknown session, got {other:?}"),
+        }
+    }
+
+    /// The other half of the same distinction: a session that EXISTS and
+    /// has produced nothing answers with an empty screen rather than an
+    /// error.
+    ///
+    /// A registry row with no pump behind it is what every restored
+    /// session looks like before its first byte, and "there is nothing on
+    /// screen yet" is a true and useful answer. Only an id the daemon has
+    /// no row for is a mistake worth refusing.
+    #[test]
+    fn a_screen_read_for_a_session_that_has_produced_nothing_is_empty_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .insert(&SessionRecord {
+                id: "sess-quiet".into(),
+                workspace_path: "/tmp/ws".into(),
+                cwd: "/tmp/ws".into(),
+                command: None,
+                status: SessionStatus::Idle,
+                restored: false,
+                generation: 0,
+                interrupted: false,
+                process: None,
+                orphan: None,
+                failure_reason: None,
+            })
+            .unwrap();
+        match handle_request(&manager, Request::SessionScreen { id: "sess-quiet".into() }) {
+            Response::SessionScreen { id, contents } => {
+                assert_eq!(id, "sess-quiet", "the answer must name the session it is about");
+                assert_eq!(contents, "");
+            }
+            other => panic!("expected a SessionScreen, got {other:?}"),
+        }
+    }
+
+    /// The rendered screen is what the read is FOR: an agent's error
+    /// banner and its question both arrive as a stream of fragments
+    /// interleaved with cursor moves, and are contiguous text only in the
+    /// parser's model.
+    #[test]
+    fn a_screen_read_answers_with_the_rendered_text_not_the_raw_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .registry
+            .lock()
+            .unwrap()
+            .insert(&SessionRecord {
+                id: "sess-painted".into(),
+                workspace_path: "/tmp/ws".into(),
+                cwd: "/tmp/ws".into(),
+                command: None,
+                status: SessionStatus::Idle,
+                restored: false,
+                generation: 0,
+                interrupted: false,
+                process: None,
+                orphan: None,
+                failure_reason: None,
+            })
+            .unwrap();
+        // Painted the way a TUI paints: the sentence is split around a
+        // cursor move, so a raw-byte reader would straddle it and a
+        // substring match would find nothing.
+        let screen = manager.screen_for("sess-painted");
+        screen.lock().unwrap().feed(b"Which do you \x1b[Kwant?\r\n");
+        match handle_request(&manager, Request::SessionScreen { id: "sess-painted".into() }) {
+            Response::SessionScreen { contents, .. } => assert!(
+                contents.contains("Which do you want?"),
+                "the rendered screen must carry the contiguous sentence: {contents:?}"
+            ),
+            other => panic!("expected a SessionScreen, got {other:?}"),
+        }
+    }
+
+    /// Reading another session's screen is reading its PTY, one frame at
+    /// a time. The turn verdict runs in the APP over sessions the app
+    /// already hosts; an agent asking what another agent has on screen is
+    /// exactly what the agent role's deny list is for.
+    #[test]
+    fn an_agent_may_not_read_a_sessions_screen() {
+        let id = ClientIdentity::agent("sess-mine", "/tmp/ws", "/tmp/ws");
+        // Its OWN session id is no exception: the screen is still a PTY
+        // read, and `Attach` and `Snapshot` are refused on the same
+        // ground.
+        let own = authorize(&id, &Request::SessionScreen { id: "sess-mine".into() }, false);
+        assert!(own.is_err(), "an agent must not read even its own session's screen");
+        let other =
+            authorize(&id, &Request::SessionScreen { id: "sess-theirs".into() }, false);
+        assert!(other.is_err(), "an agent must not read another session's screen");
     }
 
     #[test]

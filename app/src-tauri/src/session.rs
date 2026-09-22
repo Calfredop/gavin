@@ -4496,6 +4496,44 @@ pub fn snapshot_session(
     .map_err(|e| e.to_string())
 }
 
+/// This session's screen as plain text -- the visible grid, no escape
+/// sequences.
+///
+/// The read `snapshot_session` cannot be. That one asks the daemon to
+/// REPAINT a terminal: the bytes it produces are escape sequences written
+/// to whatever terminal is attached, and it answers this process nothing.
+/// The TypeSafe turn verdict needs the TEXT, and needs it for sessions
+/// with no terminal attached at all -- a rail step in a background pane,
+/// a card run nobody is watching -- which is every case the feature
+/// exists for.
+///
+/// NOT best-effort, unlike `snapshot_session` and `set_failure_patterns`.
+/// Those two degrade into doing nothing, which is a fine outcome for a
+/// repaint that does not happen. An unanswered screen read is different:
+/// the caller is about to pass judgement on a turn, and the empty string
+/// is a perfectly parseable screen that any reader would call finished.
+/// So the error crosses back, and `turnVerdictState.ts` treats it the way
+/// it treats a timeout and a missing key -- no verdict at all, today's
+/// answer kept.
+#[tauri::command]
+pub fn session_screen(
+    session_id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<String, String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::SessionScreen { id: session_id },
+    )
+    .map_err(|e| e.to_string())?;
+    match resp {
+        Response::SessionScreen { contents, .. } => Ok(contents),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
 /// Tells the daemon what THIS session's agent prints when it has stopped
 /// because something broke.
 ///
