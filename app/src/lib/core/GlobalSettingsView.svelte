@@ -401,6 +401,11 @@
         "asking",
         "failure cause",
         "jev",
+        "card link",
+        "which card",
+        "commit",
+        "closest by meaning",
+        "search by meaning",
       ],
     },
     {
@@ -819,6 +824,15 @@
         appears on screen, which can include file contents, paths and anything else it printed — to
         <code>api.typesafe.ai</code>, once each time that session goes quiet. Nothing is sent for a
         terminal you opened yourself. It costs about $0.00007 a turn, on your key.
+      </p>
+      <p class="hint warn">
+        <strong>The same switch links commits and searches to cards.</strong> With it on, selecting a
+        commit in the Git tab's history sends that commit's message and changed file paths, with the
+        title of every card on the board, to <code>api.typesafe.ai</code>, and the pane names the card
+        the commit was made for. A board search that matches no card sends the words you typed with
+        the same titles, and the board offers the closest cards by meaning. Never a diff, a card's body
+        or a file's contents. A link is shown, never written to a card or a commit. About $0.0001 a
+        request, on your key.
       </p>
       <div class="row">
         <span>Second opinion</span>
