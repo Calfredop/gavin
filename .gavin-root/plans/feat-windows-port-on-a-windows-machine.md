@@ -49,37 +49,42 @@ Node 22, and the agent CLIs installed the way a user would install them
 
 ## Where this card stands, 2026-09-22 — read before starting an agent on it
 
-A second pass ran on this date and is written up under §5 ("The second
-pass"). **Both Windows branches are now merged (`72aac15`, `b724f91`),
-§2 is complete, and §1 is 5 of 6.** The Rust workspace runs on Windows:
-`-p app` 501/0, and the daemon suite **455 green in 78 seconds** where it
-had never once reached an end.
+Both Windows branches are merged (`72aac15`, `b724f91`) and **§1, §2, §4
+and §5 are complete**. On Windows: `cargo test -p app` 501/0, the daemon
+suite **455 green in 78 seconds** where it had never once reached an end,
+and the JS suite **5803 green across 265 files** with svelte-check at 0.
+Written up under §5 ("The second pass").
 
-What is left is eleven items in three groups, and none is a suite re-run:
+**Ten items remain, and every one of them needs the owner at the
+machine — there is no agent-executable work left on this card.**
 
-- **§1 lines 1 and 2** (`cargo test`, `npm test`) are blocked on three
-  cards that are filed **Done but whose code is not on `main`**: every
-  Windows fix of the last fortnight is sitting on `win/session-exit-reporting`
-  and `win/crlf-and-app-crate`, neither merged. Re-running the suites on
-  `main` reproduces the recorded red exactly; it was reproduced on this
-  date. Running them in those worktrees is what produces the green
-  numbers that also appear on this card — always say which tree.
-  **Both merged on 2026-09-22 and §1 line 1 is ticked.** Line 2 is not:
-  `npm test` is 12 red and `npm run check` 6, and neither set is the
-  port's — they fail on Linux too, and each now has its own card
-  ([the twelve](./fix-the-last-twelve-vitest-failures-on-main.md),
-  [the check gate](./fix-npm-run-check-gate-is-red-on-main.md)).
-  **If you merge into another checkout, refresh it to LF afterwards** —
-  the `.gitattributes` pin only reaches files that are re-checked out,
-  and the recipe is in CLAUDE.md.
 - **§1's wizard line** needs one button press in the running app. The
   path it writes is already proved to resolve (see the item).
 - **All nine of §3** are rendered UI and are the owner's by CLAUDE.md.
   Every one has a static pre-flight written under it already.
 
-So: merge those two branches, or open the app. An agent has nothing left
-to add here — which was NOT true before this pass, when the same sentence
-was written about §2 and turned out to be wrong.
+**Rebuild and reinstall before doing them.** The installed app predates
+the merges, and three of these ten exercise code that only just landed:
+`workspace_delete.rs` (the Recycle Bin item), `agent_setup.rs`'s wire
+spelling (the wizard item) and the daemon's exit reporting (the `until`
+rail item — a rail step could not complete at all before it). Testing
+them on the installed build tests the old code.
+**Two warnings on that reinstall**, both already on cards: installing
+kills every running agent session, because the tab shells are children
+of the installed `gavin-daemon.exe`; and the installer cannot overwrite
+a live daemon, which is
+[fix-windows-installer-collides-with-the-daemon](./fix-windows-installer-collides-with-the-daemon.md)'s
+second defect. Stop the daemon deliberately rather than discovering it.
+
+**If you merge into another checkout, refresh it to LF afterwards** —
+the `.gitattributes` pin only reaches files that are re-checked out, and
+the recipe is in CLAUDE.md.
+
+So: rebuild, reinstall, open the app. Twice on this card a pass has
+written "nothing left for an agent" and been wrong — §2 was parked for
+eleven days on an install that turned out not to be needed, and §1 line 2
+on a red suite that turned out to be nine mock bugs. The ten that remain
+are different in kind: each one is a person looking at a window.
 
 ## 1. It builds, and it packages
 
@@ -247,7 +252,7 @@ was written about §2 and turned out to be wrong.
       filed as a nested task under
       [fix-daemon-suite-deadlocks-on-windows](./done/fix-daemon-suite-deadlocks-on-windows.md);
       this run is its confirmation on merged main, same ten names.
-- [ ] `cd app && npm ci && npm test && npm run check && npm run build`.
+- [x] `cd app && npm ci && npm test && npm run check && npm run build`.
       Run 2026-09-11. `npm ci` ✓. `npm run check` ✓ — **0 errors**, 35 a11y
       and deprecation warnings, none new. `npm run build` ✓ — the static
       adapter wrote `build/` in 1m26s.
@@ -307,11 +312,31 @@ was written about §2 and turned out to be wrong.
       Linux job fails on the same twelve, where `npm test` is a gate.
       Filed as
       [fix-the-last-twelve-vitest-failures-on-main](./fix-the-last-twelve-vitest-failures-on-main.md).
-      So this item's blocker has MOVED, not cleared: it is no longer the
-      CRLF card but that one plus
-      [fix-npm-run-check-gate-is-red-on-main](./fix-npm-run-check-gate-is-red-on-main.md).
-      Neither is a port defect, and neither is ticked here on someone
-      else's behalf.
+      **TICKED 2026-09-22 (`9d72df9`). The JS suite is green on Windows,
+      for the first time.**
+      ```
+      npm test       5803 passed, 265 files, 0 red   (was 24 red / 14 files)
+      npm run check  0 errors                        (was 6)
+      npm run build  ✓
+      ```
+      `npm ci` was deliberately not re-run — `node_modules` is present and
+      wiping it in the shared checkout breaks whichever sibling session is
+      mid-suite. It was ✓ on 2026-09-11 and nothing since has touched the
+      lockfile.
+      **Not one of the failures was the port's, and two had stopped doing
+      their job:** `commandGate` asserts the TS classification names
+      exactly the commands `lib.rs` registers — it was red on
+      `detect_agent_binaries`, which is the drift it exists to catch, and
+      being permanently red is how it would have missed the next one.
+      `orchestrationGavinTool` and `toolPlatformGate` guarded conventions
+      on `WorkspaceToolsHubView.svelte`, which is a thin wrapper now; the
+      drawing and the Run gate had moved to `ToolsExplorerView.svelte`,
+      which honours both — so they were asserting against a file with no
+      surface left in it. The rest were mocks lying about a module's
+      shape, all hidden behind `as never`.
+      Both suites are **gates in the Linux CI job**, which had been
+      failing on these for as long as they existed. Both cards filed for
+      them are now Done.
 - [x] `npm run tauri dev` launches and reaches its daemon.
       **Done 2026-09-22.** The dev app came up (`target\debug\Gavin.exe`),
       window titled "Gavin" and responding, no error on the console, and
