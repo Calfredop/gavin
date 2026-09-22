@@ -2817,6 +2817,16 @@ pub fn profile_file_name(stem: &str, extension: &str, profile: BuildProfile) -> 
 /// directory spec: `$XDG_DATA_HOME/gavin`, defaulting to
 /// `~/.local/share/gavin`.
 ///
+/// On Windows the answer, `%LOCALAPPDATA%\gavin`, is one letter's case
+/// away from `%LOCALAPPDATA%\Gavin`, which is what Tauri's NSIS template
+/// would install the app into -- the same folder, on a case-insensitive
+/// filesystem, and an uninstall then sits beside the databases.
+/// `app/src-tauri/nsis/hooks.nsh` moves the installer to
+/// `%LOCALAPPDATA%\Programs\Gavin` and refuses this directory, and it
+/// spells this path out by hand because it has no way to ask this
+/// function. Moving this directory means moving that file: the two must
+/// never converge again.
+///
 /// Fallible rather than panicking. `HOME` is missing in a launchd job,
 /// a systemd unit without `User=`, and a container that never set it;
 /// the old `expect` turned that into a daemon that aborts before it

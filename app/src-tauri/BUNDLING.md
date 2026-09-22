@@ -93,3 +93,51 @@ transitive set, `librsvg2-dev`, `patchelf` and friends.
 A Windows build host needs Git for Windows (which the app requires at
 runtime anyway, see the windows-port card), the MSVC build tools, and
 WebView2 — present on Windows 11 and on any updated Windows 10.
+
+## Windows: the install directory and the daemon
+
+`nsis/hooks.nsh` is merged into Tauri's generated `installer.nsi` through
+`bundle.windows.nsis.installerHooks` in `tauri.windows.conf.json`. It
+fixes two things the stock template gets wrong for this app, both read
+out of the generated script rather than found by running it.
+
+**The template's per-user default, `%LOCALAPPDATA%\Gavin`, is the
+daemon's state directory.** `protocol::resolve_app_support_dir` answers
+`%LOCALAPPDATA%\gavin` on Windows, and Windows paths are
+case-insensitive, so a default install puts `Gavin.exe` and the two
+sidecars beside `kanban.sqlite`, `orchestration.sqlite`,
+`registry.sqlite`, `daemon.token` and `daemon.log`. The uninstaller then
+leaves the folder behind without a word (its `RMDir` is not `/r`), its
+"Delete the application data" checkbox misses the databases, and the
+arrangement is one `/r` away from deleting the human's boards. The hooks
+move the default to `%LOCALAPPDATA%\Programs\Gavin` -- the per-user
+counterpart of Program Files, and where `scripts/start-stable-win.ps1`
+already looks first -- make the directory page refuse the state
+directory outright, and redirect a silent install (`/S`, or `/D=`) that
+names it. An install that finds the previous one registered in the
+state directory stops that daemon, removes its four binaries by name
+(never the folder) and retargets the shortcuts. The checkbox now removes
+the state directory too.
+
+**The two directories must not converge again.** `hooks.nsh` spells the
+state directory out by hand, because it has no way to ask `protocol`;
+if `resolve_app_support_dir` moves, the hooks move with it, and the doc
+comment on that function says so.
+
+**Nothing stopped the daemon.** The template checks for a running
+`Gavin.exe` and never for `gavin-daemon.exe`, which the app spawns
+detached so that it outlives every window. Windows will not overwrite a
+running executable, so an upgrade over a live daemon kept the old
+daemon binary and the new app then talked to it -- the version skew
+`gavin-mcp` fails closed on, reached by installing. The pre-install and
+pre-uninstall hooks stop the daemon that runs from the folder being
+written, aimed at that one image path and never at the process name
+(`taskkill /IM` would reach the dev tree's daemon too); interactively
+they ask first, the way the template asks about `Gavin.exe`, and a
+silent or passive run (the updater's) does not ask.
+
+Every one of those paths compiles into the same `setup.exe`, and none
+of them can be exercised by a suite: an install stops the daemon that
+holds every agent session on the machine, so running it is the human's
+step. Read the generated `target/release/nsis/x64/installer.nsi` for
+what the installer will do; run it for what it did.
