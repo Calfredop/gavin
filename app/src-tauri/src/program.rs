@@ -318,7 +318,30 @@ mod tests {
         let hold = ["-n", "3", "127.0.0.1"];
         let mut plain = std::process::Command::new("ping").args(hold).stdout(Stdio::null()).spawn().unwrap();
         let mut quiet = command("ping").args(hold).stdout(Stdio::null()).spawn().unwrap();
-        let attached = our_console();
+
+        // Waited for, not sampled. `spawn` returns once the process
+        // object exists; the child joins the inherited console later, in
+        // its own startup -- measured at ~14ms here, and longer while the
+        // rest of the suite is running. Reading the list straight after
+        // `spawn` is what made this the one test that failed in a
+        // parallel run and passed serially: it saw a console neither
+        // child had reached yet.
+        //
+        // Waiting for the CONTROL is what makes the real assertion mean
+        // something, so this is not a loosened test but a stricter one.
+        // A zero-wait read could also pass it vacuously -- `quiet` absent
+        // because nothing had started, not because it was given a console
+        // of its own. Here `quiet` is judged on the same list that
+        // already proves a child has had time to attach. The cap sits
+        // well inside the ~2s `hold` keeps these children alive, so a
+        // child that never attaches fails the control rather than
+        // silently leaving the list again by exiting.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let mut attached = our_console();
+        while !attached.contains(&plain.id()) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            attached = our_console();
+        }
         let plain_attached = attached.contains(&plain.id());
         let quiet_attached = attached.contains(&quiet.id());
         for child in [&mut plain, &mut quiet] {
