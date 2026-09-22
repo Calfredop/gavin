@@ -1713,6 +1713,16 @@ fn isolate_refusal(layout: &ResolvedMcp) -> String {
 /// the wizard's Integration step: a profile with no McpLayout still gets
 /// its instructions block, and the two omissions are named with reasons
 /// rather than failing the whole run (W4).
+///
+/// Every path in here is `protocol::wire_path`ed, like everything else
+/// gavin puts in front of the UI. It is not cosmetic on Windows: a
+/// `ManagedFile.dir` is a literal holding forward slashes
+/// (`.opencode/skills/gavin`) and `Path::join` puts a backslash in front
+/// of the file name, so the raw spelling carries BOTH separators --
+/// `.opencode/skills/gavin\SKILL.md`. Anything that later splits such a
+/// path on `/`, or compares it against a path it built itself, silently
+/// misses. Normalised where the string is made rather than at each
+/// consumer, so there is one spelling and not a rule to remember.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationResult {
@@ -1799,16 +1809,14 @@ fn run_integration(
 
     // Written for EVERY profile -- the change W4 makes. Before this, a
     // profile without an McpLayout errored out and got nothing at all.
-    written.push(
-        write_instructions_block(
+    written.push(protocol::wire_path(
+        &write_instructions_block(
             root,
             &instructions_file,
             &instructions_block_for(mcp.as_ref(), &prd),
         )
-        .map_err(|e| e.to_string())?
-        .to_string_lossy()
-        .to_string(),
-    );
+        .map_err(|e| e.to_string())?,
+    ));
 
     // The two capabilities are reported separately: after sub-project B
     // every stock profile gets MCP config and skills; only unconfigured
@@ -1830,11 +1838,11 @@ fn run_integration(
                 skipped.push(no_skill_file());
             } else {
                 for write in write_skills(root, layout, &prd).map_err(|e| e.to_string())? {
-                    written.push(write.path.to_string_lossy().to_string());
+                    written.push(protocol::wire_path(&write.path));
                     if let Some(backup) = write.replaced {
                         replaced.push((
-                            write.path.to_string_lossy().to_string(),
-                            backup.to_string_lossy().to_string(),
+                            protocol::wire_path(&write.path),
+                            protocol::wire_path(&backup),
                         ));
                     }
                 }
@@ -1842,21 +1850,15 @@ fn run_integration(
             let mcp_path = root.join(&layout.config_file);
             let foreign = foreign_mcp_servers(&mcp_path, layout).map_err(|e| e.to_string())?;
             if foreign.is_empty() {
-                written.push(
-                    write_mcp_config(root, layout, &binary)
-                        .map_err(|e| e.to_string())?
-                        .to_string_lossy()
-                        .to_string(),
-                );
+                written.push(protocol::wire_path(
+                    &write_mcp_config(root, layout, &binary).map_err(|e| e.to_string())?,
+                ));
             } else {
                 match mcp_choice {
                     Some(McpForeignChoice::Keep) => {
-                        written.push(
-                            write_mcp_config(root, layout, &binary)
-                                .map_err(|e| e.to_string())?
-                                .to_string_lossy()
-                                .to_string(),
-                        );
+                        written.push(protocol::wire_path(
+                            &write_mcp_config(root, layout, &binary).map_err(|e| e.to_string())?,
+                        ));
                     }
                     Some(McpForeignChoice::Isolate) => {
                         skipped.push(("MCP config".to_string(), isolate_refusal(layout)));
@@ -1876,7 +1878,7 @@ fn run_integration(
                             ),
                         ));
                         mcp_foreign = Some(McpForeignServers {
-                            file: mcp_path.to_string_lossy().to_string(),
+                            file: protocol::wire_path(&mcp_path),
                             isolate_refusal: Some(isolate_refusal(layout)),
                             servers: foreign,
                         });
@@ -1901,10 +1903,9 @@ fn run_integration(
     // list reads outward from the instructions file.
     if let Some(file) = profile.agent_file.as_ref() {
         let write = write_managed_file(root, file, &prd).map_err(|e| e.to_string())?;
-        written.push(write.path.to_string_lossy().to_string());
+        written.push(protocol::wire_path(&write.path));
         if let Some(backup) = write.replaced {
-            replaced
-                .push((write.path.to_string_lossy().to_string(), backup.to_string_lossy().to_string()));
+            replaced.push((protocol::wire_path(&write.path), protocol::wire_path(&backup)));
         }
     }
     Ok(IntegrationResult { written, skipped, replaced, mcp_foreign })
