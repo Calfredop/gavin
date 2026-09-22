@@ -339,10 +339,20 @@ mod tests {
         None
     }
 
+    /// A PATH value from `;`-separated directories, joined the HOST's
+    /// way: `command_with_windows_shim` splits with `split_paths`, whose
+    /// separator is `:` off Windows. That is also why the directories
+    /// below carry no drive letter -- on unix `C:/tools` splits into `C`
+    /// and `/tools`, so every rewrite asserted here would fail and every
+    /// "left alone" would pass without having matched anything.
+    fn path_list(dirs: &str) -> std::ffi::OsString {
+        std::env::join_paths(dirs.split(';')).unwrap()
+    }
+
     fn shim(command: &str, path: &str, pathext: &str, files: &[&str]) -> String {
         command_with_windows_shim(
             command,
-            &std::ffi::OsString::from(path),
+            &path_list(path),
             pathext,
             present(files),
             no_node,
@@ -621,7 +631,7 @@ mod tests {
     #[test]
     fn a_cmd_shim_gets_its_extension_appended() {
         assert_eq!(
-            shim("agent 'do the thing'", "C:/tools", ".COM;.EXE;.BAT;.CMD", &["C:/tools/agent.cmd"]),
+            shim("agent 'do the thing'", "/tools", ".COM;.EXE;.BAT;.CMD", &["/tools/agent.cmd"]),
             "agent.cmd 'do the thing'"
         );
     }
@@ -631,12 +641,12 @@ mod tests {
     /// `%*`) and stays on the ConPTY (unlike `powershell.exe -File`).
     #[test]
     fn a_cmd_shim_with_bundled_node_runs_node_directly() {
-        let path = std::ffi::OsString::from("C:/tools");
+        let path = path_list("/tools");
         let rewritten = command_with_windows_shim(
             "agent --approve-mcps --trust 'line1\n\nline2'",
             &path,
             ".COM;.EXE;.BAT;.CMD",
-            present(&["C:/tools/agent.cmd"]),
+            present(&["/tools/agent.cmd"]),
             |_| {
                 Some((
                     PathBuf::from("C:/tools/versions/2026.09.10-abc/node.exe"),
@@ -654,12 +664,12 @@ mod tests {
     /// POSIX single-quote the rewrite embeds.
     #[test]
     fn a_node_path_with_an_apostrophe_is_posix_quoted() {
-        let path = std::ffi::OsString::from("C:/Ada's tools");
+        let path = path_list("/Ada's tools");
         let rewritten = command_with_windows_shim(
             "agent 'go'",
             &path,
             ".CMD",
-            present(&["C:/Ada's tools/agent.cmd"]),
+            present(&["/Ada's tools/agent.cmd"]),
             |_| {
                 Some((
                     PathBuf::from("C:/Ada's tools/node.exe"),
@@ -693,9 +703,9 @@ mod tests {
         assert_eq!(
             shim(
                 "thing arg",
-                "C:/tools",
+                "/tools",
                 ".COM;.EXE;.BAT;.CMD",
-                &["C:/tools/thing.exe", "C:/tools/thing.cmd"]
+                &["/tools/thing.exe", "/tools/thing.cmd"]
             ),
             "thing.exe arg"
         );
@@ -708,9 +718,9 @@ mod tests {
         assert_eq!(
             shim(
                 "thing",
-                "C:/first;C:/second",
+                "/first;/second",
                 ".COM;.EXE;.BAT;.CMD",
-                &["C:/first/thing.cmd", "C:/second/thing.exe"]
+                &["/first/thing.cmd", "/second/thing.exe"]
             ),
             "thing.cmd"
         );
@@ -722,7 +732,7 @@ mod tests {
     #[test]
     fn a_word_matching_nothing_on_pathext_is_left_alone() {
         assert_eq!(
-            shim("sh -c 'true'", "C:/tools", ".COM;.EXE;.BAT;.CMD", &[]),
+            shim("sh -c 'true'", "/tools", ".COM;.EXE;.BAT;.CMD", &[]),
             "sh -c 'true'"
         );
     }
@@ -735,9 +745,9 @@ mod tests {
         assert_eq!(
             shim(
                 "cd /work && agent 'go'",
-                "C:/tools",
+                "/tools",
                 ".COM;.EXE;.BAT;.CMD",
-                &["C:/tools/agent.cmd"]
+                &["/tools/agent.cmd"]
             ),
             "cd /work && agent 'go'"
         );
@@ -750,7 +760,7 @@ mod tests {
         for word in ["C:/tools/agent", "agent.cmd", "./agent"] {
             let line = format!("{word} 'go'");
             assert_eq!(
-                shim(&line, "C:/tools", ".COM;.EXE;.BAT;.CMD", &["C:/tools/agent.cmd"]),
+                shim(&line, "/tools", ".COM;.EXE;.BAT;.CMD", &["/tools/agent.cmd"]),
                 line
             );
         }
@@ -762,7 +772,7 @@ mod tests {
     #[test]
     fn an_empty_pathext_is_always_a_no_op() {
         assert_eq!(
-            shim("agent 'go'", "C:/tools", "", &["C:/tools/agent.cmd"]),
+            shim("agent 'go'", "/tools", "", &["/tools/agent.cmd"]),
             "agent 'go'"
         );
     }

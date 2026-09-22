@@ -4604,7 +4604,8 @@ mod tests {
     fn save_tool_accepts_every_kind_the_app_can_author() {
         let dir = tempfile::tempdir().unwrap();
         let manager = test_manager(&dir);
-        for kind in ["agent", "command", "script", "gavin", "until", "pr", "review", "critique"] {
+        let kinds = ["agent", "command", "script", "gavin", "until", "pr", "review", "critique"];
+        for kind in kinds {
             let mut tool = a_tool(&format!("u-{kind}"), Some("ws-1"));
             tool.kind = kind.into();
             match handle_request(&manager, Request::SaveTool { tool }) {
@@ -4613,7 +4614,9 @@ mod tests {
             }
         }
         match handle_request(&manager, Request::GetTools { workspace_id: "ws-1".into() }) {
-            Response::Tools { tools } => assert_eq!(tools.len(), 7),
+            // Counted off the list rather than spelled: a literal went
+            // stale the day `critique` joined it.
+            Response::Tools { tools } => assert_eq!(tools.len(), kinds.len()),
             other => panic!("wrong response: {other:?}"),
         }
     }
