@@ -1,4 +1,5 @@
 ---
+order: 11264
 kind: task
 title: Turn verdict: show a prose question on the tab badge, sidebar and card
 status: To Do

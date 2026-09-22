@@ -1,5 +1,5 @@
 ---
-order: 10240
+order: 9216
 kind: task
 title: [fix] .mcp.json points at the Windows gavin-mcp on the Mac
 labels: bug, windows

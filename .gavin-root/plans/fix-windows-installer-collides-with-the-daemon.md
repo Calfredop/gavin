@@ -1,5 +1,5 @@
 ---
-order: 9216
+order: 8192
 title: [fix] The Windows installer installs into the daemon's state directory, and never stops the daemon
 labels: windows
 status: To Do
