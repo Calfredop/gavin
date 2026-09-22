@@ -31,7 +31,9 @@ describe("the gavin tool kind", () => {
     "OrchestrationDrawer.svelte",
     "ToolLibraryDialog.svelte",
     "OrchestrationStepChip.svelte",
-    "WorkspaceToolsHubView.svelte",
+    // The Tools tab's list. WorkspaceToolsHubView is only its frame now;
+    // the rows it draws are ToolsExplorerView's.
+    "ToolsExplorerView.svelte",
     // The node graph's node: the same step the chip draws, on the tab's
     // other view.
     "OrchestrationNodesView.svelte",
