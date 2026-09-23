@@ -27,3 +27,7 @@ Tests go in the `app/src/lib/decisions/` module.
 Done when `cd app && npm test && npm run check && npm run build` are green
 against a clean-HEAD baseline, plus a static pre-flight grep of the exact
 strings the change relies on. The rendered pass is the owner's.
+
+- [ ] Human test: an agent that ends its turn saying it cannot go on, with no rail behind it, lists in the Decisions tab as "Stopped without finishing" with its own sentence quoted under the label — and is still absent from Home's "Waiting on you" inbox and from ⇧⌘A
+- [ ] Human test: a blocked agent whose card is on the board lists as that card's ONE row, carrying the reason, rather than as a second row beside it
+- [ ] Human test: an agent that asks its question in prose, ringing no bell, lists in the Decisions tab as waiting on you — the same row Home's inbox already draws for it

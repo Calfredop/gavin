@@ -2,7 +2,7 @@
 kind: task
 title: "Decisions tab: the wire half (protocol, daemon, gavin-mcp)"
 parent: tb-developed-feat-decisions-tab.md
-status: To Do
+status: Done
 complexity: complex
 ---
 Build the wire half of the Decisions tab. Read the parent plan,
