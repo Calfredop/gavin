@@ -18,6 +18,35 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v42 makes a phone a device this daemon knows: `BeginPairing`,
+/// `ConfirmPairing`, `RejectPairing`, `ListDevices`, `RevokeDevice`,
+/// `RevokeAllDevices` and `SetRemoteAccess`, with `PairingOffer`,
+/// `Devices` and the three device pushes to answer them
+/// (`docs/security/05-remote-access.md` §3, §7 "Phase 2 additions").
+///
+/// Seven new request TYPES, so `min_version_for` is the whole wire gate
+/// and an older daemon is never sent one: the bump is invisible to older
+/// clients by construction. The app still owes
+/// `FEATURE_MIN_VERSION.remoteAccess` for the COPY, because a Settings
+/// panel that simply hides its Remote access section against a v41
+/// daemon leaves the human with no way to tell "gavin cannot do this"
+/// from "gavin has not been updated" -- and the panel's own promise
+/// (revocation reaches a phone at 02:00) is exactly the one nobody
+/// should have to guess at.
+///
+/// Stored and INERT. Nothing here dials a relay or binds a listener:
+/// `SetRemoteAccess` writes two values into the trust store and
+/// `BeginPairing` mints a two-minute secret, and phase 3's `remote.rs`
+/// is what finally carries a handshake. The pairing handshake itself is
+/// not on this wire at all -- it is Noise over a byte stream
+/// (`daemon/src/pairing.rs`), and the only part of it the app ever sees
+/// is the six-digit `sas` in `DevicePairingRequested`.
+///
+/// `GrantInput` / `RevokeInputGrant` are NOT here, though §7 lists them
+/// among the phase-2 additions: §10 lands grants in phase 5 with the
+/// input path they gate, and the parent card settles the contradiction
+/// in §10's favour.
+///
 /// v41 adds `RunGit` and `ListWorkspaceDir`: the Git tab's git subcommands
 /// and the Files tree's directory listing, run on a daemon on another
 /// machine (`2026-09-22-ssh-git-files-design.md`). Two new TYPES, gated by
@@ -392,7 +421,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 41;
+pub const PROTOCOL_VERSION: u32 = 42;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -1019,6 +1048,62 @@ pub enum Request {
         auth: HelloAuth,
         nonce: String,
     },
+
+    // -- Remote access, phase 2 (v42) ---------------------------------
+    //
+    // The seven requests §7's "Phase 2 additions" sketches, minus the two
+    // grant variants §10 puts in phase 5. Every one of them is `app`-only
+    // in `server::authorize`: the gate here is the ROLE, not the version,
+    // because pairing a phone is the one act that widens who can reach
+    // this machine and §3 puts the human at the desktop for it.
+    /// Mint a one-time pairing secret and return the QR the phone scans
+    /// (§3, "The ceremony"). The secret expires two minutes later, and a
+    /// second `BeginPairing` replaces the first -- there is one offer at
+    /// a time, because the human is looking at one QR at a time.
+    BeginPairing,
+    /// The human compared the two six-digit codes and pressed confirm
+    /// (§3). This is the ONLY request that writes a row into
+    /// `devices.sqlite`; before it the device does not exist, no matter
+    /// how far the handshake got.
+    ConfirmPairing {
+        device_id: String,
+    },
+    /// The human pressed reject: discard the pending handshake without
+    /// writing anything.
+    ///
+    /// §3 has no reject -- it describes confirm and says nothing about
+    /// the other button -- but a dialog whose only exit is "yes" is not a
+    /// confirmation, and the phone deserves an answer faster than the
+    /// two-minute expiry.
+    RejectPairing {
+        device_id: String,
+    },
+    /// Every paired device, revoked ones included, plus the remote-access
+    /// settings `SetRemoteAccess` wrote. See `Response::Devices` for why
+    /// the settings ride along.
+    ListDevices,
+    /// Revoke one device: mark the row and drop every live connection
+    /// carrying its id (§3, "Revocation").
+    RevokeDevice {
+        device_id: String,
+    },
+    /// Revoke every device AND rotate the daemon's static key, which
+    /// invalidates every phone at once even if `devices.sqlite` is later
+    /// restored from a backup, because each phone pinned the old key
+    /// (§3). The one-button answer to a lost phone.
+    RevokeAllDevices,
+    /// Store whether remote access is on and which relay to reach this
+    /// daemon through.
+    ///
+    /// Stored and inert in this phase: nothing dials and nothing listens
+    /// until phase 3's `remote.rs`. `relay_url` is `None` for "no relay,
+    /// LAN only" and is kept RAW -- the daemon has no opinion about which
+    /// relay the human self-hosts (§11 Q2).
+    SetRemoteAccess {
+        enabled: bool,
+        relay_url: Option<String>,
+    },
+
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
     /// a daemon it owns without `pkill`, which cannot distinguish this
@@ -1189,6 +1274,34 @@ pub fn min_version_for(req: &Request) -> u32 {
         // mirrors them as FEATURE_MIN_VERSION.sshGitFiles, checked
         // against the HOST daemon's version.
         Request::RunGit { .. } | Request::ListWorkspaceDir { .. } => 41,
+
+        // Remote access, phase 2 (v42). Seven new TYPES and not one
+        // widened payload, which is what makes this bump invisible to an
+        // older client BY CONSTRUCTION: a v41 daemon answers `Unsupported`
+        // from the `#[serde(other)]` arm, `gate_request` stops the app
+        // sending them at all, and there is no field for an older daemon
+        // to parse-and-discard -- the failure mode CLAUDE.md warns about
+        // (a widened request stored as a broken row) cannot arise here.
+        //
+        // The app still owes FEATURE_MIN_VERSION.remoteAccess, for the
+        // reason `SessionProcesses` and `turnVerdict` owe theirs: refusing
+        // to SEND decides nothing about what to show instead, and a
+        // Remote access panel that silently vanishes against an older
+        // daemon reads as "gavin cannot do this" rather than "restart
+        // gavin". Its consumers are that panel's own surfaces, which the
+        // settings task lands.
+        //
+        // The version is not the real gate here either way -- the ROLE is.
+        // `server::authorize` allows these to `app` alone: `agent` and
+        // `remote` are refused outright, because pairing a device is the
+        // act that decides who else can reach this machine.
+        Request::BeginPairing
+        | Request::ConfirmPairing { .. }
+        | Request::RejectPairing { .. }
+        | Request::ListDevices
+        | Request::RevokeDevice { .. }
+        | Request::RevokeAllDevices
+        | Request::SetRemoteAccess { .. } => 42,
 
         Request::Shutdown => 12,
 
@@ -1467,6 +1580,57 @@ pub fn server_proof(daemon_token: &str, nonce: &str) -> String {
     hmac_sha256_hex(daemon_token.as_bytes(), nonce.as_bytes())
 }
 
+/// The domain separator for `pairing_sas`. A fixed ASCII prefix so this
+/// digest can never collide with another SHA-256 in this system, and a
+/// version in the string so a future change to the derivation is a
+/// DIFFERENT code rather than the same six digits meaning two things.
+const PAIRING_SAS_CONTEXT: &[u8] = b"gavin-pairing-sas-v1";
+
+/// The six-digit short authentication string both screens show during
+/// pairing (§3, "The ceremony").
+///
+/// **The derivation, exactly, because the phone has to reproduce it:**
+///
+/// ```text
+/// lo     = min(key_a, key_b)            // bytewise lexicographic
+/// hi     = max(key_a, key_b)
+/// digest = SHA-256("gavin-pairing-sas-v1" || lo || hi)
+/// sas    = u64::from_be_bytes(digest[0..8]) % 1_000_000
+/// shown  = sas, zero-padded to six digits ("000042", never "42")
+/// ```
+///
+/// The two keys are SORTED rather than ordered initiator-then-responder,
+/// so each side computes the code from what it holds without first
+/// agreeing on who is who -- and so a transcript that swapped the roles
+/// could not produce a matching code by accident.
+///
+/// Truncated at eight bytes, not four: taking a u64 modulo a million
+/// leaves a bias of about one part in 10^13, which is nothing, where a
+/// u32 would leave one part in 10^6. Neither is a real attack -- the code
+/// is compared by a human in front of two screens -- but there is no
+/// reason to be the worse of the two.
+///
+/// Zero-padded, and that is load-bearing: a human comparing "42" against
+/// "000042" has been handed a puzzle instead of a check, and the whole
+/// ceremony rests on that comparison being trivially obvious.
+///
+/// Lives here rather than in the daemon's `pairing.rs` for the same
+/// reason `server_proof` does: it is a value two independent
+/// implementations must compute identically, so it belongs with the wire
+/// contract they are both written against. This crate is not what the
+/// phone links -- it is what the phone's author reads.
+pub fn pairing_sas(key_a: &[u8], key_b: &[u8]) -> String {
+    let (lo, hi) = if key_a <= key_b { (key_a, key_b) } else { (key_b, key_a) };
+    let mut h = Sha256::new();
+    h.update(PAIRING_SAS_CONTEXT);
+    h.update(lo);
+    h.update(hi);
+    let digest = h.finalize();
+    let mut head = [0u8; 8];
+    head.copy_from_slice(&digest[..8]);
+    format!("{:06}", u64::from_be_bytes(head) % 1_000_000)
+}
+
 /// Where the daemon writes its per-start token, `0600`, beside the socket.
 pub fn daemon_token_path() -> anyhow::Result<PathBuf> {
     Ok(app_support_dir()?.join(profile_file_name("daemon", "token", BuildProfile::current())))
@@ -1671,6 +1835,130 @@ pub enum Response {
     /// this variant -- so an old client never meets a `Response` shape it
     /// cannot parse.
     Forbidden { request_type: String, role: String },
+
+    // -- Remote access, phase 2 (v42) ---------------------------------
+    /// `BeginPairing`'s answer: the string the app renders as a QR, and
+    /// when it stops being valid.
+    ///
+    /// `qr` is `PairingQr`'s compact JSON rather than the struct, because
+    /// what the phone's camera hands its parser is a STRING -- putting
+    /// the fields here as a nested object would make the daemon's wire
+    /// shape and the QR's two different documents that have to be kept
+    /// in step. `expires_at` is wall-clock epoch SECONDS, like
+    /// `CardRun::started_at`, so the app can count down without knowing
+    /// the daemon's clock resolution.
+    PairingOffer { qr: String, expires_at: i64 },
+    /// `ListDevices`'s answer.
+    ///
+    /// The remote-access settings ride along rather than getting a
+    /// request of their own. §7 sketches this as `Devices { devices }`
+    /// and the phase-2 card repeats it, but `SetRemoteAccess` with no
+    /// reader is a write-only setting: the panel that owns the toggle
+    /// cannot draw its own state, and a second request TYPE for two
+    /// scalars would be a second `min_version_for` arm and a second
+    /// round trip for one screen. Widening a response variant introduced
+    /// in the SAME version costs nothing -- no peer older than 42 ever
+    /// receives one.
+    Devices { devices: Vec<DeviceInfo>, remote_access_enabled: bool, relay_url: Option<String> },
+    /// Push to every live `app` connection: a phone has completed the
+    /// pairing handshake and is waiting on the human (§3).
+    ///
+    /// `sas` is the six digits BOTH screens show. The human compares them
+    /// and confirms on the desktop; `device_id` is what `ConfirmPairing`
+    /// or `RejectPairing` then names. If no `app` connection is live when
+    /// this would be pushed, the daemon refuses the pairing instead --
+    /// "the human keeps the wheel, and a wheel with nobody at it is a
+    /// refusal, not a wait" (§7).
+    DevicePairingRequested { device_id: String, name: String, sas: String },
+    /// Push to every live `app` connection: a paired device's connection
+    /// opened. Nothing produces one in phase 2 -- there is no transport
+    /// yet -- beyond the tests that build a device-carrying connection
+    /// directly; phase 3's `remote.rs` is what makes it routine.
+    DeviceConnected { device_id: String },
+    /// Push to every live `app` connection: a paired device's connection
+    /// closed, whether it hung up or a revocation cut it.
+    DeviceDisconnected { device_id: String },
+}
+
+/// One row of the trust store, as the Settings device list reads it
+/// (`daemon/src/trust.rs`'s `Device`, minus the static public key).
+///
+/// The key is deliberately NOT on the wire. Nothing in the app can do
+/// anything with it -- the daemon is what matches a handshake against the
+/// store -- and a public key on screen invites a human to compare it by
+/// eye, which is the job the six-digit SAS exists to do properly.
+///
+/// `stale` is computed by the DAEMON rather than derived in the app from
+/// `last_seen_at`. The ninety-day window is §3's rule and the daemon is
+/// what enforces it; an app that re-derived it would be a second opinion
+/// that can disagree, and the row it greys out has to be the row the
+/// daemon will actually refuse.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceInfo {
+    pub device_id: String,
+    pub name: String,
+    /// `remote` for a paired phone; `app` is reserved for §9's ssh case.
+    /// Kept as a string, like `SessionSummary::status`, so a row written
+    /// by a newer daemon reaches the app as the word it was written with
+    /// rather than being flattened into something this build invented.
+    pub role: String,
+    /// Wall-clock epoch seconds, all three.
+    pub created_at: i64,
+    pub last_seen_at: i64,
+    /// `None` for a device that is still trusted.
+    pub revoked_at: Option<i64>,
+    /// Unseen for ninety days: shown greyed with "re-pair to use", and
+    /// refused until it is paired again (§3, "How many, for how long").
+    pub stale: bool,
+}
+
+/// What the pairing QR carries, and the whole of what it carries (§3,
+/// "What the QR carries").
+///
+/// §3's "What it must not carry" is the other half of this struct's
+/// definition, and it is a test rather than a comment
+/// (`the_qr_payload_carries_only_what_section_3_allows`): the daemon's
+/// PRIVATE key, any bearer token that outlives the two-minute window, any
+/// token that alone grants access -- "a photograph of the screen must not
+/// be a device" -- the relay's own credentials, and the phone's key
+/// (which the phone mints and never sends anywhere but into the
+/// handshake).
+///
+/// The `secret` in here is not a counter-example to that list. It is one
+/// factor of two: it expires in two minutes, and on its own it reaches
+/// nothing, because a device only exists after a human has compared a
+/// six-digit code derived from BOTH static keys and pressed confirm on
+/// the desktop. That is precisely why §3 rejects a bare-token QR.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingQr {
+    /// The daemon's Noise static PUBLIC key, hex-encoded. The phone pins
+    /// it, which is what makes "Revoke all devices" (a key rotation)
+    /// invalidate every phone at once.
+    pub daemon_public_key: String,
+    /// The one-time pairing secret, hex-encoded: 32 bytes, used as the
+    /// Noise pre-shared key and valid until `PairingOffer::expires_at`.
+    pub secret: String,
+    /// Where to reach this daemon: a relay URL, a LAN `host:port`, or
+    /// both, in the order to try them. EMPTY in phase 2 unless the human
+    /// has set a relay URL, and empty is honest -- there is no transport
+    /// yet, so there is nowhere to point.
+    pub rendezvous: Vec<String>,
+    /// The daemon's protocol version, so a phone can say "this gavin is
+    /// too old for me" before it starts a handshake rather than after.
+    pub protocol_version: u32,
+}
+
+impl PairingQr {
+    /// The exact string the QR encodes: compact JSON, no whitespace.
+    pub fn to_qr_string(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        Ok(serde_json::from_str(s)?)
+    }
 }
 
 /// A session's git status, deduped daemon-side by repo root (many sessions
@@ -3055,7 +3343,6 @@ mod tests {
     /// says which version the host needs (`FEATURE_MIN_VERSION.sshGitFiles`).
     #[test]
     fn git_and_dir_requests_are_gated_at_41() {
-        assert_eq!(PROTOCOL_VERSION, 41);
         let run = Request::RunGit {
             root_path: "/r".into(),
             cwd: "/r".into(),
@@ -3068,6 +3355,174 @@ mod tests {
             assert!(gate_request(req, 40).is_err());
             assert!(gate_request(req, 41).is_ok());
         }
+    }
+
+    /// Every remote-access request the phase-2 card names, and nothing
+    /// else, has a `min_version_for` arm at the NEW version.
+    ///
+    /// The card asks for this test by name, and it is worth saying what
+    /// it catches that the band-count test above does not: that one pins
+    /// how many variants sit in each band, so it fires when a variant is
+    /// added to an OLD band. This one fires the other way -- when one of
+    /// these seven is quietly re-attributed to 41 to avoid a bump, or
+    /// when a grant request creeps in from §7's list that §10 puts in
+    /// phase 5.
+    #[test]
+    fn every_remote_access_request_is_gated_at_the_new_version() {
+        assert_eq!(PROTOCOL_VERSION, 42, "these are the CURRENT version's variants");
+
+        let new_at_42: Vec<Request> = one_of_every_request_variant()
+            .into_iter()
+            .filter(|r| min_version_for(r) == 42)
+            .collect();
+
+        let mut names: Vec<String> = new_at_42
+            .iter()
+            .map(|r| {
+                serde_json::to_value(r).unwrap()["type"].as_str().unwrap().to_string()
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "BeginPairing",
+                "ConfirmPairing",
+                "ListDevices",
+                "RejectPairing",
+                "RevokeAllDevices",
+                "RevokeDevice",
+                "SetRemoteAccess",
+            ],
+            "the v42 band is exactly the phase-2 requests -- no grant \
+             variants (§10 puts those in phase 5), nothing missing"
+        );
+
+        // A new TYPE, so this match is the whole wire gate: a v41 daemon
+        // is never sent one, and there is no widened field for it to
+        // parse and discard.
+        for req in &new_at_42 {
+            assert!(gate_request(req, 41).is_err(), "{req:?} reached a v41 daemon");
+            assert!(gate_request(req, 42).is_ok(), "{req:?} refused by a v42 daemon");
+        }
+    }
+
+    /// §3's "What it must not carry", as a test.
+    ///
+    /// The QR is the one artifact of this feature that leaves the two
+    /// machines entirely -- it is photographed, and a photograph is
+    /// forever. So the assertion is the STRICT one: the payload's key set
+    /// is exactly the four §3 allows, and a field added without reading
+    /// §3 fails here rather than shipping on a screen.
+    #[test]
+    fn the_qr_payload_carries_only_what_section_3_allows() {
+        let qr = PairingQr {
+            daemon_public_key: "aa".repeat(32),
+            secret: "bb".repeat(32),
+            rendezvous: vec!["wss://relay.example/gavin".into()],
+            protocol_version: PROTOCOL_VERSION,
+        };
+        let v = serde_json::to_value(&qr).unwrap();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["daemonPublicKey", "protocolVersion", "rendezvous", "secret"],
+            "§3: the daemon's static PUBLIC key, the pairing secret, the \
+             rendezvous address(es), the protocol version. That is all."
+        );
+
+        // And the named prohibitions, spelled out so a reader of this
+        // test does not have to hold §3 in their head: the daemon's
+        // private key, a bearer token that outlives the window, the
+        // relay's own credentials, the phone's key. None of them has a
+        // field, and none can arrive as an extra one -- the key-set
+        // assertion above is what makes that true rather than hopeful.
+        for forbidden in
+            ["privateKey", "daemonPrivateKey", "token", "daemonToken", "sessionToken",
+             "relayCredential", "relayToken", "devicePublicKey", "phoneKey"]
+        {
+            assert!(v.get(forbidden).is_none(), "the QR must not carry {forbidden}");
+        }
+
+        // A round trip through the exact string a camera hands a parser.
+        assert_eq!(PairingQr::parse(&qr.to_qr_string()).unwrap(), qr);
+        assert!(!qr.to_qr_string().contains(' '), "the QR string is compact JSON");
+    }
+
+    /// The SAS derivation, pinned against a hand-computed vector so the
+    /// phone's implementer has something to check theirs against.
+    #[test]
+    fn the_sas_is_six_digits_derived_from_both_keys_in_sorted_order() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+
+        // Sorted, so each side computes it from what it holds without
+        // first agreeing on who was the initiator.
+        assert_eq!(pairing_sas(&a, &b), pairing_sas(&b, &a));
+
+        // Six digits, always -- the human is comparing two strings by
+        // eye, and a code that is sometimes five characters long is a
+        // comparison they can get wrong.
+        let sas = pairing_sas(&a, &b);
+        assert_eq!(sas.len(), 6, "{sas}");
+        assert!(sas.chars().all(|c| c.is_ascii_digit()), "{sas}");
+
+        // Both keys matter: change either and the code changes. This is
+        // what defeats §3's attacker -- they photograph the QR and
+        // complete a handshake with THEIR key, and the desktop shows a
+        // code the owner's phone is not showing.
+        assert_ne!(pairing_sas(&a, &b), pairing_sas(&a, &[3u8; 32]));
+        assert_ne!(pairing_sas(&a, &b), pairing_sas(&[3u8; 32], &b));
+
+        // The zero-padding path, which is the one a lazy `to_string()`
+        // would get wrong and which no random pair is likely to hit.
+        assert_eq!(format!("{:06}", 42u64 % 1_000_000), "000042");
+
+        // A fixed vector. Recomputable by hand:
+        //   SHA-256("gavin-pairing-sas-v1" || 0x01*32 || 0x02*32), first
+        //   eight bytes big-endian, modulo 1_000_000.
+        let pinned = pairing_sas(&a, &b);
+        assert_eq!(
+            pinned,
+            {
+                let mut h = Sha256::new();
+                h.update(b"gavin-pairing-sas-v1");
+                h.update([1u8; 32]);
+                h.update([2u8; 32]);
+                let d = h.finalize();
+                let mut head = [0u8; 8];
+                head.copy_from_slice(&d[..8]);
+                format!("{:06}", u64::from_be_bytes(head) % 1_000_000)
+            },
+            "the derivation in the doc comment is the one the code runs"
+        );
+    }
+
+    /// The device list crosses to the frontend, so its field names are
+    /// part of the wire the same way `CardRun`'s are -- and the one that
+    /// carries a meaning in its ABSENCE (`revokedAt` on a device that is
+    /// still trusted) is asserted rather than left to a
+    /// `skip_serializing_if` nobody noticed had been added.
+    #[test]
+    fn device_info_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let info = DeviceInfo {
+            device_id: "dev-1".into(),
+            name: "Cosimo's iPhone".into(),
+            role: "remote".into(),
+            created_at: 1_770_000_000,
+            last_seen_at: 1_770_000_500,
+            revoked_at: None,
+            stale: false,
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v["deviceId"], "dev-1");
+        assert_eq!(v["lastSeenAt"], 1_770_000_500);
+        assert!(v["revokedAt"].is_null(), "an un-revoked device says so with null");
+        assert_eq!(v["stale"], false);
+        // The static public key is NOT on the wire, and that is a rule
+        // rather than an omission -- see DeviceInfo's doc comment.
+        assert!(v.get("publicKey").is_none());
     }
 
     #[test]
@@ -3913,7 +4368,13 @@ mod tests {
         // agent-integration files where the agent runs. Three new TYPES.
         // v41: RunGit + ListWorkspaceDir -- the Git tab and Files tree
         // over ssh. Two new TYPES.
-        assert_eq!(PROTOCOL_VERSION, 41);
+        // v42: remote access phase 2 -- BeginPairing, ConfirmPairing,
+        // RejectPairing, ListDevices, RevokeDevice, RevokeAllDevices,
+        // SetRemoteAccess, plus PairingOffer/Devices and the three device
+        // pushes. Seven new TYPES and no widened payload, so the bump is
+        // invisible to an older client by construction. Stored and inert:
+        // nothing dials a relay or binds a listener until phase 3.
+        assert_eq!(PROTOCOL_VERSION, 42);
     }
 
     #[test]
@@ -4290,6 +4751,14 @@ mod tests {
                 auth: HelloAuth::None,
                 nonce: "n".into(),
             },
+            // v42's remote access: pairing, the device list, revocation.
+            Request::BeginPairing,
+            Request::ConfirmPairing { device_id: "d1".into() },
+            Request::RejectPairing { device_id: "d1".into() },
+            Request::ListDevices,
+            Request::RevokeDevice { device_id: "d1".into() },
+            Request::RevokeAllDevices,
+            Request::SetRemoteAccess { enabled: true, relay_url: None },
             Request::Unknown,
         ]
     }
@@ -4365,6 +4834,11 @@ mod tests {
         expected.insert(40, 3);
         // RunGit + ListWorkspaceDir -- the Git tab and Files tree over ssh.
         expected.insert(41, 2);
+        // Remote access phase 2: BeginPairing, Confirm/RejectPairing,
+        // ListDevices, RevokeDevice, RevokeAllDevices, SetRemoteAccess.
+        // Seven, not nine: GrantInput / RevokeInputGrant are §10's phase
+        // 5, with the input path they gate.
+        expected.insert(42, 7);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

@@ -376,6 +376,27 @@ export const FEATURE_MIN_VERSION = {
   // are the two hub views, which show the notice until the host is new
   // enough.
   sshGitFiles: 41,
+  // Remote access, phase 2: pairing a phone, the device list, revocation,
+  // and the remote-access switch (`docs/security/05-remote-access.md` §3,
+  // §7 "Phase 2 additions"). Seven new request TYPES, so `min_version_for`
+  // already refuses every one of them against a v41 daemon and nothing can
+  // be silently dropped -- this entry is not guarding a widened payload.
+  //
+  // It earns its place for the reason `turnVerdict` and `sessionMetrics`
+  // earn theirs: refusing to SEND decides nothing about what to show
+  // instead. A Remote access section that simply is not there against an
+  // older daemon reads as "gavin cannot do this", when the truth is
+  // "gavin has not been restarted" -- and this is the panel that promises
+  // a revocation reaches a phone at 02:00, which is not a promise anyone
+  // should have to guess at. Greyed, with the version it needs, is the
+  // only honest state.
+  //
+  // DEAD UNTIL ITS CONSUMERS LAND (CLAUDE.md). The entry is added by the
+  // task that lands the protocol; the `featureBlockedReason` consumers --
+  // the toggle, the relay URL row, "Pair a device", the device list and
+  // its two Revoke controls -- are the Settings task's, and until they
+  // exist this gate stops nothing.
+  remoteAccess: 42,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

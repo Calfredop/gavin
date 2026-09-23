@@ -73,11 +73,24 @@ const STALE_AFTER_US: i64 = STALE_AFTER_DAYS * 24 * 60 * 60 * 1_000_000;
 const META_PRIVATE_KEY: &str = "static_private_key";
 const META_PUBLIC_KEY: &str = "static_public_key";
 
+/// `trust_meta` keys for the remote-access settings (`SetRemoteAccess`).
+///
+/// Here rather than in the app's `config.json` for the first of the three
+/// reasons §3 gives about the device rows themselves, and it applies
+/// unchanged: the daemon is what will dial (phase 3), so the daemon has
+/// to own whether it should -- a setting the app holds is a setting that
+/// is absent at 02:00 with the app closed, which is precisely when the
+/// answer matters. It is also the file the QR's rendezvous list is read
+/// out of, so keeping it beside the key the QR carries means one read,
+/// one lock, and no way for the two halves of one payload to disagree.
+const META_REMOTE_ENABLED: &str = "remote_access_enabled";
+const META_RELAY_URL: &str = "remote_access_relay_url";
+
 /// The daemon's clock, in microseconds since the epoch -- the same unit
 /// and the same saturating read as `registry::now_us`, so timestamps from
 /// the two stores are directly comparable and a machine whose date is
 /// wrong does not take the daemon down.
-fn now_us() -> i64 {
+pub(crate) fn now_us() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
@@ -200,6 +213,35 @@ impl Admission {
                 Some("this device was paired by a newer gavin — update gavin to use it")
             }
         }
+    }
+}
+
+/// Whether this daemon should be reachable from away, and through what.
+///
+/// Two values rather than one `Option<String>` where `None` means off,
+/// because the human's relay URL must survive them turning the switch off
+/// and on again -- a setting that forgets what it was is a setting they
+/// have to retype, and a URL they retype is a URL they can mistype.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RemoteAccess {
+    pub enabled: bool,
+    /// `None` for "no relay": direct only (LAN, Tailscale), which §5
+    /// calls the same code path minus the relay. Kept RAW -- the daemon
+    /// has nothing to validate a self-hosted relay's URL against (§11
+    /// Q2), and a rule it invented would refuse an address that works.
+    pub relay_url: Option<String>,
+}
+
+impl RemoteAccess {
+    /// The rendezvous list the QR carries (§3, "What the QR carries":
+    /// "the relay URL, or LAN host and port, or both").
+    ///
+    /// EMPTY in this phase unless the human has set a relay, and empty is
+    /// the honest answer rather than a gap: there is no transport yet, so
+    /// there is nowhere to point a phone. Phase 3 is what adds the LAN
+    /// address beside it.
+    pub fn rendezvous(&self) -> Vec<String> {
+        self.relay_url.iter().cloned().collect()
     }
 }
 
@@ -346,6 +388,47 @@ impl TrustStore {
         let keypair = generate_static_keypair()?;
         self.set_meta(META_PRIVATE_KEY, &keypair.private)?;
         self.set_meta(META_PUBLIC_KEY, &keypair.public)?;
+        Ok(())
+    }
+
+    // -- remote-access settings ---------------------------------------
+
+    /// Whether remote access is switched on, and which relay to be
+    /// reachable through.
+    ///
+    /// **Stored and inert in phase 2.** Nothing in this build reads
+    /// `enabled` to decide to dial or listen -- §10's "must not" for this
+    /// phase is that no listener opens and no relay is dialled, and the
+    /// way to be sure of that is for there to be no code that could.
+    /// "Remote access on" today means rows in a file and a panel that
+    /// says so in its own words.
+    pub fn remote_access(&self) -> anyhow::Result<RemoteAccess> {
+        // Absent means off. A daemon that had never been told is not a
+        // daemon that was told yes.
+        let enabled = self.meta(META_REMOTE_ENABLED)?.map(|v| v == b"1").unwrap_or(false);
+        let relay_url = match self.meta(META_RELAY_URL)? {
+            // An empty stored value is "no relay", not an empty URL: the
+            // human clearing the field must not leave something that
+            // parses as an address.
+            Some(bytes) => {
+                let s = String::from_utf8_lossy(&bytes).trim().to_string();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
+            }
+            None => None,
+        };
+        Ok(RemoteAccess { enabled, relay_url })
+    }
+
+    pub fn set_remote_access(&self, settings: &RemoteAccess) -> anyhow::Result<()> {
+        self.set_meta(META_REMOTE_ENABLED, if settings.enabled { b"1" } else { b"0" })?;
+        self.set_meta(
+            META_RELAY_URL,
+            settings.relay_url.as_deref().unwrap_or("").trim().as_bytes(),
+        )?;
         Ok(())
     }
 
@@ -954,5 +1037,97 @@ mod tests {
         // pre-existing table.
         store.confirm_device("dev-2", &key(1), "Pixel", DeviceRole::Remote).unwrap();
         assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    /// Absent means OFF. A daemon that has never been told anything is
+    /// not a daemon that was told yes -- and this is the state every
+    /// existing `devices.sqlite` is in, since the store shipped a phase
+    /// before the setting did.
+    #[test]
+    fn a_store_that_was_never_told_has_remote_access_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        assert_eq!(store.remote_access().unwrap(), RemoteAccess::default());
+        assert!(!store.remote_access().unwrap().enabled);
+        assert!(store.remote_access().unwrap().relay_url.is_none());
+        assert!(store.remote_access().unwrap().rendezvous().is_empty());
+    }
+
+    /// The switch and the URL are independent, which is the whole reason
+    /// they are two values: turning remote access off and on again must
+    /// not cost the human the address they typed.
+    #[test]
+    fn turning_remote_access_off_keeps_the_relay_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        let url = Some("wss://relay.example/gavin".to_string());
+
+        store.set_remote_access(&RemoteAccess { enabled: true, relay_url: url.clone() }).unwrap();
+        store.set_remote_access(&RemoteAccess { enabled: false, relay_url: url.clone() }).unwrap();
+
+        let read = store.remote_access().unwrap();
+        assert!(!read.enabled);
+        assert_eq!(read.relay_url, url);
+        // And it survives a reopen, because the daemon that will one day
+        // dial is the one that comes back after a reboot.
+        assert_eq!(open_store(&dir).remote_access().unwrap(), read);
+    }
+
+    /// A cleared field is "no relay", never an empty address. The QR
+    /// reads its rendezvous list straight out of this, and an entry that
+    /// is the empty string is one a phone would try to dial.
+    #[test]
+    fn a_blank_relay_url_reads_back_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        for blank in ["", "   "] {
+            store
+                .set_remote_access(&RemoteAccess {
+                    enabled: true,
+                    relay_url: Some(blank.to_string()),
+                })
+                .unwrap();
+            let read = store.remote_access().unwrap();
+            assert_eq!(read.relay_url, None, "{blank:?}");
+            assert!(read.rendezvous().is_empty(), "{blank:?}");
+        }
+    }
+
+    /// The rendezvous list the QR carries: the relay when there is one,
+    /// nothing when there is not. Empty is honest in this phase -- no
+    /// transport exists, so there is nowhere to point a phone.
+    #[test]
+    fn the_rendezvous_list_is_the_relay_or_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        store
+            .set_remote_access(&RemoteAccess {
+                enabled: true,
+                relay_url: Some("wss://relay.example/gavin".into()),
+            })
+            .unwrap();
+        assert_eq!(
+            store.remote_access().unwrap().rendezvous(),
+            vec!["wss://relay.example/gavin".to_string()]
+        );
+    }
+
+    /// Rotating the daemon key must not take the human's settings with
+    /// it. "Revoke all devices" answers a lost phone; it is not a factory
+    /// reset, and a human who pressed it should not also find remote
+    /// access switched off and their relay URL gone.
+    #[test]
+    fn revoke_all_rotates_the_key_and_leaves_the_settings_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        let settings =
+            RemoteAccess { enabled: true, relay_url: Some("wss://relay.example/gavin".into()) };
+        store.set_remote_access(&settings).unwrap();
+        let before = store.static_public_key().unwrap();
+
+        let after = store.revoke_all().unwrap();
+
+        assert_ne!(before, after, "revoke_all must rotate the key");
+        assert_eq!(store.remote_access().unwrap(), settings);
     }
 }

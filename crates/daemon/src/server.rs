@@ -1280,6 +1280,56 @@ pub struct SessionManager {
     /// reused within a daemon lifetime, so a slow `Drop` on one thread
     /// cannot remove a newer connection's entry.
     next_device_connection: AtomicU64,
+    /// Live connections that took the `app` role, keyed the same way and
+    /// for the same reasons as `device_connections` above.
+    ///
+    /// This is what the three device pushes are written to, and it is
+    /// also the thing `pair_over` asks a yes/no question of: §7 says that
+    /// when no `app` connection is live at the moment a confirmation is
+    /// needed, the daemon REFUSES the pairing with "open gavin on the
+    /// desktop" -- "the human keeps the wheel, and a wheel with nobody at
+    /// it is a refusal, not a wait". Without this map that rule has
+    /// nothing to consult and the daemon would have to pair on its own
+    /// judgment, which is exactly what §3's ceremony exists to prevent.
+    ///
+    /// `app` only, deliberately, not `local`: the pushes are for the
+    /// desktop that is showing the pairing dialog, and `local` is any
+    /// same-uid process that introduced itself as nobody in particular
+    /// (§4) -- a hand-started agent in a terminal is not a screen a human
+    /// is looking at.
+    app_connections: Mutex<HashMap<u64, Arc<Mutex<Stream>>>>,
+    next_app_connection: AtomicU64,
+    /// The one live pairing offer, or none.
+    ///
+    /// ONE, because the human is looking at one QR: a second
+    /// `BeginPairing` replaces the first, which is also what makes
+    /// "press Pair a device again" a real instruction rather than a way
+    /// to accumulate valid secrets. In memory and never on disk -- a
+    /// two-minute window that survived a daemon restart would outlive the
+    /// screen it was shown on.
+    pending_offer: Mutex<Option<crate::pairing::PairingOffer>>,
+    /// Handshakes that have completed and are waiting on the human,
+    /// keyed by the `device_id` the push named.
+    ///
+    /// Also in memory, and for the sharper reason: §3's promise is that
+    /// nothing reaches `devices.sqlite` until the human confirms, so the
+    /// place a not-yet-confirmed device is held has to be a place that
+    /// is not the trust store. A daemon that restarts mid-dialog has
+    /// forgotten the pairing, which is the correct amount of memory for
+    /// a question nobody answered.
+    pending_pairings: Mutex<HashMap<String, PendingPairing>>,
+}
+
+/// A completed handshake the human has not yet ruled on.
+///
+/// Holds no transport: in phase 2 there is nothing to answer the phone
+/// over, and phase 3 is what keeps the channel alive across the human's
+/// decision. What it holds is exactly what `ConfirmPairing` needs to
+/// write the row, and nothing else.
+#[derive(Debug, Clone)]
+struct PendingPairing {
+    public_key: Vec<u8>,
+    name: String,
 }
 
 /// A live connection carrying a device identity, and the handle that
@@ -1308,7 +1358,35 @@ struct DeviceConnectionSlot<'a> {
 
 impl Drop for DeviceConnectionSlot<'_> {
     fn drop(&mut self) {
-        self.manager.device_connections.lock().unwrap().remove(&self.token);
+        let gone = self.manager.device_connections.lock().unwrap().remove(&self.token);
+        // The `DeviceDisconnected` push lives HERE, on the one path every
+        // connection leaves by, rather than beside each thing that can
+        // end one. A revocation, a phone hanging up, a relay dropping and
+        // a daemon shutting a socket all arrive at this `Drop`, and the
+        // desktop's device list has to go grey for every one of them --
+        // announcing it at the callers would mean the list is right for
+        // the exits somebody remembered.
+        //
+        // After the removal, so an app that reacts by listing devices
+        // cannot still see the connection it was told had gone.
+        if let Some(conn) = gone {
+            self.manager
+                .push_to_apps(&Response::DeviceDisconnected { device_id: conn.device_id });
+        }
+    }
+}
+
+/// Removes a connection's `app_connections` entry when its thread ends.
+/// The `app` twin of `DeviceConnectionSlot`, and there for the same
+/// reason: one exit path, taken however the loop returns.
+struct AppConnectionSlot<'a> {
+    manager: &'a SessionManager,
+    token: u64,
+}
+
+impl Drop for AppConnectionSlot<'_> {
+    fn drop(&mut self) {
+        self.manager.app_connections.lock().unwrap().remove(&self.token);
     }
 }
 
@@ -1365,6 +1443,10 @@ impl SessionManager {
             trust: std::sync::OnceLock::new(),
             device_connections: Mutex::new(HashMap::new()),
             next_device_connection: AtomicU64::new(0),
+            app_connections: Mutex::new(HashMap::new()),
+            next_app_connection: AtomicU64::new(0),
+            pending_offer: Mutex::new(None),
+            pending_pairings: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1415,7 +1497,263 @@ impl SessionManager {
             .lock()
             .unwrap()
             .insert(token, DeviceConnection { device_id: device_id.to_string(), stream });
+        // Announced after the entry exists, so an app that reacts to the
+        // push by listing devices cannot see a device the daemon has not
+        // finished registering.
+        self.push_to_apps(&Response::DeviceConnected { device_id: device_id.to_string() });
         token
+    }
+
+    /// Registers a connection that took the `app` role, returning the
+    /// token that removes it again. See `app_connections`.
+    fn register_app_connection(&self, writer: Arc<Mutex<Stream>>) -> u64 {
+        let token = self.next_app_connection.fetch_add(1, Ordering::SeqCst);
+        self.app_connections.lock().unwrap().insert(token, writer);
+        token
+    }
+
+    /// Whether any desktop is currently listening (§7's precondition for
+    /// a pairing that needs confirming).
+    // Reached only through `pair_over`, which has no caller in the binary
+    // until phase 3's transport lands. Same allow, same reason, as
+    // `Role::Remote` and `shutdown_device_connections`.
+    #[allow(dead_code)]
+    fn an_app_is_live(&self) -> bool {
+        !self.app_connections.lock().unwrap().is_empty()
+    }
+
+    /// Writes a push to every live `app` connection.
+    ///
+    /// Every one, not "the" one: the human may have gavin open twice
+    /// (the release build and a dev build both run here -- see CLAUDE.md
+    /// on what they share), and a pairing dialog that appeared on only
+    /// one of them would be a confirm button the human cannot find.
+    ///
+    /// The writers are cloned out of the map before any of them is
+    /// written to, so this file's rule holds: no lock is held across a
+    /// blocking write. A write that fails is dropped -- the connection is
+    /// going away and its own thread's `Drop` is what removes it.
+    fn push_to_apps(&self, resp: &Response) {
+        let writers: Vec<Arc<Mutex<Stream>>> =
+            self.app_connections.lock().unwrap().values().cloned().collect();
+        for writer in writers {
+            let _ = write_message(&mut *writer.lock().unwrap(), resp);
+        }
+    }
+
+    // -- pairing (§3's ceremony, phase 2) ------------------------------
+
+    /// `BeginPairing`: mint a one-time secret and build the QR the phone
+    /// scans (§3, "What the QR carries").
+    ///
+    /// Replaces any offer already outstanding. One QR is on screen at a
+    /// time, so one secret is live at a time -- and an offer left behind
+    /// by an abandoned dialog is a valid secret nobody is watching.
+    pub fn begin_pairing(&self) -> anyhow::Result<Response> {
+        let (daemon_public_key, rendezvous) = {
+            let trust = self.trust_or_err()?;
+            (trust.static_public_key()?, trust.remote_access()?.rendezvous())
+        };
+        let offer = crate::pairing::PairingOffer::mint(crate::trust::now_us())?;
+        let qr = protocol::PairingQr {
+            daemon_public_key: crate::pairing::hex_encode(&daemon_public_key),
+            secret: offer.secret_hex().to_string(),
+            rendezvous,
+            protocol_version: protocol::PROTOCOL_VERSION,
+        };
+        let expires_at = offer.expires_at_us / 1_000_000;
+        *self.pending_offer.lock().unwrap() = Some(offer);
+        // Pressing "Pair a device" starts over, so a handshake the human
+        // never answered goes with the ceremony it belonged to. Two
+        // reasons, and the first is the one that matters: the dialog
+        // showing that device's six digits is no longer on screen, and a
+        // Confirm that could still land for it would be a yes to a
+        // question nobody is being asked. The second is housekeeping --
+        // this map is the only place a completed-but-unanswered handshake
+        // lives, and without this it lives until the daemon restarts.
+        self.pending_pairings.lock().unwrap().clear();
+        Ok(Response::PairingOffer { qr: qr.to_qr_string(), expires_at })
+    }
+
+    /// Run the pairing handshake over one byte stream and ask the human.
+    ///
+    /// **This is the seam.** Phase 2 has no transport (§10: "must not
+    /// open a listener or dial a relay"), so nothing in the binary calls
+    /// this yet -- the test that drives the whole ceremony does, over a
+    /// `Stream::pair()`, and phase 3's `remote.rs` calls it with the
+    /// relay connection it just accepted. What comes back is the
+    /// `device_id` the human's answer will name.
+    ///
+    /// Two refusals happen here rather than after the handshake, and both
+    /// matter:
+    ///
+    /// - no offer, or an expired one: the ceremony is over (the check is
+    ///   `run_responder`'s, before it reads a byte);
+    /// - no live `app` connection: §7's rule, checked BEFORE the
+    ///   handshake runs rather than after. A phone that completed a full
+    ///   mutual exchange and was then told "nobody is home" has spent its
+    ///   secret for nothing, and the human would have no way to know it
+    ///   happened.
+    // No caller in the binary until there is a transport to call it from;
+    // the ceremony test below is what proves it works meanwhile. Same
+    // allow, same reason, as `Role::Remote`.
+    #[allow(dead_code)]
+    pub fn pair_over<S: std::io::Read + std::io::Write>(
+        &self,
+        stream: &mut S,
+    ) -> anyhow::Result<crate::pairing::PairingHandshake> {
+        if !self.an_app_is_live() {
+            anyhow::bail!(
+                "gavin-daemon: open gavin on the desktop to confirm this pairing"
+            );
+        }
+        // Cloned out so the handshake -- three round trips over a socket
+        // -- does not run with the offer lock held.
+        let offer = self
+            .pending_offer
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("gavin-daemon: no pairing is in progress"))?;
+
+        // Lifted out of the store so the handshake -- three round trips
+        // over a network -- does not run with the trust lock held. A
+        // revocation takes that same lock, and §3 promises it drops a
+        // device's connections IMMEDIATELY; queueing it behind a phone
+        // that walked out of wifi range would make that a promise about
+        // the weather. See `pairing::ResponderKeys`.
+        let keys = {
+            let trust = self.trust_or_err()?;
+            crate::pairing::ResponderKeys::from_store(&trust)?
+        };
+        let outcome = crate::pairing::run_responder_with_keys(
+            stream,
+            &keys,
+            &offer,
+            crate::trust::now_us(),
+        )?;
+        let device_id = {
+            let trust = self.trust_or_err()?;
+            crate::pairing::device_id_for(&trust, &outcome.public_key)?
+        };
+        let handshake = crate::pairing::PairingHandshake {
+            device_id,
+            name: outcome.name,
+            public_key: outcome.public_key,
+            sas: outcome.sas,
+            transport: outcome.transport,
+        };
+
+        // The secret is spent whether or not the human says yes: §3 mints
+        // it per ceremony, and a secret that survived one completed
+        // handshake would let a second phone in on the same photograph.
+        *self.pending_offer.lock().unwrap() = None;
+
+        self.pending_pairings.lock().unwrap().insert(
+            handshake.device_id.clone(),
+            PendingPairing {
+                public_key: handshake.public_key.clone(),
+                name: handshake.name.clone(),
+            },
+        );
+        self.push_to_apps(&Response::DevicePairingRequested {
+            device_id: handshake.device_id.clone(),
+            name: handshake.name.clone(),
+            sas: handshake.sas.clone(),
+        });
+        Ok(handshake)
+    }
+
+    /// `ConfirmPairing`: the human compared the two codes and said yes.
+    /// The ONE place a device row is written.
+    pub fn confirm_pairing(&self, device_id: &str) -> anyhow::Result<()> {
+        let pending = self.pending_pairings.lock().unwrap().remove(device_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "gavin-daemon: there is no pairing waiting for {device_id} — it may have expired"
+            )
+        })?;
+        let written = self.trust_or_err()?.confirm_device(
+            device_id,
+            &pending.public_key,
+            &pending.name,
+            crate::trust::DeviceRole::Remote,
+        );
+        if written.is_err() {
+            // Put it back. The write that realistically fails here is
+            // the device cap ("3 devices are already paired — revoke one
+            // before pairing another"), and that message is an
+            // instruction: revoke one, press Confirm again. Dropping the
+            // pending handshake would make the instruction impossible to
+            // follow, because the phone's secret is spent and there is
+            // no channel in this phase to ask it to try again.
+            self.pending_pairings.lock().unwrap().insert(device_id.to_string(), pending);
+        }
+        written?;
+        Ok(())
+    }
+
+    /// `RejectPairing`: the human said no, or the codes did not match.
+    /// Forgets the handshake without writing anything.
+    ///
+    /// Not an error for an unknown id: a reject that raced the two-minute
+    /// expiry has got what it asked for, and telling the human their No
+    /// failed would be a worse lie than silence.
+    pub fn reject_pairing(&self, device_id: &str) -> anyhow::Result<()> {
+        self.pending_pairings.lock().unwrap().remove(device_id);
+        Ok(())
+    }
+
+    /// `ListDevices`: the trust store's rows plus the remote-access
+    /// settings, as the Settings panel reads them.
+    pub fn list_devices(&self) -> anyhow::Result<Response> {
+        let trust = self.trust_or_err()?;
+        let now = crate::trust::now_us();
+        let settings = trust.remote_access()?;
+        let devices = trust
+            .list()?
+            .into_iter()
+            .map(|d| protocol::DeviceInfo {
+                // Computed here, by the daemon that enforces it, rather
+                // than left for the app to re-derive from `last_seen_at`
+                // -- see `protocol::DeviceInfo`. Read before the row is
+                // taken apart below.
+                stale: d.is_stale_at(now),
+                device_id: d.device_id,
+                name: d.name,
+                role: d.role.as_str().to_string(),
+                created_at: d.created_at_us / 1_000_000,
+                last_seen_at: d.last_seen_at_us / 1_000_000,
+                revoked_at: d.revoked_at_us.map(|us| us / 1_000_000),
+            })
+            .collect();
+        Ok(Response::Devices {
+            devices,
+            remote_access_enabled: settings.enabled,
+            relay_url: settings.relay_url,
+        })
+    }
+
+    /// `SetRemoteAccess`: store the switch and the relay URL.
+    ///
+    /// Stored and INERT (§10). Nothing here dials, listens, or starts a
+    /// thread; the phase-3 transport is what finally reads `enabled` and
+    /// acts on it.
+    pub fn set_remote_access(
+        &self,
+        enabled: bool,
+        relay_url: Option<String>,
+    ) -> anyhow::Result<()> {
+        self.trust_or_err()?
+            .set_remote_access(&crate::trust::RemoteAccess { enabled, relay_url })
+    }
+
+    /// The trust store, or the error every remote-access request answers
+    /// when this daemon has none. Named rather than silent, for the
+    /// reason `revoke_device` gives: a success that stored nothing is
+    /// worse than a refusal.
+    fn trust_or_err(&self) -> anyhow::Result<std::sync::MutexGuard<'_, crate::trust::TrustStore>> {
+        self.trust()
+            .ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon has no trust store"))
     }
 
     /// Shuts down every live connection matching `want` and reports how
@@ -3957,6 +4295,39 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::GetProtocolVersion => {
             Ok(Response::ProtocolVersion { version: protocol::PROTOCOL_VERSION })
         }
+
+        // -- Remote access, phase 2 (v42) ----------------------------
+        //
+        // `app` only. `authorize` is what enforces that (an `agent` and a
+        // `remote` are refused before they reach here), and the version
+        // gate is beside the point for these: pairing a device is the act
+        // that decides who else can reach this machine, so the gate is
+        // the ROLE.
+        //
+        // Every one of them is stored-and-inert (§10): not one of these
+        // arms opens a listener, dials a relay, or starts a thread.
+        Request::BeginPairing => manager.begin_pairing(),
+        Request::ConfirmPairing { device_id } => {
+            manager.confirm_pairing(&device_id).map(|_| Response::Ok)
+        }
+        Request::RejectPairing { device_id } => {
+            manager.reject_pairing(&device_id).map(|_| Response::Ok)
+        }
+        Request::ListDevices => manager.list_devices(),
+        // Answered `Ok` rather than with what changed: the app refetches
+        // the list, which is the only account of the store that cannot
+        // disagree with the store.
+        Request::RevokeDevice { device_id } => {
+            manager.revoke_device(&device_id).map(|_| Response::Ok)
+        }
+        // The rotated public key is deliberately NOT in the reply. The
+        // app has no use for it -- the daemon is what matches a handshake
+        // against the store -- and a key on the wire is a key that ends
+        // up in a log.
+        Request::RevokeAllDevices => manager.revoke_all_devices().map(|_| Response::Ok),
+        Request::SetRemoteAccess { enabled, relay_url } => {
+            manager.set_remote_access(enabled, relay_url).map(|_| Response::Ok)
+        }
         Request::GetBoardByRoot { root_path } => manager
             .board_by_root(&root_path)
             .map(|board| Response::Board { columns: board.columns, labels: board.labels, card_sessions: board.card_sessions }),
@@ -4323,6 +4694,20 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // fs) and a remote (names no path) must never do.
         | Request::RunGit { .. }
         | Request::ListWorkspaceDir { .. }
+        // Remote access (v42) is the desktop's alone. An agent that could
+        // pair a device would be deciding who else reaches this machine
+        // -- the one act §3 puts a human at the desktop for -- and an
+        // agent that could revoke one could cut the human's phone off
+        // from the run it is watching. Both are `app`'s, and `app` here
+        // means the desktop holding the daemon token, not a role a
+        // session token can reach.
+        | Request::BeginPairing
+        | Request::ConfirmPairing { .. }
+        | Request::RejectPairing { .. }
+        | Request::ListDevices
+        | Request::RevokeDevice { .. }
+        | Request::RevokeAllDevices
+        | Request::SetRemoteAccess { .. }
         | Request::Unknown => false,
     }
 }
@@ -4349,6 +4734,23 @@ fn is_privileged(req: &Request) -> bool {
             // reach as the shell `CreateSession` starts. Behind the
             // require_local_token narrowing with the rest.
             | Request::RunGit { .. }
+            // Remote access (v42). Strictly more reach than
+            // `SetRootConfigField` above: pairing a device decides who
+            // ELSE can reach this machine, and revoking one decides who
+            // loses it. An untokened same-uid process is exactly the
+            // thing `require_local_token` exists to hold at arm's
+            // length, and "you must authenticate to pair a phone" is the
+            // clearest sentence that switch can say.
+            //
+            // No effect while the switch is off, which is its default
+            // (§11 Q1) -- `local` keeps today's full reach either way,
+            // so this changes nothing for any client shipping now.
+            | Request::BeginPairing
+            | Request::ConfirmPairing { .. }
+            | Request::RejectPairing { .. }
+            | Request::RevokeDevice { .. }
+            | Request::RevokeAllDevices
+            | Request::SetRemoteAccess { .. }
     )
 }
 
@@ -4610,6 +5012,17 @@ fn handle_connection_as(
     let mut identity = initial_identity;
     let mut hello_seen = false;
 
+    // An `app` connection is registered the moment its `Hello` proves the
+    // daemon token, and deregistered by this guard however the loop
+    // returns. Declared out here rather than inside the `Hello` branch so
+    // the guard's life is the CONNECTION's, not the branch's.
+    //
+    // Only `app`, never `local`: see `app_connections`. The registration
+    // is what the device pushes are written to and what §7's "is anybody
+    // at the desktop?" is answered from, and a hand-started agent in a
+    // terminal is not a screen a human is looking at.
+    let mut _app_slot: Option<AppConnectionSlot> = None;
+
     // Counted before anything else on this connection runs, so a client
     // that never sends a request still costs a slot for as long as it
     // stays open (DP-05: `serve` spawns one thread per accepted
@@ -4653,6 +5066,10 @@ fn handle_connection_as(
             hello_seen = true;
             let (id, ack) = manager.resolve_hello(auth, nonce);
             identity = id;
+            if identity.role == Role::App {
+                let token = manager.register_app_connection(Arc::clone(&writer));
+                _app_slot = Some(AppConnectionSlot { manager: &manager, token });
+            }
             write_message(&mut *writer.lock().unwrap(), &ack)?;
             continue;
         }
@@ -7610,6 +8027,705 @@ mod tests {
         let manager = test_manager(&dir);
         let err = manager.revoke_device("dev-1").unwrap_err();
         assert!(err.to_string().contains("no trust store"), "{err}");
+    }
+
+    // -- Remote access, phase 2 (v42) ---------------------------------
+
+    /// A manager with a trust store AND a daemon token, so a `Hello` can
+    /// take the `app` role against it.
+    fn paired_manager(dir: &tempfile::TempDir) -> Arc<SessionManager> {
+        let manager = trusted_manager(dir);
+        manager.set_daemon_token("test-daemon-token".to_string());
+        manager
+    }
+
+    /// An `app` connection with ONE reader over it.
+    ///
+    /// The one reader is the point. `request` above opens a fresh
+    /// `BufReader` per call, which is fine on a connection that only ever
+    /// holds replies -- but these connections also carry pushes, and a
+    /// second `BufReader` over the same socket can swallow bytes the
+    /// first one already buffered. Every message, reply and push alike,
+    /// comes off this one.
+    struct AppConn {
+        stream: Stream,
+        reader: BufReader<Stream>,
+        /// Keeps `release_on_close`'s guard thread parked. Dropping this
+        /// -- which happens whenever the `AppConn` goes -- is what lets
+        /// the guard let go of its clone of the socket.
+        _guard: std::sync::mpsc::Sender<()>,
+    }
+
+    /// Ends every read on `stream` after `PROCESS_BUDGET`, like
+    /// `bound_reads` -- and, unlike it, lets go of the socket the moment
+    /// this connection is dropped.
+    ///
+    /// The difference is load-bearing on Windows, and cost thirty seconds
+    /// a run to find. `Stream::pair` is a named pipe there, and a pipe
+    /// stays open while ANY handle to it is: `bound_reads` parks a clone
+    /// inside a `sleep`, so a test that closes its connection and then
+    /// waits for the daemon to notice waits for the budget, not for the
+    /// close. Parking on a channel instead means the guard wakes the
+    /// instant the `Sender` is dropped and releases its clone with it.
+    fn release_on_close(stream: &Stream) -> std::sync::mpsc::Sender<()> {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let guard = stream.try_clone().unwrap();
+        std::thread::spawn(move || {
+            // Timeout: the read this was guarding never arrived, so end
+            // it and let the test's own assertion do the complaining
+            // (`bound_reads`' contract). Disconnected: the connection is
+            // gone and there is nothing left to guard.
+            if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                rx.recv_timeout(PROCESS_BUDGET)
+            {
+                let _ = guard.shutdown(Shutdown::Read);
+            }
+            drop(guard);
+        });
+        tx
+    }
+
+    impl AppConn {
+        fn send(&mut self, req: &Request) {
+            write_message(&mut self.stream, req).unwrap();
+        }
+
+        /// The next message of any kind.
+        fn next(&mut self) -> Response {
+            read_message(&mut self.reader).unwrap().expect("the connection closed")
+        }
+
+        fn request(&mut self, req: &Request) -> Response {
+            self.send(req);
+            self.next()
+        }
+
+        /// Closes the connection for real -- the daemon side sees EOF and
+        /// its thread returns.
+        ///
+        /// Both halves matter. The shutdown ends the daemon's read; the
+        /// drop releases `release_on_close`'s guard, and on Windows the
+        /// pipe stays open while that clone lives.
+        fn close(self) {
+            let _ = self.stream.shutdown(Shutdown::Both);
+        }
+    }
+
+    /// Opens a connection that has taken the `app` role, and leaves it
+    /// registered for pushes.
+    ///
+    /// A `Stream::pair` rather than the listener, like `connect_as_device`
+    /// above, so the test owns both ends and can read a push off the same
+    /// connection that sent the request.
+    fn connect_as_app(manager: &Arc<SessionManager>) -> AppConn {
+        let (client, server) = Stream::pair().unwrap();
+        let manager = Arc::clone(manager);
+        std::thread::spawn(move || {
+            let _ = handle_connection_as(server, manager, ClientIdentity::local());
+        });
+        // Every read on this connection ends inside the suite's budget,
+        // so a push that never arrives fails the test rather than hanging
+        // it.
+        let _guard = release_on_close(&client);
+        let reader = line_reader(client.try_clone().unwrap());
+        let mut conn = AppConn { stream: client, reader, _guard };
+        let resp = conn.request(&Request::Hello {
+            client: "app".into(),
+            protocol_version: protocol::PROTOCOL_VERSION,
+            auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+            nonce: "n".into(),
+        });
+        match resp {
+            Response::HelloAck { ref role, .. } => assert_eq!(role, "app", "{resp:?}"),
+            other => panic!("expected HelloAck, got {other:?}"),
+        }
+        conn
+    }
+
+    /// Every request v42 added, one of each, for the role tests below.
+    fn every_remote_access_request() -> Vec<Request> {
+        vec![
+            Request::BeginPairing,
+            Request::ConfirmPairing { device_id: "dev-1".into() },
+            Request::RejectPairing { device_id: "dev-1".into() },
+            Request::ListDevices,
+            Request::RevokeDevice { device_id: "dev-1".into() },
+            Request::RevokeAllDevices,
+            Request::SetRemoteAccess { enabled: true, relay_url: None },
+        ]
+    }
+
+    /// §3 puts a human at the desktop for the one act that decides who
+    /// else reaches this machine. So every v42 request is `app`'s, and
+    /// `agent` and `remote` are refused at the gate -- before the
+    /// intercepts, before `handle_request`, before anything can be
+    /// written.
+    ///
+    /// The `agent` half is the one that would rot quietly: `agent_allows`
+    /// is an exhaustive match, so a new variant cannot be added without a
+    /// decision, but nothing stops the decision being the wrong one. This
+    /// walks the seven and checks the answer rather than the shape.
+    #[test]
+    fn agents_and_remotes_are_forbidden_every_remote_access_request() {
+        let agent = ClientIdentity::agent("sess-1", "/tmp/ws", "/tmp/ws");
+        let remote = ClientIdentity::remote("dev-1");
+
+        for req in every_remote_access_request() {
+            for id in [&agent, &remote] {
+                let verdict = authorize(id, &req, false);
+                let forbidden = verdict.expect_err(&format!(
+                    "{:?} reached {:?}",
+                    request_type_name(&req),
+                    id.role
+                ));
+                match forbidden {
+                    Response::Forbidden { request_type, role } => {
+                        assert_eq!(request_type, request_type_name(&req));
+                        assert_eq!(
+                            role,
+                            match &id.role {
+                                Role::Agent => "agent",
+                                Role::Remote => "remote",
+                                other => panic!("unexpected role {other:?}"),
+                            }
+                        );
+                    }
+                    other => panic!("expected Forbidden, got {other:?}"),
+                }
+            }
+        }
+    }
+
+    /// The other half, and it is not implied by the first: a gate that
+    /// refused everyone would pass the test above and ship a Settings
+    /// panel nothing works in.
+    #[test]
+    fn an_app_may_make_every_remote_access_request() {
+        let app = ClientIdentity {
+            role: Role::App,
+            session_id: None,
+            workspace_root: None,
+            cwd: None,
+            device_id: None,
+        };
+        for req in every_remote_access_request() {
+            assert!(
+                authorize(&app, &req, false).is_ok(),
+                "{} refused to the app",
+                request_type_name(&req)
+            );
+            // And with the switch ON, which narrows `local` but must
+            // never narrow `app` -- `app` is the role that PRESENTED the
+            // daemon token.
+            assert!(authorize(&app, &req, true).is_ok(), "{}", request_type_name(&req));
+        }
+    }
+
+    /// `require_local_token` is what makes "you must authenticate to pair
+    /// a phone" expressible (§11 Q1). Off -- the default -- an untokened
+    /// local connection keeps today's full reach and nothing about this
+    /// phase changes for any client shipping now.
+    #[test]
+    fn the_local_token_switch_decides_whether_an_untokened_client_may_pair() {
+        let local = ClientIdentity::local();
+        for req in every_remote_access_request() {
+            assert!(
+                authorize(&local, &req, false).is_ok(),
+                "the default must not narrow local: {}",
+                request_type_name(&req)
+            );
+        }
+        // On, every one of them goes -- except the read. Listing the
+        // devices tells a same-uid process nothing it could not learn by
+        // opening the file it already has permission to read, and a
+        // Sessions manager that cannot say which phones exist is a
+        // narrowing with no threat behind it.
+        for req in every_remote_access_request() {
+            let narrowed = authorize(&local, &req, true).is_err();
+            assert_eq!(
+                narrowed,
+                !matches!(req, Request::ListDevices),
+                "{}",
+                request_type_name(&req)
+            );
+        }
+    }
+
+    /// §3, "What the QR carries", against a real daemon: the key in the
+    /// payload is the one in `devices.sqlite`, the rendezvous list is
+    /// what `SetRemoteAccess` stored, and the secret is live for two
+    /// minutes.
+    #[test]
+    fn begin_pairing_mints_a_two_minute_offer_carrying_the_daemon_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        assert!(matches!(
+            app.request(&Request::SetRemoteAccess {
+                enabled: true,
+                relay_url: Some("wss://relay.example/gavin".into()),
+            }),
+            Response::Ok
+        ));
+
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let (qr, expires_at) = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, expires_at } => (qr, expires_at),
+            other => panic!("expected PairingOffer, got {other:?}"),
+        };
+
+        let parsed = protocol::PairingQr::parse(&qr).unwrap();
+        assert_eq!(
+            parsed.daemon_public_key,
+            crate::pairing::hex_encode(&manager.trust().unwrap().static_public_key().unwrap()),
+            "the QR must carry the key every phone will pin"
+        );
+        assert_eq!(parsed.rendezvous, vec!["wss://relay.example/gavin".to_string()]);
+        assert_eq!(parsed.protocol_version, protocol::PROTOCOL_VERSION);
+        assert_eq!(parsed.secret.len(), 64, "32 bytes of hex");
+
+        // Two minutes, give or take the second this test spent.
+        assert!(
+            (expires_at - before - 120).abs() <= 2,
+            "expires_at {expires_at} is not two minutes after {before}"
+        );
+
+        // And still nothing in the store: minting an offer is not
+        // pairing a device.
+        assert!(manager.trust().unwrap().list().unwrap().is_empty());
+    }
+
+    /// Runs the phone's half of §3's ceremony against `manager`, in
+    /// process, and returns what both sides computed.
+    ///
+    /// The responder runs on its own thread for the reason the pairing
+    /// module's own helper does: three synchronous round trips need two
+    /// threads. `pair_over` is exactly the call phase 3's `remote.rs`
+    /// will make with a relay connection in place of this socket pair.
+    fn run_ceremony(
+        manager: &Arc<SessionManager>,
+        qr: &protocol::PairingQr,
+        name: &str,
+    ) -> (
+        anyhow::Result<crate::pairing::PairingHandshake>,
+        anyhow::Result<crate::pairing::InitiatorResult>,
+    ) {
+        let (client, server) = Stream::pair().unwrap();
+        let manager = Arc::clone(manager);
+        let daemon = std::thread::spawn(move || {
+            let mut server = server;
+            let out = manager.pair_over(&mut server);
+            // Dropped inside the thread so a phone parked in a read of a
+            // handshake the daemon refused sees EOF rather than hanging.
+            drop(server);
+            out
+        });
+        let mut client = client;
+        let daemon_key = crate::pairing::hex_decode(&qr.daemon_public_key).unwrap();
+        let phone = crate::pairing::run_initiator(&mut client, &daemon_key, &qr.secret, name);
+        (daemon.join().unwrap(), phone)
+    }
+
+    /// The whole ceremony, the way the card asks for it: `BeginPairing`,
+    /// the handshake, `DevicePairingRequested` arriving on the app's own
+    /// connection, `ConfirmPairing`, and only THEN a row.
+    #[test]
+    fn the_pairing_ceremony_writes_a_device_only_after_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        let qr = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("expected PairingOffer, got {other:?}"),
+        };
+
+        let (daemon, phone) = run_ceremony(&manager, &qr, "Cosimo's iPhone");
+        let daemon = daemon.unwrap();
+        let phone = phone.unwrap();
+
+        // The push reaches the app that asked, on its own connection.
+        match app.next() {
+            Response::DevicePairingRequested { device_id, name, sas } => {
+                assert_eq!(device_id, daemon.device_id);
+                assert_eq!(name, "Cosimo's iPhone");
+                // The digits the human compares. Both screens, one code.
+                assert_eq!(sas, phone.sas);
+                assert_eq!(sas.len(), 6);
+            }
+            other => panic!("expected DevicePairingRequested, got {other:?}"),
+        }
+
+        // Before the human answers there is no device, however far the
+        // handshake got (§3).
+        assert!(manager.trust().unwrap().list().unwrap().is_empty());
+
+        assert!(matches!(
+            app.request(&Request::ConfirmPairing { device_id: daemon.device_id.clone() }),
+            Response::Ok
+        ));
+
+        let row = manager.trust().unwrap().device(&daemon.device_id).unwrap().unwrap();
+        assert_eq!(row.public_key, phone.public_key, "the row records the key that handshook");
+        assert_eq!(row.name, "Cosimo's iPhone");
+        assert_eq!(row.role, crate::trust::DeviceRole::Remote);
+        assert!(!row.is_revoked());
+
+        // And the list the Settings panel reads says the same.
+        match app.request(&Request::ListDevices) {
+            Response::Devices { devices, remote_access_enabled, relay_url } => {
+                assert_eq!(devices.len(), 1);
+                assert_eq!(devices[0].device_id, daemon.device_id);
+                assert_eq!(devices[0].role, "remote");
+                assert!(!devices[0].stale);
+                assert!(devices[0].revoked_at.is_none());
+                assert!(!remote_access_enabled, "nothing turned it on");
+                assert_eq!(relay_url, None);
+            }
+            other => panic!("expected Devices, got {other:?}"),
+        }
+    }
+
+    /// The same ceremony, ending in No. The card asks for this one by
+    /// name, and §3 does not describe it: a confirmation whose only exit
+    /// is "yes" is not a confirmation.
+    #[test]
+    fn a_rejected_pairing_leaves_no_device_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        let qr = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("expected PairingOffer, got {other:?}"),
+        };
+        let (daemon, _) = run_ceremony(&manager, &qr, "not mine");
+        let daemon = daemon.unwrap();
+
+        // The human is asked first -- the push is what puts the six
+        // digits on screen -- and THEN says no.
+        assert!(matches!(app.next(), Response::DevicePairingRequested { .. }));
+
+        assert!(matches!(
+            app.request(&Request::RejectPairing { device_id: daemon.device_id.clone() }),
+            Response::Ok
+        ));
+        assert!(manager.trust().unwrap().list().unwrap().is_empty());
+
+        // And the pending handshake is GONE, not merely unconfirmed: a
+        // Yes that arrives after a No must not resurrect it.
+        match app.request(&Request::ConfirmPairing { device_id: daemon.device_id }) {
+            Response::Error { message } => {
+                assert!(message.contains("no pairing waiting"), "{message}")
+            }
+            other => panic!("expected an Error, got {other:?}"),
+        }
+        assert!(manager.trust().unwrap().list().unwrap().is_empty());
+    }
+
+    /// §7: "If no `app` connection is live when a confirmation is needed,
+    /// the daemon refuses the pairing ... the human keeps the wheel, and
+    /// a wheel with nobody at it is a refusal, not a wait."
+    ///
+    /// Checked BEFORE the handshake runs, which is why this test can drop
+    /// the app connection and then start one: a phone that completed a
+    /// full mutual exchange and was only then told nobody was home would
+    /// have spent its secret for nothing.
+    #[test]
+    fn a_pairing_with_no_desktop_listening_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        let qr = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("expected PairingOffer, got {other:?}"),
+        };
+
+        // The human closed gavin while the QR was still on the phone's
+        // screen.
+        app.close();
+        let deadline = Instant::now() + PROCESS_BUDGET;
+        while !manager.app_connections.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "the app connection never closed");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let (daemon, _) = run_ceremony(&manager, &qr, "iPhone");
+        let err = daemon.unwrap_err();
+        assert!(
+            err.to_string().contains("open gavin on the desktop"),
+            "the refusal has to name what to do about it: {err}"
+        );
+        assert!(manager.trust().unwrap().list().unwrap().is_empty());
+    }
+
+    /// One QR on screen, one live secret. A second `BeginPairing`
+    /// replaces the first, so "press Pair a device again" is a real
+    /// instruction rather than a way to accumulate valid secrets -- and a
+    /// completed handshake spends the offer, so one photograph cannot
+    /// admit a second phone.
+    #[test]
+    fn an_offer_is_replaced_by_the_next_and_spent_by_a_handshake() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        let first = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        let second = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        assert_ne!(first.secret, second.secret);
+
+        // The superseded secret is dead, even though it has not expired.
+        let (daemon, _) = run_ceremony(&manager, &first, "stale QR");
+        assert!(daemon.is_err(), "a replaced offer must not still pair");
+
+        // The live one works -- once.
+        let (daemon, _) = run_ceremony(&manager, &second, "iPhone");
+        assert!(daemon.is_ok());
+        let (again, _) = run_ceremony(&manager, &second, "second phone, same photo");
+        let err = again.unwrap_err();
+        assert!(err.to_string().contains("no pairing is in progress"), "{err}");
+    }
+
+    /// Revoking from the wire is the store's half AND the connections'
+    /// half (§3), and the desktop is told about the second one.
+    #[test]
+    fn revoke_device_over_the_wire_drops_the_connection_and_pushes() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+        pair_device(&manager, "dev-1", 1);
+
+        let phone = connect_as_device(&manager, "dev-1");
+        // The connect push, first.
+        match app.next() {
+            Response::DeviceConnected { device_id } => assert_eq!(device_id, "dev-1"),
+            other => panic!("expected DeviceConnected, got {other:?}"),
+        }
+
+        assert!(matches!(
+            app.request(&Request::RevokeDevice { device_id: "dev-1".into() }),
+            Response::Ok
+        ));
+
+        await_no_connection_for(&manager, "dev-1");
+        assert_closed(&phone, "a revoked device's connection");
+        assert!(manager.trust().unwrap().device("dev-1").unwrap().unwrap().is_revoked());
+
+        // The disconnect push follows the drop, so the device list goes
+        // grey without the app having to poll for it. It may arrive
+        // before or after the `Ok` -- the socket shutdown and this
+        // connection's reply are on two threads -- so the assertion is
+        // that it arrives, not when.
+        let mut saw_disconnect = false;
+        for _ in 0..4 {
+            match app.next() {
+                Response::DeviceDisconnected { device_id } => {
+                    assert_eq!(device_id, "dev-1");
+                    saw_disconnect = true;
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        assert!(saw_disconnect, "no DeviceDisconnected push arrived");
+    }
+
+    /// "Revoke all devices" over the wire: every row revoked, every
+    /// connection dropped, and the key rotated -- which is the half that
+    /// holds even if `devices.sqlite` is later restored from a backup
+    /// (§3).
+    #[test]
+    fn revoke_all_devices_over_the_wire_rotates_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+        pair_device(&manager, "dev-1", 1);
+        pair_device(&manager, "dev-2", 2);
+        let before = manager.trust().unwrap().static_public_key().unwrap();
+
+        assert!(matches!(app.request(&Request::RevokeAllDevices), Response::Ok));
+
+        assert_ne!(manager.trust().unwrap().static_public_key().unwrap(), before);
+        for device in manager.trust().unwrap().list().unwrap() {
+            assert!(device.is_revoked(), "{} survived revoke-all", device.device_id);
+        }
+        // The settings are not a casualty of a lost phone.
+        assert!(!manager.trust().unwrap().remote_access().unwrap().enabled);
+    }
+
+    /// Pressing "Pair a device" again starts over: the handshake the
+    /// human walked away from stops being answerable.
+    ///
+    /// The dialog showing that device's six digits is gone from the
+    /// screen, so a Confirm that could still land for it would be a yes
+    /// to a question nobody is being asked.
+    #[test]
+    fn a_new_offer_forgets_a_handshake_the_human_never_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        let qr = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        let (daemon, _) = run_ceremony(&manager, &qr, "iPhone");
+        let abandoned = daemon.unwrap().device_id;
+        assert!(matches!(app.next(), Response::DevicePairingRequested { .. }));
+
+        // The human ignores the dialog and starts again.
+        assert!(matches!(app.request(&Request::BeginPairing), Response::PairingOffer { .. }));
+
+        match app.request(&Request::ConfirmPairing { device_id: abandoned }) {
+            Response::Error { message } => {
+                assert!(message.contains("no pairing waiting"), "{message}")
+            }
+            other => panic!("expected an Error, got {other:?}"),
+        }
+        assert!(manager.trust().unwrap().list().unwrap().is_empty());
+    }
+
+    /// A Confirm the STORE refuses leaves the pairing answerable.
+    ///
+    /// The refusal that realistically happens is the device cap, and its
+    /// message is an instruction -- "revoke one before pairing another".
+    /// Dropping the pending handshake would make that instruction
+    /// impossible to follow: the phone's secret is spent, and this phase
+    /// has no channel to ask it to try again.
+    #[test]
+    fn a_confirm_the_store_refuses_can_be_retried_after_revoking() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        // The cap, filled.
+        for (i, id) in ["dev-a", "dev-b", "dev-c"].iter().enumerate() {
+            pair_device(&manager, id, (i + 10) as u8);
+        }
+
+        let qr = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        let (daemon, _) = run_ceremony(&manager, &qr, "a fourth phone");
+        let fourth = daemon.unwrap().device_id;
+        assert!(matches!(app.next(), Response::DevicePairingRequested { .. }));
+
+        match app.request(&Request::ConfirmPairing { device_id: fourth.clone() }) {
+            Response::Error { message } => {
+                assert!(message.contains("already paired"), "{message}")
+            }
+            other => panic!("expected the cap to refuse, got {other:?}"),
+        }
+
+        // The human does what the message said, and presses Confirm
+        // again -- without re-running the ceremony on the phone.
+        assert!(matches!(
+            app.request(&Request::RevokeDevice { device_id: "dev-a".into() }),
+            Response::Ok
+        ));
+        assert!(matches!(
+            app.request(&Request::ConfirmPairing { device_id: fourth.clone() }),
+            Response::Ok
+        ));
+        assert!(manager.trust().unwrap().device(&fourth).unwrap().is_some());
+    }
+
+    /// §3 promises a revocation drops a device's connections
+    /// **immediately**. A pairing handshake is three round trips over a
+    /// network, so a responder that held the trust store's lock for the
+    /// duration would make "immediately" mean "once the phone in the
+    /// other room answers, or never".
+    ///
+    /// This is the guard for that. A phone connects and goes quiet, so
+    /// `pair_over` is parked in a read with the handshake underway; a
+    /// revocation from the desktop has to land anyway. If the lock ever
+    /// creeps back across the handshake (the obvious way: calling
+    /// `pairing::run_responder`, which takes the store, instead of the
+    /// two-step `ResponderKeys` / `run_responder_with_keys` pair), the
+    /// revoke blocks and the `recv_timeout` below fails the test rather
+    /// than hanging the suite.
+    ///
+    /// It can only fail CORRECTLY: if the daemon thread has not reached
+    /// its read yet, the revoke simply succeeds and the test passes on a
+    /// case it did not mean to test. There is no arrangement in which it
+    /// passes while the lock IS held.
+    #[test]
+    fn a_handshake_in_flight_does_not_block_a_revocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+        pair_device(&manager, "dev-1", 1);
+        assert!(matches!(app.request(&Request::BeginPairing), Response::PairingOffer { .. }));
+
+        // A phone that opened the connection and then said nothing: the
+        // daemon is inside `read_frame`, waiting for message 1.
+        let (phone, daemon_side) = Stream::pair().unwrap();
+        let pairing_manager = Arc::clone(&manager);
+        let handshake_thread = std::thread::spawn(move || {
+            let mut daemon_side = daemon_side;
+            let _ = pairing_manager.pair_over(&mut daemon_side);
+        });
+        std::thread::sleep(Duration::from_millis(200));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let revoking = Arc::clone(&manager);
+        std::thread::spawn(move || {
+            let _ = tx.send(revoking.revoke_device("dev-1"));
+        });
+        let revoked = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a revocation queued behind a pairing handshake")
+            .unwrap();
+        assert!(revoked.newly_revoked);
+        assert!(manager.trust().unwrap().device("dev-1").unwrap().unwrap().is_revoked());
+
+        // Let the parked handshake go, so this test leaves no thread
+        // sitting in a read for the rest of the run. DROPPED, not merely
+        // shut down: on Windows `Stream::pair` is a named pipe, and a
+        // pipe stays open -- and its peer stays parked -- while any
+        // handle to it lives, so a shutdown on a handle still in scope
+        // ends nothing.
+        drop(phone);
+        handshake_thread.join().unwrap();
+    }
+
+    /// Stored and inert (§10). `SetRemoteAccess` persists and reads back,
+    /// and the daemon does NOT start listening because of it -- the
+    /// proof being that nothing in this build reads `enabled` to decide
+    /// to dial. The end-to-end `netstat` check is the parent card's.
+    #[test]
+    fn set_remote_access_is_stored_and_reads_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        assert!(matches!(
+            app.request(&Request::SetRemoteAccess {
+                enabled: true,
+                relay_url: Some("wss://relay.example/gavin".into())
+            }),
+            Response::Ok
+        ));
+        match app.request(&Request::ListDevices) {
+            Response::Devices { remote_access_enabled, relay_url, devices } => {
+                assert!(remote_access_enabled);
+                assert_eq!(relay_url.as_deref(), Some("wss://relay.example/gavin"));
+                assert!(devices.is_empty());
+            }
+            other => panic!("expected Devices, got {other:?}"),
+        }
     }
 
     #[test]

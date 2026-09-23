@@ -4,6 +4,7 @@ mod git_status;
 mod kanban;
 mod orchestration;
 mod osc;
+mod pairing;
 mod proc;
 mod program;
 mod pty;
