@@ -49,6 +49,7 @@
 // below is arguable in a test rather than observable only on a laptop.
 
 import type { FailureCause } from "$lib/agents/autoResume";
+import type { SessionStatus } from "$lib/core/notifications";
 
 /// The model the thresholds were measured on. PINNED, and the pin is the
 /// point: `jev-latest` would move the decision boundary under a policy
@@ -570,6 +571,41 @@ export function verdictCompletesTurn(entry: TurnVerdictEntry | null | undefined)
 /// until there is a real one.
 export function verdictIsAsking(entry: TurnVerdictEntry | null | undefined): boolean {
   return readingOf(entry)?.kind === "asking";
+}
+
+/// The same fact with the daemon's status folded in: a session gavin has
+/// been told is QUIET whose turn was a question.
+///
+/// The whole rule, in the one place every reader of it can see. The
+/// attention inbox's `reasonFor` calls this, `stepAttentions` asks the
+/// same thing of a rail step, and so does the status view the tab badge,
+/// the sidebar dots, the board card and the card modal draw from
+/// (`verdictAttention.ts`) -- because a badge that says "done" while the
+/// inbox two clicks away says "waiting for you" is the exact
+/// disagreement the badges were wired up to remove, and two spellings of
+/// one test is how it would arrive.
+///
+/// `idle` is the only status it touches, and that is the point rather
+/// than an optimisation. The verdict's job is to reinterpret QUIET: a
+/// `working` session is still moving, a `failed` one already carries the
+/// agent's own sentence, and a `waiting_for_input` one rang its bell and
+/// needs no help being noticed. Reinterpreting any of those would be the
+/// verdict overruling something the daemon actually observed -- and a
+/// stale entry the driver has not cleared yet would do it for a turn
+/// that is already over.
+///
+/// `asking` alone, deliberately, and `blocked` is the reading it leaves
+/// out. A blocked turn is not unsaid: `verdictStallReason` below turns
+/// it into a rail stall carrying the agent's own sentence, which is more
+/// than a badge could say and is how every other consumer already
+/// reports it. Widening this to cover `blocked` would give the badge a
+/// rule the inbox, the step marks and the follow-up gate do not share --
+/// the thing this predicate exists to prevent.
+export function verdictAsksQuietly(
+  status: SessionStatus | null | undefined,
+  entry: TurnVerdictEntry | null | undefined
+): boolean {
+  return status === "idle" && verdictIsAsking(entry);
 }
 
 /// The stall a `blocked` or `failed` verdict turns a running step into,

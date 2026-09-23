@@ -37,7 +37,7 @@ import type { LayoutNode } from "$lib/panes/layout";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/core/gavin";
-import { verdictIsAsking, type TurnVerdictEntry } from "$lib/agents/turnVerdict";
+import { verdictAsksQuietly, type TurnVerdictEntry } from "$lib/agents/turnVerdict";
 
 /// Why a row is in the inbox. The rails' own answers, reused rather than
 /// re-spelled: a running step marked `asking` and a bare terminal
@@ -303,7 +303,13 @@ function reasonFor(
   // `waiting_for_input`, so that ATTENTION_RANK's order is preserved: a
   // broken agent still outranks a question, and a rail that cannot reach
   // its card is still worth saying before one that is merely waiting.
-  if (status === "idle" && verdictIsAsking(verdicts.get(sessionId))) return "asking";
+  //
+  // Through `verdictAsksQuietly` rather than the test spelled out here,
+  // because the tab badge, the sidebar dots, the board card and the card
+  // modal now draw from the same rule (verdictAttention.ts): this row
+  // and that badge are one fact asked twice, and a second copy of the
+  // test is how they would come to disagree.
+  if (verdictAsksQuietly(status, verdicts.get(sessionId))) return "asking";
   // Before `asking`, and without consulting the status at all: the write
   // has already happened, so an agent still talking -- or still asking
   // about the card it cannot reach -- is no less stuck for it. This is

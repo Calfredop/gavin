@@ -23,9 +23,9 @@
     queuedInputsById,
     repairUnknownTabs,
     terminalFontSize,
-    attentionStatusById,
   } from "$lib/core/layoutState";
   import { turnVerdictById } from "$lib/agents/turnVerdictState";
+  import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
   import { gavinTrees } from "$lib/core/gavinState";
   import { kanbanState, cardSessionFor, fetchBoard } from "$lib/board/kanbanState";
   import { orchestrations, fetchOrchestration } from "$lib/orchestration/orchestrationState";
@@ -258,11 +258,16 @@
   // to the same session and the sidebar row under it all say it with the
   // same glyph and the same tone.
   function tabStatusBadge(sessionId: string): Indicator | null {
-    // The acknowledged view (layoutState's attentionStatusById): a wait
+    // The acknowledged view, one layer on (verdictAttention.ts): a wait
     // the human marked as read draws no badge, which is the whole point
-    // of the mark. Everything else on this tab -- the follow-up queue's
-    // gate below, most of all -- still reads the daemon's own status.
-    return tabAgentIndicator($attentionStatusById[sessionId], $layoutState.failureReasonById[sessionId]);
+    // of the mark, and a question asked in PROSE draws one, which the
+    // daemon's `idle` cannot say. Everything else on this tab -- the
+    // follow-up queue's gate below, most of all -- still reads the
+    // daemon's own status.
+    return tabAgentIndicator(
+      $verdictAttentionStatusById[sessionId],
+      $layoutState.failureReasonById[sessionId]
+    );
   }
 
   // What the ↻/⚠ badge on this tab says, or null for no badge. All three
@@ -359,6 +364,11 @@
           // hides, and reading the masked map would make the entry
           // vanish the moment it was used.
           status: $layoutState.sessionStatusById[sessionId],
+          // Beside it rather than folded into it, for the same reason:
+          // the verdict ADDS the prose-question case the entry has to
+          // cover, and a badge raised by a judgement needs its off
+          // switch more than one raised by a bell (sessionRead.ts).
+          verdict: $turnVerdictById[sessionId] ?? null,
           read: $layoutState.readSessionIds?.has(sessionId) === true,
         },
         { startRename: startEditing, reportError: reportMenuError }

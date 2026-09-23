@@ -13,6 +13,7 @@ import {
   refineCause,
   screenTail,
   verdictCompletesTurn,
+  verdictAsksQuietly,
   verdictIsAsking,
   verdictRequest,
   verdictStallReason,
@@ -407,6 +408,48 @@ describe("verdictIsAsking and verdictStallReason", () => {
     expect(verdictStallReason({ state: "read", reading: { kind: "asking" } })).toBeNull();
     expect(verdictStallReason({ state: "read", reading: { kind: "finished" } })).toBeNull();
     expect(verdictStallReason(null)).toBeNull();
+  });
+});
+
+// The one rule the hub's inbox, the rails' step marks and the four badge
+// surfaces share. Two spellings of it is how the badge on a tab and the
+// row two clicks away come to disagree, so it lives here and they all
+// call it.
+describe("verdictAsksQuietly", () => {
+  const read = (reading: TurnReading) => ({ state: "read", reading }) as const;
+
+  it("is true for a quiet session whose turn was a question", () => {
+    expect(verdictAsksQuietly("idle", read({ kind: "asking" }))).toBe(true);
+  });
+
+  it("reinterprets QUIET and nothing else", () => {
+    // The verdict's whole job. `working` is still moving, `failed`
+    // already carries the agent's own sentence, and
+    // `waiting_for_input` rang its bell -- all three are things the
+    // daemon OBSERVED, and a judgement must not overrule an observation.
+    // A stale entry against one of them would do exactly that.
+    for (const status of ["working", "failed", "waiting_for_input", "unknown"] as const) {
+      expect(verdictAsksQuietly(status, read({ kind: "asking" }))).toBe(false);
+    }
+    expect(verdictAsksQuietly(undefined, read({ kind: "asking" }))).toBe(false);
+  });
+
+  it("leaves a quiet session alone on every other reading", () => {
+    expect(verdictAsksQuietly("idle", read({ kind: "finished" }))).toBe(false);
+    expect(verdictAsksQuietly("idle", read({ kind: "working" }))).toBe(false);
+    expect(verdictAsksQuietly("idle", read({ kind: "failed", cause: "unknown", said: "" }))).toBe(false);
+    // `blocked` is a STALL, not a badge: verdictStallReason carries the
+    // agent's own sentence into the rail, which says more than a badge
+    // could. Raising one here would give the badge a rule the inbox and
+    // the step marks do not share.
+    expect(verdictAsksQuietly("idle", read({ kind: "blocked", said: "no disk" }))).toBe(false);
+    // A request that failed, timed out or came back under the
+    // confidence floor says today's answer, which is what absence says.
+    expect(verdictAsksQuietly("idle", { state: "read", reading: null })).toBe(false);
+    // Pending must not put a badge in front of anybody, and no entry at
+    // all is today's answer unchanged.
+    expect(verdictAsksQuietly("idle", { state: "pending" })).toBe(false);
+    expect(verdictAsksQuietly("idle", undefined)).toBe(false);
   });
 });
 
