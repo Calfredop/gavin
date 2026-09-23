@@ -2516,6 +2516,7 @@ pub fn list_workspace_dir(root: &Path, path: &str) -> anyhow::Result<Vec<protoco
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{wire_separators, wire_spelling};
 
     /// Makes a symlink the way the running OS makes one, and reports
     /// whether the OS allowed it at all.
@@ -3201,7 +3202,7 @@ mod tests {
 
         let tree = scan_root(root.path());
         let ctx = tree.contexts.last().unwrap();
-        assert_eq!(ctx.folder_path, lib.to_string_lossy());
+        assert_eq!(ctx.folder_path, wire_spelling(&lib));
         assert!(ctx.outside);
         assert!(!tree.contexts.first().unwrap().outside);
 
@@ -3261,15 +3262,22 @@ mod tests {
         let inside = root.path().join("src");
         std::fs::create_dir_all(inside.join(GAVIN_DIR)).unwrap();
         let mut body = std::fs::read_to_string(&config).unwrap();
+        // TOML LITERAL strings (single quotes), not basic ones: a Windows
+        // path is `C:\Users\...`, and `\U` is an escape TOML rejects, so
+        // a basic string here fails to parse and the extras list silently
+        // comes back empty -- which is to say the skip this test is about
+        // would never be exercised on Windows. `add_external_context`
+        // writes the native spelling through `toml_edit`, which escapes
+        // it; writing the file by hand has to do one or the other.
         body.push_str(&format!(
-            "extra_contexts = [\"{}\", \"/definitely/not/there\"]\n",
+            "extra_contexts = ['{}', '/definitely/not/there']\n",
             inside.display()
         ));
         std::fs::write(&config, body).unwrap();
         let tree = scan_root(root.path());
         // `src` still appears once -- from the walk, not the extras list.
         let src_entries =
-            tree.contexts.iter().filter(|c| c.folder_path == inside.to_string_lossy()).count();
+            tree.contexts.iter().filter(|c| c.folder_path == wire_spelling(&inside)).count();
         assert_eq!(src_entries, 1);
         assert!(tree.contexts.iter().all(|c| !c.outside));
     }
@@ -4678,7 +4686,7 @@ mod tests {
         // hiding it from the tree is the FRONTEND's job, not the
         // scanner's.
         let tree = scan_root(dir.path());
-        assert!(tree.contexts[0].plans.iter().any(|p| p.path == archived.to_string_lossy()));
+        assert!(tree.contexts[0].plans.iter().any(|p| p.path == wire_spelling(&archived)));
 
         let promoted = promote_checklist_item(&archived, "step one").unwrap();
         assert_eq!(promoted, plans.join("archive").join("step-one.md"));
@@ -4700,10 +4708,20 @@ mod tests {
 
     // --- recovering a card path the daemon did not move -------------------
 
+    /// Step paths as the orchestration store holds them: wire spelling,
+    /// because that is what a scan put there. `wire_spelling` itself
+    /// cannot serve -- these name cards that deliberately do NOT exist
+    /// (a deleted one, one that moved) and canonicalising needs a file.
+    /// So the root is resolved and the card's own segments joined on.
     fn card_paths(root: &Path, names: &[&str]) -> Vec<String> {
+        let root = PathBuf::from(wire_spelling(root));
         names
             .iter()
-            .map(|n| root.join(GAVIN_ROOT_DIR).join("plans").join(n).to_string_lossy().to_string())
+            .map(|n| {
+                wire_separators(
+                    &root.join(GAVIN_ROOT_DIR).join("plans").join(n).to_string_lossy(),
+                )
+            })
             .collect()
     }
 
@@ -4716,7 +4734,7 @@ mod tests {
         write_card(&plans.join(DONE_DIR), "fs-sync.md", "---\ntitle: FS sync\nstatus: Done\n---\n");
 
         let stale = card_paths(dir.path(), &["fs-sync.md"]);
-        let moved = plans.join(DONE_DIR).join("fs-sync.md").to_string_lossy().to_string();
+        let moved = wire_spelling(&plans.join(DONE_DIR).join("fs-sync.md"));
 
         assert_eq!(
             recover_moved_card_paths(&scan_root(dir.path()), &stale),

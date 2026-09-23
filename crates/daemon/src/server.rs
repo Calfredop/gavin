@@ -4445,6 +4445,8 @@ fn handle_connection(stream: Stream, manager: Arc<SessionManager>) -> anyhow::Re
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::wire_spelling;
+
     /// Every daemon test gets a throwaway in-memory orchestration store:
     /// none of them exercise it, they just need SessionManager to build.
     fn test_orchestration_store() -> crate::orchestration::OrchestrationStore {
@@ -7233,32 +7235,6 @@ mod tests {
             Arc::new(Mutex::new(theirs)),
         );
         (manager, wire_spelling(&root), wire_spelling(&card))
-    }
-
-    /// A path on disk in the spelling gavin puts on the wire: resolved,
-    /// forward slashes, and on Windows with the `\\?\` verbatim prefix
-    /// gone.
-    ///
-    /// Spelled out here rather than handed to `protocol::wire_path`, so
-    /// a test comparing a REPORTED path against this is comparing two
-    /// independent derivations rather than the implementation with
-    /// itself.
-    ///
-    /// Why a test needs it at all: `Path::canonicalize` on Windows
-    /// answers `\\?\C:\Users\x`, and nothing in gavin ever reports a
-    /// path in that shape -- a watcher stores
-    /// `protocol::canonical_path(root)` and every card id the board,
-    /// the orchestration store and the MCP hand around came out of that
-    /// scan. A test that keyed a binding on the raw canonical spelling
-    /// created a row nothing could ever look up, and then asserted
-    /// against a path the daemon does not use.
-    fn wire_spelling(path: &std::path::Path) -> String {
-        let resolved = path.canonicalize().unwrap();
-        let text = resolved.to_string_lossy().to_string();
-        if !cfg!(windows) {
-            return text;
-        }
-        text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/")
     }
 
     /// A live session in the registry AND in the pty map, which is what
