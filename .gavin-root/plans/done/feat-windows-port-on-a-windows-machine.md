@@ -3,7 +3,7 @@ model: opus[1m]
 order: 1024
 title: [feat] windows port — the half that needs a Windows machine
 labels: windows
-status: To Do
+status: Done
 ---
 Everything in [feat-windows-port.md](./feat-windows-port.md) that could be done
 from a mac is done: four commits on `feat/multi-os-support`
@@ -55,20 +55,29 @@ suite **455 green in 78 seconds** where it had never once reached an end,
 and the JS suite **5803 green across 265 files** with svelte-check at 0.
 Written up under §5 ("The second pass").
 
-**Ten items remain, and every one of them needs the owner at the
-machine — there is no agent-executable work left on this card.**
+**Nothing is left on this card.** A board audit on 2026-09-22 re-checked
+all ten then-open items individually against the committed source and
+confirmed every one was owner-only — the assertion below had been made
+twice before, but never verified item by item. They were then routed to
+where the work actually is:
 
-- **§1's wizard line** needs one button press in the running app. The
-  path it writes is already proved to resolve (see the item).
-- **All nine of §3** are rendered UI and are the owner's by CLAUDE.md.
-  Every one has a static pre-flight written under it already.
+- **All nine of §3** moved verbatim to
+  [windows-desktop-pass.md](./windows-desktop-pass.md), with their static
+  pre-flights.
+- **§1's wizard line** merged into the last item of
+  [fix-windows-installer-collides-with-the-daemon](./fix-windows-installer-collides-with-the-daemon.md),
+  because it is the same button press in the same sitting.
 
-**Rebuild and reinstall before doing them.** The installed app predates
-the merges, and three of these ten exercise code that only just landed:
-`workspace_delete.rs` (the Recycle Bin item), `agent_setup.rs`'s wire
-spelling (the wizard item) and the daemon's exit reporting (the `until`
-rail item — a rail step could not complete at all before it). Testing
-them on the installed build tests the old code.
+**The old "rebuild and reinstall before doing them" warning is
+satisfied.** It said the installed app predated the merges. It no longer
+does: the install at `%LOCALAPPDATA%\Programs\Gavin` was built 22:59–23:02
+on 2026-09-22, after the `win/installer-state-dir` merge (`2bcde943`,
+21:59) and after `95871081` (22:48). Registry `InstallLocation`, the files
+on disk, and the running `Gavin.exe` / `gavin-daemon.exe` pids all agree.
+So the three items that exercise recently landed code — `workspace_delete.rs`
+(Recycle Bin), `agent_setup.rs`'s wire spelling (the wizard), the daemon's
+exit reporting (the `until` rail step) — now run against the code that
+shipped.
 **Two warnings on that reinstall**, both already on cards: installing
 kills every running agent session, because the tab shells are children
 of the installed `gavin-daemon.exe`; and the installer cannot overwrite
@@ -439,20 +448,25 @@ are different in kind: each one is a person looking at a window.
       That is §2's shell decision in production, not in a test: the
       daemon's chosen `sh.exe` is the Git-for-Windows `usr/bin` one, and
       the agent CLI is its child.
-- [ ] Run the wizard's integration step and confirm the absolute `gavin-mcp`
+- [x] Run the wizard's integration step and confirm the absolute `gavin-mcp`
       path it writes into the agent config resolves.
-      **The second half is proved; only the button-press is owed.**
-      `resolve_mcp_binary_path` writes `current_exe().parent()` +
-      `gavin-mcp` + `EXE_SUFFIX`, which on the install above is
-      `C:\Users\calfr\AppData\Local\Gavin\gavin-mcp.exe`. That is
-      character-for-character the command in this workspace's `.mcp.json`,
-      and it resolves: the MCP server answering this session is that exact
-      binary, running as a child of this tab's `claude.exe`. So the path
-      SHAPE the wizard emits is known good on Windows, and a failure here
-      could now only be in the writing, not in what is written. Left
-      unticked because the wizard itself is a rendered surface and belongs
-      to the owner (CLAUDE.md), and because the entry in use was placed by
-      hand (`b8ba17c`), not by the wizard.
+      **Moved, not dropped** (2026-09-22): this is the same button press as
+      the last item of
+      [fix-windows-installer-collides-with-the-daemon](./fix-windows-installer-collides-with-the-daemon.md)
+      ("re-run Set up / update for each workspace's agents"), and it is
+      tracked there now so one action does not carry two boxes. Ticked here
+      to close this section; the work is live on that card.
+
+      **The evidence paragraph that used to sit here was wrong after the
+      installer move and is corrected on that card.** It claimed the wizard
+      would write `C:\Users\calfr\AppData\Local\Gavin\gavin-mcp.exe` and
+      that this was "character-for-character the command in this
+      workspace's `.mcp.json`, and it resolves". Post-install both halves
+      are false: the binary is at `%LOCALAPPDATA%\Programs\Gavin\gavin-mcp.exe`,
+      and `.mcp.json` still names the old path, which no longer exists. The
+      item went from "only the button-press is owed" to "the button-press
+      is the repair" — every agent session in this repo currently starts
+      with a dead `gavin` MCP server because of it.
 
 What broke on the first packaged launch (2026-09-10): the release `Gavin.exe`
 is `windows_subsystem = "windows"` and the daemon is spawned with
@@ -636,99 +650,15 @@ an emitted POSIX line that reaches `C:\Windows\System32\find.exe` or
 than failing where it can be seen. `interactive_shell` is untouched: a
 `%COMSPEC%` tab is a Windows shell and keeps the PATH Windows gave it.
 
-## 3. The desktop pass
+## 3. The desktop pass — moved to its own card
 
-**None of these is ticked, and an agent should not tick them.** Rendered
-UI is the one thing the suites cannot cover and confirming it is the
-owner's, in the running app (CLAUDE.md). What is below each item is the
-static pre-flight for it: the exact code path the item exercises, checked
-against the committed source, so that when the human does run it a
-failure is a surprise rather than a re-derivation. Two of them turned up
-something worth knowing before the app is ever launched.
-
-**The item-2 text below is out of date and the code is better than it
-says.** The restart's fallback is no longer `taskkill /F /IM
-gavin-daemon.exe` — no `taskkill` shells out anywhere in the app; it
-survives only in `daemon.rs`'s comments. `stop_running_daemon` reads the
-pid serving THIS endpoint off the connection (`Stream::server_pid`),
-sends `Request::Shutdown`, and on failure calls `TerminateProcess` on
-that one pid. The comment says why: a name is not an address, and
-`taskkill /IM` reached every daemon on the machine — which is how `cargo
-test -p app` once killed a human's sessions and how the dev app's Restart
-took the stable app's daemon with it. So the second half of that item —
-"the fallback by wedging or downgrading a daemon" — is still worth doing,
-but it exercises `TerminateProcess` on one pid, and the thing to watch
-for is that the OTHER daemon on this machine is untouched.
-
-- [ ] Launch, and spawn a plain shell tab: it should be `%COMSPEC%`, not bash.
-      *Pre-flight:* `shell::interactive_shell` reads `%COMSPEC%` and falls
-      back to a bare `cmd.exe`; `shell::tests::on_windows_a_plain_tab_gets_a_comspec_that_is_really_there`
-      now asserts the resolved value is an existing file, so the fallback
-      being reached is a test failure rather than a surprise in a tab. A
-      plain tab gets no PATH augmentation — that is deliberate, and §2's
-      finding explains why it must not.
-- [ ] **Restart the daemon from Settings.** It now asks over the wire
-      (`Request::Shutdown`) before falling back to `taskkill /F /IM
-      gavin-daemon.exe`. Exercise both — the fallback by wedging or downgrading
-      a daemon so the polite route cannot land.
-- [ ] Delete a workspace and confirm it is in the **Recycle Bin** and that
-      **Restore** puts it back.
-      *Pre-flight:* the Linux half of this had an end-to-end test
-      (`trash::tests`, gated `target_os = "linux"`) asserting the file
-      reaches the desktop Trash WITH the `.trashinfo` that makes "Put
-      back" work; Windows had none. Added
-      `trash::windows_tests::a_trashed_file_lands_in_the_recycle_bin_with_its_restore_record`,
-      the exact counterpart: it trashes a file and finds the
-      `$Recycle.Bin\<SID>\$I…` record that holds the original path plus
-      the `$R…` data beside it, then removes both so a developer's bin is
-      left as it was found. An `$R` with no `$I` is the failure worth
-      catching — it looks identical in the shell and cannot be restored.
-      What the human still owns: that the WIZARD reaches this, and that
-      Restore in the shell puts a whole workspace back.
-- [ ] Hover a path in terminal output and open it. This is
-      `resolve_path_under_cursor`, and the first place a `\\?\` verbatim path
-      would have surfaced before `protocol::canonical_path`.
-      *Pre-flight:* `protocol::canonical_path` canonicalises and then
-      hands the result to `strip_verbatim_prefix`, which turns
-      `\\?\C:\x` into `C:/x` and `\\?\UNC\server\share` into
-      `//server/share`, while deliberately leaving `\\?\Volume{…}` alone
-      (a volume with no drive letter, where stripping would name
-      something else). Both are unit-tested. Worth hovering a path with a
-      SPACE in it and one on a UNC share, which is where the two arms
-      differ.
-- [ ] A workspace at a `C:\` path renders on the board, and its cards open from
-      the Plans tab and the file viewer. Card ids are paths, compared and split
-      as strings — this is what the forward-slash normalisation is for.
-- [ ] A `until` rail step retries and **quotes its check** in the retry prompt.
-      The log now lives under the host's own temp directory rather than `/tmp`,
-      which on Windows was two different directories: the shell wrote one and
-      the app read the other.
-      *Pre-flight:* the wiring is whole. `fileviewer::temp_dir` answers
-      `protocol::wire_path(std::env::temp_dir())` — forward-slash
-      normalised — `layoutState` pushes it into
-      `orchestrationLoop::setTempRoot` at bootstrap, and `untilLogPath`
-      builds on it, so the `tee 'C:/Users/…/Temp/gavin-until-<id>.log'`
-      the shell writes and the path the app reads are one string. The
-      `/tmp` default is only what the module holds before the host
-      answers. MSYS opens a `C:/…` path natively, so `tee` needs no
-      translation.
-- [ ] Resize the window from all eight edges and corners
-      (`WindowResizeEdges.svelte`), and note whether the OS *also* resizes
-      there. The grips are drawn on Windows on the assumption WebView2 swallows
-      the frame's hit-testing; if the OS border works after all, the overlay can
-      be dropped on this platform.
-      *Pre-flight:* the branch is `needsResizeGrips(isMacSync())` — one
-      call, evaluated on the first frame from plugin-os's synchronous
-      platform read, so the grips are up before any await. `decorations:
-      false` and `shadow: true` are both present and adjacent in
-      tauri.conf.json, which is the pair that leaves an undecorated
-      Windows 11 window its 1px border and rounded corners. The question
-      this item exists to answer — whether the OS border responds too —
-      cannot be read off the source at all; it needs the window.
-- [ ] Drag the window by the corner strip and by the empty run of a tab row;
-      double-click the title bar to maximize.
-- [ ] The non-mac `WindowControls` — minimize / maximize / close, with the
-      corner still top-LEFT (a decision, recorded on the parent card).
+The nine rendered checks that were here are now
+[windows-desktop-pass.md](./windows-desktop-pass.md), moved verbatim with
+their static pre-flights. They were split out on 2026-09-22 because they are
+one coherent sitting in front of the running app, owner-only to the last
+item, and keeping them inside an umbrella whose other four sections are
+complete made the card read as if it still had agent work in it. It does
+not.
 
 ## 4. Two accounts, one machine
 

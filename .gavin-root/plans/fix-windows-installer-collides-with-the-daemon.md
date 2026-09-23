@@ -4,10 +4,10 @@ title: [fix] The Windows installer installs into the daemon's state directory, a
 labels: windows
 status: In Progress
 priority: high
-complexity: medium
+complexity: moderate
 ---
 Found 2026-09-11 while working
-[feat-windows-port-on-a-windows-machine](./feat-windows-port-on-a-windows-machine.md)
+[feat-windows-port-on-a-windows-machine](./done/feat-windows-port-on-a-windows-machine.md)
 §1, by reading the `installer.nsi` the 2026-09-10 `npm run bundle` generated
 (`gavin-stable/target/release/nsis/x64/installer.nsi`) against what the
 daemon actually writes. Neither of these is visible from a dev build, and
@@ -125,7 +125,7 @@ installer did.
       macro stopped three fake `gavin-daemon.exe` (a renamed `ping.exe`) in
       12 s and left the live daemon, pid 21616, alone.
 - [ ] Then run the install end to end and confirm §1's remaining items on
-      [the windows port card](./feat-windows-port-on-a-windows-machine.md).
+      [the windows port card](./done/feat-windows-port-on-a-windows-machine.md).
       **The human's, and it cannot be otherwise:** this agent's shell is a
       child of the installed daemon (`Gavin.exe → gavin-daemon.exe → sh.exe
       → claude.exe`), so a setup run from an agent tab kills the tab.
@@ -144,6 +144,188 @@ installer did.
       names the old `gavin-mcp.exe` path. The stable-install card's recipe
       steps 3 and 4 (choose the folder by hand, stop the daemon by hand)
       are obsolete once this lands.
+
+      **The install ran, and every expectation above was met** (observed
+      2026-09-22 by a board audit, from the machine state rather than from
+      a report):
+
+      - registry `InstallLocation` under HKCU Uninstall\Gavin is
+        `C:\Users\calfr\AppData\Local\Programs\Gavin`;
+      - that folder holds `Gavin.exe`, `gavin-daemon.exe`, `gavin-mcp.exe`,
+        `uninstall.exe`, built 22:59–23:02, installed 23:43;
+      - `%LOCALAPPDATA%\gavin` holds **zero `.exe` files** and still has
+        `kanban.sqlite`, `orchestration.sqlite`, `registry.sqlite`,
+        `daemon.token` and `daemon.log` intact — the whole point of the fix;
+      - `Gavin.exe` and `gavin-daemon.exe` are both running **from
+        `Programs\Gavin`**;
+      - the Start menu and Desktop `Gavin.lnk` both retarget to
+        `Programs\Gavin\Gavin.exe` — the hooks' most fragile behaviour, and
+        the one the stock template never does in `/UPDATE` mode.
+
+      **One thing is still owed, and it is breaking every agent session in
+      this repo right now.** "Re-run Set up / update for each workspace's
+      agents" has not been done: `.mcp.json` still reads
+      `C:\Users\calfr\AppData\Local\gavin\gavin-mcp.exe`, a file the move
+      deleted, so the `gavin` MCP server fails to connect at every session
+      start and `gavin_*` tools are unavailable. This item also now carries
+      **§1's wizard line from
+      [the windows port card](./done/feat-windows-port-on-a-windows-machine.md)**,
+      merged here on 2026-09-22 because it is the same button press:
+      confirming the absolute `gavin-mcp` path the wizard writes resolves
+      is what re-running the integration step does. Doing it ticks this box
+      and closes that card's last section.
+
+      Note the shape problem it exposes, which outlives the button press:
+      `.mcp.json` is committed and carries one absolute path, so it cannot
+      be right on this machine and the Mac at once. That is
+      [fix-mcp-json-points-at-the-windows-gavin-mcp-on-the-mac](./archive/fix-mcp-json-points-at-the-windows-gavin-mcp-on-the-mac.md),
+      and it is a code change, not a button press.
+
+      **2026-09-23, from the machine: the install half is confirmed a
+      second time, and the button press is now the WRONG action for this
+      checkout.** Re-verified independently (registry, files, live pids,
+      shortcut targets — not from the paragraph above): `InstallLocation`
+      is `C:\Users\calfr\AppData\Local\Programs\Gavin`, that folder holds
+      the four binaries, `%LOCALAPPDATA%\gavin` holds **zero `.exe`** with
+      `kanban.sqlite` / `orchestration.sqlite` / `registry.sqlite` /
+      `daemon.token` / `daemon.log` intact, `Gavin.exe` (pid 4736) and
+      `gavin-daemon.exe` (pid 16268) both run from `Programs\Gavin`, and
+      the Start-menu and Desktop `Gavin.lnk` both point there. Also
+      confirmed: `GAVIN_SESSION_SOCKET` in an agent shell is still
+      `%LOCALAPPDATA%\gavin\daemon.sock` — the state directory did not
+      move, which is the fix's whole claim. (Cosmetic leak, no consumer in
+      the tree: the hooks' `GAVIN_DAEMON_EXE_PATH` — set with
+      `SetEnvironmentVariable` so the stop macro's PowerShell can read it —
+      is inherited by the `Gavin.exe` the installer runs at the end and so
+      by every session under it, naming the *predecessor's*
+      `%LOCALAPPDATA%\gavin\gavin-daemon.exe`. Nothing but `hooks.nsh`
+      reads that name; it is gone at the next normal launch.)
+
+      **Why the press is wrong here.**
+      [fix-mcp-json-points-at-the-windows-gavin-mcp-on-the-mac](./archive/fix-mcp-json-points-at-the-windows-gavin-mcp-on-the-mac.md)
+      was landed on `fix/agent-fixes` (`43bafd9f`, `fed453d5`) and says so
+      in as many words: the committed configs now name `scripts/gavin-mcp`
+      by relative path, and "no wizard re-run is needed, and none should be
+      done, since that is the flip-flop this card removes". A press here
+      would write this machine's absolute path back over the launcher and
+      re-break the Mac. Probed today from the branch worktree, spawned the
+      way a client spawns it: `scripts\gavin-mcp.cmd` resolves
+      `%LOCALAPPDATA%\Programs\Gavin\gavin-mcp.exe` (candidate 2 — `GAVIN_MCP`
+      is unset), answers `initialize` as `gavin-mcp 0.1.0` and `tools/list`
+      with all sixteen tools, and puts nothing but JSON-RPC on stdout.
+
+      **So this box waits on a merge, not a button — and the merge is
+      now resolved and waiting.** `fix/agent-fixes` did not merge: it
+      forked at `902938f5` and `fd5945a9` (the ssh merge) has since
+      rewritten the same `write_mcp_config_*` / `json_entry` region to take
+      `fs: &dyn WorkspaceFiles`, so `git merge-tree` conflicted in 4 hunks
+      of `app/src-tauri/src/agent_setup.rs`. Resolved 2026-09-23 on
+      **`fix/agent-fixes-merged`** (`c51990b9`, worktree `C:\Users\calfr\gvm`),
+      which takes both sides — the trait threading from main, the resolved
+      command from the branch — and drops the branch's own `create_dir_all`,
+      since `LocalFiles::write_bytes` already makes the parent and doing it
+      in the writer would create a `.cursor\` on the DESKTOP for a workspace
+      whose files are on a host.
+
+      The decision neither side could make alone — what an ssh workspace
+      does with a relative launcher — went this way: `mcp_command` asks two
+      questions about the root (*is this a gavin checkout, does it carry the
+      launcher*), and for an ssh workspace the root is a path on the HOST,
+      so asking this process's disk lets whatever sits at the same spelling
+      here decide what gavin's own MCP entry executes. Both questions now go
+      through `fs`, and the platform half with them: `launcher_file` picks
+      `.cmd` or the sh script by the platform that will RUN the command, so
+      `WorkspaceFiles` grew `is_windows` — `cfg!` for `LocalFiles`, the
+      banner's `host_os` for `RemoteFiles`. A remote gavin checkout that
+      ships the launcher gets it; every root that ships none keeps the
+      absolute binary, which for ssh is the banner's `mcp_path`.
+
+      `cargo test -p app` **534 passed / 0 failed** on the merge, the
+      branch's seven launcher tests among them. One test added for the new
+      gate and **confirmed to go red with either half reverted**. Nothing
+      under `app/src` is touched, so the JS suites are main's. Probed on
+      this machine from the merged tree: `scripts\gavin-mcp.cmd` resolves
+      the installed binary and answers `initialize`. `git merge
+      fix/agent-fixes-merged` from `main` is a **fast-forward** as of
+      `a3781101`.
+
+      **And `.mcp.json` is not the only one. jarvis is a second instance
+      the launcher does not cover.** `C:\Users\calfr\coding\jarvis` is the
+      other registered workspace (`config.json`; both are `profile =
+      "claude-code"`, so both write `.mcp.json`). Its committed config names
+      `C:\Users\calfr\coding\gavin\target\debug\gavin-mcp.exe` — a file that
+      does exist, built 2026-09-10, which is worse than a missing one: it
+      connects and then fails every call. Driven directly today,
+      `gavin_get_board` from that root returns *"the gavin daemon is newer
+      than this gavin-mcp (v41 vs v36)"*. The launcher is written only into
+      a root that already ships one (the branch's own decision — "every
+      other workspace still gets the absolute binary"), and jarvis ships
+      none, so **jarvis is the one workspace where "Set up / update" is
+      still the right action**, and it will write
+      `%LOCALAPPDATA%\Programs\Gavin\gavin-mcp.exe`, which resolves.
+
+      Two actions were left. **The first is done; the second is the only
+      thing this box still waits on.**
+
+      1. **gavin — merged 2026-09-23.** `git merge --ff-only
+         fix/agent-fixes-merged` on `main`: `a3781101..c51990b9`, a clean
+         fast-forward, six files, none of them dirty in the shared tree
+         beforehand (checked before merging — a ff that has to touch a
+         dirty file is the one way this could have gone wrong). The suite
+         was not re-run: the merge is a fast-forward, so `c51990b9` already
+         *is* the post-merge state the card recorded `cargo test -p app`
+         534/0 against. Verified from `main` afterwards, from the machine
+         rather than from the branch's claim:
+         - `.mcp.json` and `.cursor/mcp.json` name `scripts/gavin-mcp`, and
+           all four files are `w/lf` on disk (`git ls-files --eol`), so the
+           launcher cmd's single-line discipline survived the checkout;
+         - spawned the way a client spawns it (`cmd /d /s /c
+           scripts\gavin-mcp` from the root), it answers `initialize` as
+           `gavin-mcp 0.1.0`, lists all sixteen tools, and puts **two
+           lines on stdout, both JSON** — nothing but JSON-RPC, which is
+           the launcher's own stated failure mode;
+         - `gavin_get_board` through it returns the board, so it reaches
+           the daemon and clears the version gate — not just connects;
+         - `claude mcp list` reports `gavin: scripts/gavin-mcp - ✔
+           Connected`, so the harness resolves the relative command through
+           PATHEXT as the branch intended.
+         `C:\Users\calfr\gvm` removed (`git worktree remove --force`, as
+         predicted — cargo had built in it). "Set up / update" was **not**
+         pressed here, deliberately: it would write this machine's absolute
+         path back over the launcher.
+      2. **jarvis — still owed, and still the owner's.** Re-verified today
+         from the machine: `C:\Users\calfr\coding\jarvis\.mcp.json` still
+         names `C:\Users\calfr\coding\gavin\target\debug\gavin-mcp.exe`
+         (present, built 2026-09-10), the root ships no `scripts/gavin-mcp`
+         and has no `.cursor/mcp.json`, and driving that binary from the
+         jarvis root reproduces the exact failure — `initialize` succeeds,
+         then `gavin_get_board` returns *"the gavin daemon is newer than
+         this gavin-mcp (v41 vs v36)"*. Connects, then fails every call.
+
+         The press is safe from either build, which the merge does not
+         change: `mcp_command` writes the launcher only for a root that
+         holds `crates/gavin-mcp/Cargo.toml` **and** the launcher file, and
+         jarvis holds neither, so it takes the `binary` branch —
+         `resolve_mcp_binary_path`, i.e. `current_exe().parent()` +
+         `gavin-mcp.exe` = `%LOCALAPPDATA%\Programs\Gavin\gavin-mcp.exe`,
+         the binary proven above to answer and clear the gate.
+
+         An agent cannot discharge this one and should not fake it. Writing
+         that path into jarvis's `.mcp.json` by hand would fix jarvis and
+         still leave the box false, because what this item merged in from
+         §1 of the windows port card is *the wizard writing a path that
+         resolves* — evidence only the button press produces.
+
+      Tick this box when the jarvis press is done. Nothing else is left.
+
+      One small correction to the prediction above, immaterial and recorded
+      only so the next reader is not surprised: `GAVIN_DAEMON_EXE_PATH` is
+      **not** "gone at the next normal launch" — it is still set in an agent
+      shell today. It now reads
+      `C:\Users\calfr\AppData\Local\Programs\Gavin\gavin-daemon.exe`, the
+      current install rather than a predecessor, because the sessions still
+      descend from an installer-launched `Gavin.exe`. Still nothing in the
+      tree reads it, and it now names the right file.
 
 **Out of scope:** code signing; the machine-wide install path, which has
 neither problem.
