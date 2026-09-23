@@ -365,7 +365,15 @@ export type TurnReading =
   | { kind: "working" }
   | { kind: "asking" }
   | { kind: "blocked"; said: string }
-  | { kind: "failed"; cause: FailureCause };
+  /// `said` for the same reason `blocked` carries one, and it is worth
+  /// stating because the daemon's own failures do not need it: those
+  /// arrive with the agent's sentence attached (`failureReasonById`),
+  /// and every surface that reports one quotes it. A failure the
+  /// VERDICT read off the screen has no such sentence -- the daemon
+  /// called this turn `idle` and cleared the reason with it -- so the
+  /// screen's own last line is the only thing there is to quote, and
+  /// `failureBody` is useless without it.
+  | { kind: "failed"; cause: FailureCause; said: string };
 
 /// The `cause` question's answer as a `FailureCause`, through the
 /// confidence gate.
@@ -414,7 +422,7 @@ export function readTurn(answers: VerdictAnswers | null, screen: string): TurnRe
       return { kind: "blocked", said: agentLastLine(screen) };
     case "failed":
       // 4. The cause, through its own higher gate (`causeFrom`).
-      return { kind: "failed", cause: causeFrom(answers) };
+      return { kind: "failed", cause: causeFrom(answers), said: agentLastLine(screen) };
   }
 }
 

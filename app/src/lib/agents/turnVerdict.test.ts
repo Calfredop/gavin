@@ -266,6 +266,25 @@ describe("readTurn: the policy", () => {
     const reading = read({ verdict: "blocked", verdictConfidence: 0.91 }, screen);
     expect(reading).toEqual({ kind: "blocked", said: "blocked by the sandbox." });
   });
+
+  it("a failed turn carries the agent's own last line too, for the same reason", () => {
+    // The daemon's own failures reach the human as `failureBody`, whose
+    // whole value is the quoted sentence -- a dead network and an
+    // expired token want opposite responses. A failure the VERDICT read
+    // off the screen has no daemon reason to quote, because the daemon
+    // called this turn `idle`. The screen's own last line is the only
+    // sentence there is, and it is already being read for `blocked`.
+    const screen = claudeScreen("API Error: Connection reset by peer.");
+    const reading = read(
+      { verdict: "failed", verdictConfidence: 0.94, cause: "network", causeConfidence: 0.95 },
+      screen
+    );
+    expect(reading).toEqual({
+      kind: "failed",
+      cause: "network",
+      said: "API Error: Connection reset by peer.",
+    });
+  });
 });
 
 describe("readTurn: the cause gate", () => {
@@ -277,7 +296,7 @@ describe("readTurn: the cause gate", () => {
       causeConfidence: 0.95,
       nBroke: 0.98,
     });
-    expect(reading).toEqual({ kind: "failed", cause: "usage-limit" });
+    expect(reading).toEqual({ kind: "failed", cause: "usage-limit", said: "" });
   });
 
   it("a low-confidence cause IS unknown, so it can never drive a resume", () => {
@@ -292,7 +311,7 @@ describe("readTurn: the cause gate", () => {
       cause: "network",
       causeConfidence: CAUSE_MIN_CONFIDENCE - 0.01,
     });
-    expect(reading).toEqual({ kind: "failed", cause: "unknown" });
+    expect(reading).toEqual({ kind: "failed", cause: "unknown", said: "" });
   });
 
   it("uses a cause exactly at the resume threshold", () => {
@@ -302,7 +321,7 @@ describe("readTurn: the cause gate", () => {
       cause: "network",
       causeConfidence: CAUSE_MIN_CONFIDENCE,
     });
-    expect(reading).toEqual({ kind: "failed", cause: "network" });
+    expect(reading).toEqual({ kind: "failed", cause: "network", said: "" });
   });
 
   it("reads `none` as unknown rather than inventing one", () => {
@@ -312,12 +331,12 @@ describe("readTurn: the cause gate", () => {
       cause: "none",
       causeConfidence: 0.99,
     });
-    expect(reading).toEqual({ kind: "failed", cause: "unknown" });
+    expect(reading).toEqual({ kind: "failed", cause: "unknown", said: "" });
   });
 });
 
 describe("refineCause", () => {
-  const failed = { kind: "failed", cause: "auth" } as const;
+  const failed = { kind: "failed", cause: "auth", said: "" } as const;
 
   it("leaves a cause the profile's own table matched", () => {
     // The table is ordered, measured and local. Overriding a match with
@@ -364,7 +383,7 @@ describe("verdictCompletesTurn", () => {
     expect(verdictCompletesTurn(read({ kind: "finished" }))).toBe(true);
     expect(verdictCompletesTurn(read({ kind: "asking" }))).toBe(false);
     expect(verdictCompletesTurn(read({ kind: "blocked", said: "no" }))).toBe(false);
-    expect(verdictCompletesTurn(read({ kind: "failed", cause: "network" }))).toBe(false);
+    expect(verdictCompletesTurn(read({ kind: "failed", cause: "network", said: "" }))).toBe(false);
     expect(verdictCompletesTurn(read({ kind: "working" }))).toBe(false);
   });
 });

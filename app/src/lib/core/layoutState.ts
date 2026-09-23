@@ -21,7 +21,12 @@ import type {
 import { sessionLabel } from "$lib/core/paths";
 import { buildRunCommand, mintConversationId, noPromptReason } from "$lib/cards/cardRun";
 import { workspaceIdForSession } from "$lib/core/workspace";
-import { maybeNotifyStatusChange, parseSessionStatus, type SessionStatus } from "$lib/core/notifications";
+import {
+  maybeNotifyStatusChange,
+  parseSessionStatus,
+  type NotifyPrefs,
+  type SessionStatus,
+} from "$lib/core/notifications";
 import { initGavinListeners, watchRootedWorkspaces, gavinTrees, worktreeSetups } from "$lib/core/gavinState";
 import {
   handleRemoteLinkLost,
@@ -3436,6 +3441,10 @@ export function handleSessionStatusChanged(sessionId: string, rawStatus: string)
     return;
   }
   pendingFailureNotice.delete(sessionId);
+  // Somebody may own this transition's line instead -- today only the
+  // turn verdict does, and only for the one transition it can reword.
+  // Every other transition notifies here, now, exactly as it always did.
+  if (statusNoticeHold?.(sessionId, previousStatus, status)) return;
   notifyStatus(state, sessionId, previousStatus, status);
 }
 
@@ -3536,6 +3545,7 @@ export function setSessionStatusHook(hook: SessionStatusHook | null): void {
 export function __resetFailureNotices(): void {
   pendingFailureNotice.clear();
   sessionFailureHook = null;
+  statusNoticeHold = null;
 }
 
 function notifyStatus(
@@ -3546,21 +3556,63 @@ function notifyStatus(
   failureReason?: string
 ): void {
   const label = sessionLabel(state.sessionNames, state.cwdBySessionId, sessionId);
-  const owner = workspaceIdForSession(state, sessionId);
-  const owningWs = owner ? state.workspaces.find((w) => w.id === owner) : undefined;
-  // A session owned by no workspace (spawned but not yet landed) keeps
-  // today's behaviour rather than going silent.
   void maybeNotifyStatusChange(
     sessionId,
     previousStatus,
     status,
     label,
-    {
-      needsInput: owningWs?.notifyNeedsInput ?? true,
-      finished: owningWs?.notifyFinished ?? true,
-    },
+    notifyPrefsFor(state, sessionId),
     failureReason
   );
+}
+
+/// Asked at every status transition, just before this module would
+/// notify: does something else own this transition's line?
+///
+/// True means "I have taken it, and I owe the human exactly one
+/// notification for this turn, later" -- so this module sends nothing
+/// and the holder sends the line it settles on. False (and no holder at
+/// all) is every transition notifying inline, on this tick, unchanged.
+///
+/// One holder today: the turn verdict (`verdictNoticeState.ts`). The
+/// daemon calls a finished turn, a question asked in prose and an agent
+/// that gave up all `idle`, so the line composed at the transition says
+/// "finished" for all three; the verdict can tell them apart, a second
+/// or two later. Holding the line until then is the only way the tray
+/// can say the true one, because there is nothing truer to say YET.
+///
+/// A slot rather than an import, the third of its kind in this file and
+/// for the same reason as `setSessionFailureHook` and
+/// `setRailNotificationVoice`: the holder reads the verdict map, which
+/// is loaded from the other side of the orchestration cycle, and
+/// `turnVerdictSurfaces.test.ts` pins that this module never imports it.
+/// Registered by `startTurnVerdict`, cleared by its teardown.
+export type StatusNoticeHold = (
+  sessionId: string,
+  previousStatus: SessionStatus | undefined,
+  status: SessionStatus
+) => boolean;
+
+let statusNoticeHold: StatusNoticeHold | null = null;
+
+export function setStatusNoticeHold(hold: StatusNoticeHold | null): void {
+  statusNoticeHold = hold;
+}
+
+/// The workspace toggles that govern one session's notifications.
+///
+/// Exported so a holder of `StatusNoticeHold` answers to exactly the
+/// switches this module would have: a deferred notification that
+/// consulted a different set of toggles would be one the human silenced
+/// and heard anyway. A session owned by no workspace (spawned but not
+/// yet landed) keeps today's behaviour rather than going silent.
+export function notifyPrefsFor(state: LayoutState, sessionId: string): NotifyPrefs {
+  const owner = workspaceIdForSession(state, sessionId);
+  const owningWs = owner ? state.workspaces.find((w) => w.id === owner) : undefined;
+  return {
+    needsInput: owningWs?.notifyNeedsInput ?? true,
+    finished: owningWs?.notifyFinished ?? true,
+  };
 }
 
 /// Shared by the "session-failed" listener in bootstrap() and this
