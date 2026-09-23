@@ -391,11 +391,10 @@ export const FEATURE_MIN_VERSION = {
   // should have to guess at. Greyed, with the version it needs, is the
   // only honest state.
   //
-  // DEAD UNTIL ITS CONSUMERS LAND (CLAUDE.md). The entry is added by the
-  // task that lands the protocol; the `featureBlockedReason` consumers --
-  // the toggle, the relay URL row, "Pair a device", the device list and
-  // its two Revoke controls -- are the Settings task's, and until they
-  // exist this gate stops nothing.
+  // Its consumers have landed, so this is not a dead gate (CLAUDE.md):
+  // `remoteAccess.ts`'s `remoteAccessBlocked` reads it, and the Settings
+  // section greys the toggle, the relay URL row, "Pair a device", the
+  // device list and both Revoke controls behind that one verdict.
   remoteAccess: 42,
 } as const;
 

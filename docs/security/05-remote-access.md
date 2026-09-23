@@ -99,6 +99,54 @@ daemon pushes `DevicePairingRequested { device_id, name, sas }` to the app; the 
 compares the two codes and confirms **on the desktop**. Only then does the daemon write
 the device into the trust store and answer the phone with `HelloAck { role: "remote" }`.
 
+**The ceremony, as phase 2 built it.** Four things the sketch above left to the
+implementer, settled in `crates/daemon/src/pairing.rs` and `crates/protocol`:
+
+- **The pattern is `Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s`** (`trust::NOISE_PARAMS`, one
+  string, because the daemon's static key is generated from the same DH function). The
+  PSK slot is `3` — the last of XX's three messages — for a reason the phone depends on:
+  at `psk3` the responder's static key arrives in message 2, *before* the secret is
+  mixed in, so the phone can compare the key it was handed against the one it pinned
+  from the QR and abandon the handshake if they differ, rather than finding out
+  afterwards. `psk0` would also let someone holding only a photograph of the screen make
+  the secret do work at message 1, which is exactly the "QR as credential" this section
+  rejects. Neither is a cliff; `psk3` is the better of the two.
+- **The SAS derivation is published, because the phone must reproduce it byte for
+  byte.** It lives in `protocol::pairing_sas`, beside `server_proof`, for the same
+  reason: it is a value two independent implementations must compute identically, so it
+  belongs with the wire contract rather than inside one peer.
+
+  ```text
+  lo     = min(key_a, key_b)            // bytewise lexicographic
+  hi     = max(key_a, key_b)
+  digest = SHA-256("gavin-pairing-sas-v1" || lo || hi)
+  sas    = u64::from_be_bytes(digest[0..8]) % 1_000_000
+  shown  = sas, zero-padded to six digits ("000042", never "42")
+  ```
+
+  The keys are **sorted** rather than ordered initiator-then-responder, so each side
+  computes the code from what it holds without first agreeing on who is who. The context
+  string carries a version, so a future change to the derivation is a *different* code
+  rather than the same six digits meaning two things. Zero-padding is load-bearing: a
+  human asked to compare "42" against "000042" has been handed a puzzle instead of a
+  check, and the whole ceremony rests on that comparison being trivially obvious.
+- **There is a Reject button.** This section describes confirm and says nothing about
+  the other button, but a dialog whose only exit is "yes" is not a confirmation, and the
+  phone deserves an answer sooner than the two-minute expiry. `RejectPairing`
+  (§7) discards the pending handshake and writes nothing.
+- **One offer at a time, and a completed handshake spends it.** A second `BeginPairing`
+  replaces the first — the human is looking at one QR at a time — and the secret is
+  discarded whether or not the human then says yes, because a secret that survived one
+  completed handshake would let a second phone in on the same photograph. The offer is
+  held in memory and never written to `devices.sqlite`: a two-minute window that
+  outlived the screen it was shown on is not a two-minute window.
+
+**"No app connection" is refused before the handshake, not after.** §7's rule is that
+the daemon refuses a pairing when no `app` connection is live to confirm it. Phase 2
+checks that *first*, ahead of the three round trips, because a phone that completed a
+full mutual exchange and was only then told "nobody is home" has spent its secret for
+nothing, and the human would have no way to know it happened.
+
 **What the QR carries.** The daemon's static public key; the pairing secret; the
 rendezvous address (relay URL, or LAN host and port, or both); the daemon's protocol
 version. That is all.
@@ -137,12 +185,41 @@ a daemon that does not come back after reboot. A `0600` file behind a `0700` dir
 is the same boundary the socket already rests on; Keychain custody is a later
 hardening, listed in §11.
 
+**One trust store per machine, not per build.** `registry.sqlite` splits by build
+profile (`registry-dev.sqlite` beside `registry.sqlite`) so a debug daemon and an
+installed one do not fight over process identity. `devices.sqlite` deliberately does
+**not**. A paired phone is the human's work, not a process fact: they performed the
+ceremony once, and a rebuild is not a reason to make them do it again. The stronger
+reason is the key. Splitting the file would give the two builds two different daemon
+static keys, so which app happened to be running would decide whether a phone's pinned
+key still matched — and "Revoke all devices" would rotate only one of them. A phone pins
+one key, so the machine has one.
+
+The device name arrives inside the handshake, from the phone, and is therefore
+attacker-controlled text that lands next to a Confirm button. It is stripped of control
+characters and cut to 64 characters before it is shown, so a name can neither carry an
+escape sequence at the desktop nor push the six-digit code off the dialog the human is
+supposed to be reading. A name that survives none of that becomes "unnamed device"
+rather than an empty string, because "confirm ''" tells the human nothing.
+
 **How many, for how long.** Three devices by default (Settings can raise it). A device's
 trust has no scheduled expiry: a certificate that lapses on a laptop that sleeps for a
 week is a re-pair the human did not ask for. Instead `last_seen_at` drives a nag: a
 device unseen for ninety days is shown greyed with "re-pair to use", and is refused
 until re-paired. Rejected: thirty-day trust with silent renewal on use, because
 "silent renewal on use" means a stolen phone renews itself.
+
+Two details phase 2 settled. The cap counts *active* devices, so revoking one frees its
+slot, and a phone that re-pairs revives the row it already had rather than adding a
+second — a device's identity is its static key, not the number of times it has been
+through the ceremony, so the `device_id` freshly minted for the new handshake is
+discarded and the stored one comes back. That is what keeps a later Revoke aimed at the
+right device, and it is why the cap cannot be filled by one phone pairing three times.
+And staleness is computed by the **daemon** and put on the wire as
+`DeviceInfo.stale`, not derived in the app from `last_seen_at`: the ninety-day window is
+this section's rule and the daemon is what enforces it, so an app that re-derived it
+would be a second opinion that can disagree with the daemon it is drawing. The row shown
+greyed has to be the row the daemon will actually refuse.
 
 **Revocation.** From the desktop: the Settings device list has Revoke per row and
 "Revoke all devices". Revoke marks `revoked_at`, and the daemon drops every live
@@ -152,6 +229,22 @@ which invalidates every phone at once even if the store is somehow restored, bec
 each phone pinned the old key. From the phone: an `Unpair` request removes the phone's
 own row; it is a courtesy, not a control, because a lost phone will not send it. On
 loss: "Revoke all devices" is the one-button answer, and the pairing screen says so.
+
+Phase 2 built both halves of the desktop side. Revoking marks the row *and* drops every
+live connection carrying that `device_id` — the connection holds its identity, so it is
+a lookup over the connections the server already tracks. The two halves are deliberately
+split across the two modules: the row is the store's (`TrustStore::revoke`), the
+connections are the server's (`SessionManager::revoke_device`). A revocation also does
+not queue behind a handshake in flight: the daemon lifts the keys out of the store
+before running the three round trips, so a phone that walked out of wifi range mid-pair
+cannot hold the lock this section's "immediately" depends on. `Unpair` is not in phase 2
+at all: it is a request the *phone* sends, and there is no transport for it to arrive
+over until phase 3.
+
+`RevokeDevice` for an id the store has never heard of answers `Ok` rather than an error.
+Revocation is a statement about the end state, and "that device is not trusted" is true
+either way; a revoke that failed because the phone had already been revoked from another
+window would be a worse answer than a quiet yes.
 
 ## 4. Identity, roles, authorization
 
@@ -404,7 +497,8 @@ phone whose owner is not the human.
 
 ## 7. Protocol sketch
 
-Illustrative shapes; not a bump. Field names are suggestions for the implementer.
+Illustrative shapes; not a bump. Field names are suggestions for the implementer —
+except in "Phase 2 additions" below, which has shipped and is quoted from the wire.
 
 **The handshake request and its replies** (additive; one `PROTOCOL_VERSION` bump):
 
@@ -464,24 +558,102 @@ daemon at v12 or later answers `Unsupported { request_type: "unknown" }` from th
   of scope and §5 forbids gavin from ever offering.
 
 **Phase 2 additions** (a second bump, `app` role only, so the gate is the role and not
-the version):
+the version). **Shipped at `PROTOCOL_VERSION = 42`**, and these shapes are no longer a
+sketch — they are the wire, reproduced here from `crates/protocol/src/lib.rs`.
+`MIN_COMPATIBLE_VERSION` is untouched at 5. Request and response fields are snake_case,
+as everywhere else on this socket; the two structs that cross into TypeScript
+(`DeviceInfo`, `PairingQr`) are camelCase, marked below.
 
 ```json
 {"type":"BeginPairing"}                     -> {"type":"PairingOffer","qr":"…","expires_at":…}
 {"type":"ConfirmPairing","device_id":"…"}   -> Ok
-{"type":"ListDevices"}                      -> {"type":"Devices","devices":[…]}
+{"type":"RejectPairing","device_id":"…"}    -> Ok
+{"type":"ListDevices"}                      -> {"type":"Devices","devices":[…],
+                                                "remote_access_enabled":true,"relay_url":"…"}
 {"type":"RevokeDevice","device_id":"…"}     -> Ok
 {"type":"RevokeAllDevices"}                 -> Ok   (rotates the daemon static key)
 {"type":"SetRemoteAccess","enabled":true,"relay_url":"…"} -> Ok
-{"type":"GrantInput","device_id":"…","session_id":"…","ttl_secs":1800} -> Ok
-{"type":"RevokeInputGrant","device_id":"…","session_id":"…"} -> Ok
 ```
 
+`qr` is the QR's **string**, not a nested object: compact JSON with no whitespace, the
+exact bytes the phone's camera hands its parser. Putting the fields here as an object
+would make the daemon's wire shape and the QR's two documents that have to be kept in
+step. `expires_at` is wall-clock epoch **seconds**, like `CardRun::started_at`, so the
+app can draw the two-minute countdown without knowing the daemon's clock resolution.
+
+`PairingQr` — what the `qr` string decodes to, and the whole of what it carries. §3's
+"What it must not carry" is the other half of this shape's definition, and it is a test
+rather than a comment (`the_qr_payload_carries_only_what_section_3_allows`):
+
+```json
+{"daemonPublicKey":"<64 hex>","secret":"<64 hex>",
+ "rendezvous":["wss://…"],"protocolVersion":42}
+```
+
+`DeviceInfo` — one row of the trust store, as the device list reads it:
+
+```json
+{"deviceId":"…","name":"…","role":"remote",
+ "createdAt":…,"lastSeenAt":…,"revokedAt":null,"stale":false}
+```
+
+`rendezvous` is empty in phase 2 unless the human has set a relay URL, and empty is
+honest: there is no transport yet, so there is nowhere to point. The static **public**
+key is deliberately absent from `DeviceInfo` — nothing in the app can do anything with
+it (the daemon is what matches a handshake against the store), and a key on screen
+invites a human to compare it by eye, which is the job the six-digit SAS exists to do
+properly. `role` stays a string, like `SessionSummary::status`, so a row written by a
+newer daemon reaches the app as the word it was written with.
+
+**Three changes from the sketch above, each decided by building it.**
+
+1. **`RejectPairing` is new.** §3 described confirm and nothing else; a dialog whose
+   only exit is "yes" is not a confirmation. It discards the pending handshake and
+   writes nothing.
+2. **`Devices` carries the settings.** §7 sketched `Devices { devices }`, which leaves
+   `SetRemoteAccess` a write-only setting: the panel that owns the toggle cannot draw
+   its own state. A second request TYPE for two scalars would be a second
+   `min_version_for` arm and a second round trip for one screen. Widening a response
+   variant introduced in the *same* version costs nothing — no peer older than 42 ever
+   receives one.
+3. **`GrantInput` / `RevokeInputGrant` are not here**, and neither is the
+   `InputGrantRequested` push. §7 listed them among the phase-2 additions and §10 lands
+   grants in phase 5 with the input path they gate; §10 wins. This section was the one
+   that was wrong.
+
 Pushes to `app` connections: `DevicePairingRequested { device_id, name, sas }`,
-`DeviceConnected`, `DeviceDisconnected`, `InputGrantRequested { device_id, session_id }`.
-If no `app` connection is live when a confirmation is needed, the daemon refuses the
-pairing or the grant with "open gavin on the desktop": the human keeps the wheel, and a
-wheel with nobody at it is a refusal, not a wait.
+`DeviceConnected`, `DeviceDisconnected`. If no `app` connection is live when a
+confirmation is needed, the daemon refuses the pairing with "open gavin on the desktop":
+the human keeps the wheel, and a wheel with nobody at it is a refusal, not a wait.
+Nothing in phase 2 produces `DeviceConnected` or `DeviceDisconnected` outside the tests
+that build a device-carrying connection directly — there is no transport for a device to
+connect over — and phase 3's `remote.rs` is what makes them routine.
+
+**Why this bump is invisible to an older client by construction.** Seven new request
+TYPES and not one widened payload. `min_version_for` gates request types, so it is the
+whole wire gate here: `gate_request` stops the app sending any of them to a v41 daemon,
+a v41 daemon that met one anyway answers `Unsupported` from the `#[serde(other)]` arm,
+and there is no field for an older daemon to parse-and-discard. The failure CLAUDE.md
+warns about — a widened request silently stored as a broken row — cannot arise. The app
+still owes `FEATURE_MIN_VERSION.remoteAccess: 42` in `daemonCompat.ts`, for the **copy**
+rather than the gate: a Remote access section that simply is not there against an older
+daemon reads as "gavin cannot do this" when the truth is "gavin has not been restarted".
+Its `featureBlockedReason` consumers are the section's own controls — the toggle, the
+relay URL row, "Pair a device", the device list and both Revoke controls — so the entry
+is not a dead gate.
+
+The role, not the version, is the real gate. `server::authorize` allows all seven to
+`app` alone; `agent` and `remote` are refused outright, because pairing a device is the
+act that decides who else can reach this machine, and §3 puts the human at the desktop
+for it.
+
+**The pairing stream is not this protocol.** The handshake in §3 does not travel as JSON
+lines: `pairing.rs` frames each Noise message as two bytes of big-endian length followed
+by that many bytes. It cannot reuse `protocol::write_message`, which is
+newline-delimited JSON, because a Noise message is ciphertext that may contain any byte
+including a newline. The length cannot overflow the prefix — Noise itself caps a message
+at 65535 bytes, which is exactly what two bytes hold. The only part of the ceremony that
+appears on the JSON socket at all is the six-digit `sas` in `DevicePairingRequested`.
 
 ## 8. The proxy's threat model
 
@@ -620,16 +792,38 @@ column; an untokened connection is unchanged from today.
 Must not: bind any network listener, dial anything, refuse an untokened local
 connection, or change what the app can do.
 
-**Phase 2 — pairing, trust store, revocation UI.**
+**Phase 2 — pairing, trust store, revocation UI. — LANDED, `PROTOCOL_VERSION = 42`.**
 Lands: `trust.rs` and `devices.sqlite`; daemon static key generation; the phase-2
 requests and pushes from §7; the Noise `XX`+PSK pairing handshake as a library the
 daemon can run over any byte stream; the Settings panel's Remote access section
 (toggle, relay URL, Pair a device with QR and SAS, device list with Revoke, Revoke all).
-Proves: a test client driving the pairing handshake in-process over the Unix socket
-ends up in `devices.sqlite` only after `ConfirmPairing`; a revoked device's live
-connection drops; "Revoke all" rotates the key and every prior device fails `IK`.
+Proves: a test client driving the pairing handshake in-process ends up in
+`devices.sqlite` only after `ConfirmPairing`; a revoked device's live connection drops;
+"Revoke all" rotates the key so no prior device's pinned key matches it again.
 Must not: open a listener or dial a relay. Remote access "on" with no transport is a
 store with rows in it and nothing to serve.
+
+Two words in that "proves" line were wrong when it was written, and building the phase
+is what showed it.
+
+- **Not "over the Unix socket".** The handshake is not on this protocol at all (§7, "The
+  pairing stream is not this protocol"): `pairing.rs` runs the responder over any
+  `Read + Write`, and the ceremony test drives it over an in-process `Stream::pair()`.
+  Phase 3's `remote.rs` calls the same seam — `SessionManager::pair_over` — with the
+  relay connection it just accepted. Insisting on the Unix socket would have meant
+  building a transport phase 2 is forbidden to build.
+- **Not "fails `IK`".** There is no `IK` handshake until phase 3, so phase 2 cannot
+  prove a failure in it. What it proves instead is the thing `IK` would rest on: the
+  rotation is real and reaches disk, so the key every prior phone pinned is gone.
+  `revoke_all_rotates_the_key_so_the_old_public_key_no_longer_matches` is that test, and
+  `revoke_all_devices_rotates_the_key_and_drops_every_device_connection` is the other
+  half. **Phase 3 owes the `IK` half of this proof** — an old device's `IK` against a
+  rotated key, refused — and should not treat this line as already discharged.
+
+The "must not" was checked and not merely intended: with the section's toggle on and a
+relay URL stored, `netstat -ano` shows the daemon owning no TCP or UDP endpoint at all,
+before, during and after. There is nothing to find, because there is nothing that
+listens or dials — `SetRemoteAccess` writes two values into the trust store and stops.
 
 **Phase 3 — transport and relay.**
 Lands: `remote.rs` (dial, reconnect on wake, Noise `IK`, framing, padding, caps) feeding
