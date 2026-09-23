@@ -2893,7 +2893,7 @@ pub fn resolve_app_support_dir(
     let xdg = xdg_data_home
         .filter(|x| !x.is_empty())
         .map(PathBuf::from)
-        .filter(|x| x.is_absolute());
+        .filter(|x| xdg_path_is_absolute(x));
     if let Some(xdg) = xdg {
         return Ok(xdg.join("gavin"));
     }
@@ -2901,6 +2901,25 @@ pub fn resolve_app_support_dir(
         anyhow::anyhow!("neither XDG_DATA_HOME nor HOME is set, so gavin has nowhere to keep its socket and databases")
     })?;
     Ok(PathBuf::from(home).join(".local").join("share").join("gavin"))
+}
+
+/// Whether an `XDG_DATA_HOME` value is absolute *by the spec's rule*,
+/// which is POSIX's: a leading `/`.
+///
+/// Deliberately not `Path::is_absolute`. That answers for the OS running
+/// this process, not the `HostOs` being asked about, and on Windows it
+/// is false for `/data/gavin-home` because an absolute Windows path
+/// needs a drive prefix. `resolve_app_support_dir` takes its OS as an
+/// argument precisely so that the answer does not depend on who is
+/// asking -- the doc comment there says so -- and a host-dependent
+/// check reintroduced the dependency at the one place that reads a
+/// path. The XDG branch is unreachable on Windows in production, the
+/// Windows branch having returned already, so the only thing this ever
+/// broke was the suite: three tests stating the Linux rule got the
+/// `HOME` fallback instead of the data home and had been red on every
+/// Windows run since the port.
+fn xdg_path_is_absolute(path: &Path) -> bool {
+    path.as_os_str().as_encoded_bytes().first() == Some(&b'/')
 }
 
 /// Every path gavin puts on the wire or into the UI uses forward

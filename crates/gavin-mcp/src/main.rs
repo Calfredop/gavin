@@ -2998,7 +2998,15 @@ mod tests {
         assert!(reply.contains("created plan"));
         match &t.requests[0] {
             Request::CreatePlan { context_folder, file_name, title, priority, .. } => {
-                assert_eq!(context_folder, "/ws/.");
+                // Built the way the code builds it, because the claim is
+                // that a relative context is resolved against the root --
+                // not that the separator is a forward slash.
+                // `resolve_against_root` is `root.join(input)`, which
+                // spells this `/ws\.` on Windows; every path this binary
+                // puts on the wire is a plain `to_string_lossy` of a
+                // native path, `root_path` included, so hardcoding the
+                // POSIX spelling only made the claim untestable off unix.
+                assert_eq!(context_folder, &root.join(".").to_string_lossy().to_string());
                 assert_eq!(file_name, "a.md");
                 assert_eq!(title, "A");
                 assert_eq!(priority.as_deref(), Some("high"));
