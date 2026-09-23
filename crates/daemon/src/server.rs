@@ -6250,24 +6250,22 @@ mod tests {
         assert!(matches!(resp, Response::Ok));
     }
 
-    /// Unix only, and the reason is the OS rather than anything gavin
-    /// does. Windows refuses to rename a directory while ANY handle is
-    /// open anywhere inside it -- measured 2026-09-22: the refusal
-    /// survives opening that inner handle with FILE_SHARE_DELETE, which
-    /// only ever licensed deleting the file itself, never moving one of
-    /// its ancestors. `watch_targets` registers a watch per scanned
-    /// directory on every platform but macOS, so `.gavin-root` alone is
-    /// enough to make `fs::rename(&root, &away)` here fail
-    /// `PermissionDenied` before the assertion under test is reached.
+    /// Ran on unix only until 2026-09-23, and the reason was the OS
+    /// rather than anything gavin does. Windows refuses to rename a
+    /// directory while ANY handle is open anywhere inside it -- the
+    /// refusal survives opening that inner handle with FILE_SHARE_DELETE,
+    /// which only ever licensed deleting the file itself, never moving
+    /// one of its ancestors. `watch_targets` then registered a watch per
+    /// scanned directory everywhere but macOS, so `.gavin-root` alone was
+    /// enough to make `fs::rename(&root, &away)` below fail
+    /// `PermissionDenied` before the assertion under test was reached.
     ///
-    /// Worth knowing beyond this test: a Windows user cannot rename or
-    /// move a workspace folder while gavin has it open. Only a single
-    /// recursive watch on the root would leave the tree movable, and on
-    /// Windows that is not a free swap -- `ReadDirectoryChangesW` with
-    /// `bWatchSubtree` would pull `target/`, `node_modules/` and `.git/`
-    /// churn into the daemon, which is exactly what the per-directory
-    /// set exists to keep out.
-    #[cfg(unix)]
+    /// It runs on Windows now because `gavin::ONE_RECURSIVE_WATCH` is
+    /// true there: the only handle is the root's own, and a handle on
+    /// the directory being renamed is not what Windows objects to. Which
+    /// is the same reason a human can now rename or move a watched
+    /// workspace folder in Explorer -- this test is the regression guard
+    /// for that, not just for `root_missing`.
     #[test]
     fn renaming_the_root_away_pushes_root_missing_and_renaming_back_heals() {
         let (socket_path, _dir) = start_test_server();
@@ -6285,9 +6283,19 @@ mod tests {
             },
         )
         .unwrap();
+        // Every read below is a bare blocking one, and a push that never
+        // comes would otherwise sit here for ever and take the whole
+        // suite's summary with it -- which is exactly what this test did
+        // the first time it was let onto Windows. Bounded, the same
+        // silence is a named failure.
+        bound_reads(&stream);
         let mut reader = line_reader(stream.try_clone().unwrap());
-        let first: Response = read_message(&mut reader).unwrap().unwrap();
-        assert!(matches!(first, Response::GavinTreeChanged { .. }));
+        let expect_push = |msg: Option<Response>, what: &str| match msg {
+            Some(Response::GavinTreeChanged { tree, .. }) => tree,
+            None => panic!("no {what} push before the read budget ran out"),
+            other => panic!("expected the {what} push, got {other:?}"),
+        };
+        expect_push(read_message(&mut reader).unwrap(), "initial");
 
         // The rename event's path is the ROOT itself -- no `.gavin`
         // segment -- so this exercises the event filter's root-path arm
@@ -6295,21 +6303,37 @@ mod tests {
         // "Root not found" banner never appeared).
         let away = holder.path().join("ws-x");
         std::fs::rename(&root, &away).unwrap();
-        let missing: Response = read_message(&mut reader).unwrap().unwrap();
-        match missing {
-            Response::GavinTreeChanged { tree, .. } => assert!(tree.root_missing),
-            other => panic!("expected root_missing push, got {other:?}"),
-        }
+        let missing = expect_push(read_message(&mut reader).unwrap(), "root_missing");
+        assert!(missing.root_missing);
 
         std::fs::rename(&away, &root).unwrap();
-        let healed: Response = read_message(&mut reader).unwrap().unwrap();
-        match healed {
-            Response::GavinTreeChanged { tree, .. } => {
-                assert!(!tree.root_missing);
-                assert!(tree.contexts[0].has_prd);
-            }
-            other => panic!("expected healed push, got {other:?}"),
-        }
+        // On inotify and FSEvents the rename BACK is reported against the
+        // watched root itself and heals the tree on its own. Under
+        // `gavin::ONE_RECURSIVE_WATCH` on Windows it is not:
+        // `ReadDirectoryChangesW` reports what happens INSIDE the
+        // directory its handle is open on, and a directory's own rename
+        // is only ever reported to a watch on its PARENT -- which
+        // `watch_targets` deliberately never takes, a workspace root's
+        // parent being routinely a folder full of unrelated projects.
+        //
+        // Measured 2026-09-23, which is why the Windows arm asserts a
+        // weaker property rather than being switched off: the away-rename
+        // still pushes `root_missing` (the handle follows the directory
+        // and keeps reporting), the return pushes nothing at all (1/10
+        // runs, and that one a coincidence), and the first change under
+        // the restored root heals it (5/5). So a Windows human who
+        // renames a workspace folder back sees the banner clear on their
+        // next edit rather than on the rename -- the cost of the swap
+        // that made the folder renameable in the first place.
+        #[cfg(windows)]
+        std::fs::write(
+            root.join(".gavin-root").join("plans").join("back.md"),
+            "---\ntitle: Back\n---\n",
+        )
+        .unwrap();
+        let healed = expect_push(read_message(&mut reader).unwrap(), "healed");
+        assert!(!healed.root_missing);
+        assert!(healed.contexts[0].has_prd);
     }
 
     #[test]
