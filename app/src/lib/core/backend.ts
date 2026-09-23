@@ -26,6 +26,7 @@ import type { ManagedSessions } from "$lib/sessions/sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspace/workspaceDelete";
 import type { AttachmentStatus } from "$lib/cards/attachments";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
+import type { DeviceList, PairingOffer } from "$lib/core/remoteAccess";
 
 /// `workspaceRoot` is the workspace the session BELONGS to, as distinct
 /// from `cwd`, where it runs. The two differ whenever gavin launches into
@@ -59,6 +60,53 @@ export function getRequireLocalToken(): Promise<boolean> {
 /// process-starting requests until they present a token.
 export function setRequireLocalToken(enabled: boolean): Promise<void> {
   return invoke("set_require_local_token", { enabled });
+}
+
+// -- Remote access, phase 2 -------------------------------------------
+//
+// All seven aimed at the LOCAL daemon and nothing else (see session.rs):
+// a paired phone is neither a session nor a workspace, so there is no
+// route to take, and pairing against an ssh host's trust store from the
+// desktop's Settings would be the wrong daemon entirely.
+
+/// Mint a one-time pairing secret and return the QR payload. A second
+/// call replaces the first.
+export function beginPairing(): Promise<PairingOffer> {
+  return invoke("begin_pairing");
+}
+
+/// The human compared the six digits and said yes. The only call in the
+/// app that writes a row into the daemon's trust store.
+export function confirmPairing(deviceId: string): Promise<void> {
+  return invoke("confirm_pairing", { deviceId });
+}
+
+/// The human said no: discard the pending handshake so the phone hears
+/// an answer rather than waiting out the expiry.
+export function rejectPairing(deviceId: string): Promise<void> {
+  return invoke("reject_pairing", { deviceId });
+}
+
+/// Every paired device, revoked ones included, plus the two
+/// remote-access settings that ride along with them.
+export function listDevices(): Promise<DeviceList> {
+  return invoke("list_devices");
+}
+
+export function revokeDevice(deviceId: string): Promise<void> {
+  return invoke("revoke_device", { deviceId });
+}
+
+/// Revoke everything and rotate the daemon's static key: the one-button
+/// answer to a lost phone.
+export function revokeAllDevices(): Promise<void> {
+  return invoke("revoke_all_devices");
+}
+
+/// Stored and inert in this phase -- nothing dials and nothing listens
+/// until there is a transport.
+export function setRemoteAccess(enabled: boolean, relayUrl: string | null): Promise<void> {
+  return invoke("set_remote_access", { enabled, relayUrl });
 }
 
 export function getFileTabs(): Promise<Record<string, string>> {
