@@ -18,6 +18,18 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v42 adds the eight requests that finish the Git tab and Files tree on
+/// another machine (`2026-09-23-ssh-git-sync-and-conflicts-design.md`):
+/// `RunGitStreaming` + `CancelGitOp` (fetch/pull/push, which outlive a
+/// request/reply and stream their progress), `WatchGitWorktree` +
+/// `UnwatchGitWorktree` (the tab's live refresh, which the desktop's
+/// `notify` watch cannot do for a tree on a host), `RunGitEnv`
+/// (cherry-pick and `--continue`, which need GIT_EDITOR), and
+/// `CreateWorkspacePath` / `RenameWorkspacePath` / `TrashWorkspacePath`
+/// (the Files tree's mutations). Eight new TYPES, gated by
+/// `min_version_for`; the app mirrors them as
+/// FEATURE_MIN_VERSION.sshGitSync against the HOST's version.
+///
 /// v41 adds `RunGit` and `ListWorkspaceDir`: the Git tab's git subcommands
 /// and the Files tree's directory listing, run on a daemon on another
 /// machine (`2026-09-22-ssh-git-files-design.md`). Two new TYPES, gated by
@@ -392,7 +404,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 41;
+pub const PROTOCOL_VERSION: u32 = 42;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -661,6 +673,94 @@ pub enum Request {
     /// root-relative; a symlink is refused rather than followed, as the
     /// desktop's own `list_directory` refuses one.
     ListWorkspaceDir {
+        root_path: String,
+        path: String,
+    },
+    /// `RunGit` with an environment, for the two callers that need
+    /// `GIT_EDITOR=true` so a cherry-pick or a `rebase --continue` never
+    /// waits on an editor nobody can see (v42). Its own request rather
+    /// than an `env` field on `RunGit`, because `min_version_for` gates
+    /// TYPES and not payloads: a v41 host would parse the widened
+    /// request, drop the environment in silence, and hang on the editor.
+    /// `env` is an allow-list of one key, `GIT_EDITOR` -- an arbitrary
+    /// environment is a way to point git at a program, which is the
+    /// reach `RunGit`'s fixed-binary rule exists to deny.
+    RunGitEnv {
+        root_path: String,
+        cwd: String,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    },
+    /// Starts a long-running git network op (fetch/pull/push) in a
+    /// confined cwd and streams its progress back on THIS connection: a
+    /// `GitOpProgress` per line git writes, then one `GitOpDone` (v42).
+    ///
+    /// Sent on the STREAMING connection like `Attach` and
+    /// `WatchGavinRoot`, and for the same reason those are intercepted:
+    /// the answer is a push in its own time, not a value a reply could
+    /// carry. A fetch of a large repo runs for minutes, and putting it
+    /// on the request/reply connection would queue every other thing the
+    /// desktop asks this host behind it.
+    ///
+    /// `op_id` is the desktop's own id for the op, echoed on every push
+    /// so two workspaces on one host cannot cross their streams.
+    RunGitStreaming {
+        root_path: String,
+        cwd: String,
+        args: Vec<String>,
+        op_id: String,
+    },
+    /// Kills a running `RunGitStreaming`'s child; its `GitOpDone` then
+    /// reports `cancelled` (v42). Request/reply on the COMMAND
+    /// connection, deliberately: a cancel queued behind the op it is
+    /// cancelling never arrives.
+    CancelGitOp {
+        op_id: String,
+    },
+    /// Watches a git worktree under the root for the Git tab of a
+    /// workspace on another machine, pushing `GitWorktreeChanged` on THIS
+    /// connection when something the tab renders from changes (v42).
+    /// Never a poll: `git_status.rs` records what a cadenced `git status`
+    /// does to `.git/index.lock`, and a network round trip does not
+    /// improve it.
+    WatchGitWorktree {
+        root_path: String,
+        cwd: String,
+    },
+    /// Drops one reference to a `WatchGitWorktree`; the watch ends when
+    /// the last goes (v42). A connection that closes drops every watch it
+    /// held without this.
+    UnwatchGitWorktree {
+        root_path: String,
+        cwd: String,
+    },
+    /// Creates an empty file, or one directory, under a watched root, for
+    /// the Files tree of a workspace on another machine (v42). One
+    /// request for both because they differ by one `fs` call and share
+    /// every rule: never `create_dir_all`, and an existing target refused
+    /// by the filesystem itself rather than by a check with a window
+    /// between it and the write.
+    CreateWorkspacePath {
+        root_path: String,
+        path: String,
+        directory: bool,
+    },
+    /// Renames or moves an entry inside the root (v42). Both ends
+    /// confined and the destination must not exist: `fs::rename`
+    /// overwrites silently on unix, which would turn a mistyped rename
+    /// into a delete with no trip through the Trash.
+    RenameWorkspacePath {
+        root_path: String,
+        from: String,
+        to: String,
+    },
+    /// Moves an entry to the HOST's Trash -- the freedesktop trash, the
+    /// Recycle Bin, or `NSFileManager`'s -- never `rm` (v42). The
+    /// desktop's promise is that nothing gavin removes on the human's
+    /// behalf is unrecoverable, and it does not lapse because the disk is
+    /// on another machine. The confirmation stays on the desktop, where
+    /// the human is.
+    TrashWorkspacePath {
         root_path: String,
         path: String,
     },
@@ -1189,6 +1289,14 @@ pub fn min_version_for(req: &Request) -> u32 {
         // mirrors them as FEATURE_MIN_VERSION.sshGitFiles, checked
         // against the HOST daemon's version.
         Request::RunGit { .. } | Request::ListWorkspaceDir { .. } => 41,
+        Request::RunGitEnv { .. }
+        | Request::RunGitStreaming { .. }
+        | Request::CancelGitOp { .. }
+        | Request::WatchGitWorktree { .. }
+        | Request::UnwatchGitWorktree { .. }
+        | Request::CreateWorkspacePath { .. }
+        | Request::RenameWorkspacePath { .. }
+        | Request::TrashWorkspacePath { .. } => 42,
 
         Request::Shutdown => 12,
 
@@ -1618,6 +1726,25 @@ pub enum Response {
     GitRun { stdout: Vec<u8>, stderr: String, code: i32 },
     /// `ListWorkspaceDir`'s answer, name-sorted like the local listing.
     WorkspaceDir { entries: Vec<WorkspaceDirEntry> },
+    /// One line of a `RunGitStreaming` op's progress (git draws it on
+    /// stderr, `\r`-separated), pushed on the connection that asked
+    /// (v42). The desktop re-emits it as the same `git-op-progress`
+    /// event its local runner produces, so the Git tab cannot tell which
+    /// machine ran the op.
+    GitOpProgress { op_id: String, line: String },
+    /// A `RunGitStreaming` op's end (v42): `error` is None on success,
+    /// and otherwise the message the desktop shows verbatim -- git's own
+    /// last words, or `cancelled` when a `CancelGitOp` took the child.
+    GitOpDone { op_id: String, error: Option<String> },
+    /// `CancelGitOp`'s answer: whether an op by that id was still running
+    /// to kill (v42). False is not an error -- an op that finished on its
+    /// own a moment before the cancel is the ordinary race.
+    GitOpCancelled { cancelled: bool },
+    /// A watched git worktree changed on this machine (v42), pushed on
+    /// the connection that asked. Carries the `cwd` it was watched under,
+    /// not the path that changed: the tab refreshes the whole view, and
+    /// the filter that decided this was worth saying already ran here.
+    GitWorktreeChanged { cwd: String },
     PlanCreated { path: String },
     AgentSessionSpawned { workspace_id: String, session_id: String, cwd: String, command: String },
     /// Push: an agent renamed its own tab. The app applies it through the
@@ -3055,7 +3182,6 @@ mod tests {
     /// says which version the host needs (`FEATURE_MIN_VERSION.sshGitFiles`).
     #[test]
     fn git_and_dir_requests_are_gated_at_41() {
-        assert_eq!(PROTOCOL_VERSION, 41);
         let run = Request::RunGit {
             root_path: "/r".into(),
             cwd: "/r".into(),
@@ -3068,6 +3194,65 @@ mod tests {
             assert!(gate_request(req, 40).is_err());
             assert!(gate_request(req, 41).is_ok());
         }
+    }
+
+    /// v42: what finishes the Git tab and Files tree on a host -- the
+    /// streaming network ops and their cancel, the worktree watch, the
+    /// env-carrying run, and the three tree mutations
+    /// (`2026-09-23-ssh-git-sync-and-conflicts-design.md`). All new
+    /// TYPES, so this match is the wire gate a v41 host is held to, and
+    /// `FEATURE_MIN_VERSION.sshGitSync` is the app's mirror of it.
+    #[test]
+    fn git_sync_and_tree_requests_are_gated_at_42() {
+        assert_eq!(PROTOCOL_VERSION, 42);
+        let reqs = [
+            Request::RunGitEnv {
+                root_path: "/r".into(),
+                cwd: "/r".into(),
+                args: vec!["cherry-pick".into()],
+                env: vec![("GIT_EDITOR".into(), "true".into())],
+            },
+            Request::RunGitStreaming {
+                root_path: "/r".into(),
+                cwd: "/r".into(),
+                args: vec!["fetch".into()],
+                op_id: "op-1".into(),
+            },
+            Request::CancelGitOp { op_id: "op-1".into() },
+            Request::WatchGitWorktree { root_path: "/r".into(), cwd: "/r".into() },
+            Request::UnwatchGitWorktree { root_path: "/r".into(), cwd: "/r".into() },
+            Request::CreateWorkspacePath { root_path: "/r".into(), path: "a.txt".into(), directory: false },
+            Request::RenameWorkspacePath { root_path: "/r".into(), from: "a".into(), to: "b".into() },
+            Request::TrashWorkspacePath { root_path: "/r".into(), path: "a.txt".into() },
+        ];
+        for req in &reqs {
+            assert_eq!(min_version_for(req), 42);
+            assert!(gate_request(req, 41).is_err());
+            assert!(gate_request(req, 42).is_ok());
+        }
+    }
+
+    /// The env-carrying run is a SEPARATE request from `RunGit`, not a
+    /// widened one -- the whole reason it exists. If someone ever folds
+    /// the two together, `RunGit` keeps its v41 gate, a v41 host drops
+    /// the environment on the floor, and a cherry-pick hangs on an editor
+    /// nobody can see. This is what would catch that.
+    #[test]
+    fn run_git_env_is_not_a_widened_run_git() {
+        let plain = Request::RunGit {
+            root_path: "/r".into(),
+            cwd: "/r".into(),
+            args: vec!["cherry-pick".into()],
+            stdin: None,
+        };
+        let with_env = Request::RunGitEnv {
+            root_path: "/r".into(),
+            cwd: "/r".into(),
+            args: vec!["cherry-pick".into()],
+            env: vec![("GIT_EDITOR".into(), "true".into())],
+        };
+        assert_eq!(min_version_for(&plain), 41);
+        assert_eq!(min_version_for(&with_env), 42);
     }
 
     #[test]
@@ -3913,7 +4098,14 @@ mod tests {
         // agent-integration files where the agent runs. Three new TYPES.
         // v41: RunGit + ListWorkspaceDir -- the Git tab and Files tree
         // over ssh. Two new TYPES.
-        assert_eq!(PROTOCOL_VERSION, 41);
+        // v42: RunGitEnv, RunGitStreaming, CancelGitOp, WatchGitWorktree,
+        // UnwatchGitWorktree, CreateWorkspacePath, RenameWorkspacePath
+        // and TrashWorkspacePath -- the network sync, the live refresh,
+        // the conflict/cherry-pick env and the Files tree's mutations on
+        // a host. Eight new TYPES, plus the GitOpProgress/GitOpDone/
+        // GitWorktreeChanged pushes and the GitOpCancelled reply, which
+        // are Response variants and so invisible here.
+        assert_eq!(PROTOCOL_VERSION, 42);
     }
 
     #[test]
@@ -4161,6 +4353,24 @@ mod tests {
             Request::StatWorkspacePaths { root_path: "r".into(), paths: vec!["a.md".into()] },
             Request::RunGit { root_path: "r".into(), cwd: "r".into(), args: vec!["status".into()], stdin: None },
             Request::ListWorkspaceDir { root_path: "r".into(), path: "r".into() },
+            Request::RunGitEnv {
+                root_path: "r".into(),
+                cwd: "r".into(),
+                args: vec!["cherry-pick".into()],
+                env: vec![("GIT_EDITOR".into(), "true".into())],
+            },
+            Request::RunGitStreaming {
+                root_path: "r".into(),
+                cwd: "r".into(),
+                args: vec!["fetch".into()],
+                op_id: "op".into(),
+            },
+            Request::CancelGitOp { op_id: "op".into() },
+            Request::WatchGitWorktree { root_path: "r".into(), cwd: "r".into() },
+            Request::UnwatchGitWorktree { root_path: "r".into(), cwd: "r".into() },
+            Request::CreateWorkspacePath { root_path: "r".into(), path: "a.txt".into(), directory: false },
+            Request::RenameWorkspacePath { root_path: "r".into(), from: "a".into(), to: "b".into() },
+            Request::TrashWorkspacePath { root_path: "r".into(), path: "a.txt".into() },
             Request::CreatePlan {
                 context_folder: "c".into(),
                 file_name: "f".into(),
@@ -4365,6 +4575,10 @@ mod tests {
         expected.insert(40, 3);
         // RunGit + ListWorkspaceDir -- the Git tab and Files tree over ssh.
         expected.insert(41, 2);
+        // RunGitEnv, RunGitStreaming, CancelGitOp, Watch/UnwatchGitWorktree,
+        // Create/Rename/TrashWorkspacePath -- network sync, live refresh
+        // and the Files tree's mutations over ssh.
+        expected.insert(42, 8);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

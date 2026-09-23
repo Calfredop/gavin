@@ -2400,6 +2400,15 @@ fn confined_dir(root: &Path, cwd: &str) -> anyhow::Result<PathBuf> {
     }
 }
 
+/// Where a git worktree is, when it is inside the workspace -- what
+/// `WatchGitWorktree` resolves before pointing an OS watch at it. The
+/// same confinement `RunGit` gives a cwd, exposed because the watch is
+/// set up in `handle_connection` (it owns the connection's writer) rather
+/// than in `handle_request`.
+pub fn confined_worktree(root: &Path, cwd: &str) -> anyhow::Result<PathBuf> {
+    confined_dir(root, cwd)
+}
+
 /// `RunGit`: runs `git <args>` in a cwd confined to the root, returning
 /// `(stdout, stderr, code)` -- the three the desktop's local `run_git`
 /// produces, so the Git tab does not care which ran it.
@@ -2511,6 +2520,225 @@ pub fn list_workspace_dir(root: &Path, path: &str) -> anyhow::Result<Vec<protoco
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)
+}
+
+/// The only environment variable `RunGitEnv` will set. The desktop's two
+/// callers -- cherry-pick and `<op> --continue` -- set exactly this one,
+/// and an open-ended environment is a way to point git at a program,
+/// which is the reach `RunGit`'s fixed-binary, never-a-shell rule exists
+/// to deny. A request naming anything else is refused rather than
+/// filtered: a silently dropped variable is how a caller ends up
+/// believing it set something.
+const GIT_ENV_ALLOWED: &[&str] = &["GIT_EDITOR"];
+
+/// `RunGitEnv`: `run_git` with an allow-listed environment, for the
+/// callers that need `GIT_EDITOR=true` so a cherry-pick or a
+/// `rebase --continue` never waits on an editor nobody can see.
+pub fn run_git_env(
+    root: &Path,
+    cwd: &str,
+    args: &[String],
+    env: &[(String, String)],
+) -> anyhow::Result<(Vec<u8>, String, i32)> {
+    for (key, _) in env {
+        if !GIT_ENV_ALLOWED.contains(&key.as_str()) {
+            anyhow::bail!("{key} is not an environment variable this daemon will set for git");
+        }
+    }
+    let resolved = confined_dir(root, cwd)?;
+    let out = crate::program::command("git")
+        .args(args)
+        .current_dir(&resolved)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!("git was not found on the host's PATH")
+            } else {
+                anyhow::anyhow!("failed to run git: {e}")
+            }
+        })?;
+    Ok((
+        out.stdout,
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.code().unwrap_or(-1),
+    ))
+}
+
+/// Ceiling for a `RunGitStreaming` op. These are fetch/pull/push, which
+/// stream progress and can be cancelled, so this only catches a truly
+/// hung transport -- the same ten minutes the desktop's own
+/// `GIT_OP_TIMEOUT` allows a local one.
+const GIT_OP_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// A running `RunGitStreaming`'s child, shared with whoever may cancel
+/// it: the canceller `take()`s and kills it, and the runner reports
+/// `cancelled`. The desktop's `SharedChild` by another name, because the
+/// op now runs on this side of the wire.
+pub type SharedChild = std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>;
+
+/// `RunGitStreaming`: runs a long git network op in a confined cwd,
+/// handing every progress line to `on_line` as git draws it and the
+/// child to `register` so a `CancelGitOp` can take it.
+///
+/// Git writes progress on stderr with `\r` rather than `\n`, so `\r`
+/// counts as a line break here -- the desktop's runner splits on both
+/// for the same reason, and the Git tab's progress row is what reads the
+/// result.
+///
+/// `Ok(())` on success; `Err` carries git's own last words (the tail of
+/// what it said), or `cancelled` when the child was taken.
+pub fn run_git_streaming(
+    root: &Path,
+    cwd: &str,
+    args: &[String],
+    on_line: &mut dyn FnMut(String),
+    register: &mut dyn FnMut(SharedChild),
+) -> anyhow::Result<()> {
+    use std::io::Read;
+    let resolved = confined_dir(root, cwd)?;
+    let mut child = crate::program::command("git")
+        .args(args)
+        .current_dir(&resolved)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!("git was not found on the host's PATH")
+            } else {
+                anyhow::anyhow!("failed to run git: {e}")
+            }
+        })?;
+    let mut stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("git stderr unavailable"))?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        let mut acc: Vec<u8> = Vec::new();
+        loop {
+            let n = match stderr.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            for &b in &buf[..n] {
+                if b == b'\n' || b == b'\r' {
+                    if !acc.is_empty() {
+                        let _ = tx.send(String::from_utf8_lossy(&acc).into_owned());
+                        acc.clear();
+                    }
+                } else {
+                    acc.push(b);
+                }
+            }
+        }
+        if !acc.is_empty() {
+            let _ = tx.send(String::from_utf8_lossy(&acc).into_owned());
+        }
+    });
+    let shared: SharedChild = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
+    register(shared.clone());
+
+    let mut tail: Vec<String> = Vec::new();
+    let push_tail = |line: &str, tail: &mut Vec<String>| {
+        if tail.len() >= 8 {
+            tail.remove(0);
+        }
+        tail.push(line.to_string());
+    };
+    let deadline = Instant::now() + GIT_OP_TIMEOUT;
+    let status = loop {
+        while let Ok(line) = rx.try_recv() {
+            push_tail(&line, &mut tail);
+            on_line(line);
+        }
+        {
+            let mut guard = shared.lock().unwrap();
+            let Some(child) = guard.as_mut() else { anyhow::bail!("cancelled") };
+            match child.try_wait() {
+                Ok(Some(s)) => break s,
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        anyhow::bail!("git {} timed out after {}s", args.join(" "), GIT_OP_TIMEOUT.as_secs());
+                    }
+                }
+                Err(e) => anyhow::bail!("failed waiting for git: {e}"),
+            }
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    };
+    // Drain what the reader still holds; it ends when the pipe closes.
+    while let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) {
+        push_tail(&line, &mut tail);
+        on_line(line);
+    }
+    *shared.lock().unwrap() = None;
+    if status.success() {
+        Ok(())
+    } else {
+        let msg = tail.iter().filter(|l| !l.trim().is_empty()).cloned().collect::<Vec<_>>().join("\n");
+        if msg.is_empty() {
+            anyhow::bail!("git exited with status {}", status.code().unwrap_or(-1))
+        }
+        anyhow::bail!("{msg}")
+    }
+}
+
+/// `CreateWorkspacePath`: an empty file, or one directory, under the
+/// root.
+///
+/// `create_new` rather than a write, and `create_dir` rather than
+/// `create_dir_all`: an existing target is refused by the filesystem
+/// itself instead of by a check with a window between it and the write,
+/// and a missing parent is a typo worth reporting. The desktop's
+/// `create_file` / `create_directory` make exactly these two choices for
+/// a local root.
+pub fn create_workspace_path(root: &Path, path: &str, directory: bool) -> anyhow::Result<()> {
+    let resolved = confined(root, path)?;
+    if directory {
+        std::fs::create_dir(&resolved).map_err(|e| anyhow::anyhow!("{}: {e}", resolved.display()))
+    } else {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&resolved)
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!("{}: {e}", resolved.display()))
+    }
+}
+
+/// `RenameWorkspacePath`: both ends confined, and the destination must
+/// not exist. `fs::rename` overwrites silently on unix, which would turn
+/// a mistyped rename into a delete with no trip through the Trash -- the
+/// desktop refuses it for the same reason, through `resolve_new`.
+pub fn rename_workspace_path(root: &Path, from: &str, to: &str) -> anyhow::Result<()> {
+    let source = confined(root, from)?;
+    let target = confined(root, to)?;
+    if !source.exists() {
+        anyhow::bail!("{from} does not exist");
+    }
+    if target.exists() {
+        anyhow::bail!("{to} already exists");
+    }
+    std::fs::rename(&source, &target)
+        .map_err(|e| anyhow::anyhow!("{} -> {}: {e}", source.display(), target.display()))
+}
+
+/// `TrashWorkspacePath`: to THIS machine's Trash, never `rm` (see
+/// `crate::trash`). The confirmation the human answered stays on the
+/// desktop, where the human is; what crosses the wire is a path already
+/// agreed to.
+pub fn trash_workspace_path(root: &Path, path: &str) -> anyhow::Result<()> {
+    let resolved = confined(root, path)?;
+    if !resolved.exists() {
+        anyhow::bail!("{path} does not exist");
+    }
+    crate::trash::trash_path(&resolved.to_string_lossy())
 }
 
 #[cfg(test)]
@@ -5025,5 +5253,157 @@ mod tests {
         if try_symlink(outside.path(), &dir.path().join("link")) {
             assert!(list_workspace_dir(dir.path(), &lossy(&dir.path().join("link"))).is_err());
         }
+    }
+
+    // --- Sync, env, and the tree's mutations (v42) ----------------------
+
+    #[test]
+    fn run_git_env_sets_the_allowed_variable_and_refuses_any_other() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        // `git var GIT_EDITOR` prints the editor git would use -- the one
+        // thing that proves the environment actually reached the child.
+        let (stdout, stderr, code) = run_git_env(
+            dir.path(),
+            &lossy(dir.path()),
+            &["var".to_string(), "GIT_EDITOR".to_string()],
+            &[("GIT_EDITOR".to_string(), "true".to_string())],
+        )
+        .unwrap();
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(String::from_utf8_lossy(&stdout).trim(), "true");
+
+        // Anything else is refused outright, not filtered: a silently
+        // dropped variable is how a caller believes it set something.
+        let err = run_git_env(
+            dir.path(),
+            &lossy(dir.path()),
+            &["var".to_string(), "GIT_EDITOR".to_string()],
+            &[("GIT_SSH_COMMAND".to_string(), "sh -c evil".to_string())],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("GIT_SSH_COMMAND"), "{err}");
+    }
+
+    #[test]
+    fn run_git_env_is_confined_like_run_git() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        let outside = tempfile::tempdir().unwrap();
+        let env = [("GIT_EDITOR".to_string(), "true".to_string())];
+        assert!(run_git_env(dir.path(), &lossy(outside.path()), &["status".to_string()], &env).is_err());
+        assert!(run_git_env(dir.path(), "..", &["status".to_string()], &env).is_err());
+    }
+
+    #[test]
+    fn run_git_streaming_delivers_progress_lines_and_the_error_tail() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        let mut lines = Vec::new();
+        // `clone --progress` of a missing path fails fast with a stderr
+        // line: enough to prove the stream and the error tail with no
+        // network, exactly as the desktop's own runner is tested.
+        let err = run_git_streaming(
+            dir.path(),
+            &lossy(dir.path()),
+            &["clone".to_string(), "--progress".to_string(), "/definitely/missing/repo".to_string(), "x".to_string()],
+            &mut |l| lines.push(l),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(!lines.is_empty(), "git said nothing on stderr");
+        let msg = err.to_string();
+        assert!(msg.contains("exist") || msg.contains("fatal"), "{msg}");
+    }
+
+    #[test]
+    fn run_git_streaming_succeeds_and_is_confined() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        // A local clone needs no network and does write progress.
+        let dest = dir.path().join("copy");
+        std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+        let _ = run_git(dir.path(), &lossy(dir.path()), &["add".into(), "a.txt".into()], None).unwrap();
+        let _ = run_git(dir.path(), &lossy(dir.path()), &["commit".into(), "-q".into(), "-m".into(), "x".into()], None).unwrap();
+        run_git_streaming(
+            dir.path(),
+            &lossy(dir.path()),
+            &["clone".to_string(), "--progress".to_string(), "-q".to_string(), ".".to_string(), lossy(&dest)],
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(dest.join("a.txt").exists());
+
+        let outside = tempfile::tempdir().unwrap();
+        assert!(run_git_streaming(
+            dir.path(),
+            &lossy(outside.path()),
+            &["fetch".to_string()],
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn create_workspace_path_makes_a_file_or_a_folder_and_refuses_an_existing_one() {
+        let dir = workspace_root();
+        create_workspace_path(dir.path(), "new.txt", false).unwrap();
+        assert!(dir.path().join("new.txt").is_file());
+        create_workspace_path(dir.path(), "folder", true).unwrap();
+        assert!(dir.path().join("folder").is_dir());
+        // An existing target is refused by the filesystem, never
+        // overwritten -- `create_new`, not a write.
+        std::fs::write(dir.path().join("new.txt"), "kept").unwrap();
+        assert!(create_workspace_path(dir.path(), "new.txt", false).is_err());
+        assert_eq!(std::fs::read_to_string(dir.path().join("new.txt")).unwrap(), "kept");
+        // A missing parent is a typo worth reporting, not a mkdir -p.
+        assert!(create_workspace_path(dir.path(), "nope/deep.txt", false).is_err());
+        // And nothing outside the root.
+        let outside = tempfile::tempdir().unwrap();
+        assert!(create_workspace_path(dir.path(), &lossy(&outside.path().join("x")), false).is_err());
+        assert!(create_workspace_path(dir.path(), "../escape.txt", false).is_err());
+    }
+
+    #[test]
+    fn rename_workspace_path_moves_inside_the_root_and_never_clobbers() {
+        let dir = workspace_root();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        rename_workspace_path(dir.path(), "a.txt", "moved.txt").unwrap();
+        assert!(!dir.path().join("a.txt").exists());
+        assert_eq!(std::fs::read_to_string(dir.path().join("moved.txt")).unwrap(), "a");
+        // The destination existing is a refusal, not a silent overwrite:
+        // fs::rename clobbers on unix, which would delete b.txt with no
+        // trip through the Trash.
+        assert!(rename_workspace_path(dir.path(), "moved.txt", "b.txt").is_err());
+        assert_eq!(std::fs::read_to_string(dir.path().join("b.txt")).unwrap(), "b");
+        assert!(rename_workspace_path(dir.path(), "gone.txt", "x.txt").is_err());
+        let outside = tempfile::tempdir().unwrap();
+        assert!(rename_workspace_path(dir.path(), "moved.txt", &lossy(&outside.path().join("x"))).is_err());
+        assert!(rename_workspace_path(dir.path(), "moved.txt", "../escaped.txt").is_err());
+    }
+
+    /// The containment half, which holds on every OS. Whether the file
+    /// reaches a Trash is the `trash` crate's business and varies with
+    /// the session type (a headless CI runner may have none), so this
+    /// asserts the refusals and only that the call is attempted.
+    #[test]
+    fn trash_workspace_path_refuses_outside_the_root_and_a_missing_file() {
+        let dir = workspace_root();
+        let outside = tempfile::tempdir().unwrap();
+        assert!(trash_workspace_path(dir.path(), &lossy(&outside.path().join("x.txt"))).is_err());
+        assert!(trash_workspace_path(dir.path(), "../x.txt").is_err());
+        assert!(trash_workspace_path(dir.path(), "never-existed.txt").is_err());
+    }
+
+    #[test]
+    fn confined_worktree_agrees_with_run_gits_own_confinement() {
+        let dir = workspace_root();
+        assert!(confined_worktree(dir.path(), &lossy(dir.path())).is_ok());
+        let outside = tempfile::tempdir().unwrap();
+        assert!(confined_worktree(dir.path(), &lossy(outside.path())).is_err());
+        assert!(confined_worktree(dir.path(), "..").is_err());
     }
 }

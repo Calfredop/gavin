@@ -1318,6 +1318,7 @@ dependencies = [
  "tempfile",
  "toml 0.8.2",
  "toml_edit 0.22.27",
+ "trash",
  "uuid",
  "vt100",
  "windows 0.61.3",

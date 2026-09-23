@@ -5,7 +5,7 @@
 //! conflict markers remain.
 
 use crate::git::commands::repo_info;
-use crate::git::run::{ok, run_git, run_git_ro};
+use crate::git::run::{ok, read_repo_file, run_git, run_git_ro};
 use crate::git::types::{ConflictInfo, ConflictLabels};
 use std::path::Path;
 
@@ -88,11 +88,24 @@ fn labels(cwd: &str) -> Result<ConflictLabels, String> {
         "rebase" => {
             // During a rebase git's "ours" is the upstream being rebased onto
             // and "theirs" is the branch being replayed; say so in the labels.
-            let dir = if git_dir.join("rebase-merge").exists() { "rebase-merge" } else { "rebase-apply" };
-            let head_name = std::fs::read_to_string(git_dir.join(dir).join("head-name"))
+            //
+            // These four reads are of the git dir git just named, which is
+            // on whichever machine the repo is -- `read_repo_file` is what
+            // makes that true for an ssh workspace. Each keeps its own
+            // fallback, so a host that refuses one (a linked worktree
+            // whose common git dir is outside the workspace root) gets a
+            // generic label rather than a broken 3-pane.
+            let state_file = |name: &str| -> Option<String> {
+                read_repo_file(cwd, &git_dir.join(name))
+                    .ok()
+                    .flatten()
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+            };
+            let dir = if state_file("rebase-merge/head-name").is_some() { "rebase-merge" } else { "rebase-apply" };
+            let head_name = state_file(&format!("{dir}/head-name"))
                 .map(|s| s.trim().trim_start_matches("refs/heads/").to_string())
-                .unwrap_or_else(|_| "branch".into());
-            let onto = std::fs::read_to_string(git_dir.join(dir).join("onto")).map(|s| s.trim().to_string()).ok();
+                .unwrap_or_else(|| "branch".into());
+            let onto = state_file(&format!("{dir}/onto")).map(|s| s.trim().to_string());
             let upstream = onto.map(|o| short_name(cwd, &o)).unwrap_or_else(|| "upstream".into());
             ConflictLabels { ours: format!("{upstream} (upstream)"), theirs: format!("{head_name} (rebasing)"), operation: "rebase".into() }
         }
@@ -142,7 +155,14 @@ pub fn conflict_info(cwd: &str, path: &str) -> Result<ConflictInfo, String> {
     let base = to_text(base_b);
     let ours = to_text(ours_b);
     let theirs = to_text(theirs_b);
-    let worktree = std::fs::read(Path::new(cwd).join(path)).ok().and_then(|v| if is_binary(&v) { None } else { Some(String::from_utf8_lossy(&v).into_owned()) });
+    // The worktree side is the one thing here git cannot hand over: it is
+    // the file on disk, markers and all, and that disk is the host's for
+    // an ssh workspace. A read the host refuses (binary, or outside the
+    // root) lands as None, which is what a binary file already meant.
+    let worktree = read_repo_file(cwd, &Path::new(cwd).join(path))
+        .ok()
+        .flatten()
+        .and_then(|v| if is_binary(&v) { None } else { Some(String::from_utf8_lossy(&v).into_owned()) });
     let has_markers_now = worktree.as_deref().is_some_and(has_markers);
     let (eol, final_newline) = detect_eol(ours.as_deref().or(theirs.as_deref()).or(worktree.as_deref()).unwrap_or("\n"));
 
@@ -165,7 +185,12 @@ pub fn conflict_info(cwd: &str, path: &str) -> Result<ConflictInfo, String> {
 /// mirrors this check; the backend enforces it).
 pub fn mark_resolved(cwd: &str, path: &str) -> Result<(), String> {
     let full = Path::new(cwd).join(path);
-    if let Ok(bytes) = std::fs::read(&full) {
+    // On the machine the worktree is on. A read that fails leaves the
+    // check unmade and the `add` proceeds -- which is what the local path
+    // has always done with an unreadable file, and the right direction:
+    // refusing to stage a file nobody could look at would strand the
+    // resolution with no way out.
+    if let Ok(Some(bytes)) = read_repo_file(cwd, &full) {
         if !is_binary(&bytes) && has_markers(&String::from_utf8_lossy(&bytes)) {
             return Err("conflict markers remain in the file".to_string());
         }

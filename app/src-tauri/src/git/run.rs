@@ -111,6 +111,47 @@ pub fn run_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>) -> Result<GitOutp
     Ok(GitOutput { stdout, stderr, code: status.code().unwrap_or(-1) })
 }
 
+/// A file inside the repository at `cwd`, read wherever that repository
+/// is: `std::fs` for a local checkout, `ReadWorkspaceFile` over the link
+/// for one on a host. `Ok(None)` when there is no such file.
+///
+/// The Git tab reaches past `git` to the disk in exactly two places, and
+/// both are here rather than in either of them: `conflict.rs` reads the
+/// rebase state under the git dir and the worktree side of a conflicted
+/// file, and `ignore.rs` reads `.gitignore` and `.git/info/exclude` after
+/// git has located them. `path` is therefore always absolute and always
+/// something git just named.
+///
+/// Two host-side limits worth knowing, both of which surface as an `Err`
+/// the caller already knows how to degrade from. A file that is not
+/// UTF-8 is refused (the request carries text), which is the same
+/// conclusion both callers draw from a binary file anyway. And a path
+/// outside the workspace root is refused — which a LINKED worktree's
+/// common git dir can be, so `.git/info/exclude` may be unreachable for
+/// one over ssh where `.gitignore` at the toplevel is not.
+pub fn read_repo_file(cwd: &str, path: &std::path::Path) -> Result<Option<Vec<u8>>, String> {
+    if let Some(result) = crate::remote::read_file_over_link(cwd, &protocol::wire_path(path)) {
+        return result.map(|text| text.map(String::into_bytes));
+    }
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("could not read {}: {e}", path.display())),
+    }
+}
+
+/// The write half of `read_repo_file`, for `ignore.rs`'s Save. Parents
+/// are created on both sides.
+pub fn write_repo_file(cwd: &str, path: &std::path::Path, content: &str) -> Result<(), String> {
+    if let Some(result) = crate::remote::write_file_over_link(cwd, &protocol::wire_path(path), content) {
+        return result;
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(path, content).map_err(|e| format!("could not write {}: {e}", path.display()))
+}
+
 /// Maps a non-zero exit to `Err(stderr)` — the UI shows that string
 /// verbatim (spec §2).
 pub fn ok(out: GitOutput) -> Result<GitOutput, String> {
@@ -135,6 +176,13 @@ pub fn run_git_ro(cwd: &str, args: &[&str]) -> Result<GitOutput, String> {
 /// `run_git` with extra environment variables (e.g. `GIT_EDITOR=true` so a
 /// `rebase --continue` never opens an editor).
 pub fn run_git_env(cwd: &str, args: &[&str], env: &[(&str, &str)]) -> Result<GitOutput, String> {
+    // Routed like `run_git`, through its own request rather than a
+    // widened `RunGit`: `min_version_for` gates request TYPES, so an
+    // `env` field on `RunGit` would be dropped in silence by a v41 host
+    // and the cherry-pick would hang on an editor nobody can see.
+    if let Some(result) = crate::remote::run_git_env_over_link(cwd, args, env) {
+        return result.map(|(stdout, stderr, code)| GitOutput { stdout, stderr, code });
+    }
     if !std::path::Path::new(cwd).is_dir() {
         return Err(format!("directory not found: {cwd}"));
     }
@@ -153,6 +201,12 @@ pub fn run_git_env(cwd: &str, args: &[&str], env: &[(&str, &str)]) -> Result<Git
 /// as a line break so progress updates arrive as they are drawn. The child
 /// is handed to `register` so a canceller can `take()` and kill it; a taken
 /// child makes this return `Err("cancelled")`.
+///
+/// Local only, unlike `run_git` and `run_git_env` above, and deliberately:
+/// an op on a host is addressed by an op id (for its progress pushes and
+/// its cancel) and this signature has none. `git::ops::run_op` is the
+/// layer that has one, so that is where the ssh route lives — see its
+/// comment.
 pub fn run_git_streaming(
     cwd: &str,
     args: &[&str],
@@ -268,6 +322,48 @@ mod tests {
         // stdin round-trip that needs no repository.
         let out = run_git(".", &["stripspace"], Some(b"hello   \n\n\n")).unwrap();
         assert_eq!(out.stdout_str(), "hello\n");
+    }
+
+    /// The file seam `conflict.rs` and `ignore.rs` reach the disk
+    /// through. A local cwd takes the `std::fs` path here; the routed one
+    /// is exercised where a link exists to route to. What matters on both
+    /// sides is the SHAPE -- a missing file is `Ok(None)`, not an error,
+    /// because both callers treat "there is no .gitignore yet" and "the
+    /// rebase wrote no head-name" as ordinary.
+    #[test]
+    fn read_repo_file_answers_none_for_a_missing_file_and_bytes_for_a_real_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        assert_eq!(read_repo_file(cwd, &dir.path().join("nope.txt")).unwrap(), None);
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        assert_eq!(
+            read_repo_file(cwd, &dir.path().join("a.txt")).unwrap(),
+            Some(b"hello".to_vec())
+        );
+    }
+
+    #[test]
+    fn write_repo_file_creates_parents_and_overwrites_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        // `.git/info/exclude` is the case that needs the parents: a repo
+        // that has never had one has no `info/` either.
+        let target = dir.path().join(".git").join("info").join("exclude");
+        write_repo_file(cwd, &target, "build/\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "build/\n");
+        // Verbatim, no reformatting -- what the editor's Save promises.
+        write_repo_file(cwd, &target, "# replaced").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "# replaced");
+    }
+
+    /// `run_git_env` still runs git with the environment for a local cwd;
+    /// the routed arm is its own request (`RunGitEnv`, v42) rather than a
+    /// widened `RunGit`, which the protocol crate pins.
+    #[test]
+    fn run_git_env_sets_the_variable_for_a_local_cwd() {
+        let out = run_git_env(".", &["var", "GIT_EDITOR"], &[("GIT_EDITOR", "true")]).unwrap();
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(out.stdout_str().trim(), "true");
     }
 
     #[test]

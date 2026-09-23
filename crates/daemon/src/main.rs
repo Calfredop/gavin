@@ -1,6 +1,7 @@
 mod bridge;
 mod gavin;
 mod git_status;
+mod git_watch;
 mod kanban;
 mod orchestration;
 mod osc;
@@ -12,6 +13,7 @@ mod screen;
 mod server;
 mod shell;
 mod status;
+mod trash;
 
 use kanban::KanbanStore;
 use registry::{secure_db_file, Registry};

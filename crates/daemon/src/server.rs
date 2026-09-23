@@ -1245,6 +1245,18 @@ pub struct SessionManager {
     /// does not exercise `Hello` with the `app` role) simply matches no
     /// daemon token, which is the safe default.
     daemon_token: std::sync::OnceLock<String>,
+    /// Running `RunGitStreaming` ops, keyed by the desktop's own op id,
+    /// so `CancelGitOp` can take and kill the child (v42).
+    ///
+    /// Manager state and not the connection's, unlike the git worktree
+    /// watchers: the op arrives on the streaming connection and its
+    /// cancel arrives on the command one, precisely so a cancel is never
+    /// queued behind the op it is cancelling. An entry is removed by
+    /// whichever of the two gets there first -- the op ending, or the
+    /// cancel taking it -- and an id that is already gone is a `false`,
+    /// not an error: an op that finished a moment before the cancel is
+    /// the ordinary race.
+    git_ops: Mutex<HashMap<String, crate::gavin::SharedChild>>,
 }
 
 impl SessionManager {
@@ -1274,6 +1286,65 @@ impl SessionManager {
             active_connections: AtomicUsize::new(0),
             connection_ceiling: AtomicUsize::new(MAX_CONNECTIONS),
             daemon_token: std::sync::OnceLock::new(),
+            git_ops: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Runs a `RunGitStreaming` op to completion, pushing a
+    /// `GitOpProgress` per line git draws and one `GitOpDone` at the end,
+    /// both on the connection that asked. Called on its own thread from
+    /// `handle_connection`; a write that fails means the desktop is gone,
+    /// and the op is left to finish or time out on its own.
+    fn run_git_op(
+        manager: &Arc<SessionManager>,
+        root_path: &str,
+        cwd: &str,
+        args: &[String],
+        op_id: &str,
+        writer: &Arc<Mutex<Stream>>,
+    ) {
+        let registry = Arc::clone(manager);
+        let reg_id = op_id.to_string();
+        let progress_writer = Arc::clone(writer);
+        let progress_id = op_id.to_string();
+        let result = crate::gavin::run_git_streaming(
+            std::path::Path::new(root_path),
+            cwd,
+            args,
+            &mut |line| {
+                let _ = write_message(
+                    &mut *progress_writer.lock().unwrap(),
+                    &Response::GitOpProgress { op_id: progress_id.clone(), line },
+                );
+            },
+            &mut |child| {
+                registry.git_ops.lock().unwrap().insert(reg_id.clone(), child);
+            },
+        );
+        manager.git_ops.lock().unwrap().remove(op_id);
+        let _ = write_message(
+            &mut *writer.lock().unwrap(),
+            &Response::GitOpDone {
+                op_id: op_id.to_string(),
+                error: result.err().map(|e| e.to_string()),
+            },
+        );
+    }
+
+    /// `CancelGitOp`: takes the op's child and kills it. The runner then
+    /// reports `cancelled` in its own `GitOpDone`, so the desktop hears
+    /// the end from one place however it ended.
+    fn cancel_git_op(&self, op_id: &str) -> bool {
+        let child = self.git_ops.lock().unwrap().remove(op_id);
+        match child {
+            Some(shared) => {
+                if let Some(mut c) = shared.lock().unwrap().take() {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
+                true
+            }
+            None => false,
         }
     }
 
@@ -3585,6 +3656,17 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::WatchGavinRoot { .. } => {
             unreachable!("WatchGavinRoot is intercepted in handle_connection")
         }
+        // The v42 trio whose answer is a push on the asking connection,
+        // intercepted beside Attach and WatchGavinRoot for that reason.
+        Request::RunGitStreaming { .. } => {
+            unreachable!("RunGitStreaming is intercepted in handle_connection")
+        }
+        Request::WatchGitWorktree { .. } => {
+            unreachable!("WatchGitWorktree is intercepted in handle_connection")
+        }
+        Request::UnwatchGitWorktree { .. } => {
+            unreachable!("UnwatchGitWorktree is intercepted in handle_connection")
+        }
         Request::UnwatchGavinRoot { workspace_id } => {
             manager.unwatch_gavin_root(&workspace_id);
             Ok(Response::Ok)
@@ -3661,6 +3743,29 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::ListWorkspaceDir { root_path, path } => {
             crate::gavin::list_workspace_dir(std::path::Path::new(&root_path), &path)
                 .map(|entries| Response::WorkspaceDir { entries })
+        }
+        // What finishes that tab and that tree (v42). `RunGitStreaming`
+        // and the two watch requests are NOT here -- their answer is a
+        // push to the asking connection's writer, so they are intercepted
+        // in `handle_connection` beside `Attach` and `WatchGavinRoot`.
+        Request::RunGitEnv { root_path, cwd, args, env } => {
+            crate::gavin::run_git_env(std::path::Path::new(&root_path), &cwd, &args, &env)
+                .map(|(stdout, stderr, code)| Response::GitRun { stdout, stderr, code })
+        }
+        Request::CancelGitOp { op_id } => {
+            Ok(Response::GitOpCancelled { cancelled: manager.cancel_git_op(&op_id) })
+        }
+        Request::CreateWorkspacePath { root_path, path, directory } => {
+            crate::gavin::create_workspace_path(std::path::Path::new(&root_path), &path, directory)
+                .map(|_| Response::Ok)
+        }
+        Request::RenameWorkspacePath { root_path, from, to } => {
+            crate::gavin::rename_workspace_path(std::path::Path::new(&root_path), &from, &to)
+                .map(|_| Response::Ok)
+        }
+        Request::TrashWorkspacePath { root_path, path } => {
+            crate::gavin::trash_workspace_path(std::path::Path::new(&root_path), &path)
+                .map(|_| Response::Ok)
         }
         Request::CreatePlan {
             context_folder,
@@ -4095,6 +4200,19 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // fs) and a remote (names no path) must never do.
         | Request::RunGit { .. }
         | Request::ListWorkspaceDir { .. }
+        // What finishes them (v42): the streaming network ops and their
+        // cancel, the worktree watch, the env-carrying run and the three
+        // tree mutations. Same reasoning, and it does not weaken for the
+        // ones that only watch -- a `remote` naming a path to watch is
+        // still a `remote` naming a path.
+        | Request::RunGitEnv { .. }
+        | Request::RunGitStreaming { .. }
+        | Request::CancelGitOp { .. }
+        | Request::WatchGitWorktree { .. }
+        | Request::UnwatchGitWorktree { .. }
+        | Request::CreateWorkspacePath { .. }
+        | Request::RenameWorkspacePath { .. }
+        | Request::TrashWorkspacePath { .. }
         | Request::Unknown => false,
     }
 }
@@ -4121,6 +4239,16 @@ fn is_privileged(req: &Request) -> bool {
             // reach as the shell `CreateSession` starts. Behind the
             // require_local_token narrowing with the rest.
             | Request::RunGit { .. }
+            // The v42 half of the same reach: another way to run git,
+            // git run long, and three ways to change the tree. Its
+            // cancel and the two watch requests stay OUT -- they start
+            // no process and change nothing, and a cancel that needs a
+            // token is a cancel that cannot be sent.
+            | Request::RunGitEnv { .. }
+            | Request::RunGitStreaming { .. }
+            | Request::CreateWorkspacePath { .. }
+            | Request::RenameWorkspacePath { .. }
+            | Request::TrashWorkspacePath { .. }
     )
 }
 
@@ -4331,6 +4459,14 @@ fn handle_connection(stream: Stream, manager: Arc<SessionManager>) -> anyhow::Re
     let mut identity = ClientIdentity::local();
     let mut hello_seen = false;
 
+    // This connection's git worktree watchers (v42), refcounted per cwd
+    // like the desktop's own. Deliberately a LOCAL, not `SessionManager`
+    // state: a link that drops takes its connection with it, and a
+    // watcher owned by the connection is then dropped by the language
+    // rather than by a cleanup path that has to notice the link is gone.
+    let mut git_watchers: HashMap<String, (notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>, usize)> =
+        HashMap::new();
+
     // Counted before anything else on this connection runs, so a client
     // that never sends a request still costs a slot for as long as it
     // stays open (DP-05: `serve` spawns one thread per accepted
@@ -4423,6 +4559,80 @@ fn handle_connection(stream: Stream, manager: Arc<SessionManager>) -> anyhow::Re
             std::thread::spawn(move || {
                 SessionManager::watch_gavin_root(&manager, &workspace_id, &root_path, writer);
             });
+            continue;
+        }
+
+        // Intercepted for the same reason as Attach and WatchGavinRoot
+        // (v42): the answer is a stream of pushes to THIS connection's
+        // writer over the minutes a fetch takes, not a value a reply
+        // could carry -- and running it inline would hold this
+        // connection's whole request loop behind it. Off this thread, so
+        // a second op (or anything else the desktop sends) is not queued
+        // behind the first.
+        if let Request::RunGitStreaming { root_path, cwd, args, op_id } = req {
+            let manager = Arc::clone(&manager);
+            let writer = Arc::clone(&writer);
+            std::thread::spawn(move || {
+                SessionManager::run_git_op(&manager, &root_path, &cwd, &args, &op_id, &writer);
+            });
+            continue;
+        }
+
+        // The Git tab's live refresh for a workspace on this machine
+        // (v42). Refcounted per cwd: two callers (the tab and a Home
+        // tile) share one OS watch, exactly as the desktop's `git_watch`
+        // shares one. The `cwd` is confined against the root before
+        // anything is watched, and a failure is reported as an ordinary
+        // request error rather than pushed, because there is nothing
+        // watching yet to push on.
+        if let Request::WatchGitWorktree { root_path, cwd } = req {
+            if let Some(entry) = git_watchers.get_mut(&cwd) {
+                entry.1 += 1;
+                continue;
+            }
+            let root = std::path::Path::new(&root_path);
+            match crate::gavin::confined_worktree(root, &cwd) {
+                Err(e) => {
+                    write_message(
+                        &mut *writer.lock().unwrap(),
+                        &Response::Error { message: e.to_string() },
+                    )?;
+                }
+                Ok(resolved) => {
+                    let push_writer = Arc::clone(&writer);
+                    let push_cwd = cwd.clone();
+                    match crate::git_watch::spawn_worktree_watcher(&resolved, move || {
+                        let _ = write_message(
+                            &mut *push_writer.lock().unwrap(),
+                            &Response::GitWorktreeChanged { cwd: push_cwd.clone() },
+                        );
+                    }) {
+                        Ok(debouncer) => {
+                            git_watchers.insert(cwd, (debouncer, 1));
+                        }
+                        Err(e) => {
+                            write_message(
+                                &mut *writer.lock().unwrap(),
+                                &Response::Error { message: format!("could not watch {cwd}: {e}") },
+                            )?;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        if let Request::UnwatchGitWorktree { cwd, .. } = req {
+            let drop_it = match git_watchers.get_mut(&cwd) {
+                Some(entry) => {
+                    entry.1 = entry.1.saturating_sub(1);
+                    entry.1 == 0
+                }
+                None => false,
+            };
+            if drop_it {
+                git_watchers.remove(&cwd);
+            }
             continue;
         }
 
@@ -4949,6 +5159,265 @@ mod tests {
         assert!(authorize(&id, &Request::ListSessions, true).is_ok());
     }
 
+    // --- The v42 streaming intercept, end to end -----------------------
+    //
+    // `RunGitStreaming` is the one request whose whole contract is what
+    // the CONNECTION does -- pushes in their own time on the asking
+    // connection's writer, and a cancel that must be answerable on a
+    // different connection while the op runs. `handle_request` cannot
+    // express any of that, so these run a real `handle_connection` over a
+    // real socket rather than calling a function.
+
+    /// A listener on a throwaway socket, plus a thread that serves each
+    /// connection through the real `handle_connection`.
+    fn serving_manager(
+        dir: &tempfile::TempDir,
+    ) -> (Arc<SessionManager>, std::path::PathBuf, tempfile::TempDir) {
+        // Short path: a unix socket's sun_path budget is ~104 bytes and a
+        // tempdir under the repo blows it (see shutdown.rs). The dir is
+        // returned so the caller holds it -- the socket file has to
+        // outlive the listener.
+        let temp_root = if cfg!(windows) { std::env::temp_dir() } else { std::path::PathBuf::from("/tmp") };
+        let sock_dir = tempfile::Builder::new().prefix("gavin-gitop-").tempdir_in(&temp_root).unwrap();
+        let sock = sock_dir.path().join("d.sock");
+        let manager = test_manager(dir);
+        let listener = Listener::bind(&sock).unwrap();
+        let served = Arc::clone(&manager);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                let manager = Arc::clone(&served);
+                std::thread::spawn(move || {
+                    let _ = handle_connection(stream, manager);
+                });
+            }
+        });
+        (manager, sock, sock_dir)
+    }
+
+    /// A repo the ops can run in, and its path as the wire spells it.
+    fn streaming_repo(root: &std::path::Path) -> String {
+        for args in [&["init", "-q"][..], &["config", "user.email", "t@e"][..], &["config", "user.name", "T"][..]] {
+            let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            crate::gavin::run_git(root, &root.to_string_lossy(), &argv, None).unwrap();
+        }
+        root.to_string_lossy().into_owned()
+    }
+
+    fn next_response(reader: &mut BufReader<Stream>) -> Response {
+        read_message(reader).unwrap().expect("the connection closed early")
+    }
+
+    /// The whole shape in one pass: the request is accepted with no
+    /// reply, progress arrives as pushes, and the op ends with exactly
+    /// one `GitOpDone` carrying git's own words.
+    #[test]
+    fn run_git_streaming_pushes_progress_then_one_done_on_the_asking_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_manager, sock, _sock_dir) = serving_manager(&dir);
+        let root = streaming_repo(dir.path());
+
+        let stream = Stream::connect(&sock).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write_message(
+            &mut &stream,
+            &Request::RunGitStreaming {
+                root_path: root.clone(),
+                cwd: root.clone(),
+                // A clone of a path that is not there fails fast and says
+                // so on stderr: a real progress stream with no network.
+                args: vec!["clone".into(), "--progress".into(), "/definitely/missing/repo".into(), "x".into()],
+                op_id: "op-1".into(),
+            },
+        )
+        .unwrap();
+
+        let mut progress = Vec::new();
+        let done = loop {
+            match next_response(&mut reader) {
+                Response::GitOpProgress { op_id, line } => {
+                    assert_eq!(op_id, "op-1", "every push carries the op id it was asked under");
+                    progress.push(line);
+                }
+                Response::GitOpDone { op_id, error } => break (op_id, error),
+                other => panic!("unexpected push {other:?}"),
+            }
+        };
+        assert_eq!(done.0, "op-1");
+        let message = done.1.expect("a failed clone reports an error");
+        assert!(message.contains("exist") || message.contains("fatal"), "{message}");
+        assert!(!progress.is_empty(), "git said nothing on stderr");
+    }
+
+    /// The reason the cancel is request/reply on the OTHER connection: it
+    /// has to be answerable while the op is still running. A `fetch` of
+    /// an `ext::` remote that sleeps is a hang we can take back.
+    #[cfg(unix)]
+    #[test]
+    fn cancel_git_op_kills_a_running_op_from_a_second_connection() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (_manager, sock, _sock_dir) = serving_manager(&dir);
+        let root = streaming_repo(dir.path());
+        let script = dir.path().join("sleepy.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // `ext::` splits its command on whitespace, hence a script.
+        let remote = format!("ext::{} %S", script.display());
+
+        let op = Stream::connect(&sock).unwrap();
+        let mut op_reader = BufReader::new(op.try_clone().unwrap());
+        write_message(
+            &mut &op,
+            &Request::RunGitStreaming {
+                root_path: root.clone(),
+                cwd: root.clone(),
+                args: vec![
+                    "-c".into(),
+                    "protocol.ext.allow=always".into(),
+                    "fetch".into(),
+                    "--progress".into(),
+                    remote,
+                ],
+                op_id: "op-2".into(),
+            },
+        )
+        .unwrap();
+
+        // The child has to be registered before a cancel can find it;
+        // retry until it is, rather than sleeping a guessed interval.
+        let cancel = Stream::connect(&sock).unwrap();
+        let mut cancel_reader = BufReader::new(cancel.try_clone().unwrap());
+        let started = Instant::now();
+        let cancelled = loop {
+            write_message(&mut &cancel, &Request::CancelGitOp { op_id: "op-2".into() }).unwrap();
+            match next_response(&mut cancel_reader) {
+                Response::GitOpCancelled { cancelled: true } => break true,
+                Response::GitOpCancelled { cancelled: false } => {
+                    assert!(started.elapsed() < Duration::from_secs(10), "the op never registered");
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                other => panic!("unexpected reply {other:?}"),
+            }
+        };
+        assert!(cancelled);
+
+        let error = loop {
+            match next_response(&mut op_reader) {
+                Response::GitOpProgress { .. } => continue,
+                Response::GitOpDone { error, .. } => break error,
+                other => panic!("unexpected push {other:?}"),
+            }
+        };
+        assert_eq!(error.as_deref(), Some("cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(20), "the cancel did not take effect");
+
+        // An id nobody is running is `false`, not an error: an op that
+        // finished a moment before the cancel is the ordinary race.
+        write_message(&mut &cancel, &Request::CancelGitOp { op_id: "op-2".into() }).unwrap();
+        assert!(matches!(
+            next_response(&mut cancel_reader),
+            Response::GitOpCancelled { cancelled: false }
+        ));
+    }
+
+    /// The watch is set up on the connection that asked, and its pushes
+    /// come back there. An `UnwatchGitWorktree` ends it, and a cwd
+    /// outside the root is refused before anything is watched.
+    #[test]
+    fn watch_git_worktree_pushes_a_change_and_refuses_an_outside_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_manager, sock, _sock_dir) = serving_manager(&dir);
+        let root = streaming_repo(dir.path());
+
+        let stream = Stream::connect(&sock).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+        let outside = tempfile::tempdir().unwrap();
+        write_message(
+            &mut &stream,
+            &Request::WatchGitWorktree {
+                root_path: root.clone(),
+                cwd: outside.path().to_string_lossy().into_owned(),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(next_response(&mut reader), Response::Error { .. }),
+            "a cwd outside the root must be refused, not watched"
+        );
+
+        write_message(
+            &mut &stream,
+            &Request::WatchGitWorktree { root_path: root.clone(), cwd: root.clone() },
+        )
+        .unwrap();
+        // No reply on success -- the first thing this connection hears is
+        // the push, the way WatchGavinRoot answers with its first tree.
+        // Written in a loop: the OS watch is registered asynchronously,
+        // so an early write can land before it is listening.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let hit = std::thread::spawn(move || {
+            matches!(next_response(&mut reader), Response::GitWorktreeChanged { .. })
+        });
+        let mut n = 0;
+        while !hit.is_finished() && Instant::now() < deadline {
+            n += 1;
+            std::fs::write(dir.path().join("a.txt"), format!("{n}")).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(hit.is_finished(), "the watch never pushed a change");
+        assert!(hit.join().unwrap());
+    }
+
+    /// The v42 git/tree requests, by role and by privilege
+    /// (`2026-09-23-ssh-git-sync-and-conflicts-design.md` §5). An agent
+    /// has its own filesystem and no business running git or moving files
+    /// through the daemon; the ones that run a process or change the tree
+    /// join the `require_local_token` narrowing, and the cancel and the
+    /// two watches deliberately do not -- a cancel that needs a token is
+    /// a cancel that cannot be sent.
+    #[test]
+    fn the_v42_git_requests_are_app_only_and_the_mutating_ones_are_privileged() {
+        let (_ws, root, _card) = workspace_with_card();
+        let agent = ClientIdentity::agent("sess-1", &root, &root);
+        let privileged = [
+            Request::RunGitEnv {
+                root_path: root.clone(),
+                cwd: root.clone(),
+                args: vec!["cherry-pick".into()],
+                env: vec![("GIT_EDITOR".into(), "true".into())],
+            },
+            Request::RunGitStreaming {
+                root_path: root.clone(),
+                cwd: root.clone(),
+                args: vec!["fetch".into()],
+                op_id: "op".into(),
+            },
+            Request::CreateWorkspacePath { root_path: root.clone(), path: "a.txt".into(), directory: false },
+            Request::RenameWorkspacePath { root_path: root.clone(), from: "a".into(), to: "b".into() },
+            Request::TrashWorkspacePath { root_path: root.clone(), path: "a.txt".into() },
+        ];
+        let unprivileged = [
+            Request::CancelGitOp { op_id: "op".into() },
+            Request::WatchGitWorktree { root_path: root.clone(), cwd: root.clone() },
+            Request::UnwatchGitWorktree { root_path: root.clone(), cwd: root.clone() },
+        ];
+        for req in privileged.iter().chain(unprivileged.iter()) {
+            assert!(
+                matches!(authorize(&agent, req, false), Err(Response::Forbidden { role, .. }) if role == "agent"),
+                "an agent must be refused {}",
+                request_type_name(req)
+            );
+        }
+        for req in &privileged {
+            assert!(is_privileged(req), "{} should be privileged", request_type_name(req));
+        }
+        for req in &unprivileged {
+            assert!(!is_privileged(req), "{} should not be privileged", request_type_name(req));
+        }
+    }
+
     #[test]
     fn an_agent_is_confined_to_its_own_scope() {
         let (_ws, root, card) = workspace_with_card();
@@ -5160,6 +5629,24 @@ mod tests {
             Request::StatWorkspacePaths { root_path: "/x".into(), paths: vec!["a.md".into()] },
             Request::RunGit { root_path: "/x".into(), cwd: "/x".into(), args: vec!["status".into()], stdin: None },
             Request::ListWorkspaceDir { root_path: "/x".into(), path: "/x".into() },
+            Request::RunGitEnv {
+                root_path: "/x".into(),
+                cwd: "/x".into(),
+                args: vec!["cherry-pick".into()],
+                env: vec![("GIT_EDITOR".into(), "true".into())],
+            },
+            Request::RunGitStreaming {
+                root_path: "/x".into(),
+                cwd: "/x".into(),
+                args: vec!["fetch".into()],
+                op_id: "op".into(),
+            },
+            Request::CancelGitOp { op_id: "op".into() },
+            Request::WatchGitWorktree { root_path: "/x".into(), cwd: "/x".into() },
+            Request::UnwatchGitWorktree { root_path: "/x".into(), cwd: "/x".into() },
+            Request::CreateWorkspacePath { root_path: "/x".into(), path: "a.txt".into(), directory: false },
+            Request::RenameWorkspacePath { root_path: "/x".into(), from: "a".into(), to: "b".into() },
+            Request::TrashWorkspacePath { root_path: "/x".into(), path: "a.txt".into() },
             Request::GetBoardByRoot { root_path: "/x".into() },
             Request::PromoteChecklistItem { plan_path: "/x/a.md".into(), item: "i".into() },
             Request::SetChecklistItem { path: "/x/a.md".into(), line_index: 0, expected_text: "i".into(), checked: true },
