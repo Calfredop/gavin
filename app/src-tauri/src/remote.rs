@@ -526,6 +526,13 @@ impl crate::agent_setup::WorkspaceFiles for RemoteFiles {
     fn canonical_dir(&self, path: &std::path::Path) -> Option<std::path::PathBuf> {
         Some(path.to_path_buf())
     }
+
+    /// From the banner, not from `cfg!`: the agent and its `gavin-mcp` run
+    /// on the host, so it is the host's platform that decides which
+    /// launcher file a relative MCP command would land on.
+    fn is_windows(&self) -> bool {
+        self.link.host_os == "windows"
+    }
 }
 
 /// host -> its link. Managed at app setup, before bootstrap.

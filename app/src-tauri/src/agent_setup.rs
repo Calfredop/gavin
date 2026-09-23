@@ -161,6 +161,16 @@ pub trait WorkspaceFiles {
     /// confines every write to the root, so the check is its.
     fn canonical_dir(&self, path: &Path) -> Option<PathBuf>;
 
+    /// Whether the machine whose disk this is runs Windows. Asked by
+    /// `launcher_file`, which has to name the file that would actually
+    /// run -- and for an ssh workspace that machine is the host, not this
+    /// desktop. Defaulted to this process's platform because that is the
+    /// right answer for every local implementation, including the test
+    /// doubles; a remote overrides it from the link's banner.
+    fn is_windows(&self) -> bool {
+        cfg!(windows)
+    }
+
     fn read_to_string(&self, path: &Path) -> anyhow::Result<Option<String>> {
         match self.read_bytes(path)? {
             Some(bytes) => Ok(Some(String::from_utf8(bytes).map_err(|_| {
@@ -1376,6 +1386,68 @@ fn resolve_mcp_binary_path() -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
+/// gavin's own committed launcher, named by the config files RELATIVE to
+/// the workspace root. Forward slash on both platforms: it is a config
+/// value, not a path built here, and Windows accepts it.
+const MCP_LAUNCHER: &str = "scripts/gavin-mcp";
+
+/// The file the launcher command actually spawns.
+///
+/// Windows resolves an extensionless relative command through PATHEXT and
+/// lands on the `.cmd`; everywhere else the sh script runs itself. Both
+/// are committed, so a real checkout has the pair -- but the existence
+/// check has to name the one that would run, or a half-checkout writes a
+/// command that cannot start.
+///
+/// `windows` is the platform of the machine that will RUN the command,
+/// which is not this process for an ssh workspace -- the agent and its
+/// `gavin-mcp` are on the host. `WorkspaceFiles::is_windows` answers it
+/// for whichever disk the root is on.
+fn launcher_file(root: &Path, windows: bool) -> PathBuf {
+    let name = if windows { "gavin-mcp.cmd" } else { "gavin-mcp" };
+    root.join("scripts").join(name)
+}
+
+/// What the config files name as the command.
+///
+/// `.mcp.json` and `.cursor/mcp.json` are committed and this checkout is
+/// opened from both a Mac and a Windows box, so an absolute path there is
+/// wrong for one machine by construction: each setup run re-pointed the
+/// file and broke the other, three times over, until it named a binary
+/// that existed on neither and every agent session lost the gavin_* tools.
+/// A root that carries gavin's own launcher is named by relative path
+/// instead, and the per-machine resolving moves into the launcher.
+///
+/// Every OTHER workspace -- gavin manages roots that are not its own
+/// checkout -- gets the absolute binary resolved beside the running app,
+/// which is correct there: those files are not shared between machines.
+///
+/// That split is also why the launcher needs a second condition, and not
+/// just "a file sits at that path". A relative command is resolved by the
+/// agent against the workspace root, so naming one means the REPO chooses
+/// what gavin's own entry executes. `03-agent-surface.md` records that
+/// gavin's own writes cannot be redirected; pointing them at a file an
+/// arbitrary cloned repo happens to ship would falsify that. So the
+/// launcher is named only in a checkout that actually builds gavin-mcp --
+/// where the human already trusts the tree enough to compile and run it,
+/// and where the shared-config problem is the one that exists.
+///
+/// Both questions go through `fs`, never through this process's disk. An
+/// ssh workspace's root is a path on the HOST: answering it locally would
+/// read a same-shaped directory on the desktop, and the answer decides
+/// what gavin's own MCP entry executes. A remote gavin checkout that
+/// ships the launcher gets it, resolved on the host by the host's copy,
+/// which is the same guarantee the local case gets -- and `mcp_path`'s
+/// absolute binary remains the answer for every root that ships none.
+fn mcp_command(fs: &dyn WorkspaceFiles, root: &Path, binary: &Path) -> String {
+    let is_gavin_checkout = fs.is_file(&root.join("crates/gavin-mcp/Cargo.toml"));
+    if is_gavin_checkout && fs.is_file(&launcher_file(root, fs.is_windows())) {
+        MCP_LAUNCHER.to_string()
+    } else {
+        binary.to_string_lossy().into_owned()
+    }
+}
+
 impl McpFormat {
     /// The key the per-server map hangs off. Meaningless for TOML, which
     /// spells its own table name in the writer.
@@ -1390,9 +1462,9 @@ impl McpFormat {
         }
     }
 
-    /// Gavin's own entry, in this dialect's shape.
-    fn json_entry(self, binary: &Path) -> serde_json::Value {
-        let command = binary.to_string_lossy();
+    /// Gavin's own entry, in this dialect's shape. The command is already
+    /// resolved by `mcp_command` -- an absolute binary, or the launcher.
+    fn json_entry(self, command: &str) -> serde_json::Value {
         match self {
             McpFormat::JsonLocal => {
                 serde_json::json!({ "type": "local", "command": [command], "enabled": true })
@@ -1433,10 +1505,16 @@ fn write_mcp_config(
     binary: &Path,
 ) -> anyhow::Result<PathBuf> {
     let path = root.join(&layout.config_file);
+    // The `create_dir_all` that used to stand here is gone on purpose:
+    // `.gemini/`, `.cursor/` and `.codex/` still need not exist, but the
+    // parent is now created by `LocalFiles::write_bytes`, on whichever
+    // disk the workspace is. Doing it here would create a `.cursor/` on
+    // the DESKTOP for an ssh workspace whose files live on the host.
+    let command = mcp_command(fs, root, binary);
     match layout.format {
-        McpFormat::TomlServers => write_mcp_config_toml(fs, &path, layout, binary)?,
+        McpFormat::TomlServers => write_mcp_config_toml(fs, &path, layout, &command)?,
         McpFormat::JsonServers | McpFormat::JsonServersStdio | McpFormat::JsonLocal => {
-            write_mcp_config_json(fs, &path, layout, binary)?
+            write_mcp_config_json(fs, &path, layout, &command)?
         }
     }
     Ok(path)
@@ -1446,7 +1524,7 @@ fn write_mcp_config_json(
     fs: &dyn WorkspaceFiles,
     path: &Path,
     layout: &ResolvedMcp,
-    binary: &Path,
+    command: &str,
 ) -> anyhow::Result<()> {
     let mut doc: serde_json::Value = if let Some(existing) = fs.read_to_string(path)? {
         serde_json::from_str(&existing).map_err(|_| {
@@ -1464,7 +1542,7 @@ fn write_mcp_config_json(
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("{container} is not a JSON object"))?;
-    servers.insert(layout.server_key.to_string(), layout.format.json_entry(binary));
+    servers.insert(layout.server_key.to_string(), layout.format.json_entry(command));
     fs.write_bytes(path, format!("{}\n", serde_json::to_string_pretty(&doc)?).as_bytes())?;
     Ok(())
 }
@@ -1476,7 +1554,7 @@ fn write_mcp_config_toml(
     fs: &dyn WorkspaceFiles,
     path: &Path,
     layout: &ResolvedMcp,
-    binary: &Path,
+    command: &str,
 ) -> anyhow::Result<()> {
     // Absent is empty; unreadable-but-present is an error, not a reason to
     // overwrite it -- the same promise the JSON writer makes.
@@ -1491,7 +1569,7 @@ fn write_mcp_config_toml(
         table.remove(layout.server_key);
     }
     let server = &mut doc["mcp_servers"][layout.server_key];
-    server["command"] = toml_edit::value(binary.to_string_lossy().as_ref());
+    server["command"] = toml_edit::value(command);
     server["args"] = toml_edit::value(toml_edit::Array::new());
     fs.write_bytes(path, doc.to_string().as_bytes())?;
     Ok(())
@@ -3067,6 +3145,10 @@ mod tests {
     struct MemoryFiles {
         files: std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<u8>>>,
         dirs: Vec<PathBuf>,
+        /// The HOST's platform, which is what `RemoteFiles` answers from
+        /// the banner. Left false by `Default` so it differs from this
+        /// suite's own machine on Windows -- the point of the field.
+        windows: bool,
     }
 
     impl WorkspaceFiles for MemoryFiles {
@@ -3086,6 +3168,9 @@ mod tests {
         fn canonical_dir(&self, path: &Path) -> Option<PathBuf> {
             Some(path.to_path_buf())
         }
+        fn is_windows(&self) -> bool {
+            self.windows
+        }
     }
 
     /// The ssh case, end to end through the trait: a root that does not
@@ -3095,7 +3180,7 @@ mod tests {
     #[test]
     fn integration_on_a_remote_root_touches_only_the_files_it_was_given() {
         let root = PathBuf::from("/remote/repo");
-        let fs = MemoryFiles { files: Default::default(), dirs: vec![root.clone()] };
+        let fs = MemoryFiles { dirs: vec![root.clone()], ..Default::default() };
         fs.write_bytes(&root.join(".gavin-root").join("config.toml"), b"[agent]\nprofile = \"claude-code\"\n")
             .unwrap();
         let result = run_integration(
@@ -3115,6 +3200,44 @@ mod tests {
         assert!(String::from_utf8_lossy(mcp).contains("/opt/gavin/gavin-mcp"), "the host's gavin-mcp");
         assert!(result.written.iter().any(|w| w.ends_with(".mcp.json")));
         assert!(!Path::new("/remote").exists() && !Path::new("C:/remote").exists(), "nothing on this disk");
+    }
+
+    /// Where the launcher and ssh meet, which is the merge of these two
+    /// changes and belongs to neither alone. `mcp_command` asks two
+    /// questions about the root -- is this a gavin checkout, does it carry
+    /// the launcher -- and for an ssh workspace the root is a path on the
+    /// HOST. Asked of this process's disk they are answered by whatever
+    /// happens to sit at the same spelling here, and the answer decides
+    /// what gavin's own MCP entry executes. So both go through `fs`, and
+    /// the platform half goes through `is_windows`: a Linux host must be
+    /// checked for `scripts/gavin-mcp`, not for the `.cmd` this desktop
+    /// would run. Neither is answerable from `cfg!` or `Path::is_file`,
+    /// which is what makes this a gate and not a restatement.
+    #[test]
+    fn a_remote_gavin_checkout_that_carries_the_launcher_is_named_by_relative_path() {
+        let root = PathBuf::from("/remote/gavin");
+        // windows: false -- the host is Linux even when this suite is not.
+        let fs = MemoryFiles { dirs: vec![root.clone()], ..Default::default() };
+        fs.write_bytes(&root.join(".gavin-root").join("config.toml"), b"[agent]\nprofile = \"claude-code\"\n")
+            .unwrap();
+        fs.write_bytes(&root.join("crates/gavin-mcp/Cargo.toml"), b"[package]\n").unwrap();
+        fs.write_bytes(&root.join("scripts").join("gavin-mcp"), b"#!/bin/sh\n").unwrap();
+
+        run_integration(&fs, &root, || Ok(PathBuf::from("/opt/gavin/gavin-mcp")), None, None, None)
+            .unwrap();
+
+        let files = fs.files.lock().unwrap();
+        let mcp = String::from_utf8_lossy(files.get(&root.join(".mcp.json")).unwrap()).to_string();
+        let v: serde_json::Value = serde_json::from_str(&mcp).unwrap();
+        assert_eq!(
+            v.pointer("/mcpServers/gavin/command").unwrap(),
+            MCP_LAUNCHER,
+            "the host's own launcher, resolved on the host"
+        );
+        assert!(
+            !mcp.contains("/opt/gavin/gavin-mcp"),
+            "a relative command replaces the absolute one, it does not sit beside it"
+        );
     }
 
     /// The shrink sub-project B is for: custom can name an MCP config
@@ -3930,6 +4053,184 @@ mod tests {
         std::fs::write(&p, "{not json").unwrap();
         assert!(write_mcp_config(&LocalFiles, dir.path(), &claude_layout(), binary).is_err());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "{not json");
+    }
+
+    /// Just the launcher pair. BOTH files: which one is actually spawned
+    /// is per-platform (Windows resolves the extensionless command
+    /// through PATHEXT to the .cmd), so a fixture with only one would
+    /// pass on one OS and fail on the other.
+    fn with_launcher_scripts(root: &std::path::Path) {
+        let scripts = root.join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(scripts.join("gavin-mcp"), "#!/bin/sh\nexec gavin-mcp \"$@\"\n").unwrap();
+        std::fs::write(scripts.join("gavin-mcp.cmd"), "@echo off\r\ngavin-mcp %*\r\n").unwrap();
+    }
+
+    /// A checkout of gavin itself: the launcher pair AND the crate that
+    /// builds the binary it resolves. Both are required before gavin
+    /// names a repo-relative command -- see `mcp_command`.
+    fn with_launcher(root: &std::path::Path) {
+        with_launcher_scripts(root);
+        let crate_dir = root.join("crates/gavin-mcp");
+        std::fs::create_dir_all(&crate_dir).unwrap();
+        std::fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"gavin-mcp\"\n").unwrap();
+    }
+
+    /// The fix for the flip-flop: a root that carries the launcher gets
+    /// the RELATIVE path to it, so the committed file is the same bytes
+    /// on a Mac and on Windows and no machine's setup run re-points it.
+    #[test]
+    fn mcp_config_names_the_launcher_when_the_root_carries_one() {
+        let dir = tempfile::tempdir().unwrap();
+        with_launcher(dir.path());
+
+        let p =
+            write_mcp_config(&LocalFiles, dir.path(), &claude_layout(), Path::new("/apps/gavin-mcp")).unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), MCP_LAUNCHER);
+    }
+
+    /// The other half of the same rule: a workspace that is NOT gavin's
+    /// own checkout has no launcher to name, so it still gets the
+    /// absolute binary resolved beside the running app. gavin manages
+    /// other people's roots, and this is every one of them.
+    #[test]
+    fn mcp_config_keeps_the_absolute_binary_when_the_root_has_no_launcher() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let p =
+            write_mcp_config(&LocalFiles, dir.path(), &claude_layout(), Path::new("/apps/gavin-mcp")).unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), "/apps/gavin-mcp");
+    }
+
+    /// A2, and the reason `mcp_command` wants two conditions rather than
+    /// one: a cloned repo that merely SHIPS `scripts/gavin-mcp` must not
+    /// get gavin to write a config that executes it. A relative command
+    /// is resolved against the workspace root, so naming one hands the
+    /// repo control of what gavin's own entry runs -- exactly what
+    /// `03-agent-surface.md` says gavin's writes cannot be made to do.
+    #[test]
+    fn a_repo_that_merely_ships_a_launcher_does_not_get_one_written() {
+        let dir = tempfile::tempdir().unwrap();
+        with_launcher_scripts(dir.path()); // ... but no gavin-mcp crate.
+
+        let p =
+            write_mcp_config(&LocalFiles, dir.path(), &claude_layout(), Path::new("/apps/gavin-mcp")).unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(
+            v.pointer("/mcpServers/gavin/command").unwrap(),
+            "/apps/gavin-mcp",
+            "gavin pointed its own entry at a script the repo supplied"
+        );
+    }
+
+    /// The launcher is the command in every dialect, not just Claude's:
+    /// `.cursor/mcp.json` is committed too and carried the mirror-image
+    /// of the same fault (a Mac path, dead on Windows).
+    #[test]
+    fn every_dialect_names_the_launcher() {
+        let dir = tempfile::tempdir().unwrap();
+        with_launcher(dir.path());
+        let binary = Path::new("/apps/gavin-mcp");
+
+        let cursor = write_mcp_config(&LocalFiles, dir.path(), &layout("cursor"), binary).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cursor).unwrap()).unwrap();
+        assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), MCP_LAUNCHER);
+
+        let opencode = write_mcp_config(&LocalFiles, dir.path(), &layout("opencode"), binary).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&opencode).unwrap()).unwrap();
+        // opencode's command IS the array -- the launcher has to land
+        // inside it, not beside it.
+        assert_eq!(v.pointer("/mcp/gavin/command").unwrap(), &serde_json::json!([MCP_LAUNCHER]));
+
+        let codex = write_mcp_config(&LocalFiles, dir.path(), &layout("codex"), binary).unwrap();
+        let parsed = std::fs::read_to_string(&codex).unwrap().parse::<toml::Table>().unwrap();
+        assert_eq!(parsed["mcp_servers"]["gavin"]["command"].as_str().unwrap(), MCP_LAUNCHER);
+    }
+
+    /// End to end through the wizard's own entry point, which is what
+    /// actually re-pointed the file on every machine.
+    #[test]
+    fn integration_writes_the_launcher_for_a_root_that_carries_one() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        with_launcher(dir.path());
+
+        run_integration(&LocalFiles, dir.path(), fake_binary(), None, None, None).unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(v.pointer("/mcpServers/gavin/command").unwrap(), MCP_LAUNCHER);
+    }
+
+    /// The regression this whole fix exists for, pinned against the real
+    /// files: a setup run on one machine re-pointed the committed configs
+    /// at ITS binary, someone committed that, and the other machine lost
+    /// all sixteen gavin_* tools for every session. It happened three
+    /// times (d4191db, 030d99f, b8ba17c) and ended with a path that was
+    /// dead on both. Neither file may name an absolute path again, and a
+    /// re-run of the wizard no longer writes one -- so if this test goes
+    /// red, someone committed a machine-local path by hand.
+    /// Byte equality, not just the command: a setup run in this checkout
+    /// has to leave both files EXACTLY as committed. Anything less and
+    /// the wizard dirties them again, which is the churn the card is
+    /// about -- someone commits the dirt and a machine loses its tools.
+    #[test]
+    fn the_repos_own_committed_configs_name_the_launcher() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+        assert!(
+            launcher_file(repo, cfg!(windows)).is_file(),
+            "the launcher those configs name has to be committed beside them"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        with_launcher(dir.path());
+        for (profile, rel) in [("claude-code", ".mcp.json"), ("cursor", ".cursor/mcp.json")] {
+            let fresh = write_mcp_config(
+                &LocalFiles,
+                dir.path(),
+                &layout(profile),
+                Path::new("/apps/gavin-mcp"),
+            )
+            .unwrap();
+            let committed = std::fs::read_to_string(repo.join(rel)).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&fresh).unwrap(),
+                committed,
+                "a setup run would rewrite {rel} -- commit what the writer produces"
+            );
+            let v: serde_json::Value = serde_json::from_str(&committed).unwrap();
+            assert_eq!(
+                v.pointer("/mcpServers/gavin/command").unwrap(),
+                MCP_LAUNCHER,
+                "{rel} names a machine-local binary again"
+            );
+        }
+    }
+
+    /// The delete wizard keys off the server NAME, never the command, so
+    /// it has to find and remove an entry written as a launcher exactly
+    /// as it did an absolute one.
+    #[test]
+    fn entry_present_and_remove_still_work_against_a_launcher_command() {
+        let dir = tempfile::tempdir().unwrap();
+        rooted_with_profile(dir.path(), "claude-code");
+        with_launcher(dir.path());
+        write_mcp_config(&LocalFiles, dir.path(), &claude_layout(), Path::new("/apps/gavin-mcp")).unwrap();
+
+        assert!(mcp_entry_present(dir.path()), "a launcher entry is still gavin's");
+        assert!(remove_mcp_entry(dir.path()).unwrap(), "it reports having removed one");
+        assert!(!mcp_entry_present(dir.path()), "and it is gone");
     }
 
     fn layout(id: &str) -> ResolvedMcp {
