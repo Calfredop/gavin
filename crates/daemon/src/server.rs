@@ -9,7 +9,8 @@ use notify_debouncer_mini::Debouncer;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Read, Write};
 use protocol::transport::{Listener, Stream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::net::Shutdown;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -1245,6 +1246,93 @@ pub struct SessionManager {
     /// does not exercise `Hello` with the `app` role) simply matches no
     /// daemon token, which is the safe default.
     daemon_token: std::sync::OnceLock<String>,
+    /// The paired devices and the daemon's own static key (`trust.rs`).
+    ///
+    /// A `OnceLock` for the same reason as `daemon_token`: `serve` opens
+    /// the file and sets it before the socket accepts anything, and every
+    /// existing `SessionManager::new` call site -- and every test that
+    /// builds one -- stays unchanged. A manager that never had one set has
+    /// no devices, which is the safe default: `revoke_device` says so by
+    /// name rather than silently reporting success.
+    trust: std::sync::OnceLock<Mutex<crate::trust::TrustStore>>,
+    /// Live connections whose identity names a paired device, keyed by a
+    /// token this manager hands out, each with a socket handle that can
+    /// close it.
+    ///
+    /// This is what makes §3's "the daemon drops every live connection
+    /// carrying that `device_id` immediately (the connection holds its
+    /// identity, so this is a lookup, not a hunt)" true rather than
+    /// aspirational.
+    ///
+    /// Only connections that CARRY a device id are in here. A `local`,
+    /// `app` or `agent` connection has none and can never be the target
+    /// of a revocation, so registering every accepted connection would
+    /// put a lock on the hot accept path to hold entries nothing ever
+    /// looks up. Keyed by a token rather than by `device_id` because one
+    /// device may hold several connections at once, and each has to be
+    /// removable on its own thread's way out.
+    ///
+    /// Leaf lock: nothing else is locked while this is held, and the
+    /// shutdown that happens under it does not block -- it cancels I/O,
+    /// it does not wait for a peer.
+    device_connections: Mutex<HashMap<u64, DeviceConnection>>,
+    /// Hands out the keys of `device_connections`. Monotonic and never
+    /// reused within a daemon lifetime, so a slow `Drop` on one thread
+    /// cannot remove a newer connection's entry.
+    next_device_connection: AtomicU64,
+}
+
+/// A live connection carrying a device identity, and the handle that
+/// closes it.
+///
+/// The handle is a `try_clone` of the connection's socket rather than the
+/// `Arc<Mutex<Stream>>` writer the connection loop already holds: shutting
+/// a revoked device down must not have to queue behind whatever that
+/// connection is in the middle of writing.
+// Read only by `shutdown_device_connections`, which has no caller in
+// the binary until the pairing task lands `RevokeDevice`. See the same
+// allow on `Role::Remote`.
+#[allow(dead_code)]
+struct DeviceConnection {
+    device_id: String,
+    stream: Stream,
+}
+
+/// Removes a connection's `device_connections` entry when its thread ends,
+/// by whichever of `handle_connection_as`'s return paths got it there --
+/// the same reason `ConnectionSlot` exists for the counter.
+struct DeviceConnectionSlot<'a> {
+    manager: &'a SessionManager,
+    token: u64,
+}
+
+impl Drop for DeviceConnectionSlot<'_> {
+    fn drop(&mut self) {
+        self.manager.device_connections.lock().unwrap().remove(&self.token);
+    }
+}
+
+/// What `SessionManager::revoke_device` did.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revocation {
+    /// Whether this call is what revoked the device. `false` when it was
+    /// already revoked, or was never paired -- the connections are dropped
+    /// either way, because a device that is somehow still holding one is
+    /// exactly what a second press of Revoke is for.
+    pub newly_revoked: bool,
+    pub connections_dropped: usize,
+}
+
+/// What `SessionManager::revoke_all_devices` did.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokeAll {
+    /// The daemon's rotated static public key. Every phone pinned the old
+    /// one, so this is the fact that invalidates them all at once even if
+    /// the store is somehow restored from a backup (§3).
+    pub new_public_key: Vec<u8>,
+    pub connections_dropped: usize,
 }
 
 impl SessionManager {
@@ -1274,6 +1362,9 @@ impl SessionManager {
             active_connections: AtomicUsize::new(0),
             connection_ceiling: AtomicUsize::new(MAX_CONNECTIONS),
             daemon_token: std::sync::OnceLock::new(),
+            trust: std::sync::OnceLock::new(),
+            device_connections: Mutex::new(HashMap::new()),
+            next_device_connection: AtomicU64::new(0),
         }
     }
 
@@ -1290,6 +1381,102 @@ impl SessionManager {
     /// the daemon token against such a manager stays `local`.
     fn daemon_token(&self) -> &str {
         self.daemon_token.get().map(String::as_str).unwrap_or("")
+    }
+
+    /// Hands this daemon its trust store. Called once by `serve` before
+    /// the socket accepts anything; idempotent, because the `OnceLock`
+    /// ignores a second set.
+    pub fn set_trust_store(&self, store: crate::trust::TrustStore) {
+        let _ = self.trust.set(Mutex::new(store));
+    }
+
+    // This and the three after it are the revocation half of the trust
+    // store, and nothing in the binary calls them until the pairing task
+    // adds `RevokeDevice` / `RevokeAllDevices` to the protocol. Carried
+    // now because this is the task that owns the rule -- "revoking a
+    // device drops every live connection carrying that id" -- and the
+    // tests below are what prove it. Same allow, same reason, as
+    // `Role::Remote`.
+
+    /// The trust store, or `None` on a manager that never had one (a unit
+    /// test that does not exercise devices). Every caller has to say what
+    /// it does with the absence rather than be handed an empty store that
+    /// silently accepts writes nothing will ever read back.
+    #[allow(dead_code)]
+    pub fn trust(&self) -> Option<std::sync::MutexGuard<'_, crate::trust::TrustStore>> {
+        self.trust.get().map(|m| m.lock().unwrap())
+    }
+
+    /// Registers a live connection under its device id, returning the
+    /// token that removes it again. See `device_connections`.
+    fn register_device_connection(&self, device_id: &str, stream: Stream) -> u64 {
+        let token = self.next_device_connection.fetch_add(1, Ordering::SeqCst);
+        self.device_connections
+            .lock()
+            .unwrap()
+            .insert(token, DeviceConnection { device_id: device_id.to_string(), stream });
+        token
+    }
+
+    /// Shuts down every live connection matching `want` and reports how
+    /// many that was.
+    ///
+    /// Shut down, not removed: each connection's own thread owns its entry
+    /// and takes it out through `DeviceConnectionSlot` on the way out.
+    /// Removing it here would race that `Drop` into deleting a newer
+    /// connection's entry, and would leave this function pretending to
+    /// have closed a socket whose reader had not yet noticed.
+    ///
+    /// A failed shutdown is not an error worth propagating: the only way
+    /// it fails is a socket that is already gone, which is the state this
+    /// was asking for.
+    #[allow(dead_code)]
+    fn shutdown_device_connections(&self, want: impl Fn(&str) -> bool) -> usize {
+        let live = self.device_connections.lock().unwrap();
+        let mut dropped = 0;
+        for conn in live.values().filter(|c| want(&c.device_id)) {
+            let _ = conn.stream.shutdown(Shutdown::Both);
+            dropped += 1;
+        }
+        dropped
+    }
+
+    /// Revokes one device and drops every live connection carrying its id
+    /// (§3, "Revocation").
+    ///
+    /// Two halves on purpose: the row is the store's, the connections are
+    /// the server's. The store lock is released before the sockets are
+    /// touched, so a shutdown can never be what a second revocation waits
+    /// behind.
+    #[allow(dead_code)]
+    pub fn revoke_device(&self, device_id: &str) -> anyhow::Result<Revocation> {
+        let newly_revoked = {
+            let trust = self
+                .trust()
+                .ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon has no trust store"))?;
+            trust.revoke(device_id)?
+        };
+        let connections_dropped = self.shutdown_device_connections(|id| id == device_id);
+        Ok(Revocation { newly_revoked, connections_dropped })
+    }
+
+    /// Revokes every device, rotates the daemon's static key, and drops
+    /// every live connection that carries any device id (§3).
+    ///
+    /// The rotation is what makes this the one-button answer to a lost
+    /// phone: marking rows is a change to a file, but a new static key
+    /// invalidates every phone at once even if the file is restored,
+    /// because each one pinned the old key.
+    #[allow(dead_code)]
+    pub fn revoke_all_devices(&self) -> anyhow::Result<RevokeAll> {
+        let new_public_key = {
+            let trust = self
+                .trust()
+                .ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon has no trust store"))?;
+            trust.revoke_all()?
+        };
+        let connections_dropped = self.shutdown_device_connections(|_| true);
+        Ok(RevokeAll { new_public_key, connections_dropped })
     }
 
     /// Turn a `Hello`'s `auth` into the connection's identity and the
@@ -1329,6 +1516,7 @@ impl SessionManager {
                         session_id: None,
                         workspace_root: None,
                         cwd: None,
+                        device_id: None,
                     },
                     Response::HelloAck {
                         role: "app".to_string(),
@@ -1355,6 +1543,7 @@ impl SessionManager {
                             session_id: Some(rec.id.clone()),
                             workspace_root: Some(std::path::PathBuf::from(&rec.workspace_path)),
                             cwd: Some(std::path::PathBuf::from(&rec.cwd)),
+                            device_id: None,
                         },
                         Response::HelloAck {
                             role: "agent".to_string(),
@@ -3830,6 +4019,22 @@ pub struct ClientIdentity {
     pub session_id: Option<String>,
     pub workspace_root: Option<std::path::PathBuf>,
     pub cwd: Option<std::path::PathBuf>,
+    /// The paired device on the other end, for a connection whose identity
+    /// came from a Noise handshake (§4 lists it on `ClientIdentity`).
+    ///
+    /// `None` for every role today: `local`, `app` and `agent` all arrive
+    /// on the unix socket, which no device key ever completes a handshake
+    /// over, and a `Hello` cannot introduce one -- §4 fixes a device
+    /// identity in the TRANSPORT, before the first request is read, which
+    /// is exactly why `handle_connection_as` takes the identity as an
+    /// argument rather than deriving it.
+    ///
+    /// What it buys, before there is a transport to set it: revocation
+    /// stops being a hunt. `SessionManager::revoke_device` looks the id up
+    /// among the live connections that carry one and shuts their sockets
+    /// down, so a revoked phone loses its connection in the same breath as
+    /// its row (§3, "Revocation").
+    pub device_id: Option<String>,
 }
 
 impl ClientIdentity {
@@ -3837,7 +4042,13 @@ impl ClientIdentity {
     /// `Hello` elevates it: a same-uid local client with today's full
     /// reach. This is what keeps every pre-v35 client working unchanged.
     pub fn local() -> Self {
-        Self { role: Role::Local, session_id: None, workspace_root: None, cwd: None }
+        Self {
+            role: Role::Local,
+            session_id: None,
+            workspace_root: None,
+            cwd: None,
+            device_id: None,
+        }
     }
 
     /// A test helper: an agent scoped to one root/cwd and one session id.
@@ -3848,6 +4059,23 @@ impl ClientIdentity {
             session_id: Some(session_id.to_string()),
             workspace_root: Some(std::path::PathBuf::from(root)),
             cwd: Some(std::path::PathBuf::from(cwd)),
+            device_id: None,
+        }
+    }
+
+    /// A paired device over the remote transport. Nothing constructs this
+    /// in phase 2 -- there is no transport yet -- but it is the shape
+    /// phase 3's `remote.rs` hands to `handle_connection_as` once the
+    /// handshake has looked the static key up in `devices.sqlite`, and it
+    /// is what the revocation test builds its connection from.
+    #[cfg(test)]
+    pub fn remote(device_id: &str) -> Self {
+        Self {
+            role: Role::Remote,
+            session_id: None,
+            workspace_root: None,
+            cwd: None,
+            device_id: Some(device_id.to_string()),
         }
     }
 }
@@ -4301,7 +4529,36 @@ impl Drop for ConnectionSlot<'_> {
     }
 }
 
+/// A connection accepted on the local socket. Its identity starts at
+/// `local` and can only be raised by a `Hello` (§4).
 fn handle_connection(stream: Stream, manager: Arc<SessionManager>) -> anyhow::Result<()> {
+    handle_connection_as(stream, manager, ClientIdentity::local())
+}
+
+/// The connection loop, over a byte stream whose identity has already been
+/// decided.
+///
+/// Split from `handle_connection` for the reason §4 gives: "the transport
+/// caps the role". A connection that arrives through phase 3's `remote.rs`
+/// has its identity FIXED by the Noise handshake -- the static key that
+/// completed it is looked up in `devices.sqlite` -- before a single
+/// request is read, so that transport hands the identity in rather than
+/// letting the loop derive one. This is the seam it will call, and it is
+/// what the revocation test builds a device-carrying connection from
+/// today, with no transport in sight.
+///
+/// A `Hello` can still arrive on such a connection. It cannot lift the
+/// role -- `resolve_hello` only ever answers `app`, `agent` or `local`,
+/// and the remote transport does not read a daemon token off the wire --
+/// which is exactly the property §4 names: "a daemon token presented over
+/// the remote transport is ignored, not honoured". Phase 3 is where that
+/// gets its own test, because that is where there is a transport to
+/// present it over.
+fn handle_connection_as(
+    stream: Stream,
+    manager: Arc<SessionManager>,
+    initial_identity: ClientIdentity,
+) -> anyhow::Result<()> {
     // The peer-uid floor, before anything else on this connection: a peer
     // whose uid is not this daemon's own is refused outright (§4). It only
     // fires if the socket ever escapes its 0700 dir; same-uid, which is
@@ -4324,11 +4581,33 @@ fn handle_connection(stream: Stream, manager: Arc<SessionManager>) -> anyhow::Re
     }
 
     let writer = Arc::new(Mutex::new(stream.try_clone()?));
+
+    // A device-carrying connection is registered before the first request
+    // is read, and removed by the guard however this function returns.
+    // Registered from the identity the TRANSPORT handed in rather than
+    // from whatever a later `Hello` leaves behind, because a device id is
+    // the transport's to set and a `Hello` can never introduce one (§4) --
+    // so there is exactly one moment at which this is decidable, and it is
+    // here, before the loop.
+    //
+    // The handle is a third clone of the socket, held only so a
+    // revocation can close this connection from another thread without
+    // waiting on `writer`'s mutex. Cloned only when there IS a device, so
+    // an ordinary local connection pays nothing for it.
+    let _device_slot = match initial_identity.device_id.as_deref() {
+        Some(device_id) => {
+            let token = manager.register_device_connection(device_id, stream.try_clone()?);
+            Some(DeviceConnectionSlot { manager: &manager, token })
+        }
+        None => None,
+    };
+
     let mut reader = BufReader::new(stream);
 
-    // The connection's identity, `local` until a `Hello` says otherwise,
-    // and fixed thereafter (§4). `hello_seen` refuses a second `Hello`.
-    let mut identity = ClientIdentity::local();
+    // The connection's identity, whatever the transport decided, until a
+    // `Hello` says otherwise -- and fixed thereafter (§4). `hello_seen`
+    // refuses a second `Hello`.
+    let mut identity = initial_identity;
     let mut hello_seen = false;
 
     // Counted before anything else on this connection runs, so a client
@@ -4911,7 +5190,13 @@ mod tests {
 
     #[test]
     fn app_may_do_everything_and_the_switch_never_narrows_it() {
-        let id = ClientIdentity { role: Role::App, session_id: None, workspace_root: None, cwd: None };
+        let id = ClientIdentity {
+            role: Role::App,
+            session_id: None,
+            workspace_root: None,
+            cwd: None,
+            device_id: None,
+        };
         assert!(authorize(&id, &Request::Shutdown, false).is_ok());
         assert!(authorize(
             &id,
@@ -5103,12 +5388,7 @@ mod tests {
 
     #[test]
     fn a_remote_identity_is_denied_every_request_in_phase_one() {
-        let id = ClientIdentity {
-            role: Role::Remote,
-            session_id: None,
-            workspace_root: None,
-            cwd: None,
-        };
+        let id = ClientIdentity::remote("dev-1");
         for req in one_of_every_request_variant_for_authorize() {
             // Hello is never authorized (it sets the role), so skip it.
             if matches!(req, Request::Hello { .. }) {
@@ -7143,6 +7423,193 @@ mod tests {
         }
 
         drop(kept);
+    }
+
+    /// Opens a connection whose identity already names a paired device,
+    /// the way phase 3's `remote.rs` will once a Noise handshake has
+    /// looked the static key up in `devices.sqlite`.
+    ///
+    /// A `Stream::pair` rather than the listener, because the listener
+    /// hands every connection `ClientIdentity::local()` -- and the point
+    /// of `handle_connection_as` is that a transport gets to say
+    /// otherwise. Returns the client end, already past its first
+    /// round-trip, so the caller knows the connection is registered
+    /// before it revokes anything.
+    fn connect_as_device(manager: &Arc<SessionManager>, device_id: &str) -> Stream {
+        let (client, server) = Stream::pair().unwrap();
+        let manager = Arc::clone(manager);
+        let identity = ClientIdentity::remote(device_id);
+        std::thread::spawn(move || {
+            let _ = handle_connection_as(server, manager, identity);
+        });
+        let mut client = client;
+        // `remote` is denied every request in this phase (§6 lands its
+        // allow-list later), so a `Forbidden` is the liveness signal: it
+        // proves the loop is past registration and reading.
+        let resp = request(&mut client, &Request::GetProtocolVersion);
+        assert!(matches!(resp, Response::Forbidden { .. }), "{resp:?}");
+        client
+    }
+
+    /// Waits for the daemon to let go of `device_id`'s connections, which
+    /// only happens once their threads have returned and dropped every
+    /// handle. Panics rather than returning, so a connection that never
+    /// closes fails THIS test instead of hanging the suite in the read
+    /// that follows.
+    fn await_no_connection_for(manager: &SessionManager, device_id: &str) {
+        let deadline = Instant::now() + PROCESS_BUDGET;
+        loop {
+            let held = manager
+                .device_connections
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|c| c.device_id == device_id)
+                .count();
+            if held == 0 {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{device_id} still holds a connection");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The client end of a connection the daemon should have closed.
+    /// `bound_reads` is insurance only -- `await_no_connection_for` has
+    /// already established the read cannot block -- so it can never be
+    /// what makes this pass.
+    fn assert_closed(stream: &Stream, what: &str) {
+        bound_reads(stream);
+        let mut reader = line_reader(stream.try_clone().unwrap());
+        let msg: Option<Response> = read_message(&mut reader).unwrap();
+        assert!(msg.is_none(), "{what} is still open: got {msg:?}");
+    }
+
+    fn trusted_manager(dir: &tempfile::TempDir) -> Arc<SessionManager> {
+        let manager = test_manager(dir);
+        manager.set_trust_store(
+            crate::trust::TrustStore::open(&dir.path().join("devices.sqlite")).unwrap(),
+        );
+        manager
+    }
+
+    fn pair_device(manager: &SessionManager, device_id: &str, key: u8) {
+        manager
+            .trust()
+            .unwrap()
+            .confirm_device(device_id, &[key; 32], device_id, crate::trust::DeviceRole::Remote)
+            .unwrap();
+    }
+
+    /// §3: "Revoke marks `revoked_at`, and the daemon drops every live
+    /// connection carrying that `device_id` immediately (the connection
+    /// holds its identity, so this is a lookup, not a hunt)."
+    ///
+    /// A lookup, so the OTHER device's connection has to survive it --
+    /// that is the half a cull would also pass.
+    #[test]
+    fn revoking_a_device_drops_its_live_connection_and_leaves_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = trusted_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+        pair_device(&manager, "dev-2", 2);
+
+        let revoked = connect_as_device(&manager, "dev-1");
+        let mut spared = connect_as_device(&manager, "dev-2");
+
+        let outcome = manager.revoke_device("dev-1").unwrap();
+        assert!(outcome.newly_revoked);
+        assert_eq!(outcome.connections_dropped, 1);
+
+        await_no_connection_for(&manager, "dev-1");
+        assert_closed(&revoked, "the revoked device's connection");
+
+        // The row says so too -- the connection drop is not a substitute
+        // for the revocation, it is its other half.
+        assert!(manager.trust().unwrap().device("dev-1").unwrap().unwrap().is_revoked());
+        assert!(!manager.trust().unwrap().device("dev-2").unwrap().unwrap().is_revoked());
+
+        // And the device nobody revoked is still talking.
+        let resp = request(&mut spared, &Request::GetProtocolVersion);
+        assert!(matches!(resp, Response::Forbidden { .. }), "{resp:?}");
+    }
+
+    /// The second half of §3's "Revocation": "Revoke all" rotates the
+    /// daemon's static key AND clears every live connection, not just the
+    /// rows.
+    #[test]
+    fn revoke_all_devices_rotates_the_key_and_drops_every_device_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = trusted_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+        pair_device(&manager, "dev-2", 2);
+        let before = manager.trust().unwrap().static_public_key().unwrap();
+
+        let first = connect_as_device(&manager, "dev-1");
+        let second = connect_as_device(&manager, "dev-2");
+        // A connection with no device on it -- the ordinary local client,
+        // which is not registered at all and must be untouched by any of
+        // this.
+        let (mut local, local_server) = Stream::pair().unwrap();
+        {
+            let manager = Arc::clone(&manager);
+            std::thread::spawn(move || {
+                let _ = handle_connection(local_server, manager);
+            });
+        }
+        assert!(matches!(
+            request(&mut local, &Request::GetProtocolVersion),
+            Response::ProtocolVersion { .. }
+        ));
+
+        let outcome = manager.revoke_all_devices().unwrap();
+
+        assert_eq!(outcome.connections_dropped, 2);
+        assert_ne!(outcome.new_public_key, before, "revoke all must rotate the daemon's key");
+        assert_eq!(manager.trust().unwrap().static_public_key().unwrap(), outcome.new_public_key);
+
+        await_no_connection_for(&manager, "dev-1");
+        await_no_connection_for(&manager, "dev-2");
+        assert_closed(&first, "dev-1's connection");
+        assert_closed(&second, "dev-2's connection");
+
+        // The local client never carried a device id, so nothing here was
+        // ever about it.
+        assert!(matches!(
+            request(&mut local, &Request::GetProtocolVersion),
+            Response::ProtocolVersion { .. }
+        ));
+    }
+
+    /// A connection that ends on its own must take its `device_connections`
+    /// entry with it, or a later revocation shuts down a socket that
+    /// belongs to nobody and reports a connection it did not drop.
+    #[test]
+    fn a_device_connection_deregisters_itself_when_it_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = trusted_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+
+        let conn = connect_as_device(&manager, "dev-1");
+        assert_eq!(manager.device_connections.lock().unwrap().len(), 1);
+
+        drop(conn);
+        await_no_connection_for(&manager, "dev-1");
+
+        let outcome = manager.revoke_device("dev-1").unwrap();
+        assert!(outcome.newly_revoked);
+        assert_eq!(outcome.connections_dropped, 0);
+    }
+
+    /// A daemon with no trust store says so by name. The alternative --
+    /// reporting a revocation nothing recorded -- is the failure mode a
+    /// Settings panel would show as success.
+    #[test]
+    fn revoking_without_a_trust_store_is_a_named_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let err = manager.revoke_device("dev-1").unwrap_err();
+        assert!(err.to_string().contains("no trust store"), "{err}");
     }
 
     #[test]
