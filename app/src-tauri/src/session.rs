@@ -5590,6 +5590,67 @@ pub fn set_checklist_item(
     }
 }
 
+/// Files a `Decision:` / `Human test:` line on a card. Returns true when
+/// it re-armed an identical failed test rather than appending a new line.
+///
+/// The app sends this one as well as gavin-mcp -- a human can file a
+/// check they want to remember to run -- so it is an ordinary card write,
+/// routed by path like `set_checklist_item` beside it.
+#[tauri::command]
+pub fn file_human_item(
+    path: String,
+    kind: protocol::HumanItemKind,
+    text: String,
+    options: Vec<String>,
+    app_handle: AppHandle,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<bool, String> {
+    let route = crate::remote::route_for_path(&app_handle, &path)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(
+            conn,
+            compat,
+            &Request::FileHumanItem { path, kind, text, options },
+        )
+    })
+    .map_err(|e| e.to_string())?;
+    match resp {
+        Response::HumanItemFiled { rearmed } => Ok(rearmed),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected daemon reply: {other:?}")),
+    }
+}
+
+/// Writes the human's answer under a human item and sets its checkbox.
+/// `expected_text` is the item line's raw remainder, guarded by the
+/// daemon exactly as `set_checklist_item`'s is -- a refusal here means
+/// an agent rewrote the card under the tab, and the caller must re-read.
+#[tauri::command]
+pub fn resolve_human_item(
+    path: String,
+    expected_text: String,
+    outcome: protocol::HumanItemOutcome,
+    app_handle: AppHandle,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let route = crate::remote::route_for_path(&app_handle, &path)?;
+    let resp = with_command(route, &state, &compat, |conn, compat| {
+        send_command_reconnecting(
+            conn,
+            compat,
+            &Request::ResolveHumanItem { path, expected_text, outcome },
+        )
+    })
+    .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Ok => Ok(()),
+        Response::Error { message } => Err(message),
+        other => Err(format!("unexpected daemon reply: {other:?}")),
+    }
+}
+
 /// Returns the created task card's path.
 #[tauri::command]
 pub fn promote_checklist_item(
@@ -6139,6 +6200,17 @@ mod gate_tests {
                 checked: true,
             },
             Request::PromoteChecklistItem { plan_path: "p".into(), item: "i".into() },
+            Request::FileHumanItem {
+                path: "p".into(),
+                kind: protocol::HumanItemKind::Decision,
+                text: "which?".into(),
+                options: vec![],
+            },
+            Request::ResolveHumanItem {
+                path: "p".into(),
+                expected_text: "Decision: which?".into(),
+                outcome: protocol::HumanItemOutcome::Pass,
+            },
             Request::LinkCardSession {
                 workspace_id: "w".into(),
                 path: "p".into(),

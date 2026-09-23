@@ -376,6 +376,28 @@ export const FEATURE_MIN_VERSION = {
   // are the two hub views, which show the notice until the host is new
   // enough.
   sshGitFiles: 41,
+  // Human items: the `Decision:` / `Human test:` lines a card carries,
+  // and the two writes behind them (v42). Both requests are new TYPES,
+  // so `min_version_for` genuinely refuses `FileHumanItem` and
+  // `ResolveHumanItem` against an older daemon and no write can be
+  // silently dropped.
+  //
+  // The entry is for the READ, which nothing on the wire guards at all.
+  // `PlanFileInfo.human_items` is `Option<Vec<HumanItem>>`, and a v41
+  // daemon sends no such field -- not because the cards ask nothing, but
+  // because it never PARSED the lines. Reading that absence as an empty
+  // list would have the Decisions tab report "nothing is waiting on you"
+  // for a workspace with a dozen open decisions in it, which is the one
+  // wrong answer this tab must never give: the human would go away
+  // satisfied.
+  //
+  // So the consumer is the tab's answer controls (DecisionsHubView ->
+  // DecisionsItemRow), which is also why the gate is on the ITEMS and
+  // not the tab: waiting sessions, rail review gates and unreviewed
+  // cards are all readable from an older daemon, so the tab still lists
+  // them and says why the items are missing rather than drawing an empty
+  // list that looks like good news.
+  humanItems: 42,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

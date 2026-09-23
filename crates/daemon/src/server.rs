@@ -3765,6 +3765,27 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             crate::gavin::promote_checklist_item(std::path::Path::new(&plan_path), &item)
                 .map(|p| Response::TaskPromoted { path: p.to_string_lossy().to_string() })
         }
+        // The date is stamped HERE, off this machine's clock, and is not
+        // a field either request carries: two clients writing to one
+        // card would otherwise disagree about what day it is, and a
+        // caller would be free to write any date at all.
+        Request::FileHumanItem { path, kind, text, options } => crate::gavin::file_human_item(
+            std::path::Path::new(&path),
+            kind,
+            &text,
+            &options,
+            &crate::gavin::today(),
+        )
+        .map(|rearmed| Response::HumanItemFiled { rearmed }),
+        Request::ResolveHumanItem { path, expected_text, outcome } => {
+            crate::gavin::resolve_human_item(
+                std::path::Path::new(&path),
+                &expected_text,
+                &outcome,
+                &crate::gavin::today(),
+            )
+            .map(|_| Response::Ok)
+        }
         Request::GetProtocolVersion => {
             Ok(Response::ProtocolVersion { version: protocol::PROTOCOL_VERSION })
         }
@@ -4008,6 +4029,15 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // Scoped card/folder writes by PATH.
         Request::SetPlanFrontmatterField { path, .. }
         | Request::SetChecklistItem { path, .. } => agent_path_in_scope(id, path),
+        // Filing a question or a hands-on check on its own card: an
+        // agent saying it cannot go further alone, which is the whole
+        // point of the tool. Scoped by path like every other card write.
+        //
+        // `ResolveHumanItem` is NOT here, and the omission is the
+        // feature: the answer is the human's, given in the app, and an
+        // agent that could write one would be answering its own
+        // question. It falls through to the denied list below.
+        Request::FileHumanItem { path, .. } => agent_path_in_scope(id, path),
         Request::PromoteChecklistItem { plan_path, .. } => agent_path_in_scope(id, plan_path),
         Request::CreatePlan { context_folder, .. } => agent_path_in_scope(id, context_folder),
         Request::CreateGavinContext { parent_folder } => agent_path_in_scope(id, parent_folder),
@@ -4054,6 +4084,10 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // surveillance this list exists to refuse.
         | Request::SessionScreen { .. }
         | Request::SetFailurePatterns { .. }
+        // Answering a human item. The app sends this one, on a press the
+        // human made; an agent sending it would be signing off on its
+        // own work under the human's name.
+        | Request::ResolveHumanItem { .. }
         | Request::GetBoard { .. }
         | Request::SetBoard { .. }
         | Request::DeleteBoard { .. }
@@ -5081,6 +5115,43 @@ mod tests {
         }
     }
 
+    /// An agent may ASK the human, in its own workspace's card, and may
+    /// never answer. Filing is the whole point of `gavin_request_human`;
+    /// resolving is the human's press in the app, and an agent that
+    /// could send it would be signing off on its own work.
+    #[test]
+    fn an_agent_may_file_a_human_item_and_never_resolve_one() {
+        let (_ws, root, card) = workspace_with_card();
+        let (_other, _other_root, other_card) = workspace_with_card();
+        let id = ClientIdentity::agent("sess-1", &root, &root);
+
+        let file = |path: &str| Request::FileHumanItem {
+            path: path.to_string(),
+            kind: protocol::HumanItemKind::Decision,
+            text: "which?".into(),
+            options: vec![],
+        };
+        assert!(authorize(&id, &file(&card), false).is_ok());
+        // Another workspace's card is outside its scope, like every
+        // other card write.
+        assert!(matches!(
+            authorize(&id, &file(&other_card), false),
+            Err(Response::Forbidden { .. })
+        ));
+        assert!(matches!(
+            authorize(
+                &id,
+                &Request::ResolveHumanItem {
+                    path: card,
+                    expected_text: "Decision: which?".into(),
+                    outcome: protocol::HumanItemOutcome::Pass,
+                },
+                false
+            ),
+            Err(Response::Forbidden { role, .. }) if role == "agent"
+        ));
+    }
+
     #[test]
     fn an_agent_owns_only_its_own_session_id() {
         let (_ws, root, _card) = workspace_with_card();
@@ -5163,6 +5234,17 @@ mod tests {
             Request::GetBoardByRoot { root_path: "/x".into() },
             Request::PromoteChecklistItem { plan_path: "/x/a.md".into(), item: "i".into() },
             Request::SetChecklistItem { path: "/x/a.md".into(), line_index: 0, expected_text: "i".into(), checked: true },
+            Request::FileHumanItem {
+                path: "/x/a.md".into(),
+                kind: protocol::HumanItemKind::Decision,
+                text: "which?".into(),
+                options: vec![],
+            },
+            Request::ResolveHumanItem {
+                path: "/x/a.md".into(),
+                expected_text: "Decision: which?".into(),
+                outcome: protocol::HumanItemOutcome::Pass,
+            },
             Request::SpawnAgentSession { root_path: "/x".into(), cwd: "/x".into(), command: "sh".into() },
             Request::DeleteCardFile { path: "/x/a.md".into() },
             Request::ArchiveCard { path: "/x/a.md".into() },

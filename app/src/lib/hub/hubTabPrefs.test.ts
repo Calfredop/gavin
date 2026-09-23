@@ -49,6 +49,16 @@ describe("normalizeHubViewIdList", () => {
   it("drops unknown ids, non-strings and duplicates", () => {
     expect(normalizeHubViewIdList(["git", "nope", 3, "git", "settings"])).toEqual(["git"]);
   });
+
+  // A tab added by a later gavin has to be orderable and hideable like
+  // every other one. The failure this catches is the quiet half of
+  // adding a tab: a new id that never reached orderableHubViewIds would
+  // be dropped from every stored order and hidden list, so the human
+  // could drag it and it would snap back on the next launch.
+  it("knows the Decisions tab", () => {
+    expect(normalizeHubViewIdList(["decisions"])).toEqual(["decisions"]);
+    expect(hiddenHubViewCount(["decisions"])).toBe(1);
+  });
 });
 
 describe("the app-wide hidden default", () => {

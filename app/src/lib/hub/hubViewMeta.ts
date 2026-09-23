@@ -27,6 +27,16 @@ export const HUB_VIEW_META: HubViewMeta[] = [
   // a rail is carrying the tool. requiresRoot because a tool runs in a
   // checkout -- a workspace with no folder has nowhere to run one.
   { id: "tools", label: "Tools", requiresRoot: true },
+  // Between Tools and Review, because that is where it falls in the
+  // day: the three tabs above put work in flight, and this is the tab
+  // that says why it has stopped -- a question an agent asked, a check
+  // only a person can run, a rail gate, a card nobody has read. Review
+  // is the tab AFTER that, for work that did finish.
+  //
+  // requiresRoot because every row of it is a card file, a rail or a
+  // session launched in a checkout: a workspace with no folder has no
+  // cards to carry items and no rails to park.
+  { id: "decisions", label: "Decisions", requiresRoot: true },
   // After the three that PUT work in flight and before the documents
   // that describe it, because that is where it falls in the day: the
   // board says what exists, orchestration and tools run it, and this is
@@ -186,6 +196,20 @@ export interface HubViewActivity {
   /// an agent asking a question, or one whose turn ended without its card
   /// reaching the done column (see stepAttentions).
   railsWantingAttention: boolean;
+  /// Anything at all in this workspace is waiting on the human: an open
+  /// `Decision:` or `Human test:` item, a session that has stopped and
+  /// asked, a rail review gate, a card nobody has read
+  /// (`decisionsWaiting` over decisions.ts's own list).
+  ///
+  /// Its own field rather than a roll-up of the one above, and they are
+  /// not the same set in either direction: the Decisions tab lists
+  /// sessions with no rail behind them at all, and a rail wanting
+  /// attention because its agent BROKE is a fault to go and read rather
+  /// than a decision to take. Optional so every existing caller of
+  /// `hubViewBusy`/`hubViewAttention` keeps compiling, and absent reads
+  /// as "nothing waits" -- which is also what a workspace whose board
+  /// and tree have not loaded looks like.
+  decisionsWaiting?: boolean;
 }
 
 /// Whether this tab should say, from the tab strip, that something it
@@ -201,7 +225,25 @@ export function hubViewBusy(viewId: string, activity: HubViewActivity): boolean 
 /// purpose, and never collapsed into it: a spinner says gavin is doing
 /// something, a mark says you have to. A rail can be both at once.
 export function hubViewAttention(viewId: string, activity: HubViewActivity): boolean {
-  return viewId === "orchestration" && activity.railsWantingAttention;
+  if (viewId === "orchestration") return activity.railsWantingAttention;
+  if (viewId === "decisions") return activity.decisionsWaiting === true;
+  return false;
+}
+
+/// What the mark MEANS on the tab it is drawn on, for the strip's
+/// tooltip and its screen-reader name.
+///
+/// Per view rather than one sentence for all of them, because the two
+/// tabs that can wear it are waiting on different things: a rail parked
+/// on a step is a rail, and an unanswered decision is not. A strip that
+/// said "a rail is waiting on you" over the Decisions tab would send the
+/// reader to the wrong tab to deal with it.
+///
+/// Empty string for a tab with no mark, which is what `use:tooltip`
+/// takes as "no bubble".
+export function hubViewAttentionLabel(viewId: string): string {
+  if (viewId === "decisions") return "Something here is waiting on you";
+  return "A rail is waiting on you";
 }
 
 /// The hub tab to land on when a workspace's Hub button is clicked: the

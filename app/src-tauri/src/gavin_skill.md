@@ -97,19 +97,51 @@ folder to the work still in flight — and taking it off Done brings it back.
 The reply names the card's path after the write, so when it moved, use the
 new path from then on. Nested children travel with their parent.
 
-## 5. New feature or library? New context
+## 5. When only a person can answer
+
+Some work stops on a human, not on a command: a choice that is not yours
+to make, or a check no suite can run. File it on the card with
+`gavin_request_human(card, kind, text, options?)`, then carry on with
+everything that does not depend on it — the tool returns as soon as the
+line is written, and the answer arrives on the card later.
+
+- **`kind: "decision"`** — a question whose answer is words: which
+  approach, which name, whether to go ahead. Pass `options` when there is
+  a shortlist; each becomes a button the human can press.
+- **`kind: "test"`** — a check only a person can run: another machine, a
+  real install, whether the rendered surface actually looks right.
+
+It writes `- [ ] Decision: <question>` or `- [ ] Human test: <what to
+check>` into the card's checklist — with an indented `Options: A) … B) …`
+line when you passed options — and the item appears in the workspace's
+**Decisions** tab under that card. Filing one claims the card for your
+session, exactly like setting it In Progress.
+
+The answer comes back **under the item, on the card**: `Answer (date): …`
+for a decision, `Result (date): passed` or `Result (date): failed —
+<what went wrong>` for a test. A failed test keeps its box unticked and
+is yours again. Once you have fixed what they found, ask for it again
+with **word-for-word the same text**: an identical re-file re-arms that
+item rather than filing a second one.
+
+Do not use it for anything you could settle by reading the repo or
+running a command, and never sit waiting on it — there is no blocking
+form. If the work genuinely cannot go on without the answer, file the
+question, say so, and stop.
+
+## 6. New feature or library? New context
 
 `gavin_create_context(parent_folder)` scaffolds `.gavin/` there; its cards
 get their own board for anyone working in that folder.
 
-## 6. Parallel work: spawn visible sessions
+## 7. Parallel work: spawn visible sessions
 
 `gavin_spawn_session(command, cwd?)` opens a terminal in the gavin app,
 visible to the human on the Agents page. Never run long-lived background
 agents any other way — visibility is the contract. (If a tool says the
 workspace isn't open in gavin, ask the human to open it.)
 
-## 7. Proposing a memory
+## 8. Proposing a memory
 
 Learned something durable about this repo that no card records — a trap, a
 convention, a command that only works one particular way? File it as a

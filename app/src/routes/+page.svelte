@@ -63,7 +63,13 @@
   import DaemonRequestErrorBanner from "$lib/shell/DaemonRequestErrorBanner.svelte";
   import MemoryPressureBanner from "$lib/agents/MemoryPressureBanner.svelte";
   import { adoptAgentCommits, agentCommitPhase, gitStore } from "$lib/git/gitState";
-  import { drawableHubViewId, hubViewBusy, hubViewAttention, moveHubViewId } from "$lib/hub/hubViewMeta";
+  import {
+    drawableHubViewId,
+    hubViewAttention,
+    hubViewAttentionLabel,
+    hubViewBusy,
+    moveHubViewId,
+  } from "$lib/hub/hubViewMeta";
   import {
     hubTabOrderByWorkspace,
     hubTabPrefsFor,
@@ -78,6 +84,7 @@
   import { Lock, LockOpen } from "@lucide/svelte";
   import { orchestrations, stepAttentionsByWorkspace } from "$lib/orchestration/orchestrationState";
   import { railsWantingAttention, emptyOrchestration } from "$lib/orchestration/orchestration";
+  import { decisionsWaitingByWorkspace } from "$lib/decisions/decisionsAttention";
   import { tooltip } from "$lib/core/tooltip";
   import { wheelScrollsSideways, scrollsIntoLead } from "$lib/terminal/wheelScroll";
   import { windowDrag } from "$lib/shell/windowDrag";
@@ -177,6 +184,14 @@
           $orchestrations[activeWorkspace.id] ?? emptyOrchestration(),
           $stepAttentionsByWorkspace[activeWorkspace.id] ?? new Map()
         ).size > 0)
+      : false,
+    // The Decisions tab. Read from a store rather than computed here
+    // for the reason the commit spinner above exists at all: a mark on a
+    // tab has to be right while the human is looking at some OTHER tab,
+    // and the tab that owns it is destroyed on every switch away from
+    // it. See decisionsAttention.ts.
+    decisionsWaiting: activeWorkspace
+      ? ($decisionsWaitingByWorkspace[activeWorkspace.id] ?? false)
       : false,
   });
 
@@ -486,12 +501,12 @@
                       use:tooltip={busy
                         ? "An agent is committing"
                         : wantsYou
-                          ? "A rail is waiting on you"
+                          ? hubViewAttentionLabel(view.id)
                           : ""}
                       aria-label={busy
                         ? `${hubLabel(view, activeAgent.file)} — an agent is committing`
                         : wantsYou
-                          ? `${hubLabel(view, activeAgent.file)} — a rail is waiting on you`
+                          ? `${hubLabel(view, activeAgent.file)} — ${hubViewAttentionLabel(view.id).toLowerCase()}`
                           : undefined}
                       draggable={$hubTabsUnlocked}
                       ondragstart={(e) => handleHubTabDragStart(e, view.id)}

@@ -37,7 +37,7 @@ import type { LayoutNode } from "$lib/panes/layout";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/core/gavin";
-import { verdictIsAsking, type TurnVerdictEntry } from "$lib/agents/turnVerdict";
+import { readingOf, verdictIsAsking, type TurnVerdictEntry } from "$lib/agents/turnVerdict";
 
 /// Why a row is in the inbox. The rails' own answers, reused rather than
 /// re-spelled: a running step marked `asking` and a bare terminal
@@ -55,7 +55,14 @@ import { verdictIsAsking, type TurnVerdictEntry } from "$lib/agents/turnVerdict"
 /// that step never launched at all, so there is not even a session to
 /// have gone quiet. It shows where a rail gate shows -- the step's chip,
 /// the rail header, the sidebar recap and the hub's attention count.
-export type AttentionReason = Exclude<StepAttention, "review" | "unreviewed">;
+///
+/// `blocked` is the one word the rails do not have, because a rail turns
+/// that verdict into a STALL instead (`verdictStallReason`) -- which
+/// leaves a blocked agent with no rail behind it in no list at all. It
+/// is produced only for a caller that asked for it (`includeBlocked`),
+/// so the surface that wants it can have it without widening what the
+/// hub's inbox and the ⇧⌘A button have always listed.
+export type AttentionReason = Exclude<StepAttention, "review" | "unreviewed"> | "blocked";
 
 /// One session's TypeSafe turn verdict, when one was taken. Structural
 /// like everything else this module reads, so a test reaches the rule
@@ -104,6 +111,17 @@ export interface AttentionInboxInput {
   /// older daemon and a terminal the human opened all look like -- and
   /// all four must produce exactly today's list.
   verdicts?: VerdictsBySession;
+  /// Whether an idle session whose verdict is `blocked` counts as
+  /// waiting on a human. Off by default, and the default is the point:
+  /// the hub's inbox and the ⇧⌘A button have always listed exactly the
+  /// sessions they list today, and this must not change under them.
+  ///
+  /// The Decisions tab turns it on, because that tab's question is "what
+  /// is waiting on me" rather than "which sessions stopped" -- and an
+  /// agent that gave up and said why is waiting on a person to read it.
+  /// A rail behind the same agent already says so as a stall; this is
+  /// for the one with no rail behind it.
+  includeBlocked?: boolean;
 }
 
 /// One session waiting on a human.
@@ -135,7 +153,9 @@ export interface AttentionRow {
   /// False when `waitedMs` is measured from the moment gavin SAW the
   /// state rather than from the moment it began (see StatusSince).
   watched: boolean;
-  /// The agent's own line about what broke, for a `failed` row.
+  /// The agent's own line: what broke on a `failed` row, what it gave up
+  /// on for a `blocked` one. Null for every other reason, and for a row
+  /// whose line gavin could not read off the screen.
   failureReason: string | null;
 }
 
@@ -156,6 +176,12 @@ export const REASON_LABEL: Record<AttentionReason, string> = {
   // human reading "turn ended" would go and restart the agent into the
   // same wrong file.
   "decoy-edit": "Edited the worktree's copy of the card",
+  // `blockedStepReason`'s sentence, without the half that repeats the
+  // agent's line: the row carries `said` in `failureReason` and its
+  // bubble already prints it, so the label says only what the agent
+  // DID. Distinct from `stale` on purpose -- that one is a rail's
+  // guess from silence, this is the agent saying it out loud.
+  blocked: "Stopped without finishing",
 };
 
 /// Shared empty map, so an input with no `verdicts` allocates nothing
@@ -218,7 +244,8 @@ export function attentionInbox(input: AttentionInboxInput, now: number): Attenti
         input.state,
         location.sessionId,
         marks,
-        input.verdicts ?? NO_VERDICTS
+        input.verdicts ?? NO_VERDICTS,
+        input.includeBlocked === true
       );
       if (!reason) continue;
       seen.add(location.sessionId);
@@ -285,7 +312,8 @@ function reasonFor(
   state: AttentionState,
   sessionId: string,
   marks: Map<string, StepAttention>,
-  verdicts: VerdictsBySession
+  verdicts: VerdictsBySession,
+  includeBlocked: boolean
 ): AttentionReason | null {
   if (state.interruptedSessionIds.has(sessionId)) return null;
   if (state.fileTabsById[sessionId] || state.boardTabsById[sessionId] || state.cardTabsById[sessionId])
@@ -304,6 +332,15 @@ function reasonFor(
   // broken agent still outranks a question, and a rail that cannot reach
   // its card is still worth saying before one that is merely waiting.
   if (status === "idle" && verdictIsAsking(verdicts.get(sessionId))) return "asking";
+  // Its sibling, off the same reading, and opt-in for the reason
+  // `includeBlocked` gives. Beside `asking` because the two come from
+  // one verdict and a turn is only ever one of them, so the order
+  // between them decides nothing -- what matters is that both sit below
+  // `failed`: an agent that was cut off is not an agent that thought
+  // about it and stopped.
+  if (includeBlocked && status === "idle" && blockedReading(verdicts.get(sessionId))) {
+    return "blocked";
+  }
   // Before `asking`, and without consulting the status at all: the write
   // has already happened, so an agent still talking -- or still asking
   // about the card it cannot reach -- is no less stuck for it. This is
@@ -314,6 +351,20 @@ function reasonFor(
   // gone quiet. An idle session with no mark is a shell at its prompt.
   if (status === "idle" && (mark === "turn-ended" || mark === "stale")) return mark;
   return null;
+}
+
+/// The `blocked` reading an entry settled on, or null for every other
+/// reading, a pending entry and no entry at all.
+///
+/// A reading rather than a boolean, because the two callers want
+/// different halves of it and neither can be derived from the other: the
+/// reason asks whether there IS one, and the row asks what it said. A
+/// blocked turn gavin could not read a line off still belongs in the
+/// list -- the agent stopped either way -- so an empty `said` must not
+/// read as "not blocked".
+function blockedReading(entry: TurnVerdictEntry | undefined): { said: string } | null {
+  const reading = readingOf(entry);
+  return reading?.kind === "blocked" ? reading : null;
 }
 
 function row(
@@ -341,8 +392,26 @@ function row(
     cardWorkspaceId: card?.workspaceId ?? null,
     waitedMs: stamp ? Math.max(0, now - stamp.at) : null,
     watched: stamp?.watched ?? false,
-    failureReason: reason === "failed" ? (state.failureReasonById[sessionId] ?? null) : null,
+    failureReason: agentLine(input, sessionId, reason),
   };
+}
+
+/// The agent's own line for a row that has one: what the daemon recorded
+/// for a `failed` session, what the verdict read off the screen for a
+/// `blocked` one.
+///
+/// Empty becomes null rather than an empty string, so every surface can
+/// test the field instead of testing it and then trimming it --
+/// `agentLastLine` genuinely returns "" for a screen it could not read.
+function agentLine(
+  input: AttentionInboxInput,
+  sessionId: string,
+  reason: AttentionReason
+): string | null {
+  if (reason === "failed") return input.state.failureReasonById[sessionId] ?? null;
+  if (reason !== "blocked") return null;
+  const said = blockedReading((input.verdicts ?? NO_VERDICTS).get(sessionId))?.said.trim();
+  return said || null;
 }
 
 interface CardBinding {

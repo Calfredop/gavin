@@ -80,11 +80,16 @@ independently of the GUI. Design history is in
 4. **Orchestration hardening** — the open cards: a rail icon on a card that sits in
    a rail, an orchestration recap on Home, agent-driven rail organisation, archiving
    closing the card's sessions, and the tab-rename skill regression.
-5. **Confirming the rendered surface.** The suites cannot reach it, and gavin no
-   longer tracks it: the smoke checklist and its dev-only workspace are retired,
-   so there is no list to tick and no smoke items to file on a card. Looking at
-   what a change does in the running app is the owner's, done when a change
-   warrants it rather than accumulated as a backlog.
+5. **Confirming the rendered surface.** The suites cannot reach it, so looking at
+   what a change does in the running app stays the owner's. What is no longer
+   lost is the check that really needs a person: an agent files it on the card as
+   a `- [ ] Human test:` item (`gavin_request_human`, or by hand in that
+   spelling), and it waits in the **Decisions** tab with the card until the owner
+   passes or fails it — a failure comes back to the agent with their note. That
+   is for what only a person can do: another machine, a real install, a
+   judgement about what the screen looks like. It is not the retired smoke
+   checklist returning; anything a suite can reach is the agent's to run, and a
+   card padded with human tests is a backlog nobody asked for.
 
 ## Out of scope
 

@@ -43,6 +43,7 @@ import {
   Eye,
   FileWarning,
   GitBranch,
+  Hand,
   History,
   Hourglass,
   LoaderCircle,
@@ -161,6 +162,7 @@ const AGENT: Record<
   | "developing"
   | "turn_ended"
   | "stale"
+  | "blocked"
   | "decoy_edit"
   | "failed"
   | "unknown"
@@ -191,6 +193,13 @@ const AGENT: Record<
   // moves, which is exactly the claim: same question, and the answer has
   // stopped being "give it a moment".
   stale: make("agent", "stale", CirclePause, "danger", "turn ended long ago, card still unmoved"),
+  // The agent ended its own turn without doing the work, and SAID so --
+  // the TypeSafe turn verdict's `blocked` reading. Warning rather than
+  // danger, and a hand rather than a pause: nothing broke and nothing is
+  // aging, a person simply has to read what it said and decide. The two
+  // above it are gavin inferring from silence; this one is the agent
+  // speaking, which is why it is not drawn as either of them.
+  blocked: make("agent", "blocked", Hand, "warning", "stopped without finishing, and said why"),
   // The agent wrote the rail worktree's own copy of the card rather than
   // the card (see worktreeCards.ts). Danger, because nothing the run
   // does from here can reach the board, and a glyph of its own because
@@ -649,10 +658,15 @@ export const PROJECTION_BANDS = ["clear", "tight", "over"] as const;
 // when something BROKE, and "the agent stopped talking" is true of that
 // too and useless. Same fact, same badge, everywhere it is drawn.
 
-export function attentionIndicator(attention: StepAttention): Indicator {
+/// `blocked` is not a `StepAttention` and never will be: a rail turns
+/// that verdict into a stall instead. It is here because a SESSION can
+/// carry it (attentionInbox's `AttentionReason`), and a surface that
+/// lists such a session needs a badge for it like any other row.
+export function attentionIndicator(attention: StepAttention | "blocked"): Indicator {
   if (attention === "asking") return AGENT.waiting_for_input;
   if (attention === "failed") return AGENT.failed;
   if (attention === "stale") return AGENT.stale;
+  if (attention === "blocked") return AGENT.blocked;
   if (attention === "decoy-edit") return AGENT.decoy_edit;
   // The one attention mark that is not about an agent, because a
   // `review` step has none. See reviewWaitIndicator.

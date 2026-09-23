@@ -12,7 +12,13 @@ import type { Board, Column, Label } from "$lib/board/kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
 import type { GavinTracking } from "$lib/git/gitTracking";
 import type { IgnoreKind } from "$lib/git/gitIgnore";
-import type { BoardTab, CardTab, GavinTree } from "$lib/core/gavin";
+import type {
+  BoardTab,
+  CardTab,
+  GavinTree,
+  HumanItemKind,
+  HumanItemOutcome,
+} from "$lib/core/gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "$lib/git/git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "$lib/orchestration/orchestration";
 import type { ToolRecord } from "$lib/orchestration/orchestrationTools";
@@ -919,6 +925,31 @@ export function setChecklistItem(
 // Returns the created task card's path.
 export function promoteChecklistItem(planPath: string, item: string): Promise<string> {
   return invoke("promote_checklist_item", { planPath, item });
+}
+
+/// Files a `Decision:` / `Human test:` line on a card's checklist.
+/// Resolves true when it re-armed an identical test the human had
+/// already failed, rather than appending a second line.
+export function fileHumanItem(
+  path: string,
+  kind: HumanItemKind,
+  text: string,
+  options: string[] = []
+): Promise<boolean> {
+  return invoke("file_human_item", { path, kind, text, options });
+}
+
+/// Writes the human's answer under a human item and sets its checkbox.
+/// `expectedText` is the item line's raw remainder (`HumanItem.lineText`),
+/// guarded by the daemon exactly as `setChecklistItem`'s is: a rejection
+/// means an agent rewrote the card under the tab, so re-read the tree
+/// rather than retrying with the same text.
+export function resolveHumanItem(
+  path: string,
+  expectedText: string,
+  outcome: HumanItemOutcome
+): Promise<void> {
+  return invoke("resolve_human_item", { path, expectedText, outcome });
 }
 
 export function getBoard(workspaceId: string): Promise<Board> {

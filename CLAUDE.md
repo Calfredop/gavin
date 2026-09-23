@@ -128,12 +128,20 @@ Logic goes in a plain `.ts` module with unit tests (`orchestration.ts`,
 `sidebarSummary.ts`, `planBoard.ts`, …); the `.svelte` file stays a thin template
 over it. Extend the pure module, not the template.
 
-Rendered UI is the one thing the suites cannot cover, and gavin no longer tracks
-it: the smoke checklist and its dev-only workspace are gone, so there is nothing
-to tick and no smoke items to file on a card. Confirming the visible surface is
-the owner's, in the running app. A useful agent contribution is a static
-pre-flight — grep the exact strings a change relies on against the committed
-source — not a re-run of already-green suites.
+Rendered UI is the one thing the suites cannot cover, so confirming the visible
+surface is the owner's, in the running app. A useful agent contribution is a
+static pre-flight — grep the exact strings a change relies on against the
+committed source — not a re-run of already-green suites.
+
+When a change needs a person to look, file that check on the card as
+`- [ ] Human test: <what to check>` — `gavin_request_human(card, "test", text)`,
+or by hand in that spelling. It waits in the Decisions tab with the card until
+the owner passes or fails it, and a failure comes back to you with their note
+and the box still unticked; re-file the identical text once you have fixed it
+and the same item re-arms. This is for checks only a person can run — another
+machine, a real install, a judgement about what the screen looks like. It is not
+the retired smoke checklist returning: anything a suite can reach is yours to
+run, and a card padded with human tests is a backlog nobody asked for.
 
 ## Commit messages and descriptions
 

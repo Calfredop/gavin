@@ -18,6 +18,26 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v42 adds `FileHumanItem` and `ResolveHumanItem`: the two writes behind
+/// the Decisions tab, where a card's checklist carries the questions and
+/// the hands-on checks that are the human's to settle
+/// (`tb-developed-feat-decisions-tab.md`). Two new TYPES, gated by
+/// `min_version_for`, so an older daemon never receives either.
+///
+/// The same version also widens `PlanFileInfo` with `human_items`, the
+/// parsed reading of those checklist lines, and THAT half is the one a
+/// version match cannot see. It is `Option<Vec<_>>` rather than the
+/// `serde(default)` `Vec` `attachments` uses, and deliberately: the tree
+/// crosses the Tauri host, which deserializes and re-serializes it, so a
+/// defaulted `Vec` would turn "this daemon never looked" into "this card
+/// has nothing waiting" on the way through -- the `orphan` reading at
+/// v24, one layer further out. `None` survives that round trip as `null`,
+/// which is what lets the tab say "unknown" instead of inventing an empty
+/// list. The app's `FEATURE_MIN_VERSION` entry and its
+/// `featureBlockedReason` consumer belong with the tab itself
+/// (`decisions-tab-view.md`); an entry landed here, with nothing reading
+/// it, would be a dead gate.
+///
 /// v41 adds `RunGit` and `ListWorkspaceDir`: the Git tab's git subcommands
 /// and the Files tree's directory listing, run on a daemon on another
 /// machine (`2026-09-22-ssh-git-files-design.md`). Two new TYPES, gated by
@@ -392,7 +412,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 41;
+pub const PROTOCOL_VERSION: u32 = 42;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -752,6 +772,47 @@ pub enum Request {
     PromoteChecklistItem {
         plan_path: String,
         item: String,
+    },
+    /// Appends a `Decision:` or `Human test:` checklist line to a card --
+    /// an agent saying, in the card itself, that it cannot go further
+    /// without the human (v42). The card's checklist is where it lands
+    /// because that is where the answer has to be readable from later:
+    /// the next agent to pick the card up reads the answer beside the
+    /// question, with no second store to consult.
+    ///
+    /// `options` is the shortlist a decision offers, written as the
+    /// item's indented `Options:` line. Empty for a test, and empty for
+    /// a decision that is genuinely open-ended.
+    ///
+    /// Re-filing an identical TEST whose last result was a failure
+    /// re-arms it (an appended `Ready for re-test (date)`) rather than
+    /// appending a second copy: an agent that fixed what the human found
+    /// broken is asking for the same check again, not for a second one,
+    /// and a card that accumulated a line per attempt would bury the
+    /// history it is supposed to show.
+    FileHumanItem {
+        path: String,
+        kind: HumanItemKind,
+        text: String,
+        #[serde(default)]
+        options: Vec<String>,
+    },
+    /// Writes the human's answer under a `Decision:`/`Human test:` item
+    /// and ticks it (v42). `expected_text` is the item line's raw
+    /// remainder, guarded exactly as `SetChecklistItem` guards it: a
+    /// mismatch means an agent rewrote the card under the tab, and the
+    /// write is refused rather than aimed at whatever now sits there.
+    ///
+    /// There is no `line_index` beside it, unlike `SetChecklistItem`:
+    /// the tab's rows come from a tree snapshot that a card edit can
+    /// have moved since, so an index would be the stale half of the
+    /// pair. Two items with identical text are refused as ambiguous
+    /// instead -- `promote_checklist_item`'s posture, and the same
+    /// reason.
+    ResolveHumanItem {
+        path: String,
+        expected_text: String,
+        outcome: HumanItemOutcome,
     },
     /// Upserts a card file's live session binding (by workspace + path).
     LinkCardSession {
@@ -1190,6 +1251,18 @@ pub fn min_version_for(req: &Request) -> u32 {
         // against the HOST daemon's version.
         Request::RunGit { .. } | Request::ListWorkspaceDir { .. } => 41,
 
+        // The Decisions tab's two writes (v42). New TYPES, so this match
+        // is the real wire gate for them -- but it is only half of v42,
+        // and the other half is the one that bites: the same version
+        // widens `PlanFileInfo` with `human_items`, which this match
+        // sorts by TYPE and cannot see. An older daemon serves a tree
+        // with no items at all, which is "unknown" and not "none" --
+        // hence the `Option` on the field, and hence the
+        // FEATURE_MIN_VERSION entry the TAB owes, beside the
+        // `featureBlockedReason` that reads it. There is none here on
+        // purpose: an entry with no consumer is a dead gate.
+        Request::FileHumanItem { .. } | Request::ResolveHumanItem { .. } => 42,
+
         Request::Shutdown => 12,
 
         // Client identity on the local socket (phase 1 of the
@@ -1625,6 +1698,15 @@ pub enum Response {
     SessionNamed { session_id: String, name: String },
     ProtocolVersion { version: u32 },
     TaskPromoted { path: String },
+    /// A `FileHumanItem` that landed. `rearmed` says which of the two
+    /// things happened: a new marker line appended, or an existing
+    /// failed test armed again with a `Ready for re-test (date)`.
+    ///
+    /// Worth a reply of its own rather than a bare `Ok` because the
+    /// filer acts on it -- an agent told "re-armed" knows the human
+    /// already failed this check once and that the card carries their
+    /// note about why.
+    HumanItemFiled { rearmed: bool },
     /// A frontmatter write, answered with the card's path AFTERWARDS: a
     /// status write can archive the file into `plans/done/` (or bring it
     /// back), and callers hold that path as the card's identity.
@@ -2384,6 +2466,95 @@ pub enum CardKind {
     Plan,
 }
 
+/// What a `Decision:` / `Human test:` checklist line is asking of the
+/// human: a call to make, or a check to run by hand.
+///
+/// Two and not three: "decision" covers every question whose answer is
+/// words, and "test" every one whose answer is pass or fail. The
+/// distinction is load-bearing because only a test can FAIL -- and a
+/// failed test goes back to the agent while an unanswered decision waits
+/// on the human, which is the difference the tab's waiting count turns
+/// on.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HumanItemKind {
+    Decision,
+    Test,
+}
+
+/// Where a human item stands, read off the last `Answer (date):` /
+/// `Result (date):` / `Ready for re-test (date)` line under it.
+///
+/// Distinct from the checkbox, which is not enough on its own: a failed
+/// test is unticked and so is one nobody has looked at yet, and the tab
+/// has to tell "waiting on you" from "back with the agent". `Open` is
+/// also what a re-armed test reads as, which is the whole point of
+/// re-arming it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HumanItemState {
+    Open,
+    Answered,
+    Passed,
+    Failed,
+}
+
+/// What the human chose, on the way back down the wire.
+///
+/// `Fail` and `FailAndClose` carry the same note and differ only in the
+/// checkbox: a plain fail leaves the item open so the agent sees it
+/// still owes the work, and fail-and-close is the human overruling that
+/// -- the check failed and is not going to be re-run. Keeping them as
+/// two outcomes rather than a `close: bool` flag is what makes the
+/// second one a deliberate act at every call site.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum HumanItemOutcome {
+    Answer { text: String },
+    Pass,
+    Fail { note: String },
+    FailAndClose { note: String },
+}
+
+/// One `Decision:` / `Human test:` checklist line, parsed.
+///
+/// Crosses to the frontend, so camelCase like `PlanFileInfo`, verified by
+/// a shape test below.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HumanItem {
+    pub kind: HumanItemKind,
+    /// The question or the check, with the marker stripped: the
+    /// `Which serializer?` of `Decision: Which serializer?`.
+    pub text: String,
+    /// The checkbox. Not the same question as `state`: a fail-and-close
+    /// is ticked and failed, a plain fail is unticked and failed, and a
+    /// human who ticked the box by hand in an editor is done with it
+    /// whatever the lines underneath say.
+    pub done: bool,
+    /// The item's indented `Options:` line, split into its choices.
+    /// Empty when there is no such line -- an open-ended question, or a
+    /// test, which never has one.
+    pub options: Vec<String>,
+    /// The last `Answer (date): …` / `Result (date): …` / `Ready for
+    /// re-test (date)` line under the item, verbatim and un-indented, or
+    /// None for an item nobody has touched. Kept raw because the tab
+    /// SHOWS it: the date and the note are the record, and re-deriving
+    /// them from `state` would throw away the half a person reads.
+    pub latest: Option<String>,
+    pub state: HumanItemState,
+    /// The line's raw remainder -- marker included, the `Decision: Which
+    /// serializer?` -- which is what `ResolveHumanItem` and
+    /// `SetChecklistItem` both guard on. Distinct from `text`, which has
+    /// the marker stripped for display.
+    pub line_text: String,
+    /// Where the line sits in the file, counting from zero. A stable key
+    /// for a tab row within one snapshot; NOT a write guard -- the card
+    /// can have moved under it, which is why `ResolveHumanItem` matches
+    /// on `line_text` instead.
+    pub line_index: u32,
+}
+
 /// One card file inside a `.gavin*/plans/` folder, with its frontmatter
 /// parsed (kind/title/status/priority/order/parent/labels) and its body
 /// checklist counted. `parse_warning` covers an unterminated frontmatter
@@ -2467,6 +2638,20 @@ pub struct PlanFileInfo {
     /// `serde(default)` so an older daemon's tree still parses.
     #[serde(default)]
     pub model: Option<String>,
+    /// The card's `Decision:` / `Human test:` checklist lines, parsed
+    /// (v42) -- everything on this card that is waiting on a person.
+    ///
+    /// `Option<Vec<_>>`, not the `serde(default)` `Vec` the fields above
+    /// use, and the difference is the whole point. This tree is read by
+    /// the daemon, deserialized by the Tauri host and re-serialized to
+    /// the frontend, so a defaulted `Vec` would reach the tab as an
+    /// empty list whether the daemon parsed nothing or never looked --
+    /// and the tab would report "nothing waiting on you" for a workspace
+    /// whose daemon simply predates the feature. `None` survives the
+    /// round trip as `null`, which is the honest "unknown"; `Some(vec![])`
+    /// is a daemon that looked and found none.
+    #[serde(default)]
+    pub human_items: Option<Vec<HumanItem>>,
 }
 
 /// A markdown file in a context's docs/ or specs/ listing. `rel_path` is
@@ -3055,7 +3240,6 @@ mod tests {
     /// says which version the host needs (`FEATURE_MIN_VERSION.sshGitFiles`).
     #[test]
     fn git_and_dir_requests_are_gated_at_41() {
-        assert_eq!(PROTOCOL_VERSION, 41);
         let run = Request::RunGit {
             root_path: "/r".into(),
             cwd: "/r".into(),
@@ -3068,6 +3252,143 @@ mod tests {
             assert!(gate_request(req, 40).is_err());
             assert!(gate_request(req, 41).is_ok());
         }
+    }
+
+    /// v42: the Decisions tab's two writes. New TYPES, so this match is
+    /// the wire gate for them -- a v41 daemon never receives either.
+    #[test]
+    fn human_item_requests_are_gated_at_42() {
+        assert_eq!(PROTOCOL_VERSION, 42);
+        let file = Request::FileHumanItem {
+            path: "/r/.gavin-root/plans/a.md".into(),
+            kind: HumanItemKind::Test,
+            text: "install on the other machine".into(),
+            options: vec![],
+        };
+        let resolve = Request::ResolveHumanItem {
+            path: "/r/.gavin-root/plans/a.md".into(),
+            expected_text: "Human test: install on the other machine".into(),
+            outcome: HumanItemOutcome::Fail { note: "the installer hung".into() },
+        };
+        for req in [&file, &resolve] {
+            assert_eq!(min_version_for(req), 42);
+            assert!(gate_request(req, 41).is_err());
+            assert!(gate_request(req, 42).is_ok());
+        }
+    }
+
+    /// The four outcomes are a tagged union on the wire, and the tag
+    /// values are what the app's `backend.ts` wrapper types: a rename
+    /// here is a silent break there, so they are pinned.
+    #[test]
+    fn human_item_outcomes_serialize_to_the_shape_the_app_sends() {
+        let shape = |o: HumanItemOutcome| serde_json::to_value(o).unwrap();
+        assert_eq!(
+            shape(HumanItemOutcome::Answer { text: "serde".into() }),
+            serde_json::json!({ "kind": "answer", "text": "serde" })
+        );
+        assert_eq!(shape(HumanItemOutcome::Pass), serde_json::json!({ "kind": "pass" }));
+        assert_eq!(
+            shape(HumanItemOutcome::Fail { note: "crashed".into() }),
+            serde_json::json!({ "kind": "fail", "note": "crashed" })
+        );
+        assert_eq!(
+            shape(HumanItemOutcome::FailAndClose { note: "not worth it".into() }),
+            serde_json::json!({ "kind": "failAndClose", "note": "not worth it" })
+        );
+    }
+
+    /// Both requests survive the line protocol whole -- a decision's
+    /// options and a fail note are free text a human wrote, and the
+    /// daemon has to receive them as written.
+    #[test]
+    fn human_item_requests_roundtrip_through_json_line() {
+        let mut buf = Vec::new();
+        write_message(&mut buf, &Request::FileHumanItem {
+            path: "/r/.gavin-root/plans/a.md".to_string(),
+            kind: HumanItemKind::Decision,
+            text: "Which serializer?".to_string(),
+            options: vec!["serde".to_string(), "by hand (no dep)".to_string()],
+        })
+        .unwrap();
+        write_message(&mut buf, &Request::ResolveHumanItem {
+            path: "/r/.gavin-root/plans/a.md".to_string(),
+            expected_text: "Decision: Which serializer?".to_string(),
+            outcome: HumanItemOutcome::Answer { text: "serde — one dep, already in".to_string() },
+        })
+        .unwrap();
+        write_message(&mut buf, &Response::HumanItemFiled { rearmed: true }).unwrap();
+        let mut cursor = Cursor::new(buf);
+        match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
+            Request::FileHumanItem { path, kind, text, options } => {
+                assert_eq!(path, "/r/.gavin-root/plans/a.md");
+                assert_eq!(kind, HumanItemKind::Decision);
+                assert_eq!(text, "Which serializer?");
+                assert_eq!(options, vec!["serde", "by hand (no dep)"]);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
+            Request::ResolveHumanItem { expected_text, outcome, .. } => {
+                assert_eq!(expected_text, "Decision: Which serializer?");
+                assert_eq!(
+                    outcome,
+                    HumanItemOutcome::Answer { text: "serde — one dep, already in".to_string() }
+                );
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match read_message::<_, Response>(&mut cursor).unwrap().unwrap() {
+            Response::HumanItemFiled { rearmed } => assert!(rearmed),
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // `options` is serde(default): a caller that omits it entirely --
+        // gavin-mcp filing a test, which never has any -- still parses.
+        let parsed: Request = serde_json::from_str(
+            r#"{"type":"FileHumanItem","path":"/p/a.md","kind":"test","text":"check the installer"}"#,
+        )
+        .unwrap();
+        match parsed {
+            Request::FileHumanItem { kind, options, .. } => {
+                assert_eq!(kind, HumanItemKind::Test);
+                assert!(options.is_empty());
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// The reason `human_items` is an `Option<Vec<_>>` and not the
+    /// `serde(default)` `Vec` every other added field on `PlanFileInfo`
+    /// is. The tree crosses the Tauri host, which deserializes and
+    /// re-serializes it; a defaulted Vec would make an older daemon's
+    /// silence indistinguishable from a card with nothing waiting, and
+    /// the tab would report "nothing needs you" for a whole workspace.
+    #[test]
+    fn a_pre_v42_daemons_card_reads_back_as_unknown_not_as_no_items() {
+        let older: PlanFileInfo = serde_json::from_value(serde_json::json!({
+            "path": "/p/a.md",
+            "fileName": "a.md",
+            "title": "a",
+            "status": null,
+            "priority": null,
+            "order": null,
+            "kind": "plan",
+            "parent": null,
+            "labels": [],
+            "checklistDone": 0,
+            "checklistTotal": 0,
+            "parseWarning": false
+        }))
+        .unwrap();
+        assert_eq!(older.human_items, None);
+        // And it stays None through the round trip the host performs.
+        let relayed: PlanFileInfo =
+            serde_json::from_value(serde_json::to_value(&older).unwrap()).unwrap();
+        assert_eq!(relayed.human_items, None);
+        assert_eq!(
+            serde_json::to_value(&older).unwrap().get("humanItems"),
+            Some(&serde_json::Value::Null)
+        );
     }
 
     #[test]
@@ -3536,6 +3857,16 @@ mod tests {
                     complexity: Some(Complexity::Moderate),
                     agent: Some("codex".to_string()),
                     model: Some("gpt-5.1".to_string()),
+                    human_items: Some(vec![HumanItem {
+                        kind: HumanItemKind::Decision,
+                        text: "Which serializer?".to_string(),
+                        done: false,
+                        options: vec!["serde".to_string(), "by hand".to_string()],
+                        latest: None,
+                        state: HumanItemState::Open,
+                        line_text: "Decision: Which serializer?".to_string(),
+                        line_index: 7,
+                    }]),
                 }],
                 docs: vec![MdFileInfo {
                     path: "/tmp/ws/.gavin-root/docs/notes.md".to_string(),
@@ -3580,7 +3911,17 @@ mod tests {
                         "attachments": ["docs/spec.md"],
                         "complexity": "moderate",
                         "agent": "codex",
-                        "model": "gpt-5.1"
+                        "model": "gpt-5.1",
+                        "humanItems": [{
+                            "kind": "decision",
+                            "text": "Which serializer?",
+                            "done": false,
+                            "options": ["serde", "by hand"],
+                            "latest": null,
+                            "state": "open",
+                            "lineText": "Decision: Which serializer?",
+                            "lineIndex": 7
+                        }]
                     }],
                     "docs": [{ "path": "/tmp/ws/.gavin-root/docs/notes.md", "relPath": "notes.md" }],
                     "specs": [],
@@ -3913,7 +4254,16 @@ mod tests {
         // agent-integration files where the agent runs. Three new TYPES.
         // v41: RunGit + ListWorkspaceDir -- the Git tab and Files tree
         // over ssh. Two new TYPES.
-        assert_eq!(PROTOCOL_VERSION, 41);
+        // v42: FileHumanItem + ResolveHumanItem -- the Decisions tab's
+        // two writes, filing a `Decision:`/`Human test:` line on a card
+        // and writing the human's answer under it. Two new TYPES, which
+        // min_version_for does gate. The same version widens
+        // PlanFileInfo with `human_items`, which it cannot see -- that
+        // half is an Option rather than a defaulted Vec precisely so the
+        // absence survives the Tauri host's round trip as "unknown", and
+        // the tab owes it a FEATURE_MIN_VERSION entry with a real
+        // consumer (decisions-tab-view.md).
+        assert_eq!(PROTOCOL_VERSION, 42);
     }
 
     #[test]
@@ -4161,6 +4511,17 @@ mod tests {
             Request::StatWorkspacePaths { root_path: "r".into(), paths: vec!["a.md".into()] },
             Request::RunGit { root_path: "r".into(), cwd: "r".into(), args: vec!["status".into()], stdin: None },
             Request::ListWorkspaceDir { root_path: "r".into(), path: "r".into() },
+            Request::FileHumanItem {
+                path: "p".into(),
+                kind: HumanItemKind::Decision,
+                text: "t".into(),
+                options: vec![],
+            },
+            Request::ResolveHumanItem {
+                path: "p".into(),
+                expected_text: "Decision: t".into(),
+                outcome: HumanItemOutcome::Pass,
+            },
             Request::CreatePlan {
                 context_folder: "c".into(),
                 file_name: "f".into(),
@@ -4324,7 +4685,8 @@ mod tests {
     /// v27=1 (CardRuns), v28=1 (SetRailRunByRoot), v29=4 (the
     /// follow-up queue), v30=3 (standalone tool runs), v35=1 (Hello --
     /// client identity), v37=2 (an agent authoring its own workspace's
-    /// tools), v39=1 (SessionScreen), plus Unknown.
+    /// tools), v39=1 (SessionScreen), v40=3 (ssh workspace files), v41=2
+    /// (ssh git/files), v42=2 (the Decisions tab's writes), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -4365,6 +4727,8 @@ mod tests {
         expected.insert(40, 3);
         // RunGit + ListWorkspaceDir -- the Git tab and Files tree over ssh.
         expected.insert(41, 2);
+        // FileHumanItem + ResolveHumanItem -- the Decisions tab's writes.
+        expected.insert(42, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
