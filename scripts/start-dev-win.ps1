@@ -105,15 +105,28 @@ if (-not (Test-Path (Join-Path $App 'node_modules'))) {
     finally { Pop-Location }
 }
 
-# tauri.conf.json's beforeDevCommand builds these two as well. Building them
-# here first means a Rust error is the last thing on screen when it happens,
+# tauri.conf.json's beforeDevCommand runs this same script. Running it here
+# first means a Rust error is the last thing on screen when it happens,
 # instead of being scrolled away by vite and the app window.
+#
+# Through dev-sidecars.mjs and not a bare `cargo build`, for what that file
+# explains: this checkout's OTHER agent sessions are each running a
+# `target\debug\gavin-mcp.exe`, Windows will not let cargo unlink a running
+# image, and the script parks the held ones so the fresh binaries can take
+# their names. A `cargo build -p gavin-daemon -p gavin-mcp` here would fail
+# on `os error 5` exactly as often as the hook used to.
 Say 'building gavin-daemon and gavin-mcp'
 Push-Location $Root
 try {
-    & cargo build -p gavin-daemon -p gavin-mcp
+    & node (Join-Path $App 'src-tauri\dev-sidecars.mjs')
     if ($LASTEXITCODE -ne 0) {
-        Die "cargo build failed. A missing linker means the Visual Studio Build Tools are not installed -- take the 'Desktop development with C++' workload from https://visualstudio.microsoft.com/downloads/."
+        # No diagnosis offered here. This used to blame missing Visual Studio
+        # Build Tools, which is one cause of a failed cargo build and not the
+        # one a developer on this platform actually meets -- and it buried the
+        # file-in-use explanation dev-sidecars.mjs has just printed, naming the
+        # pids holding the binary. Whatever the cause, the lines above it are
+        # the answer; repeating a guess over them is how the wrong one sticks.
+        Die 'building the sidecars failed -- see the error above. A missing linker means the Visual Studio Build Tools are not installed: take the "Desktop development with C++" workload from https://visualstudio.microsoft.com/downloads/.'
     }
 }
 finally { Pop-Location }

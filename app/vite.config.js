@@ -13,7 +13,12 @@ export default defineConfig(async () => ({
   // cold CSS cache does to the app.
   plugins: [svelteStyleCache(), sveltekit(), devCspMirror()],
   test: {
-    include: ["src/**/*.{test,spec}.ts"],
+    // `src-tauri` as well as `src`, non-recursively. The two build scripts
+    // beside tauri.conf.json are shipping code -- stage-sidecars.mjs runs in
+    // the release workflow and dev-sidecars.mjs in every dev start -- and
+    // they had no test home, so the platform rules they encode were asserted
+    // nowhere. Not recursive on purpose: `src-tauri/target` is a cargo tree.
+    include: ["src/**/*.{test,spec}.ts", "src-tauri/*.{test,spec}.mjs"],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
