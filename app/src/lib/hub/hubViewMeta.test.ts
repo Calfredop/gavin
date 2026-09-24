@@ -8,6 +8,7 @@ import {
   keepableHubViewIds,
   hubViewBusy,
   hubViewAttention,
+  hubViewAttentionLabel,
   orderableHubViewIds,
   manageableHubViewIds,
   orderHubViewIds,
@@ -246,6 +247,31 @@ describe("hubViewAttention", () => {
     for (const other of HUB_VIEW_META.filter((v) => v.id !== "orchestration")) {
       expect(hubViewAttention(other.id, { ...IDLE, railsWantingAttention: true })).toBe(false);
     }
+  });
+
+  // The second axis of the same kind, and its own field rather than a
+  // roll-up of the first: the Decisions tab lists sessions with no rail
+  // behind them at all, and a rail wanting attention because its agent
+  // BROKE is a fault to go and read rather than a decision to take.
+  it("marks the Decisions tab, and only it, when something is waiting on you", () => {
+    expect(hubViewAttention("decisions", { ...IDLE, decisionsWaiting: true })).toBe(true);
+    for (const other of HUB_VIEW_META.filter((v) => v.id !== "decisions")) {
+      expect(hubViewAttention(other.id, { ...IDLE, decisionsWaiting: true })).toBe(false);
+    }
+  });
+
+  // An absent field has to behave exactly as it did before the Decisions
+  // tab existed -- every caller that has not been taught the new axis
+  // still passes two booleans.
+  it("reads an absent decisions flag as nothing waiting", () => {
+    expect(hubViewAttention("decisions", IDLE)).toBe(false);
+  });
+
+  // A strip that said "a rail is waiting on you" over the Decisions tab
+  // would send the reader to the wrong tab to deal with it.
+  it("names what each marked tab is waiting on", () => {
+    expect(hubViewAttentionLabel("orchestration")).toMatch(/rail/i);
+    expect(hubViewAttentionLabel("decisions")).not.toMatch(/rail/i);
   });
 
   it("leaves every tab alone when no rail wants anything", () => {

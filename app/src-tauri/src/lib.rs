@@ -191,6 +191,8 @@ pub fn run() {
             session::set_plan_frontmatter_field,
             session::create_plan,
             session::set_checklist_item,
+            session::file_human_item,
+            session::resolve_human_item,
             session::delete_card_file,
             session::archive_card,
             session::unarchive_card,

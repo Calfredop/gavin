@@ -311,6 +311,12 @@ fn tool_definitions() -> Value {
             "plan_path": { "type": "string" },
             "item": { "type": "string", "description": "The checklist item's exact text" }
         }, "required": ["plan_path", "item"] } },
+        { "name": "gavin_request_human", "description": "Ask the human for something you cannot settle yourself, as a checklist item on a card: a DECISION (a question whose answer is words — which approach, which name, whether to go ahead) or a TEST (a check only a person can run — another machine, a real install, does the rendered UI look right). It appears in the workspace's Decisions tab with the card, and their answer is written back under the item on the card itself, where the next agent to pick it up will read it. Filing one claims the card for your session, like a status write. Do NOT use it for anything you can find out by reading the repo or running a command, and do not wait on it: the tool returns as soon as the line is written, and the answer arrives on the card later. Re-filing a TEST word-for-word after the human failed it re-arms that same item instead of adding a second one — so when you have fixed what they found, ask again with the identical text.", "inputSchema": { "type": "object", "properties": {
+            "card": { "type": "string", "description": "Path to the card file this is blocking; relative resolves against the workspace root" },
+            "kind": { "type": "string", "enum": ["decision", "test"], "description": "decision = a question for the human to answer; test = a check for them to run by hand" },
+            "text": { "type": "string", "description": "The question or the check, as one line. Specific enough to act on without reading the rest of the card" },
+            "options": { "type": "array", "description": "For a decision, the shortlist to choose from — written under the item as an Options line and offered as buttons. Omit for an open question and for every test", "items": { "type": "string" } }
+        }, "required": ["card", "kind", "text"] } },
         { "name": "gavin_get_orchestration", "description": "The workspace's orchestration: rails with their worktrees, branches and uncommitted files, stages, steps with their cards or tools and live run state, the board's columns, every runnable card not yet on a rail (a plan's nested children ride with it and are not listed separately), and the tool library. Read this before writing an arrangement. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "gavin_set_orchestration", "description": "Replace the workspace's orchestration wholesale: rails of stages of steps, plus your own conflict notes. Read gavin_get_orchestration first and preserve the ids of steps you are keeping — run state follows the id — AND each stage's `mode` and `name`: omitting `mode` reverts that stage to `parallel`, which turns a sequential group into steps that all run at once in one checkout. Removing a step whose run state is 'running' is refused.", "inputSchema": { "type": "object", "properties": {
             "rails": { "type": "array", "description": "Ordered rails. Each: { id, name, position, worktreePath, branch, trigger, pageId, stages: [{ id, position, mode, name, steps: [...] }] }. A step is EITHER a card step { id, position, cardPath } OR a tool step { id, position, toolId, toolParams: { name: value } } — never both. Stages run one after another. A stage's `mode` is \"parallel\" (its steps run at once in the rail's checkout) or \"sequence\" (one at a time, in position order); a stage of two or more steps is what the app calls a GROUP, and `name` is what it is called. `mode` defaults to \"parallel\" when omitted. `worktreePath` says WHICH CHECKOUT (null = the workspace root), `branch` says WHICH BRANCH gavin puts that checkout on before launching a step (null = whatever is checked out) — so a branch with no worktree means the root checkout on that branch, no separate folder. `trigger` is the rail's own start condition and must be carried through unchanged, exactly like a stage's `mode`: { \"kind\": \"all-rails-done\" } arms the rail once every OTHER rail has finished, { \"kind\": \"rail-done\", \"rail\": \"backend\" } once that named rail has, and null/omitted means only a human or a start-rail step arms it — dropping it silently turns a rail that runs itself into one that waits forever.", "items": { "type": "object" } },
@@ -465,6 +471,35 @@ fn dispatch_tool(
                 .to_string(),
             item: require_arg(args, "item")?,
         },
+        "gavin_request_human" => Request::FileHumanItem {
+            path: resolve_against_root(root, &require_arg(args, "card")?)
+                .to_string_lossy()
+                .to_string(),
+            kind: match require_arg(args, "kind")?.trim().to_ascii_lowercase().as_str() {
+                "decision" => protocol::HumanItemKind::Decision,
+                "test" => protocol::HumanItemKind::Test,
+                // Named outright rather than defaulted to one of them:
+                // the two are not interchangeable (only a test can fail)
+                // and a typo that silently filed the wrong kind would
+                // reach the human as the wrong controls.
+                other => anyhow::bail!("kind must be \"decision\" or \"test\", not {other:?}"),
+            },
+            text: require_arg(args, "text")?,
+            options: match args.get("options") {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .filter_map(|o| o.as_str())
+                    .map(|o| o.trim().to_string())
+                    .filter(|o| !o.is_empty())
+                    .collect(),
+                // A single string is the mistake an agent actually makes
+                // here, and one option is a fine thing to mean by it.
+                Some(Value::String(one)) if !one.trim().is_empty() => {
+                    vec![one.trim().to_string()]
+                }
+                _ => vec![],
+            },
+        },
         "gavin_set_orchestration" => {
             // Deserialized here rather than in the daemon so malformed
             // input answers the agent directly, with serde's own message,
@@ -506,6 +541,18 @@ fn dispatch_tool(
         Response::PrdContent { content } => Ok(content),
         Response::PlanCreated { path } => Ok(format!("created plan: {path}")),
         Response::TaskPromoted { path } => Ok(format!("promoted to task card: {path}")),
+        Response::HumanItemFiled { rearmed } => Ok(if rearmed {
+            "re-armed the identical test the human had already failed — their note on \
+             the last attempt is on the card, above the re-test line. It is back in \
+             their Decisions tab; carry on with whatever does not depend on it."
+                .to_string()
+        } else {
+            "filed on the card — it is in the human's Decisions tab now. The answer \
+             gets written under the item on the card itself, so read it there; nothing \
+             will interrupt you when it arrives. Carry on with whatever does not \
+             depend on it."
+                .to_string()
+        }),
         Response::Board { columns, labels, card_sessions: _ } => {
             Ok(serde_json::to_string_pretty(&json!({ "columns": columns, "labels": labels }))?)
         }
@@ -555,12 +602,19 @@ fn current_session_id() -> Option<String> {
 /// The card this tool call just put in the calling session's hands, if
 /// it put one there at all.
 ///
-/// Two writes qualify, and they are the two an agent makes when it
+/// Three writes qualify, and they are the writes an agent makes when it
 /// starts work on its own initiative: filing a card straight into In
-/// Progress, and moving an existing one there. Both report the path the
+/// Progress, moving an existing one there, and asking the human for
+/// something that card is blocked on. The first two report the path the
 /// card ended up at, which is the one to claim -- a status write can
 /// file the card under `plans/done/`, and the binding keys on where the
 /// file IS.
+///
+/// Filing a human item is the third for a reason the interview settled
+/// outright: the tab shows each pending item under its card, and who to
+/// take the answer back to is the card's BINDING. No filer is stored per
+/// item, so the claim is what makes the question traceable to the
+/// session that asked it.
 ///
 /// The status VALUE is not read here. "In Progress" is the board's
 /// column name and the human may have renamed the columns around it, so
@@ -572,6 +626,11 @@ fn claim_target(req: &Request, resp: &Response) -> Option<String> {
         (Request::SetPlanFrontmatterField { key, .. }, Response::PlanFieldSet { path })
             if key == "status" =>
         {
+            Some(path.clone())
+        }
+        // The request's path, not the response's: a human item never
+        // moves the card, so there is no second path to prefer.
+        (Request::FileHumanItem { path, .. }, Response::HumanItemFiled { .. }) => {
             Some(path.clone())
         }
         _ => None,
@@ -1751,6 +1810,7 @@ mod tests {
             complexity: None,
             agent: None,
             model: None,
+            human_items: Some(vec![]),
         };
         protocol::GavinTree {
             root_path: "/ws".into(),
@@ -2935,6 +2995,30 @@ mod tests {
             ),
             None
         );
+        // Filing a human item claims the card too, and from the REQUEST's
+        // path: a human item never moves the card, and the tab takes the
+        // answer back to whoever the card is bound to -- no filer is
+        // stored per item, so the binding is the only trace of who asked.
+        let filed = |resp: Response| {
+            claim_target(
+                &Request::FileHumanItem {
+                    path: "/ws/plans/a.md".into(),
+                    kind: protocol::HumanItemKind::Decision,
+                    text: "which?".into(),
+                    options: vec![],
+                },
+                &resp,
+            )
+        };
+        assert_eq!(
+            filed(Response::HumanItemFiled { rearmed: false }).as_deref(),
+            Some("/ws/plans/a.md")
+        );
+        assert_eq!(
+            filed(Response::HumanItemFiled { rearmed: true }).as_deref(),
+            Some("/ws/plans/a.md")
+        );
+        assert_eq!(filed(Response::Error { message: "nope".into() }), None);
     }
 
     #[test]
@@ -3005,6 +3089,103 @@ mod tests {
             }
             other => panic!("wrong request: {other:?}"),
         }
+    }
+
+    /// The tool maps to `FileHumanItem`, resolves the card against the
+    /// root like every other card argument, and passes the shortlist
+    /// through as written.
+    #[test]
+    fn request_human_maps_to_file_human_item() {
+        let mut t = mock(vec![Response::HumanItemFiled { rearmed: false }]);
+        let reply = handle_line(
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"gavin_request_human","arguments":{"card":".gavin-root/plans/a.md","kind":"decision","text":"Which serializer?","options":["serde","by hand"," "]}}}"#,
+            Some(Path::new("/ws")),
+            &mut t,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v.pointer("/result/isError").unwrap(), false, "{reply}");
+        assert!(reply.contains("Decisions tab"), "{reply}");
+        match &t.requests[0] {
+            Request::FileHumanItem { path, kind, text, options } => {
+                // Against `resolve_against_root`'s own answer, not a
+                // hand-spelled one: the separator it joins with is the
+                // platform's, and pinning a forward slash here would be
+                // a test that only passes on unix.
+                assert_eq!(
+                    path,
+                    &resolve_against_root(Path::new("/ws"), ".gavin-root/plans/a.md")
+                        .to_string_lossy()
+                        .to_string()
+                );
+                assert_eq!(*kind, protocol::HumanItemKind::Decision);
+                assert_eq!(text, "Which serializer?");
+                // Blank entries dropped: an agent padding the array
+                // should not put an empty button in front of a human.
+                assert_eq!(options, &vec!["serde".to_string(), "by hand".to_string()]);
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    /// A test carries no options, and a re-arm is reported as one --
+    /// the agent needs to know the human already failed this check.
+    #[test]
+    fn request_human_files_a_test_and_names_a_re_arm() {
+        let mut t = mock(vec![Response::HumanItemFiled { rearmed: true }]);
+        let reply = handle_line(
+            r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"gavin_request_human","arguments":{"card":"a.md","kind":"TEST","text":"install it on the other machine"}}}"#,
+            Some(Path::new("/ws")),
+            &mut t,
+        )
+        .unwrap();
+        assert!(reply.contains("re-armed"), "{reply}");
+        match &t.requests[0] {
+            Request::FileHumanItem { kind, options, .. } => {
+                // Case-insensitive: the agent typed the enum, not a path.
+                assert_eq!(*kind, protocol::HumanItemKind::Test);
+                assert!(options.is_empty());
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    /// A kind that is neither is refused outright rather than defaulted:
+    /// the two are not interchangeable, and a typo silently filed as the
+    /// other reaches the human as the wrong controls.
+    #[test]
+    fn request_human_refuses_an_unknown_kind_without_touching_the_daemon() {
+        let mut t = mock(vec![Response::Ok]);
+        let reply = handle_line(
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"gavin_request_human","arguments":{"card":"a.md","kind":"question","text":"x"}}}"#,
+            Some(Path::new("/ws")),
+            &mut t,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v.pointer("/result/isError").unwrap(), true, "{reply}");
+        assert!(t.requests.is_empty(), "nothing reaches the daemon");
+        // And a missing `text` is the ordinary required-argument error.
+        let missing = handle_line(
+            r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"gavin_request_human","arguments":{"card":"a.md","kind":"test"}}}"#,
+            Some(Path::new("/ws")),
+            &mut t,
+        )
+        .unwrap();
+        assert!(missing.contains("text"), "{missing}");
+    }
+
+    #[test]
+    fn request_human_is_listed_with_both_kinds_in_its_schema() {
+        let tools = tool_definitions();
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "gavin_request_human")
+            .expect("gavin_request_human is listed");
+        assert_eq!(tool["inputSchema"]["properties"]["kind"]["enum"], json!(["decision", "test"]));
+        assert_eq!(tool["inputSchema"]["required"], json!(["card", "kind", "text"]));
     }
 
     #[test]

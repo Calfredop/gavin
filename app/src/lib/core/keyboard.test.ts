@@ -187,6 +187,22 @@ describe("digit navigation", () => {
 
   // The digits address tabs BY POSITION, so they have to count the row
   // the human is looking at -- not the one gavin declares.
+  // The Decisions tab was inserted between Tools and Review, which
+  // moves every digit after it: the row is what the human counts
+  // along, and a digit that still opened Review from position 6 would
+  // be a badge pointing at the tab beside the one it opens.
+  it("counts a tab inserted into the middle of the strip", async () => {
+    setState({
+      workspaces: [
+        { id: "ws-1", name: "ws-1", rootPath: "/r", activeView: "kanban", activePageId: null, pages: [] },
+      ],
+      focusedSessionId: null,
+    });
+    await press("Digit6");
+    // home, git, kanban, orchestration, tools, decisions, review, ...
+    expect(switchWorkspaceView).toHaveBeenCalledWith("ws-1", "decisions");
+  });
+
   it("counts the hub tabs the human hid", async () => {
     setState({
       workspaces: [

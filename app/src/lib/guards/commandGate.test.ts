@@ -194,6 +194,13 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   set_plan_frontmatter_field: ["ordinary"],
   create_plan: ["ordinary"],
   set_checklist_item: ["ordinary"],
+  // Filing a question or a hands-on check on a card, and writing the
+  // human's answer back under it. Both are ordinary card writes: one
+  // appends a checklist line, the other adds a line beneath one and
+  // ticks a box. Nothing is run and nothing of the human's is lost --
+  // and the second is only ever sent on a press they made.
+  file_human_item: ["ordinary"],
+  resolve_human_item: ["ordinary"],
   unarchive_card: ["ordinary"],
   link_card_session: ["ordinary"],
   unlink_card_session: ["ordinary"],
