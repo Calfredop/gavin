@@ -20,6 +20,7 @@ notify-debouncer-mini = "0.7"
 toml = "0.8"
 toml_edit = "0.22"
 vt100 = "0.16"
+snow = "0.10.0"
 
 [dev-dependencies]
 tempfile = "3"

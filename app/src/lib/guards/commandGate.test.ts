@@ -81,6 +81,35 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // confirm grant, only the Remote access surface's own reach.
   get_require_local_token: ["ordinary"],
   set_require_local_token: ["ordinary"],
+  // Remote access phase 2. Four reads-and-writes of the daemon's trust
+  // store; the two Revoke commands are destructive and sit in their own
+  // block below.
+  //
+  // `confirm_pairing` is the one worth stopping on, because it is the
+  // only command in this table that can WIDEN who reaches this machine.
+  // It is ordinary anyway, and the reason is that it cannot invent a
+  // device: it names a `device_id` the daemon is already holding a
+  // COMPLETED Noise handshake for, and refuses any other. Completing one
+  // needs a live two-minute secret and the phone's own static key, over
+  // a transport -- and phase 2 ships no transport at all, so today
+  // nothing can reach the state this command settles. When phase 3 gives
+  // it one, what stands between a scripted confirm and a paired
+  // attacker is the SAS: six digits derived from both static keys, which
+  // the human compares against the phone in their hand.
+  //
+  // `begin_pairing` mints that secret and hands back the QR. Ordinary
+  // for the same reason and one more: the secret expires in two minutes
+  // and reaches nothing on its own, which is exactly why §3 rejects a
+  // bare-token QR in favour of this ceremony.
+  //
+  // `set_remote_access` stores two scalars the daemon does not act on --
+  // nothing listens and nothing dials in this phase -- and `list_devices`
+  // is a read that deliberately leaves the static keys behind.
+  begin_pairing: ["ordinary"],
+  confirm_pairing: ["ordinary"],
+  reject_pairing: ["ordinary"],
+  list_devices: ["ordinary"],
+  set_remote_access: ["ordinary"],
 
   // ---- destructive, deliberately not gated ----
   kill_session: [
@@ -109,6 +138,14 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   git_stash_drop: ["destructive", "drops a stash entry"],
   git_delete_branch: ["destructive", "deletes a ref"],
   git_worktree_remove: ["destructive", "removes a worktree directory"],
+  revoke_device: [
+    "destructive",
+    "the same shape as delete_tool: it removes a stored record gavin cannot bring back. Re-pairing MAKES a device, it does not restore this one, and the daemon drops the device's live connections on the way. Not gated, because it only ever NARROWS what can reach this machine -- a script that called it by surprise would be a nuisance, never an escalation, and a revocation that is hard to reach is the wrong failure to design for.",
+  ],
+  revoke_all_devices: [
+    "destructive",
+    "revoke_device for every row, plus a rotation of the daemon's static key -- the half that is irreversible in the strong sense, because the old key is gone and every phone pinned it. Deliberately not gated for revoke_device's reason, and more so: this is §3's one-button answer to a lost phone, and a confirmation the host has to mint is a hurdle in front of the one control whose whole job is to be reachable in a hurry. The app confirms it on every route (revokeAllCopy).",
+  ],
 
   // ---- ordinary ----
   write_input: ["ordinary"],

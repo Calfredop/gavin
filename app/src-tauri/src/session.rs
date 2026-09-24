@@ -2840,6 +2840,176 @@ pub fn set_require_local_token(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+// -- Remote access, phase 2 (v42) -------------------------------------
+//
+// The seven `app`-only requests the Settings section drives, and the
+// three device pushes it listens for. Every one of them is aimed at the
+// LOCAL daemon and nothing else: `with_command`'s route exists because a
+// session or a workspace can live on an ssh host, and a paired phone is
+// neither. Pairing a device decides who may reach THIS machine, so the
+// daemon that answers has to be the one the human is sitting at -- a
+// "Pair a device" that quietly enrolled a phone against a remote host's
+// trust store would be the one screen where the wrong answer is
+// invisible. So these read `state.0` / `current_compat` directly rather
+// than taking a `route_for_*`, the way `list_queued_inputs` reads the
+// local half of its answer.
+//
+// Each one is gated twice over. `send_command_reconnecting` refuses to
+// put the bytes on the wire against a daemon older than v42, and the
+// frontend refuses to offer the control at all
+// (`FEATURE_MIN_VERSION.remoteAccess`) so the human is told the version
+// rather than handed an error after the click.
+
+/// `BeginPairing`'s answer, as the frontend reads it: the string to draw
+/// as a QR and the second the offer stops being valid.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingOffer {
+    /// `protocol::PairingQr`'s compact JSON -- what the phone's camera
+    /// hands its parser. Passed through as the opaque string it is: the
+    /// app draws it and never reads inside it.
+    pub qr: String,
+    /// Wall-clock epoch SECONDS, the daemon's clock. The countdown is
+    /// derived from it in `remoteAccess.ts` rather than from a duration,
+    /// so a dialog left open across a suspend shows the truth.
+    pub expires_at: i64,
+}
+
+/// `ListDevices`'s answer: the trust store's rows plus the two
+/// remote-access settings that ride along with them (see
+/// `protocol::Response::Devices` for why they share one round trip).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceList {
+    pub devices: Vec<protocol::DeviceInfo>,
+    pub remote_access_enabled: bool,
+    pub relay_url: Option<String>,
+}
+
+/// Mint a one-time pairing secret and hand back the QR payload (§3, "The
+/// ceremony"). A second call replaces the first: there is one offer at a
+/// time because the human is looking at one QR at a time.
+#[tauri::command]
+pub fn begin_pairing(
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<PairingOffer, String> {
+    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::BeginPairing)
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::PairingOffer { qr, expires_at } => Ok(PairingOffer { qr, expires_at }),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected PairingOffer, got {other:?}")),
+    }
+}
+
+/// The human compared the two six-digit codes and pressed Confirm. The
+/// only call in the app that writes a row into `devices.sqlite`.
+#[tauri::command]
+pub fn confirm_pairing(
+    device_id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::ConfirmPairing { device_id },
+    )
+    .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+/// The human pressed Reject: discard the pending handshake without
+/// writing anything, so the phone hears an answer rather than waiting out
+/// the two-minute expiry.
+#[tauri::command]
+pub fn reject_pairing(
+    device_id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::RejectPairing { device_id },
+    )
+    .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+/// Every paired device, revoked ones included, and the remote-access
+/// settings. The panel's whole read: the toggle, the relay field and the
+/// list are one answer, so they cannot draw three different accounts of
+/// the same store.
+#[tauri::command]
+pub fn list_devices(
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<DeviceList, String> {
+    let resp = send_command_reconnecting(&state.0, &current_compat(&compat), &Request::ListDevices)
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Devices { devices, remote_access_enabled, relay_url } => {
+            Ok(DeviceList { devices, remote_access_enabled, relay_url })
+        }
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected Devices, got {other:?}")),
+    }
+}
+
+/// Revoke one device: the daemon marks the row and drops every live
+/// connection carrying its id (§3, "Revocation").
+#[tauri::command]
+pub fn revoke_device(
+    device_id: String,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::RevokeDevice { device_id },
+    )
+    .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+/// Revoke every device AND rotate the daemon's static key: the one-button
+/// answer to a lost phone. Every phone pinned the old key, so the
+/// rotation invalidates all of them at once even if `devices.sqlite` is
+/// later restored from a backup.
+#[tauri::command]
+pub fn revoke_all_devices(
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp =
+        send_command_reconnecting(&state.0, &current_compat(&compat), &Request::RevokeAllDevices)
+            .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
+/// Store whether remote access is on and which relay to reach this daemon
+/// through. Stored and INERT in this phase: nothing dials and nothing
+/// listens until phase 3's `remote.rs`, which is what the section's own
+/// copy says in so many words.
+#[tauri::command]
+pub fn set_remote_access(
+    enabled: bool,
+    relay_url: Option<String>,
+    state: State<CommandConnection>,
+    compat: State<DaemonCompatState>,
+) -> Result<(), String> {
+    let resp = send_command_reconnecting(
+        &state.0,
+        &current_compat(&compat),
+        &Request::SetRemoteAccess { enabled, relay_url },
+    )
+    .map_err(|e| e.to_string())?;
+    expect_ok(resp)
+}
+
 /// One reconnect per call, mirroring gavin-mcp's `SocketTransport`
 /// (`crates/gavin-mcp/src/main.rs`), which has done this since it was
 /// written. Without it, any single command failure -- daemon restart, or
@@ -4229,6 +4399,35 @@ pub(crate) fn attach_and_relay(
                     // very path the tab's own rename UI takes -- so an
                     // agent rename and a human rename persist identically.
                     let _ = reader_app_handle.emit("session-named", (session_id, name));
+                }
+                // The three device pushes (v42). Forwarded verbatim, the
+                // way `remote-link-ready`/`remote-link-lost` are: the
+                // Settings section is the only listener, and what it does
+                // with each is its own (`remoteAccess.ts`).
+                //
+                // `DevicePairingRequested` is the one that cannot be
+                // dropped. It is the ONLY notice a phone has finished the
+                // handshake and is waiting on the human -- the daemon
+                // pushes it once and keeps nothing to re-read, because
+                // the pending handshake lives in memory until it is
+                // answered or replaced. So it rides the stream
+                // connection, which is the one the app keeps open for its
+                // whole life.
+                Response::DevicePairingRequested { device_id, name, sas } => {
+                    let _ = reader_app_handle
+                        .emit("device-pairing-requested", (device_id, name, sas));
+                }
+                // Nothing in the binary produces these two in phase 2 --
+                // there is no transport yet -- so today they arrive only
+                // in the daemon's own tests. Forwarded anyway: phase 3's
+                // `remote.rs` is what makes them routine, and a listener
+                // that has to be remembered later is a listener that is
+                // forgotten.
+                Response::DeviceConnected { device_id } => {
+                    let _ = reader_app_handle.emit("device-connected", device_id);
+                }
+                Response::DeviceDisconnected { device_id } => {
+                    let _ = reader_app_handle.emit("device-disconnected", device_id);
                 }
                 Response::AgentSessionSpawned { workspace_id, session_id, cwd, command } => {
                     // Attach BEFORE emitting: a session nobody attaches

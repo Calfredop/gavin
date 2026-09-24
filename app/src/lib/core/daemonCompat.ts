@@ -398,6 +398,26 @@ export const FEATURE_MIN_VERSION = {
   // them and says why the items are missing rather than drawing an empty
   // list that looks like good news.
   humanItems: 42,
+  // Remote access, phase 2: pairing a phone, the device list, revocation,
+  // and the remote-access switch (`docs/security/05-remote-access.md` §3,
+  // §7 "Phase 2 additions"). Seven new request TYPES, so `min_version_for`
+  // already refuses every one of them against a v41 daemon and nothing can
+  // be silently dropped -- this entry is not guarding a widened payload.
+  //
+  // It earns its place for the reason `turnVerdict` and `sessionMetrics`
+  // earn theirs: refusing to SEND decides nothing about what to show
+  // instead. A Remote access section that simply is not there against an
+  // older daemon reads as "gavin cannot do this", when the truth is
+  // "gavin has not been restarted" -- and this is the panel that promises
+  // a revocation reaches a phone at 02:00, which is not a promise anyone
+  // should have to guess at. Greyed, with the version it needs, is the
+  // only honest state.
+  //
+  // Its consumers have landed, so this is not a dead gate (CLAUDE.md):
+  // `remoteAccess.ts`'s `remoteAccessBlocked` reads it, and the Settings
+  // section greys the toggle, the relay URL row, "Pair a device", the
+  // device list and both Revoke controls behind that one verdict.
+  remoteAccess: 42,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;
