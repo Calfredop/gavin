@@ -117,10 +117,20 @@ where
 
 #[tauri::command]
 pub fn git_watch(cwd: String, app_handle: AppHandle, state: State<GitWatchers>) -> Result<(), String> {
-    // An ssh workspace's repo is on the host; this filesystem watcher has
-    // no path here to watch. A no-op, not an error -- the tab's manual
-    // Refresh still works; live git refresh over ssh is a follow-up.
-    if crate::remote::is_remote_cwd(&cwd) {
+    // An ssh workspace's repo is on the host, so the watch runs THERE:
+    // the host daemon points the same `notify` watch at the same tree
+    // through the same relevance filter, and pushes `GitWorktreeChanged`,
+    // which the relay emits as this module's own `git-changed` (v42).
+    // Refcounting is the host's for these, per connection.
+    //
+    // A host below v42 answers `Unsupported`, which is a plain error and
+    // not a reason to fail the tab -- swallowed here so the Refresh
+    // button keeps working, exactly as this call no-op'd before the
+    // request existed.
+    if let Some(result) = crate::remote::watch_git_over_link(&cwd) {
+        if let Err(e) = result {
+            eprintln!("git watch over ssh unavailable for {cwd}: {e}");
+        }
         return Ok(());
     }
     let mut watchers = state.0.lock().unwrap();
@@ -140,7 +150,10 @@ pub fn git_watch(cwd: String, app_handle: AppHandle, state: State<GitWatchers>) 
 
 #[tauri::command]
 pub fn git_unwatch(cwd: String, state: State<GitWatchers>) -> Result<(), String> {
-    if crate::remote::is_remote_cwd(&cwd) {
+    if let Some(result) = crate::remote::unwatch_git_over_link(&cwd) {
+        if let Err(e) = result {
+            eprintln!("git unwatch over ssh failed for {cwd}: {e}");
+        }
         return Ok(());
     }
     let mut watchers = state.0.lock().unwrap();

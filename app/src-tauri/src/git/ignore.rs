@@ -11,7 +11,15 @@
 //! the COMMON git dir, which is not `cwd/.git` at all in a linked
 //! worktree -- only `--git-common-dir` gets that right.
 
-use crate::git::run::{ok, run_git_ro};
+//! Both files are resolved through git, which for an ssh workspace runs
+//! on the host -- so the paths below are the host's, and the read and
+//! write that follow go there too (`read_repo_file`/`write_repo_file`).
+//! One caveat that is the host's confinement and not this module's: a
+//! LINKED worktree's common git dir can lie outside the workspace root,
+//! and `.git/info/exclude` is then refused there while `.gitignore` at
+//! the toplevel is not.
+
+use crate::git::run::{ok, read_repo_file, run_git_ro, write_repo_file};
 use std::path::PathBuf;
 
 fn toplevel(cwd: &str) -> Result<PathBuf, String> {
@@ -42,21 +50,16 @@ fn ignore_file_path(cwd: &str, kind: &str) -> Result<PathBuf, String> {
 /// template rather than "".
 pub fn read_ignore_file(cwd: &str, kind: &str) -> Result<String, String> {
     let path = ignore_file_path(cwd, kind)?;
-    match std::fs::read_to_string(&path) {
-        Ok(text) => Ok(text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(format!("could not read {}: {e}", path.display())),
-    }
+    Ok(read_repo_file(cwd, &path)?
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default())
 }
 
 /// Overwrites the file with exactly what the editor holds -- what the
 /// panel's Save button calls, verbatim, no reformatting.
 pub fn write_ignore_file(cwd: &str, kind: &str, content: &str) -> Result<(), String> {
     let path = ignore_file_path(cwd, kind)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("could not create {}: {e}", parent.display()))?;
-    }
-    std::fs::write(&path, content).map_err(|e| format!("could not write {}: {e}", path.display()))
+    write_repo_file(cwd, &path, content)
 }
 
 /// Appends `pattern` as its own line, unless a line already reads

@@ -19,9 +19,24 @@ struct Progress {
     line: String,
 }
 
+/// Emits one progress line for `op_id`. The single place the event name
+/// and its payload are spelled, so the local runner below and the relay
+/// thread that carries a host's `GitOpProgress` (`session.rs`) cannot
+/// drift into two slightly different events for the same row.
+pub fn emit_progress(app: &AppHandle, op_id: String, line: String) {
+    let _ = app.emit("git-op-progress", Progress { op_id, line });
+}
+
 /// Kills the op's child if it is still registered. The runner then reports
 /// `cancelled` to its caller.
+///
+/// An op running on a host has no child here to kill: the remote registry
+/// is asked first, and it answers only for an id it is actually running,
+/// so a local op never takes the remote path or the other way round.
 pub fn cancel(ops: &GitOps, op_id: &str) -> bool {
+    if let Some(cancelled) = crate::remote::cancel_git_op_over_link(op_id) {
+        return cancelled;
+    }
     let child = ops.0.lock().unwrap().remove(op_id);
     match child {
         Some(shared) => {
@@ -75,6 +90,21 @@ pub(crate) fn push_blocking(cwd: &str, remote: &str, on_line: &mut dyn FnMut(Str
 }
 
 fn run_op(ops: GitOps, app: AppHandle, op_id: String, cwd: String, args: Vec<String>) -> Result<(), String> {
+    // An ssh workspace's repo is on the host, and so is the git that
+    // fetches into it. The request goes out on the link's streaming
+    // connection and this blocks until the host's `GitOpDone` comes back
+    // through the relay -- so this function returns "the op ended, here
+    // is how" either way and `git_fetch`/`git_pull`/`git_push` are
+    // unchanged. The routing lives HERE rather than in
+    // `run_git_streaming` because the op id is what addresses the stream
+    // and the cancel, and only this layer has one.
+    //
+    // Progress is not returned: the relay emits each `GitOpProgress` as
+    // the same `git-op-progress` event the local closure below emits, so
+    // the toolbar reads one stream of lines however the op ran.
+    if let Some(result) = crate::remote::run_git_op_over_link(&cwd, &args, &op_id) {
+        return result;
+    }
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let emitter = app.clone();
     let id = op_id.clone();
@@ -84,7 +114,7 @@ fn run_op(ops: GitOps, app: AppHandle, op_id: String, cwd: String, args: Vec<Str
         &cwd,
         &argv,
         &mut |line| {
-            let _ = emitter.emit("git-op-progress", Progress { op_id: id.clone(), line });
+            emit_progress(&emitter, id.clone(), line);
         },
         &mut |child| {
             registry.0.lock().unwrap().insert(reg_id.clone(), child);
@@ -140,6 +170,17 @@ pub(crate) mod tests {
         git(cwd(&clone), &["config", "user.name", "T"]);
         git(cwd(&clone), &["config", "commit.gpgsign", "false"]);
         (bare, clone)
+    }
+
+    /// An id nothing is running is `false`, through both registries.
+    /// The remote arm answers only for an op it is actually running, so
+    /// it must not swallow an unknown id and report a cancel that never
+    /// happened -- `gitState.ts` reads the verdict to decide whether the
+    /// op row is still live.
+    #[test]
+    fn cancelling_an_unknown_op_is_false_and_never_taken_by_the_remote_arm() {
+        let ops = GitOps::default();
+        assert!(!cancel(&ops, "no-such-op"));
     }
 
     #[test]

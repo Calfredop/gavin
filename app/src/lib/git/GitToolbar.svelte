@@ -30,7 +30,8 @@
     trustedAgentConfigs,
   } from "$lib/core/layoutState";
   import { resolveAgentConfig } from "$lib/core/settings";
-  import { isSshWorkspace } from "$lib/workspace/sshWorkspace";
+  import { sshSyncBlocked } from "$lib/workspace/sshWorkspace";
+  import { sshLinks } from "$lib/workspace/sshLinkState";
   import { reviewBlocker } from "$lib/review/codeReview";
   import { requestBranchReview } from "$lib/review/codeReviewActions";
   import { tooltip } from "$lib/core/tooltip";
@@ -51,15 +52,14 @@
   const locked = $derived(view == null || view.busy != null || view.op != null);
   const branch = $derived(view ? currentBranch(view) : null);
   const sync = $derived(view ? canSync(view) : { fetch: false, pull: false, push: false, reason: null });
-  // Fetch/pull/push are the streaming network ops the desktop keeps to
-  // itself; an ssh workspace's daemon does not run them yet (the sync
-  // follow-up), so they stay disabled even though the rest of the tab
-  // works. Everything else -- status, diff, stage, commit, branches,
-  // stash -- routes to the host through the daemon.
+  // Fetch/pull/push run on the host now (v42): the daemon there runs the
+  // op, streams its progress back and can be told to cancel it. What is
+  // left to say is the same thing every other ssh gate says -- the link
+  // is not up, or that host's daemon is older than the ops need -- so
+  // this shares `sshFeatureBlocked`'s words instead of a hard-coded
+  // "not available yet".
   const syncBlocked = $derived(
-    isSshWorkspace($layoutState.workspaces.find((w) => w.id === workspaceId))
-      ? "Fetch, pull and push over ssh aren't available yet."
-      : null
+    sshSyncBlocked($layoutState.workspaces.find((w) => w.id === workspaceId), $sshLinks)
   );
   const remotes = $derived(view?.refs?.remotes ?? []);
   const remote = $derived(view ? effectiveRemote(view) : null);

@@ -1,6 +1,7 @@
 mod bridge;
 mod gavin;
 mod git_status;
+mod git_watch;
 mod kanban;
 mod orchestration;
 mod osc;
@@ -15,6 +16,7 @@ mod shell;
 mod status;
 #[cfg(test)]
 mod testing;
+mod trash;
 mod trust;
 
 use kanban::KanbanStore;

@@ -73,18 +73,43 @@ live in the desktop's `config.json`, never in the repository).
 
 ## What works over ssh today, and what does not yet
 
-Works: terminals, the board, the plan tree and PRD, orchestration and tools,
-git status in the tab strip — everything the host's daemon does. Card runs
-too, when the host's daemon is v39 or newer: the card and its attachments
-are read from the host, and "Set up / update" agent integration writes the
-MCP config, skills and instructions block there, naming the `gavin-mcp`
-that sits beside the host's `gavin-daemon` (install both). The Run pill
-says which version the host needs when it is older.
+Everything below is decided by the version of the daemon **on the host**,
+never the desktop's own — and every surface that needs a newer one says so,
+naming the version, rather than failing on click or running against the
+desktop's disk by mistake.
 
-Not yet (each refused with a message naming this, never run against the
-desktop's own disk by mistake): the Git tab, the Files tab, worktrees
-(best-of-N, rail binding), the setup wizard's PRD and git steps, the delete
-wizard. See the ssh card's checklist for the follow-ups.
+Works on any host inside the version window: terminals, the board, the plan
+tree and PRD, orchestration and tools, git status in the tab strip.
+
+- **v40 or newer — card runs.** The card and its attachments are read from
+  the host, and "Set up / update" agent integration writes the MCP config,
+  skills and instructions block there, naming the `gavin-mcp` that sits
+  beside the host's `gavin-daemon` (install both).
+- **v41 or newer — the Git tab and the Files tab.** Status, diff,
+  stage/unstage, commit, log, branches, stash and worktree list run on the
+  host; the file tree lists, and files open, edit and save there. Conflict
+  resolution (the 3-pane) and the `.gitignore` / `.git/info/exclude` editor
+  work here too.
+- **v42 or newer — fetch, pull and push; live refresh; the tree's
+  mutations.** The network ops run on the host and stream their progress
+  back, with the same Cancel; the Git tab refreshes itself when something
+  on the host changes, instead of needing Refresh; New file, New folder,
+  Rename and Move to Trash work in the Files tree; and cherry-pick and
+  `<op> --continue` work in the Git tab.
+
+**Moving something to the Trash puts it in the HOST's Trash** — the
+freedesktop trash on Linux, the Recycle Bin on Windows, the Trash on macOS
+— not `rm`. It is restorable from that machine's own file manager, which is
+the same promise gavin makes locally. The confirmation is still asked on
+the desktop, where you are.
+
+Two things stay the desktop's, and are refused with a message: worktrees
+(best-of-N, rail binding) and the setup wizard's PRD and git steps, plus
+the delete wizard. One thing works but is narrower than at home: an ssh
+workspace whose Git tab is pointed at a **linked worktree** cannot edit
+`.git/info/exclude`, because a linked worktree's common git dir can sit
+outside the workspace root and the host refuses paths outside it.
+`.gitignore` at the toplevel is unaffected.
 
 ## When it fails
 

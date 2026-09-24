@@ -4361,6 +4361,26 @@ pub(crate) fn attach_and_relay(
                 Response::GitStatusChanged { id, status } => {
                     let _ = reader_app_handle.emit("git-status-changed", (id, status));
                 }
+                Response::GitOpProgress { op_id, line } => {
+                    // The very event `git::ops`'s local runner emits, with
+                    // the same payload: the toolbar's progress row reads
+                    // one stream of lines and cannot tell which machine
+                    // drew them (v42).
+                    crate::git::ops::emit_progress(&reader_app_handle, op_id, line);
+                }
+                Response::GitOpDone { op_id, error } => {
+                    // Not an event: the caller in `git::ops::run_op` is
+                    // parked on this, so handing it over is what makes a
+                    // remote fetch return like a local one.
+                    crate::remote::finish_git_op(&op_id, error);
+                }
+                Response::GitWorktreeChanged { cwd } => {
+                    // The host's watcher fired. Emitted as `git-changed`,
+                    // the same event the desktop's own `notify` watch
+                    // emits for a local worktree (v42).
+                    let _ = reader_app_handle
+                        .emit("git-changed", crate::git::watch::GitChanged { cwd });
+                }
                 Response::SessionRestored { id } => {
                     let _ = reader_app_handle.emit("session-restored", id);
                 }

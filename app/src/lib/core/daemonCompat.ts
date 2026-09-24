@@ -418,6 +418,19 @@ export const FEATURE_MIN_VERSION = {
   // section greys the toggle, the relay URL row, "Pair a device", the
   // device list and both Revoke controls behind that one verdict.
   remoteAccess: 42,
+  // What finishes those two tabs on an ssh workspace: the host daemon's
+  // v42 streaming git (`RunGitStreaming`/`CancelGitOp`, the fetch, pull
+  // and push the desktop kept), its worktree watch
+  // (`WatchGitWorktree`), and the Files tree's three mutations
+  // (`Create`/`Rename`/`TrashWorkspacePath`)
+  // (`2026-09-23-ssh-git-sync-and-conflicts-design.md`). Checked against
+  // the HOST daemon's version, like the two entries above it
+  // (`sshSyncBlocked` in sshWorkspace.ts).
+  //
+  // Conflicts and `.gitignore` are deliberately NOT here: they route
+  // through the v40 file requests, so they work on a v41 host and sit
+  // behind `sshGitFiles` with the rest of the tab.
+  sshGitSync: 42,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

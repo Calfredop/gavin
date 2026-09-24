@@ -139,6 +139,16 @@ export function sshTabBlocked(ws: Workspace | null | undefined, links: SshLinks)
   return sshFeatureBlocked(ws, links, FEATURE_MIN_VERSION.sshGitFiles, "to use these tabs there");
 }
 
+/// Whether the parts of those tabs that need the host daemon to run a
+/// git op of its own, watch its own worktree or change its own tree can
+/// serve this workspace right now: fetch/pull/push, and the Files tree's
+/// new/rename/trash. A host at v41 runs the rest of the tab and answers
+/// null from `sshTabBlocked` while this one says what is still missing,
+/// which is exactly the split the two entries describe.
+export function sshSyncBlocked(ws: Workspace | null | undefined, links: SshLinks): string | null {
+  return sshFeatureBlocked(ws, links, FEATURE_MIN_VERSION.sshGitSync, "to use them there");
+}
+
 /// The hosts whose link is up -- what `staleLayoutTabIds` needs to know
 /// which ssh workspaces' tabs the baselines can vouch for.
 export function readyHosts(links: SshLinks): Set<string> {
