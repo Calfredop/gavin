@@ -688,9 +688,11 @@ export function attentionIndicator(attention: StepAttention | "blocked"): Indica
 /// and idle on a tab is no badge: a tab whose agent had BROKEN looked
 /// exactly like one whose agent was done.
 ///
-/// `status` is the acknowledged view (layoutState's attentionStatusById),
-/// so a wait the human marked as read draws nothing -- which is what the
-/// mark is for.
+/// `status` is the acknowledged, verdict-aware view
+/// (verdictAttention.ts's verdictAttentionStatusById), so a wait the
+/// human marked as read draws nothing -- which is what the mark is for
+/// -- and a question asked in PROSE draws the waiting badge even though
+/// the daemon calls that session idle.
 export function tabAgentIndicator(
   status: SessionStatus | null | undefined,
   failureReason?: string | null

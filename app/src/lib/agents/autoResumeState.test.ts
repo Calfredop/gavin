@@ -262,7 +262,7 @@ describe("a standalone card run", () => {
     expect(resumeCard).not.toHaveBeenCalled();
     expect(sendAutoResumeNotice).not.toHaveBeenCalled();
     turnVerdictById.set({
-      "sess-1": { state: "read", reading: { kind: "failed", cause: "network" } },
+      "sess-1": { state: "read", reading: { kind: "failed", cause: "network", said: "" } },
     });
     await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
     expect(resumeCard).toHaveBeenCalledWith(

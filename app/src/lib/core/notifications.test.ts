@@ -14,6 +14,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   maybeNotifyStatusChange,
+  maybeNotifyTurnVerdict,
   maybeNotifyAgentCommit,
   agentCommitBody,
   setRailNotificationVoice,
@@ -251,6 +252,63 @@ describe("the rail's voice over a status notification", () => {
     await maybeNotifyStatusChange("s-1", "working", "idle", "my-project", ALL_ON);
     const call = vi.mocked(sendNotification).mock.calls[0][0] as { body: string };
     expect(call.body).toBe("my-project finished");
+  });
+});
+
+// The quiet transition's notification, sent LATE -- once the turn
+// verdict has settled and `verdictNotice` has said what the line should
+// actually be. Everything the immediate path enforces still applies; the
+// only thing that changed is who composed the sentence.
+describe("maybeNotifyTurnVerdict", () => {
+  const ASKING = { toggle: "needsInput", body: "my-project needs your input" } as const;
+  const FINISHED = { toggle: "finished", body: "my-project finished" } as const;
+
+  it("sends the line the verdict earned", async () => {
+    await maybeNotifyTurnVerdict("s-1", ASKING, ALL_ON);
+    const call = vi.mocked(sendNotification).mock.calls[0][0] as { title: string; body: string };
+    expect(call.body).toBe("my-project needs your input");
+    expect(call.title).toBe("gavin");
+  });
+
+  it("is governed by the toggle the notice names, not by the transition", async () => {
+    // The point of carrying the toggle: the daemon called this turn
+    // `idle`, so today's code would check `notifyFinished`. The verdict
+    // read it as a question, so the workspace's `notifyNeedsInput` is
+    // the switch that answers for it.
+    await maybeNotifyTurnVerdict("s-1", ASKING, { needsInput: false, finished: true });
+    expect(sendNotification).not.toHaveBeenCalled();
+    await maybeNotifyTurnVerdict("s-1", ASKING, { needsInput: true, finished: false });
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays silent for a workspace silenced for endings", async () => {
+    await maybeNotifyTurnVerdict("s-1", FINISHED, { needsInput: true, finished: false });
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  it("is suppressed while gavin is the frontmost window, exactly as today", async () => {
+    mockWindow(true);
+    await maybeNotifyTurnVerdict("s-1", FINISHED, ALL_ON);
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  it("does not notify when the lazy permission request is declined", async () => {
+    vi.mocked(isPermissionGranted).mockResolvedValue(false);
+    vi.mocked(requestPermission).mockResolvedValue("denied");
+    await maybeNotifyTurnVerdict("s-1", FINISHED, ALL_ON);
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  it("still lets the rail's own words win, so one turn is still one line", async () => {
+    // The rail names the CARD; the notice names the session's shell
+    // label. For a step the rail is waiting on, the card is the thing
+    // the human needs to see -- and the precedence is today's, so the
+    // deferral cannot turn one notification into two differently
+    // worded ones.
+    setRailNotificationVoice(() => "Wire the API stopped without finishing its card");
+    await maybeNotifyTurnVerdict("s-1", FINISHED, ALL_ON);
+    const call = vi.mocked(sendNotification).mock.calls[0][0] as { body: string };
+    expect(call.body).toBe("Wire the API stopped without finishing its card");
   });
 });
 

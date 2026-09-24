@@ -9,6 +9,14 @@ import {
   withSessionRead,
 } from "$lib/sessions/sessionRead";
 import type { SessionStatus } from "$lib/core/notifications";
+import type { TurnVerdictEntry } from "$lib/agents/turnVerdict";
+
+const asking: TurnVerdictEntry = { state: "read", reading: { kind: "asking" } };
+const blocked: TurnVerdictEntry = {
+  state: "read",
+  reading: { kind: "blocked", said: "the sandbox refuses the install" },
+};
+const finished: TurnVerdictEntry = { state: "read", reading: { kind: "finished" } };
 
 describe("canMarkRead", () => {
   it("is true for the one status that nags", () => {
@@ -23,6 +31,39 @@ describe("canMarkRead", () => {
       expect(canMarkRead(status)).toBe(false);
     }
   );
+
+  // The second wait, and the reason this takes a verdict at all: a
+  // question asked in prose rings no bell, so the daemon says `idle` and
+  // will never say anything else about it. verdictAttention.ts raises a
+  // badge over exactly that, and a badge raised by a JUDGEMENT needs an
+  // off switch more than one raised by an observation -- roughly 3 of
+  // this repository's 44 finished turns read as asking, so some of them
+  // are wrong, and a wrong badge nobody can dismiss is worse than the
+  // missing badge this feature set out to fix.
+  it("is true for a quiet session the verdict reads as a prose question", () => {
+    expect(canMarkRead("idle", asking)).toBe(true);
+    // Unchanged for the bell: the verdict ADDS a case, it does not
+    // replace the status test.
+    expect(canMarkRead("waiting_for_input", finished)).toBe(true);
+  });
+
+  it("is false when the verdict raised no badge to dismiss", () => {
+    expect(canMarkRead("idle", finished)).toBe(false);
+    expect(canMarkRead("idle", { state: "pending" })).toBe(false);
+    expect(canMarkRead("idle", null)).toBe(false);
+    // `blocked` raises no badge either -- it stalls the rail with the
+    // agent's own sentence instead (verdictAttention.ts), so there is
+    // nothing here to acknowledge.
+    expect(canMarkRead("idle", blocked)).toBe(false);
+  });
+
+  // The verdict only ever reinterprets quiet. A stale `asking` entry
+  // against a session the daemon has since seen move or break must not
+  // put an entry on that tab's menu.
+  it("is false for a verdict against a status the daemon observed", () => {
+    expect(canMarkRead("working", asking)).toBe(false);
+    expect(canMarkRead("failed", asking)).toBe(false);
+  });
 });
 
 describe("readEntryApplies", () => {
@@ -38,6 +79,14 @@ describe("readEntryApplies", () => {
 
   it("stays off a tab with nothing to read", () => {
     expect(readEntryApplies("idle", false)).toBe(false);
+  });
+
+  it("offers the entry on a verdict-raised wait", () => {
+    expect(readEntryApplies("idle", false, asking)).toBe(true);
+  });
+
+  it("keeps offering it once that one is marked too", () => {
+    expect(readEntryApplies("idle", true, asking)).toBe(true);
   });
 });
 

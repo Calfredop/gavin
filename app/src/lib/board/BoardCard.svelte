@@ -25,7 +25,8 @@
   import { cardSessionState } from "$lib/board/columnRunAction";
   import { boardSelection } from "$lib/board/boardSelection";
   import { tooltip } from "$lib/core/tooltip";
-  import { layoutState, resolvedAgents, attentionStatusById } from "$lib/core/layoutState";
+  import { layoutState, resolvedAgents } from "$lib/core/layoutState";
+  import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
   import { agentPromptBlocker } from "$lib/cards/cardRun";
   import { sshRunBlocked } from "$lib/workspace/sshWorkspace";
   import { sshLinks } from "$lib/workspace/sshLinkState";
@@ -124,9 +125,10 @@
       };
     if (state === "exited")
       return { indicator: agentExitedIndicator(), action: "open the card for Re-launch" };
-    // The acknowledged view, like the tab badge and the sidebar dot: one
-    // session, one answer, wherever it is drawn.
-    const indicator = agentIndicator($attentionStatusById[binding.sessionId]);
+    // The acknowledged, verdict-aware view, like the tab badge and the
+    // sidebar dot: one session, one answer, wherever it is drawn -- and
+    // a question asked in prose is a wait on all three of them.
+    const indicator = agentIndicator($verdictAttentionStatusById[binding.sessionId]);
     return { indicator, action: "click to open the session" };
   });
 

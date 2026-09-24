@@ -149,6 +149,50 @@ export async function maybeNotifyStatusChange(
   sendNotification({ title: "gavin", body: railVoice?.(sessionId, newStatus) ?? generic });
 }
 
+/// The same quiet transition's notification, sent once the turn verdict
+/// has settled instead of at the moment the daemon reported it.
+///
+/// `maybeNotifyStatusChange` above composes its line from the STATUS,
+/// which is all it has: the daemon says `idle` for a finished turn, a
+/// prose question and an agent that gave up alike. This one is handed a
+/// line somebody else already decided (`verdictNotice`), and its whole
+/// job is to put it through the same three gates the immediate path
+/// uses -- the workspace's toggle, the frontmost-window suppression and
+/// the OS permission -- in the same order, so a deferred notification
+/// can never reach a human the immediate one would not have.
+///
+/// The toggle comes from the NOTICE rather than from the status,
+/// because the verdict is allowed to change which one applies: a turn
+/// the daemon called `idle` and the verdict read as a question is
+/// governed by `notifyNeedsInput`, not by the `notifyFinished` switch
+/// for the sentence it no longer says.
+///
+/// Structurally typed rather than importing `VerdictNotice`, so this
+/// module goes on importing nothing of gavin's at all -- which is what
+/// lets the rail's voice be registered into it from a layer that reads
+/// layoutState (see `setRailNotificationVoice`).
+///
+/// The rail's voice still wins, and that is the whole of "one turn, one
+/// notification": this path REPLACES the line the transition would have
+/// sent rather than adding to it, and the voice replaces that in turn.
+/// There is exactly one `sendNotification` per quiet turn, here or in
+/// `maybeNotifyStatusChange`, never both -- the caller defers one or
+/// sends the other.
+export async function maybeNotifyTurnVerdict(
+  sessionId: string,
+  notice: { toggle: keyof NotifyPrefs; body: string },
+  prefs: NotifyPrefs
+): Promise<void> {
+  if (!prefs[notice.toggle]) return;
+  if (await getCurrentWindow().isFocused()) return;
+  if (!(await ensurePermission())) return;
+  // `idle`, because that is the transition this path defers and the
+  // only one it is ever called for -- the voice reads the same
+  // `stepAttentions` marks the rail is about to draw, and by now they
+  // have the settled verdict in them.
+  sendNotification({ title: "gavin", body: railVoice?.(sessionId, "idle") ?? notice.body });
+}
+
 /// A failure notification's body. Separate so the tray and the surfaces
 /// that show the same fact cannot drift apart, and so the no-reason case
 /// -- a v21 daemon that pushed the status and lost the reason -- still

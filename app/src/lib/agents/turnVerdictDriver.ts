@@ -53,6 +53,7 @@ import { gavinTrees } from "$lib/core/gavinState";
 import { cardIndex, findStep } from "$lib/orchestration/orchestration";
 import { orchestrations } from "$lib/orchestration/orchestrationState";
 import { parseVerdictAnswers, readTurn, screenTail, verdictRequest } from "$lib/agents/turnVerdict";
+import { startVerdictNotices } from "$lib/agents/verdictNoticeState";
 import {
   PENDING_BACKSTOP_MS,
   loadTypesafeSettings,
@@ -232,7 +233,13 @@ function onSessionStatus(
 export function startTurnVerdict(): () => void {
   void loadTypesafeSettings();
   setSessionStatusHook(onSessionStatus);
+  // The tray's half of the same feature, started here because a hold is
+  // meaningless without this driver marking sessions pending: with the
+  // gates above closed there is never an entry to wait for, and every
+  // transition notifies inline exactly as it does today.
+  const stopNotices = startVerdictNotices();
   return () => {
+    stopNotices();
     setSessionStatusHook(null);
     // Every token bumped, so an answer still in flight lands nowhere,
     // and the map emptied: nothing is listening for the turns it

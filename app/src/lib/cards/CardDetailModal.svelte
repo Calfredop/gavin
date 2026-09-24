@@ -22,9 +22,9 @@
     liveSessionIds,
     agentDefaultsStore,
     agentProfilesStore,
-    attentionStatusById,
     requireReviewDefault,
   } from "$lib/core/layoutState";
+  import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
   import {
     COMPLEXITY_LABELS,
     COMPLEXITY_LEVELS,
@@ -626,8 +626,18 @@
     binding ? ($layoutState.failureReasonById[binding.sessionId] ?? null) : null
   );
   /// The session fold's own word for where the run stands.
+  ///
+  /// Through `verdictAttentionStatusById`, like the badge below it, the
+  /// dot on the board card behind this modal and the badge on the tab:
+  /// an acknowledged wait reads as idle and a question asked in PROSE
+  /// reads as a wait, because the daemon calls that one `idle` and a
+  /// human opening this modal to find out why a card has not moved is
+  /// exactly who needs telling (verdictAttention.ts).
   const bindingStatus = $derived(
-    boundStatusLabel(bindingPhase, binding ? ($attentionStatusById[binding.sessionId] ?? null) : null)
+    boundStatusLabel(
+      bindingPhase,
+      binding ? ($verdictAttentionStatusById[binding.sessionId] ?? null) : null
+    )
   );
   /// The same badge the board card, the terminal tab and the sidebar row
   /// draw for this very session: the panel used to say the state in a
@@ -640,7 +650,7 @@
       : bindingPhase === "failed"
         ? agentFailedIndicator(failureReason)
         : bindingPhase === "live"
-          ? agentIndicator(binding ? $attentionStatusById[binding.sessionId] : undefined)
+          ? agentIndicator(binding ? $verdictAttentionStatusById[binding.sessionId] : undefined)
           : agentExitedIndicator()
   );
 
@@ -903,7 +913,7 @@
       binding: binding
         ? {
             phase: bindingPhase,
-            status: $attentionStatusById[binding.sessionId] ?? null,
+            status: $verdictAttentionStatusById[binding.sessionId] ?? null,
             orphan: bindingOrphan !== null,
           }
         : null,
@@ -1296,7 +1306,7 @@
               <div class="candidate-row">
                 <StatusBadge
                   indicator={row.live
-                    ? agentIndicator($attentionStatusById[row.candidate.sessionId])
+                    ? agentIndicator($verdictAttentionStatusById[row.candidate.sessionId])
                     : agentExitedIndicator()}
                   size={12}
                   text={row.live ? "running" : "stopped"}

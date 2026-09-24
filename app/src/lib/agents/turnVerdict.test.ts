@@ -13,6 +13,7 @@ import {
   refineCause,
   screenTail,
   verdictCompletesTurn,
+  verdictAsksQuietly,
   verdictIsAsking,
   verdictRequest,
   verdictStallReason,
@@ -266,6 +267,25 @@ describe("readTurn: the policy", () => {
     const reading = read({ verdict: "blocked", verdictConfidence: 0.91 }, screen);
     expect(reading).toEqual({ kind: "blocked", said: "blocked by the sandbox." });
   });
+
+  it("a failed turn carries the agent's own last line too, for the same reason", () => {
+    // The daemon's own failures reach the human as `failureBody`, whose
+    // whole value is the quoted sentence -- a dead network and an
+    // expired token want opposite responses. A failure the VERDICT read
+    // off the screen has no daemon reason to quote, because the daemon
+    // called this turn `idle`. The screen's own last line is the only
+    // sentence there is, and it is already being read for `blocked`.
+    const screen = claudeScreen("API Error: Connection reset by peer.");
+    const reading = read(
+      { verdict: "failed", verdictConfidence: 0.94, cause: "network", causeConfidence: 0.95 },
+      screen
+    );
+    expect(reading).toEqual({
+      kind: "failed",
+      cause: "network",
+      said: "API Error: Connection reset by peer.",
+    });
+  });
 });
 
 describe("readTurn: the cause gate", () => {
@@ -277,7 +297,7 @@ describe("readTurn: the cause gate", () => {
       causeConfidence: 0.95,
       nBroke: 0.98,
     });
-    expect(reading).toEqual({ kind: "failed", cause: "usage-limit" });
+    expect(reading).toEqual({ kind: "failed", cause: "usage-limit", said: "" });
   });
 
   it("a low-confidence cause IS unknown, so it can never drive a resume", () => {
@@ -292,7 +312,7 @@ describe("readTurn: the cause gate", () => {
       cause: "network",
       causeConfidence: CAUSE_MIN_CONFIDENCE - 0.01,
     });
-    expect(reading).toEqual({ kind: "failed", cause: "unknown" });
+    expect(reading).toEqual({ kind: "failed", cause: "unknown", said: "" });
   });
 
   it("uses a cause exactly at the resume threshold", () => {
@@ -302,7 +322,7 @@ describe("readTurn: the cause gate", () => {
       cause: "network",
       causeConfidence: CAUSE_MIN_CONFIDENCE,
     });
-    expect(reading).toEqual({ kind: "failed", cause: "network" });
+    expect(reading).toEqual({ kind: "failed", cause: "network", said: "" });
   });
 
   it("reads `none` as unknown rather than inventing one", () => {
@@ -312,12 +332,12 @@ describe("readTurn: the cause gate", () => {
       cause: "none",
       causeConfidence: 0.99,
     });
-    expect(reading).toEqual({ kind: "failed", cause: "unknown" });
+    expect(reading).toEqual({ kind: "failed", cause: "unknown", said: "" });
   });
 });
 
 describe("refineCause", () => {
-  const failed = { kind: "failed", cause: "auth" } as const;
+  const failed = { kind: "failed", cause: "auth", said: "" } as const;
 
   it("leaves a cause the profile's own table matched", () => {
     // The table is ordered, measured and local. Overriding a match with
@@ -364,7 +384,7 @@ describe("verdictCompletesTurn", () => {
     expect(verdictCompletesTurn(read({ kind: "finished" }))).toBe(true);
     expect(verdictCompletesTurn(read({ kind: "asking" }))).toBe(false);
     expect(verdictCompletesTurn(read({ kind: "blocked", said: "no" }))).toBe(false);
-    expect(verdictCompletesTurn(read({ kind: "failed", cause: "network" }))).toBe(false);
+    expect(verdictCompletesTurn(read({ kind: "failed", cause: "network", said: "" }))).toBe(false);
     expect(verdictCompletesTurn(read({ kind: "working" }))).toBe(false);
   });
 });
@@ -388,6 +408,48 @@ describe("verdictIsAsking and verdictStallReason", () => {
     expect(verdictStallReason({ state: "read", reading: { kind: "asking" } })).toBeNull();
     expect(verdictStallReason({ state: "read", reading: { kind: "finished" } })).toBeNull();
     expect(verdictStallReason(null)).toBeNull();
+  });
+});
+
+// The one rule the hub's inbox, the rails' step marks and the four badge
+// surfaces share. Two spellings of it is how the badge on a tab and the
+// row two clicks away come to disagree, so it lives here and they all
+// call it.
+describe("verdictAsksQuietly", () => {
+  const read = (reading: TurnReading) => ({ state: "read", reading }) as const;
+
+  it("is true for a quiet session whose turn was a question", () => {
+    expect(verdictAsksQuietly("idle", read({ kind: "asking" }))).toBe(true);
+  });
+
+  it("reinterprets QUIET and nothing else", () => {
+    // The verdict's whole job. `working` is still moving, `failed`
+    // already carries the agent's own sentence, and
+    // `waiting_for_input` rang its bell -- all three are things the
+    // daemon OBSERVED, and a judgement must not overrule an observation.
+    // A stale entry against one of them would do exactly that.
+    for (const status of ["working", "failed", "waiting_for_input", "unknown"] as const) {
+      expect(verdictAsksQuietly(status, read({ kind: "asking" }))).toBe(false);
+    }
+    expect(verdictAsksQuietly(undefined, read({ kind: "asking" }))).toBe(false);
+  });
+
+  it("leaves a quiet session alone on every other reading", () => {
+    expect(verdictAsksQuietly("idle", read({ kind: "finished" }))).toBe(false);
+    expect(verdictAsksQuietly("idle", read({ kind: "working" }))).toBe(false);
+    expect(verdictAsksQuietly("idle", read({ kind: "failed", cause: "unknown", said: "" }))).toBe(false);
+    // `blocked` is a STALL, not a badge: verdictStallReason carries the
+    // agent's own sentence into the rail, which says more than a badge
+    // could. Raising one here would give the badge a rule the inbox and
+    // the step marks do not share.
+    expect(verdictAsksQuietly("idle", read({ kind: "blocked", said: "no disk" }))).toBe(false);
+    // A request that failed, timed out or came back under the
+    // confidence floor says today's answer, which is what absence says.
+    expect(verdictAsksQuietly("idle", { state: "read", reading: null })).toBe(false);
+    // Pending must not put a badge in front of anybody, and no entry at
+    // all is today's answer unchanged.
+    expect(verdictAsksQuietly("idle", { state: "pending" })).toBe(false);
+    expect(verdictAsksQuietly("idle", undefined)).toBe(false);
   });
 });
 

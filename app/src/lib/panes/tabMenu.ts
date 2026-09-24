@@ -11,6 +11,7 @@ import { pickCandidate } from "$lib/cards/bestOfNActions";
 import { get } from "svelte/store";
 import { readEntryApplies, readEntryLabel } from "$lib/sessions/sessionRead";
 import type { SessionStatus } from "$lib/core/notifications";
+import type { TurnVerdictEntry } from "$lib/agents/turnVerdict";
 import type { ContextMenuEntry } from "$lib/core/contextMenu";
 
 export interface TabMenuContext {
@@ -28,6 +29,12 @@ export interface TabMenuContext {
   status?: SessionStatus;
   /** Whether this session's current wait has already been acknowledged. */
   read?: boolean;
+  /** This session's turn verdict, so the entry is offered for a question
+   * asked in PROSE too -- the daemon's status for one is `idle`, and the
+   * badge verdictAttention.ts raises over it has to be dismissible. The
+   * status above stays the daemon's own: this adds a case, it does not
+   * substitute a view. */
+  verdict?: TurnVerdictEntry | null;
 }
 
 export interface TabMenuHooks {
@@ -61,7 +68,7 @@ export function buildTabMenuEntries(ctx: TabMenuContext, hooks: TabMenuHooks): C
   // "Mark as Read" on a tab with nothing to read would be a menu entry
   // that means nothing on almost every tab in the app.
   const read = ctx.read === true;
-  if (ctx.kind === "terminal" && readEntryApplies(ctx.status, read)) {
+  if (ctx.kind === "terminal" && readEntryApplies(ctx.status, read, ctx.verdict)) {
     entries.push({ label: readEntryLabel(read), onPick: () => setSessionRead(ctx.tabId, !read) });
   }
 

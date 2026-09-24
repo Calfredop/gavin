@@ -37,7 +37,7 @@ import type { LayoutNode } from "$lib/panes/layout";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Board } from "$lib/board/kanban";
 import type { GavinTree } from "$lib/core/gavin";
-import { readingOf, verdictIsAsking, type TurnVerdictEntry } from "$lib/agents/turnVerdict";
+import { readingOf, verdictAsksQuietly, type TurnVerdictEntry } from "$lib/agents/turnVerdict";
 
 /// Why a row is in the inbox. The rails' own answers, reused rather than
 /// re-spelled: a running step marked `asking` and a bare terminal
@@ -331,13 +331,24 @@ function reasonFor(
   // `waiting_for_input`, so that ATTENTION_RANK's order is preserved: a
   // broken agent still outranks a question, and a rail that cannot reach
   // its card is still worth saying before one that is merely waiting.
-  if (status === "idle" && verdictIsAsking(verdicts.get(sessionId))) return "asking";
+  //
+  // Through `verdictAsksQuietly` rather than the test spelled out here,
+  // because the tab badge, the sidebar dots, the board card and the card
+  // modal now draw from the same rule (verdictAttention.ts): this row
+  // and that badge are one fact asked twice, and a second copy of the
+  // test is how they would come to disagree.
+  if (verdictAsksQuietly(status, verdicts.get(sessionId))) return "asking";
   // Its sibling, off the same reading, and opt-in for the reason
   // `includeBlocked` gives. Beside `asking` because the two come from
   // one verdict and a turn is only ever one of them, so the order
   // between them decides nothing -- what matters is that both sit below
   // `failed`: an agent that was cut off is not an agent that thought
   // about it and stopped.
+  //
+  // Left out of `verdictAsksQuietly` deliberately, and by that
+  // predicate's own doc: it covers `asking` alone so that the badge
+  // cannot acquire a rule the inbox does not share. `blocked` stays a
+  // separate test here for exactly that reason.
   if (includeBlocked && status === "idle" && blockedReading(verdicts.get(sessionId))) {
     return "blocked";
   }

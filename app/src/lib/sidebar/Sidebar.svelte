@@ -38,8 +38,9 @@
     openAppSettings,
     agentProfilesStore,
     gitTrackingDefault,
-    attentionState,
   } from "$lib/core/layoutState";
+  import { turnVerdictById } from "$lib/agents/turnVerdictState";
+  import { verdictAttentionState } from "$lib/agents/verdictAttention";
   import { confirmWorkspaceClose, confirmPageClose } from "$lib/shell/confirmClose";
   // Naming a workspace into existence is the app hub's action now; the
   // sidebar's is "Open workspace…", which starts from a folder. The
@@ -434,9 +435,9 @@
     return searchSidebar(
       {
         workspaces: visibleWorkspaces,
-        // The acknowledged view, so a hit's badge says the same thing as
-        // the row it jumps to.
-        tabs: $attentionState,
+        // The acknowledged, verdict-aware view, so a hit's badge says
+        // the same thing as the row it jumps to.
+        tabs: $verdictAttentionState,
         sessionNames: $layoutState.sessionNames,
         cwdBySessionId: $layoutState.cwdBySessionId,
       },
@@ -509,12 +510,14 @@
   // sidebar, which is precisely the session a human has no other row to
   // notice.
   //
-  // Through `attentionState` -- the layout with acknowledged waits shown
-  // as idle -- like every other tally and dot in this sidebar. A wait the
-  // human has marked as read is one they have already looked at, and this
-  // badge exists to make them look.
+  // Through `verdictAttentionState` -- the layout with acknowledged
+  // waits shown as idle and verdict-read questions shown as waits --
+  // like every other tally and dot in this sidebar. A wait the human has
+  // marked as read is one they have already looked at, and this badge
+  // exists to make them look; a question asked in prose is one they have
+  // NOT, and the daemon's `idle` is the reason they never saw it.
   function workspaceWaitingCount(ws: Workspace): number {
-    return workspaceAgentsSummary(ws, $attentionState).waiting;
+    return workspaceAgentsSummary(ws, $verdictAttentionState).waiting;
   }
 
   // Whether this row's workspace is on screen in a different window. The
@@ -549,14 +552,14 @@
   // A page's own half of the recap: what it holds, rather than what the
   // workspace adds up to. Same pure-tally shape as the three above.
   function tabsRecap(page: Page): PageAgentsSummary {
-    return pageAgentsSummary(page, $attentionState);
+    return pageAgentsSummary(page, $verdictAttentionState);
   }
 
   // What a page expands into: one row per tab, in layout order. Same
   // projection the recap counts, so the rows revealed here always add up
   // to the numbers on the row above them.
   function tabRows(page: Page): PageTabRow[] {
-    return pageTabRows(page, $attentionState);
+    return pageTabRows(page, $verdictAttentionState);
   }
 
   // The card this row's agent is running, if any -- the reverse lookup
@@ -809,6 +812,10 @@
       // the entry exists to hide this wait, so it has to be able to see
       // it. `row.status` is the masked view the dot beside it draws.
       status: $layoutState.sessionStatusById[row.id],
+      // And the verdict beside it, so the entry is offered for the
+      // prose question too -- the one wait the daemon's status can
+      // never name (sessionRead.ts).
+      verdict: $turnVerdictById[row.id] ?? null,
       read: $layoutState.readSessionIds?.has(row.id) === true,
     };
   }

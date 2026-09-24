@@ -109,6 +109,10 @@ vi.mock("$lib/core/layoutState", () => ({
   // The turn verdict's driver is started beside auto-resume's and hands
   // layoutState a hook the same way.
   setSessionStatusHook: vi.fn(),
+  // And it starts the tray's half of the same feature, which registers
+  // into this second seam (verdictNoticeState.ts).
+  setStatusNoticeHold: vi.fn(),
+  notifyPrefsFor: vi.fn(() => ({ needsInput: true, finished: true })),
   daemonCompat: writable(null),
 }));
 // A REAL store, left empty by default: tick() bails early without a
