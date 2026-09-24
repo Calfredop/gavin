@@ -1,0 +1,72 @@
+#!/bin/sh
+# Resolve and exec the gavin-mcp binary for whatever machine this
+# checkout is sitting on.
+#
+# `.mcp.json` and `.cursor/mcp.json` are COMMITTED and the same checkout is
+# opened from a Mac and a Windows box, so neither file can name an absolute
+# path: whichever machine last ran the wizard's integration step re-pointed
+# it and broke the other. The file flip-flopped three times on that account
+# (d4191db, 030d99f, b8ba17c) and ended up naming a binary that existed on
+# NEITHER machine, which costs every agent session all sixteen gavin_* tools.
+# So the configs name this script by RELATIVE path and the resolving happens
+# here, once, at launch.
+#
+# Windows runs `gavin-mcp.cmd` beside this file: the configs say
+# `scripts/gavin-mcp` on both platforms and Windows resolves that through
+# PATHEXT to the .cmd. The two scripts must keep the same search order.
+#
+# Nothing may reach stdout but the binary's own JSON-RPC -- a stray echo
+# corrupts the stream and the server dies as a parse error. Diagnostics go
+# to stderr.
+
+set -eu
+
+# Resolved from this script's own directory, never the caller's cwd, so a
+# worktree finds ITS target/ and the answer does not change with wherever
+# the agent happened to be started.
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+root=$(dirname -- "$here")
+
+# Order matters: the installed app is the one binary that exists on both
+# machines and in every freshly-cut worktree (a new worktree has no target/
+# at all), so it leads. A dev iterating on gavin-mcp itself overrides with
+# GAVIN_MCP rather than by deleting their install.
+candidates=$(cat <<EOF
+${GAVIN_MCP:-}
+$HOME/Applications/Gavin.app/Contents/MacOS/gavin-mcp
+/Applications/Gavin.app/Contents/MacOS/gavin-mcp
+$root/target/release/gavin-mcp
+$root/target/debug/gavin-mcp
+EOF
+)
+
+# A plain `while ... done < heredoc` keeps the loop in this shell -- piping
+# into it would set `found` in a subshell and lose it.
+found=""
+while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    if [ -x "$candidate" ]; then
+        found=$candidate
+        break
+    fi
+done <<EOF
+$candidates
+EOF
+
+if [ -z "$found" ] && command -v gavin-mcp >/dev/null 2>&1; then
+    found=$(command -v gavin-mcp)
+fi
+
+if [ -z "$found" ]; then
+    # Name every path tried. The failure an agent otherwise sees is a bare
+    # `gavin (CONNECTION_CLOSED)`, which says nothing about what was wrong.
+    echo "gavin-mcp: no binary found. Tried, in order:" >&2
+    echo "$candidates" | while IFS= read -r candidate; do
+        [ -n "$candidate" ] && echo "  $candidate" >&2
+    done
+    echo "  gavin-mcp on PATH" >&2
+    echo "Install Gavin, run \`cargo build -p gavin-mcp\`, or set GAVIN_MCP." >&2
+    exit 1
+fi
+
+exec "$found" "$@"

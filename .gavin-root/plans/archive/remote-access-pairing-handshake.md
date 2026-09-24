@@ -2,7 +2,7 @@
 order: 20480
 kind: task
 title: Remote access: the pairing handshake and the phase-2 protocol
-status: To Do
+status: Done
 parent: feat-remote-access-phase-2.md
 complexity: intricate
 ---

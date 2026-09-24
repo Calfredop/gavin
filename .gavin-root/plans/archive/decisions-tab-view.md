@@ -3,7 +3,7 @@ order: 10240
 kind: task
 title: "Decisions tab: the hub tab itself"
 parent: tb-developed-feat-decisions-tab.md
-status: To Do
+status: Done
 complexity: complex
 ---
 Build the Decisions hub tab. Read the parent plan,
@@ -45,3 +45,15 @@ against a clean-HEAD baseline, plus a static pre-flight grep of the exact
 strings the change relies on. The rendered pass is the owner's: file it
 on this card as `Human test:` items — through `gavin_request_human`, or by
 hand in the marker spelling if the MCP is down.
+
+## Checklist
+
+- [ ] Human test: the Decisions tab sits between Tools and Review, wears the gavel, and ⌘ 6 opens it — and hiding or dragging it in Hub tabs… sticks across a relaunch
+- [ ] Human test: with something waiting, the tab wears the attention mark and its hover text reads "Something here is waiting on you", not the Orchestration tab's sentence about a rail
+- [ ] Human test: a card carrying a `Decision:` line lists as ONE row even when its agent is also asking; picking an option and pressing Answer ticks the line on the card, writes `Answer (date):` under it, and the bound agent receives exactly one queued message
+- [ ] Human test: on a `Human test:` item, Pass ticks it; Fail leaves the box unticked and the row reads "failed · with the agent"; Fail and close asks first in gavin's own modal (never an OS dialog) with focus on the dismissing button
+- [ ] Human test: answering a card whose agent has exited says so on screen ("Answered on the card. The agent was not told: …") rather than silently sending nothing
+- [ ] Human test: a rail parked on a `review` step lists as a gate, and Skip the step / Mark it done each move that rail on — including a rail that rule 5 had paused
+- [ ] Human test: an unreviewed card's row opens that card's own review sheet through the Plan pane, showing the same prompt a launch would send
+- [ ] Human test: the tab's two head bands line up with the Review tab's, the list and the items column each scroll inside themselves, and nothing scrolls sideways with the window narrowed to a phone-ish width
+- [ ] Human test: against a pre-v42 daemon the tab still lists waiting sessions and rail gates, and says why decisions and human tests cannot be shown instead of drawing an empty list

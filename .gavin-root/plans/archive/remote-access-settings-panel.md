@@ -2,7 +2,7 @@
 order: 21504
 kind: task
 title: Remote access: the Settings section — toggle, relay URL, Pair a device, device list, Revoke all
-status: To Do
+status: Done
 parent: feat-remote-access-phase-2.md
 complexity: complex
 ---

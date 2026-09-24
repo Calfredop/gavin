@@ -33,22 +33,27 @@ Settled decisions. Breaking one needs a new decision, not a patch.
 
 ## Architecture
 
-- `crates/protocol` — wire types, `PROTOCOL_VERSION` (13), `MIN_COMPATIBLE_VERSION`
+- `crates/protocol` — wire types, `PROTOCOL_VERSION` (41), `MIN_COMPATIBLE_VERSION`
   (5) and `min_version_for`: the supported daemon window.
 - `crates/daemon` — `gavin-daemon`: PTYs, SQLite registry, the `.gavin*` filesystem
-  watcher, orchestration state. Newline-delimited JSON over a Unix socket.
+  watcher, orchestration state. Newline-delimited JSON over a Unix socket on
+  macOS and Linux, and over a Windows named pipe (`\\.\pipe\gavin-…`, named
+  from a hash of the state directory so each user gets their own) on Windows.
 - `crates/gavin-mcp` — the MCP server behind the `gavin_*` tools.
 - `app/` — SvelteKit (SPA) + Svelte 5 + xterm.js. `app/src-tauri` — the Tauri host:
   a thin socket client to the daemon, plus git, file viewer/editor, agent profiles.
 
 The client/server split is the load-bearing decision: the daemon persists
 independently of the GUI. Design history is in
-`docs/superpowers/{brainstorms,specs,plans}/`.
+`docs/superpowers/{briefs,brainstorms,specs,plans}/`; the security model is in
+`docs/security/`.
 
 ## What is built
 
 - **Terminal core** — workspaces → pages → tabs, split panes, per-session status
-  (idle / working / waiting for input) with OS notifications, restart recovery.
+  (idle / working / waiting for input / failed, plus `unknown` from a newer
+  daemon) with OS notifications, restart recovery, orphan recovery, and a launch
+  wall that gates, queues and estimates what is about to start.
 - **Kanban board** — markdown cards (note / task / plan), statuses from the column
   names, labels, priority, nesting and promotion, multi-select, search and filter,
   run actions, `plans/done/` on Done and an explicit `plans/archive/`.
@@ -56,35 +61,83 @@ independently of the GUI. Design history is in
   CodeMirror 6, live-reloading file viewer.
 - **Git tab** — local changes, sync / branches / worktrees, history graph, 3-pane
   conflict merge, commit via a hidden agent run.
-- **Orchestration** — rails of steps (a card or a tool), bound to a worktree or a
-  branch, each rail spawning a page of its own; a scheduler that runs steps through
-  agents and reconciles dead sessions.
+- **Orchestration** — rails of ordered **stages**, each stage holding one or more
+  steps (a card or a tool) and running them `parallel` or in `sequence`; rails
+  bound to a worktree and/or a branch, each spawning a page of its own, each able
+  to carry a `trigger` that arms it without a human (`rail-done`,
+  `all-rails-done`); a scheduler that runs steps through agents and reconciles
+  dead sessions; reusable **group templates**.
+- **Tool library** — reusable units of work droppable onto a rail: workspace-owned
+  or global custom tools (agent prompt, command, script) plus a fixed catalog of
+  built-ins (commit, run-tests, merge, push, open-pr, await-pr, until,
+  manual-review, code-review, reconcile-repo, notify, browser-test, start-rail…),
+  with its own hub tab.
+- **Review tab** — finished work per card, code review and critical review filing
+  their findings back as cards.
+- **Attention** — an inbox of what is waiting on the human, a next-waiting jump,
+  auto-resume, agent pause, a model fallback chain and queued follow-ups.
+- **TypeSafe features** — turn verdicts (telling a prose question, a blocker or a
+  failure from a finished turn), change attribution in a shared tree, commit↔card
+  links, and a by-meaning fallback for settings search.
+- **ssh workspaces** — the daemon runs where the workspace lives and the desktop
+  drives it over `ssh <host> gavin-daemon bridge`; sessions, board, tree,
+  orchestration, tools, card runs, the Git tab and the Files tree all route to the
+  host.
+- **Agent economics** — usage, cost and limit tracking per profile, complexity →
+  model routing, Best-of-N.
+- **Windows and Linux ports** — named-pipe transport and ConPTY on Windows, XDG
+  data directories and AppImage/deb bundling on Linux, CI on `windows-latest` and
+  `ubuntu-latest`.
 - **Workspace plumbing** — settings, init wizard, agent profiles that write real MCP
-  config, keyboard shortcuts, daemon restart from Settings, and a daemon version
-  compatibility window with a banner and per-feature gating.
-- **Home hub** — PRD excerpt, board and plan summaries, sidebar workspace/page recaps.
+  config, superpowers install, keyboard shortcuts, daemon restart from Settings,
+  worktree setup scripts, a workspace-removal wizard with OS-trash and restore,
+  an updater, machine memory-pressure gating, and a daemon version compatibility
+  window with a banner and per-feature gating.
+- **Home hub** — PRD excerpt, board, plan and orchestration summaries, sidebar
+  workspace/page recaps, and an app-level hub with a "waiting on you" inbox.
 
 ## Current focus
 
-1. **Land the tree.** `main`'s working tree carries ~100 dirty entries — several
-   sessions' finished features (archive, page recap, rail scheduler fixes, commit
-   via agent, nested-task status). Until they are committed, `git log` cannot
-   answer "is this in?". Commit per feature, own files only.
-2. **Clear the merge debt.** `feature/multimcp` (9de344a), and the uncommitted O15
-   (rail↔branch binding) and O16 (rail spawns its page) work in the
-   `Orchestration/opts-01` worktree. That merge owes a protocol bump plus a
-   `FEATURE_MIN_VERSION` entry *with a real consumer* for `Rail.branch`.
-3. **Close the `gavin-mcp` compat gap** (`plans/gavin-mcp-compat-window.md`). The
-   app tolerates an older daemon; `gavin-mcp` still demands exact equality, so one
-   version of skew takes every `gavin_*` tool down in every running agent session.
-4. **Orchestration hardening** — the open cards: a rail icon on a card that sits in
-   a rail, an orchestration recap on Home, agent-driven rail organisation, archiving
-   closing the card's sessions, and the tab-rename skill regression.
-5. **Confirming the rendered surface.** The suites cannot reach it, and gavin no
-   longer tracks it: the smoke checklist and its dev-only workspace are retired,
-   so there is no list to tick and no smoke items to file on a card. Looking at
-   what a change does in the running app is the owner's, done when a change
-   warrants it rather than accumulated as a backlog.
+Rewritten 2026-09-22 by a board audit. The five items that stood here were all
+stale: the tree is clean, every branch is merged into `main`, the compat card
+named a file that had been archived, and all five "orchestration hardening"
+items had shipped.
+
+1. **Repair the agent toolchain on this machine.** `.mcp.json` is committed and
+   carries ONE absolute path to `gavin-mcp`, and the installer move left it
+   pointing at a binary that no longer exists — so every agent session in this
+   repo now starts with a dead `gavin` MCP server and no `gavin_*` tools. The
+   button-press repair re-breaks the Mac, which is the argument for the card:
+   make the command machine-independent. Alongside it, `gavin-mcp` still fails
+   closed when the daemon is newer, so a rebuild takes the tools down in every
+   running session until each one restarts; the spec asks for a self re-exec.
+2. **Close the Windows port.** The code has landed and CI builds it; what is left
+   is a desktop pass in front of the running app and four fixes an agent can
+   make — `gavin::tests` 10 red, four Rust baseline reds that keep `cargo test`
+   from being a gate, npm CLI shims eaten by `cmd.exe`, and `tauri dev` unable to
+   rebuild a sidecar a sibling session holds. Compiling is not running.
+3. **Finish ssh workspaces.** Sessions, board, tree, orchestration, tools, card
+   runs (v40), the Git tab and the Files tree (v41) all route to the host.
+   Network git sync, the git watcher, conflict resolution and tree mutations are
+   still gated off, and nothing has been verified from macOS against a real Linux
+   or Windows host.
+4. **Make what waits on the human visible, and honest.** The turn verdict tells a
+   prose question from a finished turn, but only the rails, auto-resume, the
+   attention inbox and the follow-up queue read it — a tab badge, a sidebar row
+   and a board card still show a waiting agent as idle, and the "finished"
+   notification fires before the verdict lands. The Decisions tab gathers all of
+   it in one place.
+5. **Remote access, phase 2.** Phase 1 (client identity and roles on the local
+   socket) landed. The trust store, the pairing handshake, revocation and the
+   Settings section do not exist yet — `trust.rs` and `pairing.rs` are unwritten.
+   It must not open a listener or dial a relay.
+
+**On confirming the rendered surface.** The suites cannot reach it, and the
+retired smoke checklist is not coming back as a routine UI backlog. But checks
+that genuinely need a person — another machine, a real install, a judgement
+call — are being brought back as card items (`Human test:`), gathered on the
+Decisions tab, rather than living only in an agent's memory of what it could not
+verify. Looking at what a change does in the running app stays the owner's.
 
 ## Out of scope
 

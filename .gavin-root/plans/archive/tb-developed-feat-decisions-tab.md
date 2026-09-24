@@ -2,7 +2,7 @@
 order: 9216
 kind: plan
 title: [feat] Decisions tab
-status: To Do
+status: Done
 complexity: moderate
 ---
 A new tab in the workspace hub listing everything waiting on the human
@@ -63,19 +63,19 @@ needs to be taken in order for the task/plan to proceed, or human tests."*
 
 ## Checklist
 
-- [ ] Wire half — task card `decisions-tab-wire.md` (its own rail step)
-- [ ] The tab — task card `decisions-tab-view.md` (its own rail step,
+- [x] Wire half — task card `decisions-tab-wire.md` (its own rail step)
+- [x] The tab — task card `decisions-tab-view.md` (its own rail step,
       after the wire half)
-- [ ] Teach the agents `gavin_request_human` and both markers:
+- [x] Teach the agents `gavin_request_human` and both markers:
       `app/src-tauri/src/gavin_skill.md`, `gavin_resume_skill.md` (a
       resume reads answers and failed results first) and
       `gavin_develop_skill.md`, plus this repo's
       `.claude/skills/{gavin,gavin-resume,gavin-develop}/SKILL.md`; the
       template-drift guards stay green
-- [ ] Amend PRD current focus #5 and CLAUDE.md's "How UI work is
+- [x] Amend PRD current focus #5 and CLAUDE.md's "How UI work is
       structured" paragraph: a rendered check that needs a person is
       filed as a `Human test:` item, never as a smoke backlog
-- [ ] Verdict follow-up — nested task `decisions-tab-verdict.md` (the
+- [x] Verdict follow-up — nested task `decisions-tab-verdict.md` (the
       turn verdict is on main since the 2026-09-22 merge)
 
 <!-- gavin:auto-commit -->

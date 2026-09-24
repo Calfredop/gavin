@@ -2,7 +2,7 @@
   "mcpServers": {
     "gavin": {
       "args": [],
-      "command": "C:\\Users\\calfr\\AppData\\Local\\gavin\\gavin-mcp.exe"
+      "command": "scripts/gavin-mcp"
     }
   }
 }

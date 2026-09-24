@@ -2,7 +2,7 @@
   "mcpServers": {
     "gavin": {
       "args": [],
-      "command": "/Users/coalpila/CloudStation/Coding/gavin/target/debug/gavin-mcp",
+      "command": "scripts/gavin-mcp",
       "env": {
         "GAVIN_SESSION_ID": "${env:GAVIN_SESSION_ID}",
         "GAVIN_SESSION_SOCKET": "${env:GAVIN_SESSION_SOCKET}",
