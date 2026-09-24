@@ -12,6 +12,8 @@ mod screen;
 mod server;
 mod shell;
 mod status;
+#[cfg(test)]
+mod testing;
 
 use kanban::KanbanStore;
 use registry::{secure_db_file, Registry};

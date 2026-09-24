@@ -2252,10 +2252,47 @@ pub fn scan_root(root: &Path) -> GavinTree {
 /// in milliseconds, and `tree_relevant` already rejects the churn the
 /// per-directory set was meant to keep out.
 ///
+/// Windows is here for a different reason, and it is correctness rather
+/// than speed. `ReadDirectoryChangesW` holds an open handle on every
+/// directory it watches, and Windows refuses to rename or move a
+/// directory while any handle is open ANYWHERE inside it -- a refusal
+/// that survives opening the inner handle with FILE_SHARE_DELETE, which
+/// only ever licensed deleting that file, never moving one of its
+/// ancestors. So the per-directory set made a watched workspace
+/// immovable: `.gavin-root`'s own watch was enough to stop the human
+/// renaming the workspace folder in Explorer, and a context folder's
+/// `.gavin` was enough to stop them renaming the context. With one
+/// handle on the root and none below it, every folder inside stays
+/// renamable, and the root itself goes too -- a handle on the directory
+/// being renamed is fine, it is a handle *inside* it that is not.
+///
+/// `ReadDirectoryChangesW` is natively recursive (`bWatchSubtree`), so
+/// unlike inotify this costs one handle rather than one per directory.
+/// What it does cost is delivery: every write under `target/`,
+/// `node_modules/` and `.git/` now crosses into the daemon to be thrown
+/// away by `tree_relevant`. Measured rather than guessed -- see
+/// `measure_recursive_watch_churn`: 2000 build-shaped writes produce
+/// ~6000 event paths, `tree_relevant` rejects all of them, and the
+/// filtering costs tens of milliseconds. No rescan follows a rejection,
+/// so the walk is never paid.
+///
+/// The second Windows cost is narrower and is not about volume.
+/// `ReadDirectoryChangesW` reports what happens INSIDE the directory its
+/// handle is open on, so the root's OWN rename is only ever reported to
+/// a watch on its parent -- which `watch_targets` deliberately never
+/// takes. Renaming the root away still pushes `root_missing` (the handle
+/// follows the directory and keeps reporting from its new home), but
+/// renaming it BACK pushes nothing; the first change under the restored
+/// root heals the tree instead. Measured on
+/// `server::tests::renaming_the_root_away_pushes_root_missing_and_renaming_back_heals`,
+/// which asserts exactly that on Windows and the stronger unix property
+/// elsewhere. inotify does not have this gap: its watch is on the inode
+/// and both renames raise IN_MOVE_SELF.
+///
 /// inotify is genuinely non-recursive and a recursive watch there means
 /// one descriptor per directory, node_modules included, so the
 /// per-directory set stays the right answer on Linux.
-const ONE_RECURSIVE_WATCH: bool = cfg!(target_os = "macos");
+const ONE_RECURSIVE_WATCH: bool = cfg!(any(target_os = "macos", windows));
 
 /// The directories worth watching, and how deeply. Mirrors `scan_root`'s
 /// own walk exactly, because watching what the scanner reads -- and
@@ -2274,13 +2311,15 @@ const ONE_RECURSIVE_WATCH: bool = cfg!(target_os = "macos");
 ///
 /// All of which describes inotify. On FSEvents the churn crosses into the
 /// daemon either way and the per-directory set only multiplies the cost
-/// of arming it, so there the whole root is one recursive watch -- see
-/// `ONE_RECURSIVE_WATCH`.
+/// of arming it; on Windows each entry is an open handle that makes the
+/// folder it names unrenamable. On both the whole root is one recursive
+/// watch instead -- see `ONE_RECURSIVE_WATCH`.
 pub fn watch_targets(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
     use notify::RecursiveMode::{NonRecursive, Recursive};
     if ONE_RECURSIVE_WATCH {
         // See the constant: on FSEvents the per-directory set below buys
-        // nothing and costs a stream rebuild per directory.
+        // nothing and costs a stream rebuild per directory, and on
+        // Windows it locks every folder it names against renaming.
         return vec![(root.to_path_buf(), Recursive)];
     }
     // The root's own watch is permanent, and listed even while the root
@@ -3069,6 +3108,7 @@ pub fn list_workspace_dir(root: &Path, path: &str) -> anyhow::Result<Vec<protoco
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{wire_separators, wire_spelling};
 
     /// Makes a symlink the way the running OS makes one, and reports
     /// whether the OS allowed it at all.
@@ -4248,7 +4288,7 @@ mod tests {
 
         let tree = scan_root(root.path());
         let ctx = tree.contexts.last().unwrap();
-        assert_eq!(ctx.folder_path, lib.to_string_lossy());
+        assert_eq!(ctx.folder_path, wire_spelling(&lib));
         assert!(ctx.outside);
         assert!(!tree.contexts.first().unwrap().outside);
 
@@ -4308,15 +4348,22 @@ mod tests {
         let inside = root.path().join("src");
         std::fs::create_dir_all(inside.join(GAVIN_DIR)).unwrap();
         let mut body = std::fs::read_to_string(&config).unwrap();
+        // TOML LITERAL strings (single quotes), not basic ones: a Windows
+        // path is `C:\Users\...`, and `\U` is an escape TOML rejects, so
+        // a basic string here fails to parse and the extras list silently
+        // comes back empty -- which is to say the skip this test is about
+        // would never be exercised on Windows. `add_external_context`
+        // writes the native spelling through `toml_edit`, which escapes
+        // it; writing the file by hand has to do one or the other.
         body.push_str(&format!(
-            "extra_contexts = [\"{}\", \"/definitely/not/there\"]\n",
+            "extra_contexts = ['{}', '/definitely/not/there']\n",
             inside.display()
         ));
         std::fs::write(&config, body).unwrap();
         let tree = scan_root(root.path());
         // `src` still appears once -- from the walk, not the extras list.
         let src_entries =
-            tree.contexts.iter().filter(|c| c.folder_path == inside.to_string_lossy()).count();
+            tree.contexts.iter().filter(|c| c.folder_path == wire_spelling(&inside)).count();
         assert_eq!(src_entries, 1);
         assert!(tree.contexts.iter().all(|c| !c.outside));
     }
@@ -4937,10 +4984,12 @@ mod tests {
     /// purpose (`cargo test -p gavin-daemon -- --ignored measure_watch`)
     /// and a poor one to run on every commit.
     ///
-    /// Off macOS only: on FSEvents `watch_targets` returns the root and
-    /// nothing else, so there is no per-directory cost to measure.
+    /// inotify only: where `watch_targets` returns the root and nothing
+    /// else there is no per-directory cost to measure. The cost those
+    /// platforms pay instead is measured by
+    /// `measure_recursive_watch_churn`.
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     #[ignore = "builds a 3000-folder repo and arms the real watch set; run with --ignored"]
     fn measure_watch_set_on_a_large_repo() {
         let dir = tempfile::tempdir().unwrap();
@@ -5027,7 +5076,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn watch_targets_covers_the_scanned_dirs_and_skips_the_churny_ones() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
@@ -5058,13 +5107,86 @@ mod tests {
         assert!(!targets.iter().any(|(p, _)| p == ".gavin-root/plans"), "{targets:?}");
     }
 
+    /// The other half of the watch-set bargain, kept runnable rather
+    /// than written down once as a number.
+    ///
+    /// Where the root is one recursive watch, the churn the
+    /// per-directory set used to keep out crosses into the daemon and
+    /// `tree_relevant` is the only thing left standing between a build
+    /// and a rescan. This builds the shape a build makes -- writes under
+    /// `target/` and `node_modules/` -- and reports how many event paths
+    /// that costs, how many survive the filter, and what the filtering
+    /// took. Measured 2026-09-23 on Windows 11: 2000 writes, ~6000 event
+    /// paths, 0 survivors, tens of milliseconds.
+    ///
+    /// The survivor count is the assertion; the rest is the report. A
+    /// non-zero one means a build would drive rescans, which is the
+    /// failure mode that makes the recursive watch the wrong trade.
+    ///
+    /// `#[ignore]`d for the same reason as the measurement above: it
+    /// writes two thousand files and sleeps out a watcher.
     #[test]
-    #[cfg(target_os = "macos")]
-    fn on_fsevents_the_root_is_one_recursive_watch_and_nothing_else() {
-        // The per-directory set is what made a large repo take minutes
-        // to arm (see ONE_RECURSIVE_WATCH): every directory the scanner
-        // descends into became its own `watch()` call, each one a stream
-        // rebuild. One recursive registration covers the same events.
+    #[cfg(any(target_os = "macos", windows))]
+    #[ignore = "writes 2000 files under a live recursive watch; run with --ignored"]
+    fn measure_recursive_watch_churn() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(GAVIN_ROOT_DIR).join("plans")).unwrap();
+        let obj = root.join("target").join("debug").join("build");
+        let module = root.join("node_modules").join("pkg");
+        std::fs::create_dir_all(&obj).unwrap();
+        std::fs::create_dir_all(&module).unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = notify::recommended_watcher(move |e| {
+            let _ = tx.send(e);
+        })
+        .unwrap();
+        notify::Watcher::watch(&mut watcher, &root, notify::RecursiveMode::Recursive).unwrap();
+        // The watch is armed asynchronously; writing into the tree
+        // before it is would measure a quieter repo than the real one.
+        std::thread::sleep(Duration::from_millis(300));
+
+        let t = Instant::now();
+        for i in 0..1000 {
+            std::fs::write(obj.join(format!("o{i}.o")), b"x").unwrap();
+            std::fs::write(module.join(format!("m{i}.js")), b"x").unwrap();
+        }
+        let write_time = t.elapsed();
+        std::thread::sleep(Duration::from_secs(2));
+
+        let t = Instant::now();
+        let (mut raw, mut relevant) = (0usize, 0usize);
+        while let Ok(Ok(event)) = rx.recv_timeout(Duration::from_millis(200)) {
+            for path in &event.paths {
+                raw += 1;
+                if tree_relevant(&root, None, path) {
+                    relevant += 1;
+                }
+            }
+        }
+        let filter_time = t.elapsed();
+
+        println!(
+            "2000 churn writes in {write_time:?}\n\
+             {raw} raw event paths crossed into the process\n\
+             {relevant} survived tree_relevant\n\
+             draining and filtering took {filter_time:?}"
+        );
+        assert!(raw > 0, "the recursive watch reported nothing -- it never armed");
+        assert_eq!(relevant, 0, "build churn reached the rescan path");
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", windows))]
+    fn under_one_recursive_watch_the_root_is_the_whole_set() {
+        // Both reasons the set collapses, and each is fatal on its own
+        // platform (see ONE_RECURSIVE_WATCH): on FSEvents every scanned
+        // directory became its own `watch()` call and each one a stream
+        // rebuild, which made a large repo take minutes to arm; on
+        // Windows each one is an open handle that makes the folder it
+        // names unrenamable. One recursive registration covers the same
+        // events with neither cost.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         std::fs::create_dir_all(root.join(GAVIN_ROOT_DIR).join("plans")).unwrap();
@@ -5296,14 +5418,23 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn under_one_recursive_watch_a_new_folder_needs_no_watch_of_its_own() {
-        // The FSEvents counterpart of the two tests below: the root's
-        // recursive watch already covers a folder that appears later, so
-        // a rescan must not start registering per-directory watches --
-        // that is the slow path this platform left.
+        // The counterpart of the two tests below, for the platforms that
+        // watch the root recursively: that watch already covers a folder
+        // appearing later, so a rescan must not start registering
+        // per-directory watches -- on macOS that is the slow arm these
+        // platforms left behind, on Windows it is a handle that would
+        // lock the new folder against being renamed.
+        //
+        // Wire spelling rather than `canonicalize()`, because this
+        // compares against paths the watcher REGISTERED and
+        // `GavinWatcher::start` stores `protocol::canonical_path(root)`.
+        // On Windows raw canonicalisation answers `\\?\C:\...`, which no
+        // watch is ever held under; on macOS the two spellings are the
+        // same and this changes nothing.
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = PathBuf::from(wire_spelling(dir.path()));
         init_gavin_root(&root, "WS").unwrap();
 
         let (_ours, theirs) = Stream::pair().unwrap();
@@ -5321,7 +5452,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn a_new_folder_picks_up_its_own_watch_on_the_next_rescan() {
         // The watch set is non-recursive per directory, so a folder that
         // appears after the watcher started must be armed by the very
@@ -5330,8 +5461,8 @@ mod tests {
         //
         // Asserted against the registered set rather than a second
         // filesystem event: the mechanism is what this pins, and racing
-        // FSEvents twice in one test is how you get a suite that fails
-        // only under load.
+        // the watcher twice in one test is how you get a suite that
+        // fails only under load.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         init_gavin_root(&root, "WS").unwrap();
@@ -5353,7 +5484,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn a_folder_that_left_gives_its_watch_back() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
@@ -5725,7 +5856,7 @@ mod tests {
         // hiding it from the tree is the FRONTEND's job, not the
         // scanner's.
         let tree = scan_root(dir.path());
-        assert!(tree.contexts[0].plans.iter().any(|p| p.path == archived.to_string_lossy()));
+        assert!(tree.contexts[0].plans.iter().any(|p| p.path == wire_spelling(&archived)));
 
         let promoted = promote_checklist_item(&archived, "step one").unwrap();
         assert_eq!(promoted, plans.join("archive").join("step-one.md"));
@@ -5747,10 +5878,20 @@ mod tests {
 
     // --- recovering a card path the daemon did not move -------------------
 
+    /// Step paths as the orchestration store holds them: wire spelling,
+    /// because that is what a scan put there. `wire_spelling` itself
+    /// cannot serve -- these name cards that deliberately do NOT exist
+    /// (a deleted one, one that moved) and canonicalising needs a file.
+    /// So the root is resolved and the card's own segments joined on.
     fn card_paths(root: &Path, names: &[&str]) -> Vec<String> {
+        let root = PathBuf::from(wire_spelling(root));
         names
             .iter()
-            .map(|n| root.join(GAVIN_ROOT_DIR).join("plans").join(n).to_string_lossy().to_string())
+            .map(|n| {
+                wire_separators(
+                    &root.join(GAVIN_ROOT_DIR).join("plans").join(n).to_string_lossy(),
+                )
+            })
             .collect()
     }
 
@@ -5763,7 +5904,7 @@ mod tests {
         write_card(&plans.join(DONE_DIR), "fs-sync.md", "---\ntitle: FS sync\nstatus: Done\n---\n");
 
         let stale = card_paths(dir.path(), &["fs-sync.md"]);
-        let moved = plans.join(DONE_DIR).join("fs-sync.md").to_string_lossy().to_string();
+        let moved = wire_spelling(&plans.join(DONE_DIR).join("fs-sync.md"));
 
         assert_eq!(
             recover_moved_card_paths(&scan_root(dir.path()), &stale),

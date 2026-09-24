@@ -4479,6 +4479,8 @@ fn handle_connection(stream: Stream, manager: Arc<SessionManager>) -> anyhow::Re
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::wire_spelling;
+
     /// Every daemon test gets a throwaway in-memory orchestration store:
     /// none of them exercise it, they just need SessionManager to build.
     fn test_orchestration_store() -> crate::orchestration::OrchestrationStore {
@@ -6330,24 +6332,22 @@ mod tests {
         assert!(matches!(resp, Response::Ok));
     }
 
-    /// Unix only, and the reason is the OS rather than anything gavin
-    /// does. Windows refuses to rename a directory while ANY handle is
-    /// open anywhere inside it -- measured 2026-09-22: the refusal
-    /// survives opening that inner handle with FILE_SHARE_DELETE, which
-    /// only ever licensed deleting the file itself, never moving one of
-    /// its ancestors. `watch_targets` registers a watch per scanned
-    /// directory on every platform but macOS, so `.gavin-root` alone is
-    /// enough to make `fs::rename(&root, &away)` here fail
-    /// `PermissionDenied` before the assertion under test is reached.
+    /// Ran on unix only until 2026-09-23, and the reason was the OS
+    /// rather than anything gavin does. Windows refuses to rename a
+    /// directory while ANY handle is open anywhere inside it -- the
+    /// refusal survives opening that inner handle with FILE_SHARE_DELETE,
+    /// which only ever licensed deleting the file itself, never moving
+    /// one of its ancestors. `watch_targets` then registered a watch per
+    /// scanned directory everywhere but macOS, so `.gavin-root` alone was
+    /// enough to make `fs::rename(&root, &away)` below fail
+    /// `PermissionDenied` before the assertion under test was reached.
     ///
-    /// Worth knowing beyond this test: a Windows user cannot rename or
-    /// move a workspace folder while gavin has it open. Only a single
-    /// recursive watch on the root would leave the tree movable, and on
-    /// Windows that is not a free swap -- `ReadDirectoryChangesW` with
-    /// `bWatchSubtree` would pull `target/`, `node_modules/` and `.git/`
-    /// churn into the daemon, which is exactly what the per-directory
-    /// set exists to keep out.
-    #[cfg(unix)]
+    /// It runs on Windows now because `gavin::ONE_RECURSIVE_WATCH` is
+    /// true there: the only handle is the root's own, and a handle on
+    /// the directory being renamed is not what Windows objects to. Which
+    /// is the same reason a human can now rename or move a watched
+    /// workspace folder in Explorer -- this test is the regression guard
+    /// for that, not just for `root_missing`.
     #[test]
     fn renaming_the_root_away_pushes_root_missing_and_renaming_back_heals() {
         let (socket_path, _dir) = start_test_server();
@@ -6365,9 +6365,19 @@ mod tests {
             },
         )
         .unwrap();
+        // Every read below is a bare blocking one, and a push that never
+        // comes would otherwise sit here for ever and take the whole
+        // suite's summary with it -- which is exactly what this test did
+        // the first time it was let onto Windows. Bounded, the same
+        // silence is a named failure.
+        bound_reads(&stream);
         let mut reader = line_reader(stream.try_clone().unwrap());
-        let first: Response = read_message(&mut reader).unwrap().unwrap();
-        assert!(matches!(first, Response::GavinTreeChanged { .. }));
+        let expect_push = |msg: Option<Response>, what: &str| match msg {
+            Some(Response::GavinTreeChanged { tree, .. }) => tree,
+            None => panic!("no {what} push before the read budget ran out"),
+            other => panic!("expected the {what} push, got {other:?}"),
+        };
+        expect_push(read_message(&mut reader).unwrap(), "initial");
 
         // The rename event's path is the ROOT itself -- no `.gavin`
         // segment -- so this exercises the event filter's root-path arm
@@ -6375,21 +6385,37 @@ mod tests {
         // "Root not found" banner never appeared).
         let away = holder.path().join("ws-x");
         std::fs::rename(&root, &away).unwrap();
-        let missing: Response = read_message(&mut reader).unwrap().unwrap();
-        match missing {
-            Response::GavinTreeChanged { tree, .. } => assert!(tree.root_missing),
-            other => panic!("expected root_missing push, got {other:?}"),
-        }
+        let missing = expect_push(read_message(&mut reader).unwrap(), "root_missing");
+        assert!(missing.root_missing);
 
         std::fs::rename(&away, &root).unwrap();
-        let healed: Response = read_message(&mut reader).unwrap().unwrap();
-        match healed {
-            Response::GavinTreeChanged { tree, .. } => {
-                assert!(!tree.root_missing);
-                assert!(tree.contexts[0].has_prd);
-            }
-            other => panic!("expected healed push, got {other:?}"),
-        }
+        // On inotify and FSEvents the rename BACK is reported against the
+        // watched root itself and heals the tree on its own. Under
+        // `gavin::ONE_RECURSIVE_WATCH` on Windows it is not:
+        // `ReadDirectoryChangesW` reports what happens INSIDE the
+        // directory its handle is open on, and a directory's own rename
+        // is only ever reported to a watch on its PARENT -- which
+        // `watch_targets` deliberately never takes, a workspace root's
+        // parent being routinely a folder full of unrelated projects.
+        //
+        // Measured 2026-09-23, which is why the Windows arm asserts a
+        // weaker property rather than being switched off: the away-rename
+        // still pushes `root_missing` (the handle follows the directory
+        // and keeps reporting), the return pushes nothing at all (1/10
+        // runs, and that one a coincidence), and the first change under
+        // the restored root heals it (5/5). So a Windows human who
+        // renames a workspace folder back sees the banner clear on their
+        // next edit rather than on the rename -- the cost of the swap
+        // that made the folder renameable in the first place.
+        #[cfg(windows)]
+        std::fs::write(
+            root.join(".gavin-root").join("plans").join("back.md"),
+            "---\ntitle: Back\n---\n",
+        )
+        .unwrap();
+        let healed = expect_push(read_message(&mut reader).unwrap(), "healed");
+        assert!(!healed.root_missing);
+        assert!(healed.contexts[0].has_prd);
     }
 
     #[test]
@@ -7315,32 +7341,6 @@ mod tests {
             Arc::new(Mutex::new(theirs)),
         );
         (manager, wire_spelling(&root), wire_spelling(&card))
-    }
-
-    /// A path on disk in the spelling gavin puts on the wire: resolved,
-    /// forward slashes, and on Windows with the `\\?\` verbatim prefix
-    /// gone.
-    ///
-    /// Spelled out here rather than handed to `protocol::wire_path`, so
-    /// a test comparing a REPORTED path against this is comparing two
-    /// independent derivations rather than the implementation with
-    /// itself.
-    ///
-    /// Why a test needs it at all: `Path::canonicalize` on Windows
-    /// answers `\\?\C:\Users\x`, and nothing in gavin ever reports a
-    /// path in that shape -- a watcher stores
-    /// `protocol::canonical_path(root)` and every card id the board,
-    /// the orchestration store and the MCP hand around came out of that
-    /// scan. A test that keyed a binding on the raw canonical spelling
-    /// created a row nothing could ever look up, and then asserted
-    /// against a path the daemon does not use.
-    fn wire_spelling(path: &std::path::Path) -> String {
-        let resolved = path.canonicalize().unwrap();
-        let text = resolved.to_string_lossy().to_string();
-        if !cfg!(windows) {
-            return text;
-        }
-        text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/")
     }
 
     /// A live session in the registry AND in the pty map, which is what
