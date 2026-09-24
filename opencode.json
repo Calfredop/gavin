@@ -2,7 +2,7 @@
   "mcp": {
     "gavin": {
       "command": [
-        "/Users/coalpila/CloudStation/Coding/gavin/target/debug/gavin-mcp"
+        "scripts/gavin-mcp"
       ],
       "enabled": true,
       "type": "local"

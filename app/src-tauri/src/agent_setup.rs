@@ -4178,11 +4178,11 @@ mod tests {
     /// at ITS binary, someone committed that, and the other machine lost
     /// all sixteen gavin_* tools for every session. It happened three
     /// times (d4191db, 030d99f, b8ba17c) and ended with a path that was
-    /// dead on both. Neither file may name an absolute path again, and a
-    /// re-run of the wizard no longer writes one -- so if this test goes
-    /// red, someone committed a machine-local path by hand.
+    /// dead on both. No committed config may name an absolute path again,
+    /// and a re-run of the wizard no longer writes one -- so if this test
+    /// goes red, someone committed a machine-local path by hand.
     /// Byte equality, not just the command: a setup run in this checkout
-    /// has to leave both files EXACTLY as committed. Anything less and
+    /// has to leave every file EXACTLY as committed. Anything less and
     /// the wizard dirties them again, which is the churn the card is
     /// about -- someone commits the dirt and a machine loses its tools.
     #[test]
@@ -4195,7 +4195,12 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         with_launcher(dir.path());
-        for (profile, rel) in [("claude-code", ".mcp.json"), ("cursor", ".cursor/mcp.json")] {
+        for (profile, rel, command) in [
+            ("claude-code", ".mcp.json", "/mcpServers/gavin/command"),
+            ("gemini", ".gemini/settings.json", "/mcpServers/gavin/command"),
+            ("cursor", ".cursor/mcp.json", "/mcpServers/gavin/command"),
+            ("opencode", "opencode.json", "/mcp/gavin/command/0"),
+        ] {
             let fresh = write_mcp_config(
                 &LocalFiles,
                 dir.path(),
@@ -4211,7 +4216,7 @@ mod tests {
             );
             let v: serde_json::Value = serde_json::from_str(&committed).unwrap();
             assert_eq!(
-                v.pointer("/mcpServers/gavin/command").unwrap(),
+                v.pointer(command).unwrap(),
                 MCP_LAUNCHER,
                 "{rel} names a machine-local binary again"
             );
