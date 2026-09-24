@@ -1430,7 +1430,10 @@ export function nextActions(
   board: Board,
   tree: GavinTree | undefined,
   worktrees: WorktreeInfo[] | null,
-  liveSessionIds: Set<string>,
+  /// Every session id with a tab in some page's layout. NOT the same as
+  /// live: a shell tool's tab outlives its PTY (retainTabOnExit), so an
+  /// id with a witnessed exit below is over whatever this says.
+  layoutSessionIds: Set<string>,
   /// The tool library, for resolving a tool step's name and checking it
   /// still exists. Null while it is still loading -- which must not read
   /// as "every tool was deleted" (see launchBlocker).
@@ -1498,6 +1501,13 @@ export function nextActions(
   verdicts: VerdictsBySession = NO_VERDICTS
 ): Action[] {
   const actions: Action[] = [];
+  // A session with a witnessed exit is dead, even with its tab still up.
+  // A command or script tool keeps its tab after the PTY exits so its
+  // output stays readable, and reading that tab as a live session held
+  // every such step `running` forever -- rule 3 only consults the exit
+  // code of a session that is not live -- with its rail stopped behind it.
+  // Session ids are never reused, so an exit is final.
+  const liveSessionIds = new Set([...layoutSessionIds].filter((id) => !exitCodes.has(id)));
   const cards = cardIndex(tree);
   const plans = planIndex(cards);
   /// What the BOARD says about this step's card -- a nested task reads

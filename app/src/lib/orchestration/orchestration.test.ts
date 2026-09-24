@@ -1442,6 +1442,16 @@ describe("nextActions", () => {
     ]);
   });
 
+  // The same verdict with the step's tab kept open after the exit
+  // (retainTabOnExit): the id is still in the layout, and still over.
+  it("judges a kept-open tool step on a paused rail by its exit code", () => {
+    const r = toolRail("r1", [[["t1", "builtin:push"]]]);
+    const orch = notRunning(r, [{ stepId: "t1", state: "running", sessionId: "s1", reason: null }]);
+    expect(
+      nextActions(orch, BOARD, tree([]), [], new Set(["s1"]), TOOLS, new Map([["s1", 0]]))
+    ).toEqual([{ kind: "markDone", stepId: "t1" }]);
+  });
+
   it("schedules each running rail independently", () => {
     const a = rail("r1", [[["t1", "/ws/.gavin-root/plans/a.md"]]]);
     const b = rail("r2", [[["t2", "/ws/.gavin-root/plans/b.md"]]]);
@@ -3122,6 +3132,23 @@ describe("nextActions — tool steps", () => {
     expect(nextActions(armed(runs), BOARD, CARDS, [], new Set(["s1"]), TOOLS)).toEqual([]);
   });
 
+  // A shell tool's tab outlives its PTY (retainTabOnExit), so its session
+  // id stays in the layout -- the live set -- after the exit. The exit code
+  // is the verdict all the same; reading the retained tab as a running
+  // session held every command and script step `running` for good.
+  it("judges a tool step by its exit code while its tab is kept open", () => {
+    const runs: Orchestration["stepRuns"] = [
+      { stepId: "t1", state: "running", sessionId: "s1", reason: null },
+    ];
+    const retained = new Set(["s1"]);
+    expect(
+      nextActions(armed(runs), BOARD, CARDS, [], retained, TOOLS, new Map([["s1", 0]]))
+    ).toEqual([{ kind: "markDone", stepId: "t1" }, { kind: "complete", railId: "r1" }]);
+    expect(
+      nextActions(armed(runs), BOARD, CARDS, [], retained, TOOLS, new Map([["s1", 128]]))
+    ).toEqual([{ kind: "stall", stepId: "t1", reason: "Push branch exited with code 128" }]);
+  });
+
 // An AGENT tool's session never exits: an interactive agent finishes its
 // turn and sits at its prompt forever, which is the whole reason
 // buildHeadlessCommand exists for the runs that must end. So T5's "exits
@@ -3836,6 +3863,15 @@ describe("every built-in tool can finish", () => {
         expect(actions).toContainEqual({ kind: "markDone", stepId: "t1" });
       });
 
+      // Its tab outlives the check (retainTabOnExit), so in the app the
+      // session is still in the live set when the code lands.
+      it(`${tool.id} finishes when its check exits 0 with its tab kept open`, () => {
+        const actions = nextActions(
+          armed(tool.id), BOARD, CARDS, [], new Set(["s1"]), summary, new Map([["s1", 0]])
+        );
+        expect(actions).toContainEqual({ kind: "markDone", stepId: "t1" });
+      });
+
       it(`${tool.id} stalls when its check fails with nothing before it`, () => {
         const actions = nextActions(
           armed(tool.id), BOARD, CARDS, [], new Set(), summary, new Map([["s1", 3]])
@@ -4005,6 +4041,15 @@ describe("every built-in tool can finish", () => {
       it(`${tool.id} finishes when its session exits 0`, () => {
         const actions = nextActions(
           armed(tool.id), BOARD, CARDS, [], new Set(), summary, new Map([["s1", 0]])
+        );
+        expect(actions).toContainEqual({ kind: "markDone", stepId: "t1" });
+      });
+
+      // Its tab outlives the PTY (retainTabOnExit), so in the app the
+      // session is still in the live set when the code lands.
+      it(`${tool.id} finishes when its session exits 0 with its tab kept open`, () => {
+        const actions = nextActions(
+          armed(tool.id), BOARD, CARDS, [], new Set(["s1"]), summary, new Map([["s1", 0]])
         );
         expect(actions).toContainEqual({ kind: "markDone", stepId: "t1" });
       });
