@@ -92,9 +92,10 @@ for is that the OTHER daemon on this machine is untouched.
       item exists to confirm now has a test of its own:
       `stopping_one_endpoint_leaves_a_daemon_on_another_alone`
       (`daemon.rs:475`). One consequence worth knowing before you start:
-      the board's `memory-app-tests-kill-the-daemon` card is now **stale** —
-      it warns that `cargo test -p app` kills every daemon by name, which
-      that rewrite is precisely what removed.
+      `cargo test -p app` is safe to run beside live sessions now. The
+      `memory-app-tests-kill-the-daemon` card, which warned that it killed
+      every daemon by name, was describing the code this rewrite replaced
+      and has been corrected.
 - [ ] Delete a workspace and confirm it is in the **Recycle Bin** and that
       **Restore** puts it back.
       *Pre-flight (holds, 2026-09-24):* the Linux half of this had an

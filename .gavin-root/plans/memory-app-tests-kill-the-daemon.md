@@ -1,9 +1,9 @@
 ---
 order: 5120
 kind: note
-title: cargo test -p app kills the running daemon
+title: Stopping a daemon reaches one pid, not every gavin-daemon
 labels: memory
 ---
-`cargo test -p app` (and so `cargo test --workspace`) kills whatever `gavin-daemon` is running on the machine, every session with it.
+`cargo test -p app` and `cargo test --workspace` are safe to run beside live sessions: stopping a daemon only ever reaches the pid serving that one endpoint.
 
-Why: `stop_is_content_when_nothing_is_listening` calls `stop_running_daemon` on an empty tempdir socket, and its fallback is `taskkill /F /IM gavin-daemon.exe` / `pkill -x gavin-daemon`, by name. Until fix-app-tests-kill-the-running-daemon.md lands, run the app suite only when the daemon holds nothing you need.
+Why: the app reads the owner off the connection (`Stream::server_pid`), asks it to stop, and on failure terminates that pid alone — `taskkill /F /IM gavin-daemon.exe` and `pkill -x gavin-daemon` are gone from the code and survive only in comments. `stopping_one_endpoint_leaves_a_daemon_on_another_alone` asserts it. This is about what the APP does; running `pkill gavin-daemon` yourself still takes every session on the machine.
