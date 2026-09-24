@@ -1,4 +1,5 @@
 ---
+order: 10240
 kind: task
 title: "Decisions tab: the hub tab itself"
 parent: tb-developed-feat-decisions-tab.md

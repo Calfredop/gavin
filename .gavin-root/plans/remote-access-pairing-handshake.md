@@ -1,4 +1,5 @@
 ---
+order: 20480
 kind: task
 title: Remote access: the pairing handshake and the phase-2 protocol
 status: To Do

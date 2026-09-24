@@ -1,4 +1,5 @@
 ---
+order: 16384
 kind: task
 title: [feat] gavin-mcp re-execs itself when the daemon is newer, instead of failing closed
 status: To Do

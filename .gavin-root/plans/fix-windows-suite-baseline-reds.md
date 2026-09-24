@@ -1,4 +1,5 @@
 ---
+order: 15360
 kind: task
 title: [fix] the four Rust suite reds that keep cargo test from being a gate on Windows
 status: To Do

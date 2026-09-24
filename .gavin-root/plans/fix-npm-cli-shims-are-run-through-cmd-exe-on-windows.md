@@ -1,4 +1,5 @@
 ---
+order: 13312
 title: [fix] an npm-installed agent CLI is run through cmd.exe, which eats its arguments
 status: To Do
 priority: medium

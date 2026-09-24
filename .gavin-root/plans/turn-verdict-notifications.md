@@ -1,5 +1,5 @@
 ---
-order: 12288
+order: 8192
 kind: task
 title: Turn verdict: hold the 'finished' notification until the verdict is in
 status: To Do

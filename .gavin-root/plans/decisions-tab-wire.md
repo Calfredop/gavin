@@ -1,4 +1,5 @@
 ---
+order: 11264
 kind: task
 title: "Decisions tab: the wire half (protocol, daemon, gavin-mcp)"
 parent: tb-developed-feat-decisions-tab.md

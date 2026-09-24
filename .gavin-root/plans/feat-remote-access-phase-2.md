@@ -1,4 +1,5 @@
 ---
+order: 12288
 title: [feat] remote access, phase 2: pairing, trust store, revocation UI
 status: To Do
 priority: medium

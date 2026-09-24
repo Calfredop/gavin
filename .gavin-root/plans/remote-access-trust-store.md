@@ -1,4 +1,5 @@
 ---
+order: 22528
 kind: task
 title: Remote access: the trust store — trust.rs, devices.sqlite, the daemon's static key, revocation
 status: To Do
