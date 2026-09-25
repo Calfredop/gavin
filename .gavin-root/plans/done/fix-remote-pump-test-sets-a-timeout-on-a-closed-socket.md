@@ -3,7 +3,7 @@ order: 31744
 kind: task
 title: [fix] The remote pump test sets a read timeout on a socket the pump already closed
 labels: bug
-status: To Do
+status: Done
 ---
 `remote::tests::pump_relays_both_ways_and_ends_when_the_child_closes`
 (`app/src-tauri/src/remote.rs`) fails intermittently on macOS: 3 of 4 runs
@@ -31,3 +31,9 @@ Set both read timeouts (`app` and `child_stdin_r`) BEFORE
 `drop(child_stdout_w)`, so no `setsockopt` runs after the pump can close
 anything. Leave the assertions as they are. Run the test alone 20 times on
 the Mac and report the count.
+
+## Outcome (2026-09-25, branch `merge/origin-main-20260925`)
+
+Both read timeouts now go on before `drop(child_stdout_w)`; the
+assertions are unchanged. 20/20 runs of the test alone on the Mac,
+against 1 in 4 before.

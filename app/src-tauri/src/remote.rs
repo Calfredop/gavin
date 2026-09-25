@@ -1430,16 +1430,21 @@ mod tests {
         let got: Option<Request> = read_message(&mut child_reader).unwrap();
         assert!(matches!(got, Some(Request::GetProtocolVersion)), "{got:?}");
 
+        // Both timeouts BEFORE the child goes away. Its EOF makes the pump
+        // close both of its ends, and macOS refuses SO_RCVTIMEO on a
+        // socket whose peer has already closed (EINVAL) -- so a timeout
+        // set afterwards raced the pump, and lost most runs.
+        app.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        child_stdin_r.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+
         // The child goes away.
         drop(child_stdout_w);
-        app.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut byte = [0u8; 1];
         match (&app).read(&mut byte) {
             Ok(0) => {}
             Ok(_) => panic!("bytes from a dead child"),
             Err(e) => panic!("the app side never saw EOF: {e}"),
         }
-        child_stdin_r.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         match (&child_stdin_r).read(&mut byte) {
             Ok(0) => {}
             Ok(_) => panic!("bytes after the pump ended"),
