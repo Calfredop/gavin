@@ -3338,6 +3338,23 @@ mod tests {
     use super::*;
     use crate::testing::{wire_separators, wire_spelling};
 
+    /// A fresh tempdir's path in the spelling a scan reports, for tests
+    /// that build paths from it and compare them against scan output.
+    ///
+    /// Production scans a root that was already resolved --
+    /// `GavinWatcher::start` stores `protocol::canonical_path(root)` -- so
+    /// everything the scanner reports is resolved too. A test that hands
+    /// `scan_root` the RAW tempdir scans a different spelling from the one
+    /// `wire_spelling` expects wherever the tempdir sits behind a symlink:
+    /// on macOS it is `/var/folders/...` and `/var` is `/private/var`.
+    /// Five tests went red there, and the negative recovery tests beside
+    /// them could not fail: their keys never met the scan's, so "nothing
+    /// recovered" held whatever the code did. Resolving the root first
+    /// gives the input and the expectation one spelling on every OS.
+    fn wire_root(dir: &tempfile::TempDir) -> PathBuf {
+        PathBuf::from(wire_spelling(dir.path()))
+    }
+
     /// Makes a symlink the way the running OS makes one, and reports
     /// whether the OS allowed it at all.
     ///
@@ -4500,35 +4517,37 @@ mod tests {
 
     #[test]
     fn external_contexts_register_scan_and_unregister() {
-        let root = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        init_gavin_root(root.path(), "WS").unwrap();
-        let lib = outside.path().join("shared-lib");
+        let root_dir = tempfile::tempdir().unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let root = wire_root(&root_dir);
+        let outside = wire_root(&outside_dir);
+        init_gavin_root(&root, "WS").unwrap();
+        let lib = outside.join("shared-lib");
         std::fs::create_dir_all(&lib).unwrap();
 
-        add_external_context(root.path(), &lib).unwrap();
+        add_external_context(&root, &lib).unwrap();
         assert!(lib.join(GAVIN_DIR).join("plans").is_dir());
         // Registering twice keeps one entry:
-        add_external_context(root.path(), &lib).unwrap();
+        add_external_context(&root, &lib).unwrap();
         let config =
-            std::fs::read_to_string(root.path().join(GAVIN_ROOT_DIR).join("config.toml")).unwrap();
+            std::fs::read_to_string(root.join(GAVIN_ROOT_DIR).join("config.toml")).unwrap();
         assert_eq!(config.matches("shared-lib").count(), 1);
 
-        let tree = scan_root(root.path());
+        let tree = scan_root(&root);
         let ctx = tree.contexts.last().unwrap();
         assert_eq!(ctx.folder_path, wire_spelling(&lib));
         assert!(ctx.outside);
         assert!(!tree.contexts.first().unwrap().outside);
 
         // A folder inside the workspace refuses registration:
-        let inner = root.path().join("inner");
+        let inner = root.join("inner");
         std::fs::create_dir_all(&inner).unwrap();
-        assert!(add_external_context(root.path(), &inner).is_err());
+        assert!(add_external_context(&root, &inner).is_err());
 
-        remove_external_context(root.path(), &lib).unwrap();
-        assert!(scan_root(root.path()).contexts.iter().all(|c| !c.outside));
+        remove_external_context(&root, &lib).unwrap();
+        assert!(scan_root(&root).contexts.iter().all(|c| !c.outside));
         // Removing an unregistered path is a no-op, not an error:
-        remove_external_context(root.path(), &lib).unwrap();
+        remove_external_context(&root, &lib).unwrap();
     }
 
     /// DP-03: the confinement `CreateGavinContext` and
@@ -4570,10 +4589,11 @@ mod tests {
 
     #[test]
     fn scan_skips_extra_contexts_that_are_missing_or_inside_the_root() {
-        let root = tempfile::tempdir().unwrap();
-        init_gavin_root(root.path(), "WS").unwrap();
-        let config = root.path().join(GAVIN_ROOT_DIR).join("config.toml");
-        let inside = root.path().join("src");
+        let root_dir = tempfile::tempdir().unwrap();
+        let root = wire_root(&root_dir);
+        init_gavin_root(&root, "WS").unwrap();
+        let config = root.join(GAVIN_ROOT_DIR).join("config.toml");
+        let inside = root.join("src");
         std::fs::create_dir_all(inside.join(GAVIN_DIR)).unwrap();
         let mut body = std::fs::read_to_string(&config).unwrap();
         // TOML LITERAL strings (single quotes), not basic ones: a Windows
@@ -4588,7 +4608,7 @@ mod tests {
             inside.display()
         ));
         std::fs::write(&config, body).unwrap();
-        let tree = scan_root(root.path());
+        let tree = scan_root(&root);
         // `src` still appears once -- from the walk, not the extras list.
         let src_entries =
             tree.contexts.iter().filter(|c| c.folder_path == wire_spelling(&inside)).count();
@@ -6075,15 +6095,16 @@ mod tests {
     #[test]
     fn an_archived_card_is_still_scanned_deleted_and_promoted_like_any_other() {
         let dir = tempfile::tempdir().unwrap();
-        init_gavin_root(dir.path(), "WS").unwrap();
-        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let root = wire_root(&dir);
+        init_gavin_root(&root, "WS").unwrap();
+        let plans = root.join(GAVIN_ROOT_DIR).join("plans");
         let plan = write_card(&plans, "big.md", "---\ntitle: Big\n---\n- [ ] step one\n");
         let archived = archive_card(&plan).unwrap();
 
         // The scan lists it: `plans/archive/` is inside plans/, and
         // hiding it from the tree is the FRONTEND's job, not the
         // scanner's.
-        let tree = scan_root(dir.path());
+        let tree = scan_root(&root);
         assert!(tree.contexts[0].plans.iter().any(|p| p.path == wire_spelling(&archived)));
 
         let promoted = promote_checklist_item(&archived, "step one").unwrap();
@@ -6126,16 +6147,17 @@ mod tests {
     #[test]
     fn a_step_path_is_recovered_when_its_card_moved_into_done() {
         let dir = tempfile::tempdir().unwrap();
-        init_gavin_root(dir.path(), "WS").unwrap();
-        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let root = wire_root(&dir);
+        init_gavin_root(&root, "WS").unwrap();
+        let plans = root.join(GAVIN_ROOT_DIR).join("plans");
         std::fs::create_dir_all(plans.join(DONE_DIR)).unwrap();
         write_card(&plans.join(DONE_DIR), "fs-sync.md", "---\ntitle: FS sync\nstatus: Done\n---\n");
 
-        let stale = card_paths(dir.path(), &["fs-sync.md"]);
+        let stale = card_paths(&root, &["fs-sync.md"]);
         let moved = wire_spelling(&plans.join(DONE_DIR).join("fs-sync.md"));
 
         assert_eq!(
-            recover_moved_card_paths(&scan_root(dir.path()), &stale),
+            recover_moved_card_paths(&scan_root(&root), &stale),
             vec![(stale[0].clone(), moved)]
         );
     }
@@ -6143,64 +6165,69 @@ mod tests {
     #[test]
     fn a_step_path_that_still_has_its_file_is_left_alone() {
         let dir = tempfile::tempdir().unwrap();
-        init_gavin_root(dir.path(), "WS").unwrap();
-        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let root = wire_root(&dir);
+        init_gavin_root(&root, "WS").unwrap();
+        let plans = root.join(GAVIN_ROOT_DIR).join("plans");
         write_card(&plans, "fs-sync.md", "---\ntitle: FS sync\n---\n");
 
-        let live = card_paths(dir.path(), &["fs-sync.md"]);
-        assert!(recover_moved_card_paths(&scan_root(dir.path()), &live).is_empty());
+        let live = card_paths(&root, &["fs-sync.md"]);
+        assert!(recover_moved_card_paths(&scan_root(&root), &live).is_empty());
     }
 
     #[test]
     fn a_deleted_card_is_not_recovered_onto_some_other_file() {
         let dir = tempfile::tempdir().unwrap();
-        init_gavin_root(dir.path(), "WS").unwrap();
-        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let root = wire_root(&dir);
+        init_gavin_root(&root, "WS").unwrap();
+        let plans = root.join(GAVIN_ROOT_DIR).join("plans");
         write_card(&plans, "other.md", "---\ntitle: Other\n---\n");
 
-        let gone = card_paths(dir.path(), &["fs-sync.md"]);
-        assert!(recover_moved_card_paths(&scan_root(dir.path()), &gone).is_empty());
+        let gone = card_paths(&root, &["fs-sync.md"]);
+        assert!(recover_moved_card_paths(&scan_root(&root), &gone).is_empty());
     }
 
     #[test]
     fn recovery_never_crosses_from_one_context_into_another() {
         let dir = tempfile::tempdir().unwrap();
-        init_gavin_root(dir.path(), "WS").unwrap();
-        let sub = dir.path().join("app");
+        let root = wire_root(&dir);
+        init_gavin_root(&root, "WS").unwrap();
+        let sub = root.join("app");
         std::fs::create_dir_all(&sub).unwrap();
         create_gavin_context(&sub).unwrap();
         // Same file name, but it only ever existed in the sub-context.
         write_card(&sub.join(GAVIN_DIR).join("plans"), "fs-sync.md", "---\ntitle: FS sync\n---\n");
 
-        let stale = card_paths(dir.path(), &["fs-sync.md"]);
-        assert!(recover_moved_card_paths(&scan_root(dir.path()), &stale).is_empty());
+        let stale = card_paths(&root, &["fs-sync.md"]);
+        assert!(recover_moved_card_paths(&scan_root(&root), &stale).is_empty());
     }
 
     #[test]
     fn an_ambiguous_file_name_is_left_alone_rather_than_guessed() {
         let dir = tempfile::tempdir().unwrap();
-        init_gavin_root(dir.path(), "WS").unwrap();
-        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let root = wire_root(&dir);
+        init_gavin_root(&root, "WS").unwrap();
+        let plans = root.join(GAVIN_ROOT_DIR).join("plans");
         std::fs::create_dir_all(plans.join(DONE_DIR)).unwrap();
         write_card(&plans, "fs-sync.md", "---\ntitle: FS sync\n---\n");
         write_card(&plans.join(DONE_DIR), "fs-sync.md", "---\ntitle: FS sync\n---\n");
 
         // The step points into archive/, where nothing is: two candidates
         // answer to the name, so neither is the answer.
-        let stale = vec![plans.join(ARCHIVE_DIR).join("fs-sync.md").to_string_lossy().to_string()];
-        assert!(recover_moved_card_paths(&scan_root(dir.path()), &stale).is_empty());
+        let stale = vec![wire_separators(&plans.join(ARCHIVE_DIR).join("fs-sync.md").to_string_lossy())];
+        assert!(recover_moved_card_paths(&scan_root(&root), &stale).is_empty());
     }
 
     #[test]
     fn two_steps_sharing_one_moved_card_yield_a_single_re_key() {
         let dir = tempfile::tempdir().unwrap();
-        init_gavin_root(dir.path(), "WS").unwrap();
-        let plans = dir.path().join(GAVIN_ROOT_DIR).join("plans");
+        let root = wire_root(&dir);
+        init_gavin_root(&root, "WS").unwrap();
+        let plans = root.join(GAVIN_ROOT_DIR).join("plans");
         std::fs::create_dir_all(plans.join(DONE_DIR)).unwrap();
         write_card(&plans.join(DONE_DIR), "fs-sync.md", "---\ntitle: FS sync\n---\n");
 
-        let stale = card_paths(dir.path(), &["fs-sync.md", "fs-sync.md"]);
-        assert_eq!(recover_moved_card_paths(&scan_root(dir.path()), &stale).len(), 1);
+        let stale = card_paths(&root, &["fs-sync.md", "fs-sync.md"]);
+        assert_eq!(recover_moved_card_paths(&scan_root(&root), &stale).len(), 1);
     }
 
     // --- Workspace files (v39) ------------------------------------------

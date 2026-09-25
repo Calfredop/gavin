@@ -3,7 +3,7 @@ order: 29696
 kind: task
 title: [fix] Six daemon tests are red on macOS: temp dirs live behind the /var symlink
 labels: bug
-status: To Do
+status: Done
 ---
 `cargo test -p gavin-daemon` is red on macOS with six failures, every run,
 including each module run alone. Seen 2026-09-25 on the merge of origin/main
@@ -54,3 +54,28 @@ one spelling against the other.
    if they pass today.
 3. Run `cargo test -p gavin-daemon` on the Mac and say whether it is green.
    A Windows re-run is the owner's; do not claim it.
+
+## Outcome (2026-09-25, branch `merge/origin-main-20260925`)
+
+Fixed in the tests; `wire_spelling`, the scanner and the watcher are
+untouched, and `08d4e5b4`'s Windows fixes stand.
+
+- `gavin::tests` gained `wire_root(&TempDir)`, the resolve-first pattern
+  the module's `GavinWatcher::start` test already spelled inline
+  (`PathBuf::from(wire_spelling(dir.path()))`), and every test below
+  builds its paths from it.
+- The sweep found the family wider than the five reds: the recovery tests
+  `a_step_path_that_still_has_its_file_is_left_alone`,
+  `a_deleted_card_is_not_recovered_onto_some_other_file`,
+  `recovery_never_crosses_from_one_context_into_another` and
+  `an_ambiguous_file_name_is_left_alone_rather_than_guessed` were green on
+  the Mac only because `recover_moved_card_paths` keys on
+  `(plans root, file name)` and the two roots never met, so "nothing
+  recovered" held whatever the code did. Proven by mutation: with the
+  live-path check dropped and ambiguity resolved to the first match, two
+  of them now fail, where before the fix they could not. The ambiguous
+  test's hand-built path also takes `wire_separators`, like `card_paths`.
+- `git_watch`'s test resolves its root with `protocol::canonical_path`,
+  as `confined_worktree` does before a real watch.
+- `cargo test --workspace` on the Mac: green, daemon 662/662. A Windows
+  re-run is the owner's.

@@ -174,17 +174,23 @@ mod tests {
     #[test]
     fn a_relevant_write_wakes_the_watcher() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        // Resolved the way `WatchGitWorktree` resolves a cwd before it
+        // watches one (`confined_worktree`). The OS reports events under
+        // the resolved path -- on macOS `/private/var/...` for a tempdir
+        // under `/var` -- and an event outside the root counts as
+        // relevant, so a raw root woke on `index.lock`.
+        let root = protocol::canonical_path(dir.path()).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
         let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = std::sync::Arc::clone(&hits);
-        let _watcher = spawn_worktree_watcher(dir.path(), move || {
+        let _watcher = spawn_worktree_watcher(&root, move || {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         })
         .unwrap();
-        std::fs::write(dir.path().join(".git").join("index.lock"), "x").unwrap();
+        std::fs::write(root.join(".git").join("index.lock"), "x").unwrap();
         std::thread::sleep(GIT_WATCH_DEBOUNCE * 3);
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0, "index.lock must never wake it");
-        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        std::fs::write(root.join("a.txt"), "hello").unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while hits.load(std::sync::atomic::Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(25));
