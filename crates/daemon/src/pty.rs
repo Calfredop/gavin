@@ -1276,21 +1276,32 @@ mod tests {
         )
         .unwrap();
 
-        // First the process has to be gone, then the watcher has to
-        // have acted on that; the second is what puts the session in
-        // the state this test is about.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while session.try_wait().unwrap().is_none() {
-            assert!(Instant::now() < deadline, "command did not exit");
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while matches!(*session.master.lock().unwrap(), Master::Open(_)) {
-            assert!(Instant::now() < deadline, "the exit watcher never closed the master");
-            std::thread::sleep(Duration::from_millis(50));
+        // macOS will not let this process finish exiting while output it
+        // left on its controlling pty is unread: it waits in the exiting
+        // state (`ps` shows `E`), `try_wait` answers "running", and the
+        // exit completes the moment someone reads the master. So there
+        // the state below -- gone, and nobody has read -- cannot be
+        // reached; a late attach gets the still-open master instead, and
+        // its read is what lets the exit finish. What the client is owed
+        // is the same either way, and asserted the same way after this:
+        // the output, then end of stream, then a process that is gone.
+        if !cfg!(target_os = "macos") {
+            // First the process has to be gone, then the watcher has to
+            // have acted on that; the second is what puts the session in
+            // the state this test is about.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while session.try_wait().unwrap().is_none() {
+                assert!(Instant::now() < deadline, "command did not exit");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while matches!(*session.master.lock().unwrap(), Master::Open(_)) {
+                assert!(Instant::now() < deadline, "the exit watcher never closed the master");
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
 
-        let mut reader = session.reader().expect("no reader for a session that has ended");
+        let mut reader = session.reader().expect("no reader for a late attach");
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut sink = Vec::new();
@@ -1302,6 +1313,12 @@ mod tests {
             .expect("the late reader never reached end of stream")
             .expect("reading the pty to the end failed");
         assert!(text.contains("LATEMARK-probe"), "got: {text}");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while session.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the process outlived the end of its output");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
 

@@ -3,7 +3,7 @@ order: 30720
 kind: task
 title: [fix] The pty late-reader test never sees its command exit on macOS
 labels: bug
-status: To Do
+status: Done
 ---
 `pty::tests::a_reader_taken_after_the_exit_still_reads_the_output_to_its_end`
 fails on macOS every run — full suite, module alone, and single-threaded
@@ -33,3 +33,25 @@ thread and is meant to close the master once it sees the exit.
 3. `c19e6d57` was written for the Windows port and says unix runs the same
    thread. Do not break the Windows behaviour; a Windows re-run is the
    owner's.
+
+## Outcome (2026-09-25, branch `merge/origin-main-20260925`)
+
+It was the test, and the product is fine. Measured with a probe on the
+spawned child: macOS will not finish the exit of a process whose output
+on its controlling pty is unread. It sits in the exiting state (`ps`
+stat `?Es`) with `try_wait` answering "running" for as long as nobody
+reads the master -- 3s+ in the probe, indefinitely in the test -- and
+completes the instant a read drains it. The late read then ends in a
+clean `Ok(0)`. So on macOS "the process is gone and nobody has read yet"
+is unreachable; a late attach gets the still-open master, and its read
+is what lets the exit finish.
+
+The test now skips the wait-for-exit precondition on macOS only, and
+asserts on every OS what a late client is owed: the output, end of
+stream, then a process that is gone. Linux and Windows keep the original
+path through `Master::Closed`'s spare reader unchanged. pty module 5/5
+on the Mac.
+
+Worth knowing, not changed: on macOS a session whose output nobody ever
+reads reports "running" until something attaches, because the pump only
+starts on the first `Attach`.
