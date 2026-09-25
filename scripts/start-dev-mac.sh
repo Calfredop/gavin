@@ -51,11 +51,17 @@ if [ ! -d "$APP/node_modules" ]; then
   (cd "$APP" && npm ci)
 fi
 
-# tauri.conf.json's beforeDevCommand builds these two as well. Building them
-# here first means a Rust error is the last thing on screen when it happens,
+# tauri.conf.json's beforeDevCommand runs this same script. Running it here
+# first means a Rust error is the last thing on screen when it happens,
 # instead of being scrolled away by vite and the app window.
+#
+# Through dev-sidecars.mjs and not a bare `cargo build` so that all three dev
+# entry points share one definition of how the sidecars get built. Nothing it
+# does is needed here -- unlinking a running image is ordinary on this host --
+# but the bug it fixes was this one cargo line copied into three files, and a
+# second copy is how the next divergence starts.
 say "building gavin-daemon and gavin-mcp"
-(cd "$ROOT" && cargo build -p gavin-daemon -p gavin-mcp)
+node "$APP/src-tauri/dev-sidecars.mjs"
 
 say "starting the app (npm run tauri dev)"
 cd "$APP"

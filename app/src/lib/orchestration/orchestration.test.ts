@@ -4958,7 +4958,7 @@ describe("nextActions — an agent tool step's turn, second-guessed", () => {
     for (const reading of [
       { kind: "asking" } as const,
       { kind: "working" } as const,
-      { kind: "failed", cause: "network" } as const,
+      { kind: "failed", cause: "network", said: "" } as const,
     ]) {
       expect(actions(running(agentRail, "r1-s0", runs), verdict(read(reading)))).toEqual([]);
     }

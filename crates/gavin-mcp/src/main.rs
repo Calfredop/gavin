@@ -21,6 +21,74 @@ pub trait DaemonTransport {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
+
+    /// `Some(daemon_version)` once the transport has met a daemon newer
+    /// than this binary and still has a handover to spend on it.
+    ///
+    /// Asked by the stdio loop BEFORE a reply is written, because the
+    /// successor re-handles the in-flight request and a reply written
+    /// here would reach the client twice. The daemon's version rather
+    /// than a bare `bool` so the one stderr line can name both ends of
+    /// the skew. Default `None` keeps mocks out of this entirely.
+    fn reexec_requested(&self) -> Option<u32> {
+        None
+    }
+
+    /// The handover was attempted and failed, so this process still owns
+    /// the session. Spends the budget: the next `DaemonNewer` is the hard
+    /// error rather than another doomed attempt. Default no-op for mocks.
+    fn reexec_failed(&mut self) {}
+}
+
+// ---------- self re-exec when the daemon moves ahead (spec §3) ----------
+
+/// Set on the successor, so a second `DaemonNewer` is the hard error this
+/// arm used to be and never another handover. One re-exec is the whole
+/// budget: a binary still stale after replacing itself has to fail loudly
+/// rather than spin on a session that produces no output.
+const REEXEC_MARKER_VAR: &str = "GAVIN_MCP_REEXEC";
+
+/// Carries the bytes the successor must process before it touches stdin.
+const REPLAY_VAR: &str = "GAVIN_MCP_REPLAY";
+
+/// Our own buffer sits in FRONT of `Stdin`'s internal one, and only ours
+/// is reachable by the handover (`BufReader::buffer`). `BufReader::read`
+/// bypasses a buffer entirely when asked for at least its own capacity,
+/// so a capacity comfortably above stdio's 8 KiB keeps every pipelined
+/// byte in the buffer we can hand over instead of stranding some in one
+/// we cannot see.
+const STDIN_BUF_BYTES: usize = 64 * 1024;
+
+/// Whether this process may still hand its session to the binary at its
+/// own path. Empty counts as unset, the way every other optional variable
+/// in this codebase is read -- and it is also how Windows spells removing
+/// one, so a blank marker must not strand a session on a stale binary.
+fn may_reexec(marker: Option<&str>) -> bool {
+    !matches!(marker, Some(m) if !m.trim().is_empty())
+}
+
+/// The bytes the successor must process before it touches stdin: the
+/// request we were part-way through, then everything the reader had
+/// already pulled out of the pipe behind it. A trailing PARTIAL line is
+/// fine -- the successor chains this blob in FRONT of stdin rather than
+/// draining it first, so the rest of that line arrives normally.
+fn replay_blob(in_flight: &str, buffered: &[u8]) -> Vec<u8> {
+    let mut blob = in_flight.as_bytes().to_vec();
+    blob.push(b'\n');
+    blob.extend_from_slice(buffered);
+    blob
+}
+
+/// A JSON byte array, so arbitrary bytes survive an environment variable
+/// exactly -- no UTF-8 assumption, no extra dependency. The blob is
+/// whatever the pipe held, and a lossy conversion would corrupt the very
+/// request this exists to preserve.
+fn encode_replay(blob: &[u8]) -> String {
+    serde_json::to_string(blob).expect("a Vec<u8> always serializes")
+}
+
+fn decode_replay(encoded: &str) -> Option<Vec<u8>> {
+    serde_json::from_str(encoded).ok()
 }
 
 /// A daemon too old to parse the version probe answers nothing and closes
@@ -62,6 +130,13 @@ struct SocketTransport {
     /// From the most recent `HelloAck`. Cleared on reconnect so a
     /// replaced daemon cannot leave a stale root behind.
     hello_workspace_root: Option<PathBuf>,
+    /// The version of a daemon that has moved past this binary, set by
+    /// `connect` and read by the stdio loop before it answers anything.
+    reexec: Option<u32>,
+    /// Whether a handover is still available. Read from the environment
+    /// once, at construction, rather than per connect: a process that has
+    /// already replaced itself keeps the answer for its whole life.
+    may_reexec: bool,
 }
 
 /// The endpoint the daemon that opened this tab told us to use.
@@ -98,6 +173,8 @@ impl SocketTransport {
             socket_path,
             conn: None,
             hello_workspace_root: None,
+            reexec: None,
+            may_reexec: may_reexec(std::env::var(REEXEC_MARKER_VAR).ok().as_deref()),
         }
     }
 
@@ -108,14 +185,29 @@ impl SocketTransport {
     /// `protocol::socket_path()`, would be racing every other test in the
     /// process for one global.
     fn at(socket_path: PathBuf) -> Self {
-        Self { socket_path: Ok(socket_path), conn: None, hello_workspace_root: None }
+        Self {
+            socket_path: Ok(socket_path),
+            conn: None,
+            hello_workspace_root: None,
+            reexec: None,
+            // A fresh, unmarked process. The environment is deliberately
+            // not read here: the suite is multi-threaded and one test
+            // setting `GAVIN_MCP_REEXEC` would decide the `DaemonNewer`
+            // arm for every test running beside it.
+            may_reexec: true,
+        }
     }
 
     fn connect(&mut self) -> anyhow::Result<()> {
         // Dropped before the probe, not after it: a failed connect must
         // not leave the previous daemon's version behind for the gate.
+        // The handover request goes with it, for the same reason -- the
+        // reconnect inside `request` may land on a different daemon, and
+        // a session must never be handed away over a version nothing on
+        // the other end is running any more.
         self.conn = None;
         self.hello_workspace_root = None;
+        self.reexec = None;
         let socket_path = match &self.socket_path {
             Ok(path) => path.clone(),
             Err(why) => anyhow::bail!("{why}"),
@@ -130,9 +222,29 @@ impl SocketTransport {
             _ => anyhow::bail!(UNREACHABLE),
         };
         match protocol::version_band(version, PROTOCOL_VERSION, protocol::MIN_COMPATIBLE_VERSION) {
-            // Stays a hard error, as it is for the app: an unreleased
-            // protocol cannot be guessed at. Phase 2 of the compat work
-            // replaces this arm with a self re-exec (spec §3).
+            // Not a hard error any more (spec §3). Whatever moved the
+            // daemon ahead -- a rebuild, an update -- replaced the binary
+            // at OUR OWN path too, so the gavin-mcp sitting there already
+            // speaks v{version}. Ask the stdio loop to hand this session
+            // over to it instead of answering, rather than costing every
+            // agent on the machine its `gavin_*` tools until someone
+            // restarts the session.
+            //
+            // The handover is cheap because `handle_line` is stateless:
+            // `initialize` echoes the requested version and returns static
+            // capabilities, so the successor needs no re-handshake. The
+            // only per-process state is `root` (re-derived from cwd, which
+            // the successor inherits) and this lazy socket.
+            protocol::VersionBand::DaemonNewer if self.may_reexec => {
+                self.reexec = Some(version);
+                anyhow::bail!(
+                    "the gavin daemon is newer than this gavin-mcp (v{version} vs v{PROTOCOL_VERSION}) — re-execing into the updated gavin-mcp"
+                )
+            }
+            // Already re-execed once, and still behind: replacing
+            // ourselves did not help, because the new binary is not at
+            // our path yet. Spinning on that would produce a session that
+            // answers nothing at all, which is worse than the error.
             protocol::VersionBand::DaemonNewer => anyhow::bail!(
                 "the gavin daemon is newer than this gavin-mcp (v{version} vs v{PROTOCOL_VERSION}) — update gavin, then restart this Claude Code session"
             ),
@@ -229,6 +341,15 @@ impl DaemonTransport for SocketTransport {
         }
         Ok(())
     }
+
+    fn reexec_requested(&self) -> Option<u32> {
+        self.reexec
+    }
+
+    fn reexec_failed(&mut self) {
+        self.reexec = None;
+        self.may_reexec = false;
+    }
 }
 
 use std::collections::{HashMap, HashSet};
@@ -311,6 +432,12 @@ fn tool_definitions() -> Value {
             "plan_path": { "type": "string" },
             "item": { "type": "string", "description": "The checklist item's exact text" }
         }, "required": ["plan_path", "item"] } },
+        { "name": "gavin_request_human", "description": "Ask the human for something you cannot settle yourself, as a checklist item on a card: a DECISION (a question whose answer is words — which approach, which name, whether to go ahead) or a TEST (a check only a person can run — another machine, a real install, does the rendered UI look right). It appears in the workspace's Decisions tab with the card, and their answer is written back under the item on the card itself, where the next agent to pick it up will read it. Filing one claims the card for your session, like a status write. Do NOT use it for anything you can find out by reading the repo or running a command, and do not wait on it: the tool returns as soon as the line is written, and the answer arrives on the card later. Re-filing a TEST word-for-word after the human failed it re-arms that same item instead of adding a second one — so when you have fixed what they found, ask again with the identical text.", "inputSchema": { "type": "object", "properties": {
+            "card": { "type": "string", "description": "Path to the card file this is blocking; relative resolves against the workspace root" },
+            "kind": { "type": "string", "enum": ["decision", "test"], "description": "decision = a question for the human to answer; test = a check for them to run by hand" },
+            "text": { "type": "string", "description": "The question or the check, as one line. Specific enough to act on without reading the rest of the card" },
+            "options": { "type": "array", "description": "For a decision, the shortlist to choose from — written under the item as an Options line and offered as buttons. Omit for an open question and for every test", "items": { "type": "string" } }
+        }, "required": ["card", "kind", "text"] } },
         { "name": "gavin_get_orchestration", "description": "The workspace's orchestration: rails with their worktrees, branches and uncommitted files, stages, steps with their cards or tools and live run state, the board's columns, every runnable card not yet on a rail (a plan's nested children ride with it and are not listed separately), and the tool library. Read this before writing an arrangement. Requires the workspace open in gavin.", "inputSchema": { "type": "object", "properties": {} } },
         { "name": "gavin_set_orchestration", "description": "Replace the workspace's orchestration wholesale: rails of stages of steps, plus your own conflict notes. Read gavin_get_orchestration first and preserve the ids of steps you are keeping — run state follows the id — AND each stage's `mode` and `name`: omitting `mode` reverts that stage to `parallel`, which turns a sequential group into steps that all run at once in one checkout. Removing a step whose run state is 'running' is refused.", "inputSchema": { "type": "object", "properties": {
             "rails": { "type": "array", "description": "Ordered rails. Each: { id, name, position, worktreePath, branch, trigger, pageId, stages: [{ id, position, mode, name, steps: [...] }] }. A step is EITHER a card step { id, position, cardPath } OR a tool step { id, position, toolId, toolParams: { name: value } } — never both. Stages run one after another. A stage's `mode` is \"parallel\" (its steps run at once in the rail's checkout) or \"sequence\" (one at a time, in position order); a stage of two or more steps is what the app calls a GROUP, and `name` is what it is called. `mode` defaults to \"parallel\" when omitted. `worktreePath` says WHICH CHECKOUT (null = the workspace root), `branch` says WHICH BRANCH gavin puts that checkout on before launching a step (null = whatever is checked out) — so a branch with no worktree means the root checkout on that branch, no separate folder. `trigger` is the rail's own start condition and must be carried through unchanged, exactly like a stage's `mode`: { \"kind\": \"all-rails-done\" } arms the rail once every OTHER rail has finished, { \"kind\": \"rail-done\", \"rail\": \"backend\" } once that named rail has, and null/omitted means only a human or a start-rail step arms it — dropping it silently turns a rail that runs itself into one that waits forever.", "items": { "type": "object" } },
@@ -465,6 +592,35 @@ fn dispatch_tool(
                 .to_string(),
             item: require_arg(args, "item")?,
         },
+        "gavin_request_human" => Request::FileHumanItem {
+            path: resolve_against_root(root, &require_arg(args, "card")?)
+                .to_string_lossy()
+                .to_string(),
+            kind: match require_arg(args, "kind")?.trim().to_ascii_lowercase().as_str() {
+                "decision" => protocol::HumanItemKind::Decision,
+                "test" => protocol::HumanItemKind::Test,
+                // Named outright rather than defaulted to one of them:
+                // the two are not interchangeable (only a test can fail)
+                // and a typo that silently filed the wrong kind would
+                // reach the human as the wrong controls.
+                other => anyhow::bail!("kind must be \"decision\" or \"test\", not {other:?}"),
+            },
+            text: require_arg(args, "text")?,
+            options: match args.get("options") {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .filter_map(|o| o.as_str())
+                    .map(|o| o.trim().to_string())
+                    .filter(|o| !o.is_empty())
+                    .collect(),
+                // A single string is the mistake an agent actually makes
+                // here, and one option is a fine thing to mean by it.
+                Some(Value::String(one)) if !one.trim().is_empty() => {
+                    vec![one.trim().to_string()]
+                }
+                _ => vec![],
+            },
+        },
         "gavin_set_orchestration" => {
             // Deserialized here rather than in the daemon so malformed
             // input answers the agent directly, with serde's own message,
@@ -506,6 +662,18 @@ fn dispatch_tool(
         Response::PrdContent { content } => Ok(content),
         Response::PlanCreated { path } => Ok(format!("created plan: {path}")),
         Response::TaskPromoted { path } => Ok(format!("promoted to task card: {path}")),
+        Response::HumanItemFiled { rearmed } => Ok(if rearmed {
+            "re-armed the identical test the human had already failed — their note on \
+             the last attempt is on the card, above the re-test line. It is back in \
+             their Decisions tab; carry on with whatever does not depend on it."
+                .to_string()
+        } else {
+            "filed on the card — it is in the human's Decisions tab now. The answer \
+             gets written under the item on the card itself, so read it there; nothing \
+             will interrupt you when it arrives. Carry on with whatever does not \
+             depend on it."
+                .to_string()
+        }),
         Response::Board { columns, labels, card_sessions: _ } => {
             Ok(serde_json::to_string_pretty(&json!({ "columns": columns, "labels": labels }))?)
         }
@@ -555,12 +723,19 @@ fn current_session_id() -> Option<String> {
 /// The card this tool call just put in the calling session's hands, if
 /// it put one there at all.
 ///
-/// Two writes qualify, and they are the two an agent makes when it
+/// Three writes qualify, and they are the writes an agent makes when it
 /// starts work on its own initiative: filing a card straight into In
-/// Progress, and moving an existing one there. Both report the path the
+/// Progress, moving an existing one there, and asking the human for
+/// something that card is blocked on. The first two report the path the
 /// card ended up at, which is the one to claim -- a status write can
 /// file the card under `plans/done/`, and the binding keys on where the
 /// file IS.
+///
+/// Filing a human item is the third for a reason the interview settled
+/// outright: the tab shows each pending item under its card, and who to
+/// take the answer back to is the card's BINDING. No filer is stored per
+/// item, so the claim is what makes the question traceable to the
+/// session that asked it.
 ///
 /// The status VALUE is not read here. "In Progress" is the board's
 /// column name and the human may have renamed the columns around it, so
@@ -572,6 +747,11 @@ fn claim_target(req: &Request, resp: &Response) -> Option<String> {
         (Request::SetPlanFrontmatterField { key, .. }, Response::PlanFieldSet { path })
             if key == "status" =>
         {
+            Some(path.clone())
+        }
+        // The request's path, not the response's: a human item never
+        // moves the card, so there is no second path to prefer.
+        (Request::FileHumanItem { path, .. }, Response::HumanItemFiled { .. }) => {
             Some(path.clone())
         }
         _ => None,
@@ -1471,31 +1651,161 @@ fn read_capped_line<R: BufRead>(reader: &mut R) -> anyhow::Result<Option<String>
     Ok(Some(line))
 }
 
-fn main() {
-    let root = std::env::current_dir().ok().and_then(|cwd| find_gavin_root(&cwd));
-    match &root {
-        Some(r) => eprintln!("gavin-mcp: workspace root {}", r.display()),
-        None => eprintln!("gavin-mcp: no .gavin-root above cwd — only gavin_init_root will work"),
-    }
-    let mut transport = SocketTransport::new();
-    let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
-    let mut stdin_lock = stdin.lock();
+/// Why the stdio loop stopped.
+enum Handover {
+    /// stdin ended, or broke. The session is over.
+    Eof,
+    /// The daemon moved past this binary, and the session belongs to the
+    /// gavin-mcp at our own path now.
+    Wanted {
+        /// Everything the successor must process before it touches
+        /// stdin: the request we did NOT answer, then whatever the
+        /// reader had already pulled out of the pipe behind it.
+        blob: Vec<u8>,
+        /// The reply we are holding back, to be written only if the
+        /// handover itself fails and this process keeps the session.
+        pending_reply: Option<String>,
+        daemon_version: u32,
+    },
+}
+
+/// The stdio loop, taking a `BufReader` rather than any `BufRead` because
+/// the handover needs `buffer()` -- the pipelined bytes it has to carry
+/// forward are exactly the ones no longer visible through `Read`.
+fn serve<R: Read, W: Write>(
+    reader: &mut BufReader<R>,
+    out: &mut W,
+    root: Option<&Path>,
+    transport: &mut dyn DaemonTransport,
+) -> Handover {
     loop {
-        let line = match read_capped_line(&mut stdin_lock) {
+        let line = match read_capped_line(reader) {
             Ok(Some(line)) => line,
-            Ok(None) => break,
+            Ok(None) => return Handover::Eof,
             Err(e) => {
                 eprintln!("gavin-mcp: {e} — exiting");
-                break;
+                return Handover::Eof;
             }
         };
         let line = line.trim_end();
         if line.is_empty() {
             continue;
         }
-        if let Some(reply) = handle_line(line, root.as_deref(), &mut transport) {
-            let mut out = stdout.lock();
+        let reply = handle_line(line, root, transport);
+
+        // Asked BEFORE the reply is written: the successor re-handles the
+        // in-flight request, so answering it here too would send the
+        // client two replies for one id.
+        if let Some(daemon_version) = transport.reexec_requested() {
+            return Handover::Wanted {
+                blob: replay_blob(line, reader.buffer()),
+                pending_reply: reply,
+                daemon_version,
+            };
+        }
+
+        if let Some(reply) = reply {
+            let _ = writeln!(out, "{reply}");
+            let _ = out.flush();
+        }
+    }
+}
+
+/// Hands this session's stdio to the binary at `exe`, passing `blob` and
+/// the loop-guard marker through the environment and everything else --
+/// argv, cwd, the rest of the environment -- unchanged.
+///
+/// Returns ONLY on failure. On success the process is replaced (unix) or
+/// has already exited with the successor's status (windows).
+#[cfg(unix)]
+fn handover_to(exe: &Path, blob: &[u8]) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+    reexec_command(exe, blob).exec()
+}
+
+/// Windows has no `exec()`: a process cannot replace its own image. The
+/// nearest equivalent is a child holding THIS process's stdio handles --
+/// so the MCP client still sees one pipe, written by one process at a
+/// time -- and a parent that does nothing afterwards but wait and exit
+/// with the child's code. `Command::spawn` inherits stdio by default,
+/// which is what makes the handles the same ones.
+///
+/// The parent must not read stdin again after this point, or it would
+/// race the successor for the client's requests; it only waits.
+#[cfg(windows)]
+fn handover_to(exe: &Path, blob: &[u8]) -> std::io::Error {
+    match reexec_command(exe, blob).spawn() {
+        Err(e) => e,
+        Ok(mut child) => match child.wait() {
+            Ok(status) => std::process::exit(status.code().unwrap_or(0)),
+            Err(e) => e,
+        },
+    }
+}
+
+fn reexec_command(exe: &Path, blob: &[u8]) -> std::process::Command {
+    let mut cmd = std::process::Command::new(exe);
+    // Same argv and the inherited environment, plus the two variables the
+    // successor needs: the marker that spends its one handover, and the
+    // bytes it owes the client before it may read stdin.
+    cmd.args(std::env::args_os().skip(1))
+        .env(REEXEC_MARKER_VAR, "1")
+        .env(REPLAY_VAR, encode_replay(blob));
+    cmd
+}
+
+fn main() {
+    let root = std::env::current_dir().ok().and_then(|cwd| find_gavin_root(&cwd));
+    match &root {
+        Some(r) => eprintln!("gavin-mcp: workspace root {}", r.display()),
+        None => eprintln!("gavin-mcp: no .gavin-root above cwd — only gavin_init_root will work"),
+    }
+
+    // Anything a predecessor handed over is read BEFORE stdin, and
+    // CHAINED in front of it rather than drained first, so a partial
+    // trailing line is completed by the pipe's next bytes instead of
+    // being mistaken for a whole request.
+    let replay = std::env::var(REPLAY_VAR).ok().and_then(|e| decode_replay(&e)).unwrap_or_default();
+    if !replay.is_empty() {
+        eprintln!(
+            "gavin-mcp: v{PROTOCOL_VERSION}, replaying {} bytes handed over by the gavin-mcp that was here before",
+            replay.len()
+        );
+    }
+    let mut reader = BufReader::with_capacity(
+        STDIN_BUF_BYTES,
+        std::io::Cursor::new(replay).chain(std::io::stdin()),
+    );
+
+    let mut transport = SocketTransport::new();
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    loop {
+        let (blob, pending_reply, daemon_version) =
+            match serve(&mut reader, &mut out, root.as_deref(), &mut transport) {
+                Handover::Eof => break,
+                Handover::Wanted { blob, pending_reply, daemon_version } => {
+                    (blob, pending_reply, daemon_version)
+                }
+            };
+        match std::env::current_exe() {
+            Ok(exe) => {
+                eprintln!(
+                    "gavin-mcp: daemon is v{daemon_version} and this binary speaks v{PROTOCOL_VERSION} — re-execing into {}",
+                    exe.display()
+                );
+                // Returns only when the handover failed.
+                eprintln!("gavin-mcp: re-exec failed: {}", handover_to(&exe, &blob));
+            }
+            Err(e) => eprintln!("gavin-mcp: cannot locate my own binary to re-exec into: {e}"),
+        }
+        // Still here, so this process still owns the session. Spend the
+        // budget -- the next skew is the hard error, not another doomed
+        // attempt -- and answer the request the successor was going to.
+        // The bytes behind it are untouched in the reader, so the loop
+        // picks up exactly where it left off.
+        transport.reexec_failed();
+        if let Some(reply) = pending_reply {
             let _ = writeln!(out, "{reply}");
             let _ = out.flush();
         }
@@ -1713,6 +2023,224 @@ mod tests {
         assert!(text.contains(&format!("v{PROTOCOL_VERSION}")), "{text}");
     }
 
+    // ---------- self re-exec when the daemon moves ahead (spec §3) ----------
+
+    /// One MCP request line, so a test can pipeline several of them and
+    /// tell the replies apart by id.
+    fn tool_call_line(id: u32, tool: &str) -> String {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{tool}","arguments":{{}}}}}}"#
+        )
+    }
+
+    /// A transport that has already re-execed once: marker seen, budget
+    /// spent. Built by hand rather than by setting `GAVIN_MCP_REEXEC`
+    /// because `cargo test` runs this module multi-threaded in ONE
+    /// process, so a test that mutated the environment would decide the
+    /// `DaemonNewer` arm for every test running beside it.
+    fn already_reexeced(socket_path: PathBuf) -> SocketTransport {
+        let mut t = SocketTransport::at(socket_path);
+        t.may_reexec = may_reexec(Some("1"));
+        t
+    }
+
+    /// Deliberately not `#[cfg(unix)]`. Windows reaches the handover
+    /// through a spawn-and-wait instead of an `exec`, but the rule that
+    /// decides WHETHER to hand over at all is the same one on both, and a
+    /// loop guard that only holds on one platform is not a loop guard.
+    #[test]
+    fn the_marker_is_what_spends_the_one_re_exec_budget() {
+        assert!(may_reexec(None), "an unmarked process still has its budget");
+        assert!(!may_reexec(Some("1")), "one re-exec is the whole budget");
+        assert!(
+            may_reexec(Some("")),
+            "empty is how Windows spells unset, and an empty marker must not strand a \
+             session on a stale binary"
+        );
+    }
+
+    #[test]
+    fn a_daemon_newer_than_this_gavin_mcp_asks_for_a_handover() {
+        let (path, _seen, _dir) = fake_daemon(PROTOCOL_VERSION + 1, vec![]);
+        let mut t = SocketTransport::at(path);
+        let text = call_tool("gavin_get_tree", &mut t);
+
+        assert_eq!(
+            t.reexec_requested(),
+            Some(PROTOCOL_VERSION + 1),
+            "the daemon's version rides out with the request so the stderr line can name \
+             both ends of the skew: {text}"
+        );
+    }
+
+    #[test]
+    fn a_re_execed_gavin_mcp_refuses_a_still_newer_daemon_instead_of_looping() {
+        // The successor is the binary at our own path, so a second
+        // `DaemonNewer` means replacing ourselves did not help -- the new
+        // binary is not there yet. Handing over again would spin forever
+        // on a session that produces no output, which is worse than the
+        // error it replaced.
+        let (path, _seen, _dir) = fake_daemon(PROTOCOL_VERSION + 1, vec![]);
+        let mut t = already_reexeced(path);
+        let text = call_tool("gavin_get_tree", &mut t);
+
+        assert_eq!(t.reexec_requested(), None, "a re-execed process has no budget left");
+        assert!(text.contains("newer than this gavin-mcp"), "{text}");
+        assert!(text.contains("restart this Claude Code session"), "{text}");
+    }
+
+    #[test]
+    fn a_failed_handover_spends_the_budget_so_the_next_skew_is_the_hard_error() {
+        // `exec` can fail -- binary missing, permissions -- and this
+        // process then still owns the session. Retrying the same doomed
+        // handover on every later call would bury the real reason under a
+        // message about re-execing that never happens.
+        let (path, _seen, _dir) = fake_daemon(PROTOCOL_VERSION + 1, vec![]);
+        let mut t = SocketTransport::at(path);
+        call_tool("gavin_get_tree", &mut t);
+        assert!(t.reexec_requested().is_some());
+
+        t.reexec_failed();
+        let text = call_tool("gavin_get_tree", &mut t);
+
+        assert_eq!(t.reexec_requested(), None);
+        assert!(text.contains("restart this Claude Code session"), "{text}");
+    }
+
+    #[test]
+    fn a_daemon_below_the_floor_is_refused_without_a_handover() {
+        // The `DaemonTooOld` arm is untouched by this feature: our own
+        // path holds the binary the DAEMON outran, which does nothing for
+        // a daemon that is behind instead of ahead.
+        let (path, _seen, _dir) = fake_daemon(protocol::MIN_COMPATIBLE_VERSION - 1, vec![]);
+        let mut t = SocketTransport::at(path);
+        let text = call_tool("gavin_get_tree", &mut t);
+
+        assert!(text.contains("too old"), "{text}");
+        assert_eq!(t.reexec_requested(), None, "a stale daemon is not a stale gavin-mcp");
+    }
+
+    #[test]
+    fn the_replay_blob_carries_the_in_flight_line_then_the_buffered_bytes() {
+        let blob = replay_blob(r#"{"id":1}"#, b"{\"id\":2}\n{\"id\":3");
+        // In-flight line first, then whatever the reader had already
+        // swallowed -- including a trailing PARTIAL line, which the
+        // successor completes from the real stdin because it chains this
+        // blob in FRONT of the pipe rather than draining it first.
+        assert_eq!(blob, b"{\"id\":1}\n{\"id\":2}\n{\"id\":3".to_vec());
+    }
+
+    #[test]
+    fn a_replay_blob_survives_an_env_var_round_trip() {
+        let original = b"{\"id\":1}\n{\"partial\":".to_vec();
+        let encoded = encode_replay(&original);
+        assert_eq!(decode_replay(&encoded).unwrap(), original);
+    }
+
+    #[test]
+    fn a_replay_blob_carries_bytes_that_are_not_utf8() {
+        // A JSON byte array, not a string: the blob is whatever the pipe
+        // held, and a lossy conversion would corrupt the very request it
+        // exists to preserve.
+        let original = vec![0x7b, 0xff, 0xfe, 0x0a];
+        assert_eq!(decode_replay(&encode_replay(&original)).unwrap(), original);
+        assert_eq!(decode_replay("not json"), None);
+    }
+
+    #[test]
+    fn the_requests_pipelined_behind_the_in_flight_one_ride_across_the_handover() {
+        // The one real correctness trap (spec §3, detail 2). An agent
+        // that pipelines three calls leaves two of them in THIS process's
+        // userspace buffer, and `exec` throws that buffer away: unread
+        // bytes still in the pipe survive, buffered ones do not. Anything
+        // already swallowed has to travel with the in-flight line or the
+        // client hangs forever on ids it never gets back.
+        let (path, _seen, _dir) = fake_daemon(PROTOCOL_VERSION + 1, vec![]);
+        let mut t = SocketTransport::at(path);
+
+        let first = tool_call_line(1, "gavin_get_tree");
+        let second = tool_call_line(2, "gavin_get_tree");
+        let third = tool_call_line(3, "gavin_get_tree");
+        let piped = format!("{first}\n{second}\n{third}\n");
+        let mut reader = BufReader::new(std::io::Cursor::new(piped.clone().into_bytes()));
+        let mut out: Vec<u8> = Vec::new();
+
+        let handover = serve(&mut reader, &mut out, Some(Path::new("/ws")), &mut t);
+
+        let Handover::Wanted { blob, daemon_version, .. } = handover else {
+            panic!("a newer daemon must stop the loop for a handover, not run to EOF");
+        };
+        assert_eq!(daemon_version, PROTOCOL_VERSION + 1);
+        assert_eq!(
+            String::from_utf8(blob).unwrap(),
+            piped,
+            "every pipelined request has to reach the successor, in order"
+        );
+        assert!(
+            out.is_empty(),
+            "the in-flight request must go UNANSWERED -- the successor re-handles it, and a \
+             reply written here would reach the client twice: {}",
+            String::from_utf8_lossy(&out)
+        );
+    }
+
+    #[test]
+    fn the_stdio_loop_answers_each_line_in_order_and_stops_at_eof() {
+        // Lifting the loop out of `main` is only safe if the ordinary
+        // path is untouched: one reply per line, in order, blank lines
+        // skipped, and EOF ending the session rather than a handover.
+        let mut t = mock(vec![]);
+        let lines = format!(
+            "{}\n\n{}\n",
+            r#"{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":8,"method":"initialize","params":{}}"#
+        );
+        let mut reader = BufReader::new(std::io::Cursor::new(lines.into_bytes()));
+        let mut out: Vec<u8> = Vec::new();
+
+        let handover = serve(&mut reader, &mut out, Some(Path::new("/ws")), &mut t);
+
+        assert!(matches!(handover, Handover::Eof), "stdin ending is the end of the session");
+        let replies: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 2, "one reply per non-blank line: {replies:?}");
+        assert_eq!(replies[0]["id"], 7);
+        assert_eq!(replies[1]["id"], 8);
+    }
+
+    #[test]
+    fn a_handed_over_blob_is_read_before_stdin_and_a_partial_line_completed_from_it() {
+        // What `main` builds on startup: the predecessor's blob chained
+        // in FRONT of the pipe. The blob's last line is deliberately
+        // partial -- it is the shape a BufReader hands over when it
+        // stopped mid-request -- and it must be completed by the pipe's
+        // first bytes, not treated as a request of its own.
+        let blob = format!("{}\n{}", tool_call_line(1, "gavin_get_tree"), &tool_call_line(2, "gavin_get_tree")[..20]);
+        let rest = format!("{}\n", &tool_call_line(2, "gavin_get_tree")[20..]);
+        let mut t = mock(vec![
+            Response::GavinTreeScanned { tree: two_card_tree() },
+            Response::GavinTreeScanned { tree: two_card_tree() },
+        ]);
+        let mut reader = BufReader::new(
+            std::io::Cursor::new(blob.into_bytes()).chain(std::io::Cursor::new(rest.into_bytes())),
+        );
+        let mut out: Vec<u8> = Vec::new();
+
+        serve(&mut reader, &mut out, Some(Path::new("/ws")), &mut t);
+
+        let replies: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 2, "the split request must arrive whole: {replies:?}");
+        assert_eq!(replies[0]["id"], 1);
+        assert_eq!(replies[1]["id"], 2);
+    }
+
     #[test]
     fn a_gated_request_is_not_retried_through_a_reconnect() {
         // The retry exists for a daemon that went away mid-call. A gate
@@ -1751,6 +2279,7 @@ mod tests {
             complexity: None,
             agent: None,
             model: None,
+            human_items: Some(vec![]),
         };
         protocol::GavinTree {
             root_path: "/ws".into(),
@@ -2935,6 +3464,30 @@ mod tests {
             ),
             None
         );
+        // Filing a human item claims the card too, and from the REQUEST's
+        // path: a human item never moves the card, and the tab takes the
+        // answer back to whoever the card is bound to -- no filer is
+        // stored per item, so the binding is the only trace of who asked.
+        let filed = |resp: Response| {
+            claim_target(
+                &Request::FileHumanItem {
+                    path: "/ws/plans/a.md".into(),
+                    kind: protocol::HumanItemKind::Decision,
+                    text: "which?".into(),
+                    options: vec![],
+                },
+                &resp,
+            )
+        };
+        assert_eq!(
+            filed(Response::HumanItemFiled { rearmed: false }).as_deref(),
+            Some("/ws/plans/a.md")
+        );
+        assert_eq!(
+            filed(Response::HumanItemFiled { rearmed: true }).as_deref(),
+            Some("/ws/plans/a.md")
+        );
+        assert_eq!(filed(Response::Error { message: "nope".into() }), None);
     }
 
     #[test]
@@ -2998,13 +3551,118 @@ mod tests {
         assert!(reply.contains("created plan"));
         match &t.requests[0] {
             Request::CreatePlan { context_folder, file_name, title, priority, .. } => {
-                assert_eq!(context_folder, "/ws/.");
+                // Built the way the code builds it, because the claim is
+                // that a relative context is resolved against the root --
+                // not that the separator is a forward slash.
+                // `resolve_against_root` is `root.join(input)`, which
+                // spells this `/ws\.` on Windows; every path this binary
+                // puts on the wire is a plain `to_string_lossy` of a
+                // native path, `root_path` included, so hardcoding the
+                // POSIX spelling only made the claim untestable off unix.
+                assert_eq!(context_folder, &root.join(".").to_string_lossy().to_string());
                 assert_eq!(file_name, "a.md");
                 assert_eq!(title, "A");
                 assert_eq!(priority.as_deref(), Some("high"));
             }
             other => panic!("wrong request: {other:?}"),
         }
+    }
+
+    /// The tool maps to `FileHumanItem`, resolves the card against the
+    /// root like every other card argument, and passes the shortlist
+    /// through as written.
+    #[test]
+    fn request_human_maps_to_file_human_item() {
+        let mut t = mock(vec![Response::HumanItemFiled { rearmed: false }]);
+        let reply = handle_line(
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"gavin_request_human","arguments":{"card":".gavin-root/plans/a.md","kind":"decision","text":"Which serializer?","options":["serde","by hand"," "]}}}"#,
+            Some(Path::new("/ws")),
+            &mut t,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v.pointer("/result/isError").unwrap(), false, "{reply}");
+        assert!(reply.contains("Decisions tab"), "{reply}");
+        match &t.requests[0] {
+            Request::FileHumanItem { path, kind, text, options } => {
+                // Against `resolve_against_root`'s own answer, not a
+                // hand-spelled one: the separator it joins with is the
+                // platform's, and pinning a forward slash here would be
+                // a test that only passes on unix.
+                assert_eq!(
+                    path,
+                    &resolve_against_root(Path::new("/ws"), ".gavin-root/plans/a.md")
+                        .to_string_lossy()
+                        .to_string()
+                );
+                assert_eq!(*kind, protocol::HumanItemKind::Decision);
+                assert_eq!(text, "Which serializer?");
+                // Blank entries dropped: an agent padding the array
+                // should not put an empty button in front of a human.
+                assert_eq!(options, &vec!["serde".to_string(), "by hand".to_string()]);
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    /// A test carries no options, and a re-arm is reported as one --
+    /// the agent needs to know the human already failed this check.
+    #[test]
+    fn request_human_files_a_test_and_names_a_re_arm() {
+        let mut t = mock(vec![Response::HumanItemFiled { rearmed: true }]);
+        let reply = handle_line(
+            r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"gavin_request_human","arguments":{"card":"a.md","kind":"TEST","text":"install it on the other machine"}}}"#,
+            Some(Path::new("/ws")),
+            &mut t,
+        )
+        .unwrap();
+        assert!(reply.contains("re-armed"), "{reply}");
+        match &t.requests[0] {
+            Request::FileHumanItem { kind, options, .. } => {
+                // Case-insensitive: the agent typed the enum, not a path.
+                assert_eq!(*kind, protocol::HumanItemKind::Test);
+                assert!(options.is_empty());
+            }
+            other => panic!("wrong request: {other:?}"),
+        }
+    }
+
+    /// A kind that is neither is refused outright rather than defaulted:
+    /// the two are not interchangeable, and a typo silently filed as the
+    /// other reaches the human as the wrong controls.
+    #[test]
+    fn request_human_refuses_an_unknown_kind_without_touching_the_daemon() {
+        let mut t = mock(vec![Response::Ok]);
+        let reply = handle_line(
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"gavin_request_human","arguments":{"card":"a.md","kind":"question","text":"x"}}}"#,
+            Some(Path::new("/ws")),
+            &mut t,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v.pointer("/result/isError").unwrap(), true, "{reply}");
+        assert!(t.requests.is_empty(), "nothing reaches the daemon");
+        // And a missing `text` is the ordinary required-argument error.
+        let missing = handle_line(
+            r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"gavin_request_human","arguments":{"card":"a.md","kind":"test"}}}"#,
+            Some(Path::new("/ws")),
+            &mut t,
+        )
+        .unwrap();
+        assert!(missing.contains("text"), "{missing}");
+    }
+
+    #[test]
+    fn request_human_is_listed_with_both_kinds_in_its_schema() {
+        let tools = tool_definitions();
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "gavin_request_human")
+            .expect("gavin_request_human is listed");
+        assert_eq!(tool["inputSchema"]["properties"]["kind"]["enum"], json!(["decision", "test"]));
+        assert_eq!(tool["inputSchema"]["required"], json!(["card", "kind", "text"]));
     }
 
     #[test]

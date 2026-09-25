@@ -60,6 +60,10 @@ export const REASON_WORD: Record<AttentionReason, string> = {
   "turn-ended": "turn ended",
   stale: "stale",
   "decoy-edit": "wrong copy",
+  // Never reached from this menu, whose inbox is built without the
+  // opt-in that produces this reason -- but the record is total, so a
+  // surface that turns it on later cannot land here with a blank column.
+  blocked: "gave up",
 };
 
 /// The rows of the inbox whose TAB is in this workspace -- the tab, not

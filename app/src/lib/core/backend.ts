@@ -12,7 +12,13 @@ import type { Board, Column, Label } from "$lib/board/kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
 import type { GavinTracking } from "$lib/git/gitTracking";
 import type { IgnoreKind } from "$lib/git/gitIgnore";
-import type { BoardTab, CardTab, GavinTree } from "$lib/core/gavin";
+import type {
+  BoardTab,
+  CardTab,
+  GavinTree,
+  HumanItemKind,
+  HumanItemOutcome,
+} from "$lib/core/gavin";
 import type { ApplyMode, CommitDetail, ConflictInfo, DiscardReport, FileDiff, FileEntry, InProgressKind, LogPage, RefsSnapshot, RepoInfo, ResetMode, RunChanges, StatusResult } from "$lib/git/git";
 import type { ConflictNote, Orchestration, Rail, RailState, StepState } from "$lib/orchestration/orchestration";
 import type { ToolRecord } from "$lib/orchestration/orchestrationTools";
@@ -26,6 +32,7 @@ import type { ManagedSessions } from "$lib/sessions/sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspace/workspaceDelete";
 import type { AttachmentStatus } from "$lib/cards/attachments";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
+import type { DeviceList, PairingOffer } from "$lib/core/remoteAccess";
 
 /// `workspaceRoot` is the workspace the session BELONGS to, as distinct
 /// from `cwd`, where it runs. The two differ whenever gavin launches into
@@ -59,6 +66,53 @@ export function getRequireLocalToken(): Promise<boolean> {
 /// process-starting requests until they present a token.
 export function setRequireLocalToken(enabled: boolean): Promise<void> {
   return invoke("set_require_local_token", { enabled });
+}
+
+// -- Remote access, phase 2 -------------------------------------------
+//
+// All seven aimed at the LOCAL daemon and nothing else (see session.rs):
+// a paired phone is neither a session nor a workspace, so there is no
+// route to take, and pairing against an ssh host's trust store from the
+// desktop's Settings would be the wrong daemon entirely.
+
+/// Mint a one-time pairing secret and return the QR payload. A second
+/// call replaces the first.
+export function beginPairing(): Promise<PairingOffer> {
+  return invoke("begin_pairing");
+}
+
+/// The human compared the six digits and said yes. The only call in the
+/// app that writes a row into the daemon's trust store.
+export function confirmPairing(deviceId: string): Promise<void> {
+  return invoke("confirm_pairing", { deviceId });
+}
+
+/// The human said no: discard the pending handshake so the phone hears
+/// an answer rather than waiting out the expiry.
+export function rejectPairing(deviceId: string): Promise<void> {
+  return invoke("reject_pairing", { deviceId });
+}
+
+/// Every paired device, revoked ones included, plus the two
+/// remote-access settings that ride along with them.
+export function listDevices(): Promise<DeviceList> {
+  return invoke("list_devices");
+}
+
+export function revokeDevice(deviceId: string): Promise<void> {
+  return invoke("revoke_device", { deviceId });
+}
+
+/// Revoke everything and rotate the daemon's static key: the one-button
+/// answer to a lost phone.
+export function revokeAllDevices(): Promise<void> {
+  return invoke("revoke_all_devices");
+}
+
+/// Stored and inert in this phase -- nothing dials and nothing listens
+/// until there is a transport.
+export function setRemoteAccess(enabled: boolean, relayUrl: string | null): Promise<void> {
+  return invoke("set_remote_access", { enabled, relayUrl });
 }
 
 export function getFileTabs(): Promise<Record<string, string>> {
@@ -919,6 +973,31 @@ export function setChecklistItem(
 // Returns the created task card's path.
 export function promoteChecklistItem(planPath: string, item: string): Promise<string> {
   return invoke("promote_checklist_item", { planPath, item });
+}
+
+/// Files a `Decision:` / `Human test:` line on a card's checklist.
+/// Resolves true when it re-armed an identical test the human had
+/// already failed, rather than appending a second line.
+export function fileHumanItem(
+  path: string,
+  kind: HumanItemKind,
+  text: string,
+  options: string[] = []
+): Promise<boolean> {
+  return invoke("file_human_item", { path, kind, text, options });
+}
+
+/// Writes the human's answer under a human item and sets its checkbox.
+/// `expectedText` is the item line's raw remainder (`HumanItem.lineText`),
+/// guarded by the daemon exactly as `setChecklistItem`'s is: a rejection
+/// means an agent rewrote the card under the tab, so re-read the tree
+/// rather than retrying with the same text.
+export function resolveHumanItem(
+  path: string,
+  expectedText: string,
+  outcome: HumanItemOutcome
+): Promise<void> {
+  return invoke("resolve_human_item", { path, expectedText, outcome });
 }
 
 export function getBoard(workspaceId: string): Promise<Board> {

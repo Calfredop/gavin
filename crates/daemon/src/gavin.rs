@@ -1,6 +1,6 @@
 use protocol::{
-    AgentConfig, CardKind, Complexity, GavinContext, GavinContextKind, GavinTree, MdFileInfo,
-    PlanFileInfo, Priority, Response,
+    AgentConfig, CardKind, Complexity, GavinContext, GavinContextKind, GavinTree, HumanItem,
+    HumanItemKind, HumanItemOutcome, HumanItemState, MdFileInfo, PlanFileInfo, Priority, Response,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use protocol::transport::Stream;
@@ -228,6 +228,11 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         checklist_done,
         checklist_total,
         parse_warning: warning,
+        // Always `Some` from here: this daemon DID look. `None` is
+        // reserved for the two honest "never looked" cases -- an older
+        // daemon that has no such field at all, and the oversize card
+        // below whose body was never read.
+        human_items: Some(human_items(content)),
     }
 }
 
@@ -272,6 +277,550 @@ fn checklist_counts(content: &str) -> (u32, u32) {
         }
     }
     (done, total)
+}
+
+// ---------- human items (the Decisions tab) ----------
+//
+// A card's checklist is where an agent says what it cannot settle on its
+// own, and where the human's answer is written back. Everything in this
+// section works off the SAME reading of the file -- one fence map, one
+// body start, one "what is attached under this item" rule -- because the
+// parse and the two writes disagreeing about which lines belong to an
+// item is precisely how an answer would land under the wrong question.
+
+/// The `Options:` line's keyword, and the three lines that record an
+/// outcome. Spelled once so the writers and the parser cannot drift.
+const OPTIONS_PREFIX: &str = "Options:";
+const ANSWER_PREFIX: &str = "Answer (";
+const RESULT_PREFIX: &str = "Result (";
+const REARM_PREFIX: &str = "Ready for re-test (";
+
+/// Which lines of `content` sit inside a fenced code block, indexed like
+/// `content.lines()`.
+///
+/// A checklist line inside a fence is documentation OF a marker, not a
+/// marker: every spec in `docs/superpowers/` that explains this feature
+/// shows `- [ ] Decision: …` in a fence, and a parser that could not tell
+/// the two apart would file the spec's examples as real questions on
+/// whatever card quoted them.
+///
+/// The opening fence's character and length are remembered so a longer
+/// run can close a shorter one and a `~~~` cannot close a ``` -- the
+/// CommonMark rule, and the one that keeps a fenced block containing
+/// backticks from ending early.
+fn fenced_lines(content: &str) -> Vec<bool> {
+    let mut out = Vec::new();
+    let mut open: Option<(char, usize)> = None;
+    for line in content.lines() {
+        let t = line.trim_start();
+        let fence = fence_marker(t);
+        match (&open, fence) {
+            // Inside a fence: the fence line that CLOSES it is itself
+            // fenced, so a stray `- [ ] x` can never hide as one.
+            (Some((ch, len)), Some((fch, flen, info_empty)))
+                if fch == *ch && flen >= *len && info_empty =>
+            {
+                out.push(true);
+                open = None;
+            }
+            (Some(_), _) => out.push(true),
+            (None, Some((fch, flen, _))) => {
+                out.push(true);
+                open = Some((fch, flen));
+            }
+            (None, None) => out.push(false),
+        }
+    }
+    out
+}
+
+/// `(fence char, run length, info string is empty)` for a line that opens
+/// or closes a fence, else None.
+fn fence_marker(trimmed: &str) -> Option<(char, usize, bool)> {
+    let ch = trimmed.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let len = trimmed.chars().take_while(|c| *c == ch).count();
+    if len < 3 {
+        return None;
+    }
+    let info = trimmed[len..].trim();
+    // A ``` info string may not itself contain a backtick (CommonMark);
+    // ~~~ has no such rule. Not worth reproducing -- what matters here is
+    // only whether the line can CLOSE a fence, which needs an empty one.
+    Some((ch, len, info.is_empty()))
+}
+
+/// The first BODY line index -- everything after the frontmatter's
+/// closing marker. `None` when an opening `---` is never closed, which is
+/// exactly how `checklist_counts` reads that file: no body at all.
+fn body_start(content: &str) -> Option<usize> {
+    let mut lines = content.lines();
+    if lines.next() != Some("---") {
+        return Some(0);
+    }
+    for (offset, line) in lines.enumerate() {
+        if line == "---" {
+            return Some(offset + 2);
+        }
+    }
+    None
+}
+
+/// The marker a checklist item carries, if it carries one: the kind it
+/// names and the text after the colon.
+///
+/// `Decision:` and `Human test:` are what gavin writes. The rest are
+/// spellings already on cards before this feature existed -- `Human:`,
+/// `Human, on the other machine:`, `Owner check in the running app:`,
+/// `Manual smoke:` -- and they all mean the same thing: a check only a
+/// person can run. Reading them is what keeps the tab from showing an
+/// empty list on a workspace whose cards are full of them.
+///
+/// The match is on the FIRST WORD before the colon, not a prefix of the
+/// line, which is what keeps `Manually rewrite the parser: …` and
+/// `Human-readable output: …` out: both start with the right letters and
+/// neither is asking anything of anybody. The colon also has to arrive
+/// within `MAX_MARKER_BYTES`, so a sentence that happens to contain one
+/// much later cannot be read as a very long marker.
+fn human_marker(text: &str) -> Option<(HumanItemKind, &str)> {
+    /// Long enough for every spelling above (`Owner check in the running
+    /// app` is 30) and far short of a sentence.
+    const MAX_MARKER_BYTES: usize = 40;
+
+    // Walked by chars, not sliced by bytes: a card's text is routinely
+    // not ASCII, and a byte window that lands inside a multi-byte
+    // character would drop the whole item rather than shorten the search.
+    let colon = text
+        .char_indices()
+        .take_while(|(i, _)| *i < MAX_MARKER_BYTES)
+        .find(|(_, c)| *c == ':')
+        .map(|(i, _)| i)?;
+    let marker = text[..colon].trim();
+    let rest = text[colon + 1..].trim();
+    let lower = marker.to_ascii_lowercase();
+    // The first word, with a trailing comma dropped: `Human,` and
+    // `Owner,` are the same word as `Human` and `Owner`.
+    let first = lower.split_whitespace().next()?.trim_end_matches(',');
+    let kind = match (lower.as_str(), first) {
+        ("decision", _) => HumanItemKind::Decision,
+        ("human test", _) => HumanItemKind::Test,
+        // A bare `Human:`, or `Human, <where>:`. NOT `Human-readable`:
+        // the trim above only drops a comma, so the first word there is
+        // still `human-readable`.
+        (_, "human") | (_, "owner") | (_, "manual") => HumanItemKind::Test,
+        _ => return None,
+    };
+    Some((kind, rest))
+}
+
+/// One index past the last line ATTACHED to the item at `item`: the
+/// indented continuation that belongs to it -- its `Options:` line, every
+/// answer and result written under it, and any wrapped prose.
+///
+/// The block ends at the first line that is blank, no more indented than
+/// the item itself, a checklist item of its own (a nested `- [ ]` is a
+/// sibling's business, not this item's), or inside a fence. Deliberately
+/// the same rule for reading and for writing: an answer appended anywhere
+/// but the end of this block would read back as belonging to a different
+/// item, and the parse would be right and the write wrong.
+fn attached_block_end(lines: &[&str], fenced: &[bool], item: usize, indent: usize) -> usize {
+    let mut end = item + 1;
+    while end < lines.len() {
+        let line = lines[end];
+        if fenced[end] || line.trim().is_empty() {
+            break;
+        }
+        let line_indent = line.len() - line.trim_start().len();
+        if line_indent <= indent || split_checklist_line(line).is_some() {
+            break;
+        }
+        end += 1;
+    }
+    end
+}
+
+/// Splits an `Options:` line's remainder into the choices it offers.
+///
+/// `A) keep it B) drop it` is the shape `file_human_item` writes and the
+/// one the interview settled on, so labelled segments win. A line with no
+/// labels falls back to `|` and then to one whole option, rather than to
+/// a comma split: an option is a phrase a human wrote, and phrases have
+/// commas in them.
+fn split_options(rest: &str) -> Vec<String> {
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return Vec::new();
+    }
+    let mut cuts: Vec<usize> = Vec::new();
+    let bytes = rest.as_bytes();
+    for (i, w) in bytes.windows(3).enumerate() {
+        let at_boundary = i == 0 || bytes[i - 1].is_ascii_whitespace();
+        let labelled = w[0].is_ascii_alphanumeric()
+            && (w[1] == b')' || w[1] == b'.')
+            && w[2].is_ascii_whitespace();
+        if at_boundary && labelled {
+            cuts.push(i);
+        }
+    }
+    if !cuts.is_empty() {
+        let mut out = Vec::new();
+        for (n, start) in cuts.iter().enumerate() {
+            let end = cuts.get(n + 1).copied().unwrap_or(rest.len());
+            let choice = rest[start + 2..end].trim();
+            if !choice.is_empty() {
+                out.push(choice.to_string());
+            }
+        }
+        return out;
+    }
+    if rest.contains('|') {
+        return rest.split('|').map(|o| o.trim().to_string()).filter(|o| !o.is_empty()).collect();
+    }
+    vec![rest.to_string()]
+}
+
+/// The state an `Answer (…)` / `Result (…)` / `Ready for re-test (…)`
+/// line implies, or None for an attached line that records no outcome at
+/// all (an `Options:` line, wrapped prose).
+///
+/// A `Result` line that says neither passed nor failed is deliberately
+/// NOT a state line: the alternative is guessing, and both guesses are
+/// wrong in a way that matters -- "passed" hides a check nobody ran, and
+/// "failed" hands it back to an agent that did nothing wrong. Falling
+/// through leaves the item reading as whatever the line before it said,
+/// which for an untouched item is `Open`: still waiting on the human,
+/// which is where a line nobody can read belongs.
+fn outcome_state(line: &str) -> Option<HumanItemState> {
+    let line = line.trim();
+    if starts_with_ignore_case(line, ANSWER_PREFIX) {
+        return Some(HumanItemState::Answered);
+    }
+    if starts_with_ignore_case(line, REARM_PREFIX) {
+        return Some(HumanItemState::Open);
+    }
+    if starts_with_ignore_case(line, RESULT_PREFIX) {
+        let verdict = line.split_once("):").map(|(_, v)| v.trim().to_ascii_lowercase())?;
+        if verdict.starts_with("passed") {
+            return Some(HumanItemState::Passed);
+        }
+        if verdict.starts_with("failed") {
+            return Some(HumanItemState::Failed);
+        }
+    }
+    None
+}
+
+/// `str::get` rather than a length check and a slice: the prefixes here
+/// are ASCII but the lines they are tested against are not, and a `..n`
+/// slice landing inside a multi-byte character panics. `get` answers
+/// None there, which is also the right answer -- a line whose eighth byte
+/// is the middle of an em dash does not start with `Result (`.
+fn starts_with_ignore_case(line: &str, prefix: &str) -> bool {
+    line.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+/// Every `Decision:` / `Human test:` checklist line in a card's body,
+/// with what has been written under it.
+///
+/// Body only, like `checklist_counts` -- a `status: Decision: x`
+/// frontmatter line is not a checklist item -- and `line_index` counts
+/// from the top of the FILE, because that is the index
+/// `SetChecklistItem` addresses lines by.
+pub fn human_items(content: &str) -> Vec<HumanItem> {
+    let Some(start) = body_start(content) else { return Vec::new() };
+    let lines: Vec<&str> = content.lines().collect();
+    let fenced = fenced_lines(content);
+    let mut out = Vec::new();
+    for i in start..lines.len() {
+        if fenced[i] {
+            continue;
+        }
+        let Some((indent, mark, rest)) = split_checklist_line(lines[i]) else { continue };
+        let Some((kind, text)) = human_marker(rest) else { continue };
+        let end = attached_block_end(&lines, &fenced, i, indent);
+        let mut options = Vec::new();
+        let mut latest = None;
+        let mut state = HumanItemState::Open;
+        for line in &lines[i + 1..end] {
+            let trimmed = line.trim();
+            if options.is_empty() && starts_with_ignore_case(trimmed, OPTIONS_PREFIX) {
+                options = split_options(&trimmed[OPTIONS_PREFIX.len()..]);
+                continue;
+            }
+            // LAST wins, not first: the lines accumulate, and the one at
+            // the bottom is the one that happened most recently.
+            if let Some(s) = outcome_state(trimmed) {
+                latest = Some(trimmed.to_string());
+                state = s;
+            }
+        }
+        out.push(HumanItem {
+            kind,
+            text: text.to_string(),
+            done: mark == 'x',
+            options,
+            latest,
+            state,
+            line_text: rest.to_string(),
+            line_index: i as u32,
+        });
+    }
+    out
+}
+
+/// Appends a `Decision:` / `Human test:` line to a card's checklist, or
+/// re-arms an identical failed test. Returns true when it re-armed.
+///
+/// `today` is passed in rather than read from the clock here so the write
+/// is testable without one -- `server.rs` supplies `today()`.
+///
+/// The new line goes after the LAST checklist item in the body and its
+/// attached block, which is what "appends to the card's checklist" means
+/// on a card whose body continues past it: a plan card ends with an
+/// auto-commit comment, and an item filed below that would sit outside
+/// the list the human reads. A card with no checklist at all gets one at
+/// the end of the file.
+pub fn file_human_item(
+    path: &Path,
+    kind: HumanItemKind,
+    text: &str,
+    options: &[String],
+    today: &str,
+) -> anyhow::Result<bool> {
+    let confined = confine_card_path(path)?;
+    let path = confined.as_path();
+    let text = text.trim();
+    if text.is_empty() {
+        anyhow::bail!("a human item needs text");
+    }
+    if text.contains('\n') || text.contains('\r') {
+        anyhow::bail!("a human item is one checklist line — it cannot contain a newline");
+    }
+    let content = std::fs::read_to_string(path)?;
+    let had_trailing_newline = content.ends_with('\n');
+    let lines: Vec<&str> = content.lines().collect();
+    let fenced = fenced_lines(&content);
+
+    // Re-arm rather than duplicate: the agent fixed what the human found
+    // broken and is asking for the SAME check again. Tests only -- a
+    // decision that was answered and is being asked again is a new
+    // question, and the old answer is the record of why.
+    if kind == HumanItemKind::Test {
+        let failed = human_items(&content).into_iter().filter(|i| {
+            i.kind == HumanItemKind::Test
+                && i.text == text
+                && i.state == HumanItemState::Failed
+        });
+        // The LAST such item: if a card somehow carries two, the one
+        // further down is the one most recently written.
+        if let Some(item) = failed.last() {
+            let at = item.line_index as usize;
+            let indent = lines[at].len() - lines[at].trim_start().len();
+            let end = attached_block_end(&lines, &fenced, at, indent);
+            let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+            out.insert(end, format!("{}{REARM_PREFIX}{today})", " ".repeat(indent + 2)));
+            write_lines(path, out, had_trailing_newline || content.is_empty())?;
+            return Ok(true);
+        }
+    }
+
+    let marker = match kind {
+        HumanItemKind::Decision => "Decision",
+        HumanItemKind::Test => "Human test",
+    };
+    let mut new_lines = vec![format!("- [ ] {marker}: {text}")];
+    let options: Vec<&str> = options.iter().map(|o| o.trim()).filter(|o| !o.is_empty()).collect();
+    if !options.is_empty() {
+        let labelled: Vec<String> = options
+            .iter()
+            .enumerate()
+            .map(|(n, o)| format!("{}) {o}", option_label(n)))
+            .collect();
+        new_lines.push(format!("  {OPTIONS_PREFIX} {}", labelled.join(" ")));
+    }
+
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    let body = body_start(&content).unwrap_or(lines.len());
+    let last_item = (body..lines.len())
+        .rev()
+        .find(|i| !fenced[*i] && split_checklist_line(lines[*i]).is_some());
+    match last_item {
+        Some(i) => {
+            let indent = lines[i].len() - lines[i].trim_start().len();
+            let at = attached_block_end(&lines, &fenced, i, indent);
+            for (n, line) in new_lines.into_iter().enumerate() {
+                out.insert(at + n, line);
+            }
+        }
+        None => {
+            // No checklist yet. A blank line first, so the new list is
+            // not swallowed into whatever paragraph the card ends with.
+            if out.last().is_some_and(|l| !l.trim().is_empty()) {
+                out.push(String::new());
+            }
+            out.extend(new_lines);
+        }
+    }
+    write_lines(path, out, had_trailing_newline || content.is_empty())?;
+    Ok(false)
+}
+
+/// `A`..`Z` then `AA`..: the labels an `Options:` line carries. Past 26
+/// the scheme repeats a doubled letter, which is well past any shortlist
+/// a person would read and only has to stay unambiguous.
+fn option_label(n: usize) -> String {
+    let letter = (b'A' + (n % 26) as u8) as char;
+    let repeats = n / 26 + 1;
+    std::iter::repeat(letter).take(repeats).collect()
+}
+
+/// Writes the human's answer under a human item and sets its checkbox.
+///
+/// `expected_text` is the item line's raw remainder, guarded exactly as
+/// `set_checklist_item` guards it, and for the same reason: between the
+/// tab rendering a row and the human pressing a button, an agent may
+/// have rewritten the card. Two items with identical text are refused as
+/// ambiguous rather than resolved by position -- `promote_checklist_item`
+/// already takes that line, and guessing here would write an answer under
+/// a question nobody asked.
+pub fn resolve_human_item(
+    path: &Path,
+    expected_text: &str,
+    outcome: &HumanItemOutcome,
+    today: &str,
+) -> anyhow::Result<()> {
+    let confined = confine_card_path(path)?;
+    let path = confined.as_path();
+    let content = std::fs::read_to_string(path)?;
+    let had_trailing_newline = content.ends_with('\n');
+    let lines: Vec<&str> = content.lines().collect();
+    let fenced = fenced_lines(&content);
+
+    let matches: Vec<HumanItem> =
+        human_items(&content).into_iter().filter(|i| i.line_text == expected_text).collect();
+    let item = match matches.len() {
+        0 => anyhow::bail!(
+            "human item changed on disk — no checklist item reads {expected_text:?} any more"
+        ),
+        1 => &matches[0],
+        n => anyhow::bail!("ambiguous: {n} human items read {expected_text:?}"),
+    };
+
+    let (written, checked) = match outcome {
+        HumanItemOutcome::Answer { text } => {
+            let text = text.trim();
+            if text.is_empty() {
+                anyhow::bail!("an answer needs text");
+            }
+            (format!("{ANSWER_PREFIX}{today}): {}", one_line(text)), true)
+        }
+        HumanItemOutcome::Pass => (format!("{RESULT_PREFIX}{today}): passed"), true),
+        // A plain fail leaves the box unticked: the check is still owed,
+        // and the note beside it says what the agent has to fix. Fail
+        // and close is the human overruling exactly that.
+        HumanItemOutcome::Fail { note } => (failed_line(today, note), false),
+        HumanItemOutcome::FailAndClose { note } => (failed_line(today, note), true),
+    };
+
+    let at = item.line_index as usize;
+    let indent = lines[at].len() - lines[at].trim_start().len();
+    let end = attached_block_end(&lines, &fenced, at, indent);
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    out[at] = format!(
+        "{}- [{}] {}",
+        &lines[at][..indent],
+        if checked { 'x' } else { ' ' },
+        item.line_text
+    );
+    out.insert(end, format!("{}{written}", " ".repeat(indent + 2)));
+    write_lines(path, out, had_trailing_newline || content.is_empty())
+}
+
+fn failed_line(today: &str, note: &str) -> String {
+    match note.trim() {
+        "" => format!("{RESULT_PREFIX}{today}): failed"),
+        note => format!("{RESULT_PREFIX}{today}): failed — {}", one_line(note)),
+    }
+}
+
+/// A human's free text, flattened to the one line a checklist item can
+/// hold. Newlines become spaces rather than being refused: the note comes
+/// from a textarea, a stray return in it is not an error, and a write
+/// that rejected it would lose the answer entirely.
+fn one_line(text: &str) -> String {
+    text.split(['\n', '\r']).map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+/// Joins and writes, preserving the file's trailing-newline habit exactly
+/// as `set_checklist_item` does.
+fn write_lines(path: &Path, lines: Vec<String>, trailing_newline: bool) -> anyhow::Result<()> {
+    let mut rebuilt = lines.join("\n");
+    if trailing_newline {
+        rebuilt.push('\n');
+    }
+    std::fs::write(path, rebuilt)?;
+    Ok(())
+}
+
+/// Today's date as `YYYY-MM-DD`, in the human's OWN timezone.
+///
+/// Local and not UTC because the only reader is a person looking at their
+/// own card: an answer given at nine in the evening in Berlin that reads
+/// as tomorrow's date is wrong in the one way this string can be wrong.
+/// Both platform calls hand back the civil date directly, so no calendar
+/// arithmetic is involved on either; `ymd_from_unix` is the fallback for
+/// a target that is neither, and the piece a test can pin.
+pub fn today() -> String {
+    #[cfg(unix)]
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as libc::time_t)
+            .unwrap_or(0);
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        // SAFETY: `localtime_r` writes into `tm` and reads `now`; both
+        // are owned here and outlive the call. It is the reentrant form
+        // precisely because the daemon is threaded.
+        if !unsafe { libc::localtime_r(&now, &mut tm) }.is_null() {
+            return format!(
+                "{:04}-{:02}-{:02}",
+                tm.tm_year + 1900,
+                tm.tm_mon + 1,
+                tm.tm_mday
+            );
+        }
+    }
+    #[cfg(windows)]
+    {
+        // SAFETY: no arguments, no pointers -- windows-rs returns the
+        // SYSTEMTIME by value.
+        let st = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+        return format!("{:04}-{:02}-{:02}", st.wYear, st.wMonth, st.wDay);
+    }
+    #[allow(unreachable_code)]
+    ymd_from_unix(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+    )
+}
+
+/// `YYYY-MM-DD` for a UTC instant, by Howard Hinnant's civil-from-days --
+/// the inverse of the `days_from_civil` the app already carries, and the
+/// same dozen lines against a date crate.
+fn ymd_from_unix(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 /// Rewrites ONLY the `{key}:` line (spec §2): replace in place if present,
@@ -1498,6 +2047,10 @@ fn oversize_plan_file_info(path: &Path) -> PlanFileInfo {
         complexity: None,
         agent: None,
         model: None,
+        // None, not an empty list: the body was never read, so "this
+        // card has nothing waiting on you" is a claim nothing here can
+        // make. It rides out with `parse_warning: true` beside it.
+        human_items: None,
     }
 }
 
@@ -1699,10 +2252,47 @@ pub fn scan_root(root: &Path) -> GavinTree {
 /// in milliseconds, and `tree_relevant` already rejects the churn the
 /// per-directory set was meant to keep out.
 ///
+/// Windows is here for a different reason, and it is correctness rather
+/// than speed. `ReadDirectoryChangesW` holds an open handle on every
+/// directory it watches, and Windows refuses to rename or move a
+/// directory while any handle is open ANYWHERE inside it -- a refusal
+/// that survives opening the inner handle with FILE_SHARE_DELETE, which
+/// only ever licensed deleting that file, never moving one of its
+/// ancestors. So the per-directory set made a watched workspace
+/// immovable: `.gavin-root`'s own watch was enough to stop the human
+/// renaming the workspace folder in Explorer, and a context folder's
+/// `.gavin` was enough to stop them renaming the context. With one
+/// handle on the root and none below it, every folder inside stays
+/// renamable, and the root itself goes too -- a handle on the directory
+/// being renamed is fine, it is a handle *inside* it that is not.
+///
+/// `ReadDirectoryChangesW` is natively recursive (`bWatchSubtree`), so
+/// unlike inotify this costs one handle rather than one per directory.
+/// What it does cost is delivery: every write under `target/`,
+/// `node_modules/` and `.git/` now crosses into the daemon to be thrown
+/// away by `tree_relevant`. Measured rather than guessed -- see
+/// `measure_recursive_watch_churn`: 2000 build-shaped writes produce
+/// ~6000 event paths, `tree_relevant` rejects all of them, and the
+/// filtering costs tens of milliseconds. No rescan follows a rejection,
+/// so the walk is never paid.
+///
+/// The second Windows cost is narrower and is not about volume.
+/// `ReadDirectoryChangesW` reports what happens INSIDE the directory its
+/// handle is open on, so the root's OWN rename is only ever reported to
+/// a watch on its parent -- which `watch_targets` deliberately never
+/// takes. Renaming the root away still pushes `root_missing` (the handle
+/// follows the directory and keeps reporting from its new home), but
+/// renaming it BACK pushes nothing; the first change under the restored
+/// root heals the tree instead. Measured on
+/// `server::tests::renaming_the_root_away_pushes_root_missing_and_renaming_back_heals`,
+/// which asserts exactly that on Windows and the stronger unix property
+/// elsewhere. inotify does not have this gap: its watch is on the inode
+/// and both renames raise IN_MOVE_SELF.
+///
 /// inotify is genuinely non-recursive and a recursive watch there means
 /// one descriptor per directory, node_modules included, so the
 /// per-directory set stays the right answer on Linux.
-const ONE_RECURSIVE_WATCH: bool = cfg!(target_os = "macos");
+const ONE_RECURSIVE_WATCH: bool = cfg!(any(target_os = "macos", windows));
 
 /// The directories worth watching, and how deeply. Mirrors `scan_root`'s
 /// own walk exactly, because watching what the scanner reads -- and
@@ -1721,13 +2311,15 @@ const ONE_RECURSIVE_WATCH: bool = cfg!(target_os = "macos");
 ///
 /// All of which describes inotify. On FSEvents the churn crosses into the
 /// daemon either way and the per-directory set only multiplies the cost
-/// of arming it, so there the whole root is one recursive watch -- see
-/// `ONE_RECURSIVE_WATCH`.
+/// of arming it; on Windows each entry is an open handle that makes the
+/// folder it names unrenamable. On both the whole root is one recursive
+/// watch instead -- see `ONE_RECURSIVE_WATCH`.
 pub fn watch_targets(root: &Path) -> Vec<(PathBuf, notify::RecursiveMode)> {
     use notify::RecursiveMode::{NonRecursive, Recursive};
     if ONE_RECURSIVE_WATCH {
         // See the constant: on FSEvents the per-directory set below buys
-        // nothing and costs a stream rebuild per directory.
+        // nothing and costs a stream rebuild per directory, and on
+        // Windows it locks every folder it names against renaming.
         return vec![(root.to_path_buf(), Recursive)];
     }
     // The root's own watch is permanent, and listed even while the root
@@ -2400,6 +2992,15 @@ fn confined_dir(root: &Path, cwd: &str) -> anyhow::Result<PathBuf> {
     }
 }
 
+/// Where a git worktree is, when it is inside the workspace -- what
+/// `WatchGitWorktree` resolves before pointing an OS watch at it. The
+/// same confinement `RunGit` gives a cwd, exposed because the watch is
+/// set up in `handle_connection` (it owns the connection's writer) rather
+/// than in `handle_request`.
+pub fn confined_worktree(root: &Path, cwd: &str) -> anyhow::Result<PathBuf> {
+    confined_dir(root, cwd)
+}
+
 /// `RunGit`: runs `git <args>` in a cwd confined to the root, returning
 /// `(stdout, stderr, code)` -- the three the desktop's local `run_git`
 /// produces, so the Git tab does not care which ran it.
@@ -2513,9 +3114,229 @@ pub fn list_workspace_dir(root: &Path, path: &str) -> anyhow::Result<Vec<protoco
     Ok(entries)
 }
 
+/// The only environment variable `RunGitEnv` will set. The desktop's two
+/// callers -- cherry-pick and `<op> --continue` -- set exactly this one,
+/// and an open-ended environment is a way to point git at a program,
+/// which is the reach `RunGit`'s fixed-binary, never-a-shell rule exists
+/// to deny. A request naming anything else is refused rather than
+/// filtered: a silently dropped variable is how a caller ends up
+/// believing it set something.
+const GIT_ENV_ALLOWED: &[&str] = &["GIT_EDITOR"];
+
+/// `RunGitEnv`: `run_git` with an allow-listed environment, for the
+/// callers that need `GIT_EDITOR=true` so a cherry-pick or a
+/// `rebase --continue` never waits on an editor nobody can see.
+pub fn run_git_env(
+    root: &Path,
+    cwd: &str,
+    args: &[String],
+    env: &[(String, String)],
+) -> anyhow::Result<(Vec<u8>, String, i32)> {
+    for (key, _) in env {
+        if !GIT_ENV_ALLOWED.contains(&key.as_str()) {
+            anyhow::bail!("{key} is not an environment variable this daemon will set for git");
+        }
+    }
+    let resolved = confined_dir(root, cwd)?;
+    let out = crate::program::command("git")
+        .args(args)
+        .current_dir(&resolved)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!("git was not found on the host's PATH")
+            } else {
+                anyhow::anyhow!("failed to run git: {e}")
+            }
+        })?;
+    Ok((
+        out.stdout,
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.code().unwrap_or(-1),
+    ))
+}
+
+/// Ceiling for a `RunGitStreaming` op. These are fetch/pull/push, which
+/// stream progress and can be cancelled, so this only catches a truly
+/// hung transport -- the same ten minutes the desktop's own
+/// `GIT_OP_TIMEOUT` allows a local one.
+const GIT_OP_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// A running `RunGitStreaming`'s child, shared with whoever may cancel
+/// it: the canceller `take()`s and kills it, and the runner reports
+/// `cancelled`. The desktop's `SharedChild` by another name, because the
+/// op now runs on this side of the wire.
+pub type SharedChild = std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>;
+
+/// `RunGitStreaming`: runs a long git network op in a confined cwd,
+/// handing every progress line to `on_line` as git draws it and the
+/// child to `register` so a `CancelGitOp` can take it.
+///
+/// Git writes progress on stderr with `\r` rather than `\n`, so `\r`
+/// counts as a line break here -- the desktop's runner splits on both
+/// for the same reason, and the Git tab's progress row is what reads the
+/// result.
+///
+/// `Ok(())` on success; `Err` carries git's own last words (the tail of
+/// what it said), or `cancelled` when the child was taken.
+pub fn run_git_streaming(
+    root: &Path,
+    cwd: &str,
+    args: &[String],
+    on_line: &mut dyn FnMut(String),
+    register: &mut dyn FnMut(SharedChild),
+) -> anyhow::Result<()> {
+    use std::io::Read;
+    let resolved = confined_dir(root, cwd)?;
+    let mut child = crate::program::command("git")
+        .args(args)
+        .current_dir(&resolved)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!("git was not found on the host's PATH")
+            } else {
+                anyhow::anyhow!("failed to run git: {e}")
+            }
+        })?;
+    let mut stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("git stderr unavailable"))?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        let mut acc: Vec<u8> = Vec::new();
+        loop {
+            let n = match stderr.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            for &b in &buf[..n] {
+                if b == b'\n' || b == b'\r' {
+                    if !acc.is_empty() {
+                        let _ = tx.send(String::from_utf8_lossy(&acc).into_owned());
+                        acc.clear();
+                    }
+                } else {
+                    acc.push(b);
+                }
+            }
+        }
+        if !acc.is_empty() {
+            let _ = tx.send(String::from_utf8_lossy(&acc).into_owned());
+        }
+    });
+    let shared: SharedChild = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
+    register(shared.clone());
+
+    let mut tail: Vec<String> = Vec::new();
+    let push_tail = |line: &str, tail: &mut Vec<String>| {
+        if tail.len() >= 8 {
+            tail.remove(0);
+        }
+        tail.push(line.to_string());
+    };
+    let deadline = Instant::now() + GIT_OP_TIMEOUT;
+    let status = loop {
+        while let Ok(line) = rx.try_recv() {
+            push_tail(&line, &mut tail);
+            on_line(line);
+        }
+        {
+            let mut guard = shared.lock().unwrap();
+            let Some(child) = guard.as_mut() else { anyhow::bail!("cancelled") };
+            match child.try_wait() {
+                Ok(Some(s)) => break s,
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        anyhow::bail!("git {} timed out after {}s", args.join(" "), GIT_OP_TIMEOUT.as_secs());
+                    }
+                }
+                Err(e) => anyhow::bail!("failed waiting for git: {e}"),
+            }
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    };
+    // Drain what the reader still holds; it ends when the pipe closes.
+    while let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) {
+        push_tail(&line, &mut tail);
+        on_line(line);
+    }
+    *shared.lock().unwrap() = None;
+    if status.success() {
+        Ok(())
+    } else {
+        let msg = tail.iter().filter(|l| !l.trim().is_empty()).cloned().collect::<Vec<_>>().join("\n");
+        if msg.is_empty() {
+            anyhow::bail!("git exited with status {}", status.code().unwrap_or(-1))
+        }
+        anyhow::bail!("{msg}")
+    }
+}
+
+/// `CreateWorkspacePath`: an empty file, or one directory, under the
+/// root.
+///
+/// `create_new` rather than a write, and `create_dir` rather than
+/// `create_dir_all`: an existing target is refused by the filesystem
+/// itself instead of by a check with a window between it and the write,
+/// and a missing parent is a typo worth reporting. The desktop's
+/// `create_file` / `create_directory` make exactly these two choices for
+/// a local root.
+pub fn create_workspace_path(root: &Path, path: &str, directory: bool) -> anyhow::Result<()> {
+    let resolved = confined(root, path)?;
+    if directory {
+        std::fs::create_dir(&resolved).map_err(|e| anyhow::anyhow!("{}: {e}", resolved.display()))
+    } else {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&resolved)
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!("{}: {e}", resolved.display()))
+    }
+}
+
+/// `RenameWorkspacePath`: both ends confined, and the destination must
+/// not exist. `fs::rename` overwrites silently on unix, which would turn
+/// a mistyped rename into a delete with no trip through the Trash -- the
+/// desktop refuses it for the same reason, through `resolve_new`.
+pub fn rename_workspace_path(root: &Path, from: &str, to: &str) -> anyhow::Result<()> {
+    let source = confined(root, from)?;
+    let target = confined(root, to)?;
+    if !source.exists() {
+        anyhow::bail!("{from} does not exist");
+    }
+    if target.exists() {
+        anyhow::bail!("{to} already exists");
+    }
+    std::fs::rename(&source, &target)
+        .map_err(|e| anyhow::anyhow!("{} -> {}: {e}", source.display(), target.display()))
+}
+
+/// `TrashWorkspacePath`: to THIS machine's Trash, never `rm` (see
+/// `crate::trash`). The confirmation the human answered stays on the
+/// desktop, where the human is; what crosses the wire is a path already
+/// agreed to.
+pub fn trash_workspace_path(root: &Path, path: &str) -> anyhow::Result<()> {
+    let resolved = confined(root, path)?;
+    if !resolved.exists() {
+        anyhow::bail!("{path} does not exist");
+    }
+    crate::trash::trash_path(&resolved.to_string_lossy())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{wire_separators, wire_spelling};
 
     /// Makes a symlink the way the running OS makes one, and reports
     /// whether the OS allowed it at all.
@@ -3049,6 +3870,500 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original); // no writes on error
     }
 
+    // ---------- human items (the Decisions tab) ----------
+
+    /// Every marker spelling the interview settled on, including the four
+    /// legacy ones already on cards in this repo -- a tab that could not
+    /// read those would show an empty list on a workspace full of them.
+    #[test]
+    fn every_marker_spelling_parses_and_near_misses_do_not() {
+        let items = human_items(
+            "---\ntitle: P\n---\n\
+             - [ ] Decision: Which serializer?\n\
+             - [ ] Human test: install it on the other machine\n\
+             - [x] Human: try the installer\n\
+             - [ ] Human, on the other machine: run the smoke\n\
+             - [x] Owner, in the running app: check the drag\n\
+             - [ ] Owner check in the running app: the pip\n\
+             - [x] Manual smoke: the hub strip\n\
+             - [ ] manual pass: the whole board\n",
+        );
+        let kinds: Vec<_> = items.iter().map(|i| i.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                HumanItemKind::Decision,
+                HumanItemKind::Test,
+                HumanItemKind::Test,
+                HumanItemKind::Test,
+                HumanItemKind::Test,
+                HumanItemKind::Test,
+                HumanItemKind::Test,
+                HumanItemKind::Test,
+            ]
+        );
+        // The marker is stripped for display and kept whole for the guard.
+        assert_eq!(items[0].text, "Which serializer?");
+        assert_eq!(items[0].line_text, "Decision: Which serializer?");
+        assert_eq!(items[3].text, "run the smoke");
+        assert_eq!(items[5].text, "the pip");
+        // The checkbox travels as itself.
+        assert_eq!(items.iter().map(|i| i.done).collect::<Vec<_>>(), vec![
+            false, false, true, false, true, false, true, false
+        ]);
+
+        // Near misses: the right letters, nothing being asked.
+        let none = human_items(
+            "---\ntitle: P\n---\n\
+             - [ ] Manually rewrite the parser: it is unreadable\n\
+             - [ ] Human-readable output: print a table\n\
+             - [ ] Decide on the serializer: pick one\n\
+             - [ ] no colon at all\n\
+             - [ ] A sentence long enough that the colon it does carry arrives well past any marker: so\n",
+        );
+        assert!(none.is_empty(), "{none:?}");
+
+        // Non-ASCII text, which is ordinary on these cards: an em dash
+        // straddling the byte the marker window or a prefix test would
+        // otherwise cut at must shorten the search, never panic and
+        // never drop the item.
+        let wide = human_items(
+            "---\ntitle: P\n---\n\
+             - [ ] Decision: ¿cuál serializador — serde o a mano?\n\
+             - [ ] Un párrafo bastante largo que sí lleva dos puntos — aquí: no es marcador\n",
+        );
+        assert_eq!(wide.len(), 1);
+        assert_eq!(wide[0].text, "¿cuál serializador — serde o a mano?");
+    }
+
+    /// The indented `Options:` line, in the shape `file_human_item`
+    /// writes and the two it tolerates from a human's own hand.
+    #[test]
+    fn options_come_off_the_indented_options_line() {
+        let labelled = human_items(
+            "---\ntitle: P\n---\n- [ ] Decision: Which serializer?\n   \
+             Options: A) serde, and the dep B) by hand\n",
+        );
+        assert_eq!(labelled[0].options, vec!["serde, and the dep", "by hand"]);
+
+        let piped = human_items(
+            "---\ntitle: P\n---\n- [ ] Decision: Which?\n  Options: serde | by hand\n",
+        );
+        assert_eq!(piped[0].options, vec!["serde", "by hand"]);
+
+        // One unlabelled choice stays one choice: a comma split would
+        // shred the commas a person writes inside a phrase.
+        let one = human_items(
+            "---\ntitle: P\n---\n- [ ] Decision: Which?\n  Options: serde, and nothing else\n",
+        );
+        assert_eq!(one[0].options, vec!["serde, and nothing else"]);
+
+        // Not indented past the item -> not this item's options.
+        let loose =
+            human_items("---\ntitle: P\n---\n- [ ] Decision: Which?\nOptions: A) a B) b\n");
+        assert!(loose[0].options.is_empty());
+
+        // A test has none, and an item with no Options line has none.
+        let bare = human_items("---\ntitle: P\n---\n- [ ] Human test: check it\n");
+        assert!(bare[0].options.is_empty());
+    }
+
+    /// The answer/result/re-arm lines, and the state each implies. The
+    /// LAST one wins: they accumulate under the item, newest at the
+    /// bottom.
+    #[test]
+    fn the_last_outcome_line_sets_the_state() {
+        let card = |under: &str| {
+            let items =
+                human_items(&format!("---\ntitle: P\n---\n- [ ] Human test: check it\n{under}"));
+            (items[0].state, items[0].latest.clone())
+        };
+        assert_eq!(card(""), (HumanItemState::Open, None));
+        assert_eq!(
+            card("  Result (2026-09-23): passed\n"),
+            (HumanItemState::Passed, Some("Result (2026-09-23): passed".to_string()))
+        );
+        assert_eq!(
+            card("  Result (2026-09-23): failed — the installer hung\n"),
+            (
+                HumanItemState::Failed,
+                Some("Result (2026-09-23): failed — the installer hung".to_string())
+            )
+        );
+        assert_eq!(
+            card("  Answer (2026-09-23): use serde\n"),
+            (HumanItemState::Answered, Some("Answer (2026-09-23): use serde".to_string()))
+        );
+        // A re-armed failure is OPEN again -- the whole point of arming it.
+        assert_eq!(
+            card("  Result (2026-09-22): failed — hung\n  Ready for re-test (2026-09-23)\n"),
+            (HumanItemState::Open, Some("Ready for re-test (2026-09-23)".to_string()))
+        );
+        // And a re-arm that was then re-run reads as its new result.
+        assert_eq!(
+            card(
+                "  Result (2026-09-22): failed — hung\n  \
+                 Ready for re-test (2026-09-23)\n  Result (2026-09-23): passed\n"
+            ),
+            (HumanItemState::Passed, Some("Result (2026-09-23): passed".to_string()))
+        );
+        // An Options line is not an outcome, and neither is a Result
+        // line that says neither passed nor failed: guessing either way
+        // is worse than leaving the item where it was.
+        assert_eq!(card("  Options: A) a B) b\n"), (HumanItemState::Open, None));
+        assert_eq!(card("  Result (2026-09-23): maybe\n"), (HumanItemState::Open, None));
+        // A blank line ends the block: what comes after belongs to
+        // nobody, least of all this item.
+        assert_eq!(card("\n  Result (2026-09-23): passed\n"), (HumanItemState::Open, None));
+    }
+
+    /// The state and the checkbox are two different questions, which is
+    /// why both travel.
+    #[test]
+    fn a_failed_item_is_unticked_and_a_closed_one_is_not() {
+        let items = human_items(
+            "---\ntitle: P\n---\n\
+             - [ ] Human test: a\n  Result (2026-09-23): failed — no\n\
+             - [x] Human test: b\n  Result (2026-09-23): failed — overruled\n",
+        );
+        assert_eq!((items[0].state, items[0].done), (HumanItemState::Failed, false));
+        assert_eq!((items[1].state, items[1].done), (HumanItemState::Failed, true));
+    }
+
+    /// A marker inside a fence is a spec quoting the syntax, not a
+    /// question. Every design doc for this feature contains one.
+    #[test]
+    fn a_marker_inside_a_code_fence_is_not_an_item() {
+        let items = human_items(
+            "---\ntitle: P\n---\n\
+             Write them like this:\n\n\
+             ```md\n\
+             - [ ] Decision: which one?\n\
+             ~~~\n\
+             - [ ] Human test: not this either\n\
+             ```\n\n\
+             - [ ] Decision: but this one counts\n",
+        );
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, "but this one counts");
+        // A fence opened and never closed swallows the rest of the file,
+        // which is what a renderer does with it too.
+        let unclosed =
+            human_items("---\ntitle: P\n---\n```\n- [ ] Decision: inside forever\n");
+        assert!(unclosed.is_empty());
+        // Tildes do not close backticks, and a shorter run does not
+        // close a longer one.
+        let mixed = human_items(
+            "---\ntitle: P\n---\n````\n```\n- [ ] Decision: still inside\n````\n- [ ] Decision: out\n",
+        );
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].text, "out");
+    }
+
+    /// Frontmatter is not body, and `line_index` counts from the top of
+    /// the FILE -- the index `SetChecklistItem` addresses lines by.
+    #[test]
+    fn items_are_read_from_the_body_and_indexed_against_the_whole_file() {
+        let items =
+            human_items("---\nstatus: Decision: not a checklist item\n---\n\n- [ ] Decision: real\n");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].line_index, 4);
+        // An unterminated frontmatter block yields no body at all, the
+        // same reading `checklist_counts` takes of it.
+        assert!(human_items("---\ntitle: P\n- [ ] Decision: x\n").is_empty());
+    }
+
+    /// The tree carries the parse, and an oversize card carries `None` --
+    /// "never looked" rather than "nothing waiting".
+    #[test]
+    fn plan_file_info_carries_the_items_and_an_unread_card_carries_none() {
+        let p = plan("---\ntitle: P\n---\n- [ ] Decision: which?\n");
+        assert_eq!(p.human_items.as_ref().map(Vec::len), Some(1));
+        assert_eq!(plan("---\ntitle: P\n---\n# nothing\n").human_items, Some(vec![]));
+        assert_eq!(oversize_plan_file_info(Path::new("/tmp/plans/big.md")).human_items, None);
+    }
+
+    fn card_with(dir: &tempfile::TempDir, body: &str) -> PathBuf {
+        write_card(&dir.path().join(GAVIN_ROOT_DIR).join("plans"), "p.md", body)
+    }
+
+    fn a_root() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        dir
+    }
+
+    #[test]
+    fn filing_appends_after_the_last_checklist_item_and_its_block() {
+        let dir = a_root();
+        // The shape of a real plan card: a checklist, then prose the
+        // agent must not be filed below.
+        let path = card_with(
+            &dir,
+            "---\ntitle: P\n---\n## Checklist\n\n- [ ] one\n- [x] two\n      wrapped continuation\n\n\
+             <!-- gavin:auto-commit -->\nCommit it.\n<!-- /gavin:auto-commit -->\n",
+        );
+        assert!(!file_human_item(
+            &path,
+            HumanItemKind::Decision,
+            "  Which serializer?  ",
+            &["serde".to_string(), "by hand".to_string()],
+            "2026-09-23",
+        )
+        .unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ntitle: P\n---\n## Checklist\n\n- [ ] one\n- [x] two\n      wrapped continuation\n\
+             - [ ] Decision: Which serializer?\n  Options: A) serde B) by hand\n\n\
+             <!-- gavin:auto-commit -->\nCommit it.\n<!-- /gavin:auto-commit -->\n"
+        );
+        // And it reads back as what was written.
+        let item = &human_items(&std::fs::read_to_string(&path).unwrap())[0];
+        assert_eq!(item.options, vec!["serde", "by hand"]);
+        assert_eq!(item.state, HumanItemState::Open);
+    }
+
+    #[test]
+    fn filing_on_a_card_with_no_checklist_starts_one() {
+        let dir = a_root();
+        let path = card_with(&dir, "---\ntitle: P\n---\nDo the thing.\n");
+        file_human_item(&path, HumanItemKind::Test, "check the installer", &[], "2026-09-23")
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ntitle: P\n---\nDo the thing.\n\n- [ ] Human test: check the installer\n"
+        );
+        // A card that is nothing but frontmatter, and one with no
+        // trailing newline, both survive.
+        let bare = card_with(&dir, "---\ntitle: P\n---");
+        file_human_item(&bare, HumanItemKind::Decision, "which?", &[], "2026-09-23").unwrap();
+        assert_eq!(std::fs::read_to_string(&bare).unwrap(), "---\ntitle: P\n---\n\n- [ ] Decision: which?");
+    }
+
+    #[test]
+    fn re_filing_an_identical_failed_test_re_arms_it_instead_of_duplicating() {
+        let dir = a_root();
+        let path = card_with(
+            &dir,
+            "---\ntitle: P\n---\n- [ ] Human test: check the installer\n  \
+             Result (2026-09-22): failed — it hung\n",
+        );
+        assert!(file_human_item(
+            &path,
+            HumanItemKind::Test,
+            "check the installer",
+            &[],
+            "2026-09-23"
+        )
+        .unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ntitle: P\n---\n- [ ] Human test: check the installer\n  \
+             Result (2026-09-22): failed — it hung\n  Ready for re-test (2026-09-23)\n"
+        );
+        let items = human_items(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!(items.len(), 1, "no duplicate line");
+        assert_eq!(items[0].state, HumanItemState::Open);
+
+        // Re-arming an already-armed test appends a second marker line
+        // rather than a second item -- it is the same check either way.
+        file_human_item(&path, HumanItemKind::Test, "check the installer", &[], "2026-09-24")
+            .unwrap();
+        assert_eq!(human_items(&std::fs::read_to_string(&path).unwrap()).len(), 2);
+    }
+
+    #[test]
+    fn only_a_failed_test_re_arms() {
+        let dir = a_root();
+        // A PASSED test of the same text is a second ask, not a re-arm.
+        let passed = card_with(
+            &dir,
+            "---\ntitle: P\n---\n- [x] Human test: check it\n  Result (2026-09-22): passed\n",
+        );
+        assert!(!file_human_item(&passed, HumanItemKind::Test, "check it", &[], "2026-09-23")
+            .unwrap());
+        assert_eq!(human_items(&std::fs::read_to_string(&passed).unwrap()).len(), 2);
+
+        // And a DECISION never re-arms: asking again is a new question,
+        // and the old answer is the record of why.
+        let decided = write_card(
+            &dir.path().join(GAVIN_ROOT_DIR).join("plans"),
+            "d.md",
+            "---\ntitle: D\n---\n- [ ] Decision: which?\n  Result (2026-09-22): failed — no\n",
+        );
+        assert!(!file_human_item(&decided, HumanItemKind::Decision, "which?", &[], "2026-09-23")
+            .unwrap());
+        assert_eq!(human_items(&std::fs::read_to_string(&decided).unwrap()).len(), 2);
+    }
+
+    #[test]
+    fn filing_refuses_empty_text_a_newline_and_a_path_outside_a_root() {
+        let dir = a_root();
+        let path = card_with(&dir, "---\ntitle: P\n---\n- [ ] one\n");
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert!(file_human_item(&path, HumanItemKind::Decision, "   ", &[], "2026-09-23").is_err());
+        assert!(
+            file_human_item(&path, HumanItemKind::Decision, "a\nb", &[], "2026-09-23").is_err()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "no writes on error");
+
+        let loose = tempfile::tempdir().unwrap();
+        let outside = write_card(loose.path(), "p.md", "---\ntitle: P\n---\n- [ ] one\n");
+        assert!(
+            file_human_item(&outside, HumanItemKind::Decision, "which?", &[], "2026-09-23")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn resolving_writes_the_line_and_sets_the_box() {
+        let outcomes = [
+            (
+                HumanItemOutcome::Answer { text: "serde —\nit is already in".into() },
+                "- [x] Decision: which?",
+                "  Answer (2026-09-23): serde — it is already in",
+            ),
+            (HumanItemOutcome::Pass, "- [x] Decision: which?", "  Result (2026-09-23): passed"),
+            (
+                HumanItemOutcome::Fail { note: "it hung".into() },
+                "- [ ] Decision: which?",
+                "  Result (2026-09-23): failed — it hung",
+            ),
+            (
+                HumanItemOutcome::FailAndClose { note: "not worth it".into() },
+                "- [x] Decision: which?",
+                "  Result (2026-09-23): failed — not worth it",
+            ),
+            (
+                HumanItemOutcome::Fail { note: "  ".into() },
+                "- [ ] Decision: which?",
+                "  Result (2026-09-23): failed",
+            ),
+        ];
+        for (outcome, item_line, written) in outcomes {
+            let dir = a_root();
+            let path = card_with(
+                &dir,
+                "---\ntitle: P\n---\n- [ ] Decision: which?\n  Options: A) a B) b\n- [ ] after\n",
+            );
+            resolve_human_item(&path, "Decision: which?", &outcome, "2026-09-23").unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                format!(
+                    "---\ntitle: P\n---\n{item_line}\n  Options: A) a B) b\n{written}\n- [ ] after\n"
+                ),
+                "{outcome:?}"
+            );
+        }
+    }
+
+    /// A plain fail leaves the item open for the agent; the human
+    /// overruling it closes the box and keeps the same note.
+    #[test]
+    fn a_plain_fail_stays_open_and_fail_and_close_does_not() {
+        let dir = a_root();
+        let path = card_with(&dir, "---\ntitle: P\n---\n- [ ] Human test: check it\n");
+        resolve_human_item(
+            &path,
+            "Human test: check it",
+            &HumanItemOutcome::Fail { note: "hung".into() },
+            "2026-09-23",
+        )
+        .unwrap();
+        let after = human_items(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!((after[0].state, after[0].done), (HumanItemState::Failed, false));
+
+        resolve_human_item(
+            &path,
+            "Human test: check it",
+            &HumanItemOutcome::FailAndClose { note: "hung, shipping anyway".into() },
+            "2026-09-24",
+        )
+        .unwrap();
+        let closed = human_items(&std::fs::read_to_string(&path).unwrap());
+        assert_eq!((closed[0].state, closed[0].done), (HumanItemState::Failed, true));
+        assert_eq!(
+            closed[0].latest.as_deref(),
+            Some("Result (2026-09-24): failed — hung, shipping anyway")
+        );
+    }
+
+    /// The `SetChecklistItem` guard, on the only key this request has.
+    #[test]
+    fn resolving_refuses_a_stale_or_ambiguous_expected_text() {
+        let dir = a_root();
+        let path = card_with(&dir, "---\ntitle: P\n---\n- [ ] Decision: which?\n- [ ] plain\n");
+        let before = std::fs::read_to_string(&path).unwrap();
+        // The agent rewrote the question under the tab.
+        assert!(resolve_human_item(
+            &path,
+            "Decision: which one?",
+            &HumanItemOutcome::Pass,
+            "2026-09-23"
+        )
+        .is_err());
+        // A checklist line that is not a human item at all.
+        assert!(resolve_human_item(&path, "plain", &HumanItemOutcome::Pass, "2026-09-23").is_err());
+        // An empty answer is not an answer.
+        assert!(resolve_human_item(
+            &path,
+            "Decision: which?",
+            &HumanItemOutcome::Answer { text: "  ".into() },
+            "2026-09-23"
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "no writes on error");
+
+        // Two items reading the same thing: refused rather than guessed.
+        let twice = write_card(
+            &dir.path().join(GAVIN_ROOT_DIR).join("plans"),
+            "t.md",
+            "---\ntitle: T\n---\n- [ ] Decision: which?\n- [ ] Decision: which?\n",
+        );
+        let err = resolve_human_item(&twice, "Decision: which?", &HumanItemOutcome::Pass, "2026-09-23")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ambiguous"), "{err}");
+
+        let loose = tempfile::tempdir().unwrap();
+        let outside =
+            write_card(loose.path(), "p.md", "---\ntitle: P\n---\n- [ ] Decision: which?\n");
+        assert!(
+            resolve_human_item(&outside, "Decision: which?", &HumanItemOutcome::Pass, "2026-09-23")
+                .is_err()
+        );
+    }
+
+    /// An indented item's answer is indented under IT, not at the top
+    /// level, and the item's own indentation survives the tick.
+    #[test]
+    fn a_nested_item_keeps_its_indentation() {
+        let dir = a_root();
+        let path = card_with(&dir, "---\ntitle: P\n---\n- [ ] parent\n  - [ ] Decision: which?\n");
+        resolve_human_item(&path, "Decision: which?", &HumanItemOutcome::Pass, "2026-09-23")
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "---\ntitle: P\n---\n- [ ] parent\n  - [x] Decision: which?\n    \
+             Result (2026-09-23): passed\n"
+        );
+    }
+
+    /// The only piece of `today()` a test can pin: the platform calls
+    /// above hand back a civil date directly, and this is the fallback
+    /// arm's arithmetic.
+    #[test]
+    fn ymd_from_unix_converts_the_epoch_to_a_civil_date() {
+        assert_eq!(ymd_from_unix(0), "1970-01-01");
+        assert_eq!(ymd_from_unix(1_758_585_600), "2025-09-23");
+        // A leap day, and the year-2000 leap-century exception.
+        assert_eq!(ymd_from_unix(951_782_400), "2000-02-29");
+        assert_eq!(ymd_from_unix(-1), "1969-12-31");
+        // And the real clock agrees with itself.
+        assert_eq!(today().len(), 10);
+        assert_eq!(today().matches('-').count(), 2);
+    }
+
     /// DP-03: this request used to act on any path the wire named. Now it
     /// is `confine_card_path`'s job, exactly like `delete_card_file`'s own
     /// guard tests above.
@@ -3201,7 +4516,7 @@ mod tests {
 
         let tree = scan_root(root.path());
         let ctx = tree.contexts.last().unwrap();
-        assert_eq!(ctx.folder_path, lib.to_string_lossy());
+        assert_eq!(ctx.folder_path, wire_spelling(&lib));
         assert!(ctx.outside);
         assert!(!tree.contexts.first().unwrap().outside);
 
@@ -3261,15 +4576,22 @@ mod tests {
         let inside = root.path().join("src");
         std::fs::create_dir_all(inside.join(GAVIN_DIR)).unwrap();
         let mut body = std::fs::read_to_string(&config).unwrap();
+        // TOML LITERAL strings (single quotes), not basic ones: a Windows
+        // path is `C:\Users\...`, and `\U` is an escape TOML rejects, so
+        // a basic string here fails to parse and the extras list silently
+        // comes back empty -- which is to say the skip this test is about
+        // would never be exercised on Windows. `add_external_context`
+        // writes the native spelling through `toml_edit`, which escapes
+        // it; writing the file by hand has to do one or the other.
         body.push_str(&format!(
-            "extra_contexts = [\"{}\", \"/definitely/not/there\"]\n",
+            "extra_contexts = ['{}', '/definitely/not/there']\n",
             inside.display()
         ));
         std::fs::write(&config, body).unwrap();
         let tree = scan_root(root.path());
         // `src` still appears once -- from the walk, not the extras list.
         let src_entries =
-            tree.contexts.iter().filter(|c| c.folder_path == inside.to_string_lossy()).count();
+            tree.contexts.iter().filter(|c| c.folder_path == wire_spelling(&inside)).count();
         assert_eq!(src_entries, 1);
         assert!(tree.contexts.iter().all(|c| !c.outside));
     }
@@ -3890,10 +5212,12 @@ mod tests {
     /// purpose (`cargo test -p gavin-daemon -- --ignored measure_watch`)
     /// and a poor one to run on every commit.
     ///
-    /// Off macOS only: on FSEvents `watch_targets` returns the root and
-    /// nothing else, so there is no per-directory cost to measure.
+    /// inotify only: where `watch_targets` returns the root and nothing
+    /// else there is no per-directory cost to measure. The cost those
+    /// platforms pay instead is measured by
+    /// `measure_recursive_watch_churn`.
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     #[ignore = "builds a 3000-folder repo and arms the real watch set; run with --ignored"]
     fn measure_watch_set_on_a_large_repo() {
         let dir = tempfile::tempdir().unwrap();
@@ -3980,7 +5304,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn watch_targets_covers_the_scanned_dirs_and_skips_the_churny_ones() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
@@ -4011,13 +5335,86 @@ mod tests {
         assert!(!targets.iter().any(|(p, _)| p == ".gavin-root/plans"), "{targets:?}");
     }
 
+    /// The other half of the watch-set bargain, kept runnable rather
+    /// than written down once as a number.
+    ///
+    /// Where the root is one recursive watch, the churn the
+    /// per-directory set used to keep out crosses into the daemon and
+    /// `tree_relevant` is the only thing left standing between a build
+    /// and a rescan. This builds the shape a build makes -- writes under
+    /// `target/` and `node_modules/` -- and reports how many event paths
+    /// that costs, how many survive the filter, and what the filtering
+    /// took. Measured 2026-09-23 on Windows 11: 2000 writes, ~6000 event
+    /// paths, 0 survivors, tens of milliseconds.
+    ///
+    /// The survivor count is the assertion; the rest is the report. A
+    /// non-zero one means a build would drive rescans, which is the
+    /// failure mode that makes the recursive watch the wrong trade.
+    ///
+    /// `#[ignore]`d for the same reason as the measurement above: it
+    /// writes two thousand files and sleeps out a watcher.
     #[test]
-    #[cfg(target_os = "macos")]
-    fn on_fsevents_the_root_is_one_recursive_watch_and_nothing_else() {
-        // The per-directory set is what made a large repo take minutes
-        // to arm (see ONE_RECURSIVE_WATCH): every directory the scanner
-        // descends into became its own `watch()` call, each one a stream
-        // rebuild. One recursive registration covers the same events.
+    #[cfg(any(target_os = "macos", windows))]
+    #[ignore = "writes 2000 files under a live recursive watch; run with --ignored"]
+    fn measure_recursive_watch_churn() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(GAVIN_ROOT_DIR).join("plans")).unwrap();
+        let obj = root.join("target").join("debug").join("build");
+        let module = root.join("node_modules").join("pkg");
+        std::fs::create_dir_all(&obj).unwrap();
+        std::fs::create_dir_all(&module).unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = notify::recommended_watcher(move |e| {
+            let _ = tx.send(e);
+        })
+        .unwrap();
+        notify::Watcher::watch(&mut watcher, &root, notify::RecursiveMode::Recursive).unwrap();
+        // The watch is armed asynchronously; writing into the tree
+        // before it is would measure a quieter repo than the real one.
+        std::thread::sleep(Duration::from_millis(300));
+
+        let t = Instant::now();
+        for i in 0..1000 {
+            std::fs::write(obj.join(format!("o{i}.o")), b"x").unwrap();
+            std::fs::write(module.join(format!("m{i}.js")), b"x").unwrap();
+        }
+        let write_time = t.elapsed();
+        std::thread::sleep(Duration::from_secs(2));
+
+        let t = Instant::now();
+        let (mut raw, mut relevant) = (0usize, 0usize);
+        while let Ok(Ok(event)) = rx.recv_timeout(Duration::from_millis(200)) {
+            for path in &event.paths {
+                raw += 1;
+                if tree_relevant(&root, None, path) {
+                    relevant += 1;
+                }
+            }
+        }
+        let filter_time = t.elapsed();
+
+        println!(
+            "2000 churn writes in {write_time:?}\n\
+             {raw} raw event paths crossed into the process\n\
+             {relevant} survived tree_relevant\n\
+             draining and filtering took {filter_time:?}"
+        );
+        assert!(raw > 0, "the recursive watch reported nothing -- it never armed");
+        assert_eq!(relevant, 0, "build churn reached the rescan path");
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", windows))]
+    fn under_one_recursive_watch_the_root_is_the_whole_set() {
+        // Both reasons the set collapses, and each is fatal on its own
+        // platform (see ONE_RECURSIVE_WATCH): on FSEvents every scanned
+        // directory became its own `watch()` call and each one a stream
+        // rebuild, which made a large repo take minutes to arm; on
+        // Windows each one is an open handle that makes the folder it
+        // names unrenamable. One recursive registration covers the same
+        // events with neither cost.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         std::fs::create_dir_all(root.join(GAVIN_ROOT_DIR).join("plans")).unwrap();
@@ -4249,14 +5646,23 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn under_one_recursive_watch_a_new_folder_needs_no_watch_of_its_own() {
-        // The FSEvents counterpart of the two tests below: the root's
-        // recursive watch already covers a folder that appears later, so
-        // a rescan must not start registering per-directory watches --
-        // that is the slow path this platform left.
+        // The counterpart of the two tests below, for the platforms that
+        // watch the root recursively: that watch already covers a folder
+        // appearing later, so a rescan must not start registering
+        // per-directory watches -- on macOS that is the slow arm these
+        // platforms left behind, on Windows it is a handle that would
+        // lock the new folder against being renamed.
+        //
+        // Wire spelling rather than `canonicalize()`, because this
+        // compares against paths the watcher REGISTERED and
+        // `GavinWatcher::start` stores `protocol::canonical_path(root)`.
+        // On Windows raw canonicalisation answers `\\?\C:\...`, which no
+        // watch is ever held under; on macOS the two spellings are the
+        // same and this changes nothing.
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = PathBuf::from(wire_spelling(dir.path()));
         init_gavin_root(&root, "WS").unwrap();
 
         let (_ours, theirs) = Stream::pair().unwrap();
@@ -4274,7 +5680,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn a_new_folder_picks_up_its_own_watch_on_the_next_rescan() {
         // The watch set is non-recursive per directory, so a folder that
         // appears after the watcher started must be armed by the very
@@ -4283,8 +5689,8 @@ mod tests {
         //
         // Asserted against the registered set rather than a second
         // filesystem event: the mechanism is what this pins, and racing
-        // FSEvents twice in one test is how you get a suite that fails
-        // only under load.
+        // the watcher twice in one test is how you get a suite that
+        // fails only under load.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         init_gavin_root(&root, "WS").unwrap();
@@ -4306,7 +5712,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn a_folder_that_left_gives_its_watch_back() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
@@ -4678,7 +6084,7 @@ mod tests {
         // hiding it from the tree is the FRONTEND's job, not the
         // scanner's.
         let tree = scan_root(dir.path());
-        assert!(tree.contexts[0].plans.iter().any(|p| p.path == archived.to_string_lossy()));
+        assert!(tree.contexts[0].plans.iter().any(|p| p.path == wire_spelling(&archived)));
 
         let promoted = promote_checklist_item(&archived, "step one").unwrap();
         assert_eq!(promoted, plans.join("archive").join("step-one.md"));
@@ -4700,10 +6106,20 @@ mod tests {
 
     // --- recovering a card path the daemon did not move -------------------
 
+    /// Step paths as the orchestration store holds them: wire spelling,
+    /// because that is what a scan put there. `wire_spelling` itself
+    /// cannot serve -- these name cards that deliberately do NOT exist
+    /// (a deleted one, one that moved) and canonicalising needs a file.
+    /// So the root is resolved and the card's own segments joined on.
     fn card_paths(root: &Path, names: &[&str]) -> Vec<String> {
+        let root = PathBuf::from(wire_spelling(root));
         names
             .iter()
-            .map(|n| root.join(GAVIN_ROOT_DIR).join("plans").join(n).to_string_lossy().to_string())
+            .map(|n| {
+                wire_separators(
+                    &root.join(GAVIN_ROOT_DIR).join("plans").join(n).to_string_lossy(),
+                )
+            })
             .collect()
     }
 
@@ -4716,7 +6132,7 @@ mod tests {
         write_card(&plans.join(DONE_DIR), "fs-sync.md", "---\ntitle: FS sync\nstatus: Done\n---\n");
 
         let stale = card_paths(dir.path(), &["fs-sync.md"]);
-        let moved = plans.join(DONE_DIR).join("fs-sync.md").to_string_lossy().to_string();
+        let moved = wire_spelling(&plans.join(DONE_DIR).join("fs-sync.md"));
 
         assert_eq!(
             recover_moved_card_paths(&scan_root(dir.path()), &stale),
@@ -5025,5 +6441,157 @@ mod tests {
         if try_symlink(outside.path(), &dir.path().join("link")) {
             assert!(list_workspace_dir(dir.path(), &lossy(&dir.path().join("link"))).is_err());
         }
+    }
+
+    // --- Sync, env, and the tree's mutations (v42) ----------------------
+
+    #[test]
+    fn run_git_env_sets_the_allowed_variable_and_refuses_any_other() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        // `git var GIT_EDITOR` prints the editor git would use -- the one
+        // thing that proves the environment actually reached the child.
+        let (stdout, stderr, code) = run_git_env(
+            dir.path(),
+            &lossy(dir.path()),
+            &["var".to_string(), "GIT_EDITOR".to_string()],
+            &[("GIT_EDITOR".to_string(), "true".to_string())],
+        )
+        .unwrap();
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(String::from_utf8_lossy(&stdout).trim(), "true");
+
+        // Anything else is refused outright, not filtered: a silently
+        // dropped variable is how a caller believes it set something.
+        let err = run_git_env(
+            dir.path(),
+            &lossy(dir.path()),
+            &["var".to_string(), "GIT_EDITOR".to_string()],
+            &[("GIT_SSH_COMMAND".to_string(), "sh -c evil".to_string())],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("GIT_SSH_COMMAND"), "{err}");
+    }
+
+    #[test]
+    fn run_git_env_is_confined_like_run_git() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        let outside = tempfile::tempdir().unwrap();
+        let env = [("GIT_EDITOR".to_string(), "true".to_string())];
+        assert!(run_git_env(dir.path(), &lossy(outside.path()), &["status".to_string()], &env).is_err());
+        assert!(run_git_env(dir.path(), "..", &["status".to_string()], &env).is_err());
+    }
+
+    #[test]
+    fn run_git_streaming_delivers_progress_lines_and_the_error_tail() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        let mut lines = Vec::new();
+        // `clone --progress` of a missing path fails fast with a stderr
+        // line: enough to prove the stream and the error tail with no
+        // network, exactly as the desktop's own runner is tested.
+        let err = run_git_streaming(
+            dir.path(),
+            &lossy(dir.path()),
+            &["clone".to_string(), "--progress".to_string(), "/definitely/missing/repo".to_string(), "x".to_string()],
+            &mut |l| lines.push(l),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(!lines.is_empty(), "git said nothing on stderr");
+        let msg = err.to_string();
+        assert!(msg.contains("exist") || msg.contains("fatal"), "{msg}");
+    }
+
+    #[test]
+    fn run_git_streaming_succeeds_and_is_confined() {
+        let dir = workspace_root();
+        init_repo(dir.path());
+        // A local clone needs no network and does write progress.
+        let dest = dir.path().join("copy");
+        std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+        let _ = run_git(dir.path(), &lossy(dir.path()), &["add".into(), "a.txt".into()], None).unwrap();
+        let _ = run_git(dir.path(), &lossy(dir.path()), &["commit".into(), "-q".into(), "-m".into(), "x".into()], None).unwrap();
+        run_git_streaming(
+            dir.path(),
+            &lossy(dir.path()),
+            &["clone".to_string(), "--progress".to_string(), "-q".to_string(), ".".to_string(), lossy(&dest)],
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(dest.join("a.txt").exists());
+
+        let outside = tempfile::tempdir().unwrap();
+        assert!(run_git_streaming(
+            dir.path(),
+            &lossy(outside.path()),
+            &["fetch".to_string()],
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn create_workspace_path_makes_a_file_or_a_folder_and_refuses_an_existing_one() {
+        let dir = workspace_root();
+        create_workspace_path(dir.path(), "new.txt", false).unwrap();
+        assert!(dir.path().join("new.txt").is_file());
+        create_workspace_path(dir.path(), "folder", true).unwrap();
+        assert!(dir.path().join("folder").is_dir());
+        // An existing target is refused by the filesystem, never
+        // overwritten -- `create_new`, not a write.
+        std::fs::write(dir.path().join("new.txt"), "kept").unwrap();
+        assert!(create_workspace_path(dir.path(), "new.txt", false).is_err());
+        assert_eq!(std::fs::read_to_string(dir.path().join("new.txt")).unwrap(), "kept");
+        // A missing parent is a typo worth reporting, not a mkdir -p.
+        assert!(create_workspace_path(dir.path(), "nope/deep.txt", false).is_err());
+        // And nothing outside the root.
+        let outside = tempfile::tempdir().unwrap();
+        assert!(create_workspace_path(dir.path(), &lossy(&outside.path().join("x")), false).is_err());
+        assert!(create_workspace_path(dir.path(), "../escape.txt", false).is_err());
+    }
+
+    #[test]
+    fn rename_workspace_path_moves_inside_the_root_and_never_clobbers() {
+        let dir = workspace_root();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        rename_workspace_path(dir.path(), "a.txt", "moved.txt").unwrap();
+        assert!(!dir.path().join("a.txt").exists());
+        assert_eq!(std::fs::read_to_string(dir.path().join("moved.txt")).unwrap(), "a");
+        // The destination existing is a refusal, not a silent overwrite:
+        // fs::rename clobbers on unix, which would delete b.txt with no
+        // trip through the Trash.
+        assert!(rename_workspace_path(dir.path(), "moved.txt", "b.txt").is_err());
+        assert_eq!(std::fs::read_to_string(dir.path().join("b.txt")).unwrap(), "b");
+        assert!(rename_workspace_path(dir.path(), "gone.txt", "x.txt").is_err());
+        let outside = tempfile::tempdir().unwrap();
+        assert!(rename_workspace_path(dir.path(), "moved.txt", &lossy(&outside.path().join("x"))).is_err());
+        assert!(rename_workspace_path(dir.path(), "moved.txt", "../escaped.txt").is_err());
+    }
+
+    /// The containment half, which holds on every OS. Whether the file
+    /// reaches a Trash is the `trash` crate's business and varies with
+    /// the session type (a headless CI runner may have none), so this
+    /// asserts the refusals and only that the call is attempted.
+    #[test]
+    fn trash_workspace_path_refuses_outside_the_root_and_a_missing_file() {
+        let dir = workspace_root();
+        let outside = tempfile::tempdir().unwrap();
+        assert!(trash_workspace_path(dir.path(), &lossy(&outside.path().join("x.txt"))).is_err());
+        assert!(trash_workspace_path(dir.path(), "../x.txt").is_err());
+        assert!(trash_workspace_path(dir.path(), "never-existed.txt").is_err());
+    }
+
+    #[test]
+    fn confined_worktree_agrees_with_run_gits_own_confinement() {
+        let dir = workspace_root();
+        assert!(confined_worktree(dir.path(), &lossy(dir.path())).is_ok());
+        let outside = tempfile::tempdir().unwrap();
+        assert!(confined_worktree(dir.path(), &lossy(outside.path())).is_err());
+        assert!(confined_worktree(dir.path(), "..").is_err());
     }
 }

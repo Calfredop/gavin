@@ -20,6 +20,14 @@ notify-debouncer-mini = "0.7"
 toml = "0.8"
 toml_edit = "0.22"
 vt100 = "0.16"
+snow = "0.10.0"
+# The OS Trash, not `rm`, for `TrashWorkspacePath` (v42). The desktop's
+# promise is that nothing gavin removes on the human's behalf is
+# unrecoverable; a workspace reached over ssh does not get a weaker one,
+# and the host's own Trash is where the human would look. Same crate,
+# version and per-OS feature reasoning as app/src-tauri/Cargo.toml --
+# see the two target blocks below.
+trash = { version = "5", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
@@ -30,11 +38,28 @@ tempfile = "3"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# chrono back on, and NOT for reading: the freedesktop backend gates the
+# `DeletionDate=` line of the `.trashinfo` file on this feature, and the
+# trash spec makes that key mandatory. Without it a trashed file is one
+# file managers list with no date and may decline to put back --
+# "restorable" being the entire promise this makes over `rm`.
+trash = { version = "5", default-features = false, features = ["chrono"] }
+
 [target.'cfg(windows)'.dependencies]
+# COM back on, and it is not optional: the Windows backend is
+# IFileOperation, and the crate is a deliberate compile error when
+# neither threading model is selected -- CoInitializeEx has to be told
+# one and the crate refuses to guess. Apartment-threaded is what
+# default-features would have brought and what the shell APIs expect.
+trash = { version = "5", default-features = false, features = ["coinit_apartmentthreaded"] }
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_ProcessStatus",
+  # `GetLocalTime` only -- the civil date a human item's Answer/Result
+  # line is stamped with, in the human's own timezone rather than UTC.
+  "Win32_System_SystemInformation",
   "Win32_System_Threading",
 ] }

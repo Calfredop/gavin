@@ -50,7 +50,7 @@
   import SearchInput from "$lib/ui/SearchInput.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import { tooltip } from "$lib/core/tooltip";
-  import { sshTabBlocked, isSshWorkspace } from "$lib/workspace/sshWorkspace";
+  import { sshTabBlocked, sshSyncBlocked } from "$lib/workspace/sshWorkspace";
   import { sshLinks } from "$lib/workspace/sshLinkState";
 
   interface Props {
@@ -60,12 +60,21 @@
 
   // The tree lists and files open through the host daemon (v40) for an
   // ssh workspace; the tab works once the link is up and the host is new
-  // enough, and the empty state names why until then. Creating, renaming
-  // and trashing in the tree stay off for ssh (the follow-up) -- read and
-  // write of a file's content is what this covers.
+  // enough, and the empty state names why until then.
+  //
+  // Creating, renaming and trashing need MORE of the host than that --
+  // three requests a v41 daemon does not have (v42) -- so they have their
+  // own gate. A host at v41 therefore browses and edits while the three
+  // menu items stay absent, which is the honest split. Trashing goes to
+  // the HOST's Trash there, not `rm`, so the "recoverable" promise the
+  // confirmation makes holds on the other machine too.
+  //
+  // "Ignore this file" is NOT in that set any more: `ignore.rs` reads and
+  // writes through the v40 file requests now, so it works wherever the
+  // rest of the tab does.
   const wsForSsh = $derived($layoutState.workspaces.find((w) => w.id === workspaceId));
   const sshBlocked = $derived(sshTabBlocked(wsForSsh, $sshLinks));
-  const sshReadOnly = $derived(isSshWorkspace(wsForSsh));
+  const sshReadOnly = $derived(sshSyncBlocked(wsForSsh, $sshLinks) !== null);
   const root = $derived(
     sshBlocked ? null : ($layoutState.workspaces.find((w) => w.id === workspaceId)?.rootPath ?? null)
   );
@@ -401,7 +410,7 @@
         },
     onTrash: sshReadOnly ? null : (node) => void trashEntry(node),
     onRefresh: (dir) => void refresh(dir.path),
-    onIgnore: sshReadOnly ? null : (kind, pattern) => void ignore(kind, pattern),
+    onIgnore: (kind, pattern) => void ignore(kind, pattern),
   });
 
   // ---- the divider -----------------------------------------------------

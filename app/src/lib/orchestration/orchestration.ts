@@ -14,8 +14,8 @@ import { prKey, prRequirement, prWaitVerdict } from "$lib/git/pullRequest";
 import type { PrReport } from "$lib/git/pullRequest";
 import { critiqueSessionsComplete } from "$lib/review/criticalReview";
 import {
+  verdictAsksQuietly,
   verdictCompletesTurn,
-  verdictIsAsking,
   verdictStallReason,
   type TurnVerdictEntry,
 } from "$lib/agents/turnVerdict";
@@ -1292,7 +1292,7 @@ export function stepAttentions(
           candidates.push("failed");
         } else if (status === "waiting_for_input") {
           candidates.push("asking");
-        } else if (status === "idle" && verdictIsAsking(verdict)) {
+        } else if (verdictAsksQuietly(status, verdict)) {
           // The prose question. `waiting_for_input` above is the BELL,
           // and an agent that asks in a sentence rings none -- so the
           // daemon calls this idle and the branch below would mark it
@@ -1304,6 +1304,14 @@ export function stepAttentions(
           // tool step is exactly the case this exists for: today it is
           // marked DONE on this tick, and `agentTurnEnded` now declines
           // to -- which would leave it running with no mark at all.
+          //
+          // Through `verdictAsksQuietly` rather than the idle-plus-
+          // asking test spelled out here, because the hub's inbox and
+          // the badges on the tab, the sidebar, the board card and the
+          // card modal all now ask the same question of the same entry
+          // (verdictAttention.ts). The `else if` chain above has already
+          // ruled out `failed` and `waiting_for_input`, so this is the
+          // same branch it always was.
           candidates.push("asking");
           // An idle TOOL step is never this. An `agent` tool's step is
           // marked done by agentTurnEnded on this very tick -- from the

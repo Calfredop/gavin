@@ -26,7 +26,7 @@ use crate::session::{
 use protocol::transport::Stream;
 use protocol::{Request, Response};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::Shutdown;
 use std::process::{Child, Stdio};
@@ -378,6 +378,110 @@ impl RemoteLink {
         }
     }
 
+    /// `RunGitEnv` (v42): `run_git` with an allow-listed environment, for
+    /// the two callers that set `GIT_EDITOR=true` so a cherry-pick or a
+    /// `<op> --continue` never waits on an editor nobody can see.
+    pub fn run_git_env(
+        &self,
+        root: &str,
+        cwd: &str,
+        args: &[String],
+        env: &[(String, String)],
+    ) -> anyhow::Result<(Vec<u8>, String, i32)> {
+        match self.ask(&Request::RunGitEnv {
+            root_path: root.to_string(),
+            cwd: cwd.to_string(),
+            args: args.to_vec(),
+            env: env.to_vec(),
+        })? {
+            Response::GitRun { stdout, stderr, code } => Ok((stdout, stderr, code)),
+            Response::Error { message } => anyhow::bail!("{message}"),
+            other => anyhow::bail!("expected GitRun, got {other:?}"),
+        }
+    }
+
+    /// `CancelGitOp` (v42), on the COMMAND connection: a cancel queued
+    /// behind the op it is cancelling never arrives, which is the whole
+    /// reason the op itself goes the other way.
+    pub fn cancel_git_op(&self, op_id: &str) -> anyhow::Result<bool> {
+        match self.ask(&Request::CancelGitOp { op_id: op_id.to_string() })? {
+            Response::GitOpCancelled { cancelled } => Ok(cancelled),
+            Response::Error { message } => anyhow::bail!("{message}"),
+            other => anyhow::bail!("expected GitOpCancelled, got {other:?}"),
+        }
+    }
+
+    /// One request out on the STREAMING connection, with no reply to wait
+    /// for: what the host answers arrives as pushes the relay thread
+    /// reads. `Attach` and `WatchGavinRoot` already travel this way, and
+    /// the v42 trio joins them for the same reason -- the answer is a
+    /// push in its own time, not a value a reply could carry.
+    fn tell(&self, req: &Request) -> anyhow::Result<()> {
+        send_request(&self.writer, req, &self.compat)
+    }
+
+    /// `RunGitStreaming` (v42): starts a long git network op on the host.
+    /// Returns as soon as the request is out -- `GitOpProgress` and the
+    /// single `GitOpDone` come back through the relay.
+    pub fn start_git_op(&self, root: &str, cwd: &str, args: &[String], op_id: &str) -> anyhow::Result<()> {
+        self.tell(&Request::RunGitStreaming {
+            root_path: root.to_string(),
+            cwd: cwd.to_string(),
+            args: args.to_vec(),
+            op_id: op_id.to_string(),
+        })
+    }
+
+    /// `WatchGitWorktree` / `UnwatchGitWorktree` (v42): the Git tab's live
+    /// refresh, run by the daemon that has the worktree on its disk.
+    pub fn watch_git(&self, root: &str, cwd: &str) -> anyhow::Result<()> {
+        self.tell(&Request::WatchGitWorktree { root_path: root.to_string(), cwd: cwd.to_string() })
+    }
+
+    pub fn unwatch_git(&self, root: &str, cwd: &str) -> anyhow::Result<()> {
+        self.tell(&Request::UnwatchGitWorktree { root_path: root.to_string(), cwd: cwd.to_string() })
+    }
+
+    /// `CreateWorkspacePath` (v42): an empty file, or one directory.
+    pub fn create_path(&self, root: &str, path: &str, directory: bool) -> anyhow::Result<()> {
+        match self.ask(&Request::CreateWorkspacePath {
+            root_path: root.to_string(),
+            path: path.to_string(),
+            directory,
+        })? {
+            Response::Ok => Ok(()),
+            Response::Error { message } => anyhow::bail!("{message}"),
+            other => anyhow::bail!("expected Ok, got {other:?}"),
+        }
+    }
+
+    /// `RenameWorkspacePath` (v42).
+    pub fn rename_path(&self, root: &str, from: &str, to: &str) -> anyhow::Result<()> {
+        match self.ask(&Request::RenameWorkspacePath {
+            root_path: root.to_string(),
+            from: from.to_string(),
+            to: to.to_string(),
+        })? {
+            Response::Ok => Ok(()),
+            Response::Error { message } => anyhow::bail!("{message}"),
+            other => anyhow::bail!("expected Ok, got {other:?}"),
+        }
+    }
+
+    /// `TrashWorkspacePath` (v42): the HOST's Trash, not `rm` -- see the
+    /// request's own note. The confirmation was answered on this side
+    /// before the request went out.
+    pub fn trash_path(&self, root: &str, path: &str) -> anyhow::Result<()> {
+        match self.ask(&Request::TrashWorkspacePath {
+            root_path: root.to_string(),
+            path: path.to_string(),
+        })? {
+            Response::Ok => Ok(()),
+            Response::Error { message } => anyhow::bail!("{message}"),
+            other => anyhow::bail!("expected Ok, got {other:?}"),
+        }
+    }
+
     /// The last thing ssh said on either connection, for a dropped link's
     /// message.
     pub fn last_words(&self) -> String {
@@ -468,10 +572,198 @@ pub fn run_git_over_link(
     )
 }
 
-/// Whether a cwd is on a host -- for the git watcher, which has no remote
-/// equivalent yet and no-ops rather than watching a path that is not here.
-pub fn is_remote_cwd(cwd: &str) -> bool {
-    git_link_for_cwd(cwd).is_some()
+/// `run_git_env`'s router arm (v42) -- the same shape as
+/// `run_git_over_link`, for the two callers that need `GIT_EDITOR`.
+pub fn run_git_env_over_link(
+    cwd: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Option<Result<(Vec<u8>, String, i32), String>> {
+    let (link, root) = git_link_for_cwd(cwd)?;
+    let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    Some(
+        link.run_git_env(&root, &protocol::wire_path_str(cwd), &argv, &env)
+            .map_err(|e| e.to_string()),
+    )
+}
+
+/// A file read or written on the host that owns `cwd`, for the two
+/// modules that reach past `run_git` to the disk: `conflict.rs` (the
+/// rebase state under the git dir, and the worktree side of a conflicted
+/// file) and `ignore.rs` (`.gitignore` and `.git/info/exclude`, both
+/// located by git and then read as files).
+///
+/// Like `run_git_over_link`, this takes a bare `cwd` and finds the link
+/// through the router -- neither caller has an `AppHandle` to reach
+/// `RemoteLinks` through. `None` means the cwd is local and the caller
+/// does its own `std::fs`.
+///
+/// The read answers `Ok(None)` for a file that is not there, and an `Err`
+/// for one the host refused -- which includes a file that is not UTF-8,
+/// since `ReadWorkspaceFile` carries text. Both callers already treat an
+/// unreadable file as "nothing to check", which is the same conclusion.
+pub fn read_file_over_link(cwd: &str, path: &str) -> Option<Result<Option<String>, String>> {
+    let (link, root) = git_link_for_cwd(cwd)?;
+    Some(
+        link.read_file(&root, &protocol::wire_path_str(path))
+            .map(|(content, _truncated)| content)
+            .map_err(|e| e.to_string()),
+    )
+}
+
+pub fn write_file_over_link(cwd: &str, path: &str, content: &str) -> Option<Result<(), String>> {
+    let (link, root) = git_link_for_cwd(cwd)?;
+    Some(
+        link.write_file(&root, &protocol::wire_path_str(path), content)
+            .map_err(|e| e.to_string()),
+    )
+}
+
+/// The cwds the Git tab has asked a host to watch, remembered so a link
+/// that comes back can be asked again.
+///
+/// A host's watchers belong to the CONNECTION that asked for them
+/// (`handle_connection` owns them, so a dropped link takes them with it),
+/// which is the right lifetime there and a gap here: the tab's own
+/// `$effect` re-runs when its cwd changes, and a reconnect does not
+/// change the cwd. Without this, a Git tab that survived a dropped link
+/// would sit there never refreshing, with nothing to say it had stopped
+/// listening.
+static REMOTE_GIT_WATCHES: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+
+fn remote_git_watches() -> &'static Mutex<HashSet<String>> {
+    REMOTE_GIT_WATCHES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// The Git tab's watch, on the host that owns `cwd` (v42). `None` for a
+/// local cwd, where `git::watch` runs its own `notify` watcher.
+pub fn watch_git_over_link(cwd: &str) -> Option<Result<(), String>> {
+    let (link, root) = git_link_for_cwd(cwd)?;
+    let wire = protocol::wire_path_str(cwd);
+    // Remembered even when the request fails: a host that is too old
+    // today is a host that may be updated, and the reconnect after that
+    // is exactly when this should be tried again.
+    remote_git_watches().lock().unwrap().insert(wire.clone());
+    Some(link.watch_git(&root, &wire).map_err(|e| e.to_string()))
+}
+
+pub fn unwatch_git_over_link(cwd: &str) -> Option<Result<(), String>> {
+    let (link, root) = git_link_for_cwd(cwd)?;
+    let wire = protocol::wire_path_str(cwd);
+    remote_git_watches().lock().unwrap().remove(&wire);
+    Some(link.unwatch_git(&root, &wire).map_err(|e| e.to_string()))
+}
+
+/// Re-asks a freshly linked host to watch every cwd under `root` the Git
+/// tab still believes is watched. Called from `link_workspace` once the
+/// root is in the router, so a Reconnect restores live refresh instead of
+/// leaving the tab on manual Refresh with no sign of it.
+fn rewatch_git_roots(link: &Arc<RemoteLink>, root: &str) {
+    let cwds: Vec<String> = remote_git_watches()
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|cwd| path_is_under(root, cwd))
+        .cloned()
+        .collect();
+    for cwd in cwds {
+        // A host below v42 refuses this locally on the version gate; the
+        // tab's manual Refresh is what it keeps, as before.
+        let _ = link.watch_git(root, &cwd);
+    }
+}
+
+// --- Long git ops on a host -------------------------------------------
+//
+// `run_git_streaming` runs a fetch/pull/push and returns when it ends,
+// which is the shape `ops.rs` is built around. On a host the op is
+// started with a request that does not reply, and its end arrives later
+// as a `GitOpDone` push on the relay thread. This registry is the join
+// between the two: the caller parks on a channel, the relay hands the
+// result to it, and `ops.rs` keeps its signature.
+//
+// Keyed by the desktop's own op id, which is also what the frontend
+// already generates to address a cancel -- so an op is one id from the
+// button that starts it all the way to the child on the host.
+
+struct PendingOp {
+    link: Arc<RemoteLink>,
+    done: std::sync::mpsc::Sender<Result<(), String>>,
+}
+
+static PENDING_GIT_OPS: std::sync::OnceLock<Mutex<HashMap<String, PendingOp>>> =
+    std::sync::OnceLock::new();
+
+fn pending_git_ops() -> &'static Mutex<HashMap<String, PendingOp>> {
+    PENDING_GIT_OPS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Runs a long git op on the host that owns `cwd`, blocking until the
+/// host says it ended -- so `ops.rs::run_op` cannot tell a remote op from
+/// a local one. `None` when the cwd is local.
+///
+/// Progress is NOT returned here: the relay thread emits each
+/// `GitOpProgress` as the very `git-op-progress` event the local runner
+/// emits, so the toolbar's progress row is fed the same way either way.
+pub fn run_git_op_over_link(cwd: &str, args: &[String], op_id: &str) -> Option<Result<(), String>> {
+    let (link, root) = git_link_for_cwd(cwd)?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    pending_git_ops()
+        .lock()
+        .unwrap()
+        .insert(op_id.to_string(), PendingOp { link: Arc::clone(&link), done: tx });
+    if let Err(e) = link.start_git_op(&root, &protocol::wire_path_str(cwd), args, op_id) {
+        pending_git_ops().lock().unwrap().remove(op_id);
+        return Some(Err(e.to_string()));
+    }
+    // No deadline of our own. The host applies the same ten-minute
+    // ceiling the desktop's runner does and reports the timeout as an
+    // ordinary `GitOpDone`; a link that dies instead is what
+    // `abandon_git_ops` is for, so there is no state here that can
+    // outlive its link.
+    let result = rx.recv().unwrap_or_else(|_| Err("the connection to the host was lost".to_string()));
+    pending_git_ops().lock().unwrap().remove(op_id);
+    Some(result)
+}
+
+/// A `GitOpDone` from the relay thread: hands the verdict to whoever is
+/// parked in `run_git_op_over_link`. An id nobody is waiting on is
+/// ignored -- a cancel that raced the op's own end is the ordinary case.
+pub fn finish_git_op(op_id: &str, error: Option<String>) {
+    let pending = pending_git_ops().lock().unwrap().remove(op_id);
+    if let Some(op) = pending {
+        let _ = op.done.send(match error {
+            Some(message) => Err(message),
+            None => Ok(()),
+        });
+    }
+}
+
+/// Cancels a long git op running on a host: `Some(true)` when the host
+/// still had a child to kill, `None` when no op by that id is remote (the
+/// caller then tries its local registry).
+pub fn cancel_git_op_over_link(op_id: &str) -> Option<bool> {
+    let link = {
+        let ops = pending_git_ops().lock().unwrap();
+        Arc::clone(&ops.get(op_id)?.link)
+    };
+    Some(link.cancel_git_op(op_id).unwrap_or(false))
+}
+
+/// Releases everyone parked on an op that a dying link was running. Called
+/// from `link_lost`: without it the caller would sit in `recv` for as
+/// long as the app lives, holding the Tauri blocking thread it was
+/// spawned on.
+fn abandon_git_ops(host: &str, message: &str) {
+    let mut ops = pending_git_ops().lock().unwrap();
+    let doomed: Vec<String> =
+        ops.iter().filter(|(_, op)| op.link.host == host).map(|(id, _)| id.clone()).collect();
+    for id in doomed {
+        if let Some(op) = ops.remove(&id) {
+            let _ = op.done.send(Err(message.to_string()));
+        }
+    }
 }
 
 /// Agent integration's files on the host, through the link
@@ -653,6 +945,10 @@ pub fn link_workspace(app: &AppHandle, workspace_id: &str) -> anyhow::Result<()>
     // The git router keys on the workspace root so `git::run` can find
     // this link from a bare cwd, with no AppHandle to reach state through.
     register_git_root(&root, Arc::clone(&link));
+    // A reconnect gets a new connection, and the host's watchers belonged
+    // to the old one. Ask again for whatever the Git tab still thinks is
+    // watched under this root.
+    rewatch_git_roots(&link, &root);
 
     let non_session = non_session_tab_ids(
         &app.state::<FileTabs>().0.lock().unwrap(),
@@ -788,6 +1084,11 @@ pub fn link_lost(app: &AppHandle, host: &str, link_id: u64, message: String) {
     }
     let said = removed.as_ref().map(|l| l.last_words()).unwrap_or_default();
     let message = if said.is_empty() { message } else { format!("{message} ({said})") };
+    // A fetch running on this host will never report its own end now.
+    // Release whoever is parked on it, or that caller sits in `recv` for
+    // as long as the app lives, holding the blocking thread it is on --
+    // and the toolbar's spinner never stops.
+    abandon_git_ops(host, &message);
     let _ = app.emit(
         "remote-link-lost",
         RemoteLinkEvent {
@@ -994,6 +1295,120 @@ mod tests {
     fn ssh_command_refuses_a_daemon_path_with_a_double_quote() {
         assert!(ssh_command(&cfg("box", Some("C:/a\"b/gavin-daemon"))).is_err());
         assert!(ssh_command(&cfg("box", Some(""))).is_err());
+    }
+
+    // --- The Git tab's watch on a host (v42) ---------------------------
+
+    /// A link whose two connections are `Stream::pair()`s, with the far
+    /// end of the streaming one handed back so a test can read what the
+    /// app wrote on it. Nothing spawns ssh: what these tests are about is
+    /// which request goes out on which connection and what is remembered.
+    fn linked_to(host: &str, version: u32) -> (Arc<RemoteLink>, Stream) {
+        let (app_side, host_side) = Stream::pair().unwrap();
+        let (command_side, _command_far) = Stream::pair().unwrap();
+        let link = Arc::new(RemoteLink {
+            id: NEXT_LINK_ID.fetch_add(1, Ordering::Relaxed),
+            host: host.to_string(),
+            compat: DaemonCompat {
+                daemon_version: version,
+                app_version: protocol::PROTOCOL_VERSION,
+                degraded: version < protocol::PROTOCOL_VERSION,
+            },
+            command: Mutex::new(command_side),
+            writer: Arc::new(Mutex::new(app_side)),
+            home: "/home/me".to_string(),
+            host_os: "linux".to_string(),
+            mcp_path: None,
+            children: Mutex::new(Vec::new()),
+            // The far end of the command pair is dropped by the caller;
+            // nothing here reads it.
+            stderr: vec![Arc::new(Mutex::new(String::new()))],
+        });
+        // The command pair's far end drops here on purpose: these tests
+        // only ever write on the streaming connection, and a command
+        // write would rightly fail with nobody on the other end.
+        (link, host_side)
+    }
+
+    /// The watch request goes out on the STREAMING connection -- the one
+    /// `Attach` and `WatchGavinRoot` use -- because its answer is a push
+    /// in its own time, not a reply. Getting this wrong would park the
+    /// tab's watch behind whatever the command connection is doing.
+    #[test]
+    fn watching_a_remote_worktree_sends_the_request_on_the_streaming_connection() {
+        let (link, host_side) = linked_to("watch-host", protocol::PROTOCOL_VERSION);
+        register_git_root("/home/me/watch-repo", Arc::clone(&link));
+
+        assert!(watch_git_over_link("/home/me/watch-repo").unwrap().is_ok());
+        let mut reader = BufReader::new(host_side.try_clone().unwrap());
+        let sent: Option<Request> = read_message(&mut reader).unwrap();
+        match sent {
+            Some(Request::WatchGitWorktree { root_path, cwd }) => {
+                assert_eq!(root_path, "/home/me/watch-repo");
+                assert_eq!(cwd, "/home/me/watch-repo");
+            }
+            other => panic!("expected WatchGitWorktree, got {other:?}"),
+        }
+
+        // A local cwd is nobody's: the caller then runs its own watcher.
+        assert!(watch_git_over_link("/not/under/any/root").is_none());
+
+        assert!(unwatch_git_over_link("/home/me/watch-repo").unwrap().is_ok());
+        let sent: Option<Request> = read_message(&mut reader).unwrap();
+        assert!(matches!(sent, Some(Request::UnwatchGitWorktree { .. })), "{sent:?}");
+        clear_git_host("watch-host");
+    }
+
+    /// The gap this closes: a host's watchers belong to the CONNECTION
+    /// that asked for them, and a reconnect is a new connection. The
+    /// tab's own effect keys on its cwd, which a reconnect does not
+    /// change -- so without re-asking here, a Git tab that survived a
+    /// dropped link would silently stop refreshing for good.
+    #[test]
+    fn a_relinked_host_is_asked_to_watch_again_and_only_under_its_own_root() {
+        let (first, _first_host) = linked_to("relink-host", protocol::PROTOCOL_VERSION);
+        register_git_root("/home/me/relink-repo", Arc::clone(&first));
+        let (elsewhere, _elsewhere_host) = linked_to("other-host", protocol::PROTOCOL_VERSION);
+        register_git_root("/home/me/relink-other", Arc::clone(&elsewhere));
+        let _ = watch_git_over_link("/home/me/relink-repo");
+        let _ = watch_git_over_link("/home/me/relink-other");
+
+        // The link drops and comes back as a different connection.
+        let (second, second_host) = linked_to("relink-host", protocol::PROTOCOL_VERSION);
+        register_git_root("/home/me/relink-repo", Arc::clone(&second));
+        rewatch_git_roots(&second, "/home/me/relink-repo");
+
+        let mut reader = BufReader::new(second_host.try_clone().unwrap());
+        let sent: Option<Request> = read_message(&mut reader).unwrap();
+        match sent {
+            // Only this root's cwd: the other host's watch is not this
+            // link's to re-establish.
+            Some(Request::WatchGitWorktree { cwd, .. }) => assert_eq!(cwd, "/home/me/relink-repo"),
+            other => panic!("expected WatchGitWorktree, got {other:?}"),
+        }
+
+        let _ = unwatch_git_over_link("/home/me/relink-repo");
+        let _ = unwatch_git_over_link("/home/me/relink-other");
+        clear_git_host("relink-host");
+        clear_git_host("other-host");
+    }
+
+    /// A cwd the tab stopped watching is not resurrected by a reconnect.
+    #[test]
+    fn an_unwatched_cwd_is_not_re_asked_after_a_relink() {
+        let (link, _host) = linked_to("forget-host", protocol::PROTOCOL_VERSION);
+        register_git_root("/home/me/forget", Arc::clone(&link));
+        let _ = watch_git_over_link("/home/me/forget");
+        let _ = unwatch_git_over_link("/home/me/forget");
+
+        let (second, second_host) = linked_to("forget-host", protocol::PROTOCOL_VERSION);
+        register_git_root("/home/me/forget", Arc::clone(&second));
+        rewatch_git_roots(&second, "/home/me/forget");
+        // Nothing to read: a non-blocking read of an empty pair would
+        // hang, so assert on the bookkeeping the re-ask reads instead.
+        assert!(!remote_git_watches().lock().unwrap().contains("/home/me/forget"));
+        drop(second_host);
+        clear_git_host("forget-host");
     }
 
     /// The pump with a fake child on two pairs: what the child prints

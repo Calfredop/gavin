@@ -1,9 +1,11 @@
 mod bridge;
 mod gavin;
 mod git_status;
+mod git_watch;
 mod kanban;
 mod orchestration;
 mod osc;
+mod pairing;
 mod proc;
 mod program;
 mod pty;
@@ -12,6 +14,10 @@ mod screen;
 mod server;
 mod shell;
 mod status;
+#[cfg(test)]
+mod testing;
+mod trash;
+mod trust;
 
 use kanban::KanbanStore;
 use registry::{secure_db_file, Registry};
@@ -48,6 +54,20 @@ fn kanban_db_path() -> anyhow::Result<PathBuf> {
 
 fn orchestration_db_path() -> anyhow::Result<PathBuf> {
     Ok(protocol::app_support_dir()?.join("orchestration.sqlite"))
+}
+
+/// The trust store (`trust.rs`), beside the registry and NOT split per
+/// build -- the same deliberate sharing as kanban and orchestration.
+///
+/// A paired phone is the human's work, not a process fact: they paired it
+/// once, with the ceremony in `docs/security/05-remote-access.md` §3, and
+/// a rebuild is not a reason to make them do it again. Splitting it would
+/// also give the two builds two different daemon static keys, so which app
+/// happened to be running would decide whether a phone's pinned key still
+/// matched. `registry.sqlite` splits because it holds PROCESS identity;
+/// this holds trust, which outlives every process that reads it.
+fn devices_db_path() -> anyhow::Result<PathBuf> {
+    Ok(protocol::app_support_dir()?.join("devices.sqlite"))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -93,6 +113,11 @@ fn serve() -> anyhow::Result<()> {
     let orchestration = orchestration::OrchestrationStore::open(&orchestration_db_path()?)?;
     secure_db_file(&orchestration_db_path()?)?;
     let manager = Arc::new(SessionManager::new(registry, kanban, orchestration));
+    // Opened here, before the socket, because opening it is what MINTS
+    // the daemon's static key pair on a machine that has never paired a
+    // device -- and `trust.rs` secures its own file, which holds a private
+    // key.
+    manager.set_trust_store(trust::TrustStore::open(&devices_db_path()?)?);
     manager.recover()?;
 
     let socket = protocol::socket_path()?;
@@ -135,5 +160,10 @@ mod tests {
         // than a quiet loss of everything on the board.
         assert_eq!(kanban_db_path().unwrap().file_name().unwrap(), "kanban.sqlite");
         assert_eq!(orchestration_db_path().unwrap().file_name().unwrap(), "orchestration.sqlite");
+        // Same literal, same reason, plus one of its own: a per-build
+        // devices.sqlite would mean a per-build daemon static key, and a
+        // phone can only pin one.
+        assert!(devices_db_path().unwrap().starts_with(&dir));
+        assert_eq!(devices_db_path().unwrap().file_name().unwrap(), "devices.sqlite");
     }
 }

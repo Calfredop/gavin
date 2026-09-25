@@ -3,6 +3,53 @@
 
 import type { Complexity } from "$lib/cards/complexity";
 
+// What a `Decision:` / `Human test:` checklist line asks of the human: a
+// call to make, or a check to run by hand. Only a test can fail, and a
+// failed test goes back to the agent while an unanswered decision waits
+// on the human -- which is the difference the waiting count turns on.
+export type HumanItemKind = "decision" | "test";
+
+// Where the item stands, read off the last `Answer (date):` /
+// `Result (date):` / `Ready for re-test (date)` line under it. Distinct
+// from the checkbox: a failed test is unticked and so is one nobody has
+// looked at, and "waiting on you" is only the second. A re-armed failure
+// reads as `open` again, which is the point of arming it.
+export type HumanItemState = "open" | "answered" | "passed" | "failed";
+
+// What the human chose, on the way back down. `fail` and `failAndClose`
+// carry the same note and differ only in the checkbox: a plain fail
+// leaves the item owed, and closing it is the human overruling that.
+export type HumanItemOutcome =
+  | { kind: "answer"; text: string }
+  | { kind: "pass" }
+  | { kind: "fail"; note: string }
+  | { kind: "failAndClose"; note: string };
+
+export interface HumanItem {
+  kind: HumanItemKind;
+  // The question or the check, marker stripped: the `Which serializer?`
+  // of `Decision: Which serializer?`.
+  text: string;
+  // The checkbox, which is not the same question as `state`.
+  done: boolean;
+  // The item's indented `Options:` line, split into its choices. Empty
+  // for an open-ended question and for every test.
+  options: string[];
+  // The last outcome line, verbatim and un-indented, or null for an
+  // item nobody has touched. Raw because the tab SHOWS it -- the date
+  // and the note are the record.
+  latest: string | null;
+  state: HumanItemState;
+  // The line's raw remainder, marker included: what `resolveHumanItem`
+  // and `setChecklistItem` both guard on. Not `text`, which is trimmed
+  // for display.
+  lineText: string;
+  // Where the line sits in the file, from zero. A stable key for a row
+  // within one snapshot, never a write guard -- the card can have moved
+  // under it, which is why the write matches on `lineText`.
+  lineIndex: number;
+}
+
 export interface PlanFileInfo {
   path: string;
   fileName: string;
@@ -41,6 +88,15 @@ export interface PlanFileInfo {
   // because a pre-v32 daemon never sends either.
   agent?: string | null;
   model?: string | null;
+  // The card's `Decision:` / `Human test:` lines, parsed -- everything on
+  // this card waiting on a person.
+  //
+  // Absent or null means UNKNOWN, never "none": a pre-v42 daemon has no
+  // such field, and reading that as an empty list would have the tab
+  // report "nothing needs you" for a whole workspace. Gate on the
+  // daemon's version before believing an empty answer; `[]` from a
+  // daemon that HAS the field is the real "none".
+  humanItems?: HumanItem[] | null;
 }
 
 export interface MdFileInfo {

@@ -49,6 +49,7 @@
 // below is arguable in a test rather than observable only on a laptop.
 
 import type { FailureCause } from "$lib/agents/autoResume";
+import type { SessionStatus } from "$lib/core/notifications";
 
 /// The model the thresholds were measured on. PINNED, and the pin is the
 /// point: `jev-latest` would move the decision boundary under a policy
@@ -365,7 +366,15 @@ export type TurnReading =
   | { kind: "working" }
   | { kind: "asking" }
   | { kind: "blocked"; said: string }
-  | { kind: "failed"; cause: FailureCause };
+  /// `said` for the same reason `blocked` carries one, and it is worth
+  /// stating because the daemon's own failures do not need it: those
+  /// arrive with the agent's sentence attached (`failureReasonById`),
+  /// and every surface that reports one quotes it. A failure the
+  /// VERDICT read off the screen has no such sentence -- the daemon
+  /// called this turn `idle` and cleared the reason with it -- so the
+  /// screen's own last line is the only thing there is to quote, and
+  /// `failureBody` is useless without it.
+  | { kind: "failed"; cause: FailureCause; said: string };
 
 /// The `cause` question's answer as a `FailureCause`, through the
 /// confidence gate.
@@ -414,7 +423,7 @@ export function readTurn(answers: VerdictAnswers | null, screen: string): TurnRe
       return { kind: "blocked", said: agentLastLine(screen) };
     case "failed":
       // 4. The cause, through its own higher gate (`causeFrom`).
-      return { kind: "failed", cause: causeFrom(answers) };
+      return { kind: "failed", cause: causeFrom(answers), said: agentLastLine(screen) };
   }
 }
 
@@ -562,6 +571,41 @@ export function verdictCompletesTurn(entry: TurnVerdictEntry | null | undefined)
 /// until there is a real one.
 export function verdictIsAsking(entry: TurnVerdictEntry | null | undefined): boolean {
   return readingOf(entry)?.kind === "asking";
+}
+
+/// The same fact with the daemon's status folded in: a session gavin has
+/// been told is QUIET whose turn was a question.
+///
+/// The whole rule, in the one place every reader of it can see. The
+/// attention inbox's `reasonFor` calls this, `stepAttentions` asks the
+/// same thing of a rail step, and so does the status view the tab badge,
+/// the sidebar dots, the board card and the card modal draw from
+/// (`verdictAttention.ts`) -- because a badge that says "done" while the
+/// inbox two clicks away says "waiting for you" is the exact
+/// disagreement the badges were wired up to remove, and two spellings of
+/// one test is how it would arrive.
+///
+/// `idle` is the only status it touches, and that is the point rather
+/// than an optimisation. The verdict's job is to reinterpret QUIET: a
+/// `working` session is still moving, a `failed` one already carries the
+/// agent's own sentence, and a `waiting_for_input` one rang its bell and
+/// needs no help being noticed. Reinterpreting any of those would be the
+/// verdict overruling something the daemon actually observed -- and a
+/// stale entry the driver has not cleared yet would do it for a turn
+/// that is already over.
+///
+/// `asking` alone, deliberately, and `blocked` is the reading it leaves
+/// out. A blocked turn is not unsaid: `verdictStallReason` below turns
+/// it into a rail stall carrying the agent's own sentence, which is more
+/// than a badge could say and is how every other consumer already
+/// reports it. Widening this to cover `blocked` would give the badge a
+/// rule the inbox, the step marks and the follow-up gate do not share --
+/// the thing this predicate exists to prevent.
+export function verdictAsksQuietly(
+  status: SessionStatus | null | undefined,
+  entry: TurnVerdictEntry | null | undefined
+): boolean {
+  return status === "idle" && verdictIsAsking(entry);
 }
 
 /// The stall a `blocked` or `failed` verdict turns a running step into,

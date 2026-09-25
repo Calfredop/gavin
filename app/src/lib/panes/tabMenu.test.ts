@@ -223,4 +223,24 @@ describe("marking a wait as read", () => {
     ).map((e) => e.label);
     expect(labels.join()).not.toContain("Mark as");
   });
+
+  // The other wait, which has no status of its own: a question asked in
+  // prose rings no bell, so the daemon says `idle` for ever.
+  // verdictAttention.ts raises a badge over it, and without the entry
+  // here that badge could never be taken down.
+  it("offers the entry on a quiet session the verdict reads as asking", () => {
+    const verdict = { state: "read", reading: { kind: "asking" } } as const;
+    const labels = items(buildTabMenuEntries(ctx({ status: "idle", verdict }), hooks())).map(
+      (e) => e.label
+    );
+    expect(labels).toContain("Mark as Read");
+  });
+
+  it("leaves a quiet session with a finished verdict alone", () => {
+    const verdict = { state: "read", reading: { kind: "finished" } } as const;
+    const labels = items(buildTabMenuEntries(ctx({ status: "idle", verdict }), hooks())).map(
+      (e) => e.label
+    );
+    expect(labels.join()).not.toContain("Mark as");
+  });
 });

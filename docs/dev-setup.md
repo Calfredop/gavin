@@ -133,6 +133,36 @@ production "sidecar" bundling yet. If you see a "couldn't connect to the
 daemon" error, run `cargo build -p gavin-daemon` first so the sibling binary
 exists.
 
+### The sidecars are built by a script, not a bare `cargo build`
+
+`beforeDevCommand` runs `node src-tauri/dev-sidecars.mjs`, and so do both
+`scripts/start-dev-*` launchers. It is a `cargo build -p gavin-daemon -p
+gavin-mcp` with one thing added, for one platform.
+
+On Windows a running executable cannot be unlinked, and cargo's uplift step —
+the copy from `target/debug/deps/` to `target/debug/gavin-mcp.exe` — unlinks
+before it links. Every agent session open in a checkout runs a `gavin-mcp` out
+of that path, so the dev loop of a tool built to run several sessions at once
+used to stop on
+
+```
+error: failed to remove file `...\target\debug\gavin-mcp.exe`
+Caused by:
+  Access is denied. (os error 5)
+```
+
+before vite was ever reached. Windows *does* allow a running image to be
+renamed, and the renamed file stays mapped in the process holding it, so the
+script moves each held sidecar to `<name>.locked-<n>`, lets cargo link a fresh
+binary into the name it vacated, and sweeps the parked copies on a later run
+once their holders have exited. It never stops a process it finds — those are
+live agent sessions, and losing an MCP server mid-task is worse than a failed
+build. If a rename cannot save the build it prints the pids running that image
+and leaves the decision to you.
+
+Leftover `gavin-*.exe.locked-*` files in `target/debug/` are expected while
+sessions are open, and cost only disk.
+
 App state lives under `~/Library/Application Support/com.gavin.app/`:
 - `config.json` — the currently remembered `session_id`, so relaunching the
   app reattaches to the same terminal session instead of starting fresh.

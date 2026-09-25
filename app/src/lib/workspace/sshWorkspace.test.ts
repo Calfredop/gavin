@@ -13,6 +13,7 @@ import {
   sshBanner,
   sshLimitation,
   sshRunBlocked,
+  sshSyncBlocked,
   sshTabBlocked,
   validateSshInput,
   type SshLinks,
@@ -170,6 +171,29 @@ describe("sshTabBlocked", () => {
     expect(sshTabBlocked(ws("a", "box"), markLost({}, "box", "x"))).toMatch(/Not connected to box/);
     // The Git tab needs v41 even though card runs (v40) are fine.
     expect(sshTabBlocked(ws("a", "box"), markReady({}, "box", "linux", 40))).toMatch(/v41 on box/);
+  });
+});
+
+describe("sshSyncBlocked", () => {
+  it("never blocks a local workspace, and opens the sync ops once the host is v42", () => {
+    expect(sshSyncBlocked(ws("near"), {})).toBeNull();
+    expect(sshSyncBlocked(ws("a", "box"), markReady({}, "box", "linux", 42))).toBeNull();
+  });
+
+  it("blocks while connecting or lost, on the same evidence as the other two", () => {
+    expect(sshSyncBlocked(ws("a", "box"), {})).toMatch(/Connecting to box/);
+    expect(sshSyncBlocked(ws("a", "box"), markLost({}, "box", "x"))).toMatch(/Not connected to box/);
+  });
+
+  /// The split that matters: a v41 host runs the Git tab and the Files
+  /// tree -- status, diff, commit, the 3-pane, `.gitignore` -- while
+  /// fetch/pull/push and the tree's mutations stay dark and say which
+  /// version the host needs. Reading the two gates as one would either
+  /// close a working tab or offer an op the host cannot run.
+  it("still blocks a v41 host that the tab gate is happy with", () => {
+    const v41 = markReady({}, "box", "linux", 41);
+    expect(sshTabBlocked(ws("a", "box"), v41)).toBeNull();
+    expect(sshSyncBlocked(ws("a", "box"), v41)).toMatch(/v42 on box/);
   });
 });
 

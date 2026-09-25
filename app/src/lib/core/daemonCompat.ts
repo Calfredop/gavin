@@ -376,6 +376,61 @@ export const FEATURE_MIN_VERSION = {
   // are the two hub views, which show the notice until the host is new
   // enough.
   sshGitFiles: 41,
+  // Human items: the `Decision:` / `Human test:` lines a card carries,
+  // and the two writes behind them (v42). Both requests are new TYPES,
+  // so `min_version_for` genuinely refuses `FileHumanItem` and
+  // `ResolveHumanItem` against an older daemon and no write can be
+  // silently dropped.
+  //
+  // The entry is for the READ, which nothing on the wire guards at all.
+  // `PlanFileInfo.human_items` is `Option<Vec<HumanItem>>`, and a v41
+  // daemon sends no such field -- not because the cards ask nothing, but
+  // because it never PARSED the lines. Reading that absence as an empty
+  // list would have the Decisions tab report "nothing is waiting on you"
+  // for a workspace with a dozen open decisions in it, which is the one
+  // wrong answer this tab must never give: the human would go away
+  // satisfied.
+  //
+  // So the consumer is the tab's answer controls (DecisionsHubView ->
+  // DecisionsItemRow), which is also why the gate is on the ITEMS and
+  // not the tab: waiting sessions, rail review gates and unreviewed
+  // cards are all readable from an older daemon, so the tab still lists
+  // them and says why the items are missing rather than drawing an empty
+  // list that looks like good news.
+  humanItems: 42,
+  // Remote access, phase 2: pairing a phone, the device list, revocation,
+  // and the remote-access switch (`docs/security/05-remote-access.md` §3,
+  // §7 "Phase 2 additions"). Seven new request TYPES, so `min_version_for`
+  // already refuses every one of them against a v41 daemon and nothing can
+  // be silently dropped -- this entry is not guarding a widened payload.
+  //
+  // It earns its place for the reason `turnVerdict` and `sessionMetrics`
+  // earn theirs: refusing to SEND decides nothing about what to show
+  // instead. A Remote access section that simply is not there against an
+  // older daemon reads as "gavin cannot do this", when the truth is
+  // "gavin has not been restarted" -- and this is the panel that promises
+  // a revocation reaches a phone at 02:00, which is not a promise anyone
+  // should have to guess at. Greyed, with the version it needs, is the
+  // only honest state.
+  //
+  // Its consumers have landed, so this is not a dead gate (CLAUDE.md):
+  // `remoteAccess.ts`'s `remoteAccessBlocked` reads it, and the Settings
+  // section greys the toggle, the relay URL row, "Pair a device", the
+  // device list and both Revoke controls behind that one verdict.
+  remoteAccess: 42,
+  // What finishes those two tabs on an ssh workspace: the host daemon's
+  // v42 streaming git (`RunGitStreaming`/`CancelGitOp`, the fetch, pull
+  // and push the desktop kept), its worktree watch
+  // (`WatchGitWorktree`), and the Files tree's three mutations
+  // (`Create`/`Rename`/`TrashWorkspacePath`)
+  // (`2026-09-23-ssh-git-sync-and-conflicts-design.md`). Checked against
+  // the HOST daemon's version, like the two entries above it
+  // (`sshSyncBlocked` in sshWorkspace.ts).
+  //
+  // Conflicts and `.gitignore` are deliberately NOT here: they route
+  // through the v40 file requests, so they work on a v41 host and sit
+  // behind `sshGitFiles` with the rest of the tab.
+  sshGitSync: 42,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

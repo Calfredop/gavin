@@ -22,7 +22,7 @@
   import GitCommitDetail from "$lib/git/GitCommitDetail.svelte";
   import GitIgnoreEditor from "$lib/git/GitIgnoreEditor.svelte";
   import type { IgnoreKind } from "$lib/git/gitIgnore";
-  import { sshTabBlocked } from "$lib/workspace/sshWorkspace";
+  import { sshTabBlocked, sshSyncBlocked } from "$lib/workspace/sshWorkspace";
   import { sshLinks } from "$lib/workspace/sshLinkState";
 
   interface Props {
@@ -43,6 +43,11 @@
   // empty state names why. The network sync buttons are the follow-up and
   // stay disabled even when the tab works (GitToolbar).
   const sshBlocked = $derived(sshTabBlocked(ws, $sshLinks));
+  // `<op> --continue` sets GIT_EDITOR, which on an ssh workspace is the
+  // host daemon's `RunGitEnv` (v42). Everything else in this banner --
+  // the status behind it, Abort -- rides `RunGit` and works on a v41
+  // host, so only this one button carries the newer gate.
+  const syncBlocked = $derived(sshSyncBlocked(ws, $sshLinks));
   const root = $derived(sshBlocked ? null : (ws?.rootPath ?? null));
   // SP3: the tab may be pointed at a linked worktree; the selection is
   // persisted and reapplied on mount (falls back to the root if it's gone).
@@ -152,8 +157,8 @@
           <button
             type="button"
             class="banner-act"
-            disabled={busy || conflicts}
-            use:tooltip={conflicts ? "Resolve the conflicted files first" : `git ${kind} --continue`}
+            disabled={busy || conflicts || syncBlocked !== null}
+            use:tooltip={syncBlocked ?? (conflicts ? "Resolve the conflicted files first" : `git ${kind} --continue`)}
             onclick={() => continueInProgress(workspaceId, kind)}
           >Continue</button>
         {/if}

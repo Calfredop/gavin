@@ -183,18 +183,19 @@ jobs:
         # plain scalar can't end in a bare colon, and this one does.
         run: "cargo test --workspace --locked -- --skip gavin::"
 
-      # Still reporting, for a different reason than before. The ten
-      # source-grep tests that failed here on a CRLF checkout pass now
-      # that `.gitattributes` pins every text file to LF on every OS
-      # (`fix-source-grep-tests-on-crlf-checkouts`), so a line ending no
-      # longer separates this runner from the Linux one. What keeps it a
-      # report is the suite's own baseline: 12 tests in 8 files were red
-      # on a clean checkout on 2026-09-22 -- mock shape and source-grep
-      # drift, none of it about line endings or this platform -- and a
-      # gate here would block every push on failures this job did not
-      # cause. Promote it once the app suite is green on main.
+      # A GATE now. Two things had kept it a report and both are gone.
+      # The ten source-grep tests that failed here on a CRLF checkout
+      # pass now that `.gitattributes` pins every text file to LF on
+      # every OS (`fix-source-grep-tests-on-crlf-checkouts`), so a line
+      # ending no longer separates this runner from the Linux one; and
+      # the suite's own baseline -- 12 tests in 8 files red on a clean
+      # checkout on 2026-09-22, mock shape and source-grep drift, none
+      # of it about line endings or this platform -- went green on main
+      # that same day and has stayed green, 281 files and 6184 tests.
+      # There is no longer a failure here this job did not cause, which
+      # is the condition the old comment set for promoting it, so a red
+      # here is a real regression in the app.
       - name: npm test
-        continue-on-error: true
         working-directory: app
         run: npm test
 

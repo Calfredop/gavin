@@ -136,9 +136,19 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 vi.mock("$lib/core/notifications", () => ({
   maybeNotifyStatusChange: vi.fn(),
+  // The same notification sent LATE, once the turn verdict has settled
+  // (see verdictNotice.ts). A quiet turn reaches exactly one of these
+  // two, never both.
+  maybeNotifyTurnVerdict: vi.fn(),
   // bootstrap() starts the orchestration listeners, which register the
   // rail's voice over this module (see setRailNotificationVoice).
   setRailNotificationVoice: vi.fn(),
+  // NOT a vi.fn(), for parseSessionStatus's reason below: verdictNotice
+  // composes a failure body with this pure function, and a mock
+  // returning undefined would empty the very notice these tests assert
+  // on. The real one is covered in notifications.test.ts.
+  failureBody: (label: string, reason: string | undefined) =>
+    reason?.trim() ? `${label} stopped — ${reason.trim()}` : `${label} stopped: its agent did not finish`,
   // NOT a vi.fn(): this is a pure parser and every status that reaches
   // the store goes through it, so a mock returning undefined would empty
   // the map these tests are about. The real one is the behaviour under
@@ -243,6 +253,7 @@ import {
   setRequireReviewDefault,
   requireReviewDefault,
   markRequireReviewAsked,
+  setStatusNoticeHold,
   type LayoutState,
 } from "$lib/core/layoutState";
 import { confirmDestructive } from "$lib/core/confirmGate";
@@ -1363,6 +1374,53 @@ describe("handleSessionStatusChanged", () => {
     // instead, because that is the only call that holds one.
     expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(1, "a", undefined, "working", "a", bothOn, undefined);
     expect(notifications.maybeNotifyStatusChange).toHaveBeenNthCalledWith(2, "a", "working", "idle", "a", bothOn, undefined);
+  });
+
+  // The slot the turn verdict's tray half registers into
+  // (verdictNoticeState.ts): the line for a quiet turn is composed here,
+  // a second or two before the verdict can say whether "finished" is the
+  // right word for it.
+  describe("the status-notice hold", () => {
+    afterEach(() => __resetFailureNotices());
+
+    it("sends nothing itself for a transition a holder has taken", () => {
+      setStatusNoticeHold((_id, _previous, status) => status === "idle");
+      handleSessionStatusChanged("a", "working");
+      handleSessionStatusChanged("a", "idle");
+      // The `working` transition's own call, and no second one for the
+      // idle: the holder owes the human that line instead.
+      expect(notifications.maybeNotifyStatusChange).toHaveBeenCalledTimes(1);
+    });
+
+    it("asks with the previous status, so the holder can tell a quiet turn from a first sighting", () => {
+      const hold = vi.fn(() => false);
+      setStatusNoticeHold(hold);
+      handleSessionStatusChanged("a", "working");
+      handleSessionStatusChanged("a", "idle");
+      expect(hold).toHaveBeenNthCalledWith(1, "a", undefined, "working");
+      expect(hold).toHaveBeenNthCalledWith(2, "a", "working", "idle");
+    });
+
+    it("notifies inline when the holder declines, which is nearly every transition", () => {
+      setStatusNoticeHold(() => false);
+      handleSessionStatusChanged("a", "working");
+      handleSessionStatusChanged("a", "idle");
+      expect(notifications.maybeNotifyStatusChange).toHaveBeenCalledTimes(2);
+    });
+
+    it("is not asked about a failure, which notifies from its reason instead", () => {
+      // handleSessionFailed owns that line, because it is the only call
+      // that holds the agent's own sentence.
+      const hold = vi.fn(() => true);
+      setStatusNoticeHold(hold);
+      handleSessionStatusChanged("a", "working");
+      handleSessionStatusChanged("a", "failed");
+      handleSessionFailed("a", "API Error: 503");
+      expect(hold).toHaveBeenCalledTimes(1);
+      expect(notifications.maybeNotifyStatusChange).toHaveBeenCalledWith(
+        "a", "working", "failed", "a", { needsInput: true, finished: true }, "API Error: 503"
+      );
+    });
   });
 
   // The inbox on the hub is ordered by how long each agent has been

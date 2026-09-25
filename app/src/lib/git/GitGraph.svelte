@@ -21,6 +21,9 @@
   import GitDiscardDialog from "$lib/git/GitDiscardDialog.svelte";
   import GitResetDialog from "$lib/git/GitResetDialog.svelte";
   import SearchInput from "$lib/ui/SearchInput.svelte";
+  import { layoutState } from "$lib/core/layoutState";
+  import { sshSyncBlocked } from "$lib/workspace/sshWorkspace";
+  import { sshLinks } from "$lib/workspace/sshLinkState";
 
   interface Props {
     workspaceId: string;
@@ -38,6 +41,14 @@
   const selected = $derived(view?.selectedCommit ?? null);
   const branch = $derived(view ? currentBranch(view) : null);
   const detached = $derived(view?.repo?.detached ?? false);
+  // Cherry-pick sets GIT_EDITOR so it never waits on an editor, which
+  // on an ssh workspace is the host daemon's `RunGitEnv` (v42). A host
+  // that is older runs everything else in this view and would answer
+  // this one request `Unsupported` -- so the item says which version it
+  // needs instead of failing on click.
+  const syncBlocked = $derived(
+    sshSyncBlocked($layoutState.workspaces.find((w) => w.id === workspaceId), $sshLinks)
+  );
 
   let branchFrom = $state<string | null>(null);
   let revertSha = $state<string | null>(null);
@@ -52,7 +63,11 @@
       { label: `Copy SHA ${shortSha(c.sha)}`, onPick: () => void writeText(c.sha) },
       { label: "Copy message", onPick: () => void writeText(c.subject) },
       { separator: true },
-      { label: `Cherry-pick onto ${cur}`, disabled: locked || c.isHead, onPick: () => void cherryPick(workspaceId, c.sha) },
+      {
+        label: syncBlocked ? `Cherry-pick onto ${cur} — ${syncBlocked}` : `Cherry-pick onto ${cur}`,
+        disabled: locked || c.isHead || syncBlocked !== null,
+        onPick: () => void cherryPick(workspaceId, c.sha),
+      },
       { label: "Revert…", disabled: locked || detached, onPick: () => (revertSha = c.sha) },
       { label: `Reset ${cur} to here…`, danger: true, disabled: locked || detached || c.isHead, onPick: () => (resetSha = c.sha) },
     ];

@@ -851,8 +851,21 @@ fn list_directory_impl(root: String, path: String) -> Result<Vec<DirEntryInfo>, 
 /// Creates an empty file. `create_new` rather than a write, so an
 /// existing file is refused by the filesystem itself rather than by a
 /// check with a window between it and the write.
+///
+/// On an ssh workspace the file is made where the tree is, through
+/// `CreateWorkspacePath` (v42), which makes the same two choices on the
+/// host — `create_new`, and never `create_dir_all`.
 #[tauri::command]
-pub fn create_file(root: String, path: String) -> Result<(), String> {
+pub fn create_file(root: String, path: String, app_handle: AppHandle) -> Result<(), String> {
+    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+        return link.create_path(&root, &path, false).map_err(|e| e.to_string());
+    }
+    create_file_impl(root, path)
+}
+
+/// The local half, split out like `list_directory_impl` so the tests
+/// exercise the confinement without an `AppHandle` they cannot build.
+fn create_file_impl(root: String, path: String) -> Result<(), String> {
     let root = canonical_root(&root)?;
     let target = resolve_new(&root, &path)?;
     std::fs::OpenOptions::new()
@@ -867,7 +880,14 @@ pub fn create_file(root: String, path: String) -> Result<(), String> {
 /// parent is a typo worth reporting, and an existing target must be
 /// refused rather than silently accepted.
 #[tauri::command]
-pub fn create_directory(root: String, path: String) -> Result<(), String> {
+pub fn create_directory(root: String, path: String, app_handle: AppHandle) -> Result<(), String> {
+    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+        return link.create_path(&root, &path, true).map_err(|e| e.to_string());
+    }
+    create_directory_impl(root, path)
+}
+
+fn create_directory_impl(root: String, path: String) -> Result<(), String> {
     let root = canonical_root(&root)?;
     let target = resolve_new(&root, &path)?;
     std::fs::create_dir(&target).map_err(|e| format!("{}: {e}", target.display()))
@@ -880,7 +900,14 @@ pub fn create_directory(root: String, path: String) -> Result<(), String> {
 /// mistyped rename into a deleted file with no trip through the Trash.
 /// `resolve_new` is what refuses it.
 #[tauri::command]
-pub fn rename_path(root: String, from: String, to: String) -> Result<(), String> {
+pub fn rename_path(root: String, from: String, to: String, app_handle: AppHandle) -> Result<(), String> {
+    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+        return link.rename_path(&root, &from, &to).map_err(|e| e.to_string());
+    }
+    rename_path_impl(root, from, to)
+}
+
+fn rename_path_impl(root: String, from: String, to: String) -> Result<(), String> {
     let root = canonical_root(&root)?;
     let source = resolve_existing(&root, &from, false)?;
     let target = resolve_new(&root, &to)?;
@@ -910,8 +937,18 @@ pub fn trash_entry(
     path: String,
     token: String,
     gate: State<crate::confirm_gate::ConfirmGate>,
+    app_handle: AppHandle,
 ) -> Result<(), String> {
     crate::confirm_gate::spend(&gate, &token, "trash_entry", &path)?;
+    // The grant is spent FIRST, on both routes: the confirmation is the
+    // product's promise here and the human answered it on this machine,
+    // whichever machine the file is on. What the host then does is the
+    // host's own Trash -- never `rm` -- so "nothing gavin removes is
+    // unrecoverable" holds on a Linux or Windows host the same way it
+    // holds here (`TrashWorkspacePath`, v42).
+    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+        return link.trash_path(&root, &path).map_err(|e| e.to_string());
+    }
     trash_entry_impl(&root, &path)
 }
 
@@ -1685,11 +1722,11 @@ mod tests {
     fn create_file_makes_an_empty_file_and_refuses_to_clobber_one() {
         let dir = tempfile::tempdir().unwrap();
 
-        create_file(root_of(&dir), under(&dir, "notes.md")).unwrap();
+        create_file_impl(root_of(&dir), under(&dir, "notes.md")).unwrap();
         assert_eq!(std::fs::read_to_string(dir.path().join("notes.md")).unwrap(), "");
 
         std::fs::write(dir.path().join("kept.md"), "important").unwrap();
-        let err = create_file(root_of(&dir), under(&dir, "kept.md")).unwrap_err();
+        let err = create_file_impl(root_of(&dir), under(&dir, "kept.md")).unwrap_err();
         assert!(err.contains("already exists"), "{err}");
         // The refusal is the point: the file it would have replaced is
         // still whole.
@@ -1704,10 +1741,10 @@ mod tests {
         let root_s = root.to_string_lossy().to_string();
 
         let outside = dir.path().join("outside.md").to_string_lossy().to_string();
-        assert!(create_file(root_s.clone(), outside.clone())
+        assert!(create_file_impl(root_s.clone(), outside.clone())
             .unwrap_err()
             .contains("outside the workspace root"));
-        assert!(create_directory(root_s.clone(), outside)
+        assert!(create_directory_impl(root_s.clone(), outside)
             .unwrap_err()
             .contains("outside the workspace root"));
 
@@ -1715,12 +1752,12 @@ mod tests {
         // normalized away -- the caller meant something it should have
         // spelled out.
         let dots = root.join("..").to_string_lossy().to_string();
-        assert!(create_file(root_s.clone(), dots).unwrap_err().contains("not a usable name"));
+        assert!(create_file_impl(root_s.clone(), dots).unwrap_err().contains("not a usable name"));
 
         // ...and the traversal spelled through a parent is refused for
         // being outside, not silently created.
         let escaped = root.join("../escaped.md").to_string_lossy().to_string();
-        assert!(create_file(root_s, escaped).unwrap_err().contains("outside the workspace root"));
+        assert!(create_file_impl(root_s, escaped).unwrap_err().contains("outside the workspace root"));
         assert!(!dir.path().join("escaped.md").exists());
     }
 
@@ -1728,16 +1765,16 @@ mod tests {
     fn create_directory_makes_one_level_and_refuses_an_existing_entry() {
         let dir = tempfile::tempdir().unwrap();
 
-        create_directory(root_of(&dir), under(&dir, "docs")).unwrap();
+        create_directory_impl(root_of(&dir), under(&dir, "docs")).unwrap();
         assert!(dir.path().join("docs").is_dir());
 
-        assert!(create_directory(root_of(&dir), under(&dir, "docs"))
+        assert!(create_directory_impl(root_of(&dir), under(&dir, "docs"))
             .unwrap_err()
             .contains("already exists"));
 
         // A missing parent is a typo, not a folder to invent: create_dir,
         // never create_dir_all.
-        assert!(create_directory(root_of(&dir), under(&dir, "a/b/c")).is_err());
+        assert!(create_directory_impl(root_of(&dir), under(&dir, "a/b/c")).is_err());
         assert!(!dir.path().join("a").exists());
     }
 
@@ -1749,17 +1786,17 @@ mod tests {
         std::fs::write(dir.path().join("taken.md"), "keep me").unwrap();
 
         // Same folder: an ordinary rename.
-        rename_path(root_of(&dir), under(&dir, "draft.md"), under(&dir, "final.md")).unwrap();
+        rename_path_impl(root_of(&dir), under(&dir, "draft.md"), under(&dir, "final.md")).unwrap();
         assert!(!dir.path().join("draft.md").exists());
         assert_eq!(std::fs::read_to_string(dir.path().join("final.md")).unwrap(), "text");
 
         // Another folder: the same command moves.
-        rename_path(root_of(&dir), under(&dir, "final.md"), under(&dir, "docs/final.md")).unwrap();
+        rename_path_impl(root_of(&dir), under(&dir, "final.md"), under(&dir, "docs/final.md")).unwrap();
         assert_eq!(std::fs::read_to_string(dir.path().join("docs/final.md")).unwrap(), "text");
 
         // fs::rename overwrites silently on unix, which would make a
         // mistyped rename a deletion with no trip through the Trash.
-        let err = rename_path(root_of(&dir), under(&dir, "docs/final.md"), under(&dir, "taken.md"))
+        let err = rename_path_impl(root_of(&dir), under(&dir, "docs/final.md"), under(&dir, "taken.md"))
             .unwrap_err();
         assert!(err.contains("already exists"), "{err}");
         assert_eq!(std::fs::read_to_string(dir.path().join("taken.md")).unwrap(), "keep me");
@@ -1777,12 +1814,12 @@ mod tests {
         let outside = dir.path().join("outside.md").to_string_lossy().to_string();
 
         // Source outside: reading a file gavin was never pointed at.
-        let err = rename_path(root_s.clone(), outside.clone(), root.join("stolen.md").to_string_lossy().to_string());
+        let err = rename_path_impl(root_s.clone(), outside.clone(), root.join("stolen.md").to_string_lossy().to_string());
         assert!(err.unwrap_err().contains("outside the workspace root"));
         assert!(dir.path().join("outside.md").exists());
 
         // Destination outside: writing one.
-        let err = rename_path(
+        let err = rename_path_impl(
             root_s.clone(),
             root.join("inside.md").to_string_lossy().to_string(),
             dir.path().join("leaked.md").to_string_lossy().to_string(),
@@ -1791,7 +1828,7 @@ mod tests {
         assert!(root.join("inside.md").exists());
 
         // The root is not one of its own entries.
-        let err = rename_path(
+        let err = rename_path_impl(
             root_s.clone(),
             root_s,
             dir.path().join("ws2").to_string_lossy().to_string(),

@@ -70,6 +70,36 @@ describe("the wiring", () => {
     );
   });
 
+  it("holds the tray line through a registered slot, not an import either", () => {
+    // The same rule as above, for the half of this feature that speaks
+    // to the human: the holder reads the verdict map, so layoutState
+    // asks it through a slot it can never import (setStatusNoticeHold),
+    // exactly as it reaches auto-resume and the rail's voice.
+    expect(source("layoutState.ts")).not.toMatch(/from "\$lib\/agents\/verdictNotice/);
+    expect(source("layoutState.ts")).toContain(
+      "if (statusNoticeHold?.(sessionId, previousStatus, status)) return;"
+    );
+    expect(source("verdictNoticeState.ts")).toContain("setStatusNoticeHold(hold);");
+    // Started and stopped with the driver, because a hold is meaningless
+    // without something marking sessions pending.
+    expect(source("turnVerdictDriver.ts")).toContain("startVerdictNotices()");
+  });
+
+  it("sends exactly one notification per quiet turn", () => {
+    // The two paths are exclusive by construction: layoutState returns
+    // before `notifyStatus` when the hold takes the transition, and the
+    // holder is the only other caller of a status notification.
+    const layout = source("layoutState.ts");
+    const held = layout.indexOf("if (statusNoticeHold?.(sessionId, previousStatus, status)) return;");
+    const inline = layout.indexOf("notifyStatus(state, sessionId, previousStatus, status);");
+    expect(held).toBeGreaterThan(0);
+    expect(inline).toBeGreaterThan(held);
+    expect(layout).not.toContain("maybeNotifyTurnVerdict");
+    // And the deferred one answers to the same workspace toggles the
+    // inline one would have, rather than a second reading of them.
+    expect(source("verdictNoticeState.ts")).toContain("notifyPrefsFor(state, sessionId)");
+  });
+
   it("fires the status hook before the store update the scheduler reads on", () => {
     const s = source("layoutState.ts");
     const hook = s.indexOf("sessionStatusHook?.(sessionId, status, previousStatus);");

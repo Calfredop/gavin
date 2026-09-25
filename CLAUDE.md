@@ -77,10 +77,19 @@ bump only takes effect after a rebuild and restart, which is the human's call.
 To verify daemon or MCP behaviour meanwhile, run an isolated daemon under a temp
 `$HOME` — it gets its own socket and databases.
 
-**`gavin-mcp` fails closed on version skew.** Once the daemon moves ahead, every
-`gavin_*` tool errors ("the gavin daemon is newer than this gavin-mcp"). That is
-the expected state after a bump, not a fault in your work — file cards by hand
-and carry on.
+**`gavin-mcp` re-execs itself when the daemon moves ahead.** A bump used to cost
+every session on the machine its `gavin_*` tools until someone restarted it.
+Now the first tool call against a newer daemon hands the session to the binary
+at `current_exe()` — which the rebuild or the update has already replaced — and
+the successor answers that call itself; a line on stderr names both versions.
+So after a bump the tools keep working, but only once that binary is actually
+the new one: in the dev tree that means the app's install step, not `cargo
+build` alone, since the running gavin-mcp is the installed copy. One re-exec is
+the whole budget (`GAVIN_MCP_REEXEC=1` marks the successor), so if you still see
+"the gavin daemon is newer than this gavin-mcp … restart this Claude Code
+session", the handover already happened and did not help — the binary at that
+path is still stale. That is the expected state, not a fault in your work: file
+cards by hand and carry on.
 
 **The compat gate is per request TYPE.** `min_version_for` gates request
 variants, not fields, so widening an existing request's payload is invisible to
@@ -128,12 +137,20 @@ Logic goes in a plain `.ts` module with unit tests (`orchestration.ts`,
 `sidebarSummary.ts`, `planBoard.ts`, …); the `.svelte` file stays a thin template
 over it. Extend the pure module, not the template.
 
-Rendered UI is the one thing the suites cannot cover, and gavin no longer tracks
-it: the smoke checklist and its dev-only workspace are gone, so there is nothing
-to tick and no smoke items to file on a card. Confirming the visible surface is
-the owner's, in the running app. A useful agent contribution is a static
-pre-flight — grep the exact strings a change relies on against the committed
-source — not a re-run of already-green suites.
+Rendered UI is the one thing the suites cannot cover, so confirming the visible
+surface is the owner's, in the running app. A useful agent contribution is a
+static pre-flight — grep the exact strings a change relies on against the
+committed source — not a re-run of already-green suites.
+
+When a change needs a person to look, file that check on the card as
+`- [ ] Human test: <what to check>` — `gavin_request_human(card, "test", text)`,
+or by hand in that spelling. It waits in the Decisions tab with the card until
+the owner passes or fails it, and a failure comes back to you with their note
+and the box still unticked; re-file the identical text once you have fixed it
+and the same item re-arms. This is for checks only a person can run — another
+machine, a real install, a judgement about what the screen looks like. It is not
+the retired smoke checklist returning: anything a suite can reach is yours to
+run, and a card padded with human tests is a backlog nobody asked for.
 
 ## Commit messages and descriptions
 

@@ -26,6 +26,18 @@ vi.mock("$lib/core/layoutState", async () => {
     setSessionStatusHook: vi.fn((hook) => {
       captured.hook = hook;
     }),
+    // `startTurnVerdict` also starts the tray's half of the feature
+    // (verdictNoticeState.ts), which registers into this second slot.
+    // Its own behaviour is tested there; here it only has to exist, so
+    // that start and stop stay one call each.
+    layoutState: w({
+      sessionStatusById: {} as Record<string, string>,
+      sessionNames: {} as Record<string, string>,
+      cwdBySessionId: {} as Record<string, string>,
+      workspaces: [] as unknown[],
+    }),
+    notifyPrefsFor: vi.fn(() => ({ needsInput: true, finished: true })),
+    setStatusNoticeHold: vi.fn(),
   };
 });
 

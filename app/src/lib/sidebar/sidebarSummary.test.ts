@@ -799,10 +799,15 @@ describe("Sidebar attention badge wiring", () => {
   const sidebar = source("Sidebar.svelte");
 
   it("counts a workspace's waiting agents with workspaceAgentsSummary", () => {
-    // Off `attentionState` -- the layout with a wait the human has marked
-    // as read shown as idle (sessionRead.ts). This badge exists to make
-    // somebody look; a wait they have already looked at is not one.
-    expect(sidebar).toContain("return workspaceAgentsSummary(ws, $attentionState).waiting;");
+    // Off `verdictAttentionState` -- the layout with a wait the human
+    // has marked as read shown as idle (sessionRead.ts) and a question
+    // asked in prose shown as a wait (verdictAttention.ts). This badge
+    // exists to make somebody look: a wait they have already looked at
+    // is not one, and a question the daemon calls `idle` is the one they
+    // never saw.
+    expect(sidebar).toContain(
+      "return workspaceAgentsSummary(ws, $verdictAttentionState).waiting;"
+    );
   });
 
   it("draws the page badge off the recap that row already computed", () => {

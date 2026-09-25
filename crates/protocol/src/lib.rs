@@ -18,6 +18,67 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v42 adds `FileHumanItem` and `ResolveHumanItem`: the two writes behind
+/// the Decisions tab, where a card's checklist carries the questions and
+/// the hands-on checks that are the human's to settle
+/// (`tb-developed-feat-decisions-tab.md`). Two new TYPES, gated by
+/// `min_version_for`, so an older daemon never receives either.
+///
+/// The same version also widens `PlanFileInfo` with `human_items`, the
+/// parsed reading of those checklist lines, and THAT half is the one a
+/// version match cannot see. It is `Option<Vec<_>>` rather than the
+/// `serde(default)` `Vec` `attachments` uses, and deliberately: the tree
+/// crosses the Tauri host, which deserializes and re-serializes it, so a
+/// defaulted `Vec` would turn "this daemon never looked" into "this card
+/// has nothing waiting" on the way through -- the `orphan` reading at
+/// v24, one layer further out. `None` survives that round trip as `null`,
+/// which is what lets the tab say "unknown" instead of inventing an empty
+/// list. The app's `FEATURE_MIN_VERSION` entry and its
+/// `featureBlockedReason` consumer belong with the tab itself
+/// (`decisions-tab-view.md`); an entry landed here, with nothing reading
+/// it, would be a dead gate.
+///
+/// v42 makes a phone a device this daemon knows: `BeginPairing`,
+/// `ConfirmPairing`, `RejectPairing`, `ListDevices`, `RevokeDevice`,
+/// `RevokeAllDevices` and `SetRemoteAccess`, with `PairingOffer`,
+/// `Devices` and the three device pushes to answer them
+/// (`docs/security/05-remote-access.md` §3, §7 "Phase 2 additions").
+///
+/// Seven new request TYPES, so `min_version_for` is the whole wire gate
+/// and an older daemon is never sent one: the bump is invisible to older
+/// clients by construction. The app still owes
+/// `FEATURE_MIN_VERSION.remoteAccess` for the COPY, because a Settings
+/// panel that simply hides its Remote access section against a v41
+/// daemon leaves the human with no way to tell "gavin cannot do this"
+/// from "gavin has not been updated" -- and the panel's own promise
+/// (revocation reaches a phone at 02:00) is exactly the one nobody
+/// should have to guess at.
+///
+/// Stored and INERT. Nothing here dials a relay or binds a listener:
+/// `SetRemoteAccess` writes two values into the trust store and
+/// `BeginPairing` mints a two-minute secret, and phase 3's `remote.rs`
+/// is what finally carries a handshake. The pairing handshake itself is
+/// not on this wire at all -- it is Noise over a byte stream
+/// (`daemon/src/pairing.rs`), and the only part of it the app ever sees
+/// is the six-digit `sas` in `DevicePairingRequested`.
+///
+/// `GrantInput` / `RevokeInputGrant` are NOT here, though §7 lists them
+/// among the phase-2 additions: §10 lands grants in phase 5 with the
+/// input path they gate, and the parent card settles the contradiction
+/// in §10's favour.
+///
+/// v42 adds the eight requests that finish the Git tab and Files tree on
+/// another machine (`2026-09-23-ssh-git-sync-and-conflicts-design.md`):
+/// `RunGitStreaming` + `CancelGitOp` (fetch/pull/push, which outlive a
+/// request/reply and stream their progress), `WatchGitWorktree` +
+/// `UnwatchGitWorktree` (the tab's live refresh, which the desktop's
+/// `notify` watch cannot do for a tree on a host), `RunGitEnv`
+/// (cherry-pick and `--continue`, which need GIT_EDITOR), and
+/// `CreateWorkspacePath` / `RenameWorkspacePath` / `TrashWorkspacePath`
+/// (the Files tree's mutations). Eight new TYPES, gated by
+/// `min_version_for`; the app mirrors them as
+/// FEATURE_MIN_VERSION.sshGitSync against the HOST's version.
+///
 /// v41 adds `RunGit` and `ListWorkspaceDir`: the Git tab's git subcommands
 /// and the Files tree's directory listing, run on a daemon on another
 /// machine (`2026-09-22-ssh-git-files-design.md`). Two new TYPES, gated by
@@ -392,7 +453,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 41;
+pub const PROTOCOL_VERSION: u32 = 42;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -664,6 +725,94 @@ pub enum Request {
         root_path: String,
         path: String,
     },
+    /// `RunGit` with an environment, for the two callers that need
+    /// `GIT_EDITOR=true` so a cherry-pick or a `rebase --continue` never
+    /// waits on an editor nobody can see (v42). Its own request rather
+    /// than an `env` field on `RunGit`, because `min_version_for` gates
+    /// TYPES and not payloads: a v41 host would parse the widened
+    /// request, drop the environment in silence, and hang on the editor.
+    /// `env` is an allow-list of one key, `GIT_EDITOR` -- an arbitrary
+    /// environment is a way to point git at a program, which is the
+    /// reach `RunGit`'s fixed-binary rule exists to deny.
+    RunGitEnv {
+        root_path: String,
+        cwd: String,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    },
+    /// Starts a long-running git network op (fetch/pull/push) in a
+    /// confined cwd and streams its progress back on THIS connection: a
+    /// `GitOpProgress` per line git writes, then one `GitOpDone` (v42).
+    ///
+    /// Sent on the STREAMING connection like `Attach` and
+    /// `WatchGavinRoot`, and for the same reason those are intercepted:
+    /// the answer is a push in its own time, not a value a reply could
+    /// carry. A fetch of a large repo runs for minutes, and putting it
+    /// on the request/reply connection would queue every other thing the
+    /// desktop asks this host behind it.
+    ///
+    /// `op_id` is the desktop's own id for the op, echoed on every push
+    /// so two workspaces on one host cannot cross their streams.
+    RunGitStreaming {
+        root_path: String,
+        cwd: String,
+        args: Vec<String>,
+        op_id: String,
+    },
+    /// Kills a running `RunGitStreaming`'s child; its `GitOpDone` then
+    /// reports `cancelled` (v42). Request/reply on the COMMAND
+    /// connection, deliberately: a cancel queued behind the op it is
+    /// cancelling never arrives.
+    CancelGitOp {
+        op_id: String,
+    },
+    /// Watches a git worktree under the root for the Git tab of a
+    /// workspace on another machine, pushing `GitWorktreeChanged` on THIS
+    /// connection when something the tab renders from changes (v42).
+    /// Never a poll: `git_status.rs` records what a cadenced `git status`
+    /// does to `.git/index.lock`, and a network round trip does not
+    /// improve it.
+    WatchGitWorktree {
+        root_path: String,
+        cwd: String,
+    },
+    /// Drops one reference to a `WatchGitWorktree`; the watch ends when
+    /// the last goes (v42). A connection that closes drops every watch it
+    /// held without this.
+    UnwatchGitWorktree {
+        root_path: String,
+        cwd: String,
+    },
+    /// Creates an empty file, or one directory, under a watched root, for
+    /// the Files tree of a workspace on another machine (v42). One
+    /// request for both because they differ by one `fs` call and share
+    /// every rule: never `create_dir_all`, and an existing target refused
+    /// by the filesystem itself rather than by a check with a window
+    /// between it and the write.
+    CreateWorkspacePath {
+        root_path: String,
+        path: String,
+        directory: bool,
+    },
+    /// Renames or moves an entry inside the root (v42). Both ends
+    /// confined and the destination must not exist: `fs::rename`
+    /// overwrites silently on unix, which would turn a mistyped rename
+    /// into a delete with no trip through the Trash.
+    RenameWorkspacePath {
+        root_path: String,
+        from: String,
+        to: String,
+    },
+    /// Moves an entry to the HOST's Trash -- the freedesktop trash, the
+    /// Recycle Bin, or `NSFileManager`'s -- never `rm` (v42). The
+    /// desktop's promise is that nothing gavin removes on the human's
+    /// behalf is unrecoverable, and it does not lapse because the disk is
+    /// on another machine. The confirmation stays on the desktop, where
+    /// the human is.
+    TrashWorkspacePath {
+        root_path: String,
+        path: String,
+    },
     /// Canonical plan authoring for agents. Validated daemon-side; never
     /// overwrites.
     CreatePlan {
@@ -752,6 +901,47 @@ pub enum Request {
     PromoteChecklistItem {
         plan_path: String,
         item: String,
+    },
+    /// Appends a `Decision:` or `Human test:` checklist line to a card --
+    /// an agent saying, in the card itself, that it cannot go further
+    /// without the human (v42). The card's checklist is where it lands
+    /// because that is where the answer has to be readable from later:
+    /// the next agent to pick the card up reads the answer beside the
+    /// question, with no second store to consult.
+    ///
+    /// `options` is the shortlist a decision offers, written as the
+    /// item's indented `Options:` line. Empty for a test, and empty for
+    /// a decision that is genuinely open-ended.
+    ///
+    /// Re-filing an identical TEST whose last result was a failure
+    /// re-arms it (an appended `Ready for re-test (date)`) rather than
+    /// appending a second copy: an agent that fixed what the human found
+    /// broken is asking for the same check again, not for a second one,
+    /// and a card that accumulated a line per attempt would bury the
+    /// history it is supposed to show.
+    FileHumanItem {
+        path: String,
+        kind: HumanItemKind,
+        text: String,
+        #[serde(default)]
+        options: Vec<String>,
+    },
+    /// Writes the human's answer under a `Decision:`/`Human test:` item
+    /// and ticks it (v42). `expected_text` is the item line's raw
+    /// remainder, guarded exactly as `SetChecklistItem` guards it: a
+    /// mismatch means an agent rewrote the card under the tab, and the
+    /// write is refused rather than aimed at whatever now sits there.
+    ///
+    /// There is no `line_index` beside it, unlike `SetChecklistItem`:
+    /// the tab's rows come from a tree snapshot that a card edit can
+    /// have moved since, so an index would be the stale half of the
+    /// pair. Two items with identical text are refused as ambiguous
+    /// instead -- `promote_checklist_item`'s posture, and the same
+    /// reason.
+    ResolveHumanItem {
+        path: String,
+        expected_text: String,
+        outcome: HumanItemOutcome,
     },
     /// Upserts a card file's live session binding (by workspace + path).
     LinkCardSession {
@@ -1019,6 +1209,62 @@ pub enum Request {
         auth: HelloAuth,
         nonce: String,
     },
+
+    // -- Remote access, phase 2 (v42) ---------------------------------
+    //
+    // The seven requests §7's "Phase 2 additions" sketches, minus the two
+    // grant variants §10 puts in phase 5. Every one of them is `app`-only
+    // in `server::authorize`: the gate here is the ROLE, not the version,
+    // because pairing a phone is the one act that widens who can reach
+    // this machine and §3 puts the human at the desktop for it.
+    /// Mint a one-time pairing secret and return the QR the phone scans
+    /// (§3, "The ceremony"). The secret expires two minutes later, and a
+    /// second `BeginPairing` replaces the first -- there is one offer at
+    /// a time, because the human is looking at one QR at a time.
+    BeginPairing,
+    /// The human compared the two six-digit codes and pressed confirm
+    /// (§3). This is the ONLY request that writes a row into
+    /// `devices.sqlite`; before it the device does not exist, no matter
+    /// how far the handshake got.
+    ConfirmPairing {
+        device_id: String,
+    },
+    /// The human pressed reject: discard the pending handshake without
+    /// writing anything.
+    ///
+    /// §3 has no reject -- it describes confirm and says nothing about
+    /// the other button -- but a dialog whose only exit is "yes" is not a
+    /// confirmation, and the phone deserves an answer faster than the
+    /// two-minute expiry.
+    RejectPairing {
+        device_id: String,
+    },
+    /// Every paired device, revoked ones included, plus the remote-access
+    /// settings `SetRemoteAccess` wrote. See `Response::Devices` for why
+    /// the settings ride along.
+    ListDevices,
+    /// Revoke one device: mark the row and drop every live connection
+    /// carrying its id (§3, "Revocation").
+    RevokeDevice {
+        device_id: String,
+    },
+    /// Revoke every device AND rotate the daemon's static key, which
+    /// invalidates every phone at once even if `devices.sqlite` is later
+    /// restored from a backup, because each phone pinned the old key
+    /// (§3). The one-button answer to a lost phone.
+    RevokeAllDevices,
+    /// Store whether remote access is on and which relay to reach this
+    /// daemon through.
+    ///
+    /// Stored and inert in this phase: nothing dials and nothing listens
+    /// until phase 3's `remote.rs`. `relay_url` is `None` for "no relay,
+    /// LAN only" and is kept RAW -- the daemon has no opinion about which
+    /// relay the human self-hosts (§11 Q2).
+    SetRemoteAccess {
+        enabled: bool,
+        relay_url: Option<String>,
+    },
+
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
     /// a daemon it owns without `pkill`, which cannot distinguish this
@@ -1189,6 +1435,53 @@ pub fn min_version_for(req: &Request) -> u32 {
         // mirrors them as FEATURE_MIN_VERSION.sshGitFiles, checked
         // against the HOST daemon's version.
         Request::RunGit { .. } | Request::ListWorkspaceDir { .. } => 41,
+        Request::RunGitEnv { .. }
+        | Request::RunGitStreaming { .. }
+        | Request::CancelGitOp { .. }
+        | Request::WatchGitWorktree { .. }
+        | Request::UnwatchGitWorktree { .. }
+        | Request::CreateWorkspacePath { .. }
+        | Request::RenameWorkspacePath { .. }
+        | Request::TrashWorkspacePath { .. } => 42,
+
+        // The Decisions tab's two writes (v42). New TYPES, so this match
+        // is the real wire gate for them -- but it is only half of v42,
+        // and the other half is the one that bites: the same version
+        // widens `PlanFileInfo` with `human_items`, which this match
+        // sorts by TYPE and cannot see. An older daemon serves a tree
+        // with no items at all, which is "unknown" and not "none" --
+        // hence the `Option` on the field, and hence the
+        // FEATURE_MIN_VERSION entry the TAB owes, beside the
+        // `featureBlockedReason` that reads it. There is none here on
+        // purpose: an entry with no consumer is a dead gate.
+        Request::FileHumanItem { .. } | Request::ResolveHumanItem { .. } => 42,
+        // Remote access, phase 2 (v42). Seven new TYPES and not one
+        // widened payload, which is what makes this bump invisible to an
+        // older client BY CONSTRUCTION: a v41 daemon answers `Unsupported`
+        // from the `#[serde(other)]` arm, `gate_request` stops the app
+        // sending them at all, and there is no field for an older daemon
+        // to parse-and-discard -- the failure mode CLAUDE.md warns about
+        // (a widened request stored as a broken row) cannot arise here.
+        //
+        // The app still owes FEATURE_MIN_VERSION.remoteAccess, for the
+        // reason `SessionProcesses` and `turnVerdict` owe theirs: refusing
+        // to SEND decides nothing about what to show instead, and a
+        // Remote access panel that silently vanishes against an older
+        // daemon reads as "gavin cannot do this" rather than "restart
+        // gavin". Its consumers are that panel's own surfaces, which the
+        // settings task lands.
+        //
+        // The version is not the real gate here either way -- the ROLE is.
+        // `server::authorize` allows these to `app` alone: `agent` and
+        // `remote` are refused outright, because pairing a device is the
+        // act that decides who else can reach this machine.
+        Request::BeginPairing
+        | Request::ConfirmPairing { .. }
+        | Request::RejectPairing { .. }
+        | Request::ListDevices
+        | Request::RevokeDevice { .. }
+        | Request::RevokeAllDevices
+        | Request::SetRemoteAccess { .. } => 42,
 
         Request::Shutdown => 12,
 
@@ -1467,6 +1760,57 @@ pub fn server_proof(daemon_token: &str, nonce: &str) -> String {
     hmac_sha256_hex(daemon_token.as_bytes(), nonce.as_bytes())
 }
 
+/// The domain separator for `pairing_sas`. A fixed ASCII prefix so this
+/// digest can never collide with another SHA-256 in this system, and a
+/// version in the string so a future change to the derivation is a
+/// DIFFERENT code rather than the same six digits meaning two things.
+const PAIRING_SAS_CONTEXT: &[u8] = b"gavin-pairing-sas-v1";
+
+/// The six-digit short authentication string both screens show during
+/// pairing (§3, "The ceremony").
+///
+/// **The derivation, exactly, because the phone has to reproduce it:**
+///
+/// ```text
+/// lo     = min(key_a, key_b)            // bytewise lexicographic
+/// hi     = max(key_a, key_b)
+/// digest = SHA-256("gavin-pairing-sas-v1" || lo || hi)
+/// sas    = u64::from_be_bytes(digest[0..8]) % 1_000_000
+/// shown  = sas, zero-padded to six digits ("000042", never "42")
+/// ```
+///
+/// The two keys are SORTED rather than ordered initiator-then-responder,
+/// so each side computes the code from what it holds without first
+/// agreeing on who is who -- and so a transcript that swapped the roles
+/// could not produce a matching code by accident.
+///
+/// Truncated at eight bytes, not four: taking a u64 modulo a million
+/// leaves a bias of about one part in 10^13, which is nothing, where a
+/// u32 would leave one part in 10^6. Neither is a real attack -- the code
+/// is compared by a human in front of two screens -- but there is no
+/// reason to be the worse of the two.
+///
+/// Zero-padded, and that is load-bearing: a human comparing "42" against
+/// "000042" has been handed a puzzle instead of a check, and the whole
+/// ceremony rests on that comparison being trivially obvious.
+///
+/// Lives here rather than in the daemon's `pairing.rs` for the same
+/// reason `server_proof` does: it is a value two independent
+/// implementations must compute identically, so it belongs with the wire
+/// contract they are both written against. This crate is not what the
+/// phone links -- it is what the phone's author reads.
+pub fn pairing_sas(key_a: &[u8], key_b: &[u8]) -> String {
+    let (lo, hi) = if key_a <= key_b { (key_a, key_b) } else { (key_b, key_a) };
+    let mut h = Sha256::new();
+    h.update(PAIRING_SAS_CONTEXT);
+    h.update(lo);
+    h.update(hi);
+    let digest = h.finalize();
+    let mut head = [0u8; 8];
+    head.copy_from_slice(&digest[..8]);
+    format!("{:06}", u64::from_be_bytes(head) % 1_000_000)
+}
+
 /// Where the daemon writes its per-start token, `0600`, beside the socket.
 pub fn daemon_token_path() -> anyhow::Result<PathBuf> {
     Ok(app_support_dir()?.join(profile_file_name("daemon", "token", BuildProfile::current())))
@@ -1618,6 +1962,25 @@ pub enum Response {
     GitRun { stdout: Vec<u8>, stderr: String, code: i32 },
     /// `ListWorkspaceDir`'s answer, name-sorted like the local listing.
     WorkspaceDir { entries: Vec<WorkspaceDirEntry> },
+    /// One line of a `RunGitStreaming` op's progress (git draws it on
+    /// stderr, `\r`-separated), pushed on the connection that asked
+    /// (v42). The desktop re-emits it as the same `git-op-progress`
+    /// event its local runner produces, so the Git tab cannot tell which
+    /// machine ran the op.
+    GitOpProgress { op_id: String, line: String },
+    /// A `RunGitStreaming` op's end (v42): `error` is None on success,
+    /// and otherwise the message the desktop shows verbatim -- git's own
+    /// last words, or `cancelled` when a `CancelGitOp` took the child.
+    GitOpDone { op_id: String, error: Option<String> },
+    /// `CancelGitOp`'s answer: whether an op by that id was still running
+    /// to kill (v42). False is not an error -- an op that finished on its
+    /// own a moment before the cancel is the ordinary race.
+    GitOpCancelled { cancelled: bool },
+    /// A watched git worktree changed on this machine (v42), pushed on
+    /// the connection that asked. Carries the `cwd` it was watched under,
+    /// not the path that changed: the tab refreshes the whole view, and
+    /// the filter that decided this was worth saying already ran here.
+    GitWorktreeChanged { cwd: String },
     PlanCreated { path: String },
     AgentSessionSpawned { workspace_id: String, session_id: String, cwd: String, command: String },
     /// Push: an agent renamed its own tab. The app applies it through the
@@ -1625,6 +1988,15 @@ pub enum Response {
     SessionNamed { session_id: String, name: String },
     ProtocolVersion { version: u32 },
     TaskPromoted { path: String },
+    /// A `FileHumanItem` that landed. `rearmed` says which of the two
+    /// things happened: a new marker line appended, or an existing
+    /// failed test armed again with a `Ready for re-test (date)`.
+    ///
+    /// Worth a reply of its own rather than a bare `Ok` because the
+    /// filer acts on it -- an agent told "re-armed" knows the human
+    /// already failed this check once and that the card carries their
+    /// note about why.
+    HumanItemFiled { rearmed: bool },
     /// A frontmatter write, answered with the card's path AFTERWARDS: a
     /// status write can archive the file into `plans/done/` (or bring it
     /// back), and callers hold that path as the card's identity.
@@ -1671,6 +2043,130 @@ pub enum Response {
     /// this variant -- so an old client never meets a `Response` shape it
     /// cannot parse.
     Forbidden { request_type: String, role: String },
+
+    // -- Remote access, phase 2 (v42) ---------------------------------
+    /// `BeginPairing`'s answer: the string the app renders as a QR, and
+    /// when it stops being valid.
+    ///
+    /// `qr` is `PairingQr`'s compact JSON rather than the struct, because
+    /// what the phone's camera hands its parser is a STRING -- putting
+    /// the fields here as a nested object would make the daemon's wire
+    /// shape and the QR's two different documents that have to be kept
+    /// in step. `expires_at` is wall-clock epoch SECONDS, like
+    /// `CardRun::started_at`, so the app can count down without knowing
+    /// the daemon's clock resolution.
+    PairingOffer { qr: String, expires_at: i64 },
+    /// `ListDevices`'s answer.
+    ///
+    /// The remote-access settings ride along rather than getting a
+    /// request of their own. §7 sketches this as `Devices { devices }`
+    /// and the phase-2 card repeats it, but `SetRemoteAccess` with no
+    /// reader is a write-only setting: the panel that owns the toggle
+    /// cannot draw its own state, and a second request TYPE for two
+    /// scalars would be a second `min_version_for` arm and a second
+    /// round trip for one screen. Widening a response variant introduced
+    /// in the SAME version costs nothing -- no peer older than 42 ever
+    /// receives one.
+    Devices { devices: Vec<DeviceInfo>, remote_access_enabled: bool, relay_url: Option<String> },
+    /// Push to every live `app` connection: a phone has completed the
+    /// pairing handshake and is waiting on the human (§3).
+    ///
+    /// `sas` is the six digits BOTH screens show. The human compares them
+    /// and confirms on the desktop; `device_id` is what `ConfirmPairing`
+    /// or `RejectPairing` then names. If no `app` connection is live when
+    /// this would be pushed, the daemon refuses the pairing instead --
+    /// "the human keeps the wheel, and a wheel with nobody at it is a
+    /// refusal, not a wait" (§7).
+    DevicePairingRequested { device_id: String, name: String, sas: String },
+    /// Push to every live `app` connection: a paired device's connection
+    /// opened. Nothing produces one in phase 2 -- there is no transport
+    /// yet -- beyond the tests that build a device-carrying connection
+    /// directly; phase 3's `remote.rs` is what makes it routine.
+    DeviceConnected { device_id: String },
+    /// Push to every live `app` connection: a paired device's connection
+    /// closed, whether it hung up or a revocation cut it.
+    DeviceDisconnected { device_id: String },
+}
+
+/// One row of the trust store, as the Settings device list reads it
+/// (`daemon/src/trust.rs`'s `Device`, minus the static public key).
+///
+/// The key is deliberately NOT on the wire. Nothing in the app can do
+/// anything with it -- the daemon is what matches a handshake against the
+/// store -- and a public key on screen invites a human to compare it by
+/// eye, which is the job the six-digit SAS exists to do properly.
+///
+/// `stale` is computed by the DAEMON rather than derived in the app from
+/// `last_seen_at`. The ninety-day window is §3's rule and the daemon is
+/// what enforces it; an app that re-derived it would be a second opinion
+/// that can disagree, and the row it greys out has to be the row the
+/// daemon will actually refuse.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceInfo {
+    pub device_id: String,
+    pub name: String,
+    /// `remote` for a paired phone; `app` is reserved for §9's ssh case.
+    /// Kept as a string, like `SessionSummary::status`, so a row written
+    /// by a newer daemon reaches the app as the word it was written with
+    /// rather than being flattened into something this build invented.
+    pub role: String,
+    /// Wall-clock epoch seconds, all three.
+    pub created_at: i64,
+    pub last_seen_at: i64,
+    /// `None` for a device that is still trusted.
+    pub revoked_at: Option<i64>,
+    /// Unseen for ninety days: shown greyed with "re-pair to use", and
+    /// refused until it is paired again (§3, "How many, for how long").
+    pub stale: bool,
+}
+
+/// What the pairing QR carries, and the whole of what it carries (§3,
+/// "What the QR carries").
+///
+/// §3's "What it must not carry" is the other half of this struct's
+/// definition, and it is a test rather than a comment
+/// (`the_qr_payload_carries_only_what_section_3_allows`): the daemon's
+/// PRIVATE key, any bearer token that outlives the two-minute window, any
+/// token that alone grants access -- "a photograph of the screen must not
+/// be a device" -- the relay's own credentials, and the phone's key
+/// (which the phone mints and never sends anywhere but into the
+/// handshake).
+///
+/// The `secret` in here is not a counter-example to that list. It is one
+/// factor of two: it expires in two minutes, and on its own it reaches
+/// nothing, because a device only exists after a human has compared a
+/// six-digit code derived from BOTH static keys and pressed confirm on
+/// the desktop. That is precisely why §3 rejects a bare-token QR.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingQr {
+    /// The daemon's Noise static PUBLIC key, hex-encoded. The phone pins
+    /// it, which is what makes "Revoke all devices" (a key rotation)
+    /// invalidate every phone at once.
+    pub daemon_public_key: String,
+    /// The one-time pairing secret, hex-encoded: 32 bytes, used as the
+    /// Noise pre-shared key and valid until `PairingOffer::expires_at`.
+    pub secret: String,
+    /// Where to reach this daemon: a relay URL, a LAN `host:port`, or
+    /// both, in the order to try them. EMPTY in phase 2 unless the human
+    /// has set a relay URL, and empty is honest -- there is no transport
+    /// yet, so there is nowhere to point.
+    pub rendezvous: Vec<String>,
+    /// The daemon's protocol version, so a phone can say "this gavin is
+    /// too old for me" before it starts a handshake rather than after.
+    pub protocol_version: u32,
+}
+
+impl PairingQr {
+    /// The exact string the QR encodes: compact JSON, no whitespace.
+    pub fn to_qr_string(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        Ok(serde_json::from_str(s)?)
+    }
 }
 
 /// A session's git status, deduped daemon-side by repo root (many sessions
@@ -2384,6 +2880,95 @@ pub enum CardKind {
     Plan,
 }
 
+/// What a `Decision:` / `Human test:` checklist line is asking of the
+/// human: a call to make, or a check to run by hand.
+///
+/// Two and not three: "decision" covers every question whose answer is
+/// words, and "test" every one whose answer is pass or fail. The
+/// distinction is load-bearing because only a test can FAIL -- and a
+/// failed test goes back to the agent while an unanswered decision waits
+/// on the human, which is the difference the tab's waiting count turns
+/// on.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HumanItemKind {
+    Decision,
+    Test,
+}
+
+/// Where a human item stands, read off the last `Answer (date):` /
+/// `Result (date):` / `Ready for re-test (date)` line under it.
+///
+/// Distinct from the checkbox, which is not enough on its own: a failed
+/// test is unticked and so is one nobody has looked at yet, and the tab
+/// has to tell "waiting on you" from "back with the agent". `Open` is
+/// also what a re-armed test reads as, which is the whole point of
+/// re-arming it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HumanItemState {
+    Open,
+    Answered,
+    Passed,
+    Failed,
+}
+
+/// What the human chose, on the way back down the wire.
+///
+/// `Fail` and `FailAndClose` carry the same note and differ only in the
+/// checkbox: a plain fail leaves the item open so the agent sees it
+/// still owes the work, and fail-and-close is the human overruling that
+/// -- the check failed and is not going to be re-run. Keeping them as
+/// two outcomes rather than a `close: bool` flag is what makes the
+/// second one a deliberate act at every call site.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum HumanItemOutcome {
+    Answer { text: String },
+    Pass,
+    Fail { note: String },
+    FailAndClose { note: String },
+}
+
+/// One `Decision:` / `Human test:` checklist line, parsed.
+///
+/// Crosses to the frontend, so camelCase like `PlanFileInfo`, verified by
+/// a shape test below.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HumanItem {
+    pub kind: HumanItemKind,
+    /// The question or the check, with the marker stripped: the
+    /// `Which serializer?` of `Decision: Which serializer?`.
+    pub text: String,
+    /// The checkbox. Not the same question as `state`: a fail-and-close
+    /// is ticked and failed, a plain fail is unticked and failed, and a
+    /// human who ticked the box by hand in an editor is done with it
+    /// whatever the lines underneath say.
+    pub done: bool,
+    /// The item's indented `Options:` line, split into its choices.
+    /// Empty when there is no such line -- an open-ended question, or a
+    /// test, which never has one.
+    pub options: Vec<String>,
+    /// The last `Answer (date): …` / `Result (date): …` / `Ready for
+    /// re-test (date)` line under the item, verbatim and un-indented, or
+    /// None for an item nobody has touched. Kept raw because the tab
+    /// SHOWS it: the date and the note are the record, and re-deriving
+    /// them from `state` would throw away the half a person reads.
+    pub latest: Option<String>,
+    pub state: HumanItemState,
+    /// The line's raw remainder -- marker included, the `Decision: Which
+    /// serializer?` -- which is what `ResolveHumanItem` and
+    /// `SetChecklistItem` both guard on. Distinct from `text`, which has
+    /// the marker stripped for display.
+    pub line_text: String,
+    /// Where the line sits in the file, counting from zero. A stable key
+    /// for a tab row within one snapshot; NOT a write guard -- the card
+    /// can have moved under it, which is why `ResolveHumanItem` matches
+    /// on `line_text` instead.
+    pub line_index: u32,
+}
+
 /// One card file inside a `.gavin*/plans/` folder, with its frontmatter
 /// parsed (kind/title/status/priority/order/parent/labels) and its body
 /// checklist counted. `parse_warning` covers an unterminated frontmatter
@@ -2467,6 +3052,20 @@ pub struct PlanFileInfo {
     /// `serde(default)` so an older daemon's tree still parses.
     #[serde(default)]
     pub model: Option<String>,
+    /// The card's `Decision:` / `Human test:` checklist lines, parsed
+    /// (v42) -- everything on this card that is waiting on a person.
+    ///
+    /// `Option<Vec<_>>`, not the `serde(default)` `Vec` the fields above
+    /// use, and the difference is the whole point. This tree is read by
+    /// the daemon, deserialized by the Tauri host and re-serialized to
+    /// the frontend, so a defaulted `Vec` would reach the tab as an
+    /// empty list whether the daemon parsed nothing or never looked --
+    /// and the tab would report "nothing waiting on you" for a workspace
+    /// whose daemon simply predates the feature. `None` survives the
+    /// round trip as `null`, which is the honest "unknown"; `Some(vec![])`
+    /// is a daemon that looked and found none.
+    #[serde(default)]
+    pub human_items: Option<Vec<HumanItem>>,
 }
 
 /// A markdown file in a context's docs/ or specs/ listing. `rel_path` is
@@ -2893,7 +3492,7 @@ pub fn resolve_app_support_dir(
     let xdg = xdg_data_home
         .filter(|x| !x.is_empty())
         .map(PathBuf::from)
-        .filter(|x| x.is_absolute());
+        .filter(|x| xdg_path_is_absolute(x));
     if let Some(xdg) = xdg {
         return Ok(xdg.join("gavin"));
     }
@@ -2901,6 +3500,25 @@ pub fn resolve_app_support_dir(
         anyhow::anyhow!("neither XDG_DATA_HOME nor HOME is set, so gavin has nowhere to keep its socket and databases")
     })?;
     Ok(PathBuf::from(home).join(".local").join("share").join("gavin"))
+}
+
+/// Whether an `XDG_DATA_HOME` value is absolute *by the spec's rule*,
+/// which is POSIX's: a leading `/`.
+///
+/// Deliberately not `Path::is_absolute`. That answers for the OS running
+/// this process, not the `HostOs` being asked about, and on Windows it
+/// is false for `/data/gavin-home` because an absolute Windows path
+/// needs a drive prefix. `resolve_app_support_dir` takes its OS as an
+/// argument precisely so that the answer does not depend on who is
+/// asking -- the doc comment there says so -- and a host-dependent
+/// check reintroduced the dependency at the one place that reads a
+/// path. The XDG branch is unreachable on Windows in production, the
+/// Windows branch having returned already, so the only thing this ever
+/// broke was the suite: three tests stating the Linux rule got the
+/// `HOME` fallback instead of the data home and had been red on every
+/// Windows run since the port.
+fn xdg_path_is_absolute(path: &Path) -> bool {
+    path.as_os_str().as_encoded_bytes().first() == Some(&b'/')
 }
 
 /// Every path gavin puts on the wire or into the UI uses forward
@@ -3055,7 +3673,6 @@ mod tests {
     /// says which version the host needs (`FEATURE_MIN_VERSION.sshGitFiles`).
     #[test]
     fn git_and_dir_requests_are_gated_at_41() {
-        assert_eq!(PROTOCOL_VERSION, 41);
         let run = Request::RunGit {
             root_path: "/r".into(),
             cwd: "/r".into(),
@@ -3068,6 +3685,384 @@ mod tests {
             assert!(gate_request(req, 40).is_err());
             assert!(gate_request(req, 41).is_ok());
         }
+    }
+
+    /// v42: the Decisions tab's two writes. New TYPES, so this match is
+    /// the wire gate for them -- a v41 daemon never receives either.
+    #[test]
+    fn human_item_requests_are_gated_at_42() {
+        assert_eq!(PROTOCOL_VERSION, 42);
+        let file = Request::FileHumanItem {
+            path: "/r/.gavin-root/plans/a.md".into(),
+            kind: HumanItemKind::Test,
+            text: "install on the other machine".into(),
+            options: vec![],
+        };
+        let resolve = Request::ResolveHumanItem {
+            path: "/r/.gavin-root/plans/a.md".into(),
+            expected_text: "Human test: install on the other machine".into(),
+            outcome: HumanItemOutcome::Fail { note: "the installer hung".into() },
+        };
+        for req in [&file, &resolve] {
+            assert_eq!(min_version_for(req), 42);
+            assert!(gate_request(req, 41).is_err());
+            assert!(gate_request(req, 42).is_ok());
+        }
+    }
+
+    /// v42: what finishes the Git tab and Files tree on a host -- the
+    /// streaming network ops and their cancel, the worktree watch, the
+    /// env-carrying run, and the three tree mutations
+    /// (`2026-09-23-ssh-git-sync-and-conflicts-design.md`). All new
+    /// TYPES, so this match is the wire gate a v41 host is held to, and
+    /// `FEATURE_MIN_VERSION.sshGitSync` is the app's mirror of it.
+    #[test]
+    fn git_sync_and_tree_requests_are_gated_at_42() {
+        assert_eq!(PROTOCOL_VERSION, 42);
+        let reqs = [
+            Request::RunGitEnv {
+                root_path: "/r".into(),
+                cwd: "/r".into(),
+                args: vec!["cherry-pick".into()],
+                env: vec![("GIT_EDITOR".into(), "true".into())],
+            },
+            Request::RunGitStreaming {
+                root_path: "/r".into(),
+                cwd: "/r".into(),
+                args: vec!["fetch".into()],
+                op_id: "op-1".into(),
+            },
+            Request::CancelGitOp { op_id: "op-1".into() },
+            Request::WatchGitWorktree { root_path: "/r".into(), cwd: "/r".into() },
+            Request::UnwatchGitWorktree { root_path: "/r".into(), cwd: "/r".into() },
+            Request::CreateWorkspacePath { root_path: "/r".into(), path: "a.txt".into(), directory: false },
+            Request::RenameWorkspacePath { root_path: "/r".into(), from: "a".into(), to: "b".into() },
+            Request::TrashWorkspacePath { root_path: "/r".into(), path: "a.txt".into() },
+        ];
+        for req in &reqs {
+            assert_eq!(min_version_for(req), 42);
+            assert!(gate_request(req, 41).is_err());
+            assert!(gate_request(req, 42).is_ok());
+        }
+    }
+
+    /// The four outcomes are a tagged union on the wire, and the tag
+    /// values are what the app's `backend.ts` wrapper types: a rename
+    /// here is a silent break there, so they are pinned.
+    #[test]
+    fn human_item_outcomes_serialize_to_the_shape_the_app_sends() {
+        let shape = |o: HumanItemOutcome| serde_json::to_value(o).unwrap();
+        assert_eq!(
+            shape(HumanItemOutcome::Answer { text: "serde".into() }),
+            serde_json::json!({ "kind": "answer", "text": "serde" })
+        );
+        assert_eq!(shape(HumanItemOutcome::Pass), serde_json::json!({ "kind": "pass" }));
+        assert_eq!(
+            shape(HumanItemOutcome::Fail { note: "crashed".into() }),
+            serde_json::json!({ "kind": "fail", "note": "crashed" })
+        );
+        assert_eq!(
+            shape(HumanItemOutcome::FailAndClose { note: "not worth it".into() }),
+            serde_json::json!({ "kind": "failAndClose", "note": "not worth it" })
+        );
+    }
+
+    /// Both requests survive the line protocol whole -- a decision's
+    /// options and a fail note are free text a human wrote, and the
+    /// daemon has to receive them as written.
+    #[test]
+    fn human_item_requests_roundtrip_through_json_line() {
+        let mut buf = Vec::new();
+        write_message(&mut buf, &Request::FileHumanItem {
+            path: "/r/.gavin-root/plans/a.md".to_string(),
+            kind: HumanItemKind::Decision,
+            text: "Which serializer?".to_string(),
+            options: vec!["serde".to_string(), "by hand (no dep)".to_string()],
+        })
+        .unwrap();
+        write_message(&mut buf, &Request::ResolveHumanItem {
+            path: "/r/.gavin-root/plans/a.md".to_string(),
+            expected_text: "Decision: Which serializer?".to_string(),
+            outcome: HumanItemOutcome::Answer { text: "serde — one dep, already in".to_string() },
+        })
+        .unwrap();
+        write_message(&mut buf, &Response::HumanItemFiled { rearmed: true }).unwrap();
+        let mut cursor = Cursor::new(buf);
+        match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
+            Request::FileHumanItem { path, kind, text, options } => {
+                assert_eq!(path, "/r/.gavin-root/plans/a.md");
+                assert_eq!(kind, HumanItemKind::Decision);
+                assert_eq!(text, "Which serializer?");
+                assert_eq!(options, vec!["serde", "by hand (no dep)"]);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match read_message::<_, Request>(&mut cursor).unwrap().unwrap() {
+            Request::ResolveHumanItem { expected_text, outcome, .. } => {
+                assert_eq!(expected_text, "Decision: Which serializer?");
+                assert_eq!(
+                    outcome,
+                    HumanItemOutcome::Answer { text: "serde — one dep, already in".to_string() }
+                );
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match read_message::<_, Response>(&mut cursor).unwrap().unwrap() {
+            Response::HumanItemFiled { rearmed } => assert!(rearmed),
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // `options` is serde(default): a caller that omits it entirely --
+        // gavin-mcp filing a test, which never has any -- still parses.
+        let parsed: Request = serde_json::from_str(
+            r#"{"type":"FileHumanItem","path":"/p/a.md","kind":"test","text":"check the installer"}"#,
+        )
+        .unwrap();
+        match parsed {
+            Request::FileHumanItem { kind, options, .. } => {
+                assert_eq!(kind, HumanItemKind::Test);
+                assert!(options.is_empty());
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// The reason `human_items` is an `Option<Vec<_>>` and not the
+    /// `serde(default)` `Vec` every other added field on `PlanFileInfo`
+    /// is. The tree crosses the Tauri host, which deserializes and
+    /// re-serializes it; a defaulted Vec would make an older daemon's
+    /// silence indistinguishable from a card with nothing waiting, and
+    /// the tab would report "nothing needs you" for a whole workspace.
+    #[test]
+    fn a_pre_v42_daemons_card_reads_back_as_unknown_not_as_no_items() {
+        let older: PlanFileInfo = serde_json::from_value(serde_json::json!({
+            "path": "/p/a.md",
+            "fileName": "a.md",
+            "title": "a",
+            "status": null,
+            "priority": null,
+            "order": null,
+            "kind": "plan",
+            "parent": null,
+            "labels": [],
+            "checklistDone": 0,
+            "checklistTotal": 0,
+            "parseWarning": false
+        }))
+        .unwrap();
+        assert_eq!(older.human_items, None);
+        // And it stays None through the round trip the host performs.
+        let relayed: PlanFileInfo =
+            serde_json::from_value(serde_json::to_value(&older).unwrap()).unwrap();
+        assert_eq!(relayed.human_items, None);
+        assert_eq!(
+            serde_json::to_value(&older).unwrap().get("humanItems"),
+            Some(&serde_json::Value::Null)
+        );
+    }
+
+    /// Every remote-access request the phase-2 card names has a
+    /// `min_version_for` arm at the NEW version, and no grant request
+    /// does.
+    ///
+    /// The card asks for this test by name, and it is worth saying what
+    /// it catches that the band-count test above does not: that one pins
+    /// how many variants sit in each band, so it fires when a variant is
+    /// added to an OLD band. This one fires the other way -- when one of
+    /// these seven is quietly re-attributed to 41 to avoid a bump, or
+    /// when a grant request creeps in from §7's list that §10 puts in
+    /// phase 5.
+    ///
+    /// It asks whether the seven are IN the band, not whether they are
+    /// the whole of it: v42 is shared with the Decisions tab's two
+    /// writes, which landed in the same bump. Policing what else sits at
+    /// 42 belongs to the band-count test above, which counts all nine --
+    /// asserting the whole band here would just be that test again, and
+    /// would red every time an unrelated feature shared a version.
+    #[test]
+    fn every_remote_access_request_is_gated_at_the_new_version() {
+        assert_eq!(PROTOCOL_VERSION, 42, "these are the CURRENT version's variants");
+
+        let new_at_42: Vec<Request> = one_of_every_request_variant()
+            .into_iter()
+            .filter(|r| min_version_for(r) == 42)
+            .collect();
+
+        let mut names: Vec<String> = new_at_42
+            .iter()
+            .map(|r| {
+                serde_json::to_value(r).unwrap()["type"].as_str().unwrap().to_string()
+            })
+            .collect();
+        names.sort();
+        for want in [
+            "BeginPairing",
+            "ConfirmPairing",
+            "ListDevices",
+            "RejectPairing",
+            "RevokeAllDevices",
+            "RevokeDevice",
+            "SetRemoteAccess",
+        ] {
+            assert!(
+                names.iter().any(|n| n == want),
+                "{want} is not in the v42 band; re-attributing it to 41 to \
+                 avoid a bump is what this test exists to catch (band: {names:?})"
+            );
+        }
+        assert!(
+            !names.iter().any(|n| n.contains("Grant")),
+            "a grant request reached phase 2 -- §10 puts those in phase 5, \
+             with the input path they gate (band: {names:?})"
+        );
+
+        // A new TYPE, so this match is the whole wire gate: a v41 daemon
+        // is never sent one, and there is no widened field for it to
+        // parse and discard.
+        for req in &new_at_42 {
+            assert!(gate_request(req, 41).is_err(), "{req:?} reached a v41 daemon");
+            assert!(gate_request(req, 42).is_ok(), "{req:?} refused by a v42 daemon");
+        }
+    }
+
+    /// §3's "What it must not carry", as a test.
+    ///
+    /// The QR is the one artifact of this feature that leaves the two
+    /// machines entirely -- it is photographed, and a photograph is
+    /// forever. So the assertion is the STRICT one: the payload's key set
+    /// is exactly the four §3 allows, and a field added without reading
+    /// §3 fails here rather than shipping on a screen.
+    #[test]
+    fn the_qr_payload_carries_only_what_section_3_allows() {
+        let qr = PairingQr {
+            daemon_public_key: "aa".repeat(32),
+            secret: "bb".repeat(32),
+            rendezvous: vec!["wss://relay.example/gavin".into()],
+            protocol_version: PROTOCOL_VERSION,
+        };
+        let v = serde_json::to_value(&qr).unwrap();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["daemonPublicKey", "protocolVersion", "rendezvous", "secret"],
+            "§3: the daemon's static PUBLIC key, the pairing secret, the \
+             rendezvous address(es), the protocol version. That is all."
+        );
+
+        // And the named prohibitions, spelled out so a reader of this
+        // test does not have to hold §3 in their head: the daemon's
+        // private key, a bearer token that outlives the window, the
+        // relay's own credentials, the phone's key. None of them has a
+        // field, and none can arrive as an extra one -- the key-set
+        // assertion above is what makes that true rather than hopeful.
+        for forbidden in
+            ["privateKey", "daemonPrivateKey", "token", "daemonToken", "sessionToken",
+             "relayCredential", "relayToken", "devicePublicKey", "phoneKey"]
+        {
+            assert!(v.get(forbidden).is_none(), "the QR must not carry {forbidden}");
+        }
+
+        // A round trip through the exact string a camera hands a parser.
+        assert_eq!(PairingQr::parse(&qr.to_qr_string()).unwrap(), qr);
+        assert!(!qr.to_qr_string().contains(' '), "the QR string is compact JSON");
+    }
+
+    /// The SAS derivation, pinned against a hand-computed vector so the
+    /// phone's implementer has something to check theirs against.
+    #[test]
+    fn the_sas_is_six_digits_derived_from_both_keys_in_sorted_order() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+
+        // Sorted, so each side computes it from what it holds without
+        // first agreeing on who was the initiator.
+        assert_eq!(pairing_sas(&a, &b), pairing_sas(&b, &a));
+
+        // Six digits, always -- the human is comparing two strings by
+        // eye, and a code that is sometimes five characters long is a
+        // comparison they can get wrong.
+        let sas = pairing_sas(&a, &b);
+        assert_eq!(sas.len(), 6, "{sas}");
+        assert!(sas.chars().all(|c| c.is_ascii_digit()), "{sas}");
+
+        // Both keys matter: change either and the code changes. This is
+        // what defeats §3's attacker -- they photograph the QR and
+        // complete a handshake with THEIR key, and the desktop shows a
+        // code the owner's phone is not showing.
+        assert_ne!(pairing_sas(&a, &b), pairing_sas(&a, &[3u8; 32]));
+        assert_ne!(pairing_sas(&a, &b), pairing_sas(&[3u8; 32], &b));
+
+        // The zero-padding path, which is the one a lazy `to_string()`
+        // would get wrong and which no random pair is likely to hit.
+        assert_eq!(format!("{:06}", 42u64 % 1_000_000), "000042");
+
+        // A fixed vector. Recomputable by hand:
+        //   SHA-256("gavin-pairing-sas-v1" || 0x01*32 || 0x02*32), first
+        //   eight bytes big-endian, modulo 1_000_000.
+        let pinned = pairing_sas(&a, &b);
+        assert_eq!(
+            pinned,
+            {
+                let mut h = Sha256::new();
+                h.update(b"gavin-pairing-sas-v1");
+                h.update([1u8; 32]);
+                h.update([2u8; 32]);
+                let d = h.finalize();
+                let mut head = [0u8; 8];
+                head.copy_from_slice(&d[..8]);
+                format!("{:06}", u64::from_be_bytes(head) % 1_000_000)
+            },
+            "the derivation in the doc comment is the one the code runs"
+        );
+    }
+
+    /// The device list crosses to the frontend, so its field names are
+    /// part of the wire the same way `CardRun`'s are -- and the one that
+    /// carries a meaning in its ABSENCE (`revokedAt` on a device that is
+    /// still trusted) is asserted rather than left to a
+    /// `skip_serializing_if` nobody noticed had been added.
+    #[test]
+    fn device_info_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let info = DeviceInfo {
+            device_id: "dev-1".into(),
+            name: "Cosimo's iPhone".into(),
+            role: "remote".into(),
+            created_at: 1_770_000_000,
+            last_seen_at: 1_770_000_500,
+            revoked_at: None,
+            stale: false,
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v["deviceId"], "dev-1");
+        assert_eq!(v["lastSeenAt"], 1_770_000_500);
+        assert!(v["revokedAt"].is_null(), "an un-revoked device says so with null");
+        assert_eq!(v["stale"], false);
+        // The static public key is NOT on the wire, and that is a rule
+        // rather than an omission -- see DeviceInfo's doc comment.
+        assert!(v.get("publicKey").is_none());
+    }
+
+    /// The env-carrying run is a SEPARATE request from `RunGit`, not a
+    /// widened one -- the whole reason it exists. If someone ever folds
+    /// the two together, `RunGit` keeps its v41 gate, a v41 host drops
+    /// the environment on the floor, and a cherry-pick hangs on an editor
+    /// nobody can see. This is what would catch that.
+    #[test]
+    fn run_git_env_is_not_a_widened_run_git() {
+        let plain = Request::RunGit {
+            root_path: "/r".into(),
+            cwd: "/r".into(),
+            args: vec!["cherry-pick".into()],
+            stdin: None,
+        };
+        let with_env = Request::RunGitEnv {
+            root_path: "/r".into(),
+            cwd: "/r".into(),
+            args: vec!["cherry-pick".into()],
+            env: vec![("GIT_EDITOR".into(), "true".into())],
+        };
+        assert_eq!(min_version_for(&plain), 41);
+        assert_eq!(min_version_for(&with_env), 42);
     }
 
     #[test]
@@ -3536,6 +4531,16 @@ mod tests {
                     complexity: Some(Complexity::Moderate),
                     agent: Some("codex".to_string()),
                     model: Some("gpt-5.1".to_string()),
+                    human_items: Some(vec![HumanItem {
+                        kind: HumanItemKind::Decision,
+                        text: "Which serializer?".to_string(),
+                        done: false,
+                        options: vec!["serde".to_string(), "by hand".to_string()],
+                        latest: None,
+                        state: HumanItemState::Open,
+                        line_text: "Decision: Which serializer?".to_string(),
+                        line_index: 7,
+                    }]),
                 }],
                 docs: vec![MdFileInfo {
                     path: "/tmp/ws/.gavin-root/docs/notes.md".to_string(),
@@ -3580,7 +4585,17 @@ mod tests {
                         "attachments": ["docs/spec.md"],
                         "complexity": "moderate",
                         "agent": "codex",
-                        "model": "gpt-5.1"
+                        "model": "gpt-5.1",
+                        "humanItems": [{
+                            "kind": "decision",
+                            "text": "Which serializer?",
+                            "done": false,
+                            "options": ["serde", "by hand"],
+                            "latest": null,
+                            "state": "open",
+                            "lineText": "Decision: Which serializer?",
+                            "lineIndex": 7
+                        }]
                     }],
                     "docs": [{ "path": "/tmp/ws/.gavin-root/docs/notes.md", "relPath": "notes.md" }],
                     "specs": [],
@@ -3913,7 +4928,33 @@ mod tests {
         // agent-integration files where the agent runs. Three new TYPES.
         // v41: RunGit + ListWorkspaceDir -- the Git tab and Files tree
         // over ssh. Two new TYPES.
-        assert_eq!(PROTOCOL_VERSION, 41);
+        // v42 carries several independent additions that landed together,
+        // which is why one bump covers them all:
+        //
+        // - FileHumanItem + ResolveHumanItem -- the Decisions tab's two
+        //   writes, filing a `Decision:`/`Human test:` line on a card and
+        //   writing the human's answer under it. Two new TYPES, which
+        //   min_version_for does gate. The same version widens
+        //   PlanFileInfo with `human_items`, which it cannot see -- that
+        //   half is an Option rather than a defaulted Vec precisely so the
+        //   absence survives the Tauri host's round trip as "unknown", and
+        //   the tab owes it a FEATURE_MIN_VERSION entry with a real
+        //   consumer (decisions-tab-view.md).
+        // - Remote access phase 2 -- BeginPairing, ConfirmPairing,
+        //   RejectPairing, ListDevices, RevokeDevice, RevokeAllDevices,
+        //   SetRemoteAccess, plus PairingOffer/Devices and the three device
+        //   pushes. Seven new TYPES and no widened payload, so the bump is
+        //   invisible to an older client by construction. Stored and inert:
+        //   nothing dials a relay or binds a listener until phase 3.
+        // - ssh git sync -- RunGitEnv, RunGitStreaming, CancelGitOp,
+        //   WatchGitWorktree, UnwatchGitWorktree, CreateWorkspacePath,
+        //   RenameWorkspacePath and TrashWorkspacePath: the network sync,
+        //   the live refresh, the conflict/cherry-pick env and the Files
+        //   tree's mutations on a host. Eight new TYPES, plus the
+        //   GitOpProgress/GitOpDone/GitWorktreeChanged pushes and the
+        //   GitOpCancelled reply, which are Response variants and so
+        //   invisible here.
+        assert_eq!(PROTOCOL_VERSION, 42);
     }
 
     #[test]
@@ -4161,6 +5202,35 @@ mod tests {
             Request::StatWorkspacePaths { root_path: "r".into(), paths: vec!["a.md".into()] },
             Request::RunGit { root_path: "r".into(), cwd: "r".into(), args: vec!["status".into()], stdin: None },
             Request::ListWorkspaceDir { root_path: "r".into(), path: "r".into() },
+            Request::FileHumanItem {
+                path: "p".into(),
+                kind: HumanItemKind::Decision,
+                text: "t".into(),
+                options: vec![],
+            },
+            Request::ResolveHumanItem {
+                path: "p".into(),
+                expected_text: "Decision: t".into(),
+                outcome: HumanItemOutcome::Pass,
+            },
+            Request::RunGitEnv {
+                root_path: "r".into(),
+                cwd: "r".into(),
+                args: vec!["cherry-pick".into()],
+                env: vec![("GIT_EDITOR".into(), "true".into())],
+            },
+            Request::RunGitStreaming {
+                root_path: "r".into(),
+                cwd: "r".into(),
+                args: vec!["fetch".into()],
+                op_id: "op".into(),
+            },
+            Request::CancelGitOp { op_id: "op".into() },
+            Request::WatchGitWorktree { root_path: "r".into(), cwd: "r".into() },
+            Request::UnwatchGitWorktree { root_path: "r".into(), cwd: "r".into() },
+            Request::CreateWorkspacePath { root_path: "r".into(), path: "a.txt".into(), directory: false },
+            Request::RenameWorkspacePath { root_path: "r".into(), from: "a".into(), to: "b".into() },
+            Request::TrashWorkspacePath { root_path: "r".into(), path: "a.txt".into() },
             Request::CreatePlan {
                 context_folder: "c".into(),
                 file_name: "f".into(),
@@ -4290,6 +5360,14 @@ mod tests {
                 auth: HelloAuth::None,
                 nonce: "n".into(),
             },
+            // v42's remote access: pairing, the device list, revocation.
+            Request::BeginPairing,
+            Request::ConfirmPairing { device_id: "d1".into() },
+            Request::RejectPairing { device_id: "d1".into() },
+            Request::ListDevices,
+            Request::RevokeDevice { device_id: "d1".into() },
+            Request::RevokeAllDevices,
+            Request::SetRemoteAccess { enabled: true, relay_url: None },
             Request::Unknown,
         ]
     }
@@ -4324,7 +5402,8 @@ mod tests {
     /// v27=1 (CardRuns), v28=1 (SetRailRunByRoot), v29=4 (the
     /// follow-up queue), v30=3 (standalone tool runs), v35=1 (Hello --
     /// client identity), v37=2 (an agent authoring its own workspace's
-    /// tools), v39=1 (SessionScreen), plus Unknown.
+    /// tools), v39=1 (SessionScreen), v40=3 (ssh workspace files), v41=2
+    /// (ssh git/files), v42=2 (the Decisions tab's writes), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -4365,6 +5444,19 @@ mod tests {
         expected.insert(40, 3);
         // RunGit + ListWorkspaceDir -- the Git tab and Files tree over ssh.
         expected.insert(41, 2);
+        // Seventeen, from the three features that shared the v42 bump:
+        //
+        // - FileHumanItem + ResolveHumanItem -- the Decisions tab's
+        //   writes. Two.
+        // - Remote access phase 2: BeginPairing, Confirm/RejectPairing,
+        //   ListDevices, RevokeDevice, RevokeAllDevices, SetRemoteAccess.
+        //   Seven, not nine: GrantInput / RevokeInputGrant are §10's phase
+        //   5, with the input path they gate.
+        // - ssh git sync: RunGitEnv, RunGitStreaming, CancelGitOp,
+        //   Watch/UnwatchGitWorktree, Create/Rename/TrashWorkspacePath --
+        //   network sync, live refresh and the Files tree's mutations over
+        //   ssh. Eight.
+        expected.insert(42, 17);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

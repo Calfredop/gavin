@@ -31,6 +31,13 @@
 // first side too -- it is where you go to see what the daemon actually
 // holds.
 //
+// A second wait with the same shape arrived with the turn verdict: a
+// question asked in PROSE rings no bell, so the daemon says `idle` and
+// will never say anything else until the agent prints again.
+// `verdictAttention.ts` raises a badge for it, and `canMarkRead` below
+// therefore has to be able to take that badge down -- a judged wait
+// needs its off switch more than an observed one, not less.
+//
 // A mark lasts only as long as the wait it acknowledged. Any status the
 // daemon reports for that session afterwards -- including a second bell,
 // which it re-emits per notification rather than only on a change --
@@ -40,15 +47,44 @@
 // honest answer to that.
 
 import type { SessionStatus } from "$lib/core/notifications";
+import { verdictAsksQuietly, type TurnVerdictEntry } from "$lib/agents/turnVerdict";
 
 /// The sessions whose current wait the human has acknowledged.
 export type ReadSessions = ReadonlySet<string>;
 
-/// Whether this session is in the one state a read mark can be made
-/// about. Nothing else is markable: `failed` carries a reason the human
-/// has to act on, and `working`/`idle` are not asking for anything.
-export function canMarkRead(status: SessionStatus | undefined): boolean {
-  return status === "waiting_for_input";
+/// Whether this session is in a state a read mark can be made about.
+///
+/// Two of them, and the status is only half of the answer for the
+/// second. `waiting_for_input` is the bell. The other is a session the
+/// daemon calls `idle` whose turn verdict reads as a question asked in
+/// prose -- the wait `verdictAttention.ts` now raises a badge for on the
+/// tab, the sidebar, the board card and the card modal.
+///
+/// That second case is a REQUIREMENT of raising those badges, not a
+/// convenience. The verdict is a judgement, not an observation: it reads
+/// roughly 3 of this repository's 44 finished turns as asking, and a
+/// false one would put a badge on a tab that has nothing waiting on it.
+/// Without an off switch there is no way to take that badge down --
+/// `idle` is already the daemon's answer, so no later status can
+/// contradict it and there is no keystroke the human can make on the
+/// agent's behalf. A wrong badge with no way to dismiss it is worse than
+/// the missing badge this feature set out to fix.
+///
+/// The mark still lasts only as long as the wait it acknowledged: it is
+/// dropped by any status the daemon reports for the session afterwards
+/// (layoutState's handleSessionStatusChanged), which is unchanged and
+/// covers this case for free -- the next thing the agent prints moves it
+/// to `working`, and the verdict for the turn after that raises the
+/// badge again if it is still a question.
+///
+/// Nothing else is markable: `failed` carries a reason the human has to
+/// act on, and a plain `working`/`idle` session is not asking for
+/// anything.
+export function canMarkRead(
+  status: SessionStatus | undefined,
+  verdict?: TurnVerdictEntry | null
+): boolean {
+  return status === "waiting_for_input" || verdictAsksQuietly(status, verdict);
 }
 
 /// Whether the menu should carry the entry at all.
@@ -56,8 +92,12 @@ export function canMarkRead(status: SessionStatus | undefined): boolean {
 /// A session that is already marked keeps it, so the human can put the
 /// badge back on a tab they silenced by mistake -- without it the only
 /// way back is to wait for the agent to ask something else.
-export function readEntryApplies(status: SessionStatus | undefined, read: boolean): boolean {
-  return read || canMarkRead(status);
+export function readEntryApplies(
+  status: SessionStatus | undefined,
+  read: boolean,
+  verdict?: TurnVerdictEntry | null
+): boolean {
+  return read || canMarkRead(status, verdict);
 }
 
 /// The entry's label, in the Pin/Unpin shape the same menu already uses:

@@ -9,7 +9,8 @@ use notify_debouncer_mini::Debouncer;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Read, Write};
 use protocol::transport::{Listener, Stream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::net::Shutdown;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -1245,6 +1246,183 @@ pub struct SessionManager {
     /// does not exercise `Hello` with the `app` role) simply matches no
     /// daemon token, which is the safe default.
     daemon_token: std::sync::OnceLock<String>,
+    /// The paired devices and the daemon's own static key (`trust.rs`).
+    ///
+    /// A `OnceLock` for the same reason as `daemon_token`: `serve` opens
+    /// the file and sets it before the socket accepts anything, and every
+    /// existing `SessionManager::new` call site -- and every test that
+    /// builds one -- stays unchanged. A manager that never had one set has
+    /// no devices, which is the safe default: `revoke_device` says so by
+    /// name rather than silently reporting success.
+    trust: std::sync::OnceLock<Mutex<crate::trust::TrustStore>>,
+    /// Live connections whose identity names a paired device, keyed by a
+    /// token this manager hands out, each with a socket handle that can
+    /// close it.
+    ///
+    /// This is what makes §3's "the daemon drops every live connection
+    /// carrying that `device_id` immediately (the connection holds its
+    /// identity, so this is a lookup, not a hunt)" true rather than
+    /// aspirational.
+    ///
+    /// Only connections that CARRY a device id are in here. A `local`,
+    /// `app` or `agent` connection has none and can never be the target
+    /// of a revocation, so registering every accepted connection would
+    /// put a lock on the hot accept path to hold entries nothing ever
+    /// looks up. Keyed by a token rather than by `device_id` because one
+    /// device may hold several connections at once, and each has to be
+    /// removable on its own thread's way out.
+    ///
+    /// Leaf lock: nothing else is locked while this is held, and the
+    /// shutdown that happens under it does not block -- it cancels I/O,
+    /// it does not wait for a peer.
+    device_connections: Mutex<HashMap<u64, DeviceConnection>>,
+    /// Hands out the keys of `device_connections`. Monotonic and never
+    /// reused within a daemon lifetime, so a slow `Drop` on one thread
+    /// cannot remove a newer connection's entry.
+    next_device_connection: AtomicU64,
+    /// Live connections that took the `app` role, keyed the same way and
+    /// for the same reasons as `device_connections` above.
+    ///
+    /// This is what the three device pushes are written to, and it is
+    /// also the thing `pair_over` asks a yes/no question of: §7 says that
+    /// when no `app` connection is live at the moment a confirmation is
+    /// needed, the daemon REFUSES the pairing with "open gavin on the
+    /// desktop" -- "the human keeps the wheel, and a wheel with nobody at
+    /// it is a refusal, not a wait". Without this map that rule has
+    /// nothing to consult and the daemon would have to pair on its own
+    /// judgment, which is exactly what §3's ceremony exists to prevent.
+    ///
+    /// `app` only, deliberately, not `local`: the pushes are for the
+    /// desktop that is showing the pairing dialog, and `local` is any
+    /// same-uid process that introduced itself as nobody in particular
+    /// (§4) -- a hand-started agent in a terminal is not a screen a human
+    /// is looking at.
+    app_connections: Mutex<HashMap<u64, Arc<Mutex<Stream>>>>,
+    next_app_connection: AtomicU64,
+    /// The one live pairing offer, or none.
+    ///
+    /// ONE, because the human is looking at one QR: a second
+    /// `BeginPairing` replaces the first, which is also what makes
+    /// "press Pair a device again" a real instruction rather than a way
+    /// to accumulate valid secrets. In memory and never on disk -- a
+    /// two-minute window that survived a daemon restart would outlive the
+    /// screen it was shown on.
+    pending_offer: Mutex<Option<crate::pairing::PairingOffer>>,
+    /// Handshakes that have completed and are waiting on the human,
+    /// keyed by the `device_id` the push named.
+    ///
+    /// Also in memory, and for the sharper reason: §3's promise is that
+    /// nothing reaches `devices.sqlite` until the human confirms, so the
+    /// place a not-yet-confirmed device is held has to be a place that
+    /// is not the trust store. A daemon that restarts mid-dialog has
+    /// forgotten the pairing, which is the correct amount of memory for
+    /// a question nobody answered.
+    pending_pairings: Mutex<HashMap<String, PendingPairing>>,
+    /// Running `RunGitStreaming` ops, keyed by the desktop's own op id,
+    /// so `CancelGitOp` can take and kill the child (v42).
+    ///
+    /// Manager state and not the connection's, unlike the git worktree
+    /// watchers: the op arrives on the streaming connection and its
+    /// cancel arrives on the command one, precisely so a cancel is never
+    /// queued behind the op it is cancelling. An entry is removed by
+    /// whichever of the two gets there first -- the op ending, or the
+    /// cancel taking it -- and an id that is already gone is a `false`,
+    /// not an error: an op that finished a moment before the cancel is
+    /// the ordinary race.
+    git_ops: Mutex<HashMap<String, crate::gavin::SharedChild>>,
+}
+
+/// A completed handshake the human has not yet ruled on.
+///
+/// Holds no transport: in phase 2 there is nothing to answer the phone
+/// over, and phase 3 is what keeps the channel alive across the human's
+/// decision. What it holds is exactly what `ConfirmPairing` needs to
+/// write the row, and nothing else.
+#[derive(Debug, Clone)]
+struct PendingPairing {
+    public_key: Vec<u8>,
+    name: String,
+}
+
+/// A live connection carrying a device identity, and the handle that
+/// closes it.
+///
+/// The handle is a `try_clone` of the connection's socket rather than the
+/// `Arc<Mutex<Stream>>` writer the connection loop already holds: shutting
+/// a revoked device down must not have to queue behind whatever that
+/// connection is in the middle of writing.
+// Read only by `shutdown_device_connections`, which has no caller in
+// the binary until the pairing task lands `RevokeDevice`. See the same
+// allow on `Role::Remote`.
+#[allow(dead_code)]
+struct DeviceConnection {
+    device_id: String,
+    stream: Stream,
+}
+
+/// Removes a connection's `device_connections` entry when its thread ends,
+/// by whichever of `handle_connection_as`'s return paths got it there --
+/// the same reason `ConnectionSlot` exists for the counter.
+struct DeviceConnectionSlot<'a> {
+    manager: &'a SessionManager,
+    token: u64,
+}
+
+impl Drop for DeviceConnectionSlot<'_> {
+    fn drop(&mut self) {
+        let gone = self.manager.device_connections.lock().unwrap().remove(&self.token);
+        // The `DeviceDisconnected` push lives HERE, on the one path every
+        // connection leaves by, rather than beside each thing that can
+        // end one. A revocation, a phone hanging up, a relay dropping and
+        // a daemon shutting a socket all arrive at this `Drop`, and the
+        // desktop's device list has to go grey for every one of them --
+        // announcing it at the callers would mean the list is right for
+        // the exits somebody remembered.
+        //
+        // After the removal, so an app that reacts by listing devices
+        // cannot still see the connection it was told had gone.
+        if let Some(conn) = gone {
+            self.manager
+                .push_to_apps(&Response::DeviceDisconnected { device_id: conn.device_id });
+        }
+    }
+}
+
+/// Removes a connection's `app_connections` entry when its thread ends.
+/// The `app` twin of `DeviceConnectionSlot`, and there for the same
+/// reason: one exit path, taken however the loop returns.
+struct AppConnectionSlot<'a> {
+    manager: &'a SessionManager,
+    token: u64,
+}
+
+impl Drop for AppConnectionSlot<'_> {
+    fn drop(&mut self) {
+        self.manager.app_connections.lock().unwrap().remove(&self.token);
+    }
+}
+
+/// What `SessionManager::revoke_device` did.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revocation {
+    /// Whether this call is what revoked the device. `false` when it was
+    /// already revoked, or was never paired -- the connections are dropped
+    /// either way, because a device that is somehow still holding one is
+    /// exactly what a second press of Revoke is for.
+    pub newly_revoked: bool,
+    pub connections_dropped: usize,
+}
+
+/// What `SessionManager::revoke_all_devices` did.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokeAll {
+    /// The daemon's rotated static public key. Every phone pinned the old
+    /// one, so this is the fact that invalidates them all at once even if
+    /// the store is somehow restored from a backup (§3).
+    pub new_public_key: Vec<u8>,
+    pub connections_dropped: usize,
 }
 
 impl SessionManager {
@@ -1274,6 +1452,72 @@ impl SessionManager {
             active_connections: AtomicUsize::new(0),
             connection_ceiling: AtomicUsize::new(MAX_CONNECTIONS),
             daemon_token: std::sync::OnceLock::new(),
+            trust: std::sync::OnceLock::new(),
+            device_connections: Mutex::new(HashMap::new()),
+            next_device_connection: AtomicU64::new(0),
+            app_connections: Mutex::new(HashMap::new()),
+            next_app_connection: AtomicU64::new(0),
+            pending_offer: Mutex::new(None),
+            pending_pairings: Mutex::new(HashMap::new()),
+            git_ops: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Runs a `RunGitStreaming` op to completion, pushing a
+    /// `GitOpProgress` per line git draws and one `GitOpDone` at the end,
+    /// both on the connection that asked. Called on its own thread from
+    /// `handle_connection`; a write that fails means the desktop is gone,
+    /// and the op is left to finish or time out on its own.
+    fn run_git_op(
+        manager: &Arc<SessionManager>,
+        root_path: &str,
+        cwd: &str,
+        args: &[String],
+        op_id: &str,
+        writer: &Arc<Mutex<Stream>>,
+    ) {
+        let registry = Arc::clone(manager);
+        let reg_id = op_id.to_string();
+        let progress_writer = Arc::clone(writer);
+        let progress_id = op_id.to_string();
+        let result = crate::gavin::run_git_streaming(
+            std::path::Path::new(root_path),
+            cwd,
+            args,
+            &mut |line| {
+                let _ = write_message(
+                    &mut *progress_writer.lock().unwrap(),
+                    &Response::GitOpProgress { op_id: progress_id.clone(), line },
+                );
+            },
+            &mut |child| {
+                registry.git_ops.lock().unwrap().insert(reg_id.clone(), child);
+            },
+        );
+        manager.git_ops.lock().unwrap().remove(op_id);
+        let _ = write_message(
+            &mut *writer.lock().unwrap(),
+            &Response::GitOpDone {
+                op_id: op_id.to_string(),
+                error: result.err().map(|e| e.to_string()),
+            },
+        );
+    }
+
+    /// `CancelGitOp`: takes the op's child and kills it. The runner then
+    /// reports `cancelled` in its own `GitOpDone`, so the desktop hears
+    /// the end from one place however it ended.
+    fn cancel_git_op(&self, op_id: &str) -> bool {
+        let child = self.git_ops.lock().unwrap().remove(op_id);
+        match child {
+            Some(shared) => {
+                if let Some(mut c) = shared.lock().unwrap().take() {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
+                true
+            }
+            None => false,
         }
     }
 
@@ -1290,6 +1534,358 @@ impl SessionManager {
     /// the daemon token against such a manager stays `local`.
     fn daemon_token(&self) -> &str {
         self.daemon_token.get().map(String::as_str).unwrap_or("")
+    }
+
+    /// Hands this daemon its trust store. Called once by `serve` before
+    /// the socket accepts anything; idempotent, because the `OnceLock`
+    /// ignores a second set.
+    pub fn set_trust_store(&self, store: crate::trust::TrustStore) {
+        let _ = self.trust.set(Mutex::new(store));
+    }
+
+    // This and the three after it are the revocation half of the trust
+    // store, and nothing in the binary calls them until the pairing task
+    // adds `RevokeDevice` / `RevokeAllDevices` to the protocol. Carried
+    // now because this is the task that owns the rule -- "revoking a
+    // device drops every live connection carrying that id" -- and the
+    // tests below are what prove it. Same allow, same reason, as
+    // `Role::Remote`.
+
+    /// The trust store, or `None` on a manager that never had one (a unit
+    /// test that does not exercise devices). Every caller has to say what
+    /// it does with the absence rather than be handed an empty store that
+    /// silently accepts writes nothing will ever read back.
+    #[allow(dead_code)]
+    pub fn trust(&self) -> Option<std::sync::MutexGuard<'_, crate::trust::TrustStore>> {
+        self.trust.get().map(|m| m.lock().unwrap())
+    }
+
+    /// Registers a live connection under its device id, returning the
+    /// token that removes it again. See `device_connections`.
+    fn register_device_connection(&self, device_id: &str, stream: Stream) -> u64 {
+        let token = self.next_device_connection.fetch_add(1, Ordering::SeqCst);
+        self.device_connections
+            .lock()
+            .unwrap()
+            .insert(token, DeviceConnection { device_id: device_id.to_string(), stream });
+        // Announced after the entry exists, so an app that reacts to the
+        // push by listing devices cannot see a device the daemon has not
+        // finished registering.
+        self.push_to_apps(&Response::DeviceConnected { device_id: device_id.to_string() });
+        token
+    }
+
+    /// Registers a connection that took the `app` role, returning the
+    /// token that removes it again. See `app_connections`.
+    fn register_app_connection(&self, writer: Arc<Mutex<Stream>>) -> u64 {
+        let token = self.next_app_connection.fetch_add(1, Ordering::SeqCst);
+        self.app_connections.lock().unwrap().insert(token, writer);
+        token
+    }
+
+    /// Whether any desktop is currently listening (§7's precondition for
+    /// a pairing that needs confirming).
+    // Reached only through `pair_over`, which has no caller in the binary
+    // until phase 3's transport lands. Same allow, same reason, as
+    // `Role::Remote` and `shutdown_device_connections`.
+    #[allow(dead_code)]
+    fn an_app_is_live(&self) -> bool {
+        !self.app_connections.lock().unwrap().is_empty()
+    }
+
+    /// Writes a push to every live `app` connection.
+    ///
+    /// Every one, not "the" one: the human may have gavin open twice
+    /// (the release build and a dev build both run here -- see CLAUDE.md
+    /// on what they share), and a pairing dialog that appeared on only
+    /// one of them would be a confirm button the human cannot find.
+    ///
+    /// The writers are cloned out of the map before any of them is
+    /// written to, so this file's rule holds: no lock is held across a
+    /// blocking write. A write that fails is dropped -- the connection is
+    /// going away and its own thread's `Drop` is what removes it.
+    fn push_to_apps(&self, resp: &Response) {
+        let writers: Vec<Arc<Mutex<Stream>>> =
+            self.app_connections.lock().unwrap().values().cloned().collect();
+        for writer in writers {
+            let _ = write_message(&mut *writer.lock().unwrap(), resp);
+        }
+    }
+
+    // -- pairing (§3's ceremony, phase 2) ------------------------------
+
+    /// `BeginPairing`: mint a one-time secret and build the QR the phone
+    /// scans (§3, "What the QR carries").
+    ///
+    /// Replaces any offer already outstanding. One QR is on screen at a
+    /// time, so one secret is live at a time -- and an offer left behind
+    /// by an abandoned dialog is a valid secret nobody is watching.
+    pub fn begin_pairing(&self) -> anyhow::Result<Response> {
+        let (daemon_public_key, rendezvous) = {
+            let trust = self.trust_or_err()?;
+            (trust.static_public_key()?, trust.remote_access()?.rendezvous())
+        };
+        let offer = crate::pairing::PairingOffer::mint(crate::trust::now_us())?;
+        let qr = protocol::PairingQr {
+            daemon_public_key: crate::pairing::hex_encode(&daemon_public_key),
+            secret: offer.secret_hex().to_string(),
+            rendezvous,
+            protocol_version: protocol::PROTOCOL_VERSION,
+        };
+        let expires_at = offer.expires_at_us / 1_000_000;
+        *self.pending_offer.lock().unwrap() = Some(offer);
+        // Pressing "Pair a device" starts over, so a handshake the human
+        // never answered goes with the ceremony it belonged to. Two
+        // reasons, and the first is the one that matters: the dialog
+        // showing that device's six digits is no longer on screen, and a
+        // Confirm that could still land for it would be a yes to a
+        // question nobody is being asked. The second is housekeeping --
+        // this map is the only place a completed-but-unanswered handshake
+        // lives, and without this it lives until the daemon restarts.
+        self.pending_pairings.lock().unwrap().clear();
+        Ok(Response::PairingOffer { qr: qr.to_qr_string(), expires_at })
+    }
+
+    /// Run the pairing handshake over one byte stream and ask the human.
+    ///
+    /// **This is the seam.** Phase 2 has no transport (§10: "must not
+    /// open a listener or dial a relay"), so nothing in the binary calls
+    /// this yet -- the test that drives the whole ceremony does, over a
+    /// `Stream::pair()`, and phase 3's `remote.rs` calls it with the
+    /// relay connection it just accepted. What comes back is the
+    /// `device_id` the human's answer will name.
+    ///
+    /// Two refusals happen here rather than after the handshake, and both
+    /// matter:
+    ///
+    /// - no offer, or an expired one: the ceremony is over (the check is
+    ///   `run_responder`'s, before it reads a byte);
+    /// - no live `app` connection: §7's rule, checked BEFORE the
+    ///   handshake runs rather than after. A phone that completed a full
+    ///   mutual exchange and was then told "nobody is home" has spent its
+    ///   secret for nothing, and the human would have no way to know it
+    ///   happened.
+    // No caller in the binary until there is a transport to call it from;
+    // the ceremony test below is what proves it works meanwhile. Same
+    // allow, same reason, as `Role::Remote`.
+    #[allow(dead_code)]
+    pub fn pair_over<S: std::io::Read + std::io::Write>(
+        &self,
+        stream: &mut S,
+    ) -> anyhow::Result<crate::pairing::PairingHandshake> {
+        if !self.an_app_is_live() {
+            anyhow::bail!(
+                "gavin-daemon: open gavin on the desktop to confirm this pairing"
+            );
+        }
+        // Cloned out so the handshake -- three round trips over a socket
+        // -- does not run with the offer lock held.
+        let offer = self
+            .pending_offer
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("gavin-daemon: no pairing is in progress"))?;
+
+        // Lifted out of the store so the handshake -- three round trips
+        // over a network -- does not run with the trust lock held. A
+        // revocation takes that same lock, and §3 promises it drops a
+        // device's connections IMMEDIATELY; queueing it behind a phone
+        // that walked out of wifi range would make that a promise about
+        // the weather. See `pairing::ResponderKeys`.
+        let keys = {
+            let trust = self.trust_or_err()?;
+            crate::pairing::ResponderKeys::from_store(&trust)?
+        };
+        let outcome = crate::pairing::run_responder_with_keys(
+            stream,
+            &keys,
+            &offer,
+            crate::trust::now_us(),
+        )?;
+        let device_id = {
+            let trust = self.trust_or_err()?;
+            crate::pairing::device_id_for(&trust, &outcome.public_key)?
+        };
+        let handshake = crate::pairing::PairingHandshake {
+            device_id,
+            name: outcome.name,
+            public_key: outcome.public_key,
+            sas: outcome.sas,
+            transport: outcome.transport,
+        };
+
+        // The secret is spent whether or not the human says yes: §3 mints
+        // it per ceremony, and a secret that survived one completed
+        // handshake would let a second phone in on the same photograph.
+        *self.pending_offer.lock().unwrap() = None;
+
+        self.pending_pairings.lock().unwrap().insert(
+            handshake.device_id.clone(),
+            PendingPairing {
+                public_key: handshake.public_key.clone(),
+                name: handshake.name.clone(),
+            },
+        );
+        self.push_to_apps(&Response::DevicePairingRequested {
+            device_id: handshake.device_id.clone(),
+            name: handshake.name.clone(),
+            sas: handshake.sas.clone(),
+        });
+        Ok(handshake)
+    }
+
+    /// `ConfirmPairing`: the human compared the two codes and said yes.
+    /// The ONE place a device row is written.
+    pub fn confirm_pairing(&self, device_id: &str) -> anyhow::Result<()> {
+        let pending = self.pending_pairings.lock().unwrap().remove(device_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "gavin-daemon: there is no pairing waiting for {device_id} — it may have expired"
+            )
+        })?;
+        let written = self.trust_or_err()?.confirm_device(
+            device_id,
+            &pending.public_key,
+            &pending.name,
+            crate::trust::DeviceRole::Remote,
+        );
+        if written.is_err() {
+            // Put it back. The write that realistically fails here is
+            // the device cap ("3 devices are already paired — revoke one
+            // before pairing another"), and that message is an
+            // instruction: revoke one, press Confirm again. Dropping the
+            // pending handshake would make the instruction impossible to
+            // follow, because the phone's secret is spent and there is
+            // no channel in this phase to ask it to try again.
+            self.pending_pairings.lock().unwrap().insert(device_id.to_string(), pending);
+        }
+        written?;
+        Ok(())
+    }
+
+    /// `RejectPairing`: the human said no, or the codes did not match.
+    /// Forgets the handshake without writing anything.
+    ///
+    /// Not an error for an unknown id: a reject that raced the two-minute
+    /// expiry has got what it asked for, and telling the human their No
+    /// failed would be a worse lie than silence.
+    pub fn reject_pairing(&self, device_id: &str) -> anyhow::Result<()> {
+        self.pending_pairings.lock().unwrap().remove(device_id);
+        Ok(())
+    }
+
+    /// `ListDevices`: the trust store's rows plus the remote-access
+    /// settings, as the Settings panel reads them.
+    pub fn list_devices(&self) -> anyhow::Result<Response> {
+        let trust = self.trust_or_err()?;
+        let now = crate::trust::now_us();
+        let settings = trust.remote_access()?;
+        let devices = trust
+            .list()?
+            .into_iter()
+            .map(|d| protocol::DeviceInfo {
+                // Computed here, by the daemon that enforces it, rather
+                // than left for the app to re-derive from `last_seen_at`
+                // -- see `protocol::DeviceInfo`. Read before the row is
+                // taken apart below.
+                stale: d.is_stale_at(now),
+                device_id: d.device_id,
+                name: d.name,
+                role: d.role.as_str().to_string(),
+                created_at: d.created_at_us / 1_000_000,
+                last_seen_at: d.last_seen_at_us / 1_000_000,
+                revoked_at: d.revoked_at_us.map(|us| us / 1_000_000),
+            })
+            .collect();
+        Ok(Response::Devices {
+            devices,
+            remote_access_enabled: settings.enabled,
+            relay_url: settings.relay_url,
+        })
+    }
+
+    /// `SetRemoteAccess`: store the switch and the relay URL.
+    ///
+    /// Stored and INERT (§10). Nothing here dials, listens, or starts a
+    /// thread; the phase-3 transport is what finally reads `enabled` and
+    /// acts on it.
+    pub fn set_remote_access(
+        &self,
+        enabled: bool,
+        relay_url: Option<String>,
+    ) -> anyhow::Result<()> {
+        self.trust_or_err()?
+            .set_remote_access(&crate::trust::RemoteAccess { enabled, relay_url })
+    }
+
+    /// The trust store, or the error every remote-access request answers
+    /// when this daemon has none. Named rather than silent, for the
+    /// reason `revoke_device` gives: a success that stored nothing is
+    /// worse than a refusal.
+    fn trust_or_err(&self) -> anyhow::Result<std::sync::MutexGuard<'_, crate::trust::TrustStore>> {
+        self.trust()
+            .ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon has no trust store"))
+    }
+
+    /// Shuts down every live connection matching `want` and reports how
+    /// many that was.
+    ///
+    /// Shut down, not removed: each connection's own thread owns its entry
+    /// and takes it out through `DeviceConnectionSlot` on the way out.
+    /// Removing it here would race that `Drop` into deleting a newer
+    /// connection's entry, and would leave this function pretending to
+    /// have closed a socket whose reader had not yet noticed.
+    ///
+    /// A failed shutdown is not an error worth propagating: the only way
+    /// it fails is a socket that is already gone, which is the state this
+    /// was asking for.
+    #[allow(dead_code)]
+    fn shutdown_device_connections(&self, want: impl Fn(&str) -> bool) -> usize {
+        let live = self.device_connections.lock().unwrap();
+        let mut dropped = 0;
+        for conn in live.values().filter(|c| want(&c.device_id)) {
+            let _ = conn.stream.shutdown(Shutdown::Both);
+            dropped += 1;
+        }
+        dropped
+    }
+
+    /// Revokes one device and drops every live connection carrying its id
+    /// (§3, "Revocation").
+    ///
+    /// Two halves on purpose: the row is the store's, the connections are
+    /// the server's. The store lock is released before the sockets are
+    /// touched, so a shutdown can never be what a second revocation waits
+    /// behind.
+    #[allow(dead_code)]
+    pub fn revoke_device(&self, device_id: &str) -> anyhow::Result<Revocation> {
+        let newly_revoked = {
+            let trust = self
+                .trust()
+                .ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon has no trust store"))?;
+            trust.revoke(device_id)?
+        };
+        let connections_dropped = self.shutdown_device_connections(|id| id == device_id);
+        Ok(Revocation { newly_revoked, connections_dropped })
+    }
+
+    /// Revokes every device, rotates the daemon's static key, and drops
+    /// every live connection that carries any device id (§3).
+    ///
+    /// The rotation is what makes this the one-button answer to a lost
+    /// phone: marking rows is a change to a file, but a new static key
+    /// invalidates every phone at once even if the file is restored,
+    /// because each one pinned the old key.
+    #[allow(dead_code)]
+    pub fn revoke_all_devices(&self) -> anyhow::Result<RevokeAll> {
+        let new_public_key = {
+            let trust = self
+                .trust()
+                .ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon has no trust store"))?;
+            trust.revoke_all()?
+        };
+        let connections_dropped = self.shutdown_device_connections(|_| true);
+        Ok(RevokeAll { new_public_key, connections_dropped })
     }
 
     /// Turn a `Hello`'s `auth` into the connection's identity and the
@@ -1329,6 +1925,7 @@ impl SessionManager {
                         session_id: None,
                         workspace_root: None,
                         cwd: None,
+                        device_id: None,
                     },
                     Response::HelloAck {
                         role: "app".to_string(),
@@ -1355,6 +1952,7 @@ impl SessionManager {
                             session_id: Some(rec.id.clone()),
                             workspace_root: Some(std::path::PathBuf::from(&rec.workspace_path)),
                             cwd: Some(std::path::PathBuf::from(&rec.cwd)),
+                            device_id: None,
                         },
                         Response::HelloAck {
                             role: "agent".to_string(),
@@ -3585,6 +4183,17 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::WatchGavinRoot { .. } => {
             unreachable!("WatchGavinRoot is intercepted in handle_connection")
         }
+        // The v42 trio whose answer is a push on the asking connection,
+        // intercepted beside Attach and WatchGavinRoot for that reason.
+        Request::RunGitStreaming { .. } => {
+            unreachable!("RunGitStreaming is intercepted in handle_connection")
+        }
+        Request::WatchGitWorktree { .. } => {
+            unreachable!("WatchGitWorktree is intercepted in handle_connection")
+        }
+        Request::UnwatchGitWorktree { .. } => {
+            unreachable!("UnwatchGitWorktree is intercepted in handle_connection")
+        }
         Request::UnwatchGavinRoot { workspace_id } => {
             manager.unwatch_gavin_root(&workspace_id);
             Ok(Response::Ok)
@@ -3661,6 +4270,29 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::ListWorkspaceDir { root_path, path } => {
             crate::gavin::list_workspace_dir(std::path::Path::new(&root_path), &path)
                 .map(|entries| Response::WorkspaceDir { entries })
+        }
+        // What finishes that tab and that tree (v42). `RunGitStreaming`
+        // and the two watch requests are NOT here -- their answer is a
+        // push to the asking connection's writer, so they are intercepted
+        // in `handle_connection` beside `Attach` and `WatchGavinRoot`.
+        Request::RunGitEnv { root_path, cwd, args, env } => {
+            crate::gavin::run_git_env(std::path::Path::new(&root_path), &cwd, &args, &env)
+                .map(|(stdout, stderr, code)| Response::GitRun { stdout, stderr, code })
+        }
+        Request::CancelGitOp { op_id } => {
+            Ok(Response::GitOpCancelled { cancelled: manager.cancel_git_op(&op_id) })
+        }
+        Request::CreateWorkspacePath { root_path, path, directory } => {
+            crate::gavin::create_workspace_path(std::path::Path::new(&root_path), &path, directory)
+                .map(|_| Response::Ok)
+        }
+        Request::RenameWorkspacePath { root_path, from, to } => {
+            crate::gavin::rename_workspace_path(std::path::Path::new(&root_path), &from, &to)
+                .map(|_| Response::Ok)
+        }
+        Request::TrashWorkspacePath { root_path, path } => {
+            crate::gavin::trash_workspace_path(std::path::Path::new(&root_path), &path)
+                .map(|_| Response::Ok)
         }
         Request::CreatePlan {
             context_folder,
@@ -3765,8 +4397,62 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             crate::gavin::promote_checklist_item(std::path::Path::new(&plan_path), &item)
                 .map(|p| Response::TaskPromoted { path: p.to_string_lossy().to_string() })
         }
+        // The date is stamped HERE, off this machine's clock, and is not
+        // a field either request carries: two clients writing to one
+        // card would otherwise disagree about what day it is, and a
+        // caller would be free to write any date at all.
+        Request::FileHumanItem { path, kind, text, options } => crate::gavin::file_human_item(
+            std::path::Path::new(&path),
+            kind,
+            &text,
+            &options,
+            &crate::gavin::today(),
+        )
+        .map(|rearmed| Response::HumanItemFiled { rearmed }),
+        Request::ResolveHumanItem { path, expected_text, outcome } => {
+            crate::gavin::resolve_human_item(
+                std::path::Path::new(&path),
+                &expected_text,
+                &outcome,
+                &crate::gavin::today(),
+            )
+            .map(|_| Response::Ok)
+        }
         Request::GetProtocolVersion => {
             Ok(Response::ProtocolVersion { version: protocol::PROTOCOL_VERSION })
+        }
+
+        // -- Remote access, phase 2 (v42) ----------------------------
+        //
+        // `app` only. `authorize` is what enforces that (an `agent` and a
+        // `remote` are refused before they reach here), and the version
+        // gate is beside the point for these: pairing a device is the act
+        // that decides who else can reach this machine, so the gate is
+        // the ROLE.
+        //
+        // Every one of them is stored-and-inert (§10): not one of these
+        // arms opens a listener, dials a relay, or starts a thread.
+        Request::BeginPairing => manager.begin_pairing(),
+        Request::ConfirmPairing { device_id } => {
+            manager.confirm_pairing(&device_id).map(|_| Response::Ok)
+        }
+        Request::RejectPairing { device_id } => {
+            manager.reject_pairing(&device_id).map(|_| Response::Ok)
+        }
+        Request::ListDevices => manager.list_devices(),
+        // Answered `Ok` rather than with what changed: the app refetches
+        // the list, which is the only account of the store that cannot
+        // disagree with the store.
+        Request::RevokeDevice { device_id } => {
+            manager.revoke_device(&device_id).map(|_| Response::Ok)
+        }
+        // The rotated public key is deliberately NOT in the reply. The
+        // app has no use for it -- the daemon is what matches a handshake
+        // against the store -- and a key on the wire is a key that ends
+        // up in a log.
+        Request::RevokeAllDevices => manager.revoke_all_devices().map(|_| Response::Ok),
+        Request::SetRemoteAccess { enabled, relay_url } => {
+            manager.set_remote_access(enabled, relay_url).map(|_| Response::Ok)
         }
         Request::GetBoardByRoot { root_path } => manager
             .board_by_root(&root_path)
@@ -3830,6 +4516,22 @@ pub struct ClientIdentity {
     pub session_id: Option<String>,
     pub workspace_root: Option<std::path::PathBuf>,
     pub cwd: Option<std::path::PathBuf>,
+    /// The paired device on the other end, for a connection whose identity
+    /// came from a Noise handshake (§4 lists it on `ClientIdentity`).
+    ///
+    /// `None` for every role today: `local`, `app` and `agent` all arrive
+    /// on the unix socket, which no device key ever completes a handshake
+    /// over, and a `Hello` cannot introduce one -- §4 fixes a device
+    /// identity in the TRANSPORT, before the first request is read, which
+    /// is exactly why `handle_connection_as` takes the identity as an
+    /// argument rather than deriving it.
+    ///
+    /// What it buys, before there is a transport to set it: revocation
+    /// stops being a hunt. `SessionManager::revoke_device` looks the id up
+    /// among the live connections that carry one and shuts their sockets
+    /// down, so a revoked phone loses its connection in the same breath as
+    /// its row (§3, "Revocation").
+    pub device_id: Option<String>,
 }
 
 impl ClientIdentity {
@@ -3837,7 +4539,13 @@ impl ClientIdentity {
     /// `Hello` elevates it: a same-uid local client with today's full
     /// reach. This is what keeps every pre-v35 client working unchanged.
     pub fn local() -> Self {
-        Self { role: Role::Local, session_id: None, workspace_root: None, cwd: None }
+        Self {
+            role: Role::Local,
+            session_id: None,
+            workspace_root: None,
+            cwd: None,
+            device_id: None,
+        }
     }
 
     /// A test helper: an agent scoped to one root/cwd and one session id.
@@ -3848,6 +4556,23 @@ impl ClientIdentity {
             session_id: Some(session_id.to_string()),
             workspace_root: Some(std::path::PathBuf::from(root)),
             cwd: Some(std::path::PathBuf::from(cwd)),
+            device_id: None,
+        }
+    }
+
+    /// A paired device over the remote transport. Nothing constructs this
+    /// in phase 2 -- there is no transport yet -- but it is the shape
+    /// phase 3's `remote.rs` hands to `handle_connection_as` once the
+    /// handshake has looked the static key up in `devices.sqlite`, and it
+    /// is what the revocation test builds its connection from.
+    #[cfg(test)]
+    pub fn remote(device_id: &str) -> Self {
+        Self {
+            role: Role::Remote,
+            session_id: None,
+            workspace_root: None,
+            cwd: None,
+            device_id: Some(device_id.to_string()),
         }
     }
 }
@@ -4008,6 +4733,15 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // Scoped card/folder writes by PATH.
         Request::SetPlanFrontmatterField { path, .. }
         | Request::SetChecklistItem { path, .. } => agent_path_in_scope(id, path),
+        // Filing a question or a hands-on check on its own card: an
+        // agent saying it cannot go further alone, which is the whole
+        // point of the tool. Scoped by path like every other card write.
+        //
+        // `ResolveHumanItem` is NOT here, and the omission is the
+        // feature: the answer is the human's, given in the app, and an
+        // agent that could write one would be answering its own
+        // question. It falls through to the denied list below.
+        Request::FileHumanItem { path, .. } => agent_path_in_scope(id, path),
         Request::PromoteChecklistItem { plan_path, .. } => agent_path_in_scope(id, plan_path),
         Request::CreatePlan { context_folder, .. } => agent_path_in_scope(id, context_folder),
         Request::CreateGavinContext { parent_folder } => agent_path_in_scope(id, parent_folder),
@@ -4054,6 +4788,10 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // surveillance this list exists to refuse.
         | Request::SessionScreen { .. }
         | Request::SetFailurePatterns { .. }
+        // Answering a human item. The app sends this one, on a press the
+        // human made; an agent sending it would be signing off on its
+        // own work under the human's name.
+        | Request::ResolveHumanItem { .. }
         | Request::GetBoard { .. }
         | Request::SetBoard { .. }
         | Request::DeleteBoard { .. }
@@ -4095,6 +4833,33 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // fs) and a remote (names no path) must never do.
         | Request::RunGit { .. }
         | Request::ListWorkspaceDir { .. }
+        // Remote access (v42) is the desktop's alone. An agent that could
+        // pair a device would be deciding who else reaches this machine
+        // -- the one act §3 puts a human at the desktop for -- and an
+        // agent that could revoke one could cut the human's phone off
+        // from the run it is watching. Both are `app`'s, and `app` here
+        // means the desktop holding the daemon token, not a role a
+        // session token can reach.
+        | Request::BeginPairing
+        | Request::ConfirmPairing { .. }
+        | Request::RejectPairing { .. }
+        | Request::ListDevices
+        | Request::RevokeDevice { .. }
+        | Request::RevokeAllDevices
+        | Request::SetRemoteAccess { .. }
+        // What finishes them (v42): the streaming network ops and their
+        // cancel, the worktree watch, the env-carrying run and the three
+        // tree mutations. Same reasoning, and it does not weaken for the
+        // ones that only watch -- a `remote` naming a path to watch is
+        // still a `remote` naming a path.
+        | Request::RunGitEnv { .. }
+        | Request::RunGitStreaming { .. }
+        | Request::CancelGitOp { .. }
+        | Request::WatchGitWorktree { .. }
+        | Request::UnwatchGitWorktree { .. }
+        | Request::CreateWorkspacePath { .. }
+        | Request::RenameWorkspacePath { .. }
+        | Request::TrashWorkspacePath { .. }
         | Request::Unknown => false,
     }
 }
@@ -4121,6 +4886,33 @@ fn is_privileged(req: &Request) -> bool {
             // reach as the shell `CreateSession` starts. Behind the
             // require_local_token narrowing with the rest.
             | Request::RunGit { .. }
+            // Remote access (v42). Strictly more reach than
+            // `SetRootConfigField` above: pairing a device decides who
+            // ELSE can reach this machine, and revoking one decides who
+            // loses it. An untokened same-uid process is exactly the
+            // thing `require_local_token` exists to hold at arm's
+            // length, and "you must authenticate to pair a phone" is the
+            // clearest sentence that switch can say.
+            //
+            // No effect while the switch is off, which is its default
+            // (§11 Q1) -- `local` keeps today's full reach either way,
+            // so this changes nothing for any client shipping now.
+            | Request::BeginPairing
+            | Request::ConfirmPairing { .. }
+            | Request::RejectPairing { .. }
+            | Request::RevokeDevice { .. }
+            | Request::RevokeAllDevices
+            | Request::SetRemoteAccess { .. }
+            // The v42 half of the same reach: another way to run git,
+            // git run long, and three ways to change the tree. Its
+            // cancel and the two watch requests stay OUT -- they start
+            // no process and change nothing, and a cancel that needs a
+            // token is a cancel that cannot be sent.
+            | Request::RunGitEnv { .. }
+            | Request::RunGitStreaming { .. }
+            | Request::CreateWorkspacePath { .. }
+            | Request::RenameWorkspacePath { .. }
+            | Request::TrashWorkspacePath { .. }
     )
 }
 
@@ -4301,7 +5093,36 @@ impl Drop for ConnectionSlot<'_> {
     }
 }
 
+/// A connection accepted on the local socket. Its identity starts at
+/// `local` and can only be raised by a `Hello` (§4).
 fn handle_connection(stream: Stream, manager: Arc<SessionManager>) -> anyhow::Result<()> {
+    handle_connection_as(stream, manager, ClientIdentity::local())
+}
+
+/// The connection loop, over a byte stream whose identity has already been
+/// decided.
+///
+/// Split from `handle_connection` for the reason §4 gives: "the transport
+/// caps the role". A connection that arrives through phase 3's `remote.rs`
+/// has its identity FIXED by the Noise handshake -- the static key that
+/// completed it is looked up in `devices.sqlite` -- before a single
+/// request is read, so that transport hands the identity in rather than
+/// letting the loop derive one. This is the seam it will call, and it is
+/// what the revocation test builds a device-carrying connection from
+/// today, with no transport in sight.
+///
+/// A `Hello` can still arrive on such a connection. It cannot lift the
+/// role -- `resolve_hello` only ever answers `app`, `agent` or `local`,
+/// and the remote transport does not read a daemon token off the wire --
+/// which is exactly the property §4 names: "a daemon token presented over
+/// the remote transport is ignored, not honoured". Phase 3 is where that
+/// gets its own test, because that is where there is a transport to
+/// present it over.
+fn handle_connection_as(
+    stream: Stream,
+    manager: Arc<SessionManager>,
+    initial_identity: ClientIdentity,
+) -> anyhow::Result<()> {
     // The peer-uid floor, before anything else on this connection: a peer
     // whose uid is not this daemon's own is refused outright (§4). It only
     // fires if the socket ever escapes its 0700 dir; same-uid, which is
@@ -4324,12 +5145,52 @@ fn handle_connection(stream: Stream, manager: Arc<SessionManager>) -> anyhow::Re
     }
 
     let writer = Arc::new(Mutex::new(stream.try_clone()?));
+
+    // A device-carrying connection is registered before the first request
+    // is read, and removed by the guard however this function returns.
+    // Registered from the identity the TRANSPORT handed in rather than
+    // from whatever a later `Hello` leaves behind, because a device id is
+    // the transport's to set and a `Hello` can never introduce one (§4) --
+    // so there is exactly one moment at which this is decidable, and it is
+    // here, before the loop.
+    //
+    // The handle is a third clone of the socket, held only so a
+    // revocation can close this connection from another thread without
+    // waiting on `writer`'s mutex. Cloned only when there IS a device, so
+    // an ordinary local connection pays nothing for it.
+    let _device_slot = match initial_identity.device_id.as_deref() {
+        Some(device_id) => {
+            let token = manager.register_device_connection(device_id, stream.try_clone()?);
+            Some(DeviceConnectionSlot { manager: &manager, token })
+        }
+        None => None,
+    };
+
     let mut reader = BufReader::new(stream);
 
-    // The connection's identity, `local` until a `Hello` says otherwise,
-    // and fixed thereafter (§4). `hello_seen` refuses a second `Hello`.
-    let mut identity = ClientIdentity::local();
+    // The connection's identity, whatever the transport decided, until a
+    // `Hello` says otherwise -- and fixed thereafter (§4). `hello_seen`
+    // refuses a second `Hello`.
+    let mut identity = initial_identity;
     let mut hello_seen = false;
+
+    // An `app` connection is registered the moment its `Hello` proves the
+    // daemon token, and deregistered by this guard however the loop
+    // returns. Declared out here rather than inside the `Hello` branch so
+    // the guard's life is the CONNECTION's, not the branch's.
+    //
+    // Only `app`, never `local`: see `app_connections`. The registration
+    // is what the device pushes are written to and what §7's "is anybody
+    // at the desktop?" is answered from, and a hand-started agent in a
+    // terminal is not a screen a human is looking at.
+    let mut _app_slot: Option<AppConnectionSlot> = None;
+    // This connection's git worktree watchers (v42), refcounted per cwd
+    // like the desktop's own. Deliberately a LOCAL, not `SessionManager`
+    // state: a link that drops takes its connection with it, and a
+    // watcher owned by the connection is then dropped by the language
+    // rather than by a cleanup path that has to notice the link is gone.
+    let mut git_watchers: HashMap<String, (notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>, usize)> =
+        HashMap::new();
 
     // Counted before anything else on this connection runs, so a client
     // that never sends a request still costs a slot for as long as it
@@ -4374,6 +5235,10 @@ fn handle_connection(stream: Stream, manager: Arc<SessionManager>) -> anyhow::Re
             hello_seen = true;
             let (id, ack) = manager.resolve_hello(auth, nonce);
             identity = id;
+            if identity.role == Role::App {
+                let token = manager.register_app_connection(Arc::clone(&writer));
+                _app_slot = Some(AppConnectionSlot { manager: &manager, token });
+            }
             write_message(&mut *writer.lock().unwrap(), &ack)?;
             continue;
         }
@@ -4426,6 +5291,80 @@ fn handle_connection(stream: Stream, manager: Arc<SessionManager>) -> anyhow::Re
             continue;
         }
 
+        // Intercepted for the same reason as Attach and WatchGavinRoot
+        // (v42): the answer is a stream of pushes to THIS connection's
+        // writer over the minutes a fetch takes, not a value a reply
+        // could carry -- and running it inline would hold this
+        // connection's whole request loop behind it. Off this thread, so
+        // a second op (or anything else the desktop sends) is not queued
+        // behind the first.
+        if let Request::RunGitStreaming { root_path, cwd, args, op_id } = req {
+            let manager = Arc::clone(&manager);
+            let writer = Arc::clone(&writer);
+            std::thread::spawn(move || {
+                SessionManager::run_git_op(&manager, &root_path, &cwd, &args, &op_id, &writer);
+            });
+            continue;
+        }
+
+        // The Git tab's live refresh for a workspace on this machine
+        // (v42). Refcounted per cwd: two callers (the tab and a Home
+        // tile) share one OS watch, exactly as the desktop's `git_watch`
+        // shares one. The `cwd` is confined against the root before
+        // anything is watched, and a failure is reported as an ordinary
+        // request error rather than pushed, because there is nothing
+        // watching yet to push on.
+        if let Request::WatchGitWorktree { root_path, cwd } = req {
+            if let Some(entry) = git_watchers.get_mut(&cwd) {
+                entry.1 += 1;
+                continue;
+            }
+            let root = std::path::Path::new(&root_path);
+            match crate::gavin::confined_worktree(root, &cwd) {
+                Err(e) => {
+                    write_message(
+                        &mut *writer.lock().unwrap(),
+                        &Response::Error { message: e.to_string() },
+                    )?;
+                }
+                Ok(resolved) => {
+                    let push_writer = Arc::clone(&writer);
+                    let push_cwd = cwd.clone();
+                    match crate::git_watch::spawn_worktree_watcher(&resolved, move || {
+                        let _ = write_message(
+                            &mut *push_writer.lock().unwrap(),
+                            &Response::GitWorktreeChanged { cwd: push_cwd.clone() },
+                        );
+                    }) {
+                        Ok(debouncer) => {
+                            git_watchers.insert(cwd, (debouncer, 1));
+                        }
+                        Err(e) => {
+                            write_message(
+                                &mut *writer.lock().unwrap(),
+                                &Response::Error { message: format!("could not watch {cwd}: {e}") },
+                            )?;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        if let Request::UnwatchGitWorktree { cwd, .. } = req {
+            let drop_it = match git_watchers.get_mut(&cwd) {
+                Some(entry) => {
+                    entry.1 = entry.1.saturating_sub(1);
+                    entry.1 == 0
+                }
+                None => false,
+            };
+            if drop_it {
+                git_watchers.remove(&cwd);
+            }
+            continue;
+        }
+
         // Also intercepted rather than routed through handle_request: this
         // is the one request that ends the whole process, not just this
         // connection, so it can't be expressed as an `Ok(Response)` return
@@ -4445,6 +5384,8 @@ fn handle_connection(stream: Stream, manager: Arc<SessionManager>) -> anyhow::Re
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::wire_spelling;
+
     /// Every daemon test gets a throwaway in-memory orchestration store:
     /// none of them exercise it, they just need SessionManager to build.
     fn test_orchestration_store() -> crate::orchestration::OrchestrationStore {
@@ -4911,7 +5852,13 @@ mod tests {
 
     #[test]
     fn app_may_do_everything_and_the_switch_never_narrows_it() {
-        let id = ClientIdentity { role: Role::App, session_id: None, workspace_root: None, cwd: None };
+        let id = ClientIdentity {
+            role: Role::App,
+            session_id: None,
+            workspace_root: None,
+            cwd: None,
+            device_id: None,
+        };
         assert!(authorize(&id, &Request::Shutdown, false).is_ok());
         assert!(authorize(
             &id,
@@ -4947,6 +5894,265 @@ mod tests {
         ));
         // ...but ordinary reads still go through.
         assert!(authorize(&id, &Request::ListSessions, true).is_ok());
+    }
+
+    // --- The v42 streaming intercept, end to end -----------------------
+    //
+    // `RunGitStreaming` is the one request whose whole contract is what
+    // the CONNECTION does -- pushes in their own time on the asking
+    // connection's writer, and a cancel that must be answerable on a
+    // different connection while the op runs. `handle_request` cannot
+    // express any of that, so these run a real `handle_connection` over a
+    // real socket rather than calling a function.
+
+    /// A listener on a throwaway socket, plus a thread that serves each
+    /// connection through the real `handle_connection`.
+    fn serving_manager(
+        dir: &tempfile::TempDir,
+    ) -> (Arc<SessionManager>, std::path::PathBuf, tempfile::TempDir) {
+        // Short path: a unix socket's sun_path budget is ~104 bytes and a
+        // tempdir under the repo blows it (see shutdown.rs). The dir is
+        // returned so the caller holds it -- the socket file has to
+        // outlive the listener.
+        let temp_root = if cfg!(windows) { std::env::temp_dir() } else { std::path::PathBuf::from("/tmp") };
+        let sock_dir = tempfile::Builder::new().prefix("gavin-gitop-").tempdir_in(&temp_root).unwrap();
+        let sock = sock_dir.path().join("d.sock");
+        let manager = test_manager(dir);
+        let listener = Listener::bind(&sock).unwrap();
+        let served = Arc::clone(&manager);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                let manager = Arc::clone(&served);
+                std::thread::spawn(move || {
+                    let _ = handle_connection(stream, manager);
+                });
+            }
+        });
+        (manager, sock, sock_dir)
+    }
+
+    /// A repo the ops can run in, and its path as the wire spells it.
+    fn streaming_repo(root: &std::path::Path) -> String {
+        for args in [&["init", "-q"][..], &["config", "user.email", "t@e"][..], &["config", "user.name", "T"][..]] {
+            let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            crate::gavin::run_git(root, &root.to_string_lossy(), &argv, None).unwrap();
+        }
+        root.to_string_lossy().into_owned()
+    }
+
+    fn next_response(reader: &mut BufReader<Stream>) -> Response {
+        read_message(reader).unwrap().expect("the connection closed early")
+    }
+
+    /// The whole shape in one pass: the request is accepted with no
+    /// reply, progress arrives as pushes, and the op ends with exactly
+    /// one `GitOpDone` carrying git's own words.
+    #[test]
+    fn run_git_streaming_pushes_progress_then_one_done_on_the_asking_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_manager, sock, _sock_dir) = serving_manager(&dir);
+        let root = streaming_repo(dir.path());
+
+        let stream = Stream::connect(&sock).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write_message(
+            &mut &stream,
+            &Request::RunGitStreaming {
+                root_path: root.clone(),
+                cwd: root.clone(),
+                // A clone of a path that is not there fails fast and says
+                // so on stderr: a real progress stream with no network.
+                args: vec!["clone".into(), "--progress".into(), "/definitely/missing/repo".into(), "x".into()],
+                op_id: "op-1".into(),
+            },
+        )
+        .unwrap();
+
+        let mut progress = Vec::new();
+        let done = loop {
+            match next_response(&mut reader) {
+                Response::GitOpProgress { op_id, line } => {
+                    assert_eq!(op_id, "op-1", "every push carries the op id it was asked under");
+                    progress.push(line);
+                }
+                Response::GitOpDone { op_id, error } => break (op_id, error),
+                other => panic!("unexpected push {other:?}"),
+            }
+        };
+        assert_eq!(done.0, "op-1");
+        let message = done.1.expect("a failed clone reports an error");
+        assert!(message.contains("exist") || message.contains("fatal"), "{message}");
+        assert!(!progress.is_empty(), "git said nothing on stderr");
+    }
+
+    /// The reason the cancel is request/reply on the OTHER connection: it
+    /// has to be answerable while the op is still running. A `fetch` of
+    /// an `ext::` remote that sleeps is a hang we can take back.
+    #[cfg(unix)]
+    #[test]
+    fn cancel_git_op_kills_a_running_op_from_a_second_connection() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (_manager, sock, _sock_dir) = serving_manager(&dir);
+        let root = streaming_repo(dir.path());
+        let script = dir.path().join("sleepy.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // `ext::` splits its command on whitespace, hence a script.
+        let remote = format!("ext::{} %S", script.display());
+
+        let op = Stream::connect(&sock).unwrap();
+        let mut op_reader = BufReader::new(op.try_clone().unwrap());
+        write_message(
+            &mut &op,
+            &Request::RunGitStreaming {
+                root_path: root.clone(),
+                cwd: root.clone(),
+                args: vec![
+                    "-c".into(),
+                    "protocol.ext.allow=always".into(),
+                    "fetch".into(),
+                    "--progress".into(),
+                    remote,
+                ],
+                op_id: "op-2".into(),
+            },
+        )
+        .unwrap();
+
+        // The child has to be registered before a cancel can find it;
+        // retry until it is, rather than sleeping a guessed interval.
+        let cancel = Stream::connect(&sock).unwrap();
+        let mut cancel_reader = BufReader::new(cancel.try_clone().unwrap());
+        let started = Instant::now();
+        let cancelled = loop {
+            write_message(&mut &cancel, &Request::CancelGitOp { op_id: "op-2".into() }).unwrap();
+            match next_response(&mut cancel_reader) {
+                Response::GitOpCancelled { cancelled: true } => break true,
+                Response::GitOpCancelled { cancelled: false } => {
+                    assert!(started.elapsed() < Duration::from_secs(10), "the op never registered");
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                other => panic!("unexpected reply {other:?}"),
+            }
+        };
+        assert!(cancelled);
+
+        let error = loop {
+            match next_response(&mut op_reader) {
+                Response::GitOpProgress { .. } => continue,
+                Response::GitOpDone { error, .. } => break error,
+                other => panic!("unexpected push {other:?}"),
+            }
+        };
+        assert_eq!(error.as_deref(), Some("cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(20), "the cancel did not take effect");
+
+        // An id nobody is running is `false`, not an error: an op that
+        // finished a moment before the cancel is the ordinary race.
+        write_message(&mut &cancel, &Request::CancelGitOp { op_id: "op-2".into() }).unwrap();
+        assert!(matches!(
+            next_response(&mut cancel_reader),
+            Response::GitOpCancelled { cancelled: false }
+        ));
+    }
+
+    /// The watch is set up on the connection that asked, and its pushes
+    /// come back there. An `UnwatchGitWorktree` ends it, and a cwd
+    /// outside the root is refused before anything is watched.
+    #[test]
+    fn watch_git_worktree_pushes_a_change_and_refuses_an_outside_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_manager, sock, _sock_dir) = serving_manager(&dir);
+        let root = streaming_repo(dir.path());
+
+        let stream = Stream::connect(&sock).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+        let outside = tempfile::tempdir().unwrap();
+        write_message(
+            &mut &stream,
+            &Request::WatchGitWorktree {
+                root_path: root.clone(),
+                cwd: outside.path().to_string_lossy().into_owned(),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(next_response(&mut reader), Response::Error { .. }),
+            "a cwd outside the root must be refused, not watched"
+        );
+
+        write_message(
+            &mut &stream,
+            &Request::WatchGitWorktree { root_path: root.clone(), cwd: root.clone() },
+        )
+        .unwrap();
+        // No reply on success -- the first thing this connection hears is
+        // the push, the way WatchGavinRoot answers with its first tree.
+        // Written in a loop: the OS watch is registered asynchronously,
+        // so an early write can land before it is listening.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let hit = std::thread::spawn(move || {
+            matches!(next_response(&mut reader), Response::GitWorktreeChanged { .. })
+        });
+        let mut n = 0;
+        while !hit.is_finished() && Instant::now() < deadline {
+            n += 1;
+            std::fs::write(dir.path().join("a.txt"), format!("{n}")).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(hit.is_finished(), "the watch never pushed a change");
+        assert!(hit.join().unwrap());
+    }
+
+    /// The v42 git/tree requests, by role and by privilege
+    /// (`2026-09-23-ssh-git-sync-and-conflicts-design.md` §5). An agent
+    /// has its own filesystem and no business running git or moving files
+    /// through the daemon; the ones that run a process or change the tree
+    /// join the `require_local_token` narrowing, and the cancel and the
+    /// two watches deliberately do not -- a cancel that needs a token is
+    /// a cancel that cannot be sent.
+    #[test]
+    fn the_v42_git_requests_are_app_only_and_the_mutating_ones_are_privileged() {
+        let (_ws, root, _card) = workspace_with_card();
+        let agent = ClientIdentity::agent("sess-1", &root, &root);
+        let privileged = [
+            Request::RunGitEnv {
+                root_path: root.clone(),
+                cwd: root.clone(),
+                args: vec!["cherry-pick".into()],
+                env: vec![("GIT_EDITOR".into(), "true".into())],
+            },
+            Request::RunGitStreaming {
+                root_path: root.clone(),
+                cwd: root.clone(),
+                args: vec!["fetch".into()],
+                op_id: "op".into(),
+            },
+            Request::CreateWorkspacePath { root_path: root.clone(), path: "a.txt".into(), directory: false },
+            Request::RenameWorkspacePath { root_path: root.clone(), from: "a".into(), to: "b".into() },
+            Request::TrashWorkspacePath { root_path: root.clone(), path: "a.txt".into() },
+        ];
+        let unprivileged = [
+            Request::CancelGitOp { op_id: "op".into() },
+            Request::WatchGitWorktree { root_path: root.clone(), cwd: root.clone() },
+            Request::UnwatchGitWorktree { root_path: root.clone(), cwd: root.clone() },
+        ];
+        for req in privileged.iter().chain(unprivileged.iter()) {
+            assert!(
+                matches!(authorize(&agent, req, false), Err(Response::Forbidden { role, .. }) if role == "agent"),
+                "an agent must be refused {}",
+                request_type_name(req)
+            );
+        }
+        for req in &privileged {
+            assert!(is_privileged(req), "{} should be privileged", request_type_name(req));
+        }
+        for req in &unprivileged {
+            assert!(!is_privileged(req), "{} should not be privileged", request_type_name(req));
+        }
     }
 
     #[test]
@@ -5081,6 +6287,43 @@ mod tests {
         }
     }
 
+    /// An agent may ASK the human, in its own workspace's card, and may
+    /// never answer. Filing is the whole point of `gavin_request_human`;
+    /// resolving is the human's press in the app, and an agent that
+    /// could send it would be signing off on its own work.
+    #[test]
+    fn an_agent_may_file_a_human_item_and_never_resolve_one() {
+        let (_ws, root, card) = workspace_with_card();
+        let (_other, _other_root, other_card) = workspace_with_card();
+        let id = ClientIdentity::agent("sess-1", &root, &root);
+
+        let file = |path: &str| Request::FileHumanItem {
+            path: path.to_string(),
+            kind: protocol::HumanItemKind::Decision,
+            text: "which?".into(),
+            options: vec![],
+        };
+        assert!(authorize(&id, &file(&card), false).is_ok());
+        // Another workspace's card is outside its scope, like every
+        // other card write.
+        assert!(matches!(
+            authorize(&id, &file(&other_card), false),
+            Err(Response::Forbidden { .. })
+        ));
+        assert!(matches!(
+            authorize(
+                &id,
+                &Request::ResolveHumanItem {
+                    path: card,
+                    expected_text: "Decision: which?".into(),
+                    outcome: protocol::HumanItemOutcome::Pass,
+                },
+                false
+            ),
+            Err(Response::Forbidden { role, .. }) if role == "agent"
+        ));
+    }
+
     #[test]
     fn an_agent_owns_only_its_own_session_id() {
         let (_ws, root, _card) = workspace_with_card();
@@ -5103,12 +6346,7 @@ mod tests {
 
     #[test]
     fn a_remote_identity_is_denied_every_request_in_phase_one() {
-        let id = ClientIdentity {
-            role: Role::Remote,
-            session_id: None,
-            workspace_root: None,
-            cwd: None,
-        };
+        let id = ClientIdentity::remote("dev-1");
         for req in one_of_every_request_variant_for_authorize() {
             // Hello is never authorized (it sets the role), so skip it.
             if matches!(req, Request::Hello { .. }) {
@@ -5160,9 +6398,38 @@ mod tests {
             Request::StatWorkspacePaths { root_path: "/x".into(), paths: vec!["a.md".into()] },
             Request::RunGit { root_path: "/x".into(), cwd: "/x".into(), args: vec!["status".into()], stdin: None },
             Request::ListWorkspaceDir { root_path: "/x".into(), path: "/x".into() },
+            Request::RunGitEnv {
+                root_path: "/x".into(),
+                cwd: "/x".into(),
+                args: vec!["cherry-pick".into()],
+                env: vec![("GIT_EDITOR".into(), "true".into())],
+            },
+            Request::RunGitStreaming {
+                root_path: "/x".into(),
+                cwd: "/x".into(),
+                args: vec!["fetch".into()],
+                op_id: "op".into(),
+            },
+            Request::CancelGitOp { op_id: "op".into() },
+            Request::WatchGitWorktree { root_path: "/x".into(), cwd: "/x".into() },
+            Request::UnwatchGitWorktree { root_path: "/x".into(), cwd: "/x".into() },
+            Request::CreateWorkspacePath { root_path: "/x".into(), path: "a.txt".into(), directory: false },
+            Request::RenameWorkspacePath { root_path: "/x".into(), from: "a".into(), to: "b".into() },
+            Request::TrashWorkspacePath { root_path: "/x".into(), path: "a.txt".into() },
             Request::GetBoardByRoot { root_path: "/x".into() },
             Request::PromoteChecklistItem { plan_path: "/x/a.md".into(), item: "i".into() },
             Request::SetChecklistItem { path: "/x/a.md".into(), line_index: 0, expected_text: "i".into(), checked: true },
+            Request::FileHumanItem {
+                path: "/x/a.md".into(),
+                kind: protocol::HumanItemKind::Decision,
+                text: "which?".into(),
+                options: vec![],
+            },
+            Request::ResolveHumanItem {
+                path: "/x/a.md".into(),
+                expected_text: "Decision: which?".into(),
+                outcome: protocol::HumanItemOutcome::Pass,
+            },
             Request::SpawnAgentSession { root_path: "/x".into(), cwd: "/x".into(), command: "sh".into() },
             Request::DeleteCardFile { path: "/x/a.md".into() },
             Request::ArchiveCard { path: "/x/a.md".into() },
@@ -6248,24 +7515,22 @@ mod tests {
         assert!(matches!(resp, Response::Ok));
     }
 
-    /// Unix only, and the reason is the OS rather than anything gavin
-    /// does. Windows refuses to rename a directory while ANY handle is
-    /// open anywhere inside it -- measured 2026-09-22: the refusal
-    /// survives opening that inner handle with FILE_SHARE_DELETE, which
-    /// only ever licensed deleting the file itself, never moving one of
-    /// its ancestors. `watch_targets` registers a watch per scanned
-    /// directory on every platform but macOS, so `.gavin-root` alone is
-    /// enough to make `fs::rename(&root, &away)` here fail
-    /// `PermissionDenied` before the assertion under test is reached.
+    /// Ran on unix only until 2026-09-23, and the reason was the OS
+    /// rather than anything gavin does. Windows refuses to rename a
+    /// directory while ANY handle is open anywhere inside it -- the
+    /// refusal survives opening that inner handle with FILE_SHARE_DELETE,
+    /// which only ever licensed deleting the file itself, never moving
+    /// one of its ancestors. `watch_targets` then registered a watch per
+    /// scanned directory everywhere but macOS, so `.gavin-root` alone was
+    /// enough to make `fs::rename(&root, &away)` below fail
+    /// `PermissionDenied` before the assertion under test was reached.
     ///
-    /// Worth knowing beyond this test: a Windows user cannot rename or
-    /// move a workspace folder while gavin has it open. Only a single
-    /// recursive watch on the root would leave the tree movable, and on
-    /// Windows that is not a free swap -- `ReadDirectoryChangesW` with
-    /// `bWatchSubtree` would pull `target/`, `node_modules/` and `.git/`
-    /// churn into the daemon, which is exactly what the per-directory
-    /// set exists to keep out.
-    #[cfg(unix)]
+    /// It runs on Windows now because `gavin::ONE_RECURSIVE_WATCH` is
+    /// true there: the only handle is the root's own, and a handle on
+    /// the directory being renamed is not what Windows objects to. Which
+    /// is the same reason a human can now rename or move a watched
+    /// workspace folder in Explorer -- this test is the regression guard
+    /// for that, not just for `root_missing`.
     #[test]
     fn renaming_the_root_away_pushes_root_missing_and_renaming_back_heals() {
         let (socket_path, _dir) = start_test_server();
@@ -6283,9 +7548,19 @@ mod tests {
             },
         )
         .unwrap();
+        // Every read below is a bare blocking one, and a push that never
+        // comes would otherwise sit here for ever and take the whole
+        // suite's summary with it -- which is exactly what this test did
+        // the first time it was let onto Windows. Bounded, the same
+        // silence is a named failure.
+        bound_reads(&stream);
         let mut reader = line_reader(stream.try_clone().unwrap());
-        let first: Response = read_message(&mut reader).unwrap().unwrap();
-        assert!(matches!(first, Response::GavinTreeChanged { .. }));
+        let expect_push = |msg: Option<Response>, what: &str| match msg {
+            Some(Response::GavinTreeChanged { tree, .. }) => tree,
+            None => panic!("no {what} push before the read budget ran out"),
+            other => panic!("expected the {what} push, got {other:?}"),
+        };
+        expect_push(read_message(&mut reader).unwrap(), "initial");
 
         // The rename event's path is the ROOT itself -- no `.gavin`
         // segment -- so this exercises the event filter's root-path arm
@@ -6293,21 +7568,37 @@ mod tests {
         // "Root not found" banner never appeared).
         let away = holder.path().join("ws-x");
         std::fs::rename(&root, &away).unwrap();
-        let missing: Response = read_message(&mut reader).unwrap().unwrap();
-        match missing {
-            Response::GavinTreeChanged { tree, .. } => assert!(tree.root_missing),
-            other => panic!("expected root_missing push, got {other:?}"),
-        }
+        let missing = expect_push(read_message(&mut reader).unwrap(), "root_missing");
+        assert!(missing.root_missing);
 
         std::fs::rename(&away, &root).unwrap();
-        let healed: Response = read_message(&mut reader).unwrap().unwrap();
-        match healed {
-            Response::GavinTreeChanged { tree, .. } => {
-                assert!(!tree.root_missing);
-                assert!(tree.contexts[0].has_prd);
-            }
-            other => panic!("expected healed push, got {other:?}"),
-        }
+        // On inotify and FSEvents the rename BACK is reported against the
+        // watched root itself and heals the tree on its own. Under
+        // `gavin::ONE_RECURSIVE_WATCH` on Windows it is not:
+        // `ReadDirectoryChangesW` reports what happens INSIDE the
+        // directory its handle is open on, and a directory's own rename
+        // is only ever reported to a watch on its PARENT -- which
+        // `watch_targets` deliberately never takes, a workspace root's
+        // parent being routinely a folder full of unrelated projects.
+        //
+        // Measured 2026-09-23, which is why the Windows arm asserts a
+        // weaker property rather than being switched off: the away-rename
+        // still pushes `root_missing` (the handle follows the directory
+        // and keeps reporting), the return pushes nothing at all (1/10
+        // runs, and that one a coincidence), and the first change under
+        // the restored root heals it (5/5). So a Windows human who
+        // renames a workspace folder back sees the banner clear on their
+        // next edit rather than on the rename -- the cost of the swap
+        // that made the folder renameable in the first place.
+        #[cfg(windows)]
+        std::fs::write(
+            root.join(".gavin-root").join("plans").join("back.md"),
+            "---\ntitle: Back\n---\n",
+        )
+        .unwrap();
+        let healed = expect_push(read_message(&mut reader).unwrap(), "healed");
+        assert!(!healed.root_missing);
+        assert!(healed.contexts[0].has_prd);
     }
 
     #[test]
@@ -7145,6 +8436,892 @@ mod tests {
         drop(kept);
     }
 
+    /// Opens a connection whose identity already names a paired device,
+    /// the way phase 3's `remote.rs` will once a Noise handshake has
+    /// looked the static key up in `devices.sqlite`.
+    ///
+    /// A `Stream::pair` rather than the listener, because the listener
+    /// hands every connection `ClientIdentity::local()` -- and the point
+    /// of `handle_connection_as` is that a transport gets to say
+    /// otherwise. Returns the client end, already past its first
+    /// round-trip, so the caller knows the connection is registered
+    /// before it revokes anything.
+    fn connect_as_device(manager: &Arc<SessionManager>, device_id: &str) -> Stream {
+        let (client, server) = Stream::pair().unwrap();
+        let manager = Arc::clone(manager);
+        let identity = ClientIdentity::remote(device_id);
+        std::thread::spawn(move || {
+            let _ = handle_connection_as(server, manager, identity);
+        });
+        let mut client = client;
+        // `remote` is denied every request in this phase (§6 lands its
+        // allow-list later), so a `Forbidden` is the liveness signal: it
+        // proves the loop is past registration and reading.
+        let resp = request(&mut client, &Request::GetProtocolVersion);
+        assert!(matches!(resp, Response::Forbidden { .. }), "{resp:?}");
+        client
+    }
+
+    /// Waits for the daemon to let go of `device_id`'s connections, which
+    /// only happens once their threads have returned and dropped every
+    /// handle. Panics rather than returning, so a connection that never
+    /// closes fails THIS test instead of hanging the suite in the read
+    /// that follows.
+    fn await_no_connection_for(manager: &SessionManager, device_id: &str) {
+        let deadline = Instant::now() + PROCESS_BUDGET;
+        loop {
+            let held = manager
+                .device_connections
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|c| c.device_id == device_id)
+                .count();
+            if held == 0 {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{device_id} still holds a connection");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The client end of a connection the daemon should have closed.
+    /// `bound_reads` is insurance only -- `await_no_connection_for` has
+    /// already established the read cannot block -- so it can never be
+    /// what makes this pass.
+    fn assert_closed(stream: &Stream, what: &str) {
+        bound_reads(stream);
+        let mut reader = line_reader(stream.try_clone().unwrap());
+        let msg: Option<Response> = read_message(&mut reader).unwrap();
+        assert!(msg.is_none(), "{what} is still open: got {msg:?}");
+    }
+
+    fn trusted_manager(dir: &tempfile::TempDir) -> Arc<SessionManager> {
+        let manager = test_manager(dir);
+        manager.set_trust_store(
+            crate::trust::TrustStore::open(&dir.path().join("devices.sqlite")).unwrap(),
+        );
+        manager
+    }
+
+    fn pair_device(manager: &SessionManager, device_id: &str, key: u8) {
+        manager
+            .trust()
+            .unwrap()
+            .confirm_device(device_id, &[key; 32], device_id, crate::trust::DeviceRole::Remote)
+            .unwrap();
+    }
+
+    /// §3: "Revoke marks `revoked_at`, and the daemon drops every live
+    /// connection carrying that `device_id` immediately (the connection
+    /// holds its identity, so this is a lookup, not a hunt)."
+    ///
+    /// A lookup, so the OTHER device's connection has to survive it --
+    /// that is the half a cull would also pass.
+    #[test]
+    fn revoking_a_device_drops_its_live_connection_and_leaves_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = trusted_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+        pair_device(&manager, "dev-2", 2);
+
+        let revoked = connect_as_device(&manager, "dev-1");
+        let mut spared = connect_as_device(&manager, "dev-2");
+
+        let outcome = manager.revoke_device("dev-1").unwrap();
+        assert!(outcome.newly_revoked);
+        assert_eq!(outcome.connections_dropped, 1);
+
+        await_no_connection_for(&manager, "dev-1");
+        assert_closed(&revoked, "the revoked device's connection");
+
+        // The row says so too -- the connection drop is not a substitute
+        // for the revocation, it is its other half.
+        assert!(manager.trust().unwrap().device("dev-1").unwrap().unwrap().is_revoked());
+        assert!(!manager.trust().unwrap().device("dev-2").unwrap().unwrap().is_revoked());
+
+        // And the device nobody revoked is still talking.
+        let resp = request(&mut spared, &Request::GetProtocolVersion);
+        assert!(matches!(resp, Response::Forbidden { .. }), "{resp:?}");
+    }
+
+    /// The second half of §3's "Revocation": "Revoke all" rotates the
+    /// daemon's static key AND clears every live connection, not just the
+    /// rows.
+    #[test]
+    fn revoke_all_devices_rotates_the_key_and_drops_every_device_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = trusted_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+        pair_device(&manager, "dev-2", 2);
+        let before = manager.trust().unwrap().static_public_key().unwrap();
+
+        let first = connect_as_device(&manager, "dev-1");
+        let second = connect_as_device(&manager, "dev-2");
+        // A connection with no device on it -- the ordinary local client,
+        // which is not registered at all and must be untouched by any of
+        // this.
+        let (mut local, local_server) = Stream::pair().unwrap();
+        {
+            let manager = Arc::clone(&manager);
+            std::thread::spawn(move || {
+                let _ = handle_connection(local_server, manager);
+            });
+        }
+        assert!(matches!(
+            request(&mut local, &Request::GetProtocolVersion),
+            Response::ProtocolVersion { .. }
+        ));
+
+        let outcome = manager.revoke_all_devices().unwrap();
+
+        assert_eq!(outcome.connections_dropped, 2);
+        assert_ne!(outcome.new_public_key, before, "revoke all must rotate the daemon's key");
+        assert_eq!(manager.trust().unwrap().static_public_key().unwrap(), outcome.new_public_key);
+
+        await_no_connection_for(&manager, "dev-1");
+        await_no_connection_for(&manager, "dev-2");
+        assert_closed(&first, "dev-1's connection");
+        assert_closed(&second, "dev-2's connection");
+
+        // The local client never carried a device id, so nothing here was
+        // ever about it.
+        assert!(matches!(
+            request(&mut local, &Request::GetProtocolVersion),
+            Response::ProtocolVersion { .. }
+        ));
+    }
+
+    /// A connection that ends on its own must take its `device_connections`
+    /// entry with it, or a later revocation shuts down a socket that
+    /// belongs to nobody and reports a connection it did not drop.
+    #[test]
+    fn a_device_connection_deregisters_itself_when_it_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = trusted_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+
+        let conn = connect_as_device(&manager, "dev-1");
+        assert_eq!(manager.device_connections.lock().unwrap().len(), 1);
+
+        drop(conn);
+        await_no_connection_for(&manager, "dev-1");
+
+        let outcome = manager.revoke_device("dev-1").unwrap();
+        assert!(outcome.newly_revoked);
+        assert_eq!(outcome.connections_dropped, 0);
+    }
+
+    /// A daemon with no trust store says so by name. The alternative --
+    /// reporting a revocation nothing recorded -- is the failure mode a
+    /// Settings panel would show as success.
+    #[test]
+    fn revoking_without_a_trust_store_is_a_named_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let err = manager.revoke_device("dev-1").unwrap_err();
+        assert!(err.to_string().contains("no trust store"), "{err}");
+    }
+
+    // -- Remote access, phase 2 (v42) ---------------------------------
+
+    /// A manager with a trust store AND a daemon token, so a `Hello` can
+    /// take the `app` role against it.
+    fn paired_manager(dir: &tempfile::TempDir) -> Arc<SessionManager> {
+        let manager = trusted_manager(dir);
+        manager.set_daemon_token("test-daemon-token".to_string());
+        manager
+    }
+
+    /// An `app` connection with ONE reader over it.
+    ///
+    /// The one reader is the point. `request` above opens a fresh
+    /// `BufReader` per call, which is fine on a connection that only ever
+    /// holds replies -- but these connections also carry pushes, and a
+    /// second `BufReader` over the same socket can swallow bytes the
+    /// first one already buffered. Every message, reply and push alike,
+    /// comes off this one.
+    struct AppConn {
+        stream: Stream,
+        reader: BufReader<Stream>,
+        /// Keeps `release_on_close`'s guard thread parked. Dropping this
+        /// -- which happens whenever the `AppConn` goes -- is what lets
+        /// the guard let go of its clone of the socket.
+        _guard: std::sync::mpsc::Sender<()>,
+    }
+
+    /// Ends every read on `stream` after `PROCESS_BUDGET`, like
+    /// `bound_reads` -- and, unlike it, lets go of the socket the moment
+    /// this connection is dropped.
+    ///
+    /// The difference is load-bearing on Windows, and cost thirty seconds
+    /// a run to find. `Stream::pair` is a named pipe there, and a pipe
+    /// stays open while ANY handle to it is: `bound_reads` parks a clone
+    /// inside a `sleep`, so a test that closes its connection and then
+    /// waits for the daemon to notice waits for the budget, not for the
+    /// close. Parking on a channel instead means the guard wakes the
+    /// instant the `Sender` is dropped and releases its clone with it.
+    fn release_on_close(stream: &Stream) -> std::sync::mpsc::Sender<()> {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let guard = stream.try_clone().unwrap();
+        std::thread::spawn(move || {
+            // Timeout: the read this was guarding never arrived, so end
+            // it and let the test's own assertion do the complaining
+            // (`bound_reads`' contract). Disconnected: the connection is
+            // gone and there is nothing left to guard.
+            if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                rx.recv_timeout(PROCESS_BUDGET)
+            {
+                let _ = guard.shutdown(Shutdown::Read);
+            }
+            drop(guard);
+        });
+        tx
+    }
+
+    impl AppConn {
+        fn send(&mut self, req: &Request) {
+            write_message(&mut self.stream, req).unwrap();
+        }
+
+        /// The next message of any kind.
+        fn next(&mut self) -> Response {
+            read_message(&mut self.reader).unwrap().expect("the connection closed")
+        }
+
+        fn request(&mut self, req: &Request) -> Response {
+            self.send(req);
+            self.next()
+        }
+
+        /// Closes the connection for real -- the daemon side sees EOF and
+        /// its thread returns.
+        ///
+        /// Both halves matter. The shutdown ends the daemon's read; the
+        /// drop releases `release_on_close`'s guard, and on Windows the
+        /// pipe stays open while that clone lives.
+        fn close(self) {
+            let _ = self.stream.shutdown(Shutdown::Both);
+        }
+    }
+
+    /// Opens a connection that has taken the `app` role, and leaves it
+    /// registered for pushes.
+    ///
+    /// A `Stream::pair` rather than the listener, like `connect_as_device`
+    /// above, so the test owns both ends and can read a push off the same
+    /// connection that sent the request.
+    fn connect_as_app(manager: &Arc<SessionManager>) -> AppConn {
+        let (client, server) = Stream::pair().unwrap();
+        let manager = Arc::clone(manager);
+        std::thread::spawn(move || {
+            let _ = handle_connection_as(server, manager, ClientIdentity::local());
+        });
+        // Every read on this connection ends inside the suite's budget,
+        // so a push that never arrives fails the test rather than hanging
+        // it.
+        let _guard = release_on_close(&client);
+        let reader = line_reader(client.try_clone().unwrap());
+        let mut conn = AppConn { stream: client, reader, _guard };
+        let resp = conn.request(&Request::Hello {
+            client: "app".into(),
+            protocol_version: protocol::PROTOCOL_VERSION,
+            auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+            nonce: "n".into(),
+        });
+        match resp {
+            Response::HelloAck { ref role, .. } => assert_eq!(role, "app", "{resp:?}"),
+            other => panic!("expected HelloAck, got {other:?}"),
+        }
+        conn
+    }
+
+    /// Every request v42 added, one of each, for the role tests below.
+    fn every_remote_access_request() -> Vec<Request> {
+        vec![
+            Request::BeginPairing,
+            Request::ConfirmPairing { device_id: "dev-1".into() },
+            Request::RejectPairing { device_id: "dev-1".into() },
+            Request::ListDevices,
+            Request::RevokeDevice { device_id: "dev-1".into() },
+            Request::RevokeAllDevices,
+            Request::SetRemoteAccess { enabled: true, relay_url: None },
+        ]
+    }
+
+    /// §3 puts a human at the desktop for the one act that decides who
+    /// else reaches this machine. So every v42 request is `app`'s, and
+    /// `agent` and `remote` are refused at the gate -- before the
+    /// intercepts, before `handle_request`, before anything can be
+    /// written.
+    ///
+    /// The `agent` half is the one that would rot quietly: `agent_allows`
+    /// is an exhaustive match, so a new variant cannot be added without a
+    /// decision, but nothing stops the decision being the wrong one. This
+    /// walks the seven and checks the answer rather than the shape.
+    #[test]
+    fn agents_and_remotes_are_forbidden_every_remote_access_request() {
+        let agent = ClientIdentity::agent("sess-1", "/tmp/ws", "/tmp/ws");
+        let remote = ClientIdentity::remote("dev-1");
+
+        for req in every_remote_access_request() {
+            for id in [&agent, &remote] {
+                let verdict = authorize(id, &req, false);
+                let forbidden = verdict.expect_err(&format!(
+                    "{:?} reached {:?}",
+                    request_type_name(&req),
+                    id.role
+                ));
+                match forbidden {
+                    Response::Forbidden { request_type, role } => {
+                        assert_eq!(request_type, request_type_name(&req));
+                        assert_eq!(
+                            role,
+                            match &id.role {
+                                Role::Agent => "agent",
+                                Role::Remote => "remote",
+                                other => panic!("unexpected role {other:?}"),
+                            }
+                        );
+                    }
+                    other => panic!("expected Forbidden, got {other:?}"),
+                }
+            }
+        }
+    }
+
+    /// The other half, and it is not implied by the first: a gate that
+    /// refused everyone would pass the test above and ship a Settings
+    /// panel nothing works in.
+    #[test]
+    fn an_app_may_make_every_remote_access_request() {
+        let app = ClientIdentity {
+            role: Role::App,
+            session_id: None,
+            workspace_root: None,
+            cwd: None,
+            device_id: None,
+        };
+        for req in every_remote_access_request() {
+            assert!(
+                authorize(&app, &req, false).is_ok(),
+                "{} refused to the app",
+                request_type_name(&req)
+            );
+            // And with the switch ON, which narrows `local` but must
+            // never narrow `app` -- `app` is the role that PRESENTED the
+            // daemon token.
+            assert!(authorize(&app, &req, true).is_ok(), "{}", request_type_name(&req));
+        }
+    }
+
+    /// `require_local_token` is what makes "you must authenticate to pair
+    /// a phone" expressible (§11 Q1). Off -- the default -- an untokened
+    /// local connection keeps today's full reach and nothing about this
+    /// phase changes for any client shipping now.
+    #[test]
+    fn the_local_token_switch_decides_whether_an_untokened_client_may_pair() {
+        let local = ClientIdentity::local();
+        for req in every_remote_access_request() {
+            assert!(
+                authorize(&local, &req, false).is_ok(),
+                "the default must not narrow local: {}",
+                request_type_name(&req)
+            );
+        }
+        // On, every one of them goes -- except the read. Listing the
+        // devices tells a same-uid process nothing it could not learn by
+        // opening the file it already has permission to read, and a
+        // Sessions manager that cannot say which phones exist is a
+        // narrowing with no threat behind it.
+        for req in every_remote_access_request() {
+            let narrowed = authorize(&local, &req, true).is_err();
+            assert_eq!(
+                narrowed,
+                !matches!(req, Request::ListDevices),
+                "{}",
+                request_type_name(&req)
+            );
+        }
+    }
+
+    /// §3, "What the QR carries", against a real daemon: the key in the
+    /// payload is the one in `devices.sqlite`, the rendezvous list is
+    /// what `SetRemoteAccess` stored, and the secret is live for two
+    /// minutes.
+    #[test]
+    fn begin_pairing_mints_a_two_minute_offer_carrying_the_daemon_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        assert!(matches!(
+            app.request(&Request::SetRemoteAccess {
+                enabled: true,
+                relay_url: Some("wss://relay.example/gavin".into()),
+            }),
+            Response::Ok
+        ));
+
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let (qr, expires_at) = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, expires_at } => (qr, expires_at),
+            other => panic!("expected PairingOffer, got {other:?}"),
+        };
+
+        let parsed = protocol::PairingQr::parse(&qr).unwrap();
+        assert_eq!(
+            parsed.daemon_public_key,
+            crate::pairing::hex_encode(&manager.trust().unwrap().static_public_key().unwrap()),
+            "the QR must carry the key every phone will pin"
+        );
+        assert_eq!(parsed.rendezvous, vec!["wss://relay.example/gavin".to_string()]);
+        assert_eq!(parsed.protocol_version, protocol::PROTOCOL_VERSION);
+        assert_eq!(parsed.secret.len(), 64, "32 bytes of hex");
+
+        // Two minutes, give or take the second this test spent.
+        assert!(
+            (expires_at - before - 120).abs() <= 2,
+            "expires_at {expires_at} is not two minutes after {before}"
+        );
+
+        // And still nothing in the store: minting an offer is not
+        // pairing a device.
+        assert!(manager.trust().unwrap().list().unwrap().is_empty());
+    }
+
+    /// Runs the phone's half of §3's ceremony against `manager`, in
+    /// process, and returns what both sides computed.
+    ///
+    /// The responder runs on its own thread for the reason the pairing
+    /// module's own helper does: three synchronous round trips need two
+    /// threads. `pair_over` is exactly the call phase 3's `remote.rs`
+    /// will make with a relay connection in place of this socket pair.
+    fn run_ceremony(
+        manager: &Arc<SessionManager>,
+        qr: &protocol::PairingQr,
+        name: &str,
+    ) -> (
+        anyhow::Result<crate::pairing::PairingHandshake>,
+        anyhow::Result<crate::pairing::InitiatorResult>,
+    ) {
+        let (client, server) = Stream::pair().unwrap();
+        let manager = Arc::clone(manager);
+        let daemon = std::thread::spawn(move || {
+            let mut server = server;
+            let out = manager.pair_over(&mut server);
+            // Dropped inside the thread so a phone parked in a read of a
+            // handshake the daemon refused sees EOF rather than hanging.
+            drop(server);
+            out
+        });
+        let mut client = client;
+        let daemon_key = crate::pairing::hex_decode(&qr.daemon_public_key).unwrap();
+        let phone = crate::pairing::run_initiator(&mut client, &daemon_key, &qr.secret, name);
+        (daemon.join().unwrap(), phone)
+    }
+
+    /// The whole ceremony, the way the card asks for it: `BeginPairing`,
+    /// the handshake, `DevicePairingRequested` arriving on the app's own
+    /// connection, `ConfirmPairing`, and only THEN a row.
+    #[test]
+    fn the_pairing_ceremony_writes_a_device_only_after_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        let qr = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("expected PairingOffer, got {other:?}"),
+        };
+
+        let (daemon, phone) = run_ceremony(&manager, &qr, "Cosimo's iPhone");
+        let daemon = daemon.unwrap();
+        let phone = phone.unwrap();
+
+        // The push reaches the app that asked, on its own connection.
+        match app.next() {
+            Response::DevicePairingRequested { device_id, name, sas } => {
+                assert_eq!(device_id, daemon.device_id);
+                assert_eq!(name, "Cosimo's iPhone");
+                // The digits the human compares. Both screens, one code.
+                assert_eq!(sas, phone.sas);
+                assert_eq!(sas.len(), 6);
+            }
+            other => panic!("expected DevicePairingRequested, got {other:?}"),
+        }
+
+        // Before the human answers there is no device, however far the
+        // handshake got (§3).
+        assert!(manager.trust().unwrap().list().unwrap().is_empty());
+
+        assert!(matches!(
+            app.request(&Request::ConfirmPairing { device_id: daemon.device_id.clone() }),
+            Response::Ok
+        ));
+
+        let row = manager.trust().unwrap().device(&daemon.device_id).unwrap().unwrap();
+        assert_eq!(row.public_key, phone.public_key, "the row records the key that handshook");
+        assert_eq!(row.name, "Cosimo's iPhone");
+        assert_eq!(row.role, crate::trust::DeviceRole::Remote);
+        assert!(!row.is_revoked());
+
+        // And the list the Settings panel reads says the same.
+        match app.request(&Request::ListDevices) {
+            Response::Devices { devices, remote_access_enabled, relay_url } => {
+                assert_eq!(devices.len(), 1);
+                assert_eq!(devices[0].device_id, daemon.device_id);
+                assert_eq!(devices[0].role, "remote");
+                assert!(!devices[0].stale);
+                assert!(devices[0].revoked_at.is_none());
+                assert!(!remote_access_enabled, "nothing turned it on");
+                assert_eq!(relay_url, None);
+            }
+            other => panic!("expected Devices, got {other:?}"),
+        }
+    }
+
+    /// The same ceremony, ending in No. The card asks for this one by
+    /// name, and §3 does not describe it: a confirmation whose only exit
+    /// is "yes" is not a confirmation.
+    #[test]
+    fn a_rejected_pairing_leaves_no_device_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        let qr = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("expected PairingOffer, got {other:?}"),
+        };
+        let (daemon, _) = run_ceremony(&manager, &qr, "not mine");
+        let daemon = daemon.unwrap();
+
+        // The human is asked first -- the push is what puts the six
+        // digits on screen -- and THEN says no.
+        assert!(matches!(app.next(), Response::DevicePairingRequested { .. }));
+
+        assert!(matches!(
+            app.request(&Request::RejectPairing { device_id: daemon.device_id.clone() }),
+            Response::Ok
+        ));
+        assert!(manager.trust().unwrap().list().unwrap().is_empty());
+
+        // And the pending handshake is GONE, not merely unconfirmed: a
+        // Yes that arrives after a No must not resurrect it.
+        match app.request(&Request::ConfirmPairing { device_id: daemon.device_id }) {
+            Response::Error { message } => {
+                assert!(message.contains("no pairing waiting"), "{message}")
+            }
+            other => panic!("expected an Error, got {other:?}"),
+        }
+        assert!(manager.trust().unwrap().list().unwrap().is_empty());
+    }
+
+    /// §7: "If no `app` connection is live when a confirmation is needed,
+    /// the daemon refuses the pairing ... the human keeps the wheel, and
+    /// a wheel with nobody at it is a refusal, not a wait."
+    ///
+    /// Checked BEFORE the handshake runs, which is why this test can drop
+    /// the app connection and then start one: a phone that completed a
+    /// full mutual exchange and was only then told nobody was home would
+    /// have spent its secret for nothing.
+    #[test]
+    fn a_pairing_with_no_desktop_listening_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        let qr = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("expected PairingOffer, got {other:?}"),
+        };
+
+        // The human closed gavin while the QR was still on the phone's
+        // screen.
+        app.close();
+        let deadline = Instant::now() + PROCESS_BUDGET;
+        while !manager.app_connections.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "the app connection never closed");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let (daemon, _) = run_ceremony(&manager, &qr, "iPhone");
+        let err = daemon.unwrap_err();
+        assert!(
+            err.to_string().contains("open gavin on the desktop"),
+            "the refusal has to name what to do about it: {err}"
+        );
+        assert!(manager.trust().unwrap().list().unwrap().is_empty());
+    }
+
+    /// One QR on screen, one live secret. A second `BeginPairing`
+    /// replaces the first, so "press Pair a device again" is a real
+    /// instruction rather than a way to accumulate valid secrets -- and a
+    /// completed handshake spends the offer, so one photograph cannot
+    /// admit a second phone.
+    #[test]
+    fn an_offer_is_replaced_by_the_next_and_spent_by_a_handshake() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        let first = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        let second = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        assert_ne!(first.secret, second.secret);
+
+        // The superseded secret is dead, even though it has not expired.
+        let (daemon, _) = run_ceremony(&manager, &first, "stale QR");
+        assert!(daemon.is_err(), "a replaced offer must not still pair");
+
+        // The live one works -- once.
+        let (daemon, _) = run_ceremony(&manager, &second, "iPhone");
+        assert!(daemon.is_ok());
+        let (again, _) = run_ceremony(&manager, &second, "second phone, same photo");
+        let err = again.unwrap_err();
+        assert!(err.to_string().contains("no pairing is in progress"), "{err}");
+    }
+
+    /// Revoking from the wire is the store's half AND the connections'
+    /// half (§3), and the desktop is told about the second one.
+    #[test]
+    fn revoke_device_over_the_wire_drops_the_connection_and_pushes() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+        pair_device(&manager, "dev-1", 1);
+
+        let phone = connect_as_device(&manager, "dev-1");
+        // The connect push, first.
+        match app.next() {
+            Response::DeviceConnected { device_id } => assert_eq!(device_id, "dev-1"),
+            other => panic!("expected DeviceConnected, got {other:?}"),
+        }
+
+        assert!(matches!(
+            app.request(&Request::RevokeDevice { device_id: "dev-1".into() }),
+            Response::Ok
+        ));
+
+        await_no_connection_for(&manager, "dev-1");
+        assert_closed(&phone, "a revoked device's connection");
+        assert!(manager.trust().unwrap().device("dev-1").unwrap().unwrap().is_revoked());
+
+        // The disconnect push follows the drop, so the device list goes
+        // grey without the app having to poll for it. It may arrive
+        // before or after the `Ok` -- the socket shutdown and this
+        // connection's reply are on two threads -- so the assertion is
+        // that it arrives, not when.
+        let mut saw_disconnect = false;
+        for _ in 0..4 {
+            match app.next() {
+                Response::DeviceDisconnected { device_id } => {
+                    assert_eq!(device_id, "dev-1");
+                    saw_disconnect = true;
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        assert!(saw_disconnect, "no DeviceDisconnected push arrived");
+    }
+
+    /// "Revoke all devices" over the wire: every row revoked, every
+    /// connection dropped, and the key rotated -- which is the half that
+    /// holds even if `devices.sqlite` is later restored from a backup
+    /// (§3).
+    #[test]
+    fn revoke_all_devices_over_the_wire_rotates_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+        pair_device(&manager, "dev-1", 1);
+        pair_device(&manager, "dev-2", 2);
+        let before = manager.trust().unwrap().static_public_key().unwrap();
+
+        assert!(matches!(app.request(&Request::RevokeAllDevices), Response::Ok));
+
+        assert_ne!(manager.trust().unwrap().static_public_key().unwrap(), before);
+        for device in manager.trust().unwrap().list().unwrap() {
+            assert!(device.is_revoked(), "{} survived revoke-all", device.device_id);
+        }
+        // The settings are not a casualty of a lost phone.
+        assert!(!manager.trust().unwrap().remote_access().unwrap().enabled);
+    }
+
+    /// Pressing "Pair a device" again starts over: the handshake the
+    /// human walked away from stops being answerable.
+    ///
+    /// The dialog showing that device's six digits is gone from the
+    /// screen, so a Confirm that could still land for it would be a yes
+    /// to a question nobody is being asked.
+    #[test]
+    fn a_new_offer_forgets_a_handshake_the_human_never_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        let qr = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        let (daemon, _) = run_ceremony(&manager, &qr, "iPhone");
+        let abandoned = daemon.unwrap().device_id;
+        assert!(matches!(app.next(), Response::DevicePairingRequested { .. }));
+
+        // The human ignores the dialog and starts again.
+        assert!(matches!(app.request(&Request::BeginPairing), Response::PairingOffer { .. }));
+
+        match app.request(&Request::ConfirmPairing { device_id: abandoned }) {
+            Response::Error { message } => {
+                assert!(message.contains("no pairing waiting"), "{message}")
+            }
+            other => panic!("expected an Error, got {other:?}"),
+        }
+        assert!(manager.trust().unwrap().list().unwrap().is_empty());
+    }
+
+    /// A Confirm the STORE refuses leaves the pairing answerable.
+    ///
+    /// The refusal that realistically happens is the device cap, and its
+    /// message is an instruction -- "revoke one before pairing another".
+    /// Dropping the pending handshake would make that instruction
+    /// impossible to follow: the phone's secret is spent, and this phase
+    /// has no channel to ask it to try again.
+    #[test]
+    fn a_confirm_the_store_refuses_can_be_retried_after_revoking() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        // The cap, filled.
+        for (i, id) in ["dev-a", "dev-b", "dev-c"].iter().enumerate() {
+            pair_device(&manager, id, (i + 10) as u8);
+        }
+
+        let qr = match app.request(&Request::BeginPairing) {
+            Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        let (daemon, _) = run_ceremony(&manager, &qr, "a fourth phone");
+        let fourth = daemon.unwrap().device_id;
+        assert!(matches!(app.next(), Response::DevicePairingRequested { .. }));
+
+        match app.request(&Request::ConfirmPairing { device_id: fourth.clone() }) {
+            Response::Error { message } => {
+                assert!(message.contains("already paired"), "{message}")
+            }
+            other => panic!("expected the cap to refuse, got {other:?}"),
+        }
+
+        // The human does what the message said, and presses Confirm
+        // again -- without re-running the ceremony on the phone.
+        assert!(matches!(
+            app.request(&Request::RevokeDevice { device_id: "dev-a".into() }),
+            Response::Ok
+        ));
+        assert!(matches!(
+            app.request(&Request::ConfirmPairing { device_id: fourth.clone() }),
+            Response::Ok
+        ));
+        assert!(manager.trust().unwrap().device(&fourth).unwrap().is_some());
+    }
+
+    /// §3 promises a revocation drops a device's connections
+    /// **immediately**. A pairing handshake is three round trips over a
+    /// network, so a responder that held the trust store's lock for the
+    /// duration would make "immediately" mean "once the phone in the
+    /// other room answers, or never".
+    ///
+    /// This is the guard for that. A phone connects and goes quiet, so
+    /// `pair_over` is parked in a read with the handshake underway; a
+    /// revocation from the desktop has to land anyway. If the lock ever
+    /// creeps back across the handshake (the obvious way: calling
+    /// `pairing::run_responder`, which takes the store, instead of the
+    /// two-step `ResponderKeys` / `run_responder_with_keys` pair), the
+    /// revoke blocks and the `recv_timeout` below fails the test rather
+    /// than hanging the suite.
+    ///
+    /// It can only fail CORRECTLY: if the daemon thread has not reached
+    /// its read yet, the revoke simply succeeds and the test passes on a
+    /// case it did not mean to test. There is no arrangement in which it
+    /// passes while the lock IS held.
+    #[test]
+    fn a_handshake_in_flight_does_not_block_a_revocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+        pair_device(&manager, "dev-1", 1);
+        assert!(matches!(app.request(&Request::BeginPairing), Response::PairingOffer { .. }));
+
+        // A phone that opened the connection and then said nothing: the
+        // daemon is inside `read_frame`, waiting for message 1.
+        let (phone, daemon_side) = Stream::pair().unwrap();
+        let pairing_manager = Arc::clone(&manager);
+        let handshake_thread = std::thread::spawn(move || {
+            let mut daemon_side = daemon_side;
+            let _ = pairing_manager.pair_over(&mut daemon_side);
+        });
+        std::thread::sleep(Duration::from_millis(200));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let revoking = Arc::clone(&manager);
+        std::thread::spawn(move || {
+            let _ = tx.send(revoking.revoke_device("dev-1"));
+        });
+        let revoked = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a revocation queued behind a pairing handshake")
+            .unwrap();
+        assert!(revoked.newly_revoked);
+        assert!(manager.trust().unwrap().device("dev-1").unwrap().unwrap().is_revoked());
+
+        // Let the parked handshake go, so this test leaves no thread
+        // sitting in a read for the rest of the run. DROPPED, not merely
+        // shut down: on Windows `Stream::pair` is a named pipe, and a
+        // pipe stays open -- and its peer stays parked -- while any
+        // handle to it lives, so a shutdown on a handle still in scope
+        // ends nothing.
+        drop(phone);
+        handshake_thread.join().unwrap();
+    }
+
+    /// Stored and inert (§10). `SetRemoteAccess` persists and reads back,
+    /// and the daemon does NOT start listening because of it -- the
+    /// proof being that nothing in this build reads `enabled` to decide
+    /// to dial. The end-to-end `netstat` check is the parent card's.
+    #[test]
+    fn set_remote_access_is_stored_and_reads_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        assert!(matches!(
+            app.request(&Request::SetRemoteAccess {
+                enabled: true,
+                relay_url: Some("wss://relay.example/gavin".into())
+            }),
+            Response::Ok
+        ));
+        match app.request(&Request::ListDevices) {
+            Response::Devices { remote_access_enabled, relay_url, devices } => {
+                assert!(remote_access_enabled);
+                assert_eq!(relay_url.as_deref(), Some("wss://relay.example/gavin"));
+                assert!(devices.is_empty());
+            }
+            other => panic!("expected Devices, got {other:?}"),
+        }
+    }
+
     #[test]
     fn archiving_a_card_re_keys_its_session_binding_and_rail_steps() {
         let dir = tempfile::tempdir().unwrap();
@@ -7233,32 +9410,6 @@ mod tests {
             Arc::new(Mutex::new(theirs)),
         );
         (manager, wire_spelling(&root), wire_spelling(&card))
-    }
-
-    /// A path on disk in the spelling gavin puts on the wire: resolved,
-    /// forward slashes, and on Windows with the `\\?\` verbatim prefix
-    /// gone.
-    ///
-    /// Spelled out here rather than handed to `protocol::wire_path`, so
-    /// a test comparing a REPORTED path against this is comparing two
-    /// independent derivations rather than the implementation with
-    /// itself.
-    ///
-    /// Why a test needs it at all: `Path::canonicalize` on Windows
-    /// answers `\\?\C:\Users\x`, and nothing in gavin ever reports a
-    /// path in that shape -- a watcher stores
-    /// `protocol::canonical_path(root)` and every card id the board,
-    /// the orchestration store and the MCP hand around came out of that
-    /// scan. A test that keyed a binding on the raw canonical spelling
-    /// created a row nothing could ever look up, and then asserted
-    /// against a path the daemon does not use.
-    fn wire_spelling(path: &std::path::Path) -> String {
-        let resolved = path.canonicalize().unwrap();
-        let text = resolved.to_string_lossy().to_string();
-        if !cfg!(windows) {
-            return text;
-        }
-        text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/")
     }
 
     /// A live session in the registry AND in the pty map, which is what
