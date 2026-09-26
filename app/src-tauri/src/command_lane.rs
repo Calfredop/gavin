@@ -586,7 +586,7 @@ fn read_reply(
 
 /// A read that hit its deadline: EAGAIN from a socket's SO_RCVTIMEO, and
 /// the transport's pipe poll reports the same.
-fn timed_out(e: &anyhow::Error) -> bool {
+pub(crate) fn timed_out(e: &anyhow::Error) -> bool {
     e.downcast_ref::<std::io::Error>()
         .is_some_and(|e| matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut))
 }

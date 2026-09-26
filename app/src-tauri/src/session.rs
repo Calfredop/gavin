@@ -2505,7 +2505,8 @@ fn reconnect_swapping(app_handle: &AppHandle, command: &CommandConnection) -> an
         Duration::from_secs(3),
         crate::daemon::spawn_real_daemon,
     )?;
-    let probe = Mutex::new(Stream::connect(&socket)?);
+    handshake_deadline(&stream_conn, true);
+    let probe = Mutex::new(connect_for_handshake(&socket)?);
     // Verified before ANYTHING is swapped in: a daemon that fails the
     // version probe must leave a named error and an app that is merely
     // disconnected, never one wired half onto each daemon.
@@ -2515,6 +2516,8 @@ fn reconnect_swapping(app_handle: &AppHandle, command: &CommandConnection) -> an
     // handshake and its proof run again before either connection is
     // published.
     app_handshake(&compat, &probe, &mut stream_conn)?;
+    // The relay reads this one for as long as the app runs.
+    handshake_deadline(&stream_conn, false);
 
     // A restart can hand the app a differently-versioned daemon than the
     // one it started with -- refresh the stored verdict BEFORE either
@@ -2685,13 +2688,35 @@ impl CommandConnection {
 /// for the reads lane, which must not run as `local` any more than the
 /// main one does.
 fn open_command_stream(socket: &Path, compat: &DaemonCompat) -> anyhow::Result<Stream> {
-    let conn = Mutex::new(Stream::connect(socket)?);
+    let conn = Mutex::new(connect_for_handshake(socket)?);
     if compat.daemon_version >= HELLO_MIN_VERSION {
         if let Some(token) = read_daemon_token() {
             app_handshake_command(&conn, &token)?;
         }
     }
     Ok(conn.into_inner().expect("command connection mutex poisoned"))
+}
+
+/// How long each reply may take while the app presents itself to a
+/// daemon it has just connected to: the version probe and the `Hello`s.
+/// Without it, a daemon that accepts and never answers held bootstrap --
+/// and a restart, which held the main thread with it -- with no end.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Bounds every read on `stream` by `HANDSHAKE_DEADLINE`, or lifts the
+/// bound again. A failure is ignored: the one way this fails is macOS
+/// refusing SO_RCVTIMEO on a socket whose peer has already closed, and a
+/// read on that cannot block anyway (command_lane.rs's `read_reply`).
+fn handshake_deadline(stream: &Stream, bounded: bool) {
+    let _ = stream.set_read_timeout(bounded.then_some(HANDSHAKE_DEADLINE));
+}
+
+/// A command connection to the local daemon, ready for its handshake.
+/// Left bounded: a command lane sets its own deadline before every read.
+fn connect_for_handshake(socket: &Path) -> anyhow::Result<Stream> {
+    let stream = Stream::connect(socket)?;
+    handshake_deadline(&stream, true);
+    Ok(stream)
 }
 
 /// What the app negotiated with the daemon it just connected to.
@@ -2761,6 +2786,12 @@ pub(crate) fn verify_daemon_protocol(command_conn: &Mutex<Stream>) -> anyhow::Re
         Ok(Response::ProtocolVersion { version }) => {
             classify(version, protocol::PROTOCOL_VERSION, protocol::MIN_COMPATIBLE_VERSION)
                 .map_err(|e| anyhow::anyhow!(e))
+        }
+        // Not the old-daemon shape below: it took the connection and
+        // then said nothing at all. Calling that "too old" would send the
+        // human after a version problem they do not have.
+        Err(e) if crate::command_lane::timed_out(&e) => {
+            anyhow::bail!("the gavin daemon took the connection but never answered — restart it")
         }
         // A daemon too old to parse the probe closes the connection.
         // Preserved from the 2026-08-07 stale-daemon incident: this
@@ -4467,16 +4498,18 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         Duration::from_secs(3),
         crate::daemon::spawn_real_daemon,
     )?;
+    handshake_deadline(&stream_conn, true);
     // The daemon is confirmed reachable by the connect above (which may
     // have just spawned it) — this second connection should succeed
     // immediately, no retry/backoff needed.
-    let command_stream = Stream::connect(&socket)?;
-    let command_conn = Mutex::new(command_stream);
+    let command_conn = Mutex::new(connect_for_handshake(&socket)?);
     let compat = verify_daemon_protocol(&command_conn)?;
     // Present the app's identity on both connections and verify the
     // daemon's proof (`sec-fix-client-identity.md`). A no-op against a
     // pre-v35 daemon; a proof mismatch aborts bootstrap (DP-06).
     app_handshake(&compat, &command_conn, &mut stream_conn)?;
+    // The relay reads this one for as long as the app runs.
+    handshake_deadline(&stream_conn, false);
     *app_handle.state::<DaemonCompatState>().0.lock().unwrap() = Some(compat);
     let command = CommandConnection::new(
         &socket,
@@ -6265,6 +6298,70 @@ mod version_probe_tests {
         }]);
         let err = verify_daemon_protocol(&Mutex::new(client)).unwrap_err().to_string();
         assert!(err.contains("too old to talk to this app"));
+    }
+
+    /// The restart's worst case: a daemon that takes the connection and
+    /// never says a word. The probe ends at its deadline -- the one
+    /// `connect_for_handshake` sets, shortened here -- and the error says
+    /// what happened rather than calling the daemon too old.
+    #[test]
+    fn a_daemon_that_never_answers_ends_the_probe_at_its_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("mute.sock");
+        let listener = protocol::transport::Listener::bind(&sock).unwrap();
+        let (hold, held) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let _conn = listener.accept().unwrap();
+            let _ = held.recv();
+        });
+        let client = Stream::connect(&sock).unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+
+        let started = Instant::now();
+        let err = verify_daemon_protocol(&Mutex::new(client)).unwrap_err().to_string();
+
+        assert!(started.elapsed() < Duration::from_secs(5), "the probe waited {:?}", started.elapsed());
+        assert!(err.contains("never answered"), "{err}");
+        drop(hold);
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    /// The streaming connection is handshaken under a deadline and then
+    /// handed to the relay, which must wait on a quiet daemon for as long
+    /// as the app runs: a bound left behind would read an idle stretch as
+    /// a lost daemon and throw the connection-error overlay.
+    #[test]
+    fn lifting_the_handshake_deadline_leaves_reads_unbounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("quiet.sock");
+        let listener = protocol::transport::Listener::bind(&sock).unwrap();
+        let (hang_up, hung_up) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let _conn = listener.accept().unwrap();
+            let _ = hung_up.recv();
+        });
+        let stream = Stream::connect(&sock).unwrap();
+        // Shorter than HANDSHAKE_DEADLINE, which a test cannot wait out:
+        // what is under test is that lifting it clears ANY bound.
+        stream.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        handshake_deadline(&stream, false);
+
+        let (read_back, ended) = std::sync::mpsc::channel();
+        let mut reader = stream.try_clone().unwrap();
+        std::thread::spawn(move || {
+            let mut byte = [0u8; 1];
+            let _ = read_back.send(std::io::Read::read(&mut reader, &mut byte).map_err(|e| e.kind()));
+        });
+        assert!(
+            ended.recv_timeout(Duration::from_millis(400)).is_err(),
+            "a read on a quiet daemon ended while the relay should still be waiting"
+        );
+        drop(hang_up);
+        assert_eq!(ended.recv_timeout(Duration::from_secs(5)).unwrap(), Ok(0), "the hang-up was not seen");
     }
 }
 
