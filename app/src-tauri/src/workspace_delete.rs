@@ -19,6 +19,7 @@
 //!   tampered with) removes less than it asked for, never more.
 
 use crate::agent_setup;
+use crate::git::WORKTREES_DIR;
 use crate::trash::trash_path;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -55,6 +56,14 @@ pub struct GavinFootprint {
     pub mcp: Option<McpFootprint>,
     pub instructions: Option<String>,
     pub contexts: Vec<ContextFootprint>,
+    /// Live checkouts directly under `.gavin-worktrees/` -- each one a
+    /// `git worktree add` the orchestrator cut, named after its branch.
+    /// Reported so the summary can say where they are, but this wizard
+    /// never trashes one: only `git worktree remove` (the Git tab's
+    /// sweep, or by hand) takes the registration out without leaving a
+    /// prunable entry behind. See `removable_paths` below -- this field
+    /// deliberately feeds no path into it.
+    pub worktrees: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -176,6 +185,21 @@ fn walk_contexts(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
     }
 }
 
+/// Every checkout directly under `.gavin-worktrees/`, sorted. Each is a
+/// live git working tree, not gavin's to remove -- see the doc on
+/// `GavinFootprint::worktrees`.
+fn worktrees(root: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(root.join(WORKTREES_DIR)) else { return Vec::new() };
+    let mut found: Vec<String> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .map(|p| protocol::wire_path(&p))
+        .collect();
+    found.sort();
+    found
+}
+
 /// The root config's `extra_contexts`: absolute folders registered from
 /// outside the root. Only the ones that still hold a `.gavin/` are
 /// reported -- an entry pointing at a folder that has moved on is a
@@ -289,6 +313,7 @@ pub fn scan(root: &Path) -> Result<GavinFootprint, String> {
         mcp,
         instructions,
         contexts,
+        worktrees: worktrees(root),
     })
 }
 
@@ -637,6 +662,45 @@ mod tests {
         let f = scan(dir.path()).unwrap();
 
         assert!(f.contexts.is_empty(), "{:?}", f.contexts);
+    }
+
+    /// A live checkout under `.gavin-worktrees/` shows up in the scan --
+    /// so the wizard's summary can point at it -- but a plan naming it
+    /// directly is refused, the same way a stale plan is: `worktrees` is
+    /// deliberately absent from `removable_paths`.
+    #[test]
+    fn the_scan_reports_worktrees_and_remove_never_touches_them() {
+        let dir = tempfile::tempdir().unwrap();
+        workspace(dir.path());
+        let wt = dir.path().join(WORKTREES_DIR).join("feat-x");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("marker.txt"), "uncommitted work").unwrap();
+
+        let f = scan(dir.path()).unwrap();
+
+        assert_eq!(f.worktrees, vec![protocol::wire_path(&wt)]);
+
+        let plan = RemovalPlan { trash: vec![f.worktrees[0].clone()], ..Default::default() };
+        let report = remove(dir.path(), &plan).unwrap();
+
+        assert!(report.done.is_empty());
+        assert_eq!(report.failed.len(), 1);
+        assert!(wt.join("marker.txt").is_file());
+    }
+
+    /// The folder's own `.gitignore` (`prepare_worktrees_dir` writes one
+    /// before the first checkout lands) is a file beside the worktrees,
+    /// not one -- only directories are checkouts.
+    #[test]
+    fn a_stray_file_under_gavin_worktrees_is_not_reported_as_one() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(GAVIN_ROOT_DIR)).unwrap();
+        std::fs::create_dir_all(dir.path().join(WORKTREES_DIR)).unwrap();
+        std::fs::write(dir.path().join(WORKTREES_DIR).join(".gitignore"), "*\n").unwrap();
+
+        let f = scan(dir.path()).unwrap();
+
+        assert!(f.worktrees.is_empty(), "{:?}", f.worktrees);
     }
 
     #[test]
