@@ -150,6 +150,19 @@ fn count_archived(archive: &Path) -> usize {
     total
 }
 
+/// Whether a walked entry is a directory, the way `Path::is_dir` answers
+/// it -- a symlink counts as what it points at -- without its stat. The
+/// type readdir already returned settles everything but a symlink, and
+/// only a symlink is stat'ed to follow it. On a 152k-entry root the
+/// stats were two thirds of a warm walk: 0.76 s against 0.25 s without.
+fn entry_is_dir(entry: &std::fs::DirEntry) -> bool {
+    match entry.file_type() {
+        Ok(t) if t.is_symlink() => entry.path().is_dir(),
+        Ok(t) => t.is_dir(),
+        Err(_) => entry.path().is_dir(),
+    }
+}
+
 /// Every `.gavin/` under the root. The walk matches the daemon's:
 /// `.gavin*` directories are never descended into, and the same excluded
 /// and dot-prefixed directories are skipped.
@@ -159,10 +172,10 @@ fn walk_contexts(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
     }
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+        if !entry_is_dir(&entry) {
             continue;
         }
+        let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         if name == GAVIN_DIR {
             found.push(path);
@@ -637,6 +650,25 @@ mod tests {
         let f = scan(dir.path()).unwrap();
 
         assert!(f.contexts.is_empty(), "{:?}", f.contexts);
+    }
+
+    /// The walk reads each entry's type from readdir instead of stat'ing
+    /// it, and readdir calls a symlink a symlink. A `.gavin` linked to a
+    /// folder inside the root is still one the daemon shows, so it has to
+    /// stay one this wizard finds.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_gavin_folder_is_still_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(GAVIN_ROOT_DIR)).unwrap();
+        std::fs::create_dir_all(dir.path().join("store").join("ctx")).unwrap();
+        std::fs::create_dir_all(dir.path().join("api")).unwrap();
+        std::os::unix::fs::symlink("../store/ctx", dir.path().join("api").join(GAVIN_DIR)).unwrap();
+
+        let f = scan(dir.path()).unwrap();
+
+        assert_eq!(f.contexts.len(), 1, "{:?}", f.contexts);
+        assert!(f.contexts[0].path.ends_with("api/.gavin"));
     }
 
     #[test]
