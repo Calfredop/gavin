@@ -319,7 +319,8 @@ impl RemoteLink {
     }
 
     /// One request/reply on the command connection, waited for on this
-    /// thread: every caller is a sync command or the blocking pool.
+    /// thread: every caller is the blocking pool or a thread of its own,
+    /// never the main thread.
     fn ask(&self, req: Request) -> anyhow::Result<Response> {
         self.command.ask(&self.compat, req)
     }

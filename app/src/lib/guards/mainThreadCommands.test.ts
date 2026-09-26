@@ -162,6 +162,29 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // bootstrap. The streaming connection refuses input meanwhile.
   ["session.rs", "restart_daemon", "stopping, respawning and re-handshaking the daemon"],
   ["session.rs", "stop_daemon", "a Shutdown, then SIGTERM, with up to ~0.9 s of waiting"],
+  // On an ssh workspace each of these is a round trip to the host, and a
+  // host that has stopped answering holds it for a whole deadline: the
+  // editor's autosave on every typing pause, the attachment check on
+  // every card modal, a dozen in a row for an agent integration run. The
+  // "commands that wait on an ssh host" check below finds the file and
+  // agent ones by what they call; these rows name them all the same.
+  ["fileviewer.rs", "write_file_for_editor", "an ssh round trip, on every autosave"],
+  ["fileviewer.rs", "attachment_status", "an ssh round trip, on every card modal open"],
+  ["fileviewer.rs", "create_file", "an ssh round trip"],
+  ["fileviewer.rs", "create_directory", "an ssh round trip"],
+  ["fileviewer.rs", "rename_path", "an ssh round trip"],
+  ["fileviewer.rs", "trash_entry", "an ssh round trip, or a local Trash move"],
+  ["agent_setup.rs", "setup_agent_integration", "a dozen ssh round trips in a row"],
+  ["git/commands.rs", "git_merged_branches", "`git branch --merged`, on every worktree sweep"],
+  ["git/commands.rs", "git_stash_files", "`git stash show`"],
+  ["git/commands.rs", "git_worktree_prune", "`git worktree prune`"],
+  ["git/ignore.rs", "git_read_ignore_file", "a `git rev-parse` and a file read"],
+  ["git/ignore.rs", "git_write_ignore_file", "a `git rev-parse` and a file write"],
+  ["git/ignore.rs", "git_add_ignore_pattern", "a `git rev-parse`, a read and a write"],
+  ["git/runchanges.rs", "git_head_sha", "`git rev-parse HEAD`, on every card launch"],
+  ["git/tracking.rs", "gavin_git_tracking", "`git check-ignore`, on every Settings visit"],
+  ["git/tracking.rs", "set_gavin_git_tracking", "`git check-ignore`, and `git rm --cached` to untrack"],
+  ["git/ops.rs", "git_cancel_op", "an ssh round trip, for an op running on a host"],
 ];
 
 /// The command's text from its `#[tauri::command]` line to the first
@@ -260,6 +283,84 @@ describe("the daemon's command lanes", () => {
       expect(text).toContain(`pub async fn ${name}(`);
       expect(text).toMatch(WORKER_QUEUE);
       expect(text).not.toMatch(/\.ask\(|\.wait\(/);
+    });
+  }
+});
+
+/// Every `#[tauri::command]` in src-tauri, as [file, name, text].
+function everyCommand(): [string, string, string][] {
+  return Object.keys(RUST).flatMap((path) => {
+    const file = path.slice(path.indexOf("/src-tauri/src/") + "/src-tauri/src/".length);
+    return commands(file).map(([name, text]): [string, string, string] => [file, name, text]);
+  });
+}
+
+/// A command that hands its wait to the blocking pool -- itself, through
+/// `off_main_thread`, or through git/ops.rs's `spawn_op`, the network ops'
+/// one-line form of it -- or to a command lane.
+function offMainThread(text: string): boolean {
+  return /spawn_blocking|off_main_thread\(|spawn_op\(/.test(text) || WORKER_QUEUE.test(text);
+}
+
+// An ssh workspace's files, git and agent setup live on the host, and a
+// command reaches them through a `RemoteLink` method that waits for the
+// host's answer. On the main thread that is a network round trip per
+// call -- and a whole deadline when the host has stopped answering, with
+// the window frozen for all of it. The asking methods are read from
+// remote.rs, so one added there is covered the day it is written.
+describe("commands that wait on an ssh host", () => {
+  const remote = rust("remote.rs");
+  const asking = [...remote.matchAll(/\n    pub fn (\w+)\(\s*&self[\s\S]*?\n    \}\n/g)]
+    .filter(([body]) => /self\.ask(_within)?\(/.test(body))
+    .map(([, name]) => name);
+
+  it("are found by reading remote.rs", () => {
+    expect(asking).toEqual(expect.arrayContaining(["read_file", "write_file", "stat_paths", "run_git", "trash_path"]));
+  });
+
+  const reachesHost = (text: string) =>
+    text.includes("RemoteFiles") ||
+    (/Route::Remote\(/.test(text) && asking.some((method) => text.includes(`.${method}(`)));
+  const reaching = everyCommand().filter(([, , text]) => reachesHost(text));
+
+  it("include the file and agent commands", () => {
+    expect(reaching.map(([, name]) => name)).toEqual(
+      expect.arrayContaining(["write_file_for_editor", "attachment_status", "trash_entry", "setup_agent_integration"])
+    );
+  });
+
+  for (const [file, name, text] of reaching) {
+    it(`${file}'s ${name} waits for the host off the main thread`, () => {
+      expect(text).toContain(`pub async fn ${name}(`);
+      expect(offMainThread(text), `${name} is async but does its waiting inline`).toBe(true);
+    });
+  }
+
+  // The Git tab's commands reach the host from underneath: `git::run`
+  // routes a cwd on a host to it (`remote::run_git_over_link`), so no
+  // command body says so. Every one of them is off the main thread, then,
+  // but the two that only WRITE to the host's streaming connection and
+  // never wait for an answer.
+  const WRITE_ONLY = new Set(["git_watch", "git_unwatch"]);
+  const git = everyCommand().filter(([file, name]) => file.startsWith("git/") && !WRITE_ONLY.has(name));
+
+  it("include every git command", () => {
+    expect(git.length).toBeGreaterThan(50);
+  });
+
+  // Trusted above only while it IS the blocking pool, like
+  // `off_main_thread`.
+  it("git/ops.rs's spawn_op hands its op to the blocking pool", () => {
+    const text = rust("git/ops.rs");
+    const at = text.search(/async fn spawn_op\(/);
+    expect(at, "spawn_op is not an async fn in git/ops.rs").toBeGreaterThan(-1);
+    expect(text.slice(at, text.indexOf("\n}\n", at))).toContain("tauri::async_runtime::spawn_blocking(");
+  });
+
+  for (const [file, name, text] of git) {
+    it(`${file}'s ${name} runs its git off the main thread`, () => {
+      expect(text).toContain(`pub async fn ${name}(`);
+      expect(offMainThread(text), `${name} is async but runs its git inline`).toBe(true);
     });
   }
 });

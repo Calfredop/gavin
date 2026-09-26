@@ -33,6 +33,7 @@ import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspace
 import type { AttachmentStatus } from "$lib/cards/attachments";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
 import type { DeviceList, PairingOffer } from "$lib/core/remoteAccess";
+import { keyedQueue } from "$lib/core/keyedQueue";
 
 /// `workspaceRoot` is the workspace the session BELONGS to, as distinct
 /// from `cwd`, where it runs. The two differ whenever gavin launches into
@@ -129,8 +130,14 @@ export function readFileForViewer(
   return invoke("read_file_for_viewer", { path });
 }
 
+// One path's writes, in the order they were made. The command runs off
+// the main thread -- on an ssh workspace every save is a round trip to
+// the host -- so without this an autosave could overtake the one before
+// it and leave the older text on disk (see keyedQueue.ts).
+const editorWrites = keyedQueue();
+
 export function writeFileForEditor(path: string, content: string): Promise<void> {
-  return invoke("write_file_for_editor", { path, content });
+  return editorWrites(path, () => invoke("write_file_for_editor", { path, content }));
 }
 
 export function resolvePathUnderCursor(candidate: string, cwd: string): Promise<string | null> {

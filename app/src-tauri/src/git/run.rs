@@ -30,8 +30,8 @@ const STOP_GRACE: Duration = Duration::from_secs(2);
 pub const GIT_NOT_FOUND: &str = "git was not found on PATH";
 
 /// Set to stop a running git. The runner that owns the process polls it
-/// and does the stopping, so a canceller -- `git_cancel_op`, which runs
-/// on the main thread -- only ever stores a bool and never waits.
+/// and does the stopping, so a canceller -- `git_cancel_op` -- only ever
+/// stores a bool and never waits on the git it is stopping.
 pub type CancelFlag = Arc<AtomicBool>;
 
 /// Where a running git's stderr goes, line by line: the op bar's

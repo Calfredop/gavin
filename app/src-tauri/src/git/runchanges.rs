@@ -398,9 +398,10 @@ fn discard_with(
     Ok(report)
 }
 
+/// A `git rev-parse`: on an ssh workspace, a round trip to the host.
 #[tauri::command]
-pub fn git_head_sha(cwd: String) -> Result<Option<String>, String> {
-    head_sha(&cwd)
+pub async fn git_head_sha(cwd: String) -> Result<Option<String>, String> {
+    off_main_thread(move || head_sha(&cwd)).await
 }
 
 /// `async` + `spawn_blocking`, like `get_git_baselines`: one call runs

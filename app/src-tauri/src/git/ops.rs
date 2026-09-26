@@ -2,7 +2,7 @@
 //! streamed progress over the `git-op-progress` event, one registry entry
 //! per op so the frontend can cancel it (spec SP2 §1.1, decision G13).
 
-use crate::git::run::{run_git_ro, run_git_streaming, CancelFlag, LineSink, OpControl};
+use crate::git::run::{off_main_thread, run_git_ro, run_git_streaming, CancelFlag, LineSink, OpControl};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -181,9 +181,13 @@ pub async fn git_push(cwd: String, remote: String, op_id: String, app: AppHandle
     spawn_op(ops.inner().clone(), app, op_id, cwd, args).await
 }
 
+/// Off the main thread for an op running on an ssh host, whose cancel is
+/// a round trip there (`remote::cancel_git_op_over_link`). A local one
+/// only stores a flag.
 #[tauri::command]
-pub fn git_cancel_op(op_id: String, ops: State<'_, GitOps>) -> bool {
-    cancel(ops.inner(), &op_id)
+pub async fn git_cancel_op(op_id: String, ops: State<'_, GitOps>) -> Result<bool, String> {
+    let ops = ops.inner().clone();
+    off_main_thread(move || Ok(cancel(&ops, &op_id))).await
 }
 
 #[cfg(test)]

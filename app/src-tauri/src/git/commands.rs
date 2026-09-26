@@ -334,8 +334,8 @@ pub async fn git_worktree_remove(cwd: String, path: String, force: bool) -> Resu
 }
 
 #[tauri::command]
-pub fn git_worktree_prune(cwd: String) -> Result<(), String> {
-    worktree_prune(&cwd)
+pub async fn git_worktree_prune(cwd: String) -> Result<(), String> {
+    off_main_thread(move || worktree_prune(&cwd)).await
 }
 
 #[tauri::command]
@@ -623,8 +623,8 @@ pub async fn git_delete_branch(cwd: String, name: String, force: bool) -> Result
 }
 
 #[tauri::command]
-pub fn git_merged_branches(cwd: String, base: String) -> Result<Vec<String>, String> {
-    merged_branches(&cwd, &base)
+pub async fn git_merged_branches(cwd: String, base: String) -> Result<Vec<String>, String> {
+    off_main_thread(move || merged_branches(&cwd, &base)).await
 }
 
 #[tauri::command]
@@ -675,8 +675,8 @@ pub async fn git_stash_drop(cwd: String, index: u32) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn git_stash_files(cwd: String, index: u32) -> Result<Vec<crate::git::types::FileEntry>, String> {
-    stash_files(&cwd, index)
+pub async fn git_stash_files(cwd: String, index: u32) -> Result<Vec<crate::git::types::FileEntry>, String> {
+    off_main_thread(move || stash_files(&cwd, index)).await
 }
 
 #[tauri::command]

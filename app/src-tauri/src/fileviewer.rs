@@ -275,19 +275,24 @@ fn read_prefix(reader: impl std::io::Read, cap: usize) -> std::io::Result<(Vec<u
 /// when `truncated` is true.
 ///
 /// Refuses a path outside every open workspace (AS-04) before writing.
+///
+/// Off the main thread: on an ssh workspace this is a round trip to the
+/// host, on every autosave. Two writes to one path used to be ordered by
+/// the main thread running them one after the other; they are ordered
+/// now by the frontend, which issues a path's next write only once its
+/// last one has answered (`backend.writeFileForEditor`).
 #[tauri::command]
-pub fn write_file_for_editor(
-    path: String,
-    content: String,
-    app_handle: AppHandle,
-    workspaces: State<WorkspacesState>,
-) -> Result<(), String> {
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_path(&app_handle, &path)? {
-        let root = remote_root_for(&app_handle, &path)?;
-        return link.write_file(&root, &path, &content).map_err(|e| e.to_string());
-    }
-    let roots = allowed_roots(&workspaces.0.lock().unwrap());
-    write_file_for_editor_impl(&path, content, &roots)
+pub async fn write_file_for_editor(path: String, content: String, app_handle: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let crate::remote::Route::Remote(link) = crate::remote::route_for_path(&app_handle, &path)? {
+            let root = remote_root_for(&app_handle, &path)?;
+            return link.write_file(&root, &path, &content).map_err(|e| e.to_string());
+        }
+        let roots = allowed_roots(&app_handle.state::<WorkspacesState>().0.lock().unwrap());
+        write_file_for_editor_impl(&path, content, &roots)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn write_file_for_editor_impl(path: &str, content: String, roots: &[PathBuf]) -> Result<(), String> {
@@ -599,29 +604,40 @@ fn sensitive_home_roots() -> Vec<(&'static str, PathBuf)> {
 /// that cannot be asked answers every entry as refused, naming why, so
 /// the run gate blocks rather than handing the agent paths nobody
 /// checked.
+///
+/// Off the main thread for that round trip, and for the local stats: a
+/// card's attachments can sit on a network mount.
 #[tauri::command]
-pub fn attachment_status(root: String, paths: Vec<String>, app_handle: AppHandle) -> Vec<AttachmentStatus> {
-    if let Ok(crate::remote::Route::Remote(link)) = crate::remote::route_for_root(&app_handle, Some(&root)) {
-        return match link.stat_paths(&root, &paths) {
-            Ok(stats) => stats.into_iter().map(attachment_status_from_stat).collect(),
-            Err(e) => paths
-                .into_iter()
-                .map(|path| AttachmentStatus {
-                    path,
-                    absolute_path: None,
-                    exists: false,
-                    location: AttachmentLocation::Refused,
-                    refused_reason: Some(format!("the host could not be asked: {e}")),
-                    size_bytes: None,
-                })
-                .collect(),
-        };
-    }
-    let root = PathBuf::from(root);
-    let root_canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
-    let extra_roots = extra_context_roots(&root_canonical);
-    let sensitive_roots = sensitive_home_roots();
-    attachment_status_impl(&root_canonical, paths, &extra_roots, &sensitive_roots)
+pub async fn attachment_status(
+    root: String,
+    paths: Vec<String>,
+    app_handle: AppHandle,
+) -> Result<Vec<AttachmentStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Ok(crate::remote::Route::Remote(link)) = crate::remote::route_for_root(&app_handle, Some(&root)) {
+            return match link.stat_paths(&root, &paths) {
+                Ok(stats) => stats.into_iter().map(attachment_status_from_stat).collect(),
+                Err(e) => paths
+                    .into_iter()
+                    .map(|path| AttachmentStatus {
+                        path,
+                        absolute_path: None,
+                        exists: false,
+                        location: AttachmentLocation::Refused,
+                        refused_reason: Some(format!("the host could not be asked: {e}")),
+                        size_bytes: None,
+                    })
+                    .collect(),
+            };
+        }
+        let root = PathBuf::from(root);
+        let root_canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+        let extra_roots = extra_context_roots(&root_canonical);
+        let sensitive_roots = sensitive_home_roots();
+        attachment_status_impl(&root_canonical, paths, &extra_roots, &sensitive_roots)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// One host-side stat in this command's own shape. The vocabulary is
@@ -952,13 +968,18 @@ fn list_directory_impl(root: String, path: String, cap: usize) -> Result<DirList
 ///
 /// On an ssh workspace the file is made where the tree is, through
 /// `CreateWorkspacePath` (v42), which makes the same two choices on the
-/// host — `create_new`, and never `create_dir_all`.
+/// host — `create_new`, and never `create_dir_all`. Off the main thread
+/// for that round trip; every entry action below is, for the same reason.
 #[tauri::command]
-pub fn create_file(root: String, path: String, app_handle: AppHandle) -> Result<(), String> {
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
-        return link.create_path(&root, &path, false).map_err(|e| e.to_string());
-    }
-    create_file_impl(root, path)
+pub async fn create_file(root: String, path: String, app_handle: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+            return link.create_path(&root, &path, false).map_err(|e| e.to_string());
+        }
+        create_file_impl(root, path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// The local half, split out like `list_directory_impl` so the tests
@@ -978,11 +999,15 @@ fn create_file_impl(root: String, path: String) -> Result<(), String> {
 /// parent is a typo worth reporting, and an existing target must be
 /// refused rather than silently accepted.
 #[tauri::command]
-pub fn create_directory(root: String, path: String, app_handle: AppHandle) -> Result<(), String> {
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
-        return link.create_path(&root, &path, true).map_err(|e| e.to_string());
-    }
-    create_directory_impl(root, path)
+pub async fn create_directory(root: String, path: String, app_handle: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+            return link.create_path(&root, &path, true).map_err(|e| e.to_string());
+        }
+        create_directory_impl(root, path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn create_directory_impl(root: String, path: String) -> Result<(), String> {
@@ -998,11 +1023,15 @@ fn create_directory_impl(root: String, path: String) -> Result<(), String> {
 /// mistyped rename into a deleted file with no trip through the Trash.
 /// `resolve_new` is what refuses it.
 #[tauri::command]
-pub fn rename_path(root: String, from: String, to: String, app_handle: AppHandle) -> Result<(), String> {
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
-        return link.rename_path(&root, &from, &to).map_err(|e| e.to_string());
-    }
-    rename_path_impl(root, from, to)
+pub async fn rename_path(root: String, from: String, to: String, app_handle: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+            return link.rename_path(&root, &from, &to).map_err(|e| e.to_string());
+        }
+        rename_path_impl(root, from, to)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn rename_path_impl(root: String, from: String, to: String) -> Result<(), String> {
@@ -1030,24 +1059,28 @@ fn rename_path_impl(root: String, from: String, to: String) -> Result<(), String
 /// confirmation is the product's promise here, and a direct `invoke`
 /// used to walk straight past it (AS-05/R5).
 #[tauri::command]
-pub fn trash_entry(
+pub async fn trash_entry(
     root: String,
     path: String,
     token: String,
-    gate: State<crate::confirm_gate::ConfirmGate>,
+    gate: State<'_, crate::confirm_gate::ConfirmGate>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
     crate::confirm_gate::spend(&gate, &token, "trash_entry", &path)?;
-    // The grant is spent FIRST, on both routes: the confirmation is the
-    // product's promise here and the human answered it on this machine,
-    // whichever machine the file is on. What the host then does is the
-    // host's own Trash -- never `rm` -- so "nothing gavin removes is
-    // unrecoverable" holds on a Linux or Windows host the same way it
-    // holds here (`TrashWorkspacePath`, v42).
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
-        return link.trash_path(&root, &path).map_err(|e| e.to_string());
-    }
-    trash_entry_impl(&root, &path)
+    // The grant is spent FIRST, on both routes, and before anything waits:
+    // the confirmation is the product's promise here and the human
+    // answered it on this machine, whichever machine the file is on. What
+    // the host then does is the host's own Trash -- never `rm` -- so
+    // "nothing gavin removes is unrecoverable" holds on a Linux or Windows
+    // host the same way it holds here (`TrashWorkspacePath`, v42).
+    tauri::async_runtime::spawn_blocking(move || {
+        if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+            return link.trash_path(&root, &path).map_err(|e| e.to_string());
+        }
+        trash_entry_impl(&root, &path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// The containment half, without the `State` a unit test cannot build.
