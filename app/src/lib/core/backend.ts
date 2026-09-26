@@ -8,7 +8,7 @@ import type { CardRun, TokenReport } from "$lib/cards/runHistory";
 import type { ConversationLog } from "$lib/cards/cardRun";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$lib/core/workspace";
-import type { Board, Column, Label } from "$lib/board/kanban";
+import type { Board, CardSessionRecord, Column, Label } from "$lib/board/kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
 import type { GavinTracking } from "$lib/git/gitTracking";
 import type { IgnoreKind } from "$lib/git/gitIgnore";
@@ -1077,6 +1077,14 @@ export function linkCardSession(
 
 export function unlinkCardSession(workspaceId: string, path: string): Promise<void> {
   return invoke("unlink_card_session", { workspaceId, path });
+}
+
+/// One card's binding WITH the command it launched, which the board no
+/// longer carries (v43); null when nothing is bound to it. No gate to
+/// check first: against an older daemon the host reads that daemon's
+/// board instead, which still carries the command.
+export function cardSession(workspaceId: string, path: string): Promise<CardSessionRecord | null> {
+  return invoke("card_session", { workspaceId, path });
 }
 
 /// Every run this card has had, newest first (v27). Empty for a card

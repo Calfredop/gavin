@@ -137,7 +137,7 @@ function boardWith(path: string, sessionId: string): Board {
   return {
     columns: [{ id: "c0", name: "In Progress", position: 0 }],
     labels: [],
-    cardSessions: [{ path, sessionId, cwd: "/ws", command: null }],
+    cardSessions: [{ path, sessionId, cwd: "/ws" }],
   };
 }
 

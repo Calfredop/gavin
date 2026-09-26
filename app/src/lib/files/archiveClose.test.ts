@@ -72,7 +72,7 @@ function board(cardSessions: CardSession[]): Board {
 }
 
 function binding(path: string, sessionId: string): CardSession {
-  return { path, sessionId, cwd: "/ws", command: null };
+  return { path, sessionId, cwd: "/ws" };
 }
 
 describe("closablesForArchive", () => {

@@ -139,6 +139,7 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // by three surfaces), get_board 0.1 s.
   ["session.rs", "get_board", "a daemon round trip, on every tree push"],
   ["session.rs", "set_board", "a daemon round trip"],
+  ["session.rs", "card_session", "a daemon round trip (a whole board, against a daemon before v43)"],
   ["session.rs", "card_runs", "a daemon round trip"],
   ["session.rs", "get_orchestration", "a daemon round trip"],
   ["session.rs", "set_orchestration", "a daemon round trip that pushes the whole plan first"],

@@ -274,6 +274,9 @@ describe("refreshBoard", () => {
 
 describe("card session bindings", () => {
   const binding = { path: "/p/t.md", sessionId: "s-1", cwd: "/p", command: "claude 'x'" };
+  // What the board keeps of it: everything but the launch command, the
+  // same shape the next read brings back (v43).
+  const onBoard = { path: "/p/t.md", sessionId: "s-1", cwd: "/p" };
 
   it("link upserts optimistically and persists", async () => {
     vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
@@ -282,7 +285,7 @@ describe("card session bindings", () => {
 
     await linkCardSessionAction("ws-1", binding);
 
-    expect(get(kanbanState)["ws-1"].cardSessions).toEqual([binding]);
+    expect(get(kanbanState)["ws-1"].cardSessions).toEqual([onBoard]);
     // The last four are the conversation this run IS, where it was
     // launched, how many times gavin has resumed it by itself, and the
     // commit it started on -- null on a binding that predates them, and
@@ -299,7 +302,7 @@ describe("card session bindings", () => {
       null,
       null
     );
-    expect(cardSessionFor(get(kanbanState)["ws-1"], "/p/t.md")).toEqual(binding);
+    expect(cardSessionFor(get(kanbanState)["ws-1"], "/p/t.md")).toEqual(onBoard);
 
     // Upsert replaces:
     await linkCardSessionAction("ws-1", { ...binding, sessionId: "s-2" });
@@ -308,7 +311,7 @@ describe("card session bindings", () => {
   });
 
   it("unlink removes optimistically and persists", async () => {
-    vi.mocked(backend.getBoard).mockResolvedValue({ ...emptyBoard(), cardSessions: [binding] });
+    vi.mocked(backend.getBoard).mockResolvedValue({ ...emptyBoard(), cardSessions: [onBoard] });
     await fetchBoard("ws-1");
     vi.mocked(backend.unlinkCardSession).mockResolvedValue(undefined);
 

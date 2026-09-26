@@ -17,12 +17,15 @@ export interface Column {
 }
 
 // A card file's live agent-session binding (card-model spec §3) --
-// runtime state, never written into the card file.
+// runtime state, never written into the card file -- as the board carries
+// it. No launch command: that is an agent's whole prompt, most of the
+// board's bytes, and the board is re-read on every tree push, so since v43
+// it is read one card at a time by the one action that replays it
+// (CardSessionRecord below).
 export interface CardSession {
   path: string;
   sessionId: string;
   cwd: string;
-  command: string | null;
   /// See orchestration.ts's StepRun: the conversation this run IS, and
   /// the directory it was LAUNCHED in (`cwd` above drifts with OSC 7).
   /// Optional because every binding recorded before v21 has neither.
@@ -38,6 +41,12 @@ export interface CardSession {
   /// unborn HEAD, or against a daemon that could not store it: "no
   /// baseline", never "no changes".
   baseSha?: string | null;
+}
+
+/// The binding whole, as it is written (LinkCardSession) and as Re-launch
+/// reads it back (`backend.cardSession`): with the command it launched.
+export interface CardSessionRecord extends CardSession {
+  command: string | null;
 }
 
 export interface Board {

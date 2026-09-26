@@ -1,7 +1,7 @@
 import { writable, get } from "svelte/store";
 import * as backend from "$lib/core/backend";
 import * as kanban from "$lib/board/kanban";
-import type { Board, CardSession, Column, Label } from "$lib/board/kanban";
+import type { Board, CardSession, CardSessionRecord, Column, Label } from "$lib/board/kanban";
 
 export const kanbanState = writable<Record<string, Board>>({});
 
@@ -195,10 +195,13 @@ async function mutateBindings(
   }
 }
 
-export function linkCardSessionAction(workspaceId: string, binding: CardSession): Promise<void> {
+export function linkCardSessionAction(workspaceId: string, binding: CardSessionRecord): Promise<void> {
+  // The board keeps the binding without its command, exactly as the next
+  // read will bring it back (CardSession).
+  const { command: _command, ...onBoard } = binding;
   return mutateBindings(
     workspaceId,
-    (sessions) => [...sessions.filter((cs) => cs.path !== binding.path), binding],
+    (sessions) => [...sessions.filter((cs) => cs.path !== binding.path), onBoard],
     () =>
       backend.linkCardSession(
         workspaceId,

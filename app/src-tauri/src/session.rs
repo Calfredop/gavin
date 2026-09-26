@@ -2,8 +2,8 @@ use crate::command_lane::{CommandLane, DaemonLanes, Redial};
 use crate::config::Workspace;
 use crate::layout::LayoutNode;
 use protocol::{
-    read_message, socket_path, write_message, Board, CardRun, Column, ConflictNote, GroupTemplate,
-    Label, Orchestration, Rail, Request, Response, ToolDef, ToolRun,
+    read_message, socket_path, write_message, Board, CardRun, CardSession, Column, ConflictNote,
+    GroupTemplate, Label, Orchestration, Rail, Request, Response, ToolDef, ToolRun,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -5055,7 +5055,16 @@ async fn get_board_impl(
 ) -> anyhow::Result<Board> {
     let resp = lanes.request(Request::GetBoard { workspace_id }).await?;
     match resp {
-        Response::Board { columns, labels, card_sessions } => Ok(Board { columns, labels, card_sessions }),
+        Response::Board { columns, labels, mut card_sessions } => {
+            // A daemon before v43 still fills every binding's launch
+            // command. The webview never gets it either way: it is most
+            // of the reply, the board is re-read on every tree push, and
+            // the one reader asks for it by card (`card_session`).
+            for binding in &mut card_sessions {
+                binding.command = None;
+            }
+            Ok(Board { columns, labels, card_sessions })
+        }
         other => anyhow::bail!("expected Board, got {other:?}"),
     }
 }
@@ -5076,6 +5085,47 @@ pub async fn get_board(
 /// fails with the version message rather than pretending the card has
 /// never been run -- which is why the panel reads
 /// `FEATURE_MIN_VERSION.runHistory` before it ever asks.
+/// One card's binding WITH the command it launched -- the field the board
+/// read leaves out (v43), and what Re-launch replays. None when nothing is
+/// bound to the card.
+///
+/// A daemon older than 43 cannot parse `GetCardSession`, but its board
+/// still carries every command, so against one this reads that board and
+/// picks the card out of it. Re-launch keeps working across the skew
+/// rather than greying out behind a restart it does not need -- which is
+/// why no `FEATURE_MIN_VERSION` entry mirrors the request. Decided per
+/// route: an ssh workspace's lanes carry its HOST's version.
+async fn card_session_impl(
+    lanes: &DaemonLanes,
+    workspace_id: String,
+    path: String,
+) -> anyhow::Result<Option<CardSession>> {
+    let req = Request::GetCardSession { workspace_id, path };
+    if gate(&req, lanes.compat()).is_ok() {
+        return match lanes.request(req).await? {
+            Response::CardSession { card_session } => Ok(card_session),
+            other => anyhow::bail!("expected CardSession, got {other:?}"),
+        };
+    }
+    let Request::GetCardSession { workspace_id, path } = req else { unreachable!() };
+    match lanes.request(Request::GetBoard { workspace_id }).await? {
+        Response::Board { card_sessions, .. } => Ok(card_sessions.into_iter().find(|cs| cs.path == path)),
+        other => anyhow::bail!("expected Board, got {other:?}"),
+    }
+}
+
+#[tauri::command]
+pub async fn card_session(
+    workspace_id: String,
+    path: String,
+    app_handle: AppHandle,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<Option<CardSession>, String> {
+    let route = crate::remote::route_for_workspace(&app_handle, &workspace_id)?;
+    card_session_impl(&lanes_for(route, &state, &compat), workspace_id, path).await.map_err(|e| e.to_string())
+}
+
 async fn card_runs_impl(
     lanes: &DaemonLanes,
     workspace_id: String,
@@ -6353,6 +6403,7 @@ mod gate_tests {
                 base_sha: None,
             },
             Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
+            Request::GetCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::GetOrchestration { workspace_id: "w".into() },
             Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
             Request::SetRailRun { rail_id: "r".into(), state: "idle".into(), current_stage_id: None },
@@ -6456,8 +6507,85 @@ mod gate_tests {
 
 #[cfg(test)]
 mod kanban_command_tests {
-    use super::test_support::{block_on, fake_daemon_capturing_requests, fake_daemon_replying_with, lanes_over};
+    use super::test_support::{block_on, fake_daemon_capturing_requests, fake_daemon_replying_with, lanes_at, lanes_over};
     use super::*;
+
+    fn bound(path: &str, command: Option<&str>) -> CardSession {
+        CardSession {
+            path: path.into(),
+            session_id: format!("s-{path}"),
+            cwd: "/p".into(),
+            command: command.map(Into::into),
+            conversation_id: None,
+            launch_cwd: Some("/p".into()),
+            resume_attempts: None,
+            base_sha: None,
+        }
+    }
+
+    #[test]
+    fn card_session_impl_asks_a_current_daemon_for_the_one_binding() {
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![Response::CardSession {
+            card_session: Some(bound("/p/t.md", Some("claude 'x'"))),
+        }]);
+
+        let got = block_on(card_session_impl(&lanes_over(client), "ws-1".into(), "/p/t.md".into())).unwrap();
+
+        assert_eq!(got.and_then(|cs| cs.command).as_deref(), Some("claude 'x'"));
+        let requests = captured.lock().unwrap();
+        match &requests[0] {
+            Request::GetCardSession { workspace_id, path } => {
+                assert_eq!((workspace_id.as_str(), path.as_str()), ("ws-1", "/p/t.md"));
+            }
+            other => panic!("expected GetCardSession, got {other:?}"),
+        }
+    }
+
+    /// Against a v42 daemon the request would close the connection, so it
+    /// must never be sent -- and it does not need to be: that daemon's
+    /// board still carries every command.
+    #[test]
+    fn card_session_impl_reads_an_older_daemons_board_instead() {
+        let old_board = || Response::Board {
+            columns: vec![],
+            labels: vec![],
+            card_sessions: vec![bound("/p/a.md", Some("claude 'a'")), bound("/p/t.md", Some("claude 'x'"))],
+        };
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![old_board(), old_board()]);
+        let v42 = DaemonCompat { daemon_version: 42, app_version: protocol::PROTOCOL_VERSION, degraded: true };
+        let lanes = lanes_at(client, v42);
+
+        let got = block_on(card_session_impl(&lanes, "ws-1".into(), "/p/t.md".into())).unwrap().unwrap();
+        assert_eq!(got.command.as_deref(), Some("claude 'x'"));
+        assert_eq!(got.session_id, "s-/p/t.md");
+        assert_eq!(block_on(card_session_impl(&lanes, "ws-1".into(), "/p/never.md".into())).unwrap(), None);
+
+        drop(lanes);
+        let requests = captured.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests.iter().all(|r| matches!(r, Request::GetBoard { workspace_id } if workspace_id == "ws-1")),
+            "{requests:?}"
+        );
+    }
+
+    /// The webview's board never holds a launch prompt, whichever daemon
+    /// answered: the store keeps one board per workspace in memory, and
+    /// re-reads it on every tree push.
+    #[test]
+    fn get_board_impl_hands_on_no_launch_command() {
+        let (client, _dir) = fake_daemon_replying_with(vec![Response::Board {
+            columns: vec![],
+            labels: vec![],
+            card_sessions: vec![bound("/p/t.md", Some("claude 'the whole prompt'"))],
+        }]);
+
+        let board = block_on(get_board_impl(&lanes_over(client), "ws-1".into())).unwrap();
+
+        assert_eq!(board.card_sessions.len(), 1);
+        assert_eq!(board.card_sessions[0].command, None);
+        assert!(!serde_json::to_string(&board).unwrap().contains("whole prompt"));
+    }
 
     #[test]
     fn card_runs_impl_returns_the_cards_runs_newest_first() {

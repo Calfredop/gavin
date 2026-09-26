@@ -191,6 +191,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   open_confirmation: ["ordinary"],
   answer_confirmation: ["ordinary"],
   get_board: ["ordinary"],
+  card_session: ["ordinary"],
   card_runs: ["ordinary"],
   set_board: ["ordinary"],
   get_orchestration: ["ordinary"],

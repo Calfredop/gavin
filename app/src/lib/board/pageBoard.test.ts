@@ -48,7 +48,7 @@ function page(id: string, layout: LayoutNode): Page {
 }
 
 function binding(path: string, sessionId: string): CardSession {
-  return { path, sessionId, cwd: "/ws", command: null };
+  return { path, sessionId, cwd: "/ws" };
 }
 
 function board(cardSessions: CardSession[]): Board {

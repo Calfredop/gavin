@@ -18,6 +18,23 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v43 takes the launch command OUT of the board read, and adds
+/// `GetCardSession` to read one binding with its command put back
+/// (`perf-get-board-payload-and-refresh-storm.md`). The command is an
+/// agent's whole prompt: on a board of 288 bindings it was 325 KB of a
+/// 440 KB reply, re-read on every tree push by every watched workspace,
+/// and growing towards `MAX_LINE_BYTES`, past which `read_message`
+/// fails and the board -- and gavin-mcp's `gavin_get_board` and
+/// `gavin_get_orchestration`, which ride `GetBoardByRoot` -- stop
+/// loading at all. One action reads it: Re-launch, one card at a time.
+///
+/// A narrowing of an existing reply, which `min_version_for` cannot see
+/// -- but nothing on the far side of it is left broken. A client older
+/// than 43 never reads a v43 board (`VersionBand::DaemonNewer` is a hard
+/// error), and a v43 client against an older daemon cannot send
+/// `GetCardSession`, so the app host reads the binding off that
+/// daemon's `GetBoard` instead, which still carries every command.
+///
 /// v42 adds `FileHumanItem` and `ResolveHumanItem`: the two writes behind
 /// the Decisions tab, where a card's checklist carries the questions and
 /// the hands-on checks that are the human's to settle
@@ -453,7 +470,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 42;
+pub const PROTOCOL_VERSION: u32 = 43;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -982,6 +999,13 @@ pub enum Request {
         workspace_id: String,
         path: String,
     },
+    /// One card's live binding, WITH the command it launched (v43) --
+    /// the one field `GetBoard` no longer carries. None when the card is
+    /// bound to nothing, which is an answer, not an error.
+    GetCardSession {
+        workspace_id: String,
+        path: String,
+    },
     /// Every run this card has had, newest first (v27). Never an error
     /// for an unknown workspace or an unrun card -- an empty list, which
     /// is the honest answer for a card nobody has launched.
@@ -1342,6 +1366,13 @@ pub fn min_version_for(req: &Request) -> u32 {
         // drop: an empty panel has to say "this daemon does not keep run
         // history" rather than "this card has never been run".
         Request::CardRuns { .. } => 27,
+
+        // One binding, command included (v43), now the board read leaves
+        // the command out. A new request TYPE, so this is the whole wire
+        // gate -- and no app surface is greyed behind it: the app host
+        // answers the same question from `GetBoard` against an older
+        // daemon, whose board still carries every command.
+        Request::GetCardSession { .. } => 43,
 
         // Arming a rail from gavin-mcp (`gavin_start_rail`). A new request
         // TYPE, so this match is the whole gate and no daemonCompat.ts
@@ -1917,6 +1948,7 @@ pub enum Response {
     /// `CwdChanged` is: a frontend reload has to get its baseline back.
     QueuedInputsChanged { id: String, queued: Vec<QueuedInput> },
     Board { columns: Vec<Column>, labels: Vec<Label>, card_sessions: Vec<CardSession> },
+    CardSession { card_session: Option<CardSession> },
     CardRuns { runs: Vec<CardRun> },
     ToolRuns { runs: Vec<ToolRun> },
     DirtyPaths { paths: Vec<String>, truncated: bool },
@@ -2441,6 +2473,13 @@ pub struct CardSession {
     pub path: String,
     pub session_id: String,
     pub cwd: String,
+    /// The command this run was launched with -- its whole prompt, for an
+    /// agent. Filled only by `GetCardSession`: since v43 the board read
+    /// leaves it out, because it was most of the board's bytes, grew
+    /// with every run, and is read by exactly one action (Re-launch).
+    /// Skipped when None rather than sent as `null`, so a board of
+    /// bindings carries nothing for it at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     /// The agent CLI's own conversation id for this run (see
     /// `Request::LinkCardSession::conversation_id`).
@@ -3691,7 +3730,6 @@ mod tests {
     /// the wire gate for them -- a v41 daemon never receives either.
     #[test]
     fn human_item_requests_are_gated_at_42() {
-        assert_eq!(PROTOCOL_VERSION, 42);
         let file = Request::FileHumanItem {
             path: "/r/.gavin-root/plans/a.md".into(),
             kind: HumanItemKind::Test,
@@ -3718,7 +3756,6 @@ mod tests {
     /// `FEATURE_MIN_VERSION.sshGitSync` is the app's mirror of it.
     #[test]
     fn git_sync_and_tree_requests_are_gated_at_42() {
-        assert_eq!(PROTOCOL_VERSION, 42);
         let reqs = [
             Request::RunGitEnv {
                 root_path: "/r".into(),
@@ -3880,8 +3917,6 @@ mod tests {
     /// would red every time an unrelated feature shared a version.
     #[test]
     fn every_remote_access_request_is_gated_at_the_new_version() {
-        assert_eq!(PROTOCOL_VERSION, 42, "these are the CURRENT version's variants");
-
         let new_at_42: Vec<Request> = one_of_every_request_variant()
             .into_iter()
             .filter(|r| min_version_for(r) == 42)
@@ -4063,6 +4098,64 @@ mod tests {
         };
         assert_eq!(min_version_for(&plain), 41);
         assert_eq!(min_version_for(&with_env), 42);
+    }
+
+    /// v43: one binding with its command. A new TYPE, so a v42 daemon is
+    /// never sent it -- the app host reads that daemon's board instead,
+    /// which still carries the command.
+    #[test]
+    fn get_card_session_is_gated_at_43() {
+        let req = Request::GetCardSession { workspace_id: "w".into(), path: "/p/t.md".into() };
+        assert_eq!(min_version_for(&req), 43);
+        assert!(gate_request(&req, 42).is_err());
+        assert!(gate_request(&req, 43).is_ok());
+    }
+
+    /// Both directions of the command's move off the board. A v43 client
+    /// still parses a v42 daemon's board, which carries every command --
+    /// that is what the app host's fallback reads -- and `GetCardSession`
+    /// carries the command a v43 board leaves out.
+    #[test]
+    fn a_card_session_carries_its_command_only_when_it_has_one() {
+        let old_board = r#"{"type":"Board","columns":[],"labels":[],"card_sessions":[
+            {"path":"/p/t.md","sessionId":"s-1","cwd":"/p","command":"claude 'x'"}]}"#;
+        match serde_json::from_str::<Response>(old_board).unwrap() {
+            Response::Board { card_sessions, .. } => {
+                assert_eq!(card_sessions[0].command.as_deref(), Some("claude 'x'"));
+            }
+            other => panic!("expected Board, got {other:?}"),
+        }
+
+        let bound = CardSession {
+            path: "/p/t.md".into(),
+            session_id: "s-1".into(),
+            cwd: "/p".into(),
+            command: Some("claude 'x'".into()),
+            conversation_id: None,
+            launch_cwd: None,
+            resume_attempts: None,
+            base_sha: None,
+        };
+        let mut buf = Vec::new();
+        write_message(&mut buf, &Request::GetCardSession { workspace_id: "ws".into(), path: "/p/t.md".into() })
+            .unwrap();
+        write_message(&mut buf, &Response::CardSession { card_session: Some(bound.clone()) }).unwrap();
+        write_message(&mut buf, &Response::CardSession { card_session: None }).unwrap();
+        let mut reader = &buf[..];
+        match read_message::<_, Request>(&mut reader).unwrap().unwrap() {
+            Request::GetCardSession { workspace_id, path } => {
+                assert_eq!((workspace_id.as_str(), path.as_str()), ("ws", "/p/t.md"));
+            }
+            other => panic!("expected GetCardSession, got {other:?}"),
+        }
+        match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+            Response::CardSession { card_session } => assert_eq!(card_session, Some(bound)),
+            other => panic!("expected CardSession, got {other:?}"),
+        }
+        match read_message::<_, Response>(&mut reader).unwrap().unwrap() {
+            Response::CardSession { card_session } => assert_eq!(card_session, None),
+            other => panic!("expected CardSession, got {other:?}"),
+        }
     }
 
     #[test]
@@ -4954,7 +5047,10 @@ mod tests {
         //   GitOpProgress/GitOpDone/GitWorktreeChanged pushes and the
         //   GitOpCancelled reply, which are Response variants and so
         //   invisible here.
-        assert_eq!(PROTOCOL_VERSION, 42);
+        // v43: GetCardSession -- one binding with its launch command, which
+        // the board read no longer carries. One new TYPE, plus the
+        // CardSession reply.
+        assert_eq!(PROTOCOL_VERSION, 43);
     }
 
     #[test]
@@ -5270,6 +5366,7 @@ mod tests {
                 base_sha: None,
             },
             Request::UnlinkCardSession { workspace_id: "w".into(), path: "p".into() },
+            Request::GetCardSession { workspace_id: "w".into(), path: "p".into() },
             Request::CardRuns { workspace_id: "w".into(), path: "p".into() },
             Request::GetOrchestration { workspace_id: "w".into() },
             Request::SetOrchestration { workspace_id: "w".into(), rails: vec![], conflict_notes: vec![] },
@@ -5403,7 +5500,8 @@ mod tests {
     /// follow-up queue), v30=3 (standalone tool runs), v35=1 (Hello --
     /// client identity), v37=2 (an agent authoring its own workspace's
     /// tools), v39=1 (SessionScreen), v40=3 (ssh workspace files), v41=2
-    /// (ssh git/files), v42=2 (the Decisions tab's writes), plus Unknown.
+    /// (ssh git/files), v42=2 (the Decisions tab's writes), v43=1
+    /// (GetCardSession), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -5457,6 +5555,9 @@ mod tests {
         //   network sync, live refresh and the Files tree's mutations over
         //   ssh. Eight.
         expected.insert(42, 17);
+        // GetCardSession -- one binding with its command, now the board
+        // read leaves the command out.
+        expected.insert(43, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
@@ -5650,7 +5751,9 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_value(&cs).unwrap(),
-            serde_json::json!({ "path": "/p/t.md", "sessionId": "s-1", "cwd": "/p", "command": null,
+            // No `command` key at all, not `null`: a board of bindings is
+            // exactly where that field is left out (v43).
+            serde_json::json!({ "path": "/p/t.md", "sessionId": "s-1", "cwd": "/p",
                                 "conversationId": "conv-1", "launchCwd": "/p/worktrees/a",
                                 "resumeAttempts": 1,
                                 "baseSha": "f75db30f75db30f75db30f75db30f75db30f75db" })

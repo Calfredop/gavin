@@ -2365,6 +2365,10 @@ impl SessionManager {
         self.kanban.lock().unwrap().get_board(workspace_id)
     }
 
+    pub fn card_session(&self, workspace_id: &str, path: &str) -> anyhow::Result<Option<protocol::CardSession>> {
+        self.kanban.lock().unwrap().card_session(workspace_id, path)
+    }
+
     pub fn set_board(&self, workspace_id: &str, columns: Vec<Column>, labels: Vec<Label>) -> anyhow::Result<()> {
         self.kanban.lock().unwrap().replace_board(workspace_id, &columns, &labels)
     }
@@ -4349,6 +4353,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::UnlinkCardSession { workspace_id, path } => manager
             .unlink_card_session(&workspace_id, &path)
             .map(|_| Response::Ok),
+        Request::GetCardSession { workspace_id, path } => manager
+            .card_session(&workspace_id, &path)
+            .map(|card_session| Response::CardSession { card_session }),
         Request::CardRuns { workspace_id, path } => {
             manager.card_runs(&workspace_id, &path).map(|runs| Response::CardRuns { runs })
         }
@@ -4806,6 +4813,7 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::UnarchiveCard { .. }
         | Request::LinkCardSession { .. }
         | Request::UnlinkCardSession { .. }
+        | Request::GetCardSession { .. }
         | Request::CardRuns { .. }
         | Request::StartToolRun { .. }
         | Request::SetToolRunOutcome { .. }
@@ -6459,6 +6467,7 @@ mod tests {
             Request::GitDirtyPaths { cwd: "/x".into(), limit: 10 },
             Request::NameSession { session_id: "s".into(), name: "n".into(), agent_conversation_id: None },
             Request::CardRuns { workspace_id: "w".into(), path: "/x/a.md".into() },
+            Request::GetCardSession { workspace_id: "w".into(), path: "/x/a.md".into() },
             Request::ToolRuns { workspace_id: "w".into() },
             Request::GetProtocolVersion,
             Request::Shutdown,
@@ -9592,7 +9601,8 @@ mod tests {
 
         assert!(manager.claim_card_for_session(&root, &card, &session).unwrap());
 
-        let bound = &manager.get_board("ws-1").unwrap().card_sessions[0];
+        // The single-binding read: the board no longer carries the command.
+        let bound = manager.card_session("ws-1", &card).unwrap().unwrap();
         assert_eq!(bound.path, card);
         assert_eq!(bound.session_id, session);
         // Off the session record, not the caller: the agent knows
@@ -9675,7 +9685,8 @@ mod tests {
 
         assert!(manager.claim_card_for_session(&root, &card, &session).unwrap());
 
-        let bound = &manager.get_board("ws-1").unwrap().card_sessions[0];
+        // The single-binding read: the board no longer carries the command.
+        let bound = manager.card_session("ws-1", &card).unwrap().unwrap();
         assert_eq!(bound.conversation_id.as_deref(), Some("conv-1"));
         assert_eq!(bound.launch_cwd.as_deref(), Some("/p/wt"));
         assert_eq!(bound.resume_attempts, Some(1));
@@ -10032,6 +10043,54 @@ mod tests {
                 assert!(labels.is_empty());
             }
             other => panic!("expected Board, got {other:?}"),
+        }
+    }
+
+    /// v43: the board leaves the launch command out, and `GetCardSession`
+    /// is where Re-launch gets it back -- for the card asked about, and
+    /// None (an answer, not an error) for a card bound to nothing.
+    #[test]
+    fn get_card_session_carries_the_command_the_board_leaves_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let manager = SessionManager::new(registry, kanban, test_orchestration_store());
+        let link = Request::LinkCardSession {
+            workspace_id: "ws-1".into(),
+            path: "/p/t.md".into(),
+            session_id: "s-1".into(),
+            cwd: "/p".into(),
+            command: Some("claude 'the whole prompt'".into()),
+            conversation_id: None,
+            launch_cwd: Some("/p".into()),
+            resume_attempts: None,
+            base_sha: None,
+        };
+        assert!(matches!(handle_request(&manager, link), Response::Ok));
+
+        match handle_request(&manager, Request::GetBoard { workspace_id: "ws-1".into() }) {
+            Response::Board { card_sessions, .. } => {
+                assert_eq!(card_sessions.len(), 1);
+                assert_eq!(card_sessions[0].command, None);
+            }
+            other => panic!("expected Board, got {other:?}"),
+        }
+        match handle_request(
+            &manager,
+            Request::GetCardSession { workspace_id: "ws-1".into(), path: "/p/t.md".into() },
+        ) {
+            Response::CardSession { card_session: Some(bound) } => {
+                assert_eq!(bound.session_id, "s-1");
+                assert_eq!(bound.command.as_deref(), Some("claude 'the whole prompt'"));
+            }
+            other => panic!("expected the bound CardSession, got {other:?}"),
+        }
+        match handle_request(
+            &manager,
+            Request::GetCardSession { workspace_id: "ws-1".into(), path: "/p/never.md".into() },
+        ) {
+            Response::CardSession { card_session: None } => {}
+            other => panic!("expected no binding, got {other:?}"),
         }
     }
 

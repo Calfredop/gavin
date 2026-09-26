@@ -35,7 +35,7 @@ const PEER_A = "/ws/.gavin-root/plans/peer-a.md";
 const PEER_B = "/ws/.gavin-root/plans/peer-b.md";
 
 function binding(path: string, over: Partial<CardSession> = {}): CardSession {
-  return { path, sessionId: `s-${path}`, cwd: "/repo", command: null, launchCwd: "/repo", baseSha: BASE, ...over };
+  return { path, sessionId: `s-${path}`, cwd: "/repo", launchCwd: "/repo", baseSha: BASE, ...over };
 }
 
 function run(over: Partial<AttributedRun> = {}): AttributedRun {

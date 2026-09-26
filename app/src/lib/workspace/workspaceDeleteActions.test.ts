@@ -105,8 +105,8 @@ describe("executeWorkspaceDelete", () => {
       columns: [],
       labels: [],
       cardSessions: [
-        { path: "a.md", sessionId: "s1", cwd: "/repo", command: null },
-        { path: "b.md", sessionId: "s2", cwd: "/repo", command: null },
+        { path: "a.md", sessionId: "s1", cwd: "/repo" },
+        { path: "b.md", sessionId: "s2", cwd: "/repo" },
       ],
     });
 

@@ -169,6 +169,7 @@ pub fn run() {
             confirm_gate::open_confirmation,
             confirm_gate::answer_confirmation,
             session::get_board,
+            session::card_session,
             session::card_runs,
             session::set_board,
             session::get_orchestration,
