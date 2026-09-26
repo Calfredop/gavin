@@ -58,7 +58,26 @@ describe("gavinState", () => {
       payload: [string, GavinTree];
     }) => void;
     handler({ payload: ["ws-1", tree] });
-    expect(backend.getBoard).toHaveBeenCalledWith("ws-1");
+    await vi.waitFor(() => expect(backend.getBoard).toHaveBeenCalledWith("ws-1"));
+  });
+
+  // Every card write by any agent is a push, and an agent working a plan
+  // writes its checklist a line at a time: a burst of pushes must not be
+  // a burst of whole-board reads.
+  it("a burst of tree pushes in one tick is one board read per workspace", async () => {
+    await initGavinListeners();
+    const handler = vi.mocked(listen).mock.calls[0][1] as (e: {
+      payload: [string, GavinTree];
+    }) => void;
+
+    for (let i = 0; i < 12; i++) handler({ payload: ["ws-1", tree] });
+    handler({ payload: ["ws-2", tree] });
+    handler({ payload: ["ws-2", tree] });
+
+    await vi.waitFor(() => expect(backend.getBoard).toHaveBeenCalledTimes(2));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(backend.getBoard).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(backend.getBoard).mock.calls.map(([id]) => id).sort()).toEqual(["ws-1", "ws-2"]);
   });
 
   it("watches only workspaces that have a rootPath", () => {

@@ -180,14 +180,16 @@ describe("refreshBoard", () => {
     await pending;
   });
 
-  // The board is read off the main thread now: answers race back, and a
-  // read taken before a save can land after that save has resolved.
+  // The board is read off the main thread now: a read taken before a
+  // save can land after that save has resolved.
   it("drops an answer taken before a save that resolved while it waited", async () => {
     vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
     await fetchBoard("ws-1");
+    vi.mocked(backend.getBoard).mockClear();
     let answer!: (b: Board) => void;
     vi.mocked(backend.getBoard).mockImplementationOnce(() => new Promise((r) => (answer = r)));
     const refreshing = refreshBoard("ws-1");
+    await vi.waitFor(() => expect(backend.getBoard).toHaveBeenCalledTimes(1));
 
     vi.mocked(backend.setBoard).mockResolvedValue(undefined);
     await addColumnAction("ws-1", newColumn);
@@ -197,34 +199,65 @@ describe("refreshBoard", () => {
     expect(get(kanbanState)["ws-1"].columns).toHaveLength(2);
   });
 
-  it("drops an earlier refresh whose answer arrives after a later one's", async () => {
+  // The storm this exists for: every card write by any agent is a tree
+  // push, and every push asks for the board.
+  it("any number of refreshes asked in one task are one read", async () => {
     vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
     await fetchBoard("ws-1");
-    const newer: Board = { ...emptyBoard(), labels: [{ id: "l", name: "L", color: "#fff" }] };
-    let first!: (b: Board) => void;
-    vi.mocked(backend.getBoard).mockImplementationOnce(() => new Promise((r) => (first = r)));
-    const firstDone = refreshBoard("ws-1");
-    vi.mocked(backend.getBoard).mockResolvedValueOnce(newer);
-    await refreshBoard("ws-1");
+    vi.mocked(backend.getBoard).mockClear();
 
-    first(emptyBoard());
-    await firstDone;
+    await Promise.all(Array.from({ length: 20 }, () => refreshBoard("ws-1")));
 
-    expect(get(kanbanState)["ws-1"]).toEqual(newer);
+    expect(backend.getBoard).toHaveBeenCalledTimes(1);
   });
 
-  it("a first load does not overwrite a newer board a refresh loaded meanwhile", async () => {
+  it("refreshes asked while a read is out cost one more read, not one each", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+    await fetchBoard("ws-1");
+    vi.mocked(backend.getBoard).mockClear();
     const newer: Board = { ...emptyBoard(), labels: [{ id: "l", name: "L", color: "#fff" }] };
     let first!: (b: Board) => void;
     vi.mocked(backend.getBoard).mockImplementationOnce(() => new Promise((r) => (first = r)));
-    const loading = fetchBoard("ws-1");
     vi.mocked(backend.getBoard).mockResolvedValueOnce(newer);
-    await refreshBoard("ws-1");
+
+    const asked = refreshBoard("ws-1");
+    await vi.waitFor(() => expect(backend.getBoard).toHaveBeenCalledTimes(1));
+    // The board changed after that read left: these must see it...
+    const later = [refreshBoard("ws-1"), refreshBoard("ws-1"), refreshBoard("ws-1")];
+    // ...without a second read racing the first.
+    expect(backend.getBoard).toHaveBeenCalledTimes(1);
 
     first(emptyBoard());
-    await loading;
+    await Promise.all([asked, ...later]);
 
+    expect(backend.getBoard).toHaveBeenCalledTimes(2);
     expect(get(kanbanState)["ws-1"]).toEqual(newer);
+
+    // And once it has settled, the next refresh is a read of its own.
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+    await refreshBoard("ws-1");
+    expect(backend.getBoard).toHaveBeenCalledTimes(3);
+  });
+
+  it("coalesces per workspace, never across them", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+
+    await Promise.all([refreshBoard("ws-1"), refreshBoard("ws-2"), refreshBoard("ws-1"), refreshBoard("ws-2")]);
+
+    expect(backend.getBoard).toHaveBeenCalledTimes(2);
+    expect(backend.getBoard).toHaveBeenCalledWith("ws-1");
+    expect(backend.getBoard).toHaveBeenCalledWith("ws-2");
+  });
+
+  // A surface mounting asks for both at once: fetchBoard for a board it
+  // has never seen, refreshBoard for one it may have seen stale.
+  it("a first load and a refresh asked together are one read", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+
+    await Promise.all([fetchBoard("ws-1"), refreshBoard("ws-1")]);
+
+    expect(backend.getBoard).toHaveBeenCalledTimes(1);
+    expect(get(kanbanState)["ws-1"]).toEqual(emptyBoard());
   });
 
   it("a failed refresh keeps the board we have", async () => {
