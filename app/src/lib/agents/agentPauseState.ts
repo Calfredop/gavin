@@ -42,6 +42,7 @@ import {
   type UsageProjection,
 } from "$lib/agents/usageProjection";
 import { layoutState, resolvedAgentFor, agentDefaultsStore } from "$lib/core/layoutState";
+import { holdsAppDutiesNow, listenToOtherWindows, tellOtherWindows } from "$lib/shell/appDuty";
 import {
   decideLaunch,
   effectiveFallbackChain,
@@ -161,12 +162,16 @@ const usageLandedBy: Record<string, number> = {};
 /// session failed. Only when there is nothing still-open to keep does
 /// the failure become `unavailable`.
 ///
-/// Calls for one profile can overlap -- the poll and a forced refresh,
-/// or two windows -- and the host answers them concurrently, so answers
-/// arrive in any order. One that lands after a NEWER call's answer is
-/// dropped: it would put an older reading back over the refresh somebody
-/// just pressed for. Only an answer counts as landing, not a failure, so
-/// a refresh that failed still lets the poll before it through.
+/// Calls for one profile can overlap -- the poll and a forced refresh --
+/// and the host answers them concurrently, so answers arrive in any
+/// order. One that lands after a NEWER call's answer is dropped: it would
+/// put an older reading back over the refresh somebody just pressed for.
+/// Only an answer counts as landing, not a failure, so a refresh that
+/// failed still lets the poll before it through.
+///
+/// Whatever does land is told to the other windows (`initUsageSharing`):
+/// only one of them polls, and a refresh pressed in any of them is news
+/// to all of them.
 export async function refreshUsage(profileId: string, force = false): Promise<void> {
   if (!profileId) return;
   const call = ++usageCalls;
@@ -177,21 +182,16 @@ export async function refreshUsage(profileId: string, force = false): Promise<vo
     const report = await backend.agentUsage(profileId, force);
     if (superseded()) return;
     usageLandedBy[profileId] = call;
-    agentUsageStore.update((all) => ({ ...all, [profileId]: report }));
-    recordSample(profileId, report);
-    persistUsageCache();
-    armStaleTimer();
+    landUsage({ profileId, report, sampled: true }, true);
+    tellOtherWindows<UsageReading>(USAGE_READING, { profileId, report, sampled: true });
   } catch (e) {
     if (superseded()) return;
-    agentUsageStore.update((all) => {
-      const existing = all[profileId];
-      const kept = existing ? dropExpiredWindows(existing, Date.now()) : null;
-      if (kept) return all;
-      return {
-        ...all,
-        [profileId]: { state: "unavailable", reason: String(e), retryAfter: null },
-      };
-    });
+    const existing = get(agentUsageStore)[profileId];
+    const kept = existing ? dropExpiredWindows(existing, Date.now()) : null;
+    if (kept) return;
+    const report: AgentUsageReport = { state: "unavailable", reason: String(e), retryAfter: null };
+    agentUsageStore.update((all) => ({ ...all, [profileId]: report }));
+    tellOtherWindows<UsageReading>(USAGE_READING, { profileId, report, sampled: false });
   } finally {
     // Cleared by the newest call only: an older one finishing first
     // would take the badge down while the newer is still in flight.
@@ -203,6 +203,55 @@ export async function refreshUsage(profileId: string, force = false): Promise<vo
       });
     }
   }
+}
+
+/// One profile's reading, as one window tells the others. `sampled` is
+/// whether it is a live answer the history should keep, as opposed to a
+/// failure or a reading re-sent to a window that has just opened.
+interface UsageReading {
+  profileId: string;
+  report: AgentUsageReport;
+  sampled: boolean;
+}
+
+const USAGE_READING = "agent-usage-reading";
+const USAGE_WANTED = "agent-usage-wanted";
+
+/// Puts a reading in the store, the history and the cache.
+///
+/// `persist` is false for a reading another window took: that window
+/// has already written it to localStorage, which every window shares,
+/// and writing the same bytes back from each of the others is work.
+function landUsage(reading: UsageReading, persist: boolean): void {
+  agentUsageStore.update((all) => ({ ...all, [reading.profileId]: reading.report }));
+  if (reading.sampled) recordSample(reading.profileId, reading.report, persist);
+  if (persist) persistUsageCache();
+  armStaleTimer();
+}
+
+/// Takes the readings the other windows land, and answers a window that
+/// has just opened with every reading this one holds -- if this one is
+/// the poller. Returns its teardown, for bootstrap's list.
+///
+/// The answer is what keeps a new window from saying "Checking…" for
+/// the three minutes until the next poll: the cache it hydrates from
+/// only keeps ready readings, and a profile with no limits to read is
+/// never in it at all.
+export async function initUsageSharing(): Promise<() => void> {
+  const unlistenReadings = await listenToOtherWindows<UsageReading>(USAGE_READING, (reading) => {
+    if (reading?.profileId && reading.report) landUsage(reading, false);
+  });
+  const unlistenWanted = await listenToOtherWindows<null>(USAGE_WANTED, () => {
+    if (!holdsAppDutiesNow()) return;
+    for (const [profileId, report] of Object.entries(get(agentUsageStore))) {
+      tellOtherWindows<UsageReading>(USAGE_READING, { profileId, report, sampled: false });
+    }
+  });
+  if (!holdsAppDutiesNow()) tellOtherWindows<null>(USAGE_WANTED, null);
+  return () => {
+    unlistenReadings();
+    unlistenWanted();
+  };
 }
 
 function persistUsageCache(nowMs: number = Date.now(), storage?: MaybeStorage): void {
@@ -265,12 +314,12 @@ function pruneCachedUsage(nowMs: number, storage?: MaybeStorage): void {
 /// every three minutes against a five-minute cadence. Comparing
 /// identity is what keeps that from writing localStorage twenty times an
 /// hour to store nothing.
-function recordSample(profileId: string, report: AgentUsageReport): void {
+function recordSample(profileId: string, report: AgentUsageReport, persist: boolean): void {
   const before = get(usageHistoryStore);
   const after = recordUsage(before, profileId, report);
   if (after === before) return;
   usageHistoryStore.set(after);
-  saveUsageHistory(after);
+  if (persist) saveUsageHistory(after);
 }
 
 /// Every profile any workspace actually runs. The panel lists these and
@@ -522,14 +571,17 @@ function gateReason(): string | null {
 
 // ---- Lifecycle ---------------------------------------------------------------
 
-/// Starts the clock and the poller. Module-level, like `startScheduler`
-/// -- NOT a component `$effect`, because a pause that only advances while
-/// one particular tab is mounted is the bug that made rails tick only on
+/// Starts the clock. Module-level, like `startScheduler` -- NOT a
+/// component `$effect`, because a pause that only advances while one
+/// particular tab is mounted is the bug that made rails tick only on
 /// their own tab. Returns its own teardown.
+///
+/// Every window runs one: it is a timer and a store, and each window's
+/// countdowns have to move. The POLL is `startUsagePoll`, and only the
+/// window holding the app's duties runs that.
 export function startPauseClock(): () => void {
   stopPauseClock();
   clockTimer = setInterval(() => nowStore.set(Date.now()), CLOCK_TICK_MS);
-  pollTimer = setInterval(() => void pollAll(), POLL_MS);
   void loadAgentPause();
   // Before the first poll, so the reading that lands has yesterday's
   // samples to continue rather than starting an epoch of its own.
@@ -537,15 +589,30 @@ export function startPauseClock(): () => void {
   // ...and last known bars, so a restart is not a blank "Checking…"
   // for the length of the probes.
   hydrateUsageCache();
-  void pollAll();
   return stopPauseClock;
 }
 
 export function stopPauseClock(): void {
   if (clockTimer) clearInterval(clockTimer);
-  if (pollTimer) clearInterval(pollTimer);
   if (staleTimer) clearTimeout(staleTimer);
   clockTimer = null;
-  pollTimer = null;
   staleTimer = null;
+  stopUsagePoll();
+}
+
+/// Reads every profile in use now and every three minutes after. The
+/// app's, not the window's: bootstrap starts it through
+/// `whileHoldingAppDuties`, after `startPauseClock` has hydrated what the
+/// first reading continues, and `initUsageSharing` carries each reading
+/// to the other windows.
+export function startUsagePoll(): () => void {
+  stopUsagePoll();
+  pollTimer = setInterval(() => void pollAll(), POLL_MS);
+  void pollAll();
+  return stopUsagePoll;
+}
+
+export function stopUsagePoll(): void {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
 }

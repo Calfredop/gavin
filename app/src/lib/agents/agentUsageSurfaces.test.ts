@@ -11,12 +11,21 @@ function source(name: string): string {
 }
 
 describe("usage cache surfaces", () => {
+  // The clock hydrates and every window runs it; the probe is the app's
+  // and only the window holding its duties runs that. So "hydrate before
+  // the first probe" is bootstrap's ORDER now, not one function's body.
   it("hydrates last cached readings before the first probe", () => {
     const pause = source("agentPauseState.ts");
     const start = pause.indexOf("export function startPauseClock");
     const body = pause.slice(start, pause.indexOf("export function stopPauseClock"));
-    expect(body).toContain("hydrateUsageCache");
-    expect(body.indexOf("hydrateUsageCache()")).toBeLessThan(body.lastIndexOf("void pollAll()"));
+    expect(body).toContain("hydrateUsageCache()");
+    expect(body).not.toContain("pollAll(");
+
+    const layout = source("layoutState.ts");
+    const clock = layout.indexOf("unlisteners.push(startPauseClock());");
+    const poll = layout.indexOf("unlisteners.push(whileHoldingAppDuties(startUsagePoll));");
+    expect(clock).toBeGreaterThan(-1);
+    expect(poll).toBeGreaterThan(clock);
   });
 
   it("spins each agent's Check again icon from that profile's probe, not a second badge", () => {

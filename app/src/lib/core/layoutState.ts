@@ -97,6 +97,7 @@ import {
   initWorkspaceWindows,
   isMainWindow,
 } from "$lib/shell/appWindowState";
+import { initAppDuty, whileHoldingAppDuties } from "$lib/shell/appDuty";
 
 export type { SessionStatus };
 
@@ -1206,6 +1207,10 @@ export async function bootstrap(): Promise<void> {
   // window for a frame -- with its terminals, which is exactly the
   // two-windows-one-PTY state the map exists to prevent.
   unlisteners.push(await initWorkspaceWindows());
+  // Awaited for the same kind of reason, and ahead of every poller it
+  // gates: a workspace window must know it does not hold the app's
+  // duties before the first poll would start, not a round trip after.
+  unlisteners.push(await initAppDuty());
   unlisteners.push(
     await listen<WorkspacesData>("workspaces-ready", async (event) => {
       // Awaited BEFORE the tree lands in the store: a file or board tab
@@ -1383,8 +1388,17 @@ export async function bootstrap(): Promise<void> {
   // resolvedAgentFor from this module. Started here rather than from a
   // component, because a pause whose clock only advances while one tab is
   // mounted is the bug that made rails tick only on their own tab.
-  const { startPauseClock } = await import("$lib/agents/agentPauseState");
+  //
+  // The clock in every window; the probe only in the one holding the
+  // app's duties (appDuty.ts), which tells the others what it read. The
+  // clock first: it hydrates the cached readings the first probe's
+  // answer continues.
+  const { startPauseClock, startUsagePoll, initUsageSharing } = await import(
+    "$lib/agents/agentPauseState"
+  );
   unlisteners.push(startPauseClock());
+  unlisteners.push(await initUsageSharing());
+  unlisteners.push(whileHoldingAppDuties(startUsagePoll));
   const { startArmOnFocus } = await import("$lib/agents/agentFallbackState");
   unlisteners.push(startArmOnFocus());
   // The memory probe, on the same terms and for a sharper version of the
@@ -1393,8 +1407,14 @@ export async function bootstrap(): Promise<void> {
   // different workspace -- and a queue whose poll has stalled is work
   // that silently never starts. Dynamically imported for the cycle
   // reason above (memoryState reads resolvedAgentFor from this module).
-  const { startMemoryPoll } = await import("$lib/agents/memoryState");
-  unlisteners.push(startMemoryPoll());
+  //
+  // Polled by the window holding the app's duties, like the usage
+  // probe: the machine, watchman and the daemon's session list are one
+  // answer however many windows ask, and every other window's gate takes
+  // that window's reading.
+  const { startMemoryPoll, initMemorySharing } = await import("$lib/agents/memoryState");
+  unlisteners.push(await initMemorySharing());
+  unlisteners.push(whileHoldingAppDuties(startMemoryPoll));
   // ...and the queue that drains behind the gate the probe feeds. After
   // the poller, so its first drain reads a sample rather than a null,
   // and module-level for the same reason both of those are.

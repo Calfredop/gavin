@@ -93,6 +93,17 @@ vi.mock("$lib/core/backend", () => ({
   claimWorkspaceWindow: vi.fn().mockResolvedValue(undefined),
   focusWorkspaceWindow: vi.fn().mockResolvedValue(undefined),
   closeWorkspaceWindow: vi.fn().mockResolvedValue(undefined),
+  // Which window runs the app's pollers and scheduler (appDuty.ts). This
+  // window, by default -- the one-window app every other test is about.
+  appDuty: vi.fn().mockResolvedValue({ holder: "main", windows: ["main"] }),
+  // The app-wide pollers bootstrap starts in the window holding that
+  // duty. Resolved by default so a poll lands quietly rather than
+  // failing into its catch.
+  agentUsage: vi.fn().mockResolvedValue({ state: "unsupported" }),
+  getAgentPause: vi.fn().mockResolvedValue(null),
+  systemMemory: vi.fn().mockResolvedValue(null),
+  watchmanStatus: vi.fn().mockResolvedValue(null),
+  listManagedSessions: vi.fn().mockResolvedValue({ sessions: [], metrics: true }),
   // Resolved by default: setWorkspaceRoot and watchRootedWorkspaces call
   // .catch() on these.
   watchGavinRoot: vi.fn().mockResolvedValue(undefined),
@@ -132,6 +143,8 @@ vi.mock("$lib/terminal/terminalRegistry", () => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
+  // What a window tells the others (appDuty.ts's tellOtherWindows).
+  emit: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("$lib/core/notifications", () => ({
@@ -163,6 +176,8 @@ import * as backend from "$lib/core/backend";
 import * as notifications from "$lib/core/notifications";
 import * as terminalRegistry from "$lib/terminal/terminalRegistry";
 import { workspaceWindows } from "$lib/shell/appWindowState";
+import { appDuty } from "$lib/shell/appDuty";
+import { __resetMemoryForTesting } from "$lib/agents/memoryState";
 import {
   layoutState,
   splitPane,
@@ -3015,6 +3030,62 @@ describe("movePageAction", () => {
     expect(state.activeWorkspaceId).toBe("ws-2");
     expect(state.workspaces[1].activePageId).toBe("page-1");
     expect(state.focusedSessionId).toBe("a");
+  });
+});
+
+// Every window runs bootstrap, and bootstrap starts the app's pollers. A
+// second window polling the same host and the same daemon doubled every
+// one of those commands on the thread that draws the window -- so only
+// the window holding the app's duties polls, and the others take its
+// readings (appDuty.ts).
+describe("bootstrap in a window that does not hold the app's duties", () => {
+  beforeEach(() => {
+    // Every earlier bootstrap in this file ran a memory poll, and the
+    // watchman half only runs every thirty seconds -- so without this
+    // the control below would find it skipped rather than gated.
+    __resetMemoryForTesting();
+  });
+
+  afterEach(() => {
+    teardown();
+    vi.mocked(backend.appDuty).mockResolvedValue({ holder: "main", windows: ["main"] });
+    // The store outlives the test, and every later tick reads it.
+    appDuty.set({ holder: "main", windows: [] });
+  });
+
+  async function bootWithDutyIn(holder: string): Promise<void> {
+    vi.mocked(backend.appDuty).mockResolvedValue({ holder, windows: ["main", "ws-2"] });
+    // A workspace in the store before the poll starts, so the usage
+    // probe has a profile in use to ask about.
+    setState([ws("ws-1", [page("page-1", leaf(["a"]))])], "ws-1", "a");
+    vi.mocked(backend.getWorkspacesState).mockResolvedValue({
+      workspaces: get(layoutState).workspaces,
+      activeWorkspaceId: "ws-1",
+    });
+    vi.mocked(backend.getBootstrapError).mockResolvedValue(null);
+    vi.mocked(backend.getSessionNames).mockResolvedValue({});
+    await bootstrap();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  it("starts none of the app-wide pollers", async () => {
+    await bootWithDutyIn("ws-2");
+    expect(backend.agentUsage).not.toHaveBeenCalled();
+    expect(backend.systemMemory).not.toHaveBeenCalled();
+    expect(backend.watchmanStatus).not.toHaveBeenCalled();
+    expect(backend.listManagedSessions).not.toHaveBeenCalled();
+  });
+
+  // The control: the same bootstrap, holding the duty, does poll -- so
+  // the silence above is the gate, not a poll that never got going.
+  it("starts them in the window that holds the duty", async () => {
+    await bootWithDutyIn("main");
+    await vi.waitFor(() => {
+      expect(backend.agentUsage).toHaveBeenCalled();
+      expect(backend.systemMemory).toHaveBeenCalled();
+      expect(backend.watchmanStatus).toHaveBeenCalled();
+      expect(backend.listManagedSessions).toHaveBeenCalled();
+    });
   });
 });
 
