@@ -206,12 +206,15 @@ vi.mock("$lib/core/gavinState", () => ({
 // `listen` to reach.
 const tauriEvents = vi.hoisted(() => ({
   handlers: new Map<string, (event: { payload: unknown }) => void>(),
+  // What this window tells the others (appDuty's tellOtherWindows).
+  emit: vi.fn(async (_name: string, _message: unknown) => {}),
 }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
     tauriEvents.handlers.set(name, handler);
     return () => tauriEvents.handlers.delete(name);
   },
+  emit: tauriEvents.emit,
 }));
 vi.mock("$lib/core/dialog", () => ({
   askConfirm: vi.fn(),
@@ -328,12 +331,15 @@ import {
   makeStageSequentialAction,
   setStageModeAction,
   renameStageAction,
+  renameRailAction,
   moveStageToIndexAction,
   ungroupStageAction,
   addTemplateAsStageAction,
   addTemplateToStageAction,
   __resetForTesting,
 } from "$lib/orchestration/orchestrationState";
+import { appDuty } from "$lib/shell/appDuty";
+import { workspaceWindows } from "$lib/shell/appWindowState";
 import { emptyOrchestration, addStep, findStage, stageMode } from "$lib/orchestration/orchestration";
 import { UNREVIEWED_STALL } from "$lib/cards/cardReview";
 import { askConfirmChecked } from "$lib/core/dialog";
@@ -4031,5 +4037,171 @@ describe("railStatusVoice", () => {
   it("says nothing about a step that is merely working", () => {
     status({ "sess-1": "working" });
     expect(railStatusVoice("sess-1", "idle")).toBeNull();
+  });
+});
+
+// Every window holds every workspace and the sidebar loads every
+// workspace's plan, so two windows used to run two schedulers over the
+// same rails -- each able to launch the same step. A workspace's rails run
+// in the window showing it now (appDuty.ts's railWindowFor), and the rest
+// hear about rails through the writes that move them.
+describe("one scheduler per workspace, however many windows", () => {
+  let stop: (() => void) | null = null;
+
+  const idle = () =>
+    layoutStore.update((s) => ({
+      ...s,
+      sessionStatusById: { "sess-1": "idle" },
+      sessionsSeenWorking: new Set(["sess-1"]),
+    }));
+
+  /// ws-1 on screen in a window of its own, which is not this one.
+  const shownElsewhere = () => {
+    workspaceWindows.set({ "ws-1": "ws-2" });
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+  };
+
+  beforeEach(async () => {
+    __resetForTesting();
+    toolsResetForTesting();
+    vi.clearAllMocks();
+    armWorkspace();
+    appDuty.set({ holder: "main", windows: ["main"] });
+    workspaceWindows.set({});
+    toolRecords.set({ "ws-1": [] });
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setStepRun).mockResolvedValue(undefined);
+    vi.mocked(backend.setOrchestration).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.setSessionName).mockResolvedValue(undefined);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    vi.mocked(backend.getOrchestration).mockResolvedValue(agentToolRail());
+  });
+
+  afterEach(() => {
+    stop?.();
+    stop = null;
+    appDuty.set({ holder: "main", windows: [] });
+    workspaceWindows.set({});
+  });
+
+  it("ticks nothing for a workspace another window is showing", async () => {
+    shownElsewhere();
+    await fetchOrchestration("ws-1");
+    stop = await initOrchestrationListeners();
+    idle();
+    await settle();
+    await tick("ws-1");
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+
+  /// The workspace comes back to this window when its own window closes
+  /// -- and the rail it left mid-run has to keep going from here.
+  it("takes a workspace's rails over when its window closes", async () => {
+    shownElsewhere();
+    await fetchOrchestration("ws-1");
+    stop = await initOrchestrationListeners();
+    idle();
+    await settle();
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+
+    workspaceWindows.set({});
+    appDuty.set({ holder: "main", windows: ["main"] });
+    await vi.waitFor(() =>
+      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null, null, "ws-1")
+    );
+  });
+
+  /// The close prompt's first rung destroys the main window and leaves
+  /// the others. The main window's workspaces are shown nowhere then,
+  /// and the duty holder runs their rails.
+  it("runs the rails of a workspace no open window is showing, when it holds the duty", async () => {
+    appDuty.set({ holder: "ws-2", windows: ["main", "ws-2"] });
+    workspaceWindows.set({ "ws-1": "ws-3" });
+    await fetchOrchestration("ws-1");
+    stop = await initOrchestrationListeners();
+    idle();
+    await settle();
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    await vi.waitFor(() =>
+      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null, null, "ws-1")
+    );
+  });
+
+  it("stops ticking a workspace handed to another window", async () => {
+    await fetchOrchestration("ws-1");
+    stop = await initOrchestrationListeners();
+    shownElsewhere();
+    idle();
+    await settle();
+    expect(backend.setStepRun).not.toHaveBeenCalled();
+  });
+
+  it("tells the other windows about every write it makes", async () => {
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    await fetchOrchestration("ws-1");
+    await setRailRunAction("ws-1", "r1", "paused", "s1");
+    await renameRailAction("ws-1", "r1", "renamed");
+    const told = tauriEvents.emit.mock.calls.filter(([name]) => name === "orchestration-written");
+    expect(told).toEqual([
+      ["orchestration-written", { origin: "main", payload: "ws-1" }],
+      ["orchestration-written", { origin: "main", payload: "ws-1" }],
+    ]);
+  });
+
+  it("tells nobody about a write that failed", async () => {
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    vi.mocked(backend.setRailRun).mockRejectedValue(new Error("refused"));
+    await fetchOrchestration("ws-1");
+    await setRailRunAction("ws-1", "r1", "paused", "s1");
+    expect(tauriEvents.emit).not.toHaveBeenCalledWith("orchestration-written", expect.anything());
+  });
+
+  /// The human marks the step done from the app hub in another window;
+  /// this window shows the workspace and has to move the rail on. The
+  /// daemon never pushes the app's own writes, so the write's
+  /// announcement is the only way the news gets here.
+  it("re-reads and schedules a rail another window moved", async () => {
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    await fetchOrchestration("ws-1");
+    stop = await initOrchestrationListeners();
+    await settle();
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...agentToolRail(),
+      stepRuns: [{ stepId: "t1", state: "done", sessionId: "sess-1", reason: null }],
+    });
+    tauriEvents.handlers.get("orchestration-written")?.({ payload: { origin: "ws-2", payload: "ws-1" } });
+
+    await vi.waitFor(() =>
+      expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+        "ws-1",
+        "p1",
+        "/x/wt",
+        expect.stringContaining("git push -u origin HEAD")
+      )
+    );
+  });
+
+  /// Several writes in one pass are one re-read, not one each.
+  it("folds a burst of another window's writes into one re-read", async () => {
+    await fetchOrchestration("ws-1");
+    stop = await initOrchestrationListeners();
+    vi.mocked(backend.getOrchestration).mockClear();
+    for (let i = 0; i < 3; i++) {
+      tauriEvents.handlers.get("orchestration-written")?.({ payload: { origin: "ws-2", payload: "ws-1" } });
+    }
+    await vi.waitFor(() => expect(backend.getOrchestration).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(backend.getOrchestration).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes the decoy sweep another window ran", async () => {
+    stop = await initOrchestrationListeners();
+    tauriEvents.handlers.get("decoy-edits")?.({ payload: { origin: "ws-2", payload: { "ws-1": ["t1"] } } });
+    expect([...get(decoyEditsByWorkspace)["ws-1"]]).toEqual(["t1"]);
   });
 });
