@@ -10,41 +10,61 @@ use std::path::Path;
 /// Diffs larger than this are not rendered (spec §1: "Diff too large").
 pub const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
 
-fn config_value(cwd: &str, key: &str) -> Result<Option<String>, String> {
-    let out = run_git_ro(cwd, &["config", "--get", key])?;
-    // Exit 1 = unset; anything else non-zero is a real error.
+/// `user.name` and `user.email` in one read. `-z` so a value is taken
+/// whole; a key set at several levels is listed once per level, and the
+/// last one wins, which is how `git config --get` resolves it too.
+fn author(cwd: &str) -> Result<Option<Author>, String> {
+    let out = run_git_ro(cwd, &["config", "-z", "--get-regexp", r"^user\.(name|email)$"])?;
+    // Exit 1 = neither is set; anything else non-zero is a real error.
     match out.code {
-        0 => Ok(Some(out.stdout_str().trim().to_string()).filter(|s| !s.is_empty())),
-        1 => Ok(None),
-        _ => Err(out.stderr.trim().to_string()),
+        0 => {}
+        1 => return Ok(None),
+        _ => return Err(out.stderr.trim().to_string()),
     }
+    let (mut name, mut email) = (None, None);
+    for entry in out.stdout_str().split('\0') {
+        let (key, value) = entry.split_once('\n').unwrap_or((entry, ""));
+        let slot = match key {
+            "user.name" => &mut name,
+            "user.email" => &mut email,
+            _ => continue,
+        };
+        *slot = Some(value.trim().to_string()).filter(|v| !v.is_empty());
+    }
+    Ok(name.zip(email).map(|(name, email)| Author { name, email }))
 }
 
+/// Five git processes (four on an unborn HEAD), down from eight: it runs
+/// on every Git-view refresh, and over ssh each one is a round trip.
 pub fn repo_info(cwd: &str) -> Result<RepoInfo, String> {
-    let top = run_git_ro(cwd, &["rev-parse", "--show-toplevel"])?;
-    if top.code != 0 {
+    let paths = run_git_ro(cwd, &["rev-parse", "--show-toplevel", "--absolute-git-dir"])?;
+    let paths = if paths.code == 0 { paths.stdout_str() } else { String::new() };
+    let mut lines = paths.lines();
+    // Not a repository prints neither path; a git old enough to answer
+    // `--show-toplevel` with nothing outside a work tree prints only one.
+    let (Some(root), Some(git_dir)) = (lines.next(), lines.next()) else {
         return Ok(RepoInfo { not_a_repo: true, ..Default::default() });
-    }
-    let root = top.stdout_str().trim().to_string();
-    let unborn = run_git_ro(cwd, &["rev-parse", "--verify", "-q", "HEAD"])?.code != 0;
+    };
+    let root = root.trim().to_string();
+    // One read answers both whether HEAD is born and, when it is detached,
+    // the name to show for it.
+    let head = run_git_ro(cwd, &["rev-parse", "--verify", "-q", "--short", "HEAD"])?;
+    let unborn = head.code != 0;
     let sym = run_git_ro(cwd, &["symbolic-ref", "--short", "-q", "HEAD"])?;
     let (branch, detached) = if sym.code == 0 {
         (Some(sym.stdout_str().trim().to_string()), false)
+    } else if !unborn {
+        (Some(head.stdout_str().trim().to_string()), true)
     } else {
-        let sha = ok(run_git_ro(cwd, &["rev-parse", "--short", "HEAD"])?)?;
-        (Some(sha.stdout_str().trim().to_string()), true)
+        return Err("HEAD is neither a branch nor a commit".to_string());
     };
-    let author = match (config_value(cwd, "user.name")?, config_value(cwd, "user.email")?) {
-        (Some(name), Some(email)) => Some(Author { name, email }),
-        _ => None,
-    };
+    let author = author(cwd)?;
     let head_message = if unborn {
         None
     } else {
         Some(ok(run_git_ro(cwd, &["log", "-1", "--format=%B"])?)?.stdout_str().trim_end().to_string())
     };
-    let git_dir = ok(run_git_ro(cwd, &["rev-parse", "--absolute-git-dir"])?)?.stdout_str().trim().to_string();
-    let git_dir = Path::new(&git_dir);
+    let git_dir = Path::new(git_dir.trim());
     let in_progress = if git_dir.join("MERGE_HEAD").exists() {
         Some("merge".to_string())
     } else if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
@@ -746,6 +766,21 @@ mod read_tests {
         let info = repo_info(cwd(&dir)).unwrap();
         assert!(info.detached);
         assert_eq!(info.branch.as_deref().map(str::len), Some(7));
+    }
+
+    /// Both halves come from one `config --get-regexp`, so the rules
+    /// `config --get` applied per key are this parser's job now. The
+    /// repo's own config is listed last, which keeps these independent of
+    /// whatever the machine's global config says.
+    #[test]
+    fn repo_info_author_takes_each_keys_last_value_and_needs_both() {
+        let dir = temp_repo();
+        git(cwd(&dir), &["config", "--add", "user.name", "Later Name"]);
+        let info = repo_info(cwd(&dir)).unwrap();
+        assert_eq!(info.author, Some(Author { name: "Later Name".into(), email: "t@example.com".into() }));
+
+        git(cwd(&dir), &["config", "--add", "user.email", ""]);
+        assert_eq!(repo_info(cwd(&dir)).unwrap().author, None, "an empty last email is no identity");
     }
 
     #[test]
