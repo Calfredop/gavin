@@ -75,9 +75,9 @@ const SUSPEND_GAP_THRESHOLD: Duration = Duration::from_secs(30);
 /// How long after the terminal says something ABOUT ITSELF into a
 /// session its output stops counting as the agent doing something.
 ///
-/// Two things gavin does to a PTY make the program in it repaint without
+/// Three things gavin does to a PTY make the program in it repaint without
 /// the agent having done anything, and the activity heuristic cannot tell
-/// either repaint from a turn starting:
+/// any of those repaints from a turn starting:
 ///
 ///   - a size change, which raises SIGWINCH. One pane geometry change
 ///     refits EVERY tab in the pane (Pane.svelte's `fitAll`, deliberately
@@ -88,11 +88,15 @@ const SUSPEND_GAP_THRESHOLD: Duration = Duration::from_secs(30);
 ///     its textarea gains or loses focus and the program has asked for
 ///     them with DEC mode 1004 -- as Claude Code does. Clicking from one
 ///     session to another therefore repainted both.
+///   - a mouse report (`is_mouse_report`), which xterm sends for every
+///     cell the pointer crosses once the program asks for any-motion
+///     tracking -- as Claude Code does since 2.1.x. Hovering its terminal
+///     therefore repainted it continuously.
 ///
 /// Worse than the spinner: the same block clears `waiting_for_input`, and
-/// an agent rings its notification bell exactly once. A refit or a click
-/// landing after the question took the only badge saying a human was
-/// needed off every surface, permanently.
+/// an agent rings its notification bell exactly once. A refit, a click or
+/// a hover landing after the question took the only badge saying a human
+/// was needed off every surface, permanently.
 ///
 /// Long enough to cover a repaint that dribbles in over several reads,
 /// and far below HEURISTIC_QUIET_PERIOD so an agent that really is
@@ -112,6 +116,45 @@ const PROVOKED_REDRAW_GRACE: Duration = Duration::from_millis(400);
 /// itself from the human typing.
 fn is_focus_report(data: &[u8]) -> bool {
     data == b"\x1b[I" || data == b"\x1b[O"
+}
+
+/// Whether a write is nothing but mouse reports: what a terminal emulator
+/// sends about the POINTER once the program has asked for mouse tracking.
+/// Claude Code asks for all of it at startup since 2.1.x (DEC 1000, 1002,
+/// 1003 any-motion, 1006 SGR; verified against 2.1.283), so merely moving
+/// the mouse across its terminal sends a report per cell crossed.
+///
+/// Every report counts, clicks and wheel included, not just motion: none
+/// is the human typing into the turn, and each one makes the program
+/// redraw its own view. A click that does drive the program -- picking a
+/// menu option -- still shows up as work, because the work outlasts the
+/// grace window the report opens.
+///
+/// SGR only (`ESC [ < Cb ; Cx ; Cy M|m`, which SGR-pixels shares): xterm
+/// hands the legacy X10 encoding to `onBinary`, which gavin does not
+/// forward, so it never reaches here. More than one report back to back
+/// is still reports; a single byte of anything else makes it typing.
+fn is_mouse_report(data: &[u8]) -> bool {
+    let mut rest = data;
+    if rest.is_empty() {
+        return false;
+    }
+    while !rest.is_empty() {
+        let Some(body) = rest.strip_prefix(b"\x1b[<") else {
+            return false;
+        };
+        let Some(end) = body.iter().position(|b| *b == b'M' || *b == b'm') else {
+            return false;
+        };
+        let fields: Vec<&[u8]> = body[..end].split(|b| *b == b';').collect();
+        if fields.len() != 3
+            || fields.iter().any(|f| f.is_empty() || !f.iter().all(u8::is_ascii_digit))
+        {
+            return false;
+        }
+        rest = &body[end + 1..];
+    }
+    true
 }
 
 /// Shared between a session's pump thread and its heuristic idle-timeout
@@ -3018,7 +3061,12 @@ impl SessionManager {
         // put a spinner on both. Written all the same -- the program
         // asked for these, and Claude Code uses them to decide whether a
         // notification is even worth sending.
-        if is_focus_report(data) {
+        //
+        // A mouse report is the same thing about the pointer, and it was
+        // worse: hovering an agent's terminal sent one per cell, so a
+        // waiting agent read as working while the human was reading its
+        // question, and the Decisions tab dropped it under the cursor.
+        if is_focus_report(data) || is_mouse_report(data) {
             self.provoke_repaint(id);
             writer.lock().unwrap().write_all(data)?;
             return Ok(());
@@ -3860,7 +3908,7 @@ impl SessionManager {
                             } else if repainting {
                                 // The terminal just said something about
                                 // itself into this session -- a new size,
-                                // or a focus report -- so these bytes are
+                                // a focus or a mouse report -- so these bytes are
                                 // the program answering that, not the
                                 // agent doing anything. Ahead of BOTH
                                 // branches below on purpose: this must
@@ -11345,6 +11393,146 @@ mod tests {
         assert!(
             !manager.list_sessions().unwrap()[0].restored,
             "typing must still dismiss it"
+        );
+    }
+
+    /// What xterm sends for the pointer passing over a terminal whose
+    /// program asked for any-motion tracking (DEC 1003) in SGR encoding
+    /// (DEC 1006) -- as Claude Code does since 2.1.x, verified against
+    /// 2.1.283: button 3 ("none") plus the motion flag, 1-based column
+    /// and row.
+    const HOVER_REPORT: &str = "\u{1b}[<35;10;5M";
+
+    #[test]
+    fn every_sgr_mouse_report_is_the_terminal_and_nothing_else_is() {
+        for report in [
+            HOVER_REPORT,
+            "\u{1b}[<65;10;5M",     // wheel down
+            "\u{1b}[<64;1;1M",      // wheel up
+            "\u{1b}[<0;120;40M",    // left press
+            "\u{1b}[<0;120;40m",    // left release
+            "\u{1b}[<32;3;4M",      // drag with the left button held
+            "\u{1b}[<51;10;5M",     // hover with shift held
+            "\u{1b}[<35;812;644M",  // SGR-pixels (DEC 1016): same shape
+            "\u{1b}[<35;10;5M\u{1b}[<35;11;5M", // two, should they ever coalesce
+        ] {
+            assert!(is_mouse_report(report.as_bytes()), "{report:?} is a mouse report");
+        }
+        for typed in [
+            "",
+            "x",
+            "\r",
+            "\u{1b}[A",               // an arrow key
+            "\u{1b}[I",               // a focus report: its own rule
+            "\u{1b}[<35;10;5",        // cut short
+            "\u{1b}[<35;10M",         // a coordinate missing
+            "\u{1b}[<;10;5M",         // an empty field
+            "\u{1b}[<35;10;5Mx",      // a report with a keystroke behind it
+            "x\u{1b}[<35;10;5M",      // ...or in front of it
+            "\u{1b}[<35;10;5;1M",     // a fourth field
+        ] {
+            assert!(!is_mouse_report(typed.as_bytes()), "{typed:?} is not a mouse report");
+        }
+    }
+
+    /// A session whose program repaints for every mouse report it reads,
+    /// the way Claude Code redraws its fullscreen view under a moving
+    /// pointer. Raw and unechoed for `REPAINTS_ON_FOCUS`' reason; reads
+    /// exactly one report's worth so each report gets one repaint.
+    #[cfg(unix)]
+    fn repaints_on_hover(before: &str) -> String {
+        format!(
+            "{before}stty raw -echo; \
+             while head -c {} >/dev/null; do printf gavin_redraw; done",
+            HOVER_REPORT.len()
+        )
+    }
+
+    /// The Decisions tab bug. The tab mounts the card's agent terminal
+    /// beside its items, and moving the mouse over it made xterm write a
+    /// motion report per cell crossed. Each one was taken for the human
+    /// typing, and the repaint it provoked for the agent starting work --
+    /// so the row the human had opened left the list under the pointer.
+    ///
+    /// Unix only, with `a_focus_report_is_not_the_agent_working`'s
+    /// reason: ConPTY turns input-side terminal reports into console
+    /// events an ordinary read never sees.
+    #[cfg(unix)]
+    #[test]
+    fn a_hovering_pointer_is_not_the_agent_working() {
+        let (socket_path, _dir) = start_test_server();
+        let id = create_session_with(&socket_path, &repaints_on_hover("printf gavin_painted; "));
+
+        let mut attached = attach_reader(&socket_path, &id);
+        wait_for_status(&mut attached, &id, "working");
+        wait_for_status(&mut attached, &id, "idle");
+
+        let mut commands = Stream::connect(&socket_path).unwrap();
+        request(
+            &mut commands,
+            &Request::WriteInput { id: id.clone(), data: HOVER_REPORT.to_string() },
+        );
+
+        let (statuses, repainted) = collect_after(&mut attached, &id, Duration::from_millis(1500));
+        assert!(repainted, "the session never repainted, so this proves nothing about the pointer");
+        assert!(
+            statuses.is_empty(),
+            "a mouse report the terminal sent about the pointer was reported as the agent working: \
+             {statuses:?}"
+        );
+    }
+
+    /// The damaging half, and the one the Decisions tab showed: the bell
+    /// rings once, and a hover that cleared `waiting_for_input` took the
+    /// agent's question off every surface for good.
+    #[cfg(unix)]
+    #[test]
+    fn a_hovering_pointer_never_answers_a_question_the_agent_asked() {
+        let (socket_path, _dir) = start_test_server();
+        let id = create_session_with(
+            &socket_path,
+            &repaints_on_hover("printf '\\033]777;notify;Claude Code;needs your permission\\007'; "),
+        );
+
+        let mut attached = attach_reader(&socket_path, &id);
+        wait_for_status(&mut attached, &id, "waiting_for_input");
+        std::thread::sleep(HEURISTIC_QUIET_PERIOD + Duration::from_millis(500));
+
+        let mut commands = Stream::connect(&socket_path).unwrap();
+        request(
+            &mut commands,
+            &Request::WriteInput { id: id.clone(), data: HOVER_REPORT.to_string() },
+        );
+
+        let (statuses, repainted) = collect_after(&mut attached, &id, Duration::from_millis(1500));
+        assert!(repainted, "the session never repainted, so this proves nothing about the pointer");
+        assert!(statuses.is_empty(), "a hover took the agent's question off the board: {statuses:?}");
+        assert_eq!(
+            manager_status(&socket_path, &id),
+            "waiting_for_input",
+            "the stored status must still say a human is needed"
+        );
+    }
+
+    /// Nor is the pointer the human taking a restored tab over.
+    #[test]
+    fn a_mouse_report_does_not_dismiss_the_restored_badge() {
+        let dir = tempfile::tempdir().unwrap();
+        leftover_row(
+            &dir.path().join("registry.sqlite"),
+            "shell-1",
+            "/tmp",
+            None,
+            SessionStatus::Idle,
+        );
+        let manager = recovered_manager(&dir);
+        assert!(manager.list_sessions().unwrap()[0].restored, "precondition: the row is restored");
+
+        manager.write_input("shell-1", HOVER_REPORT.as_bytes()).unwrap();
+        manager.write_input("shell-1", b"\x1b[<0;10;5M\x1b[<0;10;5m").unwrap();
+        assert!(
+            manager.list_sessions().unwrap()[0].restored,
+            "a mouse report dismissed the restored badge -- nobody typed anything"
         );
     }
 
