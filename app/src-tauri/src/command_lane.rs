@@ -36,6 +36,14 @@
 //! a push that is newer than it. The stores that apply a read guard it
 //! with a supersession token (`refreshBoard`, `refreshOrchestration`,
 //! `refreshGavinTree`).
+//!
+//! An ssh link's lane has one connection and nothing to redial, so a
+//! host that stops answering cannot be routed around the way a wedged
+//! local handler is. What keeps it from costing more than one deadline:
+//! a request whose caller already gave up is never sent
+//! (`ask_each`'s bound), and while the host still owes a late answer the
+//! lane refuses new requests at once instead of queuing each for a whole
+//! deadline of its own behind it (`Worker::settle`).
 
 use protocol::transport::Stream;
 use protocol::{write_message, Request, Response, MAX_LINE_BYTES};
@@ -415,6 +423,49 @@ impl DaemonLanes {
     /// thread.
     pub fn ask(&self, req: Request) -> anyhow::Result<Response> {
         self.submit(req)?.wait()
+    }
+}
+
+/// The same question put to several daemons at once, each answer waited
+/// for for at most `budget`: what `remote::ask_every_link` runs for the
+/// reads that span every ssh host.
+///
+/// Every ask starts here, before the caller awaits anything -- so the
+/// hosts are asked side by side, and alongside whatever the caller asks
+/// the local daemon meanwhile. An ask that misses its budget is dropped,
+/// and with it any request it still had queued: withdrawn, never sent
+/// (`CommandLane::submit`).
+pub fn ask_each<D, T, Fut>(daemons: Vec<D>, budget: Duration, ask: impl Fn(D) -> Fut) -> Asked<T>
+where
+    Fut: Future<Output = Result<T, String>> + Send + 'static,
+    T: Send + 'static,
+{
+    let asks = daemons
+        .into_iter()
+        .map(|daemon| {
+            let answer = ask(daemon);
+            // The timer is made inside the task: it needs the runtime,
+            // which the caller -- a test, a plain thread -- may not be on.
+            tauri::async_runtime::spawn(async move { tokio::time::timeout(budget, answer).await })
+        })
+        .collect();
+    Asked(asks)
+}
+
+/// `ask_each`'s asks, under way.
+pub struct Asked<T>(Vec<tauri::async_runtime::JoinHandle<Result<Result<T, String>, tokio::time::error::Elapsed>>>);
+
+impl<T> Asked<T> {
+    /// The answers that came back in time, in the order the daemons were
+    /// given. A daemon that failed or missed its budget is left out.
+    pub async fn answers(self) -> Vec<T> {
+        let mut answers = Vec::with_capacity(self.0.len());
+        for asked in self.0 {
+            if let Ok(Ok(Ok(answer))) = asked.await {
+                answers.push(answer);
+            }
+        }
+        answers
     }
 }
 
@@ -959,6 +1010,65 @@ mod tests {
         assert_eq!(message(third.wait().unwrap()), "s-3");
         drop(lane);
         assert_eq!(daemon.seen.join().unwrap(), ids(&[1, 3]));
+    }
+
+    /// Answers every request with `name`, so a test can tell which daemon
+    /// an answer came from.
+    fn answer_as(daemon: Stream, name: &'static str) {
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(daemon.try_clone().unwrap());
+            while let Ok(Some(_)) = read_message::<_, Request>(&mut reader) {
+                if write_message(&mut &daemon, &Response::Error { message: name.to_string() }).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    /// The reads that span every host ask them side by side, and one host
+    /// that does not answer costs the read its budget, not the lane's
+    /// deadline -- and not its place in the answer for the hosts that did.
+    /// What the stuck host was still to be sent is withdrawn with the ask.
+    #[test]
+    fn ask_each_keeps_the_answers_that_came_within_the_budget() {
+        const BUDGET: Duration = Duration::from_millis(500);
+        fn two_seconds(_: &Request) -> Duration {
+            Duration::from_secs(2)
+        }
+        let lane = |name: Option<&'static str>| {
+            let (app, daemon) = Stream::pair().unwrap();
+            let wedged = match name {
+                Some(name) => {
+                    answer_as(daemon, name);
+                    None
+                }
+                None => Some(never_answer(daemon)),
+            };
+            let lane = CommandLane::spawn_with("the test daemon", app, protocol::PROTOCOL_VERSION, None, two_seconds);
+            (DaemonLanes::single(lane, parity()), wedged)
+        };
+        let (a, _) = lane(Some("a"));
+        let (stuck, wedged) = lane(None);
+        let (c, _) = lane(Some("c"));
+        let ask = |lanes: DaemonLanes| async move {
+            // Two requests, one after the other, like `managed_sessions_on`:
+            // the stuck host is never sent the second.
+            lanes.request(kill(1)).await.map_err(|e| e.to_string())?;
+            lanes.request(kill(2)).await.map(message).map_err(|e| e.to_string())
+        };
+
+        let start = Instant::now();
+        let answers =
+            tauri::async_runtime::block_on(ask_each(vec![a, stuck.clone(), c], BUDGET, ask).answers());
+        let took = start.elapsed();
+        assert_eq!(answers, vec!["a".to_string(), "c".to_string()]);
+        assert!(took >= BUDGET && took < two_seconds(&kill(1)), "the read took {took:?}");
+
+        // A second round, while the stuck host's lane is still waiting out
+        // the first: its ask is withdrawn before it is sent.
+        let answers = tauri::async_runtime::block_on(ask_each(vec![stuck], BUDGET, ask).answers());
+        assert!(answers.is_empty());
+        assert_eq!(wedged.unwrap().join().unwrap(), 1, "a withdrawn ask reached the stuck host");
     }
 
     /// An ssh link's lane cannot redial -- its connection is the bridge --

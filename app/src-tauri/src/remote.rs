@@ -18,7 +18,7 @@
 //! window; every request to it is gated on its own verdict, never on the
 //! local daemon's.
 
-use crate::command_lane::{CommandLane, DaemonLanes};
+use crate::command_lane::{Asked, CommandLane, DaemonLanes};
 use crate::config::{SshConfig, Workspace};
 use crate::session::{
     attach_and_relay, list_valid_session_ids, non_session_tab_ids, resolve_sessions, send_request,
@@ -1245,6 +1245,30 @@ pub fn route_for_path(app: &AppHandle, path: &str) -> Result<Route, String> {
 /// manager, the baselines).
 pub fn every_link(app: &AppHandle) -> Vec<Arc<RemoteLink>> {
     app.state::<RemoteLinks>().0.lock().unwrap().values().cloned().collect()
+}
+
+/// How long a read that spans every daemon waits for any one host.
+///
+/// Those reads are polled -- the memory poll every 5 s, the hub every 4 s,
+/// the Sessions manager every 2 s -- and each used to wait on every host
+/// in turn: one host that stopped answering held the local daemon's
+/// sessions back for its lane's whole deadline, and a dropped network for
+/// as long as ssh took to notice (~45 s). A host's sessions and process
+/// sample take a round trip and a moment on the host; this is room for a
+/// slow link, not for a stuck one.
+const SPAN_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Starts `ask` on every live link at once, each bounded by
+/// `SPAN_BUDGET`: the ssh half of a read that spans every daemon. Called
+/// before the caller awaits its local answer, so the two run side by
+/// side. A host that fails or runs out of budget is left out of the
+/// answers, as a host that failed always was.
+pub fn ask_every_link<T, Fut>(app: &AppHandle, ask: impl Fn(Arc<RemoteLink>) -> Fut) -> Asked<T>
+where
+    Fut: std::future::Future<Output = Result<T, String>> + Send + 'static,
+    T: Send + 'static,
+{
+    crate::command_lane::ask_each(every_link(app), SPAN_BUDGET, ask)
 }
 
 /// Records that a session the app just created on a link is the link's.

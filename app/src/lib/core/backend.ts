@@ -804,11 +804,20 @@ export interface SessionBaseline {
   failureReason: string | null;
 }
 
+/// Every live session on every daemon, and which linked ssh hosts those
+/// include. A linked host missing from `hosts` did not answer -- it was
+/// down, or slow past its budget -- which says nothing about whether its
+/// sessions are still there.
+export interface SessionBaselines {
+  sessions: SessionBaseline[];
+  hosts: string[];
+}
+
 // The frontend learns cwd/status/restored/interrupted from pushes whose
 // baseline the daemon only sends in reply to Attach -- and Attach happens once per app
 // PROCESS, not per frontend load. This is how a reloaded frontend gets
 // them back; see the Rust command's own doc comment.
-export function getSessionBaselines(): Promise<SessionBaseline[]> {
+export function getSessionBaselines(): Promise<SessionBaselines> {
   return invoke("get_session_baselines");
 }
 

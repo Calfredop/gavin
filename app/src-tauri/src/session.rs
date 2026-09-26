@@ -3299,6 +3299,18 @@ pub(crate) fn resolve_sessions(
 /// One live session's push-derived state, read back in a single query.
 /// camelCase because it crosses to the frontend; the protocol's own
 /// `SessionSummary` stays as it is on the wire.
+/// `get_session_baselines`'s answer: the sessions, and which ssh hosts
+/// they include.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionBaselines {
+    pub sessions: Vec<SessionBaseline>,
+    /// The linked hosts that answered. A linked host missing from here
+    /// said nothing about its sessions -- which is not the same as saying
+    /// it has none, and the frontend must not close its tabs over it.
+    pub hosts: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionBaseline {
@@ -3351,10 +3363,11 @@ pub struct SessionBaseline {
 ///
 /// Every daemon the app is talking to: the local one and each linked
 /// host. The frontend closes any layout tab whose session this list does
-/// not name, so a link's sessions missing here would close every remote
-/// tab on the next reload. A link that cannot answer contributes
-/// nothing -- its relay reports it lost -- rather than failing the read
-/// for the local sessions too.
+/// not name, so it sweeps a host's workspaces only when `hosts` says
+/// that host answered: a host that failed, or ran out of its budget
+/// (`remote::ask_every_link`), contributes nothing -- its relay reports
+/// it lost -- rather than failing the read for the local sessions too,
+/// and rather than having every one of its tabs closed as stale.
 ///
 /// Every daemon is asked before any answer is awaited, so a slow host
 /// costs its own round trip and not the local one's as well.
@@ -3363,19 +3376,22 @@ pub async fn get_session_baselines(
     app_handle: AppHandle,
     state: State<'_, CommandConnection>,
     compat: State<'_, DaemonCompatState>,
-) -> Result<Vec<SessionBaseline>, String> {
+) -> Result<SessionBaselines, String> {
     let local = state.lanes(current_compat(&compat)).submit(Request::ListSessions).map_err(|e| e.to_string())?;
-    let links: Vec<_> = crate::remote::every_link(&app_handle)
-        .iter()
-        .filter_map(|link| link.lanes().submit(Request::ListSessions).ok())
-        .collect();
-    let mut sessions = sessions_by_id(local.await).map_err(|e| e.to_string())?;
-    for link in links {
-        if let Ok(more) = sessions_by_id(link.await) {
-            sessions.extend(more);
+    let links = crate::remote::ask_every_link(&app_handle, |link| {
+        let (host, lanes) = (link.host.clone(), link.lanes());
+        async move {
+            let sessions = sessions_by_id(lanes.request(Request::ListSessions).await).map_err(|e| e.to_string())?;
+            Ok((host, sessions))
         }
+    });
+    let mut sessions = sessions_by_id(local.await).map_err(|e| e.to_string())?;
+    let mut hosts = Vec::new();
+    for (host, more) in links.answers().await {
+        hosts.push(host);
+        sessions.extend(more);
     }
-    Ok(sessions
+    let sessions = sessions
         .into_values()
         .filter(|s| s.status != "exited")
         .map(|s| SessionBaseline {
@@ -3387,7 +3403,8 @@ pub async fn get_session_baselines(
             orphan: s.orphan,
             failure_reason: s.failure_reason,
         })
-        .collect())
+        .collect();
+    Ok(SessionBaselines { sessions, hosts })
 }
 
 /// Ends the process a session left running after its daemon died.
@@ -3554,19 +3571,21 @@ async fn managed_sessions_on(lanes: DaemonLanes) -> Result<ManagedSessions, Stri
 ///
 /// Polled every few seconds by three surfaces, so it must never wait on
 /// the main thread: each daemon's two requests queue on its lanes and are
-/// awaited there.
+/// awaited there. The hosts are asked all at once, alongside the local
+/// daemon, and each gets a bound of its own (`remote::ask_every_link`):
+/// one host that has stopped answering costs the read that host's rows,
+/// not everybody's for as long as it takes to give up on it.
 #[tauri::command]
 pub async fn list_managed_sessions(
     app_handle: AppHandle,
     state: State<'_, CommandConnection>,
     compat: State<'_, DaemonCompatState>,
 ) -> Result<ManagedSessions, String> {
+    let links = crate::remote::ask_every_link(&app_handle, |link| managed_sessions_on(link.lanes()));
     let mut all = managed_sessions_on(state.lanes(current_compat(&compat))).await?;
-    for link in crate::remote::every_link(&app_handle) {
-        if let Ok(theirs) = managed_sessions_on(link.lanes()).await {
-            all.metrics = all.metrics && theirs.metrics;
-            all.sessions.extend(theirs.sessions);
-        }
+    for theirs in links.answers().await {
+        all.metrics = all.metrics && theirs.metrics;
+        all.sessions.extend(theirs.sessions);
     }
     Ok(all)
 }
@@ -4817,17 +4836,14 @@ pub async fn list_queued_inputs(
         .lanes(current_compat(&compat))
         .submit(Request::ListQueuedInputs)
         .map_err(|e| e.to_string())?;
-    let links: Vec<_> = crate::remote::every_link(&app_handle)
-        .iter()
-        .filter_map(|link| link.lanes().submit(Request::ListQueuedInputs).ok())
-        .collect();
+    // A link that cannot answer in time is left out -- its relay reports
+    // it lost if it is -- and the local queue is still worth returning.
+    let links = crate::remote::ask_every_link(&app_handle, |link| {
+        queued_inputs_request(link.lanes(), Request::ListQueuedInputs)
+    });
     let mut queued = queued_inputs(local.await)?;
-    for link in links {
-        // A link that cannot answer is reported as lost by its relay;
-        // the local queue is still worth returning.
-        if let Ok(more) = queued_inputs(link.await) {
-            queued.extend(more);
-        }
+    for more in links.answers().await {
+        queued.extend(more);
     }
     Ok(queued)
 }

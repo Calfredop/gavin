@@ -11,6 +11,7 @@ import { askConfirm } from "$lib/core/dialog";
 import { kanbanState } from "$lib/board/kanbanState";
 import { orchestrations } from "$lib/orchestration/orchestrationState";
 import { toolRecords } from "$lib/orchestration/toolsState";
+import { sshLinks } from "$lib/workspace/sshLinkState";
 
 // setWorkspaceRoot's reclaim offer is the only dialog this module opens.
 // Defaults to "Start fresh" so every test that is not about the reclaim
@@ -116,7 +117,7 @@ vi.mock("$lib/core/backend", () => ({
   setCardTabs: vi.fn().mockResolvedValue(undefined),
   // Resolved by default: bootstrap calls this best-effort to refill the
   // maps a frontend reload starts blank on.
-  getSessionBaselines: vi.fn().mockResolvedValue([]),
+  getSessionBaselines: vi.fn().mockResolvedValue({ sessions: [], hosts: [] }),
   // Same: the git half of that refill, keyed by the cwds the call above
   // returned.
   getGitBaselines: vi.fn().mockResolvedValue([]),
@@ -1734,6 +1735,12 @@ describe("handleSessionFailed", () => {
 // reads as a running agent forever, and its rail step can never be
 // corrected (the wedge spec §2.2 describes). Rust reconciles once per
 // app PROCESS; this is the same sweep on the two occasions that misses.
+/// `getSessionBaselines`'s answer: these sessions, and the linked hosts
+/// that answered.
+function baselinesRead<T>(sessions: T[], hosts: string[] = []): { sessions: T[]; hosts: string[] } {
+  return { sessions, hosts };
+}
+
 describe("reconcileLayoutSessions", () => {
   function pageWith(tabs: string[]): Workspace {
     return {
@@ -1746,9 +1753,9 @@ describe("reconcileLayoutSessions", () => {
 
   it("clears a tab the daemon has no session for, and leaves the live ones", async () => {
     setState([pageWith(["s-live", "ghost"])], "ws-1", "s-live");
-    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(baselinesRead([
       { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
-    ]);
+    ]));
 
     await reconcileLayoutSessions();
 
@@ -1758,9 +1765,9 @@ describe("reconcileLayoutSessions", () => {
   it("leaves file and board tabs alone — they are not sessions", async () => {
     setState([pageWith(["s-live", "file-1"])], "ws-1", "s-live");
     layoutState.update((s) => ({ ...s, fileTabsById: { "file-1": { path: "/ws/README.md" } } }));
-    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(baselinesRead([
       { id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
-    ]);
+    ]));
 
     await reconcileLayoutSessions();
 
@@ -1785,7 +1792,7 @@ describe("reconcileLayoutSessions", () => {
           })),
         })),
       }));
-      return [{ id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null }];
+      return baselinesRead([{ id: "s-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null }]);
     });
 
     await reconcileLayoutSessions();
@@ -1793,6 +1800,40 @@ describe("reconcileLayoutSessions", () => {
     expect(get(layoutState).workspaces[0].pages[0].layout).toMatchObject({
       tabs: ["s-live", "s-brand-new"],
     });
+  });
+
+  // A linked host that is up but did not answer the read -- slow past its
+  // budget, or failing -- said nothing about its sessions. Reading that
+  // silence as "none left" closed every tab it had.
+  it("sweeps an ssh workspace only when its host answered the read", async () => {
+    const remote = (id: string, host: string, tabs: string[]): Workspace => ({
+      ...pageWith(tabs),
+      id,
+      name: id,
+      ssh: { host },
+    });
+    setState(
+      [remote("ws-quiet", "quiet", ["q-live", "q-ghost"]), remote("ws-heard", "heard", ["h-live", "h-ghost"])],
+      "ws-quiet",
+      null
+    );
+    sshLinks.set({ quiet: { status: "ready" }, heard: { status: "ready" } });
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(
+      baselinesRead(
+        [{ id: "h-live", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null }],
+        ["heard"]
+      )
+    );
+
+    try {
+      await reconcileLayoutSessions();
+    } finally {
+      sshLinks.set({});
+    }
+
+    const [quiet, heard] = get(layoutState).workspaces;
+    expect(quiet.pages[0].layout).toMatchObject({ tabs: ["q-live", "q-ghost"] });
+    expect(heard.pages[0].layout).toMatchObject({ tabs: ["h-live"] });
   });
 
   // Clearing every tab in the app over a transient IPC failure would be
@@ -3250,10 +3291,10 @@ describe("bootstrap seeds the push-fed session maps", () => {
   }
 
   it("fills cwd, status and the restored badge from the daemon", async () => {
-    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(baselinesRead([
       { id: "s-1", cwd: "/ws/auth", status: "working", restored: true, interrupted: false, orphan: null, failureReason: null },
       { id: "s-2", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
-    ]);
+    ]));
 
     await bootstrapReady();
 
@@ -3278,9 +3319,9 @@ describe("bootstrap seeds the push-fed session maps", () => {
   // gavin met it and marked unwatched, and the hub's inbox reads the
   // duration built from it as a floor rather than a measurement.
   it("stamps a baselined status as one it did not watch begin", async () => {
-    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(baselinesRead([
       { id: "s-1", cwd: "/ws", status: "waiting_for_input", restored: false, interrupted: false, orphan: null, failureReason: null },
-    ]);
+    ]));
 
     await bootstrapReady();
 
@@ -3293,9 +3334,9 @@ describe("bootstrap seeds the push-fed session maps", () => {
   // the better answer for the worse one.
   it("never overwrites a stamp a live transition already set", async () => {
     handleSessionStatusChanged("s-1", "waiting_for_input");
-    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(baselinesRead([
       { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
-    ]);
+    ]));
 
     await bootstrapReady();
 
@@ -3303,10 +3344,10 @@ describe("bootstrap seeds the push-fed session maps", () => {
     expect(get(layoutState).statusSinceById["s-1"].watched).toBe(true);
   });
   it("fills the interrupted set, which the restored one does not speak for", async () => {
-    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(baselinesRead([
       { id: "s-agent", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null, failureReason: null },
       { id: "s-shell", cwd: "/ws", status: "idle", restored: true, interrupted: false, orphan: null, failureReason: null },
-    ]);
+    ]));
 
     await bootstrapReady();
 
@@ -3322,7 +3363,7 @@ describe("bootstrap seeds the push-fed session maps", () => {
     // once per app PROCESS -- so without the read-back a frontend reload
     // comes up showing an ordinary interrupted tab over an agent that is
     // still editing the checkout. Under `tauri dev` that is every edit.
-    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(baselinesRead([
       {
         id: "s-orphan",
         cwd: "/ws",
@@ -3333,7 +3374,7 @@ describe("bootstrap seeds the push-fed session maps", () => {
         failureReason: null,
       },
       { id: "s-agent", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null, failureReason: null },
-    ]);
+    ]));
 
     await bootstrapReady();
 
@@ -3354,7 +3395,7 @@ describe("bootstrap seeds the push-fed session maps", () => {
     // about.
     vi.mocked(backend.getSessionBaselines).mockImplementation(async () => {
       handleSessionOrphaned("s-1", { pid: 4172, command: "claude" });
-      return [{ id: "s-1", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null, failureReason: null }];
+      return baselinesRead([{ id: "s-1", cwd: "/ws", status: "idle", restored: true, interrupted: true, orphan: null, failureReason: null }]);
     });
 
     await bootstrapReady();
@@ -3369,10 +3410,10 @@ describe("bootstrap seeds the push-fed session maps", () => {
   // reloaded frontend comes up with a red session and nothing to say for
   // itself, which is the exact state this feature exists to replace.
   it("fills the failure reason, so a reload does not leave a red session mute", async () => {
-    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(baselinesRead([
       { id: "s-broke", cwd: "/ws", status: "failed", restored: false, interrupted: false, orphan: null, failureReason: "API Error: x" },
       { id: "s-fine", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
-    ]);
+    ]));
 
     await bootstrapReady();
 
@@ -3389,7 +3430,7 @@ describe("bootstrap seeds the push-fed session maps", () => {
     vi.mocked(backend.getSessionBaselines).mockImplementation(async () => {
       // A live push beats the snapshot this call is about to return.
       handleCwdChanged("s-1", "/ws/live");
-      return [{ id: "s-1", cwd: "/ws/stale", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null }];
+      return baselinesRead([{ id: "s-1", cwd: "/ws/stale", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null }]);
     });
 
     await bootstrapReady();
@@ -3413,10 +3454,10 @@ describe("bootstrap seeds the push-fed session maps", () => {
   // daemon cannot fix it by itself, because GitStatusChanged only fires
   // when the status actually CHANGES.
   it("fills the git status the sidebar's repo chip reads", async () => {
-    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(baselinesRead([
       { id: "s-1", cwd: "/ws/auth", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
       { id: "s-2", cwd: "/elsewhere", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
-    ]);
+    ]));
     vi.mocked(backend.getGitBaselines).mockResolvedValue([
       { repoRoot: "/ws", branch: "main", dirty: true, ahead: 2, behind: 0, hasUpstream: true },
       null,
@@ -3443,9 +3484,9 @@ describe("bootstrap seeds the push-fed session maps", () => {
 
   it("never overwrites a git push that already landed", async () => {
     const live = { repoRoot: "/ws", branch: "live", dirty: false, ahead: 0, behind: 0, hasUpstream: false };
-    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(baselinesRead([
       { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
-    ]);
+    ]));
     vi.mocked(backend.getGitBaselines).mockImplementation(async () => {
       handleGitStatusChanged("s-1", live);
       return [{ repoRoot: "/ws", branch: "stale", dirty: true, ahead: 9, behind: 9, hasUpstream: true }];
@@ -3459,9 +3500,9 @@ describe("bootstrap seeds the push-fed session maps", () => {
   // Not fatal, and never blocks the cwd/status seed it rides along with:
   // git can be missing, slow, or refuse a repo outright.
   it("keeps the cwd seed when the git half fails", async () => {
-    vi.mocked(backend.getSessionBaselines).mockResolvedValue([
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(baselinesRead([
       { id: "s-1", cwd: "/ws", status: "idle", restored: false, interrupted: false, orphan: null, failureReason: null },
-    ]);
+    ]));
     vi.mocked(backend.getGitBaselines).mockRejectedValue(new Error("git was not found on PATH"));
 
     await bootstrapReady();

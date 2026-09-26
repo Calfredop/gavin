@@ -1057,7 +1057,10 @@ async function seedSessionBaselines(): Promise<void> {
   // Same wait loadTabMaps satisfies: once those maps have come back, the
   // Rust side has managed CommandConnection too.
   await tabMapsLoaded;
-  const baselines = await backend.getSessionBaselines().catch(() => null);
+  const baselines = await backend.getSessionBaselines().then(
+    (read) => read.sessions,
+    () => null
+  );
   if (!baselines) return;
   const known = get(layoutState);
   const fresh = baselines.filter((b) => known.cwdBySessionId[b.id] === undefined);
@@ -1165,9 +1168,10 @@ export async function reconcileLayoutSessions(): Promise<void> {
   const before = get(layoutState);
   const baselines = await backend.getSessionBaselines().catch(() => null);
   if (!baselines) return;
+  const answered = new Set(baselines.hosts);
   const stale = workspace.staleLayoutTabIds(
     before,
-    new Set(baselines.map((b) => b.id)),
+    new Set(baselines.sessions.map((b) => b.id)),
     new Set([
       ...Object.keys(before.fileTabsById),
       ...Object.keys(before.boardTabsById),
@@ -1175,8 +1179,10 @@ export async function reconcileLayoutSessions(): Promise<void> {
     ]),
     // The baselines name a linked host's sessions and nothing of a host
     // still connecting or lost; an ssh workspace is swept only once its
-    // host is up.
-    readyHosts(get(sshLinks))
+    // host is up -- and only when that host answered this read. One that
+    // was up but slow past its budget said nothing about its sessions,
+    // and reading its silence as "none left" closed every tab it had.
+    new Set([...readyHosts(get(sshLinks))].filter((host) => answered.has(host)))
   );
   // handleSessionExited searches the CURRENT trees and is a no-op for an
   // id no longer in one, so a tab closed in the meantime needs no guard.
