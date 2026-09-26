@@ -934,6 +934,14 @@ fn spawn_repo_poller(manager: &Arc<SessionManager>, repo_root: String, poller: A
 /// top-level directory (created after this poller started) won't be
 /// watched until something else triggers a fresh check for this root --
 /// the 3-minute backstop timer always eventually does.
+/// Whether `path` lies inside a `.gavin-worktrees` folder under `root`:
+/// another checkout of the same repository, whose writes never change
+/// `root`'s `git status` (the folder ignores itself).
+fn in_nested_worktree(root: &std::path::Path, path: &std::path::Path) -> bool {
+    path.strip_prefix(root)
+        .is_ok_and(|rel| rel.components().any(|c| c.as_os_str() == crate::git_watch::WORKTREES_DIR))
+}
+
 fn setup_filesystem_watch(manager: &Arc<SessionManager>, repo_root: &str, poller: &Arc<RepoPoller>) {
     let manager = Arc::clone(manager);
     let repo_root_owned = repo_root.to_string();
@@ -953,14 +961,21 @@ fn setup_filesystem_watch(manager: &Arc<SessionManager>, repo_root: &str, poller
     let debounce_result = notify_debouncer_mini::new_debouncer(
         GIT_STATUS_DEBOUNCE,
         move |res: notify_debouncer_mini::DebounceEventResult| {
-            if res.is_ok() {
-                // If this fires after teardown has begun (the poller's
-                // last strong `Arc` was already dropped), `.upgrade()`
-                // returns `None` and this is a silent no-op -- correct,
-                // since there's nothing left to recheck.
-                if let Some(poller) = poller_for_callback.upgrade() {
-                    trigger_recheck(&manager, &repo_root_owned, &poller);
-                }
+            let Ok(events) = res else { return };
+            // A batch that is all nested-worktree churn changed nothing
+            // here. Registration below already skips a top-level
+            // `.gavin-worktrees`; this catches one deeper down, where a
+            // workspace opened at a package folder keeps its worktrees.
+            let root = std::path::Path::new(&repo_root_owned);
+            if !events.is_empty() && events.iter().all(|e| in_nested_worktree(root, &e.path)) {
+                return;
+            }
+            // If this fires after teardown has begun (the poller's
+            // last strong `Arc` was already dropped), `.upgrade()`
+            // returns `None` and this is a silent no-op -- correct,
+            // since there's nothing left to recheck.
+            if let Some(poller) = poller_for_callback.upgrade() {
+                trigger_recheck(&manager, &repo_root_owned, &poller);
             }
         },
     );
@@ -999,7 +1014,11 @@ fn setup_filesystem_watch(manager: &Arc<SessionManager>, repo_root: &str, poller
     let _ = debouncer.watcher().watch(std::path::Path::new(repo_root), notify::RecursiveMode::NonRecursive);
     if let Ok(entries) = std::fs::read_dir(repo_root) {
         for entry in entries.flatten() {
-            if entry.file_name() == ".git" {
+            // `.gavin-worktrees` holds OTHER checkouts: every build an
+            // agent runs in one would recheck this one's status, and on
+            // Linux each of their node_modules and target directories
+            // would cost an inotify watch of this process's own.
+            if entry.file_name() == ".git" || entry.file_name() == crate::git_watch::WORKTREES_DIR {
                 continue;
             }
             let _ = debouncer.watcher().watch(&entry.path(), notify::RecursiveMode::Recursive);
@@ -5384,6 +5403,18 @@ fn handle_connection_as(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nested_worktree_churn_is_not_this_checkouts_change() {
+        use std::path::Path;
+        let root = Path::new("/r");
+        for churn in ["/r/.gavin-worktrees", "/r/.gavin-worktrees/feat-x/target/debug/x.o", "/r/pkg/.gavin-worktrees/a/f.ts"] {
+            assert!(super::in_nested_worktree(root, Path::new(churn)), "{churn}");
+        }
+        for change in ["/r/src/main.rs", "/r/.git/index", "/r/.gavin-worktrees-notes.md", "/elsewhere/.gavin-worktrees/x"] {
+            assert!(!super::in_nested_worktree(root, Path::new(change)), "{change}");
+        }
+    }
+
     use crate::testing::wire_spelling;
 
     /// Every daemon test gets a throwaway in-memory orchestration store:

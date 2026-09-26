@@ -14,15 +14,21 @@ use tauri::{AppHandle, Emitter, State};
 pub const GIT_WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Which paths (relative to the worktree root) should trigger a refresh.
-/// Everything outside `.git/` counts; inside it only the state files the
-/// tab actually renders from. `*.lock` never counts — `index.lock` is
-/// created by every writing git command including our own, and reacting
-/// to it would make the watcher chase its own tail.
+/// Everything outside `.git/` counts except a `.gavin-worktrees` folder
+/// at any depth: it holds OTHER checkouts, which this one's status never
+/// lists (the folder ignores itself, see `commands::WORKTREES_DIR`) and
+/// which get a watcher of their own when a Git tab looks at one --
+/// counting them would refresh this tab on every build an agent runs in
+/// a worktree. Inside `.git/` only the state files the tab actually
+/// renders from. `*.lock` never counts — `index.lock` is created by every
+/// writing git command including our own, and reacting to it would make
+/// the watcher chase its own tail.
 pub fn is_relevant(rel: &Path) -> bool {
+    use crate::git::commands::WORKTREES_DIR;
     let mut comps = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned());
     let Some(first) = comps.next() else { return false };
     if first != ".git" {
-        return true;
+        return first != WORKTREES_DIR && !comps.any(|c| c == WORKTREES_DIR);
     }
     if rel.to_string_lossy().ends_with(".lock") {
         return false;
@@ -183,6 +189,19 @@ mod tests {
         assert!(rel("src/lib/foo.ts"));
         assert!(rel("README.md"));
         assert!(rel("nested/.gitignore"));
+    }
+
+    #[test]
+    fn nested_gavin_worktrees_are_not_relevant() {
+        assert!(!rel(".gavin-worktrees"));
+        assert!(!rel(".gavin-worktrees/.gitignore"));
+        assert!(!rel(".gavin-worktrees/feat-x/src/lib/foo.ts"));
+        assert!(!rel(".gavin-worktrees/feat-x/target/debug/deps/x.o"));
+        // A workspace opened at a package folder keeps its worktrees there.
+        assert!(!rel("packages/foo/.gavin-worktrees/feat-x/README.md"));
+        // Only that exact name.
+        assert!(rel(".gavin-worktrees-notes.md"));
+        assert!(rel(".gavin-root/plans/a.md"));
     }
 
     #[test]

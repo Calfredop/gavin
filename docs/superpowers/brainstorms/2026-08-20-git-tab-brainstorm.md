@@ -99,7 +99,9 @@ Deviations from the spec, all deliberate:
   (rebase). `git push`, auto `-u <remote> <branch>` on a branch with no
   upstream ("Publish"). No force push in v1.
 - **G11:** **Fork worktrees default to a sibling folder** `../<repo>-<branch>`
-  (recommended, approved); path editable in the dialog.
+  (recommended, approved); path editable in the dialog. *Superseded
+  2026-09-26: forks default to `<workspace>/.gavin-worktrees/<branch>` —
+  `specs/2026-09-26-gavin-worktrees-folder-design.md`.*
 - **G12:** **Merge back = merge + optional cleanup** (recommended, approved):
   `git merge <fork-branch>` in the root checkout, then offer "remove
   worktree + delete branch". Conflicts switch the view to the root checkout

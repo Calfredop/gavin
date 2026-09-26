@@ -93,7 +93,7 @@ describe("the config a candidate resolves through", () => {
 });
 
 describe("planning the git objects", () => {
-  it("names a branch and a sibling folder per candidate, off the card title", () => {
+  it("names a branch and a .gavin-worktrees folder per candidate, off the card title", () => {
     const plans = planCandidates(
       "Auth rework",
       [
@@ -105,7 +105,7 @@ describe("planning the git objects", () => {
       []
     );
     expect(plans.map((p) => p.branch)).toEqual(["auth-rework-claude-code-sonnet", "auth-rework-codex"]);
-    expect(plans[1].worktreePath).toBe("/repos/gavin-auth-rework-codex");
+    expect(plans[1].worktreePath).toBe("/repos/gavin/.gavin-worktrees/auth-rework-codex");
     expect(plans[0].label).toBe("Claude Code · sonnet");
   });
 

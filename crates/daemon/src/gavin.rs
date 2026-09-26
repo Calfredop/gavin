@@ -1079,13 +1079,20 @@ pub fn is_in_progress_status(status: &str) -> bool {
     slug_title(status).as_deref() == Some("in-progress")
 }
 
+/// Whether a directory is one of the two context markers. Exactly those
+/// two names, never a `.gavin` prefix: `.gavin-worktrees` holds whole
+/// checkouts in folders named after their branches, and a branch called
+/// `plans`, `docs` or `specs` must not turn that checkout into a card
+/// folder -- the scan already matches exactly (`scan_root`), and every
+/// gate that decides what a card is has to agree with it.
+fn is_marker_dir(dir: &Path) -> bool {
+    dir.file_name().is_some_and(|n| n == GAVIN_DIR || n == GAVIN_ROOT_DIR)
+}
+
 /// True for a `plans` directory that really is a context's plans folder
-/// (its parent is a `.gavin*` marker directory).
+/// (its parent is a `.gavin` / `.gavin-root` marker directory).
 fn is_plans_dir(dir: &Path) -> bool {
-    dir.file_name().is_some_and(|n| n == "plans")
-        && dir
-            .parent()
-            .is_some_and(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".gavin")))
+    dir.file_name().is_some_and(|n| n == "plans") && dir.parent().is_some_and(is_marker_dir)
 }
 
 /// The `plans/` root governing this file, but ONLY for the three
@@ -1560,7 +1567,7 @@ pub fn promote_checklist_item(plan_path: &Path, item: &str) -> anyhow::Result<Pa
         .ok_or_else(|| anyhow::anyhow!("not a plans/ file: {}", plan_path.display()))?;
     let gavin_dir = plans_dir
         .parent()
-        .filter(|d| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".gavin")))
+        .filter(|d| is_marker_dir(d))
         .ok_or_else(|| anyhow::anyhow!("not inside a .gavin* folder: {}", plan_path.display()))?;
     let context_folder = gavin_dir
         .parent()
@@ -1658,9 +1665,7 @@ pub fn confine_card_path(path: &Path) -> anyhow::Result<PathBuf> {
     }
     let guarded = canonical.ancestors().skip(1).any(|dir| {
         dir.file_name().is_some_and(|n| n == "plans" || n == "docs" || n == "specs")
-            && dir.parent().is_some_and(|p| {
-                p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".gavin"))
-            })
+            && dir.parent().is_some_and(is_marker_dir)
     });
     if !guarded {
         anyhow::bail!("not inside a .gavin*/plans|docs|specs folder: {}", canonical.display());
@@ -4515,6 +4520,33 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "x");
     }
 
+    /// A worktree folder named after a branch called `plans`, `docs` or
+    /// `specs` sits directly under `.gavin-worktrees` -- a `.gavin*`
+    /// name that is no marker. The card-shape gates match the two marker
+    /// names exactly, so a README in that checkout is not a card: no
+    /// status write files it under `done/`, and no delete reaches it.
+    #[test]
+    fn a_worktree_named_like_a_card_folder_is_not_one() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        for folder in ["plans", "docs", "specs"] {
+            let wt = dir.path().join(".gavin-worktrees").join(folder);
+            std::fs::create_dir_all(&wt).unwrap();
+            let readme = wt.join("README.md");
+            std::fs::write(&readme, "# not a card\n").unwrap();
+            assert!(confine_card_path(&readme).is_err(), "{folder}");
+            assert!(delete_card_file(&readme).is_err(), "{folder}");
+            assert!(readme.exists(), "{folder}");
+        }
+        let readme = dir.path().join(".gavin-worktrees").join("plans").join("README.md");
+        assert_eq!(governed_plans_root(&readme), None);
+        // The real markers still pass.
+        let card = dir.path().join(GAVIN_ROOT_DIR).join("plans").join("a.md");
+        std::fs::write(&card, "---\ntitle: A\n---\n").unwrap();
+        assert!(confine_card_path(&card).is_ok());
+        assert!(governed_plans_root(&card).is_some());
+    }
+
     #[test]
     fn external_contexts_register_scan_and_unregister() {
         let root_dir = tempfile::tempdir().unwrap();
@@ -4682,6 +4714,38 @@ mod tests {
         assert_eq!(tree.contexts[1].name, "auth");
         assert_eq!(tree.contexts[1].plans.len(), 1);
         assert_eq!(tree.contexts[1].plans[0].status.as_deref(), Some("To Do"));
+    }
+
+    /// `.gavin-worktrees` holds whole checkouts of this repository, each
+    /// with its own `.gavin-root` and `.gavin` folders. The name starts
+    /// with `.gavin` because the folder is gavin's, but it is no marker:
+    /// listing a worktree's copies as contexts of this workspace would put
+    /// every card on the board twice, and their churn must not rescan
+    /// this tree. Both hold only because the scan and `tree_relevant`
+    /// match the two marker names exactly and skip every other dot
+    /// directory -- a `starts_with(".gavin")` in either would break it.
+    #[test]
+    fn a_nested_worktree_is_neither_scanned_nor_tree_relevant() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let wt = dir.path().join(".gavin-worktrees").join("feat-x");
+        let feature = wt.join("auth");
+        std::fs::create_dir_all(&feature).unwrap();
+        init_gavin_root(&wt, "WS").unwrap();
+        create_gavin_context(&feature).unwrap();
+
+        let tree = scan_root(dir.path());
+        assert_eq!(tree.contexts.len(), 1, "{:?}", tree.contexts.iter().map(|c| &c.folder_path).collect::<Vec<_>>());
+        assert_eq!(tree.contexts[0].kind, GavinContextKind::Root);
+
+        for churn in [
+            ".gavin-worktrees",
+            ".gavin-worktrees/feat-x",
+            ".gavin-worktrees/feat-x/.gavin-root/plans/a.md",
+            ".gavin-worktrees/feat-x/auth/.gavin/plans/b.md",
+        ] {
+            assert!(!tree_relevant(dir.path(), Some(&tree), &dir.path().join(churn)), "{churn}");
+        }
     }
 
     #[test]

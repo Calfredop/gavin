@@ -1,7 +1,7 @@
 // Which linked worktrees gavin has finished with, and how to say so.
 //
 // Forking a worktree per rail is cheap, so a workspace that has been
-// running for a week accumulates a dozen sibling folders whose branches
+// running for a week accumulates a dozen worktree folders whose branches
 // landed on main days ago. Sweeping them is the kind of chore a human
 // only does when it has already gone wrong, which is why the answer is a
 // button rather than advice.
@@ -101,11 +101,11 @@ function isInside(child: string, parent: string): boolean {
 }
 
 /// The worktree a path belongs to: the DEEPEST one containing it, not
-/// the first. gavin's own forks are siblings (`../<repo>-<branch>`), but
-/// the fork dialog takes any path the human types, and a worktree nested
-/// inside the repo would otherwise hand every one of its sessions to the
-/// main checkout -- which is the one row where the mistake is invisible,
-/// because main is never swept anyway.
+/// the first. gavin's own forks are nested inside the workspace
+/// (`<root>/.gavin-worktrees/<branch>`), so a first-match rule would hand
+/// every one of their sessions to the main checkout -- which is the one
+/// row where the mistake is invisible, because main is never swept
+/// anyway.
 function owningWorktree(paths: readonly string[], child: string): string | null {
   let best: string | null = null;
   for (const path of paths) {

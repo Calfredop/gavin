@@ -228,14 +228,29 @@ export function changedCount(status: StatusResult | null): number {
 
 // ---- SP3: worktrees --------------------------------------------------------
 
-/// Default fork location (G11): a sibling of the repo named
-/// `<repo>-<branch>`, with `/` in the branch flattened to `-`.
+/// The folder inside a workspace that every worktree gavin cuts lands in.
+/// The host writes a `.gitignore` of `*` into it before the first `git
+/// worktree add` (`git/commands.rs`), so it ignores itself and everything
+/// under it -- the enclosing checkout never shows it as untracked and a
+/// `git add .` never records a nested checkout as a gitlink -- and the
+/// git watchers skip it for the checkout it sits in.
+export const WORKTREES_DIR = ".gavin-worktrees";
+
+/// Default fork location: `<root>/.gavin-worktrees/<branch>`, with `/` in
+/// the branch flattened to `-`. `root` is the WORKSPACE root where the
+/// caller knows it. Forks used to be siblings named `<repo>-<branch>`,
+/// which scattered a week of rails across the folder the repo sits in.
 export function defaultWorktreePath(root: string, branch: string): string {
-  const trimmed = root.replace(/\/+$/, "");
-  const i = trimmed.lastIndexOf("/");
-  const parent = i <= 0 ? "" : trimmed.slice(0, i);
-  const name = trimmed.slice(i + 1);
-  return `${parent}/${name}-${branch.replace(/\//g, "-")}`;
+  return `${root.replace(/\/+$/, "")}/${WORKTREES_DIR}/${branch.replace(/\//g, "-")}`;
+}
+
+/// The root `defaultWorktreePath` is handed: the workspace root, else the
+/// git checkout being forked from. The two differ for a monorepo opened
+/// at a package folder, and the forks belong inside the folder the human
+/// opened. The git root only stands in while the gavin tree has not
+/// loaded -- it is still inside, just higher up.
+export function worktreesAnchor(workspaceRoot: string, gitRoot: string): string {
+  return workspaceRoot || gitRoot;
 }
 
 /// A branch name derived from free text -- an orchestration rail's name,

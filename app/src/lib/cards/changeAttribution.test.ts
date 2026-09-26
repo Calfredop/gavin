@@ -75,6 +75,25 @@ describe("coTenants", () => {
     expect(peers.map((p) => p.path)).toEqual([PEER_A]);
   });
 
+  it("does not count a run in a nested .gavin-worktrees checkout as a tenant of this one", () => {
+    // Deeper in the same TREE, but another checkout: gavin cuts its
+    // worktrees inside the workspace, and their edits never reach this
+    // checkout's diff.
+    const peers = coTenants(run(), [
+      binding(PEER_A, { launchCwd: "/repo/.gavin-worktrees/feat-x" }),
+      binding(PEER_B, { launchCwd: "/repo/app/.gavin-worktrees/feat-y/src" }),
+    ]);
+    expect(peers).toEqual([]);
+  });
+
+  it("still sees the tenants of a nested worktree from a run rooted in it", () => {
+    const peers = coTenants(run({ root: "/repo/.gavin-worktrees/feat-x" }), [
+      binding(PEER_A, { launchCwd: "/repo/.gavin-worktrees/feat-x/app" }),
+      binding(PEER_B, { launchCwd: "/repo" }),
+    ]);
+    expect(peers.map((p) => p.path)).toEqual([PEER_A]);
+  });
+
   it("reads Windows paths the way git reports them", () => {
     const peers = coTenants(run({ root: "C:/Users/me/repo" }), [
       binding(PEER_A, { launchCwd: "C:\\Users\\me\\repo\\app" }),

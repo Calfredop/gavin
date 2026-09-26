@@ -1,7 +1,8 @@
 // Where a best-of-N run is remembered between the launch and the pick.
 //
 // The record is machine-local state about machine-local things: three
-// sibling folders and the sessions running in them. It is not workspace
+// folders under `.gavin-worktrees` and the sessions running in them --
+// ignored by git, so no commit carries them. It is not workspace
 // data -- nobody else's checkout has those folders -- and it is not
 // daemon data, because putting it there would cost a protocol bump and a
 // compat gate for a feature that needs neither. So: localStorage per

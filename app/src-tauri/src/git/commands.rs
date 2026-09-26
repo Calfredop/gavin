@@ -3,7 +3,7 @@
 //! real code path without a Tauri runtime.
 
 use crate::git::parse::{parse_branches, parse_diff, parse_log, parse_name_status, parse_remotes, parse_stashes, parse_status, parse_worktree_list};
-use crate::git::run::{ok, run_git, run_git_env, run_git_ro};
+use crate::git::run::{ok, read_repo_file, run_git, run_git_env, run_git_ro, write_repo_file};
 use crate::git::types::{Author, CommitDetail, FileDiff, LogPage, RefsSnapshot, RepoInfo, StatusResult, WorktreeInfo};
 use std::path::Path;
 
@@ -202,9 +202,49 @@ pub fn worktrees(cwd: &str) -> Result<Vec<WorktreeInfo>, String> {
     Ok(parse_worktree_list(&out.stdout_str()))
 }
 
+/// The folder inside a workspace every worktree gavin cuts lands in:
+/// `WORKTREES_DIR` in app/src/lib/git/git.ts proposes it, and the
+/// orchestrate skill cuts into it by hand.
+pub const WORKTREES_DIR: &str = ".gavin-worktrees";
+
+/// That folder's own `.gitignore`: everything, itself included.
+const WORKTREES_GITIGNORE: &str =
+    "# gavin's worktrees: each one is a checkout of its own, never content of this one.\n*\n";
+
+/// Makes the `.gavin-worktrees` folder a worktree is about to land in
+/// ignore itself, before git puts anything there.
+///
+/// Without it the checkout the folder sits in lists every worktree as
+/// untracked, and a `git add .` there records one as an embedded
+/// repository -- a gitlink the next commit hands to everyone. The ignore
+/// lives INSIDE the folder: a line in the root `.gitignore` is a tracked
+/// change on every branch that lacks it, and `.git/info/exclude` is
+/// repository state that outlives the folder and that an agent cutting a
+/// worktree by hand would have to go and find. The folder's own file
+/// holds on every branch, at any depth -- a workspace opened below the
+/// git root keeps its worktrees there -- and goes when the folder does.
+///
+/// A path under no `.gavin-worktrees` is left alone: the human typed a
+/// folder of their own. An existing `.gitignore` is theirs as well and
+/// is never rewritten. Read and written through the same routed helpers
+/// as `ignore.rs`'s `.gitignore`: over ssh the folder is on the host, and
+/// `run_git` is about to cut the worktree there.
+fn prepare_worktrees_dir(cwd: &str, path: &str) -> Result<(), String> {
+    let target = Path::new(cwd).join(path);
+    let Some(dir) = target.ancestors().skip(1).find(|a| a.file_name().is_some_and(|n| n == WORKTREES_DIR)) else {
+        return Ok(());
+    };
+    let ignore = dir.join(".gitignore");
+    if read_repo_file(cwd, &ignore)?.is_some() {
+        return Ok(());
+    }
+    write_repo_file(cwd, &ignore, WORKTREES_GITIGNORE)
+}
+
 /// `new_branch`: `worktree add -b <branch> <path> [<from>]`; otherwise
 /// `worktree add <path> <branch>` for an existing branch.
 pub fn worktree_add(cwd: &str, path: &str, branch: &str, from: Option<&str>, new_branch: bool) -> Result<(), String> {
+    prepare_worktrees_dir(cwd, path)?;
     let mut args = vec!["worktree", "add"];
     if new_branch {
         args.extend(["-b", branch, "--", path]);
@@ -1170,6 +1210,57 @@ mod ref_tests {
         assert!(refs(cwd(&dir)).unwrap().worktrees[1].prunable);
         worktree_prune(cwd(&dir)).unwrap();
         assert_eq!(refs(cwd(&dir)).unwrap().worktrees.len(), 1);
+        // A folder of the human's own choosing gets nothing written for it.
+        assert!(!dir.path().join(WORKTREES_DIR).exists());
+    }
+
+    /// The folder the app forks into ignores itself: the checkout it sits
+    /// in stays clean, and a `git add -A` there records no gitlink.
+    #[test]
+    fn a_worktree_in_gavin_worktrees_leaves_the_enclosing_checkout_clean() {
+        let dir = temp_repo();
+        let wt = dir.path().join(WORKTREES_DIR).join("feature");
+        let wt_s = wt.to_str().unwrap().to_string();
+        worktree_add(cwd(&dir), &wt_s, "feature", None, true).unwrap();
+        assert_eq!(repo_info(&wt_s).unwrap().branch.as_deref(), Some("feature"));
+
+        assert_eq!(git(cwd(&dir), &["status", "--porcelain"]), "");
+        git(cwd(&dir), &["add", "-A"]);
+        assert_eq!(git(cwd(&dir), &["diff", "--cached", "--name-only"]), "");
+        // Ignored, not merely unseen.
+        let ignored = git(cwd(&dir), &["status", "--porcelain", "--ignored"]);
+        assert!(ignored.contains(&format!("!! {WORKTREES_DIR}/")), "{ignored}");
+
+        // The worktree is an ordinary checkout: its own status sees its files.
+        std::fs::write(wt.join("new.txt"), "x").unwrap();
+        assert!(git(&wt_s, &["status", "--porcelain"]).contains("?? new.txt"));
+        worktree_remove(cwd(&dir), &wt_s, true).unwrap();
+    }
+
+    /// A workspace opened at a package folder keeps its worktrees there,
+    /// below the git root -- where an anchored exclude would miss them.
+    #[test]
+    fn a_worktrees_folder_below_the_git_root_ignores_itself_too() {
+        let dir = temp_repo();
+        let pkg = dir.path().join("packages").join("foo");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("a.txt"), "a").unwrap();
+        git(cwd(&dir), &["add", "."]);
+        git(cwd(&dir), &["commit", "-q", "-m", "pkg"]);
+
+        let wt = pkg.join(WORKTREES_DIR).join("feature");
+        worktree_add(cwd(&dir), wt.to_str().unwrap(), "feature", None, true).unwrap();
+        assert_eq!(git(cwd(&dir), &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn an_existing_worktrees_gitignore_is_left_as_the_human_wrote_it() {
+        let dir = temp_repo();
+        let folder = dir.path().join(WORKTREES_DIR);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(".gitignore"), "*\n!notes.md\n").unwrap();
+        worktree_add(cwd(&dir), folder.join("feature").to_str().unwrap(), "feature", None, true).unwrap();
+        assert_eq!(std::fs::read_to_string(folder.join(".gitignore")).unwrap(), "*\n!notes.md\n");
     }
 
     /// The sweep's first disqualifier. The listing has to survive both

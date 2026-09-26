@@ -14,6 +14,7 @@
   import ConfigTrustNotice from "$lib/workspace/ConfigTrustNotice.svelte";
   import { CUSTOM_MODEL } from "$lib/agents/agentModel";
   import { candidatesError, forkBase, planCandidates, seedCandidates, type Candidate } from "$lib/cards/bestOfN";
+  import { worktreesAnchor } from "$lib/git/git";
   import { startBestOfN } from "$lib/cards/bestOfNActions";
   import { setupPlan, setupNotice } from "$lib/git/worktreeSetup";
   import type { CardView } from "$lib/core/planBoard";
@@ -81,7 +82,9 @@
   const trust = $derived($configTrusts(workspaceId));
 
   const candidates = $derived<Candidate[]>(rows.map((r) => ({ profileId: r.profileId, model: r.model })));
-  const plans = $derived(planCandidates(card.title, candidates, labels, root, takenBranches));
+  // Every candidate's folder goes inside the workspace's own
+  // `.gavin-worktrees`, the same place the fork dialog proposes.
+  const plans = $derived(planCandidates(card.title, candidates, labels, worktreesAnchor(gavinRoot, root), takenBranches));
   const setError = $derived(candidatesError(candidates));
   const rootError = $derived(root ? null : "This workspace is not a git repository, so there is nowhere to fork worktrees from.");
   // The same gate the launch applies, said here so a row that cannot run

@@ -17,7 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::git::commands::MAX_DIFF_BYTES;
+use crate::git::commands::{MAX_DIFF_BYTES, WORKTREES_DIR};
 use crate::git::parse::{parse_diff, parse_name_status};
 use crate::git::run::{ok, run_git, run_git_ro};
 use crate::git::types::{FileDiff, FileEntry};
@@ -264,7 +264,7 @@ pub fn run_changes(cwd: &str, base_sha: &str, peers: &[String]) -> Result<RunCha
     // get the identical list.
     if until.is_none() {
         let untracked = ok(run_git_ro(&root, &["ls-files", "--others", "--exclude-standard"])?)?;
-        for path in untracked.stdout_str().lines().filter(|l| !l.is_empty()) {
+        for path in untracked.stdout_str().lines().filter(|l| !l.is_empty() && !in_nested_worktree(l)) {
             out.added += untracked_line_count(&std::path::Path::new(&root).join(path));
             out.files.push(FileEntry { path: path.to_string(), old_path: None, status: "?".to_string() });
         }
@@ -355,6 +355,17 @@ pub fn discard_run(cwd: &str, base_sha: &str, untracked: &[String]) -> Result<Di
     discard_with(cwd, base_sha, untracked, trash_path)
 }
 
+/// Whether a repo-relative path crosses a `.gavin-worktrees` folder:
+/// another checkout, never one of this run's files. The folder's own
+/// `.gitignore` normally keeps git from listing it at all; this is what
+/// holds once that file has gone (`git clean -x`, a worktree cut by hand
+/// without it) and git reports a whole checkout as one untracked entry
+/// -- which a Discard would otherwise send to the Trash, uncommitted work
+/// and all.
+fn in_nested_worktree(rel: &str) -> bool {
+    rel.split('/').any(|c| c == WORKTREES_DIR)
+}
+
 /// The body, with the removal injected -- so the tests can prove the
 /// reset and the path rules without putting a tempdir in the human's
 /// real Trash on every `cargo test`.
@@ -384,6 +395,10 @@ fn discard_with(
 
     let mut report = DiscardReport::default();
     for rel in untracked {
+        if in_nested_worktree(rel) {
+            report.failed.push((rel.clone(), "another checkout -- never discarded with this run".to_string()));
+            continue;
+        }
         let joined = root_path.join(rel);
         if !joined.exists() {
             // Already gone -- the reset removed it, or the agent did.
@@ -734,6 +749,33 @@ mod tests {
             assert!(err.contains("outside the checkout"), "{bad}: {err}");
         }
         assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "changed\n");
+    }
+
+    /// A worktree in `.gavin-worktrees` whose self-ignore has gone shows
+    /// up to git as one untracked entry. It is never listed as a run's
+    /// file, and a Discard handed one anyway leaves it where it is.
+    #[test]
+    fn a_nested_worktree_is_never_a_runs_file_nor_discarded() {
+        let dir = temp_repo();
+        let base = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
+        let wt = dir.path().join(WORKTREES_DIR).join("feat-x");
+        // Cut by hand with no `.gitignore` -- the case this guards.
+        git(cwd(&dir), &["worktree", "add", "-q", "-b", "feat-x", wt.to_str().unwrap()]);
+        assert!(git(cwd(&dir), &["ls-files", "--others", "--exclude-standard"]).contains(WORKTREES_DIR));
+        write(&dir, "new.txt", "one\n");
+
+        let changes = run_changes(cwd(&dir), &base, &[]).unwrap();
+        let paths: Vec<&str> = changes.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["new.txt"]);
+
+        let entry = format!("{WORKTREES_DIR}/feat-x/");
+        let report = discard_with(cwd(&dir), &base, &["new.txt".to_string(), entry.clone()], |p| {
+            std::fs::remove_file(p).map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(report.trashed, vec!["new.txt".to_string()]);
+        assert_eq!(report.failed.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), vec![entry.as_str()]);
+        assert!(wt.join("f.txt").exists());
     }
 
     #[test]

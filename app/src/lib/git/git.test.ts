@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { lineId, parseLineId, splitPath, branchLabel, changedCount, defaultWorktreePath, validateBranchName, branchNameFrom, freeBranchNameFrom, branchResolvable, type RepoInfo, type RefsSnapshot } from "$lib/git/git";
+import { lineId, parseLineId, splitPath, branchLabel, changedCount, defaultWorktreePath, WORKTREES_DIR, worktreesAnchor, validateBranchName, branchNameFrom, freeBranchNameFrom, branchResolvable, type RepoInfo, type RefsSnapshot } from "$lib/git/git";
 
 const repo: RepoInfo = {
   notARepo: false, root: "/r", branch: "main", detached: false, unborn: false,
@@ -41,9 +41,25 @@ describe("changedCount", () => {
 });
 
 describe("defaultWorktreePath", () => {
-  it("builds a sibling folder named <repo>-<branch> with slashes flattened (G11)", () => {
-    expect(defaultWorktreePath("/a/b/repo", "feat/x")).toBe("/a/b/repo-feat-x");
-    expect(defaultWorktreePath("/a/b/repo/", "main")).toBe("/a/b/repo-main");
+  it("builds a folder inside the workspace's .gavin-worktrees, slashes flattened", () => {
+    expect(defaultWorktreePath("/a/b/repo", "feat/x")).toBe("/a/b/repo/.gavin-worktrees/feat-x");
+    expect(defaultWorktreePath("/a/b/repo/", "main")).toBe("/a/b/repo/.gavin-worktrees/main");
+  });
+
+  it("anchors on the workspace root, falling back to the git checkout", () => {
+    // A monorepo opened at a package folder: the forks belong inside the
+    // folder the human opened, not at the top of the repository.
+    expect(worktreesAnchor("/mono/packages/foo", "/mono")).toBe("/mono/packages/foo");
+    // The tree has not loaded yet -- the git root is the best there is.
+    expect(worktreesAnchor("", "/mono")).toBe("/mono");
+  });
+
+  it("never lands outside the root it was given", () => {
+    // The old sibling default (`/a/b/repo-feat-x`) scattered every fork
+    // across the folder the repo sits in -- the clutter this exists to end.
+    const path = defaultWorktreePath("/a/b/repo", "feat/x");
+    expect(path.startsWith("/a/b/repo/")).toBe(true);
+    expect(path.slice("/a/b/repo/".length).split("/")).toEqual([WORKTREES_DIR, "feat-x"]);
   });
 });
 

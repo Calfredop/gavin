@@ -45,7 +45,9 @@ describe("the branch name a rail's bind dialog seeds", () => {
     expect(fork).toContain("let branch = $state(branchSeed);");
     // The folder still tracks the branch, so a seeded branch seeds the
     // folder too -- that link is the reason one seed is enough.
-    expect(fork).toContain("if (!folderTouched && root) folder = effectiveBranch");
+    expect(fork).toContain("if (!folderTouched && anchor) folder = effectiveBranch ? defaultWorktreePath(anchor, effectiveBranch)");
+    // ...inside the workspace's own `.gavin-worktrees`, not the git root's.
+    expect(fork).toContain("worktreesAnchor(gavinRoot, root)");
   });
 
   it("leaves the Git tab's own fork dialog unseeded", () => {

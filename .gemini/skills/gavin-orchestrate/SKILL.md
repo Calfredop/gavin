@@ -189,15 +189,25 @@ the one every absolute card path in the read payload sits under.
 1. **Look first.** `git worktree list` and `git branch`. A branch already
    checked out somewhere cannot be checked out again, and a folder that
    already exists is not yours to claim.
-2. **A worktree on a new branch**, in the sibling folder gavin's own
-   dialog would have proposed — the root's folder name, a hyphen, and the
-   branch with each `/` written as `-`:
+2. **A worktree on a new branch**, inside the workspace's
+   `.gavin-worktrees/` — where gavin's own dialog puts one — in a
+   `<folder>` named after the branch with each `/` written as `-`. The
+   folder ignores itself
+   through a `.gitignore` of `*` of its own; write that before the first
+   worktree goes in, or the root checkout lists every worktree as
+   untracked and a `git add .` records one as an embedded repository:
 
    ```
-   git worktree add -b <branch> ../<repo>-<branch>
+   mkdir -p .gavin-worktrees
+   [ -f .gavin-worktrees/.gitignore ] || printf '*\n' > .gavin-worktrees/.gitignore
+   git worktree add -b <branch> .gavin-worktrees/<folder>
    ```
 
-   An existing branch instead: `git worktree add <path> <branch>`.
+   An existing branch instead:
+   `git worktree add .gavin-worktrees/<folder> <branch>`. Never a sibling
+   folder beside the repository, and never a line in the root
+   `.gitignore` or in `.git/info/exclude`: the folder's own file is the
+   whole arrangement, so nothing tracked changes on any branch.
 3. **Then its setup.** `[worktree] setup` in `.gavin-root/config.toml`
    declares what a fresh checkout needs — `npm install`, `cargo fetch`, an
    `.env` copy. Gavin runs those for a worktree made in the app; nothing
@@ -209,7 +219,8 @@ the one every absolute card path in the read payload sits under.
    checked out. The rail's own first step is what moves a checkout, once,
    and the human is working in the root one meanwhile. Never
    `git checkout` in the root yourself.
-5. **Then bind it in the write**: `worktreePath` and `branch` on the rail.
+5. **Then bind it in the write**: `worktreePath` — the absolute path,
+   `<workspace root>/.gavin-worktrees/<folder>` — and `branch` on the rail.
    Set both for a worktree you cut on a new branch — the switch is a
    no-op while the checkout is already there, and the pair is what the
    human and the next agent read as the rail's isolation.

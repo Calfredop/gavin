@@ -38,10 +38,10 @@ export const RAIL_BIND_TABS: RailBindTabMeta[] = [
   { id: "page", label: "Page" },
 ];
 
-/// The last segment of a checkout path. A worktree is a sibling folder
-/// named after its branch, so the segment is the part that identifies it;
-/// the whole path is long enough to eat a 280px rail column on its own,
-/// and it survives in the chip's tooltip.
+/// The last segment of a checkout path. A worktree is a folder under
+/// `.gavin-worktrees` named after its branch, so the segment is the part
+/// that identifies it; the whole path is long enough to eat a 280px rail
+/// column on its own, and it survives in the chip's tooltip.
 export function checkoutLabel(path: string): string {
   const trimmed = path.replace(/\/+$/, "");
   const at = trimmed.lastIndexOf("/");

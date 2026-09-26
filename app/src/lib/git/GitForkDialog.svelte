@@ -12,7 +12,7 @@
   import { gavinTrees, worktreeSetups } from "$lib/core/gavinState";
   import { configTrusts } from "$lib/core/layoutState";
   import { showAlert } from "$lib/core/dialog";
-  import { defaultWorktreePath, validateBranchName } from "$lib/git/git";
+  import { defaultWorktreePath, validateBranchName, worktreesAnchor } from "$lib/git/git";
   import { setupPlan, setupNotice } from "$lib/git/worktreeSetup";
 
   interface Props {
@@ -113,10 +113,13 @@
     setupPlan(setup, allowSpawn && startAgent ? agentCommand : null, trust.trusted)
   );
 
-  // The folder follows the branch name until the user edits it (G11).
+  // The folder follows the branch name until the user edits it (G11),
+  // inside the WORKSPACE's `.gavin-worktrees` -- not the git root's, which
+  // is higher up when a monorepo is opened at a package folder.
   const effectiveBranch = $derived(mode === "new" ? branch : existing);
+  const anchor = $derived(root ? worktreesAnchor(gavinRoot, root) : "");
   $effect(() => {
-    if (!folderTouched && root) folder = effectiveBranch ? defaultWorktreePath(root, effectiveBranch) : "";
+    if (!folderTouched && anchor) folder = effectiveBranch ? defaultWorktreePath(anchor, effectiveBranch) : "";
   });
   $effect(() => {
     if (mode === "existing" && !existing && freeBranches.length > 0) existing = freeBranches[0];
@@ -246,7 +249,7 @@
 
     <label class="field">
       <span>Folder</span>
-      <input type="text" bind:value={folder} oninput={() => (folderTouched = true)} placeholder={root ? defaultWorktreePath(root, "branch") : ""} />
+      <input type="text" bind:value={folder} oninput={() => (folderTouched = true)} placeholder={anchor ? defaultWorktreePath(anchor, "branch") : ""} />
     </label>
     {#if folderError && folderTouched}<div class="err">{folderError}</div>{/if}
 

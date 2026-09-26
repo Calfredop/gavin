@@ -45,6 +45,7 @@
 
 import type { CardSession } from "$lib/board/kanban";
 import type { FileDiff, FileEntry } from "$lib/git/git";
+import { WORKTREES_DIR } from "$lib/git/git";
 import { TYPESAFE_MODEL } from "$lib/agents/turnVerdict";
 import { stripFrontmatter } from "$lib/cards/planChecklist";
 
@@ -121,10 +122,17 @@ function normalizePath(path: string): string {
   return /^[A-Za-z]:/.test(slashed) ? slashed.toLowerCase() : slashed;
 }
 
+/// Whether a session launched in `dir` works in `root`'s checkout: the
+/// root itself or any depth below it -- except inside a
+/// `.gavin-worktrees` folder, which holds OTHER checkouts of the same
+/// repository. Deeper in the tree is not the same working tree there,
+/// and a run in one never edits this checkout's diff.
 function isInside(dir: string, root: string): boolean {
   const d = normalizePath(dir);
   const r = normalizePath(root);
-  return d === r || d.startsWith(`${r}/`);
+  if (d === r) return true;
+  if (!d.startsWith(`${r}/`)) return false;
+  return !d.slice(r.length + 1).split("/").includes(WORKTREES_DIR);
 }
 
 /// Every OTHER card run in this run's checkout whose window overlaps
