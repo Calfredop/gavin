@@ -93,6 +93,12 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["git/conflict.rs", "git_resolve_whole", "`checkout --ours/--theirs` and `git add`"],
   ["git/conflict.rs", "git_resolve_deleted", "`git rm`, or a checkout and `git add`"],
   ["git/conflict.rs", "git_restore_conflict", "`checkout -m`"],
+  // The memory poll reads watchman every 30 s per window, and Drop roots
+  // forgets one root at a time: a `watchman` CLI each, 170-200 ms, or
+  // the 5 s deadline when the server is wedged. Measured at 0.2-1.2 s
+  // of main thread a minute.
+  ["memory.rs", "watchman_status", "the `watchman watch-list` CLI, every 30 s poll"],
+  ["memory.rs", "watchman_forget", "the `watchman watch-del` CLI, once per dropped root"],
 ];
 
 /// The command's text from its `#[tauri::command]` line to the first

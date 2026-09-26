@@ -414,8 +414,18 @@ fn stdout_by_deadline(mut command: Command, timeout: Duration) -> Option<String>
 /// Called on the same timer as `system_memory`. The pid probe is two
 /// syscalls; the CLI call only happens once that probe has said there is
 /// something to ask.
+///
+/// `async` + `spawn_blocking`: that CLI call is 170-200 ms, and the
+/// whole deadline when watchman is wedged. As a plain `fn` it ran on the
+/// main thread every 30 s per window -- 0.2-1.2 s of frozen window a
+/// minute, measured. A pool that could not run the read has nothing to
+/// report, the same `None` as every other failure here.
 #[tauri::command]
-pub fn watchman_status() -> Option<WatchmanStatus> {
+pub async fn watchman_status() -> Option<WatchmanStatus> {
+    tauri::async_runtime::spawn_blocking(read_watchman).await.ok().flatten()
+}
+
+fn read_watchman() -> Option<WatchmanStatus> {
     let pid = watchman_pid()?;
     #[cfg(target_os = "macos")]
     let rss_bytes = watchman_rss(pid);
@@ -438,13 +448,15 @@ pub fn watchman_status() -> Option<WatchmanStatus> {
 ///
 /// A machine with no server is a silent success: there is nothing
 /// holding the root, which is the state the caller wanted.
+///
+/// `async` + `spawn_blocking` for the same reason as `watchman_status`:
+/// Drop roots calls it once per root, one after another, and each is a
+/// CLI round trip the main thread used to sit through.
 #[tauri::command]
-pub fn watchman_forget(root: String) -> Result<(), String> {
-    if watchman_pid().is_none() {
-        return Ok(());
-    }
-    forget_root(&root);
-    Ok(())
+pub async fn watchman_forget(root: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || forget_root(&root))
+        .await
+        .map_err(|e| format!("the watchman drop did not run: {e}"))
 }
 
 /// The same drop, for callers inside Rust that must not fail because of
