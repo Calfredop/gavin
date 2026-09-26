@@ -1,22 +1,44 @@
 //! One subprocess runner for every git call (spec §2): argv arrays, the
-//! user's environment plus GIT_TERMINAL_PROMPT=0, a 10 s timeout with the
+//! user's environment plus GIT_TERMINAL_PROMPT=0, a deadline with the
 //! stdout/stderr pipes drained on threads (the same deadlock avoidance
 //! crates/daemon/src/git_status.rs documents), optional stdin.
 
 use std::io::{Read, Write};
-use std::process::{Child, Stdio};
-use std::sync::{Arc, Mutex};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const GIT_TIMEOUT: Duration = Duration::from_secs(10);
-/// Ceiling for network ops (fetch/pull/push); they stream progress and are
-/// cancellable, so this only catches a truly hung transport.
+/// Ceiling for anything run as an op: the network ops (fetch/pull/push)
+/// and the actions that run hooks (`run_git_action`). Both show in the op
+/// bar and are cancellable, so this only catches a truly hung transport
+/// or hook -- and bounds the rail's branch switch, a checkout with nobody
+/// there to press Cancel.
 pub const GIT_OP_TIMEOUT: Duration = Duration::from_secs(600);
+/// How long a git told to stop gets to stop by itself before it is
+/// killed. Git needs microseconds -- the time to unlink its lock files --
+/// so this is for a hook that takes no notice of the TERM.
+const STOP_GRACE: Duration = Duration::from_secs(2);
 pub const GIT_NOT_FOUND: &str = "git was not found on PATH";
 
-/// A running long op's child, shared with whoever may cancel it: the
-/// canceller `take()`s and kills it, and the runner reports "cancelled".
-pub type SharedChild = Arc<Mutex<Option<Child>>>;
+/// Set to stop a running git. The runner that owns the process polls it
+/// and does the stopping, so a canceller -- `git_cancel_op`, which runs
+/// on the main thread -- only ever stores a bool and never waits.
+pub type CancelFlag = Arc<AtomicBool>;
+
+/// Where a running git's stderr goes, line by line: the op bar's
+/// `git-op-progress`. Called on the thread that drains the pipe.
+pub type LineSink = Arc<dyn Fn(String) + Send + Sync>;
+
+/// What the owner of an op holds over its git: the flag that cancels it,
+/// and where its progress goes. `default()` is neither -- what a test,
+/// or the rail's unattended branch switch, runs an action with.
+#[derive(Clone, Default)]
+pub struct OpControl {
+    pub cancel: CancelFlag,
+    pub on_line: Option<LineSink>,
+}
 
 #[derive(Debug)]
 pub struct GitOutput {
@@ -57,9 +79,9 @@ fn run_git_capped(cwd: &str, args: &[&str], stdin: Option<&[u8]>, stdout_cap: Op
     // An ssh workspace's repo is on the host: the daemon there runs git
     // and returns the same three fields. Every Git-tab command that waits
     // for its answer funnels through here (by way of `run_git`, `run_git_ro`
-    // or `run_git_ro_capped`), so
-    // routing this one function is the whole "change only where the process
-    // runs" for the tab -- `commands.rs` never learns which machine ran it.
+    // or `run_git_ro_capped`) or through `run_git_action`, so routing these
+    // two is the whole "change only where the process runs" for the tab --
+    // `commands.rs` never learns which machine ran it.
     // The network ops the desktop keeps use `run_git_streaming`, which does
     // not route.
     if let Some(result) = crate::remote::run_git_over_link(cwd, args, stdin) {
@@ -71,26 +93,172 @@ fn run_git_capped(cwd: &str, args: &[&str], stdin: Option<&[u8]>, stdout_cap: Op
             GitOutput { stdout, stderr, code }
         });
     }
+    run_local(cwd, args, &[], stdin, stdout_cap, GIT_TIMEOUT, &OpControl::default())
+}
+
+/// `run_git` for an action that runs the repository's hooks, signs a
+/// commit, or checks files out through a filter: commit, merge, revert,
+/// cherry-pick, `--continue` and the checkout family. Those wait on
+/// programs the user installed, and sometimes on the user -- a pre-commit
+/// suite, a pinentry or Touch ID prompt, an LFS download -- and GIT_TIMEOUT
+/// killed them mid-hook: the action failed, the hook ran on orphaned, and
+/// `index.lock` stayed behind. So the ceiling is GIT_OP_TIMEOUT, `control`
+/// can cancel the action, and its stderr -- where git sends a hook's output
+/// -- goes to the op bar while it runs.
+///
+/// `env` is for `GIT_EDITOR=true`, so a cherry-pick or a `--continue`
+/// never waits on an editor nobody can see.
+pub fn run_git_action(
+    cwd: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+    stdin: Option<&[u8]>,
+    control: &OpControl,
+) -> Result<GitOutput, String> {
+    run_git_action_within(cwd, args, env, stdin, control, GIT_OP_TIMEOUT)
+}
+
+fn run_git_action_within(
+    cwd: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+    stdin: Option<&[u8]>,
+    control: &OpControl,
+    timeout: Duration,
+) -> Result<GitOutput, String> {
+    // Routed like `run_git`. A call with an environment goes through its
+    // own request rather than a widened `RunGit`: `min_version_for` gates
+    // request TYPES, so an `env` field on `RunGit` would be dropped in
+    // silence by a v41 host and the cherry-pick would hang on an editor
+    // nobody can see. `RunGitEnv` carries no stdin, and no caller needs
+    // both. Neither request carries a cancel or progress: on a host, the
+    // host's own deadline is the bound.
+    debug_assert!(env.is_empty() || stdin.is_none(), "RunGitEnv carries no stdin");
+    let routed = if env.is_empty() {
+        crate::remote::run_git_over_link(cwd, args, stdin)
+    } else {
+        crate::remote::run_git_env_over_link(cwd, args, env)
+    };
+    if let Some(result) = routed {
+        return result.map(|(stdout, stderr, code)| GitOutput { stdout, stderr, code });
+    }
+    run_local(cwd, args, env, stdin, None, timeout, control)
+}
+
+/// `git` in `cwd` with what every run gets. On unix it leads a process
+/// group of its own, which is how `stop` reaches the hooks, the signing
+/// program and the filters git starts, and not git alone.
+fn git_command(cwd: &str) -> Command {
+    let mut command = crate::program::command("git");
+    command.current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command
+}
+
+fn spawn_error(e: std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        GIT_NOT_FOUND.to_string()
+    } else {
+        format!("failed to run git: {e}")
+    }
+}
+
+/// Stops a git that has to stop: past its deadline, or cancelled.
+///
+/// SIGTERM to its whole process group first. Git answers a TERM by
+/// removing the lock files it holds; a SIGKILL cannot be answered, and
+/// left `.git/index.lock` behind for every later git to refuse the
+/// repository over until someone deleted it by hand. The group is what
+/// reaches a hook git is waiting on -- killing git alone left the hook
+/// running, orphaned. A git still there after STOP_GRACE takes the group
+/// down with a SIGKILL; it is still unreaped then, so its pid, and with
+/// it the group id, cannot have gone to another process.
+///
+/// Windows has no process group here: git alone is killed, as before.
+fn stop(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let group = -(child.id() as libc::pid_t);
+        // SAFETY: kill(2) takes no pointers.
+        unsafe { libc::kill(group, libc::SIGTERM) };
+        let deadline = Instant::now() + STOP_GRACE;
+        loop {
+            match child.try_wait() {
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+                Ok(None) => {
+                    // SAFETY: as above.
+                    unsafe { libc::kill(group, libc::SIGKILL) };
+                    break;
+                }
+                Ok(Some(_)) => return,
+                Err(_) => break,
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Reads `r` to its end, handing each line to `on_line` as it arrives,
+/// and returns everything read. `\r` ends a line too: git redraws its
+/// progress with it, and so does many a hook.
+fn read_lines(r: &mut impl Read, on_line: &mut dyn FnMut(String)) -> Vec<u8> {
+    let mut all = Vec::new();
+    let mut line_start = 0;
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = match r.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        for &b in &buf[..n] {
+            if b == b'\n' || b == b'\r' {
+                if all.len() > line_start {
+                    on_line(String::from_utf8_lossy(&all[line_start..]).into_owned());
+                }
+                all.push(b);
+                line_start = all.len();
+            } else {
+                all.push(b);
+            }
+        }
+    }
+    if all.len() > line_start {
+        on_line(String::from_utf8_lossy(&all[line_start..]).into_owned());
+    }
+    all
+}
+
+/// Runs git in a local `cwd` until it exits, `timeout` passes, or
+/// `control.cancel` is set -- the last two `stop` it and are an `Err`
+/// ("cancelled" for a cancel, which the op bar reads). The one local
+/// runner behind `run_git` and `run_git_action`.
+fn run_local(
+    cwd: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+    stdin: Option<&[u8]>,
+    stdout_cap: Option<usize>,
+    timeout: Duration,
+    control: &OpControl,
+) -> Result<GitOutput, String> {
     // A missing cwd also surfaces as ErrorKind::NotFound from spawn; check it
     // first so that case is never misreported as a missing git binary.
     if !std::path::Path::new(cwd).is_dir() {
         return Err(format!("directory not found: {cwd}"));
     }
-    let mut child = crate::program::command("git")
+    let mut child = git_command(cwd)
         .args(args)
-        .current_dir(cwd)
-        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(env.iter().copied())
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                GIT_NOT_FOUND.to_string()
-            } else {
-                format!("failed to run git: {e}")
-            }
-        })?;
+        .map_err(spawn_error)?;
 
     if let Some(bytes) = stdin {
         if let Some(mut pipe) = child.stdin.take() {
@@ -118,10 +286,17 @@ fn run_git_capped(cwd: &str, args: &[&str], stdin: Option<&[u8]>, stdout_cap: Op
         }
         let _ = out_tx.send(buf);
     });
+    let on_line = control.on_line.clone();
     std::thread::spawn(move || {
-        let mut buf = String::new();
-        let _ = stderr.read_to_string(&mut buf);
-        let _ = err_tx.send(buf);
+        let bytes = match on_line {
+            Some(sink) => read_lines(&mut stderr, &mut |line| sink(line)),
+            None => {
+                let mut buf = Vec::new();
+                let _ = stderr.read_to_end(&mut buf);
+                buf
+            }
+        };
+        let _ = err_tx.send(String::from_utf8_lossy(&bytes).into_owned());
     });
 
     // Polled on a doubling pause from 1 ms, not a flat 20: most git reads
@@ -130,16 +305,19 @@ fn run_git_capped(cwd: &str, args: &[&str], stdin: Option<&[u8]>, stdout_cap: Op
     // on a helper thread: that thread would own the child, and the kill
     // at the deadline would have to go by pid to a process it may already
     // have reaped.
-    let deadline = Instant::now() + GIT_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let mut pause = Duration::from_millis(1);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
+                if control.cancel.load(Ordering::Relaxed) {
+                    stop(&mut child);
+                    return Err("cancelled".to_string());
+                }
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("git {} timed out after {}s", args.join(" "), GIT_TIMEOUT.as_secs()));
+                    stop(&mut child);
+                    return Err(format!("git {} timed out after {}s", args.join(" "), timeout.as_secs()));
                 }
                 std::thread::sleep(pause);
                 pause = (pause * 2).min(Duration::from_millis(20));
@@ -224,36 +402,12 @@ pub fn run_git_ro_capped(cwd: &str, args: &[&str], max: usize) -> Result<GitOutp
     run_git_capped(cwd, &full, None, Some(max))
 }
 
-/// `run_git` with extra environment variables (e.g. `GIT_EDITOR=true` so a
-/// `rebase --continue` never opens an editor).
-pub fn run_git_env(cwd: &str, args: &[&str], env: &[(&str, &str)]) -> Result<GitOutput, String> {
-    // Routed like `run_git`, through its own request rather than a
-    // widened `RunGit`: `min_version_for` gates request TYPES, so an
-    // `env` field on `RunGit` would be dropped in silence by a v41 host
-    // and the cherry-pick would hang on an editor nobody can see.
-    if let Some(result) = crate::remote::run_git_env_over_link(cwd, args, env) {
-        return result.map(|(stdout, stderr, code)| GitOutput { stdout, stderr, code });
-    }
-    if !std::path::Path::new(cwd).is_dir() {
-        return Err(format!("directory not found: {cwd}"));
-    }
-    let out = crate::program::command("git")
-        .args(args)
-        .current_dir(cwd)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .envs(env.iter().copied())
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { GIT_NOT_FOUND.to_string() } else { format!("failed to run git: {e}") })?;
-    Ok(GitOutput { stdout: out.stdout, stderr: String::from_utf8_lossy(&out.stderr).into_owned(), code: out.status.code().unwrap_or(-1) })
-}
-
 /// Streams git's stderr (its progress channel) line by line — `\r` counts
-/// as a line break so progress updates arrive as they are drawn. The child
-/// is handed to `register` so a canceller can `take()` and kill it; a taken
-/// child makes this return `Err("cancelled")`.
+/// as a line break so progress updates arrive as they are drawn. Setting
+/// `cancel` stops the child (see `stop`) and makes this return
+/// `Err("cancelled")`.
 ///
-/// Local only, unlike `run_git` and `run_git_env` above, and deliberately:
+/// Local only, unlike `run_git` and `run_git_action` above, and deliberately:
 /// an op on a host is addressed by an op id (for its progress pushes and
 /// its cancel) and this signature has none. `git::ops::run_op` is the
 /// layer that has one, so that is where the ssh route lives — see its
@@ -262,47 +416,25 @@ pub fn run_git_streaming(
     cwd: &str,
     args: &[&str],
     on_line: &mut dyn FnMut(String),
-    register: &mut dyn FnMut(SharedChild),
+    cancel: &AtomicBool,
 ) -> Result<(), String> {
     if !std::path::Path::new(cwd).is_dir() {
         return Err(format!("directory not found: {cwd}"));
     }
-    let mut child = crate::program::command("git")
+    let mut child = git_command(cwd)
         .args(args)
-        .current_dir(cwd)
-        .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { GIT_NOT_FOUND.to_string() } else { format!("failed to run git: {e}") })?;
+        .map_err(spawn_error)?;
     let mut stderr = child.stderr.take().ok_or("git stderr unavailable")?;
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        let mut acc: Vec<u8> = Vec::new();
-        loop {
-            let n = match stderr.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => n,
-            };
-            for &b in &buf[..n] {
-                if b == b'\n' || b == b'\r' {
-                    if !acc.is_empty() {
-                        let _ = tx.send(String::from_utf8_lossy(&acc).into_owned());
-                        acc.clear();
-                    }
-                } else {
-                    acc.push(b);
-                }
-            }
-        }
-        if !acc.is_empty() {
-            let _ = tx.send(String::from_utf8_lossy(&acc).into_owned());
-        }
+        read_lines(&mut stderr, &mut |line| {
+            let _ = tx.send(line);
+        });
     });
-    let shared: SharedChild = Arc::new(Mutex::new(Some(child)));
-    register(shared.clone());
 
     let mut tail: Vec<String> = Vec::new();
     let mut push_tail = |line: &str| {
@@ -317,20 +449,19 @@ pub fn run_git_streaming(
             push_tail(&line);
             on_line(line);
         }
-        {
-            let mut guard = shared.lock().unwrap();
-            let Some(child) = guard.as_mut() else { return Err("cancelled".to_string()) };
-            match child.try_wait() {
-                Ok(Some(s)) => break s,
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(format!("git {} timed out after {}s", args.join(" "), GIT_OP_TIMEOUT.as_secs()));
-                    }
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => {
+                if cancel.load(Ordering::Relaxed) {
+                    stop(&mut child);
+                    return Err("cancelled".to_string());
                 }
-                Err(e) => return Err(format!("failed waiting for git: {e}")),
+                if Instant::now() >= deadline {
+                    stop(&mut child);
+                    return Err(format!("git {} timed out after {}s", args.join(" "), GIT_OP_TIMEOUT.as_secs()));
+                }
             }
+            Err(e) => return Err(format!("failed waiting for git: {e}")),
         }
         std::thread::sleep(Duration::from_millis(30));
     };
@@ -339,7 +470,6 @@ pub fn run_git_streaming(
         push_tail(&line);
         on_line(line);
     }
-    *shared.lock().unwrap() = None;
     if status.success() {
         Ok(())
     } else {
@@ -407,14 +537,144 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "# replaced");
     }
 
-    /// `run_git_env` still runs git with the environment for a local cwd;
+    /// `run_git_action` runs git with the environment for a local cwd;
     /// the routed arm is its own request (`RunGitEnv`, v42) rather than a
     /// widened `RunGit`, which the protocol crate pins.
     #[test]
-    fn run_git_env_sets_the_variable_for_a_local_cwd() {
-        let out = run_git_env(".", &["var", "GIT_EDITOR"], &[("GIT_EDITOR", "true")]).unwrap();
+    fn run_git_action_sets_the_variable_for_a_local_cwd() {
+        let out = run_git_action(".", &["var", "GIT_EDITOR"], &[("GIT_EDITOR", "true")], None, &OpControl::default()).unwrap();
         assert_eq!(out.code, 0, "{}", out.stderr);
         assert_eq!(out.stdout_str().trim(), "true");
+    }
+
+    #[test]
+    fn read_lines_breaks_on_cr_and_lf_and_returns_every_byte() {
+        let mut lines = Vec::new();
+        let all = read_lines(&mut &b"50%\r100%\ndone\n\nlast"[..], &mut |l| lines.push(l));
+        assert_eq!(lines, ["50%", "100%", "done", "last"]);
+        assert_eq!(all, b"50%\r100%\ndone\n\nlast");
+    }
+
+    /// A temp repo whose pre-commit hook starts a `sleep` it waits on,
+    /// records whether git held `index.lock` while it ran, writes the
+    /// sleep's pid, and says two lines on stderr first. `hooksPath` is
+    /// set outright, so a global one on this machine cannot skip it.
+    ///
+    /// Committed with COMMIT_ALL, which holds `index.lock` through the
+    /// hooks -- as merge, cherry-pick and the checkouts do. A commit of
+    /// the index as it stands releases the lock before its hooks when the
+    /// refresh changed nothing.
+    #[cfg(unix)]
+    fn repo_with_a_slow_pre_commit_hook() -> tempfile::TempDir {
+        use crate::git::commands::testutil::{git, temp_repo};
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_repo();
+        let cwd = dir.path().to_str().unwrap();
+        let hooks = dir.path().join("hooks");
+        std::fs::create_dir(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\n\
+             echo 'checking one' >&2\n\
+             echo 'checking two' >&2\n\
+             test -e .git/index.lock && touch lock-was-held\n\
+             sleep 30 &\n\
+             echo $! > sleep.pid\n\
+             wait\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(cwd, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
+        std::fs::write(dir.path().join("f.txt"), "changed\n").unwrap();
+        dir
+    }
+
+    const COMMIT_ALL: &[&str] = &["commit", "-a", "-F", "-"];
+
+    /// The hook's `sleep`, once it has written its pid.
+    #[cfg(unix)]
+    fn hook_sleep_pid(dir: &tempfile::TempDir) -> libc::pid_t {
+        let path = dir.path().join("sleep.pid");
+        let started = Instant::now();
+        loop {
+            if let Some(pid) = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse().ok()) {
+                return pid;
+            }
+            assert!(started.elapsed() < Duration::from_secs(10), "the hook never started its sleep");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Whether `pid` is gone. It is not ours to reap -- orphaned, it
+    /// belongs to init/launchd -- so this waits a moment for that.
+    #[cfg(unix)]
+    fn gone(pid: libc::pid_t) -> bool {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(3) {
+            // SAFETY: kill(2) with signal 0 only checks the pid.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    /// The card's case: a commit whose hook outlives the deadline. The
+    /// action fails, and it fails CLEAN -- the hook's own child is gone
+    /// rather than orphaned, and `index.lock`, which git held for the
+    /// whole hook, is gone too, so the next git can use the repository.
+    /// A SIGKILL to git alone left both behind.
+    #[cfg(unix)]
+    #[test]
+    fn an_action_past_its_deadline_is_stopped_with_its_hook_and_leaves_no_index_lock() {
+        let dir = repo_with_a_slow_pre_commit_hook();
+        let cwd = dir.path().to_str().unwrap();
+        // Long enough for the hook to be well under way however loaded
+        // the machine is: a stop before it wrote its pid proves nothing.
+        let started = Instant::now();
+        let err = run_git_action_within(cwd, COMMIT_ALL, &[], Some(b"slow"), &OpControl::default(), Duration::from_secs(2))
+            .unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+        let sleep = hook_sleep_pid(&dir);
+        assert!(gone(sleep), "the hook's sleep ({sleep}) outlived the stop");
+        assert!(dir.path().join("lock-was-held").exists(), "git never held index.lock, so this proves nothing");
+        assert!(!dir.path().join(".git/index.lock").exists(), "index.lock left behind");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cancelled_action_stops_with_its_hook_says_cancelled_and_streams_until_then() {
+        let dir = repo_with_a_slow_pre_commit_hook();
+        let cwd = dir.path().to_str().unwrap().to_string();
+        let lines = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen = lines.clone();
+        let control = OpControl {
+            cancel: CancelFlag::default(),
+            on_line: Some(Arc::new(move |l| seen.lock().unwrap().push(l))),
+        };
+        let cancel = control.cancel.clone();
+        let hook_dir = dir.path().to_path_buf();
+        let canceller = std::thread::spawn(move || {
+            // Once the hook is under way, not before.
+            while !hook_dir.join("sleep.pid").exists() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            cancel.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let err = run_git_action(&cwd, COMMIT_ALL, &[], Some(b"slow"), &control).unwrap_err();
+        canceller.join().unwrap();
+        assert_eq!(err, "cancelled");
+        assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+        assert!(gone(hook_sleep_pid(&dir)), "the hook's sleep outlived the cancel");
+        assert!(dir.path().join("lock-was-held").exists(), "git never held index.lock, so this proves nothing");
+        assert!(!dir.path().join(".git/index.lock").exists(), "index.lock left behind");
+        let lines = lines.lock().unwrap();
+        assert!(lines.iter().any(|l| l == "checking one"), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "checking two"), "{lines:?}");
     }
 
     /// A megabyte through a 100-byte cap: 101 bytes come back, and git
@@ -457,7 +717,7 @@ mod tests {
             cwd,
             &["clone", "--progress", "/definitely/missing/repo", "x"],
             &mut |l| lines.push(l),
-            &mut |_| {},
+            &AtomicBool::new(false),
         )
         .unwrap_err();
         assert!(!lines.is_empty());
@@ -465,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_can_be_cancelled_by_taking_the_child() {
+    fn streaming_can_be_cancelled_by_its_flag() {
         // The `ext::` transport makes git spawn our sleeper script as the
         // remote and wait on it — a hang we can cancel. (`ext::` splits its
         // command on whitespace, hence a script rather than `sh -c '…'`.)
@@ -480,28 +740,18 @@ mod tests {
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let remote = format!("ext::{} %S", script.display());
-        let slot: Arc<Mutex<Option<SharedChild>>> = Arc::new(Mutex::new(None));
-        let slot2 = slot.clone();
+        let cancel = CancelFlag::default();
+        let flag = cancel.clone();
         let canceller = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(400));
-            loop {
-                let registered = slot2.lock().unwrap().clone();
-                if let Some(child) = registered {
-                    if let Some(mut c) = child.lock().unwrap().take() {
-                        let _ = c.kill();
-                        let _ = c.wait();
-                    }
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
+            flag.store(true, Ordering::Relaxed);
         });
         let started = Instant::now();
         let err = run_git_streaming(
             cwd,
             &["-c", "protocol.ext.allow=always", "fetch", "--progress", &remote],
             &mut |_| {},
-            &mut |child| *slot.lock().unwrap() = Some(child),
+            &cancel,
         )
         .unwrap_err();
         canceller.join().unwrap();

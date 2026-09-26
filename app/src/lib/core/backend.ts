@@ -1295,8 +1295,13 @@ export function gitDiscardFiles(cwd: string, tracked: string[], untracked: strin
   return invoke("git_discard_files", { cwd, tracked, untracked });
 }
 
-export function gitCommit(cwd: string, message: string, amend: boolean): Promise<void> {
-  return invoke("git_commit", { cwd, message, amend });
+/// `opId` runs it as an op: `gitCancelOp(opId)` stops it, and its stderr
+/// -- where git sends a hook's output -- arrives as `git-op-progress`
+/// lines. Commit, merge, revert, cherry-pick, `--continue` and the
+/// checkouts all take one, since all of them run hooks or sign. Without
+/// one it runs silent and uncancellable, as the rail's branch switch does.
+export function gitCommit(cwd: string, message: string, amend: boolean, opId: string | null = null): Promise<void> {
+  return invoke("git_commit", { cwd, message, amend, opId });
 }
 
 export function gitInit(cwd: string): Promise<void> {
@@ -1352,12 +1357,19 @@ export function gitCancelOp(opId: string): Promise<boolean> {
   return invoke("git_cancel_op", { opId });
 }
 
-export function gitCheckout(cwd: string, name: string, trackRemote: string | null): Promise<void> {
-  return invoke("git_checkout", { cwd, name, trackRemote });
+/// `opId`: see `gitCommit`.
+export function gitCheckout(cwd: string, name: string, trackRemote: string | null, opId: string | null = null): Promise<void> {
+  return invoke("git_checkout", { cwd, name, trackRemote, opId });
 }
 
-export function gitCreateBranch(cwd: string, name: string, from: string | null, checkout: boolean): Promise<void> {
-  return invoke("git_create_branch", { cwd, name, from, checkout });
+export function gitCreateBranch(
+  cwd: string,
+  name: string,
+  from: string | null,
+  checkout: boolean,
+  opId: string | null = null
+): Promise<void> {
+  return invoke("git_create_branch", { cwd, name, from, checkout, opId });
 }
 
 export function gitDeleteBranch(cwd: string, name: string, force: boolean): Promise<void> {
@@ -1371,16 +1383,16 @@ export function gitMergedBranches(cwd: string, base: string): Promise<string[]> 
   return invoke("git_merged_branches", { cwd, base });
 }
 
-export function gitMerge(cwd: string, branch: string): Promise<void> {
-  return invoke("git_merge", { cwd, branch });
+export function gitMerge(cwd: string, branch: string, opId: string | null = null): Promise<void> {
+  return invoke("git_merge", { cwd, branch, opId });
 }
 
 export function gitAbortInProgress(cwd: string, kind: InProgressKind): Promise<void> {
   return invoke("git_abort_in_progress", { cwd, kind });
 }
 
-export function gitContinueRebase(cwd: string): Promise<void> {
-  return invoke("git_continue_rebase", { cwd });
+export function gitContinueRebase(cwd: string, opId: string | null = null): Promise<void> {
+  return invoke("git_continue_rebase", { cwd, opId });
 }
 
 export function gitAddRemote(cwd: string, name: string, url: string): Promise<void> {
@@ -1443,24 +1455,24 @@ export function gitCommitDetail(cwd: string, sha: string): Promise<CommitDetail>
   return invoke("git_commit_detail", { cwd, sha });
 }
 
-export function gitCheckoutCommit(cwd: string, sha: string): Promise<void> {
-  return invoke("git_checkout_commit", { cwd, sha });
+export function gitCheckoutCommit(cwd: string, sha: string, opId: string | null = null): Promise<void> {
+  return invoke("git_checkout_commit", { cwd, sha, opId });
 }
 
-export function gitCherryPick(cwd: string, sha: string): Promise<void> {
-  return invoke("git_cherry_pick", { cwd, sha });
+export function gitCherryPick(cwd: string, sha: string, opId: string | null = null): Promise<void> {
+  return invoke("git_cherry_pick", { cwd, sha, opId });
 }
 
-export function gitRevert(cwd: string, sha: string): Promise<void> {
-  return invoke("git_revert", { cwd, sha });
+export function gitRevert(cwd: string, sha: string, opId: string | null = null): Promise<void> {
+  return invoke("git_revert", { cwd, sha, opId });
 }
 
 export function gitReset(cwd: string, sha: string, mode: ResetMode): Promise<void> {
   return invoke("git_reset", { cwd, sha, mode });
 }
 
-export function gitContinueInProgress(cwd: string, kind: InProgressKind): Promise<void> {
-  return invoke("git_continue_in_progress", { cwd, kind });
+export function gitContinueInProgress(cwd: string, kind: InProgressKind, opId: string | null = null): Promise<void> {
+  return invoke("git_continue_in_progress", { cwd, kind, opId });
 }
 
 // --- Git tab: conflict resolution -------------------------------------------

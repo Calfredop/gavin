@@ -572,8 +572,9 @@ pub fn run_git_over_link(
     )
 }
 
-/// `run_git_env`'s router arm (v42) -- the same shape as
-/// `run_git_over_link`, for the two callers that need `GIT_EDITOR`.
+/// The router arm (v42) for a `run_git_action` with an environment -- the
+/// same shape as `run_git_over_link`, for the two callers that need
+/// `GIT_EDITOR`: cherry-pick and `--continue`.
 pub fn run_git_env_over_link(
     cwd: &str,
     args: &[&str],

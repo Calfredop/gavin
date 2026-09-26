@@ -266,6 +266,7 @@ mod tests {
     use super::*;
     use crate::git::commands::testutil::*;
     use crate::git::commands::{checkout, create_branch, status};
+    use crate::git::run::OpControl;
 
     fn commit_all(dir: &tempfile::TempDir, msg: &str) {
         git(cwd(dir), &["add", "-A"]);
@@ -275,10 +276,10 @@ mod tests {
     /// main and `feature` both edit line 2 of f.txt; merging conflicts.
     fn text_conflict() -> tempfile::TempDir {
         let dir = temp_repo();
-        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        create_branch(cwd(&dir), "feature", None, true, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nFEATURE\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "feature edit");
-        checkout(cwd(&dir), "main", None).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nMAIN\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "main edit");
         let _ = run_git(cwd(&dir), &["merge", "feature"], None).unwrap();
@@ -340,13 +341,13 @@ mod tests {
     #[test]
     fn rebase_labels_are_swapped_and_explicit() {
         let dir = temp_repo();
-        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        create_branch(cwd(&dir), "feature", None, true, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nFEATURE\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "feature edit");
-        checkout(cwd(&dir), "main", None).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nMAIN\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "main edit");
-        checkout(cwd(&dir), "feature", None).unwrap();
+        checkout(cwd(&dir), "feature", None, &OpControl::default()).unwrap();
         let _ = run_git(cwd(&dir), &["rebase", "main"], None).unwrap();
         let c = conflict_info(cwd(&dir), "f.txt").unwrap();
         assert_eq!(c.labels.operation, "rebase");
@@ -359,11 +360,11 @@ mod tests {
     #[test]
     fn cherry_pick_label_names_the_commit() {
         let dir = temp_repo();
-        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        create_branch(cwd(&dir), "feature", None, true, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nFEATURE\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "feature edit");
         let sha = git(cwd(&dir), &["rev-parse", "--short", "HEAD"]).trim().to_string();
-        checkout(cwd(&dir), "main", None).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nMAIN\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "main edit");
         let _ = run_git(cwd(&dir), &["cherry-pick", &sha], None).unwrap();
@@ -376,10 +377,10 @@ mod tests {
     fn delete_modify_in_both_directions_and_keep_or_delete() {
         // They deleted, we modified.
         let dir = temp_repo();
-        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        create_branch(cwd(&dir), "feature", None, true, &OpControl::default()).unwrap();
         git(cwd(&dir), &["rm", "-q", "f.txt"]);
         commit_all(&dir, "feature deletes");
-        checkout(cwd(&dir), "main", None).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nMAIN\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "main edits");
         let _ = run_git(cwd(&dir), &["merge", "feature"], None).unwrap();
@@ -392,10 +393,10 @@ mod tests {
 
         // We deleted, they modified → delete it.
         let dir = temp_repo();
-        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        create_branch(cwd(&dir), "feature", None, true, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nFEATURE\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "feature edits");
-        checkout(cwd(&dir), "main", None).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         git(cwd(&dir), &["rm", "-q", "f.txt"]);
         commit_all(&dir, "main deletes");
         let _ = run_git(cwd(&dir), &["merge", "feature"], None).unwrap();
@@ -409,11 +410,11 @@ mod tests {
     #[test]
     fn added_by_both_binary_and_crlf_kinds() {
         let dir = temp_repo();
-        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        create_branch(cwd(&dir), "feature", None, true, &OpControl::default()).unwrap();
         write(&dir, "new.txt", "theirs\r\nline\r\n");
         std::fs::write(dir.path().join("img.bin"), b"\x00\x01THEIRS").unwrap();
         commit_all(&dir, "feature adds");
-        checkout(cwd(&dir), "main", None).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         write(&dir, "new.txt", "ours\r\nline\r\n");
         std::fs::write(dir.path().join("img.bin"), b"\x00\x01OURS").unwrap();
         commit_all(&dir, "main adds");

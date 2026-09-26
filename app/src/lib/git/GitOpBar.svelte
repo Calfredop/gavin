@@ -7,9 +7,25 @@
   let { workspaceId }: Props = $props();
 
   const op = $derived($gitStore[workspaceId]?.op ?? null);
+
+  // Shown once an op has run for REVEAL_MS. Commits and checkouts are ops
+  // too now, for the Cancel a slow hook needs, and most are over in a
+  // fraction of that: a bar that appears and vanishes within a frame or
+  // two is a layout jump with nothing to read. The toolbar disables
+  // itself through `locked` from the first moment either way. Keyed on
+  // the id alone, so a progress line does not restart the wait.
+  const REVEAL_MS = 300;
+  const opId = $derived(op?.id ?? null);
+  let revealedId = $state<string | null>(null);
+  $effect(() => {
+    const id = opId;
+    if (id === null) return;
+    const timer = setTimeout(() => (revealedId = id), REVEAL_MS);
+    return () => clearTimeout(timer);
+  });
 </script>
 
-{#if op}
+{#if op && revealedId === op.id}
   <div class="opbar" role="status" aria-live="polite">
     <span class="spinner" aria-hidden="true"></span>
     <span class="label">{op.label}…</span>

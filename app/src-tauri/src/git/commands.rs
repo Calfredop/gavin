@@ -2,10 +2,12 @@
 //! thin wrapper over a plain function so the temp-repo tests below call the
 //! real code path without a Tauri runtime.
 
+use crate::git::ops::{GitOps, RunningOp};
 use crate::git::parse::{parse_branches, parse_diff, parse_log, parse_name_status, parse_remotes, parse_stashes, parse_status, parse_worktree_list};
-use crate::git::run::{off_main_thread, ok, run_git, run_git_env, run_git_ro, run_git_ro_capped};
+use crate::git::run::{off_main_thread, ok, run_git, run_git_action, run_git_ro, run_git_ro_capped, OpControl};
 use crate::git::types::{Author, CommitDetail, FileDiff, LogPage, RefsSnapshot, RepoInfo, StatusResult, WorktreeInfo};
 use std::path::Path;
+use tauri::{AppHandle, State};
 
 /// Diffs larger than this are not rendered (spec §1: "Diff too large").
 pub const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
@@ -158,16 +160,16 @@ pub fn commit_detail(cwd: &str, sha: &str) -> Result<CommitDetail, String> {
     Ok(CommitDetail { body, files: parse_name_status(&files.stdout_str()) })
 }
 
-pub fn checkout_commit(cwd: &str, sha: &str) -> Result<(), String> {
-    ok(run_git(cwd, &["switch", "--detach", sha], None)?).map(|_| ())
+pub fn checkout_commit(cwd: &str, sha: &str, control: &OpControl) -> Result<(), String> {
+    ok(run_git_action(cwd, &["switch", "--detach", sha], &[], None, control)?).map(|_| ())
 }
 
-pub fn cherry_pick(cwd: &str, sha: &str) -> Result<(), String> {
-    ok(run_git_env(cwd, &["cherry-pick", sha], &[("GIT_EDITOR", "true")])?).map(|_| ())
+pub fn cherry_pick(cwd: &str, sha: &str, control: &OpControl) -> Result<(), String> {
+    ok(run_git_action(cwd, &["cherry-pick", sha], &[("GIT_EDITOR", "true")], None, control)?).map(|_| ())
 }
 
-pub fn revert(cwd: &str, sha: &str) -> Result<(), String> {
-    ok(run_git(cwd, &["revert", "--no-edit", sha], None)?).map(|_| ())
+pub fn revert(cwd: &str, sha: &str, control: &OpControl) -> Result<(), String> {
+    ok(run_git_action(cwd, &["revert", "--no-edit", sha], &[], None, control)?).map(|_| ())
 }
 
 pub fn reset(cwd: &str, sha: &str, mode: &str) -> Result<(), String> {
@@ -190,10 +192,11 @@ pub fn reset(cwd: &str, sha: &str, mode: &str) -> Result<(), String> {
 // So are the actions -- what the Git tab's buttons run. Each is its own
 // git plus the refresh after it, 0.7-1.3 s a click with no hooks at all,
 // and the ones that run hooks, sign, or check out through a filter wait
-// on whatever those do. Ordering is the caller's here too: `runWithReason`
-// holds `busy` for the whole action and `runBlocker` refuses a second
-// one, and the rail's branch switch runs inside its workspace's `ticking`
-// guard.
+// on whatever those do. Those take the op bar's `op_id` and run through
+// `run_git_action`: cancellable, with their stderr on the bar. Ordering
+// is the caller's here too: `runWithReason` holds `busy` for the whole
+// action and `runBlocker` refuses a second one, and the rail's branch
+// switch runs inside its workspace's `ticking` guard.
 
 #[tauri::command]
 pub async fn git_log(cwd: String, all: bool, skip: usize, limit: usize) -> Result<LogPage, String> {
@@ -206,18 +209,21 @@ pub async fn git_commit_detail(cwd: String, sha: String) -> Result<CommitDetail,
 }
 
 #[tauri::command]
-pub async fn git_checkout_commit(cwd: String, sha: String) -> Result<(), String> {
-    off_main_thread(move || checkout_commit(&cwd, &sha)).await
+pub async fn git_checkout_commit(cwd: String, sha: String, op_id: Option<String>, app: AppHandle, ops: State<'_, GitOps>) -> Result<(), String> {
+    let op = RunningOp::register(&ops, &app, op_id);
+    off_main_thread(move || checkout_commit(&cwd, &sha, &op.control)).await
 }
 
 #[tauri::command]
-pub async fn git_cherry_pick(cwd: String, sha: String) -> Result<(), String> {
-    off_main_thread(move || cherry_pick(&cwd, &sha)).await
+pub async fn git_cherry_pick(cwd: String, sha: String, op_id: Option<String>, app: AppHandle, ops: State<'_, GitOps>) -> Result<(), String> {
+    let op = RunningOp::register(&ops, &app, op_id);
+    off_main_thread(move || cherry_pick(&cwd, &sha, &op.control)).await
 }
 
 #[tauri::command]
-pub async fn git_revert(cwd: String, sha: String) -> Result<(), String> {
-    off_main_thread(move || revert(&cwd, &sha)).await
+pub async fn git_revert(cwd: String, sha: String, op_id: Option<String>, app: AppHandle, ops: State<'_, GitOps>) -> Result<(), String> {
+    let op = RunningOp::register(&ops, &app, op_id);
+    off_main_thread(move || revert(&cwd, &sha, &op.control)).await
 }
 
 #[tauri::command]
@@ -226,8 +232,9 @@ pub async fn git_reset(cwd: String, sha: String, mode: String) -> Result<(), Str
 }
 
 #[tauri::command]
-pub async fn git_continue_in_progress(cwd: String, kind: String) -> Result<(), String> {
-    off_main_thread(move || continue_in_progress(&cwd, &kind)).await
+pub async fn git_continue_in_progress(cwd: String, kind: String, op_id: Option<String>, app: AppHandle, ops: State<'_, GitOps>) -> Result<(), String> {
+    let op = RunningOp::register(&ops, &app, op_id);
+    off_main_thread(move || continue_in_progress(&cwd, &kind, &op.control)).await
 }
 
 // ---- SP3: worktrees ---------------------------------------------------------
@@ -416,12 +423,12 @@ pub fn discard_files(cwd: &str, tracked: &[String], untracked: &[String]) -> Res
     Ok(())
 }
 
-pub fn commit(cwd: &str, message: &str, amend: bool) -> Result<(), String> {
+pub fn commit(cwd: &str, message: &str, amend: bool, control: &OpControl) -> Result<(), String> {
     let mut args = vec!["commit", "-F", "-"];
     if amend {
         args.push("--amend");
     }
-    ok(run_git(cwd, &args, Some(message.as_bytes()))?).map(|_| ())
+    ok(run_git_action(cwd, &args, &[], Some(message.as_bytes()), control)?).map(|_| ())
 }
 
 pub fn init(cwd: &str) -> Result<(), String> {
@@ -437,24 +444,24 @@ fn local_branch_exists(cwd: &str, name: &str) -> Result<bool, String> {
 /// `switch <name>`; with `track_remote` and no local branch of that name,
 /// `switch -c <name> --track <remote>/<name>`. A dirty tree that would be
 /// overwritten is git's refusal, surfaced verbatim (G14).
-pub fn checkout(cwd: &str, name: &str, track_remote: Option<&str>) -> Result<(), String> {
+pub fn checkout(cwd: &str, name: &str, track_remote: Option<&str>, control: &OpControl) -> Result<(), String> {
     match track_remote {
         Some(remote) if !local_branch_exists(cwd, name)? => {
             let upstream = format!("{remote}/{name}");
-            ok(run_git(cwd, &["switch", "-c", name, "--track", &upstream], None)?).map(|_| ())
+            ok(run_git_action(cwd, &["switch", "-c", name, "--track", &upstream], &[], None, control)?).map(|_| ())
         }
-        _ => ok(run_git(cwd, &["switch", "--", name], None)?).map(|_| ()),
+        _ => ok(run_git_action(cwd, &["switch", "--", name], &[], None, control)?).map(|_| ()),
     }
 }
 
-pub fn create_branch(cwd: &str, name: &str, from: Option<&str>, checkout_after: bool) -> Result<(), String> {
+pub fn create_branch(cwd: &str, name: &str, from: Option<&str>, checkout_after: bool, control: &OpControl) -> Result<(), String> {
     let mut args = vec!["branch", "--", name];
     if let Some(f) = from {
         args.push(f);
     }
     ok(run_git(cwd, &args, None)?)?;
     if checkout_after {
-        checkout(cwd, name, None)?;
+        checkout(cwd, name, None, control)?;
     }
     Ok(())
 }
@@ -486,8 +493,8 @@ pub fn merged_branches(cwd: &str, base: &str) -> Result<Vec<String>, String> {
 
 /// `merge --no-edit <branch>`; a conflict exits non-zero with MERGE_HEAD
 /// left behind, which `repo_info` reports as `in_progress: "merge"`.
-pub fn merge(cwd: &str, branch: &str) -> Result<(), String> {
-    ok(run_git(cwd, &["merge", "--no-edit", "--", branch], None)?).map(|_| ())
+pub fn merge(cwd: &str, branch: &str, control: &OpControl) -> Result<(), String> {
+    ok(run_git_action(cwd, &["merge", "--no-edit", "--", branch], &[], None, control)?).map(|_| ())
 }
 
 pub fn abort_in_progress(cwd: &str, kind: &str) -> Result<(), String> {
@@ -502,16 +509,16 @@ pub fn abort_in_progress(cwd: &str, kind: &str) -> Result<(), String> {
 }
 
 /// `<kind> --continue` with GIT_EDITOR=true so it never opens an editor.
-pub fn continue_in_progress(cwd: &str, kind: &str) -> Result<(), String> {
+pub fn continue_in_progress(cwd: &str, kind: &str, control: &OpControl) -> Result<(), String> {
     let verb = match kind {
         "rebase" | "cherry-pick" | "revert" => kind,
         other => return Err(format!("cannot continue a {other}")),
     };
-    ok(run_git_env(cwd, &[verb, "--continue"], &[("GIT_EDITOR", "true")])?).map(|_| ())
+    ok(run_git_action(cwd, &[verb, "--continue"], &[("GIT_EDITOR", "true")], None, control)?).map(|_| ())
 }
 
-pub fn continue_rebase(cwd: &str) -> Result<(), String> {
-    continue_in_progress(cwd, "rebase")
+pub fn continue_rebase(cwd: &str, control: &OpControl) -> Result<(), String> {
+    continue_in_progress(cwd, "rebase", control)
 }
 
 pub fn add_remote(cwd: &str, name: &str, url: &str) -> Result<(), String> {
@@ -563,13 +570,15 @@ pub fn stash_files(cwd: &str, index: u32) -> Result<Vec<crate::git::types::FileE
 }
 
 #[tauri::command]
-pub async fn git_checkout(cwd: String, name: String, track_remote: Option<String>) -> Result<(), String> {
-    off_main_thread(move || checkout(&cwd, &name, track_remote.as_deref())).await
+pub async fn git_checkout(cwd: String, name: String, track_remote: Option<String>, op_id: Option<String>, app: AppHandle, ops: State<'_, GitOps>) -> Result<(), String> {
+    let op = RunningOp::register(&ops, &app, op_id);
+    off_main_thread(move || checkout(&cwd, &name, track_remote.as_deref(), &op.control)).await
 }
 
 #[tauri::command]
-pub async fn git_create_branch(cwd: String, name: String, from: Option<String>, checkout: bool) -> Result<(), String> {
-    off_main_thread(move || create_branch(&cwd, &name, from.as_deref(), checkout)).await
+pub async fn git_create_branch(cwd: String, name: String, from: Option<String>, checkout: bool, op_id: Option<String>, app: AppHandle, ops: State<'_, GitOps>) -> Result<(), String> {
+    let op = RunningOp::register(&ops, &app, op_id);
+    off_main_thread(move || create_branch(&cwd, &name, from.as_deref(), checkout, &op.control)).await
 }
 
 #[tauri::command]
@@ -583,8 +592,9 @@ pub fn git_merged_branches(cwd: String, base: String) -> Result<Vec<String>, Str
 }
 
 #[tauri::command]
-pub async fn git_merge(cwd: String, branch: String) -> Result<(), String> {
-    off_main_thread(move || merge(&cwd, &branch)).await
+pub async fn git_merge(cwd: String, branch: String, op_id: Option<String>, app: AppHandle, ops: State<'_, GitOps>) -> Result<(), String> {
+    let op = RunningOp::register(&ops, &app, op_id);
+    off_main_thread(move || merge(&cwd, &branch, &op.control)).await
 }
 
 #[tauri::command]
@@ -593,8 +603,9 @@ pub async fn git_abort_in_progress(cwd: String, kind: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub async fn git_continue_rebase(cwd: String) -> Result<(), String> {
-    off_main_thread(move || continue_rebase(&cwd)).await
+pub async fn git_continue_rebase(cwd: String, op_id: Option<String>, app: AppHandle, ops: State<'_, GitOps>) -> Result<(), String> {
+    let op = RunningOp::register(&ops, &app, op_id);
+    off_main_thread(move || continue_rebase(&cwd, &op.control)).await
 }
 
 #[tauri::command]
@@ -663,8 +674,9 @@ pub async fn git_discard_files(cwd: String, tracked: Vec<String>, untracked: Vec
 }
 
 #[tauri::command]
-pub async fn git_commit(cwd: String, message: String, amend: bool) -> Result<(), String> {
-    off_main_thread(move || commit(&cwd, &message, amend)).await
+pub async fn git_commit(cwd: String, message: String, amend: bool, op_id: Option<String>, app: AppHandle, ops: State<'_, GitOps>) -> Result<(), String> {
+    let op = RunningOp::register(&ops, &app, op_id);
+    off_main_thread(move || commit(&cwd, &message, amend, &op.control)).await
 }
 
 #[tauri::command]
@@ -1005,11 +1017,11 @@ mod write_tests {
         let dir = temp_repo();
         write(&dir, "f.txt", "changed\n");
         stage_all(cwd(&dir)).unwrap();
-        commit(cwd(&dir), "feat: change\n\nbody line", false).unwrap();
+        commit(cwd(&dir), "feat: change\n\nbody line", false, &OpControl::default()).unwrap();
         assert_eq!(repo_info(cwd(&dir)).unwrap().head_message.as_deref(), Some("feat: change\n\nbody line"));
         assert_eq!(git(cwd(&dir), &["rev-list", "--count", "HEAD"]).trim(), "2");
 
-        commit(cwd(&dir), "feat: amended", true).unwrap();
+        commit(cwd(&dir), "feat: amended", true, &OpControl::default()).unwrap();
         assert_eq!(repo_info(cwd(&dir)).unwrap().head_message.as_deref(), Some("feat: amended"));
         assert_eq!(git(cwd(&dir), &["rev-list", "--count", "HEAD"]).trim(), "2");
     }
@@ -1017,7 +1029,7 @@ mod write_tests {
     #[test]
     fn commit_with_nothing_staged_surfaces_gits_message() {
         let dir = temp_repo();
-        let err = commit(cwd(&dir), "empty", false).unwrap_err();
+        let err = commit(cwd(&dir), "empty", false, &OpControl::default()).unwrap_err();
         assert!(!err.is_empty());
     }
 
@@ -1038,12 +1050,12 @@ mod ref_tests {
     #[test]
     fn create_checkout_and_delete_branches() {
         let dir = temp_repo();
-        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        create_branch(cwd(&dir), "feature", None, true, &OpControl::default()).unwrap();
         assert_eq!(repo_info(cwd(&dir)).unwrap().branch.as_deref(), Some("feature"));
         write(&dir, "x", "x\n");
         stage_all(cwd(&dir)).unwrap();
-        commit(cwd(&dir), "x", false).unwrap();
-        checkout(cwd(&dir), "main", None).unwrap();
+        commit(cwd(&dir), "x", false, &OpControl::default()).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         let err = delete_branch(cwd(&dir), "feature", false).unwrap_err();
         assert!(err.contains("not fully merged"), "{err}");
         delete_branch(cwd(&dir), "feature", true).unwrap();
@@ -1060,7 +1072,7 @@ mod ref_tests {
         git(cwd(&clone), &["push", "-q", "-u", "origin", "topic"]);
         git(cwd(&clone), &["switch", "-q", "main"]);
         git(cwd(&clone), &["branch", "-q", "-D", "topic"]);
-        checkout(cwd(&clone), "topic", Some("origin")).unwrap();
+        checkout(cwd(&clone), "topic", Some("origin"), &OpControl::default()).unwrap();
         let r = refs(cwd(&clone)).unwrap();
         assert_eq!(r.branches.iter().find(|b| b.name == "topic").unwrap().upstream.as_deref(), Some("origin/topic"));
         assert_eq!(r.head_branch.as_deref(), Some("topic"));
@@ -1069,26 +1081,26 @@ mod ref_tests {
     #[test]
     fn merge_conflict_sets_in_progress_and_abort_clears_it() {
         let dir = temp_repo();
-        create_branch(cwd(&dir), "b", None, true).unwrap();
+        create_branch(cwd(&dir), "b", None, true, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "B\n");
         stage_all(cwd(&dir)).unwrap();
-        commit(cwd(&dir), "b", false).unwrap();
-        checkout(cwd(&dir), "main", None).unwrap();
+        commit(cwd(&dir), "b", false, &OpControl::default()).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "A\n");
         stage_all(cwd(&dir)).unwrap();
-        commit(cwd(&dir), "a", false).unwrap();
-        assert!(merge(cwd(&dir), "b").is_err());
+        commit(cwd(&dir), "a", false, &OpControl::default()).unwrap();
+        assert!(merge(cwd(&dir), "b", &OpControl::default()).is_err());
         assert_eq!(repo_info(cwd(&dir)).unwrap().in_progress.as_deref(), Some("merge"));
         assert_eq!(status(cwd(&dir)).unwrap().unstaged[0].status, "U");
         abort_in_progress(cwd(&dir), "merge").unwrap();
         assert_eq!(repo_info(cwd(&dir)).unwrap().in_progress, None);
         // A clean merge works.
-        create_branch(cwd(&dir), "c", None, true).unwrap();
+        create_branch(cwd(&dir), "c", None, true, &OpControl::default()).unwrap();
         write(&dir, "c", "c\n");
         stage_all(cwd(&dir)).unwrap();
-        commit(cwd(&dir), "c", false).unwrap();
-        checkout(cwd(&dir), "main", None).unwrap();
-        merge(cwd(&dir), "c").unwrap();
+        commit(cwd(&dir), "c", false, &OpControl::default()).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
+        merge(cwd(&dir), "c", &OpControl::default()).unwrap();
         assert!(dir.path().join("c").exists());
     }
 
@@ -1126,16 +1138,16 @@ mod ref_tests {
     #[test]
     fn log_pages_over_all_branches_with_decorations() {
         let dir = temp_repo();
-        create_branch(cwd(&dir), "side", None, true).unwrap();
+        create_branch(cwd(&dir), "side", None, true, &OpControl::default()).unwrap();
         write(&dir, "s.txt", "s\n");
         stage_all(cwd(&dir)).unwrap();
-        commit(cwd(&dir), "side work", false).unwrap();
-        checkout(cwd(&dir), "main", None).unwrap();
+        commit(cwd(&dir), "side work", false, &OpControl::default()).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         write(&dir, "m.txt", "m\n");
         stage_all(cwd(&dir)).unwrap();
-        commit(cwd(&dir), "main work", false).unwrap();
+        commit(cwd(&dir), "main work", false, &OpControl::default()).unwrap();
         git(cwd(&dir), &["tag", "v1"]);
-        merge(cwd(&dir), "side").unwrap();
+        merge(cwd(&dir), "side", &OpControl::default()).unwrap();
 
         let page = log(cwd(&dir), true, 0, LOG_PAGE).unwrap();
         assert!(!page.has_more);
@@ -1173,23 +1185,23 @@ mod ref_tests {
     #[test]
     fn cherry_pick_conflict_revert_and_reset_modes() {
         let dir = temp_repo();
-        create_branch(cwd(&dir), "b", None, true).unwrap();
+        create_branch(cwd(&dir), "b", None, true, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "B\n");
         stage_all(cwd(&dir)).unwrap();
-        commit(cwd(&dir), "b", false).unwrap();
+        commit(cwd(&dir), "b", false, &OpControl::default()).unwrap();
         let b_sha = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
-        checkout(cwd(&dir), "main", None).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "A\n");
         stage_all(cwd(&dir)).unwrap();
-        commit(cwd(&dir), "a", false).unwrap();
+        commit(cwd(&dir), "a", false, &OpControl::default()).unwrap();
         let a_sha = git(cwd(&dir), &["rev-parse", "HEAD"]).trim().to_string();
 
-        assert!(cherry_pick(cwd(&dir), &b_sha).is_err());
+        assert!(cherry_pick(cwd(&dir), &b_sha, &OpControl::default()).is_err());
         assert_eq!(repo_info(cwd(&dir)).unwrap().in_progress.as_deref(), Some("cherry-pick"));
         abort_in_progress(cwd(&dir), "cherry-pick").unwrap();
         assert_eq!(repo_info(cwd(&dir)).unwrap().in_progress, None);
 
-        revert(cwd(&dir), &a_sha).unwrap();
+        revert(cwd(&dir), &a_sha, &OpControl::default()).unwrap();
         assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "alpha\nbeta\ngamma\ndelta\nepsilon\n");
         assert_eq!(log(cwd(&dir), false, 0, 10).unwrap().commits.len(), 3);
 
@@ -1201,7 +1213,7 @@ mod ref_tests {
         assert!(s.staged.is_empty() && s.unstaged.len() == 1);
         reset(cwd(&dir), &a_sha, "hard").unwrap();
         assert_eq!(status(cwd(&dir)).unwrap(), StatusResult::default());
-        checkout_commit(cwd(&dir), &b_sha).unwrap();
+        checkout_commit(cwd(&dir), &b_sha, &OpControl::default()).unwrap();
         assert!(repo_info(cwd(&dir)).unwrap().detached);
     }
 
@@ -1241,12 +1253,12 @@ mod ref_tests {
         let dir = temp_repo();
         let base = repo_info(cwd(&dir)).unwrap().branch.unwrap();
 
-        create_branch(cwd(&dir), "landed", None, false).unwrap();
-        create_branch(cwd(&dir), "ahead", None, true).unwrap();
+        create_branch(cwd(&dir), "landed", None, false, &OpControl::default()).unwrap();
+        create_branch(cwd(&dir), "ahead", None, true, &OpControl::default()).unwrap();
         std::fs::write(dir.path().join("new.txt"), "x").unwrap();
         stage_files(cwd(&dir), &["new.txt".into()]).unwrap();
-        commit(cwd(&dir), "work", false).unwrap();
-        checkout(cwd(&dir), &base, None).unwrap();
+        commit(cwd(&dir), "work", false, &OpControl::default()).unwrap();
+        checkout(cwd(&dir), &base, None, &OpControl::default()).unwrap();
 
         let name = dir.path().file_name().unwrap().to_string_lossy().to_string();
         let wt = dir.path().parent().unwrap().join(format!("{name}-landed"));

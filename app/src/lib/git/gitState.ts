@@ -85,7 +85,8 @@ export interface GitViewState {
   navSelection: NavSelection;
   /// Files of the selected stash (nav selection), read-only.
   stashFiles: FileEntry[] | null;
-  /// A running long op (fetch/pull/push) with its latest progress line.
+  /// A running long op with its latest progress line: fetch/pull/push, or
+  /// an action that runs hooks (`runAction`), which holds `busy` as well.
   op: { id: string; label: string; line: string | null } | null;
   // ---- SP4 ----
   log: { commits: CommitInfo[]; hasMore: boolean; all: boolean } | null;
@@ -458,10 +459,36 @@ export async function run(workspaceId: string, label: string, op: (cwd: string) 
 /// dialog opened from the orchestration hub or from a card is not
 /// looking at the Git tab's error banner, so a bare `false` told it --
 /// and its human -- nothing at all: the button simply did nothing.
-export async function runWithReason(
+export function runWithReason(
   workspaceId: string,
   label: string,
   op: (cwd: string) => Promise<void>
+): Promise<RunResult> {
+  return mutate(workspaceId, label, op, null);
+}
+
+/// A mutation that runs the repository's hooks, signs, or checks files
+/// out through a filter: commit, merge, revert, cherry-pick, `--continue`
+/// and the checkouts. It takes as long as those do -- a pre-commit suite,
+/// a pinentry or Touch ID prompt, an LFS download -- so it is an op as
+/// well as `busy`: the op bar shows it, with the hook's output as its
+/// line and a Cancel that reaches the command through `opId`.
+export function runAction(
+  workspaceId: string,
+  label: string,
+  op: (cwd: string, opId: string) => Promise<void>
+): Promise<RunResult> {
+  const opId = crypto.randomUUID();
+  return mutate(workspaceId, label, (cwd) => op(cwd, opId), opId);
+}
+
+/// `runWithReason` and `runAction`: an `opId` makes the mutation an op
+/// too, for the length of the command.
+async function mutate(
+  workspaceId: string,
+  label: string,
+  op: (cwd: string) => Promise<void>,
+  opId: string | null
 ): Promise<RunResult> {
   const s = current(workspaceId);
   const blocked = runBlocker(s);
@@ -475,18 +502,28 @@ export async function runWithReason(
     noteError(workspaceId, reason);
     return { ok: false, error: reason };
   }
-  update(workspaceId, (st) => ({ ...st, busy: label, error: null }));
+  // Busy either way: every surface that disables on `busy` alone must
+  // stay disabled through an action too.
+  update(workspaceId, (st) => ({ ...st, busy: label, error: null, op: opId ? { id: opId, label, line: null } : st.op }));
+  const unlisten = opId ? await followProgress(workspaceId, opId) : null;
   let failure: string | null = null;
   try {
     await op(s.cwd);
   } catch (e) {
-    failure = `${label} failed: ${errorText(e)}`;
+    const text = errorText(e);
+    failure = opId && text === "cancelled" ? `${label} cancelled` : `${label} failed: ${text}`;
     update(workspaceId, (st) => ({ ...st, error: failure }));
   }
+  unlisten?.();
   // A successful mutation invalidates any line selection (spec §3: the diff
   // is refetched and the selection cleared); a failed one keeps it so the
   // user can retry.
-  update(workspaceId, (st) => ({ ...st, busy: null, lineSelection: failure ? st.lineSelection : new Set() }));
+  update(workspaceId, (st) => ({
+    ...st,
+    busy: null,
+    op: opId && st.op?.id === opId ? null : st.op,
+    lineSelection: failure ? st.lineSelection : new Set(),
+  }));
   await refresh(workspaceId);
   return failure === null ? { ok: true, error: null } : { ok: false, error: failure };
 }
@@ -539,7 +576,7 @@ export async function commit(workspaceId: string): Promise<boolean> {
   if (!s || !canCommit(s)) return false;
   const message = joinMessage(s.commit);
   const amend = s.commit.amend;
-  const done = await run(workspaceId, "Commit", (cwd) => backend.gitCommit(cwd, message, amend));
+  const { ok: done } = await runAction(workspaceId, "Commit", (cwd, opId) => backend.gitCommit(cwd, message, amend, opId));
   if (done) {
     update(workspaceId, (st) => ({ ...st, commit: { summary: "", description: "", amend: false }, preAmend: null }));
   }
@@ -1054,10 +1091,7 @@ export async function startOp(
   if (!s || s.busy || s.op) return false;
   const id = crypto.randomUUID();
   update(workspaceId, (st) => ({ ...st, op: { id, label, line: null }, error: null }));
-  const unlisten = await listen<{ opId: string; line: string }>("git-op-progress", (event) => {
-    if (event.payload.opId !== id) return;
-    update(workspaceId, (st) => (st.op?.id === id ? { ...st, op: { ...st.op, line: event.payload.line } } : st));
-  });
+  const unlisten = await followProgress(workspaceId, id);
   let okResult = true;
   try {
     await invoke(s.cwd, id);
@@ -1072,6 +1106,15 @@ export async function startOp(
   return okResult;
 }
 
+/// Lands op `id`'s `git-op-progress` lines in the view's `op.line`.
+function followProgress(workspaceId: string, id: string): Promise<() => void> {
+  return listen<{ opId: string; line: string }>("git-op-progress", (event) => {
+    if (event.payload.opId !== id) return;
+    update(workspaceId, (st) => (st.op?.id === id ? { ...st, op: { ...st.op, line: event.payload.line } } : st));
+  });
+}
+
+/// Stops the running op: fetch, pull, push, or an action (`runAction`).
 export async function cancelOp(workspaceId: string): Promise<void> {
   const id = current(workspaceId)?.op?.id;
   if (id) await backend.gitCancelOp(id).catch(() => false);
@@ -1098,31 +1141,31 @@ export function push(workspaceId: string): Promise<boolean> {
   return startOp(workspaceId, label, (cwd, id) => backend.gitPush(cwd, remote, id));
 }
 
-export function checkout(workspaceId: string, name: string, trackRemote: string | null): Promise<boolean> {
-  return run(workspaceId, `Checkout ${name}`, (cwd) => backend.gitCheckout(cwd, name, trackRemote));
+export async function checkout(workspaceId: string, name: string, trackRemote: string | null): Promise<boolean> {
+  return (await runAction(workspaceId, `Checkout ${name}`, (cwd, opId) => backend.gitCheckout(cwd, name, trackRemote, opId))).ok;
 }
 
 /// Reports its reason for the same read: the rail bind dialog offers
 /// "New branch…" from the orchestration hub, where nothing else would
 /// carry git's refusal.
 export function createBranch(workspaceId: string, name: string, from: string | null, checkoutAfter: boolean): Promise<RunResult> {
-  return runWithReason(workspaceId, "New branch", (cwd) => backend.gitCreateBranch(cwd, name, from, checkoutAfter));
+  return runAction(workspaceId, "New branch", (cwd, opId) => backend.gitCreateBranch(cwd, name, from, checkoutAfter, opId));
 }
 
 export function deleteBranch(workspaceId: string, name: string, force: boolean): Promise<boolean> {
   return run(workspaceId, "Delete branch", (cwd) => backend.gitDeleteBranch(cwd, name, force));
 }
 
-export function mergeBranch(workspaceId: string, branch: string): Promise<boolean> {
-  return run(workspaceId, `Merge ${branch}`, (cwd) => backend.gitMerge(cwd, branch));
+export async function mergeBranch(workspaceId: string, branch: string): Promise<boolean> {
+  return (await runAction(workspaceId, `Merge ${branch}`, (cwd, opId) => backend.gitMerge(cwd, branch, opId))).ok;
 }
 
 export function abortInProgress(workspaceId: string, kind: InProgressKind): Promise<boolean> {
   return run(workspaceId, `Abort ${kind}`, (cwd) => backend.gitAbortInProgress(cwd, kind));
 }
 
-export function continueRebase(workspaceId: string): Promise<boolean> {
-  return run(workspaceId, "Continue rebase", (cwd) => backend.gitContinueRebase(cwd));
+export async function continueRebase(workspaceId: string): Promise<boolean> {
+  return (await runAction(workspaceId, "Continue rebase", (cwd, opId) => backend.gitContinueRebase(cwd, opId))).ok;
 }
 
 export function addRemote(workspaceId: string, name: string, url: string): Promise<boolean> {
@@ -1266,24 +1309,24 @@ export async function selectDetailFile(workspaceId: string, path: string): Promi
   await loadDetailDiff(workspaceId, s.selectedCommit, file, token);
 }
 
-export function checkoutCommit(workspaceId: string, sha: string): Promise<boolean> {
-  return run(workspaceId, "Checkout commit", (cwd) => backend.gitCheckoutCommit(cwd, sha));
+export async function checkoutCommit(workspaceId: string, sha: string): Promise<boolean> {
+  return (await runAction(workspaceId, "Checkout commit", (cwd, opId) => backend.gitCheckoutCommit(cwd, sha, opId))).ok;
 }
 
-export function cherryPick(workspaceId: string, sha: string): Promise<boolean> {
-  return run(workspaceId, "Cherry-pick", (cwd) => backend.gitCherryPick(cwd, sha));
+export async function cherryPick(workspaceId: string, sha: string): Promise<boolean> {
+  return (await runAction(workspaceId, "Cherry-pick", (cwd, opId) => backend.gitCherryPick(cwd, sha, opId))).ok;
 }
 
-export function revertCommit(workspaceId: string, sha: string): Promise<boolean> {
-  return run(workspaceId, "Revert", (cwd) => backend.gitRevert(cwd, sha));
+export async function revertCommit(workspaceId: string, sha: string): Promise<boolean> {
+  return (await runAction(workspaceId, "Revert", (cwd, opId) => backend.gitRevert(cwd, sha, opId))).ok;
 }
 
 export function resetTo(workspaceId: string, sha: string, mode: ResetMode): Promise<boolean> {
   return run(workspaceId, `Reset (${mode})`, (cwd) => backend.gitReset(cwd, sha, mode));
 }
 
-export function continueInProgress(workspaceId: string, kind: InProgressKind): Promise<boolean> {
-  return run(workspaceId, `Continue ${kind}`, (cwd) => backend.gitContinueInProgress(cwd, kind));
+export async function continueInProgress(workspaceId: string, kind: InProgressKind): Promise<boolean> {
+  return (await runAction(workspaceId, `Continue ${kind}`, (cwd, opId) => backend.gitContinueInProgress(cwd, kind, opId))).ok;
 }
 
 // ---- SP3: worktrees --------------------------------------------------------
@@ -1461,7 +1504,7 @@ export async function discardWorktrees(
 /// Merge a fork's branch into the ROOT checkout (G12). "conflict" means the
 /// root now has MERGE_HEAD and the banner's Abort is the way out.
 export async function mergeBack(workspaceId: string, rootPath: string, branch: string): Promise<"merged" | "conflict" | "failed"> {
-  const done = await run(workspaceId, `Merge ${branch}`, () => backend.gitMerge(rootPath, branch));
+  const { ok: done } = await runAction(workspaceId, `Merge ${branch}`, (_cwd, opId) => backend.gitMerge(rootPath, branch, opId));
   if (done) return "merged";
   const info = await backend.gitRepoInfo(rootPath).catch(() => null);
   return info?.inProgress === "merge" ? "conflict" : "failed";

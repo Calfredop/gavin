@@ -130,7 +130,8 @@ import {
   commitButtonLabel, amendRewritesPushed,
   ensureGitView, refresh, select, run, runWithReason, runBlocker, forkWorktree,
   stageFiles, stageAll, commit, setCommitDraft, setLineSelection,
-  effectiveRemote, pushLabel, canSync, setActiveRemote, startOp, fetch, selectStash, selectChanges,
+  effectiveRemote, pushLabel, canSync, setActiveRemote, startOp, cancelOp, fetch, selectStash, selectChanges,
+  checkout, createBranch, cherryPick,
   switchWorktree, mergeBack, rootPathOf, removeWorktree, sweepFacts, sweepWorktrees,
   selectCommits, loadMore, selectCommit, selectDetailFile, setGraphAll,
   markResolved, saveConflict, openMergeTool,
@@ -378,7 +379,7 @@ describe("run / mutations", () => {
     await refresh("ws");
     setCommitDraft("ws", { summary: "feat: x", description: "body" });
     expect(await commit("ws")).toBe(true);
-    expect(backend.gitCommit).toHaveBeenCalledWith("/r", "feat: x\n\nbody", false);
+    expect(backend.gitCommit).toHaveBeenCalledWith("/r", "feat: x\n\nbody", false, expect.any(String));
     expect(get(gitStore)["ws"].commit).toEqual({ summary: "", description: "", amend: false });
   });
 
@@ -538,6 +539,88 @@ describe("long ops", () => {
     expect(backend.gitStatus).toHaveBeenCalled();
   });
 
+  // The actions that run hooks, sign, or check out through a filter can
+  // take as long as those do -- a pre-commit suite, a Touch ID prompt, an
+  // LFS download -- so they run as ops: shown in the op bar with the
+  // hook's output and a Cancel, and still holding `busy` like any other
+  // mutation, so everything that disables on `busy` stays disabled.
+  describe("actions that run hooks", () => {
+    it("run as an op: the bar shows them, their id reaches the command, progress lands, and both marks clear", async () => {
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      let handler!: (e: { payload: { opId: string; line: string } }) => void;
+      vi.mocked(listen).mockImplementationOnce(async (_n, h) => {
+        handler = h as never;
+        return () => {};
+      });
+      let finish!: () => void;
+      vi.mocked(backend.gitCommit).mockImplementationOnce(() => new Promise<void>((res) => (finish = res)));
+      setCommitDraft("ws", { summary: "feat: x" });
+      const done = commit("ws");
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+
+      const view = get(gitStore)["ws"];
+      expect(view.busy).toBe("Commit");
+      expect(view.op).toMatchObject({ label: "Commit", line: null });
+      expect(backend.gitCommit).toHaveBeenCalledWith("/r", "feat: x", false, view.op!.id);
+      handler({ payload: { opId: "someone-else", line: "nope" } });
+      handler({ payload: { opId: view.op!.id, line: "eslint...Passed" } });
+      expect(get(gitStore)["ws"].op?.line).toBe("eslint...Passed");
+      expect(await startOp("ws", "Fetch", async () => {})).toBe(false);
+
+      finish();
+      expect(await done).toBe(true);
+      expect(get(gitStore)["ws"].op).toBeNull();
+      expect(get(gitStore)["ws"].busy).toBeNull();
+    });
+
+    it("Cancel reaches a running action by its id", async () => {
+      ensureGitView("ws", "/r");
+      let finish!: (e: unknown) => void;
+      vi.mocked(backend.gitCheckout).mockImplementationOnce(() => new Promise<void>((_, rej) => (finish = rej)));
+      const done = checkout("ws", "main", null);
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      const id = get(gitStore)["ws"].op!.id;
+      expect(backend.gitCheckout).toHaveBeenCalledWith("/r", "main", null, id);
+
+      await cancelOp("ws");
+      expect(backend.gitCancelOp).toHaveBeenCalledWith(id);
+      finish("cancelled");
+      expect(await done).toBe(false);
+      expect(get(gitStore)["ws"].error).toBe("Checkout main cancelled");
+      expect(get(gitStore)["ws"].op).toBeNull();
+    });
+
+    it("a cancelled commit keeps its draft, and a failure is still a failure", async () => {
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      setCommitDraft("ws", { summary: "feat: keep me" });
+      vi.mocked(backend.gitCommit).mockRejectedValueOnce("cancelled");
+      expect(await commit("ws")).toBe(false);
+      expect(get(gitStore)["ws"].error).toBe("Commit cancelled");
+      expect(get(gitStore)["ws"].commit.summary).toBe("feat: keep me");
+
+      vi.mocked(backend.gitCherryPick).mockRejectedValueOnce("error: could not apply abc123");
+      expect(await cherryPick("ws", "abc123")).toBe(false);
+      expect(get(gitStore)["ws"].error).toBe("Cherry-pick failed: error: could not apply abc123");
+    });
+
+    it("say why when refused, like any other mutation", async () => {
+      ensureGitView("ws", "/r");
+      let finish!: () => void;
+      vi.mocked(backend.gitCheckout).mockImplementationOnce(() => new Promise<void>((res) => (finish = res)));
+      const first = checkout("ws", "main", null);
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(await createBranch("ws", "topic", null, true)).toEqual({
+        ok: false,
+        error: "Another git operation is still running (Checkout main)",
+      });
+      expect(backend.gitCreateBranch).not.toHaveBeenCalled();
+      finish();
+      await first;
+    });
+  });
+
   it("a cancelled op reports 'cancelled' in the banner", async () => {
     ensureGitView("ws", "/r");
     await refresh("ws");
@@ -589,7 +672,7 @@ describe("worktrees", () => {
   it("mergeBack merges in the root checkout and classifies conflicts", async () => {
     ensureGitView("ws", "/r-feature");
     expect(await mergeBack("ws", "/r", "feature")).toBe("merged");
-    expect(backend.gitMerge).toHaveBeenCalledWith("/r", "feature");
+    expect(backend.gitMerge).toHaveBeenCalledWith("/r", "feature", expect.any(String));
     vi.mocked(backend.gitMerge).mockRejectedValueOnce("CONFLICT (content)");
     vi.mocked(backend.gitRepoInfo).mockResolvedValue({ ...repo, inProgress: "merge" });
     expect(await mergeBack("ws", "/r", "feature")).toBe("conflict");
