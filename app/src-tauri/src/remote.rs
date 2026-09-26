@@ -324,6 +324,12 @@ impl RemoteLink {
         self.command.ask(&self.compat, req)
     }
 
+    /// `ask`, waiting `deadline` for the answer instead of the lane's own
+    /// figure for the request.
+    fn ask_within(&self, req: Request, deadline: std::time::Duration) -> anyhow::Result<Response> {
+        self.command.submit_within(&self.compat, req, Some(deadline))?.wait()
+    }
+
     /// `ReadWorkspaceFile` (v39): the file's text under `root` on the
     /// host, or `None` when there is none, and whether it was cut at the
     /// cap.
@@ -360,19 +366,26 @@ impl RemoteLink {
     /// `RunGit` (v40): a git subcommand in `cwd` on the host, its stdout,
     /// stderr and exit code -- the three the desktop's local `run_git`
     /// returns, so the Git tab's parsing is unchanged.
+    ///
+    /// `deadline` is the caller's, because the request's type cannot say
+    /// which git this is: a `status` and a commit running a pre-commit
+    /// suite are both a `RunGit`. The host kills neither, so this is the
+    /// only bound either has.
     pub fn run_git(
         &self,
         root: &str,
         cwd: &str,
         args: &[String],
         stdin: Option<&str>,
+        deadline: std::time::Duration,
     ) -> anyhow::Result<(Vec<u8>, String, i32)> {
-        match self.ask(Request::RunGit {
+        let req = Request::RunGit {
             root_path: root.to_string(),
             cwd: cwd.to_string(),
             args: args.to_vec(),
             stdin: stdin.map(str::to_string),
-        })? {
+        };
+        match self.ask_within(req, deadline)? {
             Response::GitRun { stdout, stderr, code } => Ok((stdout, stderr, code)),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("expected GitRun, got {other:?}"),
@@ -397,13 +410,15 @@ impl RemoteLink {
         cwd: &str,
         args: &[String],
         env: &[(String, String)],
+        deadline: std::time::Duration,
     ) -> anyhow::Result<(Vec<u8>, String, i32)> {
-        match self.ask(Request::RunGitEnv {
+        let req = Request::RunGitEnv {
             root_path: root.to_string(),
             cwd: cwd.to_string(),
             args: args.to_vec(),
             env: env.to_vec(),
-        })? {
+        };
+        match self.ask_within(req, deadline)? {
             Response::GitRun { stdout, stderr, code } => Ok((stdout, stderr, code)),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("expected GitRun, got {other:?}"),
@@ -566,10 +581,14 @@ pub fn git_link_for_cwd(cwd: &str) -> Option<(Arc<RemoteLink>, String)> {
 /// site -- exactly the "change only where the process runs" the card asks
 /// for. The network ops it keeps to itself go through `run_git_streaming`,
 /// which does not call this.
+///
+/// `deadline` is how long the answer is waited for: the ceiling the local
+/// runner would have given the same git (`git::run`).
 pub fn run_git_over_link(
     cwd: &str,
     args: &[&str],
     stdin: Option<&[u8]>,
+    deadline: std::time::Duration,
 ) -> Option<Result<(Vec<u8>, String, i32), String>> {
     let (link, root) = git_link_for_cwd(cwd)?;
     let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
@@ -577,7 +596,7 @@ pub fn run_git_over_link(
     // patch is a case gavin does not produce.
     let stdin = stdin.map(|b| String::from_utf8_lossy(b).into_owned());
     Some(
-        link.run_git(&root, &protocol::wire_path_str(cwd), &argv, stdin.as_deref())
+        link.run_git(&root, &protocol::wire_path_str(cwd), &argv, stdin.as_deref(), deadline)
             .map_err(|e| e.to_string()),
     )
 }
@@ -589,12 +608,13 @@ pub fn run_git_env_over_link(
     cwd: &str,
     args: &[&str],
     env: &[(&str, &str)],
+    deadline: std::time::Duration,
 ) -> Option<Result<(Vec<u8>, String, i32), String>> {
     let (link, root) = git_link_for_cwd(cwd)?;
     let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     Some(
-        link.run_git_env(&root, &protocol::wire_path_str(cwd), &argv, &env)
+        link.run_git_env(&root, &protocol::wire_path_str(cwd), &argv, &env, deadline)
             .map_err(|e| e.to_string()),
     )
 }

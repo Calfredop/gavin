@@ -10,6 +10,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const GIT_TIMEOUT: Duration = Duration::from_secs(10);
+/// `GIT_TIMEOUT` for a git that runs on an ssh host. The host kills
+/// nothing, so this wait is the only bound it has, and it has a round
+/// trip over what may be a slow link to cover as well as the git. What
+/// it replaced was the ten minutes a hook-running action gets, for a
+/// `git status` -- and a link serves one request at a time, so a host that
+/// had stopped answering held every later request that long.
+pub const GIT_LINK_TIMEOUT: Duration = Duration::from_secs(30);
 /// Ceiling for anything run as an op: the network ops (fetch/pull/push)
 /// and the actions that run hooks (`run_git_action`). Both show in the op
 /// bar and are cancellable, so this only catches a truly hung transport
@@ -84,7 +91,7 @@ fn run_git_capped(cwd: &str, args: &[&str], stdin: Option<&[u8]>, stdout_cap: Op
     // `commands.rs` never learns which machine ran it.
     // The network ops the desktop keeps use `run_git_streaming`, which does
     // not route.
-    if let Some(result) = crate::remote::run_git_over_link(cwd, args, stdin) {
+    if let Some(result) = crate::remote::run_git_over_link(cwd, args, stdin, GIT_LINK_TIMEOUT) {
         // The host read all of it; the cap still holds for the caller.
         return result.map(|(mut stdout, stderr, code)| {
             if let Some(cap) = stdout_cap {
@@ -136,13 +143,14 @@ fn run_git_action_within(
     // request TYPES, so an `env` field on `RunGit` would be dropped in
     // silence by a v41 host and the cherry-pick would hang on an editor
     // nobody can see. `RunGitEnv` carries no stdin, and no caller needs
-    // both. Neither request carries a cancel or progress: on a host, the
-    // host's own deadline is the bound.
+    // both. Neither request carries a cancel or progress, and the host
+    // puts no ceiling on the git: `timeout` bounds the wait for its answer,
+    // as it bounds the process here.
     debug_assert!(env.is_empty() || stdin.is_none(), "RunGitEnv carries no stdin");
     let routed = if env.is_empty() {
-        crate::remote::run_git_over_link(cwd, args, stdin)
+        crate::remote::run_git_over_link(cwd, args, stdin, timeout)
     } else {
-        crate::remote::run_git_env_over_link(cwd, args, env)
+        crate::remote::run_git_env_over_link(cwd, args, env, timeout)
     };
     if let Some(result) = routed {
         return result.map(|(stdout, stderr, code)| GitOutput { stdout, stderr, code });

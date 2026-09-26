@@ -215,7 +215,8 @@ describe("commands that wait on something slow", () => {
       return text.slice(at, text.indexOf("\n    }\n", at));
     };
     expect(fnBody("admit")).toContain("crate::session::gate(");
-    const submit = fnBody("submit");
+    expect(fnBody("submit")).toContain("self.submit_within(");
+    const submit = fnBody("submit_within");
     expect(submit).toContain("self.admit(");
     expect(submit).toContain(".send(Job::Ask");
     expect(submit).not.toMatch(/\.lock\(|\.wait\(|blocking_recv|\.recv\(/);

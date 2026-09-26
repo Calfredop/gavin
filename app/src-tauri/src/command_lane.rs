@@ -38,9 +38,9 @@
 //! `refreshGavinTree`).
 
 use protocol::transport::Stream;
-use protocol::{read_message, write_message, Request, Response};
+use protocol::{write_message, Request, Response, MAX_LINE_BYTES};
 use std::future::Future;
-use std::io::{BufReader, ErrorKind};
+use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -59,6 +59,12 @@ const DEFAULT_DEADLINE: Duration = Duration::from_secs(30);
 
 /// The version probe and the `Hello` a redial sends.
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// How long a request on a link that owes a late answer waits for it
+/// before the lane refuses the request unsent (`Worker::settle`). Per
+/// read, so an answer that is still arriving -- a large one, over a slow
+/// link -- keeps being read for as long as its bytes keep coming.
+const OWED_GRACE: Duration = Duration::from_millis(250);
 
 /// How long `req` may take to answer.
 ///
@@ -168,7 +174,9 @@ struct Shared {
 // allocation per request and nothing else.
 #[allow(clippy::large_enum_variant)]
 enum Job {
-    Ask { req: Request, reply: oneshot::Sender<anyhow::Result<Response>> },
+    /// `deadline` is the caller's, when it chose one (`submit_within`);
+    /// otherwise the lane's own for the request.
+    Ask { req: Request, reply: oneshot::Sender<anyhow::Result<Response>>, deadline: Option<Duration> },
     Swap { stream: Stream, version: u32 },
 }
 
@@ -207,7 +215,7 @@ impl CommandLane {
             redial,
             deadline,
         });
-        let worker = Worker { shared: Arc::clone(&shared), conn: Some(BufReader::new(stream)), owed: 0, version };
+        let worker = Worker { shared: Arc::clone(&shared), conn: Some(Conn::new(stream)), owed: 0, version };
         std::thread::Builder::new()
             .name(format!("command lane: {}", shared.peer))
             .spawn(move || worker.run(queue))
@@ -219,11 +227,27 @@ impl CommandLane {
     ///
     /// Gated first (`admit`). Never blocks -- the queue is unbounded, and
     /// the worker does the waiting.
+    ///
+    /// Dropping the reply before the worker reaches the request withdraws
+    /// it: a request nobody is waiting for is never sent.
     pub fn submit(&self, compat: &DaemonCompat, req: Request) -> anyhow::Result<Reply> {
+        self.submit_within(compat, req, None)
+    }
+
+    /// `submit`, with the reply waited for for `deadline` rather than the
+    /// lane's own figure for the request. For a caller that knows more
+    /// about the request than its type says -- a `RunGit` that is a read,
+    /// not a commit running hooks (`remote::run_git_over_link`).
+    pub fn submit_within(
+        &self,
+        compat: &DaemonCompat,
+        req: Request,
+        deadline: Option<Duration>,
+    ) -> anyhow::Result<Reply> {
         self.admit(compat, &req)?;
         let (reply, answer) = oneshot::channel();
         self.jobs
-            .send(Job::Ask { req, reply })
+            .send(Job::Ask { req, reply, deadline })
             .map_err(|_| anyhow::anyhow!("the command worker for {} has stopped", self.shared.peer))?;
         Ok(Reply(answer))
     }
@@ -254,7 +278,8 @@ impl CommandLane {
                 let answer = if worker.shared.swapping.load(Ordering::SeqCst) {
                     Err(restarting(&worker.shared.peer))
                 } else {
-                    worker.round_trip(&req)
+                    let deadline = (worker.shared.deadline)(&req);
+                    worker.round_trip(&req, deadline)
                 };
                 let _ = reply.send(answer);
             })
@@ -396,15 +421,12 @@ impl DaemonLanes {
 struct Worker {
     shared: Arc<Shared>,
     /// `None` once the connection has failed; the next request redials.
-    /// The reader is kept for the connection's life, never rebuilt per
-    /// request: a per-request `BufReader` can buffer bytes past the
-    /// reply it was made for, and drop them with it.
-    conn: Option<BufReader<Stream>>,
+    conn: Option<Conn>,
     /// Replies still due on `conn` for requests the lane stopped waiting
     /// for. Only a lane with no redial keeps a connection past a timeout:
     /// the daemon answers every request exactly once and in order, so the
-    /// late answers arrive first and are read off and dropped before the
-    /// next request's own.
+    /// late answers arrive first, and are read off and dropped before
+    /// anything else goes out (`settle`).
     owed: usize,
     /// The daemon version the app's compat verdict describes. A redial
     /// that finds a different daemon on the endpoint refuses to send
@@ -412,20 +434,48 @@ struct Worker {
     version: u32,
 }
 
+/// A connection as the worker reads it.
+struct Conn {
+    /// Kept for the connection's life, never rebuilt per request: a
+    /// per-request `BufReader` can buffer bytes past the reply it was
+    /// made for, and drop them with it.
+    reader: BufReader<Stream>,
+    /// The start of a reply whose read ran out of time part-way through
+    /// the line. The rest of that line is still coming, and only a link's
+    /// lane keeps a connection past a timeout -- read on its own, the
+    /// rest would not parse, and the link would lose its connection over
+    /// an answer that did arrive.
+    partial: Vec<u8>,
+}
+
+impl Conn {
+    fn new(stream: Stream) -> Conn {
+        Conn { reader: BufReader::new(stream), partial: Vec::new() }
+    }
+}
+
 impl Worker {
     fn run(mut self, queue: mpsc::Receiver<Job>) {
         for job in queue {
             match job {
                 Job::Swap { stream, version } => {
-                    self.conn = Some(BufReader::new(stream));
+                    self.conn = Some(Conn::new(stream));
                     self.owed = 0;
                     self.version = version;
                 }
-                Job::Ask { req, reply } => {
+                Job::Ask { req, reply, deadline } => {
+                    // Its caller stopped waiting -- a read that spans every
+                    // host gave up on this one. Sending it anyway would
+                    // only queue more for a host that has stopped
+                    // answering, one poll after another.
+                    if reply.is_closed() {
+                        continue;
+                    }
                     let answer = if self.shared.swapping.load(Ordering::SeqCst) {
                         Err(restarting(&self.shared.peer))
                     } else {
-                        self.round_trip(&req)
+                        let deadline = deadline.unwrap_or_else(|| (self.shared.deadline)(&req));
+                        self.round_trip(&req, deadline)
                     };
                     let _ = reply.send(answer);
                 }
@@ -433,39 +483,71 @@ impl Worker {
         }
     }
 
-    fn round_trip(&mut self, req: &Request) -> anyhow::Result<Response> {
+    fn round_trip(&mut self, req: &Request, deadline: Duration) -> anyhow::Result<Response> {
+        self.settle()?;
         self.send(req)?;
-        let deadline = (self.shared.deadline)(req);
         let conn = self.conn.as_mut().expect("send leaves a connection behind");
-        // This request's answer comes after every one still owed.
-        let mut due = self.owed + 1;
-        loop {
-            match read_reply(conn, deadline, &self.shared.peer, req) {
-                Ok(resp) => {
-                    due -= 1;
-                    if due == 0 {
-                        self.owed = 0;
-                        return Ok(resp);
-                    }
-                    // A late answer to a request already given up on.
+        match read_reply(conn, deadline, &self.shared.peer, req) {
+            Ok(resp) => Ok(resp),
+            Err(e) if e.is::<TimedOut>() && self.shared.redial.is_none() => {
+                // Nothing to redial: an ssh link's connection is its
+                // bridge. Keep it, and owe what did not arrive.
+                self.owed += 1;
+                Err(e)
+            }
+            Err(e) => {
+                // Closed, unparseable, or timed out where a fresh
+                // connection is to be had -- a new daemon thread, not
+                // one stuck behind the wedged handler. Whatever this
+                // connection says next can no longer be matched.
+                self.conn = None;
+                self.owed = 0;
+                Err(e)
+            }
+        }
+    }
+
+    /// Reads off the answers a link still owes before anything else goes
+    /// out on it, and refuses the request unsent when they do not come.
+    ///
+    /// A host that ran past one deadline is busy or stuck, and it serves
+    /// its connection strictly in order: a request sent now would wait
+    /// behind the late one, for a whole deadline of its own, and every
+    /// request queued behind it another -- a Git tab's refresh alone is a
+    /// dozen of them. So until the owed answers arrive, each request gets
+    /// `OWED_GRACE` for them and is then refused, never written. The lane
+    /// recovers by itself: the first request after the host catches up
+    /// reads the late answers off and goes out.
+    fn settle(&mut self) -> anyhow::Result<()> {
+        if self.owed == 0 {
+            return Ok(());
+        }
+        let peer = &self.shared.peer;
+        let Some(conn) = self.conn.as_mut() else {
+            self.owed = 0;
+            return Ok(());
+        };
+        let _ = conn.reader.get_ref().set_read_timeout(Some(OWED_GRACE));
+        while self.owed > 0 {
+            match next_reply(conn) {
+                Ok(Some(_late)) => self.owed -= 1,
+                Ok(None) => {
+                    self.conn = None;
+                    self.owed = 0;
+                    anyhow::bail!("{peer} closed the command connection");
                 }
-                Err(e) if e.is::<TimedOut>() && self.shared.redial.is_none() => {
-                    // Nothing to redial: an ssh link's connection is its
-                    // bridge. Keep it, and owe what did not arrive.
-                    self.owed = due;
-                    return Err(e);
-                }
+                Err(e) if timed_out(&e) => anyhow::bail!(
+                    "{peer} has not yet answered an earlier request that ran out of time, so this one was \
+                     not sent"
+                ),
                 Err(e) => {
-                    // Closed, unparseable, or timed out where a fresh
-                    // connection is to be had -- a new daemon thread, not
-                    // one stuck behind the wedged handler. Whatever this
-                    // connection says next can no longer be matched.
                     self.conn = None;
                     self.owed = 0;
                     return Err(e);
                 }
             }
         }
+        Ok(())
     }
 
     /// Writes `req`, dialling first if the connection is gone and once
@@ -499,7 +581,7 @@ impl Worker {
 
     fn write(&mut self, req: &Request) -> anyhow::Result<()> {
         let conn = self.conn.as_mut().expect("dialled before writing");
-        write_message(conn.get_mut(), req)
+        write_message(conn.reader.get_mut(), req)
     }
 
     /// Reopens the connection and presents the app again: the version
@@ -511,8 +593,8 @@ impl Worker {
             anyhow::bail!("the connection to {} is closed — reconnect to it", self.shared.peer);
         };
         let peer = &self.shared.peer;
-        let mut conn = BufReader::new(Stream::connect(redial.endpoint.as_path())?);
-        write_message(conn.get_mut(), &Request::GetProtocolVersion)?;
+        let mut conn = Conn::new(Stream::connect(redial.endpoint.as_path())?);
+        write_message(conn.reader.get_mut(), &Request::GetProtocolVersion)?;
         let version = match read_reply(&mut conn, HANDSHAKE_DEADLINE, peer, &Request::GetProtocolVersion)? {
             Response::ProtocolVersion { version } => version,
             other => anyhow::bail!("{peer} answered the version probe with {other:?}"),
@@ -533,7 +615,7 @@ impl Worker {
                     auth: protocol::HelloAuth::DaemonToken { token: token.clone() },
                     nonce: nonce.clone(),
                 };
-                write_message(conn.get_mut(), &hello)?;
+                write_message(conn.reader.get_mut(), &hello)?;
                 let ack = read_reply(&mut conn, HANDSHAKE_DEADLINE, peer, &hello)?;
                 crate::session::verify_app_ack(ack, &token, &nonce)?;
             }
@@ -558,28 +640,47 @@ impl std::error::Error for TimedOut {}
 
 /// Reads the reply to `req`, skipping unsolicited pushes, for at most
 /// `deadline` per read.
-fn read_reply(
-    conn: &mut BufReader<Stream>,
-    deadline: Duration,
-    peer: &str,
-    req: &Request,
-) -> anyhow::Result<Response> {
+fn read_reply(conn: &mut Conn, deadline: Duration, peer: &str, req: &Request) -> anyhow::Result<Response> {
     // Ignored on failure, deliberately. The one way it fails is macOS
     // refusing SO_RCVTIMEO on a socket whose peer has already closed
     // (EINVAL) -- and the answer may still be sitting unread in the
     // buffer: a daemon that replies and then exits did answer. A read on
     // such a socket cannot block either way; it returns what is there,
     // then EOF.
-    let _ = conn.get_ref().set_read_timeout(Some(deadline));
+    let _ = conn.reader.get_ref().set_read_timeout(Some(deadline));
+    match next_reply(conn) {
+        Ok(Some(resp)) => Ok(resp),
+        Ok(None) => anyhow::bail!("{peer} closed the command connection before answering {}", name_of(req)),
+        Err(e) if timed_out(&e) => {
+            Err(TimedOut(format!("{peer} did not answer {} within {deadline:?}", name_of(req))).into())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// The next reply on `conn`, skipping unsolicited pushes; `None` at end
+/// of stream.
+///
+/// `protocol::read_message`, except that a read failing part-way through
+/// a line -- a timeout, most often -- leaves what it read in
+/// `conn.partial`, where the next call picks the line up again.
+/// `read_until` appends what it consumed before an error, so nothing
+/// read is lost.
+fn next_reply(conn: &mut Conn) -> anyhow::Result<Option<Response>> {
     loop {
-        match read_message::<_, Response>(conn) {
-            Ok(Some(resp)) if is_unsolicited(&resp) => continue,
-            Ok(Some(resp)) => return Ok(resp),
-            Ok(None) => anyhow::bail!("{peer} closed the command connection before answering {}", name_of(req)),
-            Err(e) if timed_out(&e) => {
-                return Err(TimedOut(format!("{peer} did not answer {} within {deadline:?}", name_of(req))).into())
+        let room = MAX_LINE_BYTES.saturating_sub(conn.partial.len() as u64);
+        (&mut conn.reader).take(room).read_until(b'\n', &mut conn.partial)?;
+        if !conn.partial.ends_with(b"\n") {
+            if conn.partial.len() as u64 >= MAX_LINE_BYTES {
+                anyhow::bail!("protocol line exceeded {MAX_LINE_BYTES} bytes without a newline");
             }
-            Err(e) => return Err(e),
+            // End of stream, before a line or part-way through one.
+            return Ok(None);
+        }
+        let line = std::mem::take(&mut conn.partial);
+        let resp: Response = serde_json::from_slice(&line)?;
+        if !is_unsolicited(&resp) {
+            return Ok(Some(resp));
         }
     }
 }
@@ -602,7 +703,9 @@ fn name_of(req: &Request) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use protocol::read_message;
     use protocol::transport::Listener;
+    use std::io::Write;
     use std::sync::Mutex;
     use std::time::Instant;
 
@@ -734,7 +837,8 @@ mod tests {
 
     /// A handler that never answers costs its caller the deadline and
     /// nothing more: the request fails, and the one behind it is not
-    /// stuck behind it forever.
+    /// stuck behind it -- on a link, which cannot redial, it is refused
+    /// at once and never sent to the host that is not answering.
     #[test]
     fn a_wedged_daemon_times_out_instead_of_blocking() {
         let (lane, daemon) = lane_and_daemon();
@@ -745,10 +849,116 @@ mod tests {
         assert!(err.contains("did not answer KillSession"), "{err}");
         assert!(start.elapsed() < Duration::from_secs(5), "the deadline did not end the wait");
 
+        let start = Instant::now();
         let err = lane.ask(&parity(), kill(2)).unwrap_err().to_string();
-        assert!(err.contains("did not answer KillSession"), "{err}");
+        assert!(err.contains("not sent"), "{err}");
+        assert!(start.elapsed() < short(&kill(2)) * 3, "the second request waited a deadline of its own");
         drop(lane);
-        assert_eq!(wedged.join().unwrap(), 2);
+        assert_eq!(wedged.join().unwrap(), 1, "the request behind the wedged one was sent");
+    }
+
+    /// The fake daemon for the owed-answer tests: reads a request, holds
+    /// its answer until the test says `go`, and says when the answer is
+    /// out -- whole, or split around the hold so the lane's read times out
+    /// part-way through the line. Answers everything after that at once.
+    /// Returns the ids it was sent, once the app side goes away.
+    struct LateDaemon {
+        go: mpsc::Sender<()>,
+        answered: mpsc::Receiver<()>,
+        seen: std::thread::JoinHandle<Vec<String>>,
+    }
+
+    impl LateDaemon {
+        fn start(daemon: Stream, split: bool) -> LateDaemon {
+            let (go, hold) = mpsc::channel();
+            let (out, answered) = mpsc::channel();
+            let seen = std::thread::spawn(move || {
+                let mut reader = BufReader::new(daemon.try_clone().unwrap());
+                let first = id_of(&next(&mut reader).unwrap());
+                let mut line = serde_json::to_vec(&Response::Error { message: first.clone() }).unwrap();
+                line.push(b'\n');
+                let cut = if split { line.len() / 2 } else { 0 };
+                (&daemon).write_all(&line[..cut]).unwrap();
+                hold.recv().unwrap();
+                (&daemon).write_all(&line[cut..]).unwrap();
+                out.send(()).unwrap();
+                let mut seen = vec![first];
+                while let Ok(Some(req)) = read_message::<_, Request>(&mut reader) {
+                    let id = id_of(&req);
+                    write_message(&mut &daemon, &Response::Error { message: id.clone() }).unwrap();
+                    seen.push(id);
+                }
+                seen
+            });
+            LateDaemon { go, answered, seen }
+        }
+
+        /// Lets the held answer go, and returns once it is on the wire.
+        fn release(&self) {
+            self.go.send(()).unwrap();
+            self.answered.recv().unwrap();
+        }
+    }
+
+    fn ids(ids: &[usize]) -> Vec<String> {
+        ids.iter().map(|i| format!("s-{i}")).collect()
+    }
+
+    /// While a link owes a late answer, a new request is refused unsent;
+    /// once the answer arrives the lane reads it off and carries on,
+    /// with nobody handed an answer meant for someone else.
+    #[test]
+    fn a_link_that_owes_an_answer_refuses_new_requests_until_it_arrives() {
+        let (lane, daemon) = lane_and_daemon();
+        let daemon = LateDaemon::start(daemon, false);
+
+        assert!(lane.ask(&parity(), kill(1)).unwrap_err().is::<TimedOut>());
+        let err = lane.ask(&parity(), kill(2)).unwrap_err().to_string();
+        assert!(err.contains("not sent"), "{err}");
+
+        daemon.release();
+        assert_eq!(message(lane.ask(&parity(), kill(3)).unwrap()), "s-3");
+        drop(lane);
+        assert_eq!(daemon.seen.join().unwrap(), ids(&[1, 3]));
+    }
+
+    /// A read that times out part-way through a reply keeps what it read.
+    /// The late answer is still one line when the rest arrives -- read on
+    /// its own, the rest would not parse, and the link would lose its
+    /// connection over an answer that did come.
+    #[test]
+    fn a_reply_cut_by_a_timeout_is_finished_by_the_next_read() {
+        let (lane, daemon) = lane_and_daemon();
+        let daemon = LateDaemon::start(daemon, true);
+
+        assert!(lane.ask(&parity(), kill(1)).unwrap_err().is::<TimedOut>());
+        daemon.release();
+        assert_eq!(message(lane.ask(&parity(), kill(2)).unwrap()), "s-2");
+        drop(lane);
+        assert_eq!(daemon.seen.join().unwrap(), ids(&[1, 2]));
+    }
+
+    /// Room for a test daemon that answers only when told to.
+    fn roomy_lane() -> (CommandLane, Stream) {
+        let (app, daemon) = Stream::pair().unwrap();
+        (CommandLane::spawn_with("the test daemon", app, protocol::PROTOCOL_VERSION, None, roomy), daemon)
+    }
+
+    /// A caller that stopped waiting withdraws its request: the worker
+    /// skips it rather than send it to a daemon nobody is listening to.
+    #[test]
+    fn a_request_whose_caller_gave_up_is_never_sent() {
+        let (lane, daemon) = roomy_lane();
+        let daemon = LateDaemon::start(daemon, false);
+
+        let first = lane.submit(&parity(), kill(1)).unwrap();
+        drop(lane.submit(&parity(), kill(2)).unwrap());
+        let third = lane.submit(&parity(), kill(3)).unwrap();
+        daemon.release();
+        assert_eq!(message(first.wait().unwrap()), "s-1");
+        assert_eq!(message(third.wait().unwrap()), "s-3");
+        drop(lane);
+        assert_eq!(daemon.seen.join().unwrap(), ids(&[1, 3]));
     }
 
     /// An ssh link's lane cannot redial -- its connection is the bridge --
