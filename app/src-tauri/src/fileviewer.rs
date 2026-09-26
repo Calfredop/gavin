@@ -2,6 +2,7 @@ use crate::session::{WorkspacesData, WorkspacesState};
 use notify_debouncer_mini::Debouncer;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -9,7 +10,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Files larger than this are truncated rather than rendered whole --
 /// generous for source/markdown, small enough to never freeze the
-/// renderer on a multi-GB log.
+/// renderer on a multi-GB log. It bounds the READ too, not just what is
+/// rendered: see `read_prefix`.
 pub const MAX_VIEWER_FILE_BYTES: usize = 1024 * 1024;
 
 /// Matches the daemon's own GIT_STATUS_DEBOUNCE -- long enough to collapse
@@ -197,18 +199,46 @@ fn remote_root_for(app_handle: &AppHandle, path: &str) -> Result<String, String>
 
 fn read_file_for_viewer_impl(path: &str, roots: &[PathBuf]) -> Result<FileContent, String> {
     let resolved = ensure_within_open_workspaces(path, roots)?;
-    let bytes = match std::fs::read(&resolved) {
-        Ok(bytes) => bytes,
+    let (bytes, truncated) = match std::fs::File::open(&resolved)
+        .and_then(|file| read_prefix(file, MAX_VIEWER_FILE_BYTES))
+    {
+        Ok(read) => read,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(FileContent { content: String::new(), truncated: false, exists: false })
         }
         Err(e) => return Err(e.to_string()),
     };
-    let truncated = bytes.len() > MAX_VIEWER_FILE_BYTES;
-    let slice = if truncated { &bytes[..MAX_VIEWER_FILE_BYTES] } else { &bytes[..] };
-    let content =
-        String::from_utf8(slice.to_vec()).map_err(|_| "file is not valid UTF-8 text".to_string())?;
+    const NOT_TEXT: &str = "file is not valid UTF-8 text";
+    let content = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        // The cap can cut a multi-byte character in two. An incomplete
+        // one at the very end of a truncated read is the cut's doing,
+        // not the file's, so the text before it stands -- the rule the
+        // daemon's `read_workspace_file` already keeps. Before this a
+        // big log in any non-ASCII script failed to open whenever the
+        // cut fell mid-character. Anywhere else it is still not text.
+        Err(e) if truncated && e.utf8_error().error_len().is_none() => {
+            let valid = e.utf8_error().valid_up_to();
+            let mut bytes = e.into_bytes();
+            bytes.truncate(valid);
+            String::from_utf8(bytes).map_err(|_| NOT_TEXT.to_string())?
+        }
+        Err(_) => return Err(NOT_TEXT.to_string()),
+    };
     Ok(FileContent { content, truncated, exists: true })
+}
+
+/// At most `cap` bytes of `reader`, and whether there was more. Reads
+/// `cap + 1` and no further: one past the cap is all it takes to know
+/// the file is over it. A whole-file read truncated afterwards bounded
+/// only what was rendered, so an editor tab left open on a growing log
+/// re-read the entire log on every append.
+fn read_prefix(reader: impl std::io::Read, cap: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut bytes = Vec::new();
+    reader.take(cap as u64 + 1).read_to_end(&mut bytes)?;
+    let truncated = bytes.len() > cap;
+    bytes.truncate(cap);
+    Ok((bytes, truncated))
 }
 
 /// Writes an editor buffer back to disk, creating the file when absent.
@@ -1277,6 +1307,72 @@ mod tests {
         let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir)).unwrap();
 
         assert!(result.truncated);
+        assert_eq!(result.content.len(), MAX_VIEWER_FILE_BYTES);
+    }
+
+    /// A 50 MB file: the read stops one byte past the cap, where the old
+    /// whole-file read took all fifty. The file's own cursor is the
+    /// witness -- it sits exactly as far in as bytes were read.
+    #[test]
+    fn a_50_mb_file_reads_no_more_than_one_byte_past_the_cap() {
+        use std::io::Seek;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.log");
+        // Sparse, so the test writes nothing: fifty megabytes of NUL,
+        // which is valid UTF-8.
+        std::fs::File::create(&path).unwrap().set_len(50 * 1024 * 1024).unwrap();
+
+        let mut file = std::fs::File::open(&path).unwrap();
+        let (bytes, truncated) = read_prefix(&mut file, MAX_VIEWER_FILE_BYTES).unwrap();
+        let consumed = file.stream_position().unwrap();
+
+        assert!(truncated);
+        assert_eq!(bytes.len(), MAX_VIEWER_FILE_BYTES);
+        assert!(consumed <= MAX_VIEWER_FILE_BYTES as u64 + 1, "read {consumed} bytes");
+
+        // And the command's own path answers the same shape.
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir)).unwrap();
+        assert!(result.truncated);
+        assert_eq!(result.content.len(), MAX_VIEWER_FILE_BYTES);
+    }
+
+    #[test]
+    fn a_cut_that_splits_a_character_keeps_the_text_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accents.log");
+        // `é` is two bytes, and the cap lands between them.
+        let mut text = "a".repeat(MAX_VIEWER_FILE_BYTES - 1);
+        text.push_str("éé");
+        std::fs::write(&path, &text).unwrap();
+
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir)).unwrap();
+
+        assert!(result.truncated);
+        assert_eq!(result.content, "a".repeat(MAX_VIEWER_FILE_BYTES - 1));
+    }
+
+    #[test]
+    fn a_truncated_file_with_a_bad_byte_before_the_cut_is_still_not_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("binary.log");
+        let mut bytes = vec![b'a'; MAX_VIEWER_FILE_BYTES + 10];
+        bytes[100] = 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_file_exactly_at_the_cap_is_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exact.txt");
+        std::fs::write(&path, vec![b'a'; MAX_VIEWER_FILE_BYTES]).unwrap();
+
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir)).unwrap();
+
+        assert!(!result.truncated);
         assert_eq!(result.content.len(), MAX_VIEWER_FILE_BYTES);
     }
 

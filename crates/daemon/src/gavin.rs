@@ -2865,13 +2865,21 @@ fn confined(root: &Path, path: &str) -> anyhow::Result<PathBuf> {
 /// that lands inside a multi-byte character backs off to the last whole
 /// one; a file that is not UTF-8 at all is an error, as it is for the
 /// viewer.
+///
+/// Reads one byte past the cap and no further, like the desktop's own
+/// `read_prefix`: the viewer re-reads on every change to a watched file,
+/// and a whole-file read of a growing log bounded only what was sent.
 pub fn read_workspace_file(root: &Path, path: &str) -> anyhow::Result<(Option<String>, bool)> {
+    use std::io::Read;
     let resolved = confined(root, path)?;
-    let bytes = match std::fs::read(&resolved) {
-        Ok(bytes) => bytes,
+    let mut bytes = Vec::new();
+    match std::fs::File::open(&resolved).and_then(|file| {
+        file.take(protocol::MAX_WORKSPACE_FILE_BYTES as u64 + 1).read_to_end(&mut bytes)
+    }) {
+        Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((None, false)),
         Err(e) => return Err(e.into()),
-    };
+    }
     let truncated = bytes.len() > protocol::MAX_WORKSPACE_FILE_BYTES;
     let slice = if truncated { &bytes[..protocol::MAX_WORKSPACE_FILE_BYTES] } else { &bytes[..] };
     let text = match std::str::from_utf8(slice) {
