@@ -668,8 +668,10 @@ export function getBootstrapError(): Promise<string | null> {
   return invoke("get_bootstrap_error");
 }
 
-// Resolves true when the app is fully reconnected, false when the daemon
-// was restarted but this app process needs a relaunch to rewire.
+/// Resolves once the app is back on the restarted daemon. Off the main
+/// thread, so the window stays live meanwhile: the host refuses daemon
+/// requests and terminal input ("restarting") until it is, and refuses a
+/// second restart outright.
 export function restartDaemon(token: string): Promise<void> {
   return invoke("restart_daemon", { token });
 }

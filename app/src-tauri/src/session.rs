@@ -18,6 +18,28 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct DaemonConnection {
     writer: Arc<Mutex<Stream>>,
+    /// Set while `reconnect` swaps the daemon underneath this connection,
+    /// for the same reason a command lane has one: a keystroke then fails
+    /// at once rather than riding a socket to the daemon being killed.
+    /// The restart used to hold the main thread for its whole length, so
+    /// no keystroke could reach this connection meanwhile; now one can.
+    swapping: std::sync::atomic::AtomicBool,
+}
+
+impl DaemonConnection {
+    fn new(writer: Arc<Mutex<Stream>>) -> DaemonConnection {
+        DaemonConnection { writer, swapping: std::sync::atomic::AtomicBool::new(false) }
+    }
+
+    /// Whether a request from a command may go down this connection now.
+    /// `reconnect`'s own writes -- the Attach per session, the watch per
+    /// workspace -- use the writer directly and are never refused.
+    fn admit(&self) -> anyhow::Result<()> {
+        if self.swapping.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("the gavin daemon is restarting — try again in a moment");
+        }
+        Ok(())
+    }
 }
 
 /// The frontend's whole view of workspace/page state, sent over IPC (the
@@ -2400,11 +2422,19 @@ pub fn get_bootstrap_error(state: State<BootstrapError>) -> Option<String> {
 /// be is a denial of service on a daemon this app never connected to:
 /// the forceful half is aimed at the pid serving THIS socket, not at
 /// everything named gavin-daemon.
+///
+/// Off the main thread: the stop alone waits up to ~0.9 s, the respawn
+/// up to 3 s more, and it then runs the version probe, both `Hello`s, an
+/// `Attach` per session and a watch per workspace -- from the error
+/// overlay a whole `bootstrap`. The token is spent here, before any of
+/// that, and a restart already under way refuses this one
+/// (`DaemonRestart`).
 #[tauri::command]
-pub fn restart_daemon(
+pub async fn restart_daemon(
     app_handle: AppHandle,
     token: String,
-    gate: State<crate::confirm_gate::ConfirmGate>,
+    gate: State<'_, crate::confirm_gate::ConfirmGate>,
+    restart: State<'_, DaemonRestart>,
 ) -> Result<(), String> {
     crate::confirm_gate::spend(
         &gate,
@@ -2412,15 +2442,59 @@ pub fn restart_daemon(
         "restart_daemon",
         crate::confirm_gate::DAEMON_SUBJECT,
     )?;
+    let claim = restart.claim()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _claim = claim;
+        restart_blocking(app_handle).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn restart_blocking(app_handle: AppHandle) -> anyhow::Result<()> {
     if app_handle.try_state::<DaemonConnection>().is_some() {
-        return reconnect(&app_handle).map_err(|e| e.to_string());
+        return reconnect(&app_handle);
     }
-    let socket = socket_path().map_err(|e| e.to_string())?;
-    crate::daemon::stop_running_daemon(&socket).map_err(|e| e.to_string())?;
+    crate::daemon::stop_running_daemon(&socket_path()?)?;
     if let Some(state) = app_handle.try_state::<BootstrapError>() {
         *state.0.lock().unwrap() = None;
     }
-    bootstrap(app_handle).map_err(|e| e.to_string())
+    bootstrap(app_handle)
+}
+
+/// One restart or stop of the daemon at a time.
+///
+/// Both used to hold the main thread from start to finish, which kept a
+/// second one out as a side effect. Off it, two can overlap -- a double
+/// click, two windows, the Settings button beside the compat banner --
+/// and the second one's stop would kill the daemon the first had just
+/// spawned, halfway through its handshake, with both swapping the same
+/// connections. So the second is refused instead.
+///
+/// Not taken by the startup `bootstrap`: a daemon that accepts and never
+/// answers could hold that one for as long as the handshake deadline,
+/// and Restart on the error overlay is how the human gets out of it.
+#[derive(Default)]
+pub struct DaemonRestart(Arc<std::sync::atomic::AtomicBool>);
+
+impl DaemonRestart {
+    fn claim(&self) -> Result<DaemonRestartClaim, String> {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.0
+            .compare_exchange(false, true, SeqCst, SeqCst)
+            .map_err(|_| "the gavin daemon is already being restarted or stopped".to_string())?;
+        Ok(DaemonRestartClaim(Arc::clone(&self.0)))
+    }
+}
+
+/// Lets the next restart in when dropped -- on the blocking pool, once
+/// the work is done or has panicked.
+struct DaemonRestartClaim(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for DaemonRestartClaim {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Stops the daemon on this build's endpoint and leaves it stopped.
@@ -2442,11 +2516,16 @@ pub fn restart_daemon(
 /// rather than at everything named gavin-daemon: a release install and a
 /// dev build keep separate endpoints, and stopping one must not reach
 /// the other.
+///
+/// Off the main thread like the restart, and refused while one is under
+/// way: a stop in the middle of a restart would kill the daemon that
+/// restart is handshaking.
 #[tauri::command]
-pub fn stop_daemon(
+pub async fn stop_daemon(
     app_handle: AppHandle,
     token: String,
-    gate: State<crate::confirm_gate::ConfirmGate>,
+    gate: State<'_, crate::confirm_gate::ConfirmGate>,
+    restart: State<'_, DaemonRestart>,
 ) -> Result<(), String> {
     crate::confirm_gate::spend(
         &gate,
@@ -2454,11 +2533,17 @@ pub fn stop_daemon(
         "stop_daemon",
         crate::confirm_gate::DAEMON_SUBJECT,
     )?;
-    if let Some(epoch) = app_handle.try_state::<ConnectionEpoch>() {
-        epoch.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    }
-    let socket = socket_path().map_err(|e| e.to_string())?;
-    crate::daemon::stop_running_daemon(&socket).map_err(|e| e.to_string())
+    let claim = restart.claim()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _claim = claim;
+        if let Some(epoch) = app_handle.try_state::<ConnectionEpoch>() {
+            epoch.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        let socket = socket_path().map_err(|e| e.to_string())?;
+        crate::daemon::stop_running_daemon(&socket).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Rewires a running app onto a freshly restarted daemon, with no
@@ -2479,14 +2564,20 @@ pub fn stop_daemon(
 /// The lanes refuse requests from before the daemon is stopped until the
 /// new connections are in: a request made meanwhile fails at once rather
 /// than riding a socket to the daemon being killed, or reaching the new
-/// one before its version verdict is published.
+/// one before its version verdict is published. The streaming connection
+/// refuses keystrokes, resizes and repaints for the whole reconnect, and
+/// takes them again only once every session is attached on the new one.
 fn reconnect(app_handle: &AppHandle) -> anyhow::Result<()> {
+    use std::sync::atomic::Ordering::SeqCst;
     let command = app_handle.state::<CommandConnection>();
+    let stream = app_handle.state::<DaemonConnection>();
+    stream.swapping.store(true, SeqCst);
     command.begin_swap();
     let reconnected = reconnect_swapping(app_handle, &command);
     if reconnected.is_err() {
         command.abort_swap();
     }
+    stream.swapping.store(false, SeqCst);
     reconnected
 }
 
@@ -2619,15 +2710,21 @@ pub(crate) fn lanes_for(
 
 /// `lanes_for` for the streaming connection's writer -- `Attach`,
 /// `WriteInput`, `ResizeSession`, `Snapshot`, `WatchGavinRoot`.
+///
+/// Refused on the local daemon while a restart swaps it (`reconnect`),
+/// without calling `f`.
 pub(crate) fn with_writer<R>(
     route: crate::remote::Route,
     state: &DaemonConnection,
     compat: &DaemonCompatState,
-    f: impl FnOnce(&Arc<Mutex<Stream>>, &DaemonCompat) -> R,
-) -> R {
+    f: impl FnOnce(&Arc<Mutex<Stream>>, &DaemonCompat) -> anyhow::Result<R>,
+) -> anyhow::Result<R> {
     match route {
         crate::remote::Route::Remote(link) => f(&link.writer, &link.compat),
-        crate::remote::Route::Local => f(&state.writer, &current_compat(compat)),
+        crate::remote::Route::Local => {
+            state.admit()?;
+            f(&state.writer, &current_compat(compat))
+        }
     }
 }
 
@@ -4625,7 +4722,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
 
     let session_ids = attachable_session_ids(&workspaces_data, &non_session_tab_ids);
 
-    app_handle.manage(DaemonConnection { writer: Arc::clone(&writer) });
+    app_handle.manage(DaemonConnection::new(Arc::clone(&writer)));
     app_handle.manage(command);
     app_handle.manage(WorkspacesState(Mutex::new(workspaces_data.clone())));
     app_handle.manage(SessionNames(Mutex::new(session_names)));
@@ -6328,7 +6425,49 @@ mod version_probe_tests {
 
 #[cfg(test)]
 mod restart_tests {
+    use super::test_support::{fake_daemon_replying_with, parity_compat};
     use super::*;
+    use std::sync::atomic::Ordering::SeqCst;
+
+    #[test]
+    fn a_second_restart_is_refused_while_one_is_under_way() {
+        let restart = DaemonRestart::default();
+        let first = restart.claim().expect("the first restart");
+        let err = restart.claim().err().expect("a second restart ran beside the first");
+        assert!(err.contains("already being restarted"), "{err}");
+
+        // Dropped when the blocking work ends, however it ends.
+        drop(first);
+        assert!(restart.claim().is_ok(), "a finished restart kept the next one out");
+    }
+
+    /// Keystrokes, resizes and repaints are refused while the daemon is
+    /// swapped underneath the streaming connection -- before they are
+    /// written anywhere -- and go through again once it is back.
+    #[test]
+    fn the_streaming_connection_refuses_input_while_the_daemon_is_swapped() {
+        let (client, _dir) = fake_daemon_replying_with(vec![]);
+        let conn = DaemonConnection::new(Arc::new(Mutex::new(client)));
+        let compat = DaemonCompatState(Mutex::new(Some(parity_compat())));
+        let write = |conn: &DaemonConnection| {
+            let mut reached = false;
+            let result = with_writer(crate::remote::Route::Local, conn, &compat, |_, _| {
+                reached = true;
+                Ok(())
+            });
+            (result, reached)
+        };
+
+        conn.swapping.store(true, SeqCst);
+        let (refused, reached) = write(&conn);
+        let err = refused.err().expect("input was taken mid-restart").to_string();
+        assert!(err.contains("restarting"), "{err}");
+        assert!(!reached, "the write reached the connection mid-restart");
+
+        conn.swapping.store(false, SeqCst);
+        let (taken, reached) = write(&conn);
+        assert!(taken.is_ok() && reached, "input stayed refused after the restart");
+    }
 
     /// The streaming connection is handshaken under a deadline and then
     /// handed to the relay, which must wait on a quiet daemon for as long

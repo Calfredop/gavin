@@ -1600,6 +1600,12 @@ export async function retryConnect(): Promise<void> {
 // place and re-arms the gavin root watches, so all that is left is to
 // refresh what a fresh daemon can no longer be asked about mid-flight.
 //
+// The restart no longer holds the main thread, so terminals stay live
+// through it -- and "connecting" is still not how they are kept from
+// typing into the daemon being killed: it swaps the whole window for the
+// Connecting… overlay, Settings and its outcome note with it. The host
+// refuses `write_input` for the whole reconnect instead.
+//
 // Throws on failure so the caller can render it beside the button --
 // silently swallowing it would leave the human with a dead daemon and no
 // sign of it.

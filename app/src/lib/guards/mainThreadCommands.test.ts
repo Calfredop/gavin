@@ -156,6 +156,12 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["session.rs", "create_session", "a PTY spawn in the daemon"],
   ["session.rs", "session_screen", "a daemon round trip, per turn verdict"],
   ["session.rs", "gavin_root_exists", "a root scan on an ssh host"],
+  // Explicit actions, but unbounded: the stop waits up to ~0.9 s, the
+  // respawn up to 3 s, then the version probe, both Hellos, an Attach per
+  // session and a watch per workspace -- from the error overlay a whole
+  // bootstrap. The streaming connection refuses input meanwhile.
+  ["session.rs", "restart_daemon", "stopping, respawning and re-handshaking the daemon"],
+  ["session.rs", "stop_daemon", "a Shutdown, then SIGTERM, with up to ~0.9 s of waiting"],
 ];
 
 /// The command's text from its `#[tauri::command]` line to the first

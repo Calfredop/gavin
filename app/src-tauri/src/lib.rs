@@ -69,6 +69,7 @@ pub fn run() {
         .manage(session::FrontendReady(std::sync::atomic::AtomicBool::new(false)))
         .manage(session::BootstrapError(std::sync::Mutex::new(None)))
         .manage(session::ConnectionEpoch(std::sync::atomic::AtomicU64::new(0)))
+        .manage(session::DaemonRestart::default())
         .manage(session::DaemonCompatState(std::sync::Mutex::new(None)))
         .manage(confirm_gate::ConfirmGate::default())
         .manage(fileviewer::FileWatchers::default())
