@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::commands::MAX_DIFF_BYTES;
 use crate::git::parse::{parse_diff, parse_name_status};
-use crate::git::run::{ok, run_git, run_git_ro};
+use crate::git::run::{ok, run_git, run_git_ro, run_git_ro_capped};
 use crate::git::types::{FileDiff, FileEntry};
 use crate::trash::trash_path;
 
@@ -314,7 +314,8 @@ pub fn diff_since(
         }
         args.push(path);
     }
-    let out = run_git_ro(&root, &args)?;
+    // Capped like `diff_at`: past MAX_DIFF_BYTES it is "too large" anyway.
+    let out = run_git_ro_capped(&root, &args, MAX_DIFF_BYTES)?;
     // `--no-index` exits 1 for "differences found"; both codes are fine.
     if out.code != 0 && out.code != 1 {
         return Err(out.stderr.trim().to_string());

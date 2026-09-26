@@ -3,7 +3,7 @@
 //! real code path without a Tauri runtime.
 
 use crate::git::parse::{parse_branches, parse_diff, parse_log, parse_name_status, parse_remotes, parse_stashes, parse_status, parse_worktree_list};
-use crate::git::run::{ok, run_git, run_git_env, run_git_ro};
+use crate::git::run::{ok, run_git, run_git_env, run_git_ro, run_git_ro_capped};
 use crate::git::types::{Author, CommitDetail, FileDiff, LogPage, RefsSnapshot, RepoInfo, StatusResult, WorktreeInfo};
 use std::path::Path;
 
@@ -319,7 +319,9 @@ pub fn diff_at(cwd: &str, path: &str, old_path: Option<&str>, staged: bool, untr
         }
         args.push(path);
     }
-    let out = run_git_ro(cwd, &args)?;
+    // Capped: past MAX_DIFF_BYTES the answer is "too large" whatever the
+    // rest says, so the rest is never held in memory.
+    let out = run_git_ro_capped(cwd, &args, MAX_DIFF_BYTES)?;
     // `diff` exits 1 for "differences found" under --no-index; both 0 and 1
     // are success here.
     if out.code != 0 && out.code != 1 {
@@ -781,6 +783,15 @@ mod read_tests {
 
         git(cwd(&dir), &["config", "--add", "user.email", ""]);
         assert_eq!(repo_info(cwd(&dir)).unwrap().author, None, "an empty last email is no identity");
+    }
+
+    #[test]
+    fn a_diff_past_the_cap_is_still_too_large_under_the_capped_read() {
+        let dir = temp_repo();
+        write(&dir, "big.txt", &"x".repeat(MAX_DIFF_BYTES + 1));
+        let d = diff(cwd(&dir), "big.txt", None, false, true).unwrap();
+        assert!(d.too_large);
+        assert!(d.hunks.is_empty());
     }
 
     #[test]

@@ -35,15 +35,30 @@ impl GitOutput {
 /// (missing binary → GIT_NOT_FOUND, bad cwd, …) or times out; a non-zero
 /// exit is reported through `GitOutput::code` so callers decide.
 pub fn run_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>) -> Result<GitOutput, String> {
+    run_git_capped(cwd, args, stdin, None)
+}
+
+/// `run_git`, keeping at most `stdout_cap + 1` bytes of stdout when a cap
+/// is given: one past it is all a caller's `len() > cap` check needs, and
+/// the rest is read and dropped rather than kept, so git still runs to its
+/// own exit instead of blocking on a full pipe.
+fn run_git_capped(cwd: &str, args: &[&str], stdin: Option<&[u8]>, stdout_cap: Option<usize>) -> Result<GitOutput, String> {
     // An ssh workspace's repo is on the host: the daemon there runs git
-    // and returns the same three fields. Every synchronous Git-tab command
-    // funnels through here (and through `run_git_ro`, which calls this), so
+    // and returns the same three fields. Every Git-tab command that waits
+    // for its answer funnels through here (by way of `run_git`, `run_git_ro`
+    // or `run_git_ro_capped`), so
     // routing this one function is the whole "change only where the process
     // runs" for the tab -- `commands.rs` never learns which machine ran it.
     // The network ops the desktop keeps use `run_git_streaming`, which does
     // not route.
     if let Some(result) = crate::remote::run_git_over_link(cwd, args, stdin) {
-        return result.map(|(stdout, stderr, code)| GitOutput { stdout, stderr, code });
+        // The host read all of it; the cap still holds for the caller.
+        return result.map(|(mut stdout, stderr, code)| {
+            if let Some(cap) = stdout_cap {
+                stdout.truncate(cap.saturating_add(1));
+            }
+            GitOutput { stdout, stderr, code }
+        });
     }
     // A missing cwd also surfaces as ErrorKind::NotFound from spawn; check it
     // first so that case is never misreported as a missing git binary.
@@ -81,7 +96,15 @@ pub fn run_git(cwd: &str, args: &[&str], stdin: Option<&[u8]>) -> Result<GitOutp
     let (err_tx, err_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
+        match stdout_cap {
+            None => {
+                let _ = stdout.read_to_end(&mut buf);
+            }
+            Some(cap) => {
+                let _ = stdout.by_ref().take(cap as u64 + 1).read_to_end(&mut buf);
+                let _ = std::io::copy(&mut stdout, &mut std::io::sink());
+            }
+        }
         let _ = out_tx.send(buf);
     });
     std::thread::spawn(move || {
@@ -171,6 +194,15 @@ pub fn run_git_ro(cwd: &str, args: &[&str]) -> Result<GitOutput, String> {
     full.push("--no-optional-locks");
     full.extend_from_slice(args);
     run_git(cwd, &full, None)
+}
+
+/// `run_git_ro` for output that is only wanted up to `max` bytes -- a
+/// diff the viewer will refuse past that anyway. See `run_git_capped`.
+pub fn run_git_ro_capped(cwd: &str, args: &[&str], max: usize) -> Result<GitOutput, String> {
+    let mut full = Vec::with_capacity(args.len() + 1);
+    full.push("--no-optional-locks");
+    full.extend_from_slice(args);
+    run_git_capped(cwd, &full, None, Some(max))
 }
 
 /// `run_git` with extra environment variables (e.g. `GIT_EDITOR=true` so a
@@ -364,6 +396,19 @@ mod tests {
         let out = run_git_env(".", &["var", "GIT_EDITOR"], &[("GIT_EDITOR", "true")]).unwrap();
         assert_eq!(out.code, 0, "{}", out.stderr);
         assert_eq!(out.stdout_str().trim(), "true");
+    }
+
+    /// A megabyte through a 100-byte cap: 101 bytes come back, and git
+    /// still exits 0 -- well past a pipe buffer, so an undrained pipe
+    /// would have held it until the timeout instead.
+    #[test]
+    fn a_capped_read_keeps_one_byte_past_the_cap_and_lets_git_finish() {
+        let input = "x".repeat(1 << 20) + "\n";
+        let out = run_git_capped(".", &["stripspace"], Some(input.as_bytes()), Some(100)).unwrap();
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_eq!(out.stdout.len(), 101);
+        let whole = run_git(".", &["stripspace"], Some(input.as_bytes())).unwrap();
+        assert_eq!(whole.stdout.len(), input.len(), "no cap reads everything");
     }
 
     #[test]
