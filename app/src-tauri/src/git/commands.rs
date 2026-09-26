@@ -5,7 +5,7 @@
 use crate::git::parse::{parse_branches, parse_diff, parse_log, parse_name_status, parse_remotes, parse_stashes, parse_status, parse_worktree_list};
 use crate::git::run::{ok, read_repo_file, run_git, run_git_env, run_git_ro, write_repo_file};
 use crate::git::types::{Author, CommitDetail, FileDiff, LogPage, RefsSnapshot, RepoInfo, StatusResult, WorktreeInfo};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Diffs larger than this are not rendered (spec §1: "Diff too large").
 pub const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
@@ -211,6 +211,14 @@ pub const WORKTREES_DIR: &str = ".gavin-worktrees";
 const WORKTREES_GITIGNORE: &str =
     "# gavin's worktrees: each one is a checkout of its own, never content of this one.\n*\n";
 
+/// The absolute `.gavin-worktrees` ancestor of `cwd/path`, when `path`
+/// actually lands inside one -- `None` for a worktree the human cut
+/// somewhere of their own choosing.
+fn worktrees_dir(cwd: &str, path: &str) -> Option<PathBuf> {
+    let target = Path::new(cwd).join(path);
+    target.ancestors().skip(1).find(|a| a.file_name().is_some_and(|n| n == WORKTREES_DIR)).map(Path::to_path_buf)
+}
+
 /// Makes the `.gavin-worktrees` folder a worktree is about to land in
 /// ignore itself, before git puts anything there.
 ///
@@ -230,8 +238,7 @@ const WORKTREES_GITIGNORE: &str =
 /// as `ignore.rs`'s `.gitignore`: over ssh the folder is on the host, and
 /// `run_git` is about to cut the worktree there.
 fn prepare_worktrees_dir(cwd: &str, path: &str) -> Result<(), String> {
-    let target = Path::new(cwd).join(path);
-    let Some(dir) = target.ancestors().skip(1).find(|a| a.file_name().is_some_and(|n| n == WORKTREES_DIR)) else {
+    let Some(dir) = worktrees_dir(cwd, path) else {
         return Ok(());
     };
     let ignore = dir.join(".gitignore");
@@ -239,6 +246,71 @@ fn prepare_worktrees_dir(cwd: &str, path: &str) -> Result<(), String> {
         return Ok(());
     }
     write_repo_file(cwd, &ignore, WORKTREES_GITIGNORE)
+}
+
+/// `CLAUDE.md`, `CLAUDE.local.md` and `.claude/CLAUDE.md` in every
+/// directory strictly above `worktree`, up to and including
+/// `workspace_root`. Those are exactly the levels a worktree cut as a
+/// SIBLING of the checkout never climbed through -- nesting it inside
+/// `.gavin-worktrees` is what put them in Claude Code's memory walk
+/// (code.claude.com/docs/en/memory.md, "How CLAUDE.md files load").
+fn claude_md_excludes(worktree: &Path, workspace_root: &Path) -> Vec<String> {
+    let mut excludes = Vec::new();
+    let mut dir = worktree.parent();
+    while let Some(d) = dir {
+        excludes.push(d.join("CLAUDE.md"));
+        excludes.push(d.join("CLAUDE.local.md"));
+        excludes.push(d.join(".claude").join("CLAUDE.md"));
+        if d == workspace_root {
+            break;
+        }
+        dir = d.parent();
+    }
+    excludes.into_iter().map(|p| p.to_string_lossy().into_owned()).collect()
+}
+
+/// Writes `claudeMdExcludes` into the new worktree's own
+/// `.claude/settings.local.json`, so a Claude Code agent there loads
+/// exactly what it loaded back when worktrees were siblings of the
+/// checkout: its own `CLAUDE.md`, and nothing this nesting exposed.
+///
+/// Does nothing -- rather than risk a wrong file -- unless every guard
+/// holds: the worktree's checked-out branch tracks its own `CLAUDE.md`
+/// (otherwise the parent's copy is the only one the agent would get, and
+/// excluding it is a regression, not a fix); `settings.local.json` does
+/// not already exist with the key set (an existing file is merged into,
+/// never overwritten, and a file that fails to parse as a JSON object is
+/// left alone); and `.claude/settings.local.json` itself would be
+/// git-ignored here, so writing it does not dirty the worktree
+/// `worktree_add` just cut.
+fn write_claude_md_excludes(worktree: &Path, workspace_root: &Path) {
+    let worktree_cwd = worktree.to_string_lossy().into_owned();
+    let git_ok = |args: &[&str]| run_git_ro(&worktree_cwd, args).map(|o| o.code == 0).unwrap_or(false);
+
+    if !git_ok(&["ls-files", "--error-unmatch", "--", "CLAUDE.md"]) {
+        return;
+    }
+    if !git_ok(&["check-ignore", "-q", "--", ".claude/settings.local.json"]) {
+        return;
+    }
+
+    let settings_path = worktree.join(".claude").join("settings.local.json");
+    let Ok(existing) = read_repo_file(&worktree_cwd, &settings_path) else { return };
+    let mut doc: serde_json::Value = match &existing {
+        None => serde_json::json!({}),
+        Some(bytes) => {
+            let Ok(text) = std::str::from_utf8(bytes) else { return };
+            let Ok(parsed) = serde_json::from_str(text) else { return };
+            parsed
+        }
+    };
+    let Some(obj) = doc.as_object_mut() else { return };
+    if obj.contains_key("claudeMdExcludes") {
+        return;
+    }
+    obj.insert("claudeMdExcludes".to_string(), serde_json::json!(claude_md_excludes(worktree, workspace_root)));
+    let Ok(text) = serde_json::to_string_pretty(&doc) else { return };
+    let _ = write_repo_file(&worktree_cwd, &settings_path, &format!("{text}\n"));
 }
 
 /// `new_branch`: `worktree add -b <branch> <path> [<from>]`; otherwise
@@ -254,7 +326,13 @@ pub fn worktree_add(cwd: &str, path: &str, branch: &str, from: Option<&str>, new
     } else {
         args.extend(["--", path, branch]);
     }
-    ok(run_git(cwd, &args, None)?).map(|_| ())
+    ok(run_git(cwd, &args, None)?)?;
+    if let Some(dir) = worktrees_dir(cwd, path) {
+        if let Some(workspace_root) = dir.parent() {
+            write_claude_md_excludes(&Path::new(cwd).join(path), workspace_root);
+        }
+    }
+    Ok(())
 }
 
 /// Removes a worktree, and tells watchman to stop watching it.
@@ -1261,6 +1339,99 @@ mod ref_tests {
         std::fs::write(folder.join(".gitignore"), "*\n!notes.md\n").unwrap();
         worktree_add(cwd(&dir), folder.join("feature").to_str().unwrap(), "feature", None, true).unwrap();
         assert_eq!(std::fs::read_to_string(folder.join(".gitignore")).unwrap(), "*\n!notes.md\n");
+    }
+
+    /// A tracked `CLAUDE.md` plus a repo rule that ignores
+    /// `.claude/settings.local.json` (never relying on whatever the test
+    /// machine's own global excludes happen to say) is the case the card
+    /// asks this to fix: the new worktree gets its own excludes file, and
+    /// nothing about cutting it shows up as a change anywhere.
+    #[test]
+    fn worktree_add_writes_claude_md_excludes_for_a_tracked_claude_md() {
+        let dir = temp_repo();
+        write(&dir, "CLAUDE.md", "root instructions\n");
+        write(&dir, ".gitignore", ".claude/settings.local.json\n");
+        git(cwd(&dir), &["add", "CLAUDE.md", ".gitignore"]);
+        git(cwd(&dir), &["commit", "-q", "-m", "claude memory"]);
+
+        let wt = dir.path().join(WORKTREES_DIR).join("feature");
+        worktree_add(cwd(&dir), wt.to_str().unwrap(), "feature", None, true).unwrap();
+
+        let settings = std::fs::read_to_string(wt.join(".claude").join("settings.local.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&settings).unwrap();
+        let excludes: Vec<String> =
+            json["claudeMdExcludes"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+        let root_claude_md = dir.path().join("CLAUDE.md").to_string_lossy().into_owned();
+        let worktrees_dir_claude_md = dir.path().join(WORKTREES_DIR).join("CLAUDE.md").to_string_lossy().into_owned();
+        assert!(excludes.contains(&root_claude_md), "{excludes:?}");
+        assert!(excludes.contains(&worktrees_dir_claude_md), "{excludes:?}");
+        // One directory strictly above the worktree (`.gavin-worktrees`
+        // itself), and the workspace root it sits in -- three names each.
+        assert_eq!(excludes.len(), 6, "{excludes:?}");
+
+        // Its own status stays clean: the excludes file it just wrote is
+        // gitignored there too.
+        assert_eq!(git(wt.to_str().unwrap(), &["status", "--porcelain"]), "");
+        // And cutting it never dirtied the checkout it came from.
+        assert_eq!(git(cwd(&dir), &["status", "--porcelain"]), "");
+    }
+
+    /// The project's `CLAUDE.md` is untracked here -- the parent's copy is
+    /// the only one the agent would otherwise get, so excluding it would
+    /// be a regression, not a fix. No file is written at all.
+    #[test]
+    fn worktree_add_skips_claude_md_excludes_without_a_tracked_claude_md() {
+        let dir = temp_repo();
+        let wt = dir.path().join(WORKTREES_DIR).join("feature");
+        worktree_add(cwd(&dir), wt.to_str().unwrap(), "feature", None, true).unwrap();
+        assert!(!wt.join(".claude").join("settings.local.json").exists());
+    }
+
+    /// `!.claude/settings.local.json` makes the path un-ignored regardless
+    /// of whatever the running machine's own global excludes say --
+    /// deterministic proof that the third guard (`check-ignore -q` must
+    /// hold) actually stops the write, rather than the write happening to
+    /// stay clean by luck of this machine's config.
+    #[test]
+    fn worktree_add_skips_claude_md_excludes_when_settings_local_json_is_not_ignored() {
+        let dir = temp_repo();
+        write(&dir, "CLAUDE.md", "root instructions\n");
+        write(&dir, ".gitignore", "!.claude/settings.local.json\n");
+        git(cwd(&dir), &["add", "CLAUDE.md", ".gitignore"]);
+        git(cwd(&dir), &["commit", "-q", "-m", "claude memory"]);
+
+        let wt = dir.path().join(WORKTREES_DIR).join("feature");
+        worktree_add(cwd(&dir), wt.to_str().unwrap(), "feature", None, true).unwrap();
+        assert!(!wt.join(".claude").join("settings.local.json").exists());
+    }
+
+    /// The merge guard, exercised directly: an unrelated setting already
+    /// in the file survives, and a file that already sets the key is left
+    /// byte-for-byte alone rather than clobbered with gavin's own list.
+    #[test]
+    fn write_claude_md_excludes_merges_into_an_existing_file_but_never_touches_an_existing_key() {
+        let dir = temp_repo();
+        write(&dir, "CLAUDE.md", "root instructions\n");
+        write(&dir, ".gitignore", ".claude/settings.local.json\n");
+        git(cwd(&dir), &["add", "CLAUDE.md", ".gitignore"]);
+        git(cwd(&dir), &["commit", "-q", "-m", "claude memory"]);
+
+        let worktree = dir.path().to_path_buf();
+        let workspace_root = worktree.parent().unwrap().to_path_buf();
+        let settings_dir = worktree.join(".claude");
+        let settings_file = settings_dir.join("settings.local.json");
+        std::fs::create_dir_all(&settings_dir).unwrap();
+
+        std::fs::write(&settings_file, "{\n  \"foo\": \"bar\"\n}\n").unwrap();
+        write_claude_md_excludes(&worktree, &workspace_root);
+        let merged: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&settings_file).unwrap()).unwrap();
+        assert_eq!(merged["foo"], "bar");
+        assert!(merged["claudeMdExcludes"].is_array());
+
+        let already_set = "{\n  \"claudeMdExcludes\": [\"custom\"]\n}\n";
+        std::fs::write(&settings_file, already_set).unwrap();
+        write_claude_md_excludes(&worktree, &workspace_root);
+        assert_eq!(std::fs::read_to_string(&settings_file).unwrap(), already_set);
     }
 
     /// The sweep's first disqualifier. The listing has to survive both
