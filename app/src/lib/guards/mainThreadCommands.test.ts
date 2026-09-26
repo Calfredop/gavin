@@ -36,6 +36,10 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["git/commands.rs", "get_git_baselines", "`git status` per session, on the load path"],
   ["typesafe.rs", "typesafe_verdict", "an HTTPS request"],
   ["typesafe.rs", "typesafe_attribution", "an HTTPS request"],
+  // Per profile in use, every 180 s poll: `security`, `claude --version`
+  // and up to three curls at a 10 s timeout each. Measured at 1.1-1.6 s
+  // of main thread a minute with four profiles.
+  ["agent_usage.rs", "agent_usage", "Keychain reads and curl to each agent's usage endpoint"],
   // The Git view's refresh and what it chains: 14 processes a refresh
   // then, measured at 6-7 s of main thread a minute with one view open.
   ["git/commands.rs", "git_repo_info", "five `git` processes, every refresh"],

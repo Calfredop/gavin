@@ -146,6 +146,13 @@ export function editableCycle(workspaceId: string | null): PauseCycle {
 
 // ---- The probe ---------------------------------------------------------------
 
+/// Every `refreshUsage` call's number, app-wide and only ever rising.
+let usageCalls = 0;
+/// Per profile: the newest call made, and the newest whose answer is in
+/// the store.
+const usageAskedBy: Record<string, number> = {};
+const usageLandedBy: Record<string, number> = {};
+
 /// Reads one profile's limits into the store. `force` is a human pressing
 /// refresh; the host still refuses inside its 429 backoff.
 ///
@@ -153,16 +160,29 @@ export function editableCycle(workspaceId: string | null): PauseCycle {
 /// screen at restart must not vanish because the first curl of the
 /// session failed. Only when there is nothing still-open to keep does
 /// the failure become `unavailable`.
+///
+/// Calls for one profile can overlap -- the poll and a forced refresh,
+/// or two windows -- and the host answers them concurrently, so answers
+/// arrive in any order. One that lands after a NEWER call's answer is
+/// dropped: it would put an older reading back over the refresh somebody
+/// just pressed for. Only an answer counts as landing, not a failure, so
+/// a refresh that failed still lets the poll before it through.
 export async function refreshUsage(profileId: string, force = false): Promise<void> {
   if (!profileId) return;
+  const call = ++usageCalls;
+  usageAskedBy[profileId] = call;
+  const superseded = () => (usageLandedBy[profileId] ?? 0) > call;
   usageRefreshingStore.update((all) => ({ ...all, [profileId]: true }));
   try {
     const report = await backend.agentUsage(profileId, force);
+    if (superseded()) return;
+    usageLandedBy[profileId] = call;
     agentUsageStore.update((all) => ({ ...all, [profileId]: report }));
     recordSample(profileId, report);
     persistUsageCache();
     armStaleTimer();
   } catch (e) {
+    if (superseded()) return;
     agentUsageStore.update((all) => {
       const existing = all[profileId];
       const kept = existing ? dropExpiredWindows(existing, Date.now()) : null;
@@ -173,11 +193,15 @@ export async function refreshUsage(profileId: string, force = false): Promise<vo
       };
     });
   } finally {
-    usageRefreshingStore.update((all) => {
-      const next = { ...all };
-      delete next[profileId];
-      return next;
-    });
+    // Cleared by the newest call only: an older one finishing first
+    // would take the badge down while the newer is still in flight.
+    if (usageAskedBy[profileId] === call) {
+      usageRefreshingStore.update((all) => {
+        const next = { ...all };
+        delete next[profileId];
+        return next;
+      });
+    }
   }
 }
 

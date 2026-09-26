@@ -203,6 +203,99 @@ describe("refreshUsage", () => {
     await refreshUsage("claude-code");
     expect(get(agentUsageStore)["claude-code"].state).toBe("unavailable");
   });
+
+  describe("overlapping calls", () => {
+    const older: AgentUsageReport = { ...readyReport, observedAt: 100 };
+    const newer: AgentUsageReport = {
+      ...readyReport,
+      windows: [{ id: "five_hour", label: "5-hour", usedPercent: 40, resetsAt: null }],
+      observedAt: 200,
+    };
+
+    /// The poll's call, held open until the test answers it.
+    function pendingPoll(): { answer: (r: AgentUsageReport) => void; fail: () => void } {
+      const held = { answer: (_: AgentUsageReport) => {}, fail: () => {} };
+      backendMock.agentUsage.mockImplementationOnce(
+        () =>
+          new Promise<AgentUsageReport>((resolve, reject) => {
+            held.answer = resolve;
+            held.fail = () => reject(new Error("curl timed out"));
+          })
+      );
+      return held;
+    }
+
+    /// The host answers concurrently now, so a poll stuck on a slow curl
+    /// can answer after a forced refresh that started later. Its reading
+    /// is the older one and must not replace the refresh on screen.
+    it("drops an older call's answer once a newer one has landed", async () => {
+      const poll = pendingPoll();
+      const polling = refreshUsage("claude-code");
+      backendMock.agentUsage.mockResolvedValueOnce(newer);
+      await refreshUsage("claude-code", true);
+      expect(get(agentUsageStore)["claude-code"]).toEqual(newer);
+
+      poll.answer(older);
+      await polling;
+      expect(get(agentUsageStore)["claude-code"]).toEqual(newer);
+    });
+
+    /// A failure replaces a reading with nothing still open in it. When
+    /// the reading is a newer call's, the stale timer is what retires it,
+    /// not an older curl's timeout.
+    it("drops an older call's failure once a newer answer has landed", async () => {
+      const sinceReset: AgentUsageReport = {
+        ...newer,
+        windows: [{ id: "five_hour", label: "5-hour", usedPercent: 40, resetsAt: 1 }],
+      };
+      const poll = pendingPoll();
+      const polling = refreshUsage("claude-code");
+      backendMock.agentUsage.mockResolvedValueOnce(sinceReset);
+      await refreshUsage("claude-code", true);
+
+      poll.fail();
+      await polling;
+      expect(get(agentUsageStore)["claude-code"]).toEqual(sinceReset);
+    });
+
+    /// A failure is not a reading, so it supersedes nothing: the poll
+    /// that started first is still the newest answer there is.
+    it("still takes an older call's answer when the newer call failed", async () => {
+      const poll = pendingPoll();
+      const polling = refreshUsage("claude-code");
+      backendMock.agentUsage.mockRejectedValueOnce(new Error("ipc down"));
+      await refreshUsage("claude-code", true);
+
+      poll.answer(older);
+      await polling;
+      expect(get(agentUsageStore)["claude-code"]).toEqual(older);
+    });
+
+    it("keeps the refreshing badge up until the newest call answers", async () => {
+      backendMock.agentUsage.mockResolvedValueOnce(older);
+      const refresh = pendingPoll();
+      const first = refreshUsage("claude-code");
+      const second = refreshUsage("claude-code", true);
+      await first;
+      expect(get(usageRefreshingStore)["claude-code"]).toBe(true);
+
+      refresh.answer(newer);
+      await second;
+      expect(get(usageRefreshingStore)["claude-code"]).toBeUndefined();
+      expect(get(agentUsageStore)["claude-code"]).toEqual(newer);
+    });
+
+    it("keeps one profile's calls out of another's ordering", async () => {
+      const poll = pendingPoll();
+      const polling = refreshUsage("codex");
+      backendMock.agentUsage.mockResolvedValueOnce(newer);
+      await refreshUsage("claude-code", true);
+
+      poll.answer(older);
+      await polling;
+      expect(get(agentUsageStore)["codex"]).toEqual(older);
+    });
+  });
 });
 
 describe("hydrateUsageCache", () => {
