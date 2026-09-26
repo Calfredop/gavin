@@ -175,6 +175,26 @@ export function staleWorktrees(worktrees: readonly WorktreeInfo[], facts: SweepF
   return classifyWorktrees(worktrees, facts).filter((v) => v.stale);
 }
 
+/// What an open switcher re-asks git on: the worktree SET, as a string.
+/// Asking costs one `git status` per worktree, and every Git-view
+/// refresh rebuilds the refs object, so keying on the list itself re-ran
+/// all of them on every refresh while the set stood still.
+///
+/// Path, branch and missing-ness, and nothing else. The main checkout's
+/// branch is the base `git branch --merged` measures against; a missing
+/// folder is never asked about, so one that comes back must be. HEAD is
+/// left out on purpose -- every commit moves it. What that gives up is a
+/// badge noticing new edits while the menu stays open, and the sweep
+/// re-reads git before its confirmation, so the list a human agrees to
+/// is still current. Sorted, because the set is the question, not the
+/// order git listed it in.
+export function worktreeFactsKey(worktrees: readonly WorktreeInfo[]): string {
+  return worktrees
+    .map((w) => JSON.stringify([w.path, w.branch, w.prunable]))
+    .sort()
+    .join("\n");
+}
+
 /// One line per worktree in the confirmation: the folder the human will
 /// see disappear, then the branch and why it qualified. The folder name
 /// leads because that is what the sweep actually deletes.

@@ -6,9 +6,11 @@ import {
   nothingToSweepLines,
   staleWorktrees,
   sweepConfirm,
+  worktreeFactsKey,
   type SweepFacts,
 } from "$lib/git/worktreeSweep";
 import type { FileEntry, WorktreeInfo } from "$lib/git/git";
+import { svelteSources } from "$lib/sources";
 
 function wt(path: string, branch: string | null, extra: Partial<WorktreeInfo> = {}): WorktreeInfo {
   return { path, head: "abc1234", branch, isMain: false, locked: false, prunable: false, ...extra };
@@ -271,5 +273,64 @@ describe("whether a removal may be forced", () => {
         unstaged: [entry(".gavin-root"), entry("src/newfile.ts")],
       })
     ).toBe(false);
+  });
+});
+
+// Every Git-view refresh hands the switcher a brand-new worktree list, so
+// an open menu that re-asked git whenever the LIST changed ran one
+// `git status` per worktree on every refresh. The key moves when the SET
+// does, and only then.
+describe("the key an open switcher re-asks git on", () => {
+  const trees = [MAIN, wt("/repo-auth", "feat/auth")];
+
+  it("is the same for a rebuilt list of the same worktrees", () => {
+    // A commit moves HEAD and a refresh rebuilds every object; neither is
+    // a reason to run the sweep's git processes again.
+    const rebuilt = trees.map((w) => ({ ...w, head: "def5678" }));
+    expect(worktreeFactsKey(rebuilt)).toBe(worktreeFactsKey(trees));
+  });
+
+  it("ignores the order the list arrives in", () => {
+    expect(worktreeFactsKey([...trees].reverse())).toBe(worktreeFactsKey(trees));
+  });
+
+  it("changes when a worktree is added or removed", () => {
+    const key = worktreeFactsKey(trees);
+    expect(worktreeFactsKey([...trees, wt("/repo-ui", "feat/ui")])).not.toBe(key);
+    expect(worktreeFactsKey([MAIN])).not.toBe(key);
+  });
+
+  it("changes when a checkout switches branch", () => {
+    const key = worktreeFactsKey(trees);
+    // The main checkout's branch is the base `git branch --merged` asks about.
+    expect(worktreeFactsKey([wt("/repo", "develop", { isMain: true }), trees[1]])).not.toBe(key);
+    expect(worktreeFactsKey([MAIN, wt("/repo-auth", "feat/auth-2")])).not.toBe(key);
+    expect(worktreeFactsKey([MAIN, wt("/repo-auth", null)])).not.toBe(key);
+  });
+
+  it("changes when a folder goes missing or comes back", () => {
+    // A missing folder is never asked about, so a restored one would be
+    // absent from `dirty` -- which reads as clean -- until git is asked.
+    const missing = [MAIN, wt("/repo-auth", "feat/auth", { prunable: true })];
+    expect(worktreeFactsKey(missing)).not.toBe(worktreeFactsKey(trees));
+  });
+
+  it("is empty for no worktrees, which the menu reads as nothing to ask", () => {
+    expect(worktreeFactsKey([])).toBe("");
+  });
+});
+
+// The component half, which the pure suite cannot reach: the effect has
+// to depend on the key alone. `loadFacts` reads `worktrees` before its
+// first await, so calling it tracked would put the whole list back among
+// the effect's dependencies and every refresh would re-run it again.
+describe("the switcher's facts effect", () => {
+  const SOURCES = svelteSources();
+  const switcher = SOURCES["GitWorktreeSwitcher.svelte"];
+
+  it("keys on the worktree set and asks git untracked", () => {
+    expect(switcher).toContain("const factsKey = $derived(worktreeFactsKey(worktrees));");
+    expect(switcher).toContain('if (!open || factsKey === "") return;');
+    expect(switcher).toContain("untrack(() => void loadFacts());");
   });
 });
