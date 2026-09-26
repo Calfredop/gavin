@@ -22,16 +22,22 @@ export interface PlanDropSpec {
 // write resolves (the optimistic-patch contract). On failure: stop --
 // the watcher push (~170ms) reconciles whatever landed -- and return an
 // error naming the file that failed. Null on success.
+//
+// A status write can move the file -- into plans/done/, or back out --
+// so the dragged card's order write goes to the path that write
+// answered with. The patches stay on the path the store holds: it
+// learns the new one from the watcher's push, not from here.
 export async function applyPlanDrop(spec: PlanDropSpec): Promise<string | null> {
   let current = spec.path;
+  let onDisk = spec.path;
   try {
     if (spec.statusTarget !== null) {
-      await backend.setPlanFrontmatterField(spec.path, "status", spec.statusTarget);
+      onDisk = await backend.setPlanFrontmatterField(spec.path, "status", spec.statusTarget);
       patchPlanField(spec.workspaceId, spec.path, "status", spec.statusTarget);
     }
     for (const w of computeOrderWrites(spec.targetColumn, spec.targetIndex, spec.path)) {
       current = w.path;
-      await backend.setPlanFrontmatterField(w.path, "order", String(w.order));
+      await backend.setPlanFrontmatterField(w.path === spec.path ? onDisk : w.path, "order", String(w.order));
       patchPlanField(spec.workspaceId, w.path, "order", String(w.order));
     }
     return null;
@@ -178,13 +184,17 @@ async function applyNestDrop(
     return "Only a task can nest into a plan in its own context";
   }
   let current = dragged.id;
+  // Nesting files the card beside its new parent, so either write can
+  // move it -- into plans/done/ under a Done plan. Followed exactly as
+  // applyPlanDrop follows its status write.
+  let onDisk = dragged.id;
   try {
     if (dragged.parent !== plan.fileName) {
-      await backend.setPlanFrontmatterField(dragged.id, "parent", plan.fileName);
+      onDisk = await backend.setPlanFrontmatterField(onDisk, "parent", plan.fileName);
       patchPlanField(workspaceId, dragged.id, "parent", plan.fileName);
     }
     if (dragged.status !== null) {
-      await backend.setPlanFrontmatterField(dragged.id, "status", "");
+      onDisk = await backend.setPlanFrontmatterField(onDisk, "status", "");
       patchPlanField(workspaceId, dragged.id, "status", "");
     }
     const siblings = plan.nestedChildren
@@ -192,7 +202,7 @@ async function applyNestDrop(
       .map((c) => ({ path: c.id, order: c.order }));
     for (const w of computeOrderWrites(siblings, targetIndex, dragged.id)) {
       current = w.path;
-      await backend.setPlanFrontmatterField(w.path, "order", String(w.order));
+      await backend.setPlanFrontmatterField(w.path === dragged.id ? onDisk : w.path, "order", String(w.order));
       patchPlanField(workspaceId, w.path, "order", String(w.order));
     }
     return null;
