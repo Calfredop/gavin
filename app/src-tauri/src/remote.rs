@@ -18,6 +18,7 @@
 //! window; every request to it is gated on its own verdict, never on the
 //! local daemon's.
 
+use crate::command_lane::{CommandLane, DaemonLanes};
 use crate::config::{SshConfig, Workspace};
 use crate::session::{
     attach_and_relay, list_valid_session_ids, non_session_tab_ids, resolve_sessions, send_request,
@@ -293,8 +294,11 @@ pub struct RemoteLink {
     pub id: u64,
     pub host: String,
     pub compat: DaemonCompat,
-    /// Request/reply, serialised by the mutex like `CommandConnection`.
-    pub command: Mutex<Stream>,
+    /// Request/reply, one at a time in enqueue order, on the host's one
+    /// command connection (`command_lane.rs`). A second connection per
+    /// host would be a second ssh process; the local daemon's slow-reads
+    /// lane is not worth that here.
+    pub command: CommandLane,
     /// The streaming connection's writer, like `DaemonConnection`.
     pub writer: Arc<Mutex<Stream>>,
     /// The user's home on the host: the cwd fallback for sessions there.
@@ -308,17 +312,23 @@ pub struct RemoteLink {
 }
 
 impl RemoteLink {
-    /// One request/reply on the command connection, gated on THIS daemon's
-    /// version like every command the app sends it.
-    fn ask(&self, req: &Request) -> anyhow::Result<Response> {
-        crate::session::send_command_reconnecting(&self.command, &self.compat, req)
+    /// This host's daemon as a command sends it requests, gated on THIS
+    /// daemon's version like every request the app sends it.
+    pub fn lanes(&self) -> DaemonLanes {
+        DaemonLanes::single(self.command.clone(), self.compat)
+    }
+
+    /// One request/reply on the command connection, waited for on this
+    /// thread: every caller is a sync command or the blocking pool.
+    fn ask(&self, req: Request) -> anyhow::Result<Response> {
+        self.command.ask(&self.compat, req)
     }
 
     /// `ReadWorkspaceFile` (v39): the file's text under `root` on the
     /// host, or `None` when there is none, and whether it was cut at the
     /// cap.
     pub fn read_file(&self, root: &str, path: &str) -> anyhow::Result<(Option<String>, bool)> {
-        match self.ask(&Request::ReadWorkspaceFile { root_path: root.to_string(), path: path.to_string() })? {
+        match self.ask(Request::ReadWorkspaceFile { root_path: root.to_string(), path: path.to_string() })? {
             Response::WorkspaceFile { content, truncated } => Ok((content, truncated)),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("expected WorkspaceFile, got {other:?}"),
@@ -327,7 +337,7 @@ impl RemoteLink {
 
     /// `WriteWorkspaceFile` (v39).
     pub fn write_file(&self, root: &str, path: &str, content: &str) -> anyhow::Result<()> {
-        match self.ask(&Request::WriteWorkspaceFile {
+        match self.ask(Request::WriteWorkspaceFile {
             root_path: root.to_string(),
             path: path.to_string(),
             content: content.to_string(),
@@ -340,7 +350,7 @@ impl RemoteLink {
 
     /// `StatWorkspacePaths` (v39): where each path resolves on the host.
     pub fn stat_paths(&self, root: &str, paths: &[String]) -> anyhow::Result<Vec<protocol::WorkspacePathStat>> {
-        match self.ask(&Request::StatWorkspacePaths { root_path: root.to_string(), paths: paths.to_vec() })? {
+        match self.ask(Request::StatWorkspacePaths { root_path: root.to_string(), paths: paths.to_vec() })? {
             Response::WorkspacePathStats { stats } => Ok(stats),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("expected WorkspacePathStats, got {other:?}"),
@@ -357,7 +367,7 @@ impl RemoteLink {
         args: &[String],
         stdin: Option<&str>,
     ) -> anyhow::Result<(Vec<u8>, String, i32)> {
-        match self.ask(&Request::RunGit {
+        match self.ask(Request::RunGit {
             root_path: root.to_string(),
             cwd: cwd.to_string(),
             args: args.to_vec(),
@@ -371,7 +381,7 @@ impl RemoteLink {
 
     /// `ListWorkspaceDir` (v40): a directory's children on the host.
     pub fn list_dir(&self, root: &str, path: &str) -> anyhow::Result<Vec<protocol::WorkspaceDirEntry>> {
-        match self.ask(&Request::ListWorkspaceDir { root_path: root.to_string(), path: path.to_string() })? {
+        match self.ask(Request::ListWorkspaceDir { root_path: root.to_string(), path: path.to_string() })? {
             Response::WorkspaceDir { entries } => Ok(entries),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("expected WorkspaceDir, got {other:?}"),
@@ -388,7 +398,7 @@ impl RemoteLink {
         args: &[String],
         env: &[(String, String)],
     ) -> anyhow::Result<(Vec<u8>, String, i32)> {
-        match self.ask(&Request::RunGitEnv {
+        match self.ask(Request::RunGitEnv {
             root_path: root.to_string(),
             cwd: cwd.to_string(),
             args: args.to_vec(),
@@ -404,7 +414,7 @@ impl RemoteLink {
     /// behind the op it is cancelling never arrives, which is the whole
     /// reason the op itself goes the other way.
     pub fn cancel_git_op(&self, op_id: &str) -> anyhow::Result<bool> {
-        match self.ask(&Request::CancelGitOp { op_id: op_id.to_string() })? {
+        match self.ask(Request::CancelGitOp { op_id: op_id.to_string() })? {
             Response::GitOpCancelled { cancelled } => Ok(cancelled),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("expected GitOpCancelled, got {other:?}"),
@@ -444,7 +454,7 @@ impl RemoteLink {
 
     /// `CreateWorkspacePath` (v42): an empty file, or one directory.
     pub fn create_path(&self, root: &str, path: &str, directory: bool) -> anyhow::Result<()> {
-        match self.ask(&Request::CreateWorkspacePath {
+        match self.ask(Request::CreateWorkspacePath {
             root_path: root.to_string(),
             path: path.to_string(),
             directory,
@@ -457,7 +467,7 @@ impl RemoteLink {
 
     /// `RenameWorkspacePath` (v42).
     pub fn rename_path(&self, root: &str, from: &str, to: &str) -> anyhow::Result<()> {
-        match self.ask(&Request::RenameWorkspacePath {
+        match self.ask(Request::RenameWorkspacePath {
             root_path: root.to_string(),
             from: from.to_string(),
             to: to.to_string(),
@@ -472,7 +482,7 @@ impl RemoteLink {
     /// request's own note. The confirmation was answered on this side
     /// before the request went out.
     pub fn trash_path(&self, root: &str, path: &str) -> anyhow::Result<()> {
-        match self.ask(&Request::TrashWorkspacePath {
+        match self.ask(Request::TrashWorkspacePath {
             root_path: root.to_string(),
             path: path.to_string(),
         })? {
@@ -872,7 +882,14 @@ pub fn open_link(cfg: &SshConfig) -> anyhow::Result<(Arc<RemoteLink>, Stream)> {
         id: NEXT_LINK_ID.fetch_add(1, Ordering::Relaxed),
         host: cfg.host.clone(),
         compat,
-        command: command_conn,
+        // No redial: the connection is an ssh bridge, and a lost link is
+        // `link_lost`'s to report and Reconnect's to rebuild.
+        command: CommandLane::spawn(
+            cfg.host.clone(),
+            command_conn.into_inner().expect("command connection mutex poisoned"),
+            compat.daemon_version,
+            None,
+        ),
         writer,
         home,
         host_os,
@@ -956,18 +973,11 @@ pub fn link_workspace(app: &AppHandle, workspace_id: &str) -> anyhow::Result<()>
         &app.state::<BoardTabs>().0.lock().unwrap(),
         &app.state::<CardTabs>().0.lock().unwrap(),
     );
-    let all = list_valid_session_ids(&link.command, &link.compat)?;
+    let lanes = link.lanes();
+    let all = list_valid_session_ids(&lanes)?;
     let mut ws = ws;
     for page in ws.pages.iter_mut() {
-        resolve_sessions(
-            &mut page.layout,
-            &link.command,
-            &all,
-            &non_session,
-            &link.compat,
-            Some(&root),
-            &link.home,
-        )?;
+        resolve_sessions(&mut page.layout, &lanes, &all, &non_session, Some(&root), &link.home)?;
     }
     if let Some(id) = ws.main_session_id.clone() {
         if !all.get(&id).is_some_and(|s| s.status != "exited") {
@@ -1315,7 +1325,7 @@ mod tests {
                 app_version: protocol::PROTOCOL_VERSION,
                 degraded: version < protocol::PROTOCOL_VERSION,
             },
-            command: Mutex::new(command_side),
+            command: CommandLane::spawn(host.to_string(), command_side, version, None),
             writer: Arc::new(Mutex::new(app_side)),
             home: "/home/me".to_string(),
             host_os: "linux".to_string(),

@@ -11,11 +11,14 @@ import { describe, it, expect } from "vitest";
 // round trips held the main thread 12 s of every minute, in unbroken runs
 // of up to 9.5 s, and `git_run_changes` about a second per call.
 //
-// Each one listed is `async` and hands its work to the blocking pool, the
-// shape `get_git_baselines` documents -- directly, or through git/run.rs's
-// `off_main_thread`, which is that same call in one line. The list is not
-// exhaustive: it is the commands measured or known to wait on something
-// slow, so none of them can quietly go back to a plain `fn`.
+// Each one listed is `async` and either hands its work to the blocking
+// pool, the shape `get_git_baselines` documents -- directly, or through
+// git/run.rs's `off_main_thread`, which is that same call in one line --
+// or queues a daemon request on a command lane and awaits the reply
+// (command_lane.rs). The list is not exhaustive: it is the commands
+// measured or known to wait on something slow, so none of them can
+// quietly go back to a plain `fn`. The daemon commands are covered whole
+// by the structural check at the bottom as well.
 
 const RUST = import.meta.glob("../../../src-tauri/src/**/*.rs", {
   query: "?raw",
@@ -127,25 +130,56 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // the remover walks it again before it trashes anything.
   ["workspace_delete.rs", "scan_gavin_footprint", "a walk of the whole workspace root"],
   ["workspace_delete.rs", "remove_gavin_footprint", "the same walk again, then a Trash move per item"],
+  // The daemon's request/reply commands. They shared one blocking
+  // connection with no read timeout, so any of them could hold the main
+  // thread for as long as a handler took; they moved off it together,
+  // onto command lanes, because moving one would have made the others
+  // wait on the main thread behind it. Measured before: set_orchestration
+  // 0.26 s a minute, list_managed_sessions 0.1-0.2 s (polled every 2-5 s
+  // by three surfaces), get_board 0.1 s.
+  ["session.rs", "get_board", "a daemon round trip, on every tree push"],
+  ["session.rs", "set_board", "a daemon round trip"],
+  ["session.rs", "card_runs", "a daemon round trip"],
+  ["session.rs", "get_orchestration", "a daemon round trip"],
+  ["session.rs", "set_orchestration", "a daemon round trip that pushes the whole plan first"],
+  ["session.rs", "set_rail_run", "a daemon round trip, every scheduler pass"],
+  ["session.rs", "set_step_run", "a daemon round trip, every scheduler pass"],
+  ["session.rs", "get_gavin_tree", "a tree read that can wait on a rescan"],
+  ["session.rs", "list_managed_sessions", "two daemon round trips, polled every 2-5 s"],
+  ["session.rs", "get_session_baselines", "a round trip to every daemon, on every load"],
+  ["session.rs", "tool_runs", "a daemon round trip"],
+  ["session.rs", "set_plan_frontmatter_field", "a card write through the daemon"],
+  ["session.rs", "archive_card", "a card move through the daemon"],
+  ["session.rs", "end_orphan", "TERM, a 2 s grace, then KILL, per orphan"],
+  ["session.rs", "kill_session", "a daemon round trip"],
+  ["session.rs", "create_session", "a PTY spawn in the daemon"],
+  ["session.rs", "session_screen", "a daemon round trip, per turn verdict"],
+  ["session.rs", "gavin_root_exists", "a root scan on an ssh host"],
 ];
 
 /// The command's text from its `#[tauri::command]` line to the first
-/// line that closes a top-level item. Attributes may sit between the two,
-/// as `#[allow(clippy::too_many_arguments)]` does on a command with many
-/// arguments.
+/// line that closes a top-level item. Attributes and doc comments may sit
+/// between the two, as `#[allow(clippy::too_many_arguments)]` does on a
+/// command with many arguments.
 function commandBody(file: string, command: string): string {
   const text = rust(file);
-  const at = text.search(new RegExp(`#\\[tauri::command\\]\\s*(#\\[[^\\]]*\\]\\s*)*pub (async )?fn ${command}\\(`));
+  const at = text.search(
+    new RegExp(`#\\[tauri::command\\]\\s*(#\\[[^\\]]*\\]\\s*|///[^\\n]*\\n\\s*)*pub (async )?fn ${command}\\(`)
+  );
   expect(at, `${command} is not a command in ${file}`).toBeGreaterThan(-1);
   return text.slice(at, text.indexOf("\n}\n", at));
 }
+
+/// A command that queues its daemon request on a lane and awaits the
+/// reply: it names the lanes it sends on, and awaits.
+const WORKER_QUEUE = /(lanes_for\(|\.lanes\()[\s\S]*\.await/;
 
 describe("commands that wait on something slow", () => {
   for (const [file, command, waitsOn] of OFF_MAIN_THREAD) {
     it(`${command} (${waitsOn}) runs off the main thread`, () => {
       const body = commandBody(file, command);
       expect(body).toContain(`pub async fn ${command}(`);
-      expect(body).toMatch(/spawn_blocking|off_main_thread\(/);
+      if (!/spawn_blocking|off_main_thread\(/.test(body)) expect(body).toMatch(WORKER_QUEUE);
     });
   }
 
@@ -158,4 +192,54 @@ describe("commands that wait on something slow", () => {
     expect(at, "off_main_thread is not an async fn in git/run.rs").toBeGreaterThan(-1);
     expect(text.slice(at, text.indexOf("\n}\n", at))).toContain("tauri::async_runtime::spawn_blocking(");
   });
+
+  // The same for the worker queue. A lane is only off the main thread
+  // while its `request` AWAITS the worker's reply -- one that waited on
+  // this thread would block a runtime worker instead -- and while
+  // enqueueing never blocks, which is what lets it run on the first poll.
+  it("command_lane.rs's request awaits the worker, and enqueueing never blocks", () => {
+    const text = rust("command_lane.rs");
+    const request = text.slice(text.search(/pub async fn request\(/), text.indexOf("\n    }\n", text.search(/pub async fn request\(/)));
+    expect(request).toContain(".await");
+    expect(request).not.toMatch(/\.wait\(|blocking_recv|\.ask\(/);
+    const at = text.search(/pub fn submit\(/);
+    expect(at, "submit is not a fn in command_lane.rs").toBeGreaterThan(-1);
+    const submit = text.slice(at, text.indexOf("\n    }\n", at));
+    expect(submit).toContain("crate::session::gate(");
+    expect(submit).toContain(".send(Job::Ask");
+    expect(submit).not.toMatch(/\.lock\(|\.wait\(|blocking_recv|\.recv\(/);
+  });
+});
+
+/// Every `#[tauri::command]` in a file, as [name, text].
+function commands(file: string): [string, string][] {
+  const text = rust(file);
+  const found: [string, string][] = [];
+  const re = /#\[tauri::command\]\s*(?:#\[[^\]]*\]\s*|\/\/\/[^\n]*\n\s*)*pub (?:async )?fn (\w+)\(/g;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    found.push([m[1], text.slice(m.index, text.indexOf("\n}\n", m.index))]);
+  }
+  return found;
+}
+
+// Why the daemon commands moved as ONE unit: they share each lane, so a
+// command left as a plain `fn` would wait on the main thread for every
+// request queued ahead of it -- the freeze moves to it rather than going
+// away. So no command that reaches a lane may be a plain `fn`, and none
+// may wait on the lane with the blocking `ask`.
+describe("the daemon's command lanes", () => {
+  const onLane = /CommandConnection|lanes_for\(|\.lanes\(/;
+  const reaching = commands("session.rs").filter(([, text]) => onLane.test(text));
+
+  it("are reached by the daemon commands at all", () => {
+    expect(reaching.length).toBeGreaterThan(40);
+  });
+
+  for (const [name, text] of reaching) {
+    it(`${name} awaits its lane rather than holding the main thread`, () => {
+      expect(text).toContain(`pub async fn ${name}(`);
+      expect(text).toMatch(WORKER_QUEUE);
+      expect(text).not.toMatch(/\.ask\(|\.wait\(/);
+    });
+  }
 });

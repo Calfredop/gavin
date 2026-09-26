@@ -47,6 +47,10 @@ getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+# The command lanes' replies (command_lane.rs): a oneshot a Tauri command
+# awaits and a plain thread can block on. Already in the graph through
+# tauri, which runs the multi-threaded runtime `block_in_place` needs.
+tokio = { version = "1", features = ["sync", "rt-multi-thread"] }
 notify = "8"
 notify-debouncer-mini = "0.7"
 # The Git watcher's gitignore matcher (git/watch.rs): an ignored path is a

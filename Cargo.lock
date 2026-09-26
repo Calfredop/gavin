@@ -121,6 +121,7 @@ dependencies = [
  "tauri-plugin-os",
  "tauri-plugin-updater",
  "tempfile",
+ "tokio",
  "toml 0.8.2",
  "toml_edit 0.22.27",
  "trash",

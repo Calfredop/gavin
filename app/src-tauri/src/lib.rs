@@ -2,6 +2,7 @@ mod agent_models;
 mod agent_setup;
 mod agent_tokens;
 mod agent_usage;
+mod command_lane;
 mod config;
 mod confirm_gate;
 mod daemon;
