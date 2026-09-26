@@ -2,6 +2,7 @@ mod bridge;
 mod gavin;
 mod git_status;
 mod git_watch;
+mod input;
 mod kanban;
 mod orchestration;
 mod osc;

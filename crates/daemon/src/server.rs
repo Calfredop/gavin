@@ -2987,13 +2987,22 @@ impl SessionManager {
         self.kanban.lock().unwrap().delete_board(workspace_id)
     }
 
+    /// Hands `data` to this session's program and returns without waiting
+    /// for it to be read.
+    ///
+    /// Every caller is a thread something else is waiting on -- a
+    /// connection's one request loop, the command connection answering
+    /// "send anyway", the status path delivering a queued follow-up -- so
+    /// the write itself happens on the session's own input thread
+    /// (`crate::input`). A program that has stopped reading holds up its
+    /// own input and nobody else's.
     pub fn write_input(&self, id: &str, data: &[u8]) -> anyhow::Result<()> {
-        let writer = {
+        let input = {
             let sessions = self.sessions.lock().unwrap();
             let session = sessions
                 .get(id)
                 .ok_or_else(|| anyhow::anyhow!("unknown session: {id}"))?;
-            session.writer_handle()
+            session.input()
         };
         // A focus report is the terminal describing ITSELF, and every
         // rule below this point is about the human typing -- so it takes
@@ -3007,7 +3016,7 @@ impl SessionManager {
         // notification is even worth sending.
         if is_focus_report(data) {
             self.provoke_repaint(id);
-            writer.lock().unwrap().write_all(data)?;
+            input.send(data)?;
             return Ok(());
         }
         // BEFORE the bytes reach the PTY, and that ordering is the whole
@@ -3047,7 +3056,7 @@ impl SessionManager {
                 None => acked.remove(id),
             };
         }
-        writer.lock().unwrap().write_all(data)?;
+        input.send(data)?;
         if let Err(e) = self.registry.lock().unwrap().clear_restored(id) {
             eprintln!("failed to clear restored flag for session {id}: {e}");
         }
@@ -7967,6 +7976,131 @@ mod tests {
             },
         );
         assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    /// A program busy with something other than its input: raw mode, as
+    /// an agent's TUI runs, painting and never reading. Raw because that
+    /// is the mode that blocks early -- a raw macOS pty took 1022 bytes
+    /// from a program that was not reading, where canonical mode took a
+    /// megabyte -- and busy rather than silent so a session running it
+    /// stays `working`, which is when a follow-up waits in its queue.
+    #[cfg(unix)]
+    const STOPS_READING: &str = "stty raw -echo; while :; do printf gavin_busy; sleep 0.2; done";
+
+    /// More than a pty holds for a program that is not reading it: 1022
+    /// bytes on macOS, and Linux's tty buffer is some hundreds of KB. In
+    /// chunks, because one request line has to fit under
+    /// `MAX_LINE_BYTES`.
+    #[cfg(unix)]
+    fn more_than_a_pty_holds() -> Vec<String> {
+        (0..8).map(|_| "x".repeat(256 * 1024)).collect()
+    }
+
+    /// Reads `stream` to its end on a thread of its own, the way the app's
+    /// relay thread always reads its connection. An attached connection
+    /// nobody reads fills, and the daemon's pushes to it block -- which
+    /// is a stall of the test's own making, not the one under test.
+    #[cfg(unix)]
+    fn drain(stream: &Stream) {
+        let mut reader = line_reader(stream.try_clone().unwrap());
+        std::thread::spawn(move || while let Ok(Some(_)) = read_message::<_, Response>(&mut reader) {});
+    }
+
+    /// Asks every session in `ids` to end, so a program that never reads
+    /// does not outlive the test that started it.
+    #[cfg(unix)]
+    fn kill_all(socket_path: &std::path::Path, ids: &[&str]) {
+        let mut commands = Stream::connect(socket_path).unwrap();
+        for id in ids {
+            request(&mut commands, &Request::KillSession { id: id.to_string() });
+        }
+    }
+
+    /// The bug: a connection's input was written into each session's pty
+    /// on that connection's one thread, and a write into a program that
+    /// is not reading does not return. One paste into a wedged agent
+    /// parked the app's streaming connection, and every other terminal's
+    /// keystrokes, resizes and repaints queued behind it.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_that_stops_reading_does_not_hold_up_another_sessions_input() {
+        let (socket_path, _dir) = start_test_server();
+        let stuck = create_session_with(&socket_path, STOPS_READING);
+        let live = create_session_with(
+            &socket_path,
+            "stty raw -echo; printf gavin_ready; head -c 1 >/dev/null; printf gavin_took_it; sleep 600",
+        );
+        // Both in raw mode before a byte is sent: canonical mode takes a
+        // megabyte, and the test would prove nothing.
+        let mut stuck_out = Stream::connect(&socket_path).unwrap();
+        write_message(&mut stuck_out, &Request::Attach { id: stuck.clone() }).unwrap();
+        await_output(&stuck_out, "gavin_busy");
+        drain(&stuck_out);
+        let mut live_out = Stream::connect(&socket_path).unwrap();
+        write_message(&mut live_out, &Request::Attach { id: live.clone() }).unwrap();
+        await_output(&live_out, "gavin_ready");
+
+        // ONE connection carrying both sessions' input, as the app's
+        // streaming connection does. From a thread of its own: against
+        // the bug the socket fills and these writes never return, and it
+        // is the wait below that has to report it.
+        let mut typing = Stream::connect(&socket_path).unwrap();
+        let (to_stuck, to_live) = (stuck.clone(), live.clone());
+        std::thread::spawn(move || {
+            for chunk in more_than_a_pty_holds() {
+                let req = Request::WriteInput { id: to_stuck.clone(), data: chunk };
+                write_message(&mut typing, &req).unwrap();
+            }
+            write_message(&mut typing, &Request::WriteInput { id: to_live, data: "y".into() }).unwrap();
+            std::thread::sleep(PROCESS_BUDGET);
+        });
+
+        await_output(&live_out, "gavin_took_it");
+        kill_all(&socket_path, &[&stuck, &live]);
+    }
+
+    /// "Send anyway" is the override for exactly an agent that looks
+    /// stuck, and it wrote into the pty on the COMMAND connection's
+    /// thread -- so the reply the app waits on could not come back until
+    /// the program read, and nothing queued behind it on that connection
+    /// could either.
+    #[cfg(unix)]
+    #[test]
+    fn sending_a_follow_up_anyway_does_not_wait_for_a_program_that_is_not_reading() {
+        let (socket_path, _dir) = start_test_server();
+        let stuck = create_session_with(&socket_path, STOPS_READING);
+        let mut out = Stream::connect(&socket_path).unwrap();
+        write_message(&mut out, &Request::Attach { id: stuck.clone() }).unwrap();
+        await_output(&out, "gavin_busy");
+        drain(&out);
+
+        let (answered, answers) = std::sync::mpsc::channel();
+        let id = stuck.clone();
+        let commands_at = socket_path.clone();
+        std::thread::spawn(move || {
+            let mut commands = Stream::connect(&commands_at).unwrap();
+            // Still under one line's cap, and far over what the pty holds.
+            let text = "x".repeat(900 * 1024);
+            let queued_id = match request(&mut commands, &Request::QueueInput { id: id.clone(), text }) {
+                Response::QueuedInputs { queued } if queued.len() == 1 => queued[0].id.clone(),
+                other => panic!("expected the follow-up to wait in the queue, got {other:?}"),
+            };
+            let sent = request(&mut commands, &Request::SendQueuedInput { id: id.clone(), queued_id });
+            // The connection itself, not only the one reply: whatever the
+            // app asks next on that lane must not be stuck behind it.
+            let next = request(&mut commands, &Request::ListSessions);
+            let _ = answered.send((sent, next));
+        });
+
+        let (sent, next) = answers
+            .recv_timeout(PROCESS_BUDGET)
+            .expect("SendQueuedInput never answered while its program was not reading");
+        assert!(
+            matches!(&sent, Response::QueuedInputs { queued } if queued.is_empty()),
+            "the follow-up should have left the queue: {sent:?}"
+        );
+        assert!(matches!(next, Response::SessionList { .. }), "got {next:?}");
+        kill_all(&socket_path, &[&stuck]);
     }
 
     /// Drives a session until its output contains `marker`, returning every

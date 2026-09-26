@@ -1,5 +1,6 @@
+use crate::input::InputQueue;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -22,7 +23,9 @@ pub struct PtySession {
     /// The master end of the pty, until the child exits. Shared with the
     /// exit watcher, which is what closes it -- see `watch_for_exit`.
     master: Arc<Mutex<Master>>,
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// The pty's input side, written by a thread of this session's own
+    /// (see `crate::input`).
+    input: InputQueue,
     /// Shared with the exit watcher too: `Child::try_wait` takes the
     /// child mutably, and the watcher is a second caller of it.
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
@@ -340,7 +343,7 @@ impl PtySession {
 
         Ok(Self {
             master,
-            writer: Arc::new(Mutex::new(writer)),
+            input: InputQueue::spawn(writer),
             child,
         })
     }
@@ -363,21 +366,18 @@ impl PtySession {
         }
     }
 
-    /// A clonable handle to the PTY's input side, so a caller can write to it
-    /// without holding whatever lock guards the collection this session
-    /// lives in (see SessionManager::write_input).
-    pub fn writer_handle(&self) -> Arc<Mutex<Box<dyn Write + Send>>> {
-        Arc::clone(&self.writer)
+    /// A clonable handle to the PTY's input side, so a caller can hand it
+    /// input without holding whatever lock guards the collection this
+    /// session lives in (see SessionManager::write_input).
+    pub fn input(&self) -> InputQueue {
+        self.input.clone()
     }
 
-    /// Direct write to this PTY. Callers holding a lock over a collection of
-    /// sessions should use `writer_handle()` instead, so the blocking write
-    /// happens after that lock is released (see SessionManager::write_input) —
-    /// which leaves this method used only by this module's own tests.
+    /// Input for this PTY, through the same queue as `input()` -- which
+    /// leaves this method used only by this module's own tests.
     #[allow(dead_code)]
     pub fn write_input(&self, data: &[u8]) -> anyhow::Result<()> {
-        self.writer.lock().unwrap().write_all(data)?;
-        Ok(())
+        self.input.send(data)
     }
 
     /// Nothing to do once the process has ended: the master is gone, and
@@ -464,6 +464,9 @@ impl PtySession {
     /// any caller can reach.
     pub fn retire(self) {
         self.hangup();
+        // Nothing is going to read what is still waiting: the program
+        // has just been told its terminal is gone.
+        self.input.close();
         std::thread::spawn(move || {
             let mut session = self;
             // Escalates to SIGKILL once the grace period has passed, and
@@ -538,6 +541,7 @@ impl Drop for PtySession {
         // session is dropped without an explicit kill() (e.g. create_session
         // failing after spawn, or a session replaced during recover()).
         let _ = self.child.lock().unwrap().kill();
+        self.input.close();
         // The master is shared with the exit watcher, so it does not go
         // with this struct by itself -- and its going is what gives the
         // pump its end of stream on the kill path (see `retire`). Closed
