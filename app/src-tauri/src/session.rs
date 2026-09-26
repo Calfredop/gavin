@@ -3274,6 +3274,10 @@ pub async fn get_session_baselines(
 /// things about them: `ended` false with `still_running` true is a
 /// process refusing SIGTERM -- the same stubbornness that got it here --
 /// while both false means it had already gone.
+///
+/// The daemon waits out its grace on the connection that carries the
+/// request, so it rides one of its own (`command_lane::runs_apart`):
+/// several at once wait side by side, and nothing else waits behind them.
 #[tauri::command]
 pub async fn end_orphan(
     app_handle: AppHandle,

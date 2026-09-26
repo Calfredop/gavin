@@ -151,7 +151,7 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["session.rs", "tool_runs", "a daemon round trip"],
   ["session.rs", "set_plan_frontmatter_field", "a card write through the daemon"],
   ["session.rs", "archive_card", "a card move through the daemon"],
-  ["session.rs", "end_orphan", "TERM, a 2 s grace, then KILL, per orphan"],
+  ["session.rs", "end_orphan", "SIGTERM and a 2 s grace, on a connection of its own"],
   ["session.rs", "kill_session", "a daemon round trip"],
   ["session.rs", "create_session", "a PTY spawn in the daemon"],
   ["session.rs", "session_screen", "a daemon round trip, per turn verdict"],
@@ -203,12 +203,24 @@ describe("commands that wait on something slow", () => {
     const request = text.slice(text.search(/pub async fn request\(/), text.indexOf("\n    }\n", text.search(/pub async fn request\(/)));
     expect(request).toContain(".await");
     expect(request).not.toMatch(/\.wait\(|blocking_recv|\.ask\(/);
-    const at = text.search(/pub fn submit\(/);
-    expect(at, "submit is not a fn in command_lane.rs").toBeGreaterThan(-1);
-    const submit = text.slice(at, text.indexOf("\n    }\n", at));
-    expect(submit).toContain("crate::session::gate(");
+    const fnBody = (name: string): string => {
+      const at = text.search(new RegExp(`fn ${name}\\(`));
+      expect(at, `${name} is not a fn in command_lane.rs`).toBeGreaterThan(-1);
+      return text.slice(at, text.indexOf("\n    }\n", at));
+    };
+    expect(fnBody("admit")).toContain("crate::session::gate(");
+    const submit = fnBody("submit");
+    expect(submit).toContain("self.admit(");
     expect(submit).toContain(".send(Job::Ask");
     expect(submit).not.toMatch(/\.lock\(|\.wait\(|blocking_recv|\.recv\(/);
+    // A request that goes apart dials its own connection and waits out a
+    // 2 s grace on it: both belong to the thread it spawns, never to the
+    // caller.
+    const apart = fnBody("submit_apart");
+    expect(apart).toContain("self.admit(");
+    const onThread = apart.indexOf(".spawn(move ||");
+    expect(onThread, "submit_apart does not hand its round trip to a thread").toBeGreaterThan(-1);
+    expect(apart.slice(0, onThread)).not.toMatch(/round_trip|redial\(|connect\(|\.lock\(|\.wait\(|\.recv\(/);
   });
 });
 

@@ -77,9 +77,9 @@ pub(crate) fn deadline_for(req: &Request) -> Duration {
         // A tree read can wait on a rescan the watcher runs under its
         // lock; on a large repo that has taken tens of seconds.
         Request::GetGavinTree { .. } | Request::ScanGavinRoot { .. } => Duration::from_secs(120),
-        // TERM, then up to ORPHAN_EXIT_GRACE (2 s) of polling, then KILL
-        // -- per orphan, and a stubborn process group is the case this
-        // request exists for.
+        // SIGTERM, then up to ORPHAN_EXIT_GRACE (2 s) of polling for the
+        // exit -- and a process that refuses is the case this request
+        // exists for.
         Request::EndOrphan { .. } => Duration::from_secs(60),
         // The host's Trash, which on macOS can be a Finder round trip.
         Request::TrashWorkspacePath { .. } => Duration::from_secs(120),
@@ -101,6 +101,23 @@ pub(crate) fn is_slow_read(req: &Request) -> bool {
         req,
         Request::GetGavinTree { .. } | Request::SessionProcesses | Request::ScanGavinRoot { .. }
     )
+}
+
+/// The requests that go out on a connection of their own
+/// (`CommandLane::submit_apart`).
+///
+/// `EndOrphan`'s handler waits out `ORPHAN_EXIT_GRACE` on the thread
+/// serving its connection, and the orphan it is sent for already ignored
+/// SIGHUP -- so the full 2 s is the usual case, not the edge. On a lane,
+/// every request queued behind it waited that out too, and the close
+/// sweep's N orphans waited one after another: N × 2 s. On connections of
+/// their own the daemon waits them out side by side.
+///
+/// Nothing ordered depends on where it rides: its callers await it
+/// before the `KillSession` that must follow, and a second one for the
+/// same session is a harmless no-op on the daemon.
+pub(crate) fn runs_apart(req: &Request) -> bool {
+    matches!(req, Request::EndOrphan { .. })
 }
 
 /// Pushes the daemon writes to every `app` connection whether it asked
@@ -140,6 +157,10 @@ struct Shared {
     /// the compat state just before a restart republished it would
     /// otherwise put a request the old daemon allowed onto the new one.
     version: AtomicU32,
+    /// How the lane reopens its connection, and dials one for a request
+    /// that goes apart. `None` on an ssh link.
+    redial: Option<Redial>,
+    deadline: fn(&Request) -> Duration,
 }
 
 // `Swap` is a few bytes and `Ask` a whole request, but a swap happens once
@@ -183,15 +204,10 @@ impl CommandLane {
             peer: peer.into(),
             swapping: AtomicBool::new(false),
             version: AtomicU32::new(version),
-        });
-        let worker = Worker {
-            shared: Arc::clone(&shared),
-            conn: Some(BufReader::new(stream)),
-            owed: 0,
-            version,
             redial,
             deadline,
-        };
+        });
+        let worker = Worker { shared: Arc::clone(&shared), conn: Some(BufReader::new(stream)), owed: 0, version };
         std::thread::Builder::new()
             .name(format!("command lane: {}", shared.peer))
             .spawn(move || worker.run(queue))
@@ -201,23 +217,66 @@ impl CommandLane {
 
     /// Queues `req` and returns its reply, to await or to wait on.
     ///
-    /// Gated here, before the bytes leave: a daemon older than the
-    /// request cannot PARSE it, and that parse error closes the whole
-    /// connection. Never blocks -- the queue is unbounded, and the worker
-    /// does the waiting.
+    /// Gated first (`admit`). Never blocks -- the queue is unbounded, and
+    /// the worker does the waiting.
     pub fn submit(&self, compat: &DaemonCompat, req: Request) -> anyhow::Result<Reply> {
-        crate::session::gate(&req, compat).map_err(|e| anyhow::anyhow!(e))?;
+        self.admit(compat, &req)?;
+        let (reply, answer) = oneshot::channel();
+        self.jobs
+            .send(Job::Ask { req, reply })
+            .map_err(|_| anyhow::anyhow!("the command worker for {} has stopped", self.shared.peer))?;
+        Ok(Reply(answer))
+    }
+
+    /// `submit`, on a connection of the request's own: dialled for it and
+    /// presented the way a redial presents the lane's, then closed after
+    /// its one reply. For `runs_apart`'s requests, whose handler holds the
+    /// connection it arrives on. Never blocks either: the dial and the
+    /// wait are a thread's of their own.
+    ///
+    /// A lane with nothing to dial -- an ssh link, whose one connection is
+    /// its bridge -- queues the request like any other instead.
+    pub fn submit_apart(&self, compat: &DaemonCompat, req: Request) -> anyhow::Result<Reply> {
+        if self.shared.redial.is_none() {
+            return self.submit(compat, req);
+        }
+        self.admit(compat, &req)?;
+        let (reply, answer) = oneshot::channel();
+        let mut worker = Worker {
+            shared: Arc::clone(&self.shared),
+            conn: None,
+            owed: 0,
+            version: compat.daemon_version,
+        };
+        std::thread::Builder::new()
+            .name(format!("command apart: {}", self.shared.peer))
+            .spawn(move || {
+                let answer = if worker.shared.swapping.load(Ordering::SeqCst) {
+                    Err(restarting(&worker.shared.peer))
+                } else {
+                    worker.round_trip(&req)
+                };
+                let _ = reply.send(answer);
+            })
+            .map_err(|e| anyhow::anyhow!("could not start a connection to {}: {e}", self.shared.peer))?;
+        Ok(Reply(answer))
+    }
+
+    /// Whether `req` may leave for this lane's daemon at all.
+    ///
+    /// Gated here, before the bytes leave: a daemon older than the request
+    /// cannot PARSE it, and that parse error closes the whole connection.
+    /// And refused while a restart swaps the daemon, or once it has
+    /// swapped to a version other than the one `compat` describes.
+    fn admit(&self, compat: &DaemonCompat, req: &Request) -> anyhow::Result<()> {
+        crate::session::gate(req, compat).map_err(|e| anyhow::anyhow!(e))?;
         if self.shared.swapping.load(Ordering::SeqCst) {
             return Err(restarting(&self.shared.peer));
         }
         if compat.daemon_version != self.shared.version.load(Ordering::SeqCst) {
             return Err(restarting(&self.shared.peer));
         }
-        let (reply, answer) = oneshot::channel();
-        self.jobs
-            .send(Job::Ask { req, reply })
-            .map_err(|_| anyhow::anyhow!("the command worker for {} has stopped", self.shared.peer))?;
-        Ok(Reply(answer))
+        Ok(())
     }
 
     /// `submit`, then wait for the reply on this thread. For the callers
@@ -313,6 +372,9 @@ impl DaemonLanes {
     }
 
     pub fn submit(&self, req: Request) -> anyhow::Result<Reply> {
+        if runs_apart(&req) {
+            return self.main.submit_apart(&self.compat, req);
+        }
         let lane = if is_slow_read(&req) { &self.reads } else { &self.main };
         lane.submit(&self.compat, req)
     }
@@ -348,8 +410,6 @@ struct Worker {
     /// that finds a different daemon on the endpoint refuses to send
     /// anything: every request in the queue was gated for this one.
     version: u32,
-    redial: Option<Redial>,
-    deadline: fn(&Request) -> Duration,
 }
 
 impl Worker {
@@ -375,7 +435,7 @@ impl Worker {
 
     fn round_trip(&mut self, req: &Request) -> anyhow::Result<Response> {
         self.send(req)?;
-        let deadline = (self.deadline)(req);
+        let deadline = (self.shared.deadline)(req);
         let conn = self.conn.as_mut().expect("send leaves a connection behind");
         // This request's answer comes after every one still owed.
         let mut due = self.owed + 1;
@@ -389,7 +449,7 @@ impl Worker {
                     }
                     // A late answer to a request already given up on.
                 }
-                Err(e) if e.is::<TimedOut>() && self.redial.is_none() => {
+                Err(e) if e.is::<TimedOut>() && self.shared.redial.is_none() => {
                     // Nothing to redial: an ssh link's connection is its
                     // bridge. Keep it, and owe what did not arrive.
                     self.owed = due;
@@ -447,7 +507,7 @@ impl Worker {
     /// a redialled connection ran as `local`, which loses CreateSession
     /// and EndOrphan the moment `require_local_token` is on.
     fn redial(&mut self) -> anyhow::Result<()> {
-        let Some(redial) = &self.redial else {
+        let Some(redial) = &self.shared.redial else {
             anyhow::bail!("the connection to {} is closed — reconnect to it", self.shared.peer);
         };
         let peer = &self.shared.peer;
@@ -993,6 +1053,129 @@ mod tests {
         assert_eq!(main_arrived.join().unwrap(), vec!["s-3".to_string()]);
         drop(lanes);
         assert_eq!(wedged_reads.join().unwrap(), 1);
+    }
+
+    /// Room for a test daemon that holds its answer on purpose.
+    fn roomy(_: &Request) -> Duration {
+        Duration::from_secs(5)
+    }
+
+    /// A daemon on `listener` that serves every connection on a thread of
+    /// its own, as `server::serve` does: it answers a version probe, holds
+    /// an EndOrphan for `hold` -- an orphan refusing SIGTERM, waited out --
+    /// and answers anything else at once. Counts the connections dialled
+    /// for a request -- the ones that open with the probe -- which leaves
+    /// out the lane's own, handed over already probed.
+    fn holding_daemon(listener: Listener, hold: Duration) -> Arc<AtomicU32> {
+        let dialled = Arc::new(AtomicU32::new(0));
+        let counted = Arc::clone(&dialled);
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(conn) = conn else { continue };
+                let counted = Arc::clone(&counted);
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(conn.try_clone().unwrap());
+                    while let Ok(Some(req)) = read_message::<_, Request>(&mut reader) {
+                        let resp = match req {
+                            Request::GetProtocolVersion => {
+                                counted.fetch_add(1, Ordering::SeqCst);
+                                Response::ProtocolVersion { version: protocol::PROTOCOL_VERSION }
+                            }
+                            Request::EndOrphan { id } => {
+                                std::thread::sleep(hold);
+                                Response::OrphanEnded { id, ended: false, still_running: true }
+                            }
+                            other => Response::Error { message: id_of(&other) },
+                        };
+                        if write_message(&mut &conn, &resp).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        dialled
+    }
+
+    /// EndOrphan holds the connection that carries it for the daemon's
+    /// whole grace -- 2 s for an orphan that refuses SIGTERM, which is the
+    /// usual orphan. On the lane, the close sweep's N of them waited one
+    /// after another and every request behind them waited too. Each goes
+    /// out on a connection of its own instead.
+    #[test]
+    fn end_orphans_wait_together_on_connections_of_their_own() {
+        const N: u32 = 4;
+        const HOLD: Duration = Duration::from_secs(1);
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("apart.sock");
+        let listener = Listener::bind(&sock).unwrap();
+        let first = Stream::connect(&sock).unwrap();
+        let dialled = holding_daemon(listener, HOLD);
+        let lane = CommandLane::spawn_with(
+            "the test daemon",
+            first,
+            protocol::PROTOCOL_VERSION,
+            redial_to(&sock, || None),
+            roomy,
+        );
+        let lanes = DaemonLanes::new(lane.clone(), lane, parity());
+
+        let start = Instant::now();
+        let ends: Vec<Reply> =
+            (0..N).map(|i| lanes.submit(Request::EndOrphan { id: format!("o-{i}") }).unwrap()).collect();
+        assert_eq!(message(lanes.ask(kill(1)).unwrap()), "s-1");
+        assert!(start.elapsed() < HOLD, "a request on the lane waited behind the EndOrphans");
+
+        for (i, end) in ends.into_iter().enumerate() {
+            match end.wait().unwrap() {
+                Response::OrphanEnded { id, .. } => assert_eq!(id, format!("o-{i}"), "a reply crossed callers"),
+                other => panic!("expected OrphanEnded, got {other:?}"),
+            }
+        }
+        let took = start.elapsed();
+        assert!(took < HOLD * 2, "{N} EndOrphans took {took:?}: they waited one after another");
+        assert_eq!(dialled.load(Ordering::SeqCst), N, "one connection per EndOrphan");
+    }
+
+    /// A connection of its own is still the app's connection: refused
+    /// while a restart swaps the daemon, like every request on the lane,
+    /// rather than dialled to whichever daemon holds the socket.
+    #[test]
+    fn an_end_orphan_is_refused_mid_restart_rather_than_dialled() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("swap.sock");
+        let listener = Listener::bind(&sock).unwrap();
+        let first = Stream::connect(&sock).unwrap();
+        let dialled = holding_daemon(listener, Duration::ZERO);
+        let lane = CommandLane::spawn_with(
+            "the test daemon",
+            first,
+            protocol::PROTOCOL_VERSION,
+            redial_to(&sock, || None),
+            roomy,
+        );
+        lane.begin_swap();
+        let lanes = DaemonLanes::new(lane.clone(), lane, parity());
+        let err = lanes.submit(Request::EndOrphan { id: "o".into() }).err().expect("dialled mid-restart");
+        assert!(err.to_string().contains("restarting"), "{err}");
+        assert_eq!(dialled.load(Ordering::SeqCst), 0, "a connection was dialled mid-restart");
+    }
+
+    /// An ssh link has one connection, its bridge, and nothing to dial: an
+    /// EndOrphan rides it like any other request.
+    #[test]
+    fn a_lane_with_nothing_to_dial_sends_end_orphan_on_its_own_connection() {
+        let (lane, daemon) = lane_and_daemon();
+        let fake = std::thread::spawn(move || {
+            let mut reader = BufReader::new(daemon.try_clone().unwrap());
+            let req = next(&mut reader).unwrap();
+            let Request::EndOrphan { id } = req else { panic!("expected EndOrphan, got {req:?}") };
+            write_message(&mut &daemon, &Response::OrphanEnded { id, ended: true, still_running: false }).unwrap();
+        });
+        let lanes = DaemonLanes::single(lane, parity());
+        let resp = lanes.ask(Request::EndOrphan { id: "o".into() }).unwrap();
+        assert!(matches!(resp, Response::OrphanEnded { ended: true, .. }), "{resp:?}");
+        fake.join().unwrap();
     }
 
     #[test]
