@@ -254,6 +254,33 @@ export function isPrStep(step: Step, kinds: Map<string, ToolKind> | null): boole
   return kinds.get(step.toolId) === "pr";
 }
 
+/// Whether the scheduler should keep this rail's pull request polled.
+///
+/// Only while something reads the answer: a `pr` step that is WAITING
+/// (rule 3f's verdict), or one the loop re-armed after a failure, whose
+/// predecessor's retry prompt opens with the failing checks read from
+/// the live report (retrySourceFor). Not a rail that merely CARRIES a
+/// wait: every poll is a `gh` round trip to GitHub, and polling rails
+/// that had not reached theirs cost one workspace nineteen of them a
+/// minute, indefinitely. A wait that launches warms its own poll
+/// (executeToolLaunch), so nothing is lost by not warming it earlier
+/// but the first sweep's wait -- small beside a wait on CI.
+export function wantsPrPoll(
+  rail: Rail,
+  orch: Orchestration,
+  kinds: Map<string, ToolKind> | null
+): boolean {
+  if (!rail.branch) return false;
+  return rail.stages.some((stage) =>
+    stage.steps.some((step) => {
+      if (!isPrStep(step, kinds)) return false;
+      const run = orch.stepRuns.find((r) => r.stepId === step.id);
+      if (!run) return false;
+      return run.state === "running" || (run.state === "pending" && (run.resumeAttempts ?? 0) >= 1);
+    })
+  );
+}
+
 /// Whether a step can send its rail BACKWARDS. Two kinds can, and every
 /// rule about the loop itself -- the budget, the retry label, what opens
 /// the re-run's prompt -- is about this predicate rather than about

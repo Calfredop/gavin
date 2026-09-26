@@ -427,13 +427,23 @@ pub fn parse_pr_json(raw: &str, now: i64) -> PrReport {
 /// cannot skip the timeout or make an unauthenticated `gh` answer, and it
 /// is deliberately not what the scheduler passes: a rail polling a PR
 /// every tick would be a rail hammering GitHub.
+///
+/// `async`, with the probe on the blocking pool: a plain `fn` command
+/// runs on the main thread, and every `gh` here is a network round trip
+/// (0.45–1.3 s measured, up to GH_TIMEOUT). The poll's sweep asks for
+/// every stale branch at once, so on the main thread those waits added up
+/// into freezes of several seconds. The cache read stays inline -- it is
+/// the common answer and it is instant. `Result` only because Tauri
+/// requires one of an async command that borrows its state; the one
+/// `Err` is a probe that never ran, which `refreshPr` already treats as
+/// "keep the last report".
 #[tauri::command]
-pub fn pr_status(
+pub async fn pr_status(
     cache: tauri::State<'_, PrCache>,
     cwd: String,
     branch: String,
     force: bool,
-) -> PrReport {
+) -> Result<PrReport, String> {
     let key = format!("{cwd}\u{0}{branch}");
     let now = now_secs();
 
@@ -448,15 +458,17 @@ pub fn pr_status(
                 _ => MIN_INTERVAL_SECS,
             };
             if now - entry.fetched_at < floor && !force {
-                return entry.report.clone().as_cached();
+                return Ok(entry.report.clone().as_cached());
             }
         }
     }
 
-    let report = probe(&cwd, &branch, now);
+    let report = tauri::async_runtime::spawn_blocking(move || probe(&cwd, &branch, now))
+        .await
+        .map_err(|e| format!("the gh probe did not run: {e}"))?;
     let mut map = cache.0.lock().unwrap();
     map.insert(key, Entry { report: report.clone(), fetched_at: now });
-    report
+    Ok(report)
 }
 
 fn probe(cwd: &str, branch: &str, now: i64) -> PrReport {

@@ -116,10 +116,10 @@ import {
 import {
   buildUntilScript,
   exhaustedReason,
-  isPrStep,
   retrySourceFor,
   stageIdOfStep,
   untilLogPath,
+  wantsPrPoll,
   withRetryPrefix,
 } from "$lib/orchestration/orchestrationLoop";
 import { currentPrReports, prReportFor, prReports, requestPr, startPrPolling } from "$lib/git/prState";
@@ -2016,16 +2016,13 @@ async function runTick(workspaceId: string): Promise<boolean> {
   // waiting on CI polling while the human is on another tab, which is
   // the whole point of a rail that runs unattended.
   //
-  // Every rail carrying a pr step at all, not only one whose step is
-  // already running: the report has to be warm by the time the step
-  // launches, or its first tick waits a poll cycle for its own answer.
+  // Only rails whose wait is running or mid-loop (wantsPrPoll), not
+  // every rail carrying one: this runs for every loaded workspace, and
+  // each renewal keeps a `gh` round trip a minute alive. A wait that
+  // launches warms its own poll (executeToolLaunch).
   const kinds = tools ? new Map(tools.map((t) => [t.id, t.kind])) : null;
   for (const rail of orch.rails) {
-    if (!rail.branch) continue;
-    const wants = rail.stages.some((stage) =>
-      stage.steps.some((step) => isPrStep(step, kinds))
-    );
-    if (wants) requestPr(conflictCheckout(rail, tree), rail.branch);
+    if (wantsPrPoll(rail, orch, kinds)) requestPr(conflictCheckout(rail, tree), rail.branch);
   }
   return await executeActions(
     workspaceId,

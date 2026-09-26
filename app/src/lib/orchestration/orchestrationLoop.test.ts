@@ -23,10 +23,11 @@ import {
   setTempRoot,
   untilMax,
   untilVerdict,
+  wantsPrPoll,
   withRetryPrefix,
 } from "$lib/orchestration/orchestrationLoop";
 import { nextActions } from "$lib/orchestration/orchestration";
-import type { Orchestration, Rail, ToolSummary } from "$lib/orchestration/orchestration";
+import type { Orchestration, Rail, StepState, ToolSummary } from "$lib/orchestration/orchestration";
 import { BUILTIN_TOOLS, findTool } from "$lib/orchestration/orchestrationTools";
 import type { Board } from "$lib/board/kanban";
 import { allSources } from "$lib/sources";
@@ -456,6 +457,84 @@ describe("retryLogFor", () => {
   });
 });
 
+describe("wantsPrPoll", () => {
+  const PR_TOOL = "builtin:await-pr";
+  const PR_KINDS = new Map([
+    [WORK_TOOL, "agent" as const],
+    [PR_TOOL, "pr" as const],
+  ]);
+
+  /// Some work, then the wait on its pull request, on a bound branch.
+  function prRail(branch: string | null = "feat/x"): Rail {
+    return {
+      id: "r1",
+      name: "r1",
+      position: 0,
+      worktreePath: "/wt",
+      branch,
+      pageId: null,
+      stages: [
+        {
+          id: "r1-s0",
+          position: 0,
+          steps: [{ id: "work", position: 0, cardPath: "", toolId: WORK_TOOL, toolParams: {} }],
+        },
+        {
+          id: "r1-s1",
+          position: 1,
+          steps: [{ id: "wait", position: 0, cardPath: "", toolId: PR_TOOL, toolParams: {} }],
+        },
+      ],
+    };
+  }
+
+  function withWait(state: StepState | null, resumeAttempts: number | null = null): Orchestration {
+    return {
+      rails: [prRail()],
+      conflictNotes: [],
+      railRuns: [{ railId: "r1", state: "running", currentStageId: "r1-s0" }],
+      stepRuns:
+        state === null
+          ? []
+          : [{ stepId: "wait", state, sessionId: null, reason: null, resumeAttempts }],
+    };
+  }
+
+  it("polls a rail whose pr step is waiting", () => {
+    expect(wantsPrPoll(prRail(), withWait("running"), PR_KINDS)).toBe(true);
+  });
+
+  // The loop re-armed the step before the wait, and that step's prompt
+  // opens with the failing checks read from the live report -- so the
+  // report must still be there when it launches.
+  it("polls a rail mid-loop, whose retry prompt reads the failing checks", () => {
+    expect(wantsPrPoll(prRail(), withWait("pending", 1), PR_KINDS)).toBe(true);
+  });
+
+  // The measured case: nineteen rails that had not reached their wait
+  // each cost a `gh` round trip a minute, forever.
+  it("does not poll a rail that has not reached its pr step", () => {
+    expect(wantsPrPoll(prRail(), withWait(null), PR_KINDS)).toBe(false);
+    expect(wantsPrPoll(prRail(), withWait("pending", 0), PR_KINDS)).toBe(false);
+  });
+
+  it("does not poll once the wait has passed", () => {
+    expect(wantsPrPoll(prRail(), withWait("done", 2), PR_KINDS)).toBe(false);
+  });
+
+  it("does not poll a stalled wait, which relaunching warms again", () => {
+    expect(wantsPrPoll(prRail(), withWait("stalled", 1), PR_KINDS)).toBe(false);
+  });
+
+  it("does not poll an unbound rail, which has no pull request", () => {
+    expect(wantsPrPoll(prRail(null), withWait("running"), PR_KINDS)).toBe(false);
+  });
+
+  it("does not poll while the tool library is still loading", () => {
+    expect(wantsPrPoll(prRail(), withWait("running"), null)).toBe(false);
+  });
+});
+
 // ---- the scheduler ----------------------------------------------------------
 
 describe("a loop-until step on a running rail", () => {
@@ -617,6 +696,25 @@ describe("fail, then pass", () => {
 // are one-line decisions whose failure mode is silent.
 
 const SOURCES = allSources();
+
+describe("the pr poll's wiring", () => {
+  // The tick is what renews a rail's interest, in every loaded
+  // workspace, on every store emission -- so whatever it asks about is
+  // polled for as long as the app runs.
+  it("renews interest only for the rails wantsPrPoll names", () => {
+    const source = SOURCES["orchestrationState.ts"];
+    expect(source).toContain("if (wantsPrPoll(rail, orch, kinds)) requestPr(");
+    expect(source).not.toContain("stage.steps.some((step) => isPrStep(step, kinds))");
+  });
+
+  it("still warms a wait's poll the moment it launches", () => {
+    const source = SOURCES["orchestrationState.ts"];
+    const at = source.indexOf("async function executeToolLaunch(");
+    expect(at).toBeGreaterThan(-1);
+    const body = source.slice(at, source.indexOf("\n}\n", at));
+    expect(body).toContain("requestPr(conflictCheckout(rail, get(gavinTrees)[workspaceId]), rail.branch)");
+  });
+});
 
 describe("the until step's wiring", () => {
   it("ships as a built-in, so it is in the + Add step picker's Tools list", () => {

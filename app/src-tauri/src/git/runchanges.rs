@@ -402,13 +402,21 @@ pub fn git_head_sha(cwd: String) -> Result<Option<String>, String> {
     head_sha(&cwd)
 }
 
+/// `async` + `spawn_blocking`, like `get_git_baselines`: one call runs
+/// several `git` processes (about a second, measured), and the decoy
+/// sweep and the review gate ask for it with nobody waiting on screen --
+/// on the main thread that second was a frozen window.
 #[tauri::command]
-pub fn git_run_changes(
+pub async fn git_run_changes(
     cwd: String,
     base_sha: String,
     peers: Option<Vec<String>>,
 ) -> Result<RunChanges, String> {
-    run_changes(&cwd, &base_sha, &peers.unwrap_or_default())
+    tauri::async_runtime::spawn_blocking(move || {
+        run_changes(&cwd, &base_sha, &peers.unwrap_or_default())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
