@@ -7,6 +7,7 @@ import type { PrReport } from "$lib/git/pullRequest";
 import type { CardRun, TokenReport } from "$lib/cards/runHistory";
 import type { ConversationLog } from "$lib/cards/cardRun";
 import { invoke } from "@tauri-apps/api/core";
+import { isTerminalReport } from "$lib/terminal/terminalReport";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Board, Column, Label } from "$lib/board/kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
@@ -522,6 +523,11 @@ export function setSuperpowersMark(
 // hooking in here is the one choke point that covers both without either
 // of those modules needing to import layoutState.ts back (which would be
 // circular, since layoutState.ts already imports terminalRegistry.ts).
+//
+// Only for what a human typed or pasted. xterm's onData also carries the
+// terminal's reports about itself -- focus changes, and a mouse report
+// per cell the pointer crosses when the program tracks it -- and those
+// are still written but never dismiss the ↻ badge (see terminalReport.ts).
 let onWriteInput: ((sessionId: string) => void) | null = null;
 
 export function setOnWriteInputHook(handler: (sessionId: string) => void): void {
@@ -529,7 +535,7 @@ export function setOnWriteInputHook(handler: (sessionId: string) => void): void 
 }
 
 export function writeInput(sessionId: string, data: string): Promise<void> {
-  onWriteInput?.(sessionId);
+  if (!isTerminalReport(data)) onWriteInput?.(sessionId);
   return invoke("write_input", { sessionId, data });
 }
 
