@@ -1103,8 +1103,10 @@ fn trigger_recheck_for_session(manager: &Arc<SessionManager>, id: &str) {
 /// before reporting that it refused.
 ///
 /// Long enough for a node-based agent to run its exit handlers, short
-/// enough to stay inside a button press: this blocks the connection
-/// thread serving the app's single command socket.
+/// enough to stay inside a button press: this holds the thread serving
+/// the connection the request came in on. The app gives every EndOrphan
+/// a connection of its own for that reason, so the close sweep's N
+/// orphans wait this out side by side, not one after another.
 const ORPHAN_EXIT_GRACE: Duration = Duration::from_secs(2);
 
 /// The one place a registry row becomes the wire's view of a session.
@@ -12518,6 +12520,113 @@ mod tests {
                 assert!(!still_running, "nothing recorded is not the same as something refusing");
             }
             other => panic!("expected OrphanEnded, got {other:?}"),
+        }
+    }
+
+    /// `spawn_survivor`'s process, minus the one thing that ever ended
+    /// it: this one ignores SIGTERM too, the orphan `end_orphan` has to
+    /// report as refusing. `sleep` inherits the ignored disposition across
+    /// exec, so neither the shell nor its child goes. Unix only: Windows'
+    /// `terminate` cannot be refused.
+    #[cfg(unix)]
+    fn spawn_stubborn_survivor() -> (std::process::Child, crate::proc::ProcessHandle) {
+        let child = std::process::Command::new("/bin/sh")
+            .args(["-c", "trap '' HUP TERM; sleep 30"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let handle = crate::proc::identify(child.id()).expect("the survivor must be visible");
+        (child, handle)
+    }
+
+    /// The close sweep ends every orphan at once, each on a connection of
+    /// its own (the app's `command_lane::runs_apart`). That only pays if
+    /// the daemon waits them out side by side -- each connection has its
+    /// own thread, and `end_orphan` holds no lock across the grace -- so
+    /// N orphans that refuse SIGTERM cost one grace, not N, and a request
+    /// on another connection is answered while they wait.
+    #[cfg(unix)]
+    #[test]
+    fn stubborn_orphans_on_their_own_connections_wait_out_one_grace_together() {
+        const N: usize = 4;
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("registry.sqlite");
+        let survivors: Vec<std::process::Child> = (0..N)
+            .map(|i| {
+                let (child, handle) = spawn_stubborn_survivor();
+                let id = format!("stubborn-{i}");
+                leftover_row_running(&db, &id, "/tmp", Some("claude"), SessionStatus::Working, Some(handle));
+                child
+            })
+            .collect();
+        let manager = Arc::new(recovered_manager(&dir));
+        manager.set_daemon_token("test-daemon-token".to_string());
+        let sock_dir = tempfile::tempdir().unwrap();
+        let sock = sock_dir.path().join("daemon.sock");
+        let listener = bind_server(&sock).unwrap();
+        std::thread::spawn(move || {
+            let _ = serve(listener, manager);
+        });
+
+        let start = std::time::Instant::now();
+        let (written, all_written) = std::sync::mpsc::channel();
+        let ends: Vec<_> = (0..N)
+            .map(|i| {
+                let sock = sock.clone();
+                let written = written.clone();
+                std::thread::spawn(move || {
+                    // Presented the way the app presents it: EndOrphan is
+                    // privileged, and `local` loses it under
+                    // require_local_token.
+                    let mut conn = Stream::connect(&sock).unwrap();
+                    let hello = request(
+                        &mut conn,
+                        &Request::Hello {
+                            client: "app".into(),
+                            protocol_version: protocol::PROTOCOL_VERSION,
+                            auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                            nonce: format!("n-{i}"),
+                        },
+                    );
+                    assert!(matches!(&hello, Response::HelloAck { role, .. } if role == "app"), "{hello:?}");
+                    write_message(&mut conn, &Request::EndOrphan { id: format!("stubborn-{i}") }).unwrap();
+                    written.send(()).unwrap();
+                    read_message::<_, Response>(&mut line_reader(conn)).unwrap().unwrap()
+                })
+            })
+            .collect();
+        for _ in 0..N {
+            all_written.recv().unwrap();
+        }
+
+        // Every one of them is inside its grace now, and none can leave
+        // it before a whole grace from `start` has passed.
+        let mut other = Stream::connect(&sock).unwrap();
+        let listed = request(&mut other, &Request::ListSessions);
+        assert!(matches!(listed, Response::SessionList { .. }), "{listed:?}");
+        assert!(
+            start.elapsed() < ORPHAN_EXIT_GRACE,
+            "a request on another connection waited behind the orphans"
+        );
+
+        for end in ends {
+            match end.join().unwrap() {
+                Response::OrphanEnded { ended, still_running, .. } => {
+                    assert!(!ended);
+                    assert!(still_running, "the orphan ignored SIGTERM, so it must be reported as refusing");
+                }
+                other => panic!("expected OrphanEnded, got {other:?}"),
+            }
+        }
+        let took = start.elapsed();
+        assert!(took >= ORPHAN_EXIT_GRACE, "the daemon did not wait out the grace: {took:?}");
+        assert!(
+            took < ORPHAN_EXIT_GRACE * 2,
+            "{N} stubborn orphans took {took:?}: they waited one after another, not together"
+        );
+        for child in survivors {
+            kill_and_reap(child);
         }
     }
 
