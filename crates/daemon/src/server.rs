@@ -5256,8 +5256,7 @@ fn handle_connection_as(
     // state: a link that drops takes its connection with it, and a
     // watcher owned by the connection is then dropped by the language
     // rather than by a cleanup path that has to notice the link is gone.
-    let mut git_watchers: HashMap<String, (notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>, usize)> =
-        HashMap::new();
+    let mut git_watchers: HashMap<String, (Arc<crate::git_watch::WorktreeWatch>, usize)> = HashMap::new();
 
     // Counted before anything else on this connection runs, so a client
     // that never sends a request still costs a slot for as long as it
@@ -5403,8 +5402,8 @@ fn handle_connection_as(
                             &Response::GitWorktreeChanged { cwd: push_cwd.clone() },
                         );
                     }) {
-                        Ok(debouncer) => {
-                            git_watchers.insert(cwd, (debouncer, 1));
+                        Ok(watch) => {
+                            git_watchers.insert(cwd, (watch, 1));
                         }
                         Err(e) => {
                             write_message(

@@ -48,6 +48,12 @@ export interface GavinFootprint {
   /// Nested gavin contexts: every `.gavin/` under the root, plus the
   /// `extra_contexts` folders registered from outside it.
   contexts: ContextFootprint[];
+  /// Live checkouts directly under `.gavin-worktrees/`, one per branch
+  /// the orchestrator cut a worktree for. This wizard never trashes one
+  /// -- only `git worktree remove` (the Git tab's sweep, or by hand)
+  /// takes the registration out without leaving a prunable entry -- so
+  /// they carry no answer of their own and appear only in the summary.
+  worktrees: string[];
 }
 
 export interface GavinRootFootprint {
@@ -301,6 +307,21 @@ export function confirmationMatches(typed: string, workspaceName: string): boole
   return typed.trim() === workspaceName.trim() && workspaceName.trim() !== "";
 }
 
+/// What the summary says about live worktrees. Never part of the plan --
+/// no answer in `DeleteAnswers` touches them, and `plannedRemovals` never
+/// sees them -- so this is the one place a human learns they are still
+/// there and where the removal actually happens: the Git tab's sweep, or
+/// `git worktree remove` by hand, either of which clears the checkout
+/// AND the registration `git worktree list` would otherwise still carry.
+function worktreeLines(worktrees: readonly string[]): string[] {
+  if (worktrees.length === 0) return [];
+  const names = worktrees.map((p) => p.split("/").pop() ?? p).join(", ");
+  const plural = worktrees.length !== 1;
+  return [
+    `Leave ${plural ? "" : "the "}${plural ? `${worktrees.length} worktrees` : "worktree"} in place: ${names}. Remove ${plural ? "them" : "it"} from the Git tab, or with "git worktree remove".`,
+  ];
+}
+
 /// One line per thing that will happen, for the final screen to render.
 /// Built here rather than in the template so that what the confirmation
 /// screen PROMISES and what `plannedRemovals` returns cannot drift apart.
@@ -326,6 +347,7 @@ export function summaryLines(
   if (sessionCount > 0) {
     lines.push(`End ${sessionCount} terminal session${sessionCount === 1 ? "" : "s"}`);
   }
+  lines.push(...worktreeLines(footprint.worktrees));
   lines.push("Remove the workspace from gavin");
   return lines;
 }

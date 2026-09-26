@@ -341,7 +341,7 @@
     // precondition of the command rather than a habit of this function.
     const token = await confirmDestructive("trash_entry", [node.path], {
       title: `Move ${node.name} to the Trash?`,
-      lines: trashPromptLines(node),
+      lines: trashPromptLines(root, node),
       confirmLabel: "Move to Trash",
       // Keeps focus on the dismissing button, so Enter cannot fire it by
       // reflex.

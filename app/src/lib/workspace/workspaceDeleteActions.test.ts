@@ -26,6 +26,7 @@ const footprint: GavinFootprint = {
   mcp: { path: "/repo/.mcp.json", serverKey: "gavin" },
   instructions: "/repo/CLAUDE.md",
   contexts: [],
+  worktrees: [],
 };
 
 const bare: GavinFootprint = {
@@ -36,6 +37,7 @@ const bare: GavinFootprint = {
   mcp: null,
   instructions: null,
   contexts: [],
+  worktrees: [],
 };
 
 // clearAllMocks resets call history but keeps implementations, so a

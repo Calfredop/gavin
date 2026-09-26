@@ -24,6 +24,7 @@ const full: GavinFootprint = {
     { path: "/repo/api/.gavin", outside: false },
     { path: "/elsewhere/lib/.gavin", outside: true },
   ],
+  worktrees: [],
 };
 
 const bare: GavinFootprint = {
@@ -34,6 +35,7 @@ const bare: GavinFootprint = {
   mcp: null,
   instructions: null,
   contexts: [],
+  worktrees: [],
 };
 
 /// The same workspace on the opencode profile: the skills live under a
@@ -245,5 +247,29 @@ describe("summaryLines", () => {
   it("singularizes a lone session and omits the line when there are none", () => {
     expect(summaryLines(bare, defaultAnswers(bare), 1)).toContain("End 1 terminal session");
     expect(summaryLines(bare, defaultAnswers(bare), 0).join("\n")).not.toContain("terminal session");
+  });
+
+  // Nothing in DeleteAnswers can remove one -- the wizard never plans to
+  // touch a live checkout -- so the summary is the only place a human
+  // learns it is still there, and where to actually take it out.
+  it("says a live worktree is left in place and where to remove it", () => {
+    const withWorktree: GavinFootprint = {
+      ...bare,
+      worktrees: ["/repo/.gavin-worktrees/feat-x"],
+    };
+    const lines = summaryLines(withWorktree, defaultAnswers(withWorktree), 0);
+    const line = lines.find((l) => l.includes("feat-x"));
+    expect(line).toBeDefined();
+    expect(line).toContain("Git tab");
+    expect(line).toContain("git worktree remove");
+  });
+
+  it("counts several worktrees without naming a screenful", () => {
+    const withWorktrees: GavinFootprint = {
+      ...bare,
+      worktrees: ["/repo/.gavin-worktrees/feat-x", "/repo/.gavin-worktrees/feat-y"],
+    };
+    const lines = summaryLines(withWorktrees, defaultAnswers(withWorktrees), 0);
+    expect(lines.some((l) => l.includes("feat-x") && l.includes("feat-y"))).toBe(true);
   });
 });
