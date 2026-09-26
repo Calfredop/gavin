@@ -76,6 +76,14 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["git/commands.rs", "git_remove_remote", "`git remote remove`, which rewrites refs"],
   ["git/commands.rs", "git_init", "`git init`"],
   ["git/runchanges.rs", "git_discard_run", "`reset --hard` and a Trash move per untracked file"],
+  // Conflict resolution. The read re-runs on every refresh while a `U`
+  // path is selected and after every resolve click, which is its own git
+  // plus that refresh: 1.5-2.5 s a click, measured on the main thread.
+  ["git/conflict.rs", "git_conflict", "`ls-files -u`, a `show` per stage, the side labels' reads"],
+  ["git/conflict.rs", "git_mark_resolved", "`git add`, and its clean filters"],
+  ["git/conflict.rs", "git_resolve_whole", "`checkout --ours/--theirs` and `git add`"],
+  ["git/conflict.rs", "git_resolve_deleted", "`git rm`, or a checkout and `git add`"],
+  ["git/conflict.rs", "git_restore_conflict", "`checkout -m`"],
 ];
 
 /// The command's text from its `#[tauri::command]` line to the first

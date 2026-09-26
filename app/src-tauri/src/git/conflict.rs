@@ -230,29 +230,34 @@ pub fn merge_tool_name(cwd: &str) -> Result<Option<String>, String> {
     Ok(if out.code == 0 { Some(out.stdout_str().trim().to_string()).filter(|s| !s.is_empty()) } else { None })
 }
 
+// The conflict family is `async` and runs on the blocking pool: the read
+// re-runs on every refresh while a `U` path is selected, and each resolve
+// is its own git plus that refresh and the reload -- 1.5-2.5 s a click on
+// the main thread. Ordering is the caller's: `loadConflict` checks its
+// `conflictToken`, and the resolves run under `run()`'s `busy`.
 #[tauri::command]
-pub fn git_conflict(cwd: String, path: String) -> Result<ConflictInfo, String> {
-    conflict_info(&cwd, &path)
+pub async fn git_conflict(cwd: String, path: String) -> Result<ConflictInfo, String> {
+    off_main_thread(move || conflict_info(&cwd, &path)).await
 }
 
 #[tauri::command]
-pub fn git_mark_resolved(cwd: String, path: String) -> Result<(), String> {
-    mark_resolved(&cwd, &path)
+pub async fn git_mark_resolved(cwd: String, path: String) -> Result<(), String> {
+    off_main_thread(move || mark_resolved(&cwd, &path)).await
 }
 
 #[tauri::command]
-pub fn git_resolve_whole(cwd: String, path: String, side: String) -> Result<(), String> {
-    resolve_whole(&cwd, &path, &side)
+pub async fn git_resolve_whole(cwd: String, path: String, side: String) -> Result<(), String> {
+    off_main_thread(move || resolve_whole(&cwd, &path, &side)).await
 }
 
 #[tauri::command]
-pub fn git_resolve_deleted(cwd: String, path: String, keep: bool) -> Result<(), String> {
-    resolve_deleted(&cwd, &path, keep)
+pub async fn git_resolve_deleted(cwd: String, path: String, keep: bool) -> Result<(), String> {
+    off_main_thread(move || resolve_deleted(&cwd, &path, keep)).await
 }
 
 #[tauri::command]
-pub fn git_restore_conflict(cwd: String, path: String) -> Result<(), String> {
-    restore_conflict(&cwd, &path)
+pub async fn git_restore_conflict(cwd: String, path: String) -> Result<(), String> {
+    off_main_thread(move || restore_conflict(&cwd, &path)).await
 }
 
 /// `async`, off the main thread: every Git-view refresh asks for it.
