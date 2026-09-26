@@ -5,7 +5,7 @@
 //! conflict markers remain.
 
 use crate::git::commands::repo_info;
-use crate::git::run::{ok, read_repo_file, run_git, run_git_ro};
+use crate::git::run::{off_main_thread, ok, read_repo_file, run_git, run_git_ro};
 use crate::git::types::{ConflictInfo, ConflictLabels};
 use std::path::Path;
 
@@ -255,9 +255,10 @@ pub fn git_restore_conflict(cwd: String, path: String) -> Result<(), String> {
     restore_conflict(&cwd, &path)
 }
 
+/// `async`, off the main thread: every Git-view refresh asks for it.
 #[tauri::command]
-pub fn git_merge_tool_name(cwd: String) -> Result<Option<String>, String> {
-    merge_tool_name(&cwd)
+pub async fn git_merge_tool_name(cwd: String) -> Result<Option<String>, String> {
+    off_main_thread(move || merge_tool_name(&cwd)).await
 }
 
 #[cfg(test)]

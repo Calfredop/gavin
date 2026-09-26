@@ -12,9 +12,10 @@ import { describe, it, expect } from "vitest";
 // of up to 9.5 s, and `git_run_changes` about a second per call.
 //
 // Each one listed is `async` and hands its work to the blocking pool, the
-// shape `get_git_baselines` documents. The list is not exhaustive: it is
-// the commands measured or known to wait on something slow, so none of
-// them can quietly go back to a plain `fn`.
+// shape `get_git_baselines` documents -- directly, or through git/run.rs's
+// `off_main_thread`, which is that same call in one line. The list is not
+// exhaustive: it is the commands measured or known to wait on something
+// slow, so none of them can quietly go back to a plain `fn`.
 
 const RUST = import.meta.glob("../../../src-tauri/src/**/*.rs", {
   query: "?raw",
@@ -35,6 +36,16 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["git/commands.rs", "get_git_baselines", "`git status` per session, on the load path"],
   ["typesafe.rs", "typesafe_verdict", "an HTTPS request"],
   ["typesafe.rs", "typesafe_attribution", "an HTTPS request"],
+  // The Git view's refresh and what it chains: 14 processes a refresh
+  // then, measured at 6-7 s of main thread a minute with one view open.
+  ["git/commands.rs", "git_repo_info", "five `git` processes, every refresh"],
+  ["git/commands.rs", "git_status", "`git status` over the whole checkout, every refresh"],
+  ["git/commands.rs", "git_refs", "five `git` processes, every refresh"],
+  ["git/conflict.rs", "git_merge_tool_name", "`git config`, every refresh"],
+  ["git/commands.rs", "git_diff", "`git diff` of the selected file, every refresh"],
+  ["git/commands.rs", "git_log", "`git log`, every refresh while History shows"],
+  ["git/commands.rs", "git_commit_detail", "`git show` + `git diff-tree`"],
+  ["git/runchanges.rs", "git_diff_since", "`git diff` against a run's baseline"],
 ];
 
 /// The command's text from its `#[tauri::command]` line to the first
@@ -51,7 +62,17 @@ describe("commands that wait on something slow", () => {
     it(`${command} (${waitsOn}) runs off the main thread`, () => {
       const body = commandBody(file, command);
       expect(body).toContain(`pub async fn ${command}(`);
-      expect(body).toContain("spawn_blocking");
+      expect(body).toMatch(/spawn_blocking|off_main_thread\(/);
     });
   }
+
+  // The helper is only worth trusting while it IS the blocking pool: an
+  // `async fn` that ran the work inline would pass the check above and
+  // block a runtime worker instead of the main thread.
+  it("git/run.rs's off_main_thread hands its work to the blocking pool", () => {
+    const text = rust("git/run.rs");
+    const at = text.search(/pub async fn off_main_thread</);
+    expect(at, "off_main_thread is not an async fn in git/run.rs").toBeGreaterThan(-1);
+    expect(text.slice(at, text.indexOf("\n}\n", at))).toContain("tauri::async_runtime::spawn_blocking(");
+  });
 });

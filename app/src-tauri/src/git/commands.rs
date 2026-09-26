@@ -3,7 +3,7 @@
 //! real code path without a Tauri runtime.
 
 use crate::git::parse::{parse_branches, parse_diff, parse_log, parse_name_status, parse_remotes, parse_stashes, parse_status, parse_worktree_list};
-use crate::git::run::{ok, run_git, run_git_env, run_git_ro, run_git_ro_capped};
+use crate::git::run::{off_main_thread, ok, run_git, run_git_env, run_git_ro, run_git_ro_capped};
 use crate::git::types::{Author, CommitDetail, FileDiff, LogPage, RefsSnapshot, RepoInfo, StatusResult, WorktreeInfo};
 use std::path::Path;
 
@@ -180,14 +180,21 @@ pub fn reset(cwd: &str, sha: &str, mode: &str) -> Result<(), String> {
     ok(run_git(cwd, &["reset", flag, sha], None)?).map(|_| ())
 }
 
+// The reads below -- `git_log`, `git_commit_detail`, `git_refs`,
+// `git_repo_info`, `git_status`, `git_diff` -- are `async` and run on the
+// blocking pool: a Git-view refresh chains them, and on the main thread
+// they measured 6-7 s of frozen window a minute with one view open.
+// Ordering is the caller's: each store write in gitState.ts checks its own
+// token, and `refresh()` runs one pass at a time per view.
+
 #[tauri::command]
-pub fn git_log(cwd: String, all: bool, skip: usize, limit: usize) -> Result<LogPage, String> {
-    log(&cwd, all, skip, limit.clamp(1, 1000))
+pub async fn git_log(cwd: String, all: bool, skip: usize, limit: usize) -> Result<LogPage, String> {
+    off_main_thread(move || log(&cwd, all, skip, limit.clamp(1, 1000))).await
 }
 
 #[tauri::command]
-pub fn git_commit_detail(cwd: String, sha: String) -> Result<CommitDetail, String> {
-    commit_detail(&cwd, &sha)
+pub async fn git_commit_detail(cwd: String, sha: String) -> Result<CommitDetail, String> {
+    off_main_thread(move || commit_detail(&cwd, &sha)).await
 }
 
 #[tauri::command]
@@ -281,8 +288,8 @@ pub fn git_worktree_prune(cwd: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn git_refs(cwd: String) -> Result<RefsSnapshot, String> {
-    refs(&cwd)
+pub async fn git_refs(cwd: String) -> Result<RefsSnapshot, String> {
+    off_main_thread(move || refs(&cwd)).await
 }
 
 /// The well-known empty tree: the base for a root commit's diff.
@@ -658,13 +665,13 @@ pub fn git_init(cwd: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn git_repo_info(cwd: String) -> Result<RepoInfo, String> {
-    repo_info(&cwd)
+pub async fn git_repo_info(cwd: String) -> Result<RepoInfo, String> {
+    off_main_thread(move || repo_info(&cwd)).await
 }
 
 #[tauri::command]
-pub fn git_status(cwd: String) -> Result<StatusResult, String> {
-    status(&cwd)
+pub async fn git_status(cwd: String) -> Result<StatusResult, String> {
+    off_main_thread(move || status(&cwd)).await
 }
 
 /// The git half of what a reloaded frontend has to read back rather
@@ -685,8 +692,8 @@ pub async fn get_git_baselines(cwds: Vec<String>) -> Result<Vec<Option<protocol:
 }
 
 #[tauri::command]
-pub fn git_diff(cwd: String, path: String, old_path: Option<String>, staged: bool, untracked: bool, rev: Option<String>) -> Result<FileDiff, String> {
-    diff_at(&cwd, &path, old_path.as_deref(), staged, untracked, rev.as_deref())
+pub async fn git_diff(cwd: String, path: String, old_path: Option<String>, staged: bool, untracked: bool, rev: Option<String>) -> Result<FileDiff, String> {
+    off_main_thread(move || diff_at(&cwd, &path, old_path.as_deref(), staged, untracked, rev.as_deref())).await
 }
 
 #[cfg(test)]

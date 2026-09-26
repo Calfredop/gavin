@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::commands::MAX_DIFF_BYTES;
 use crate::git::parse::{parse_diff, parse_name_status};
-use crate::git::run::{ok, run_git, run_git_ro, run_git_ro_capped};
+use crate::git::run::{off_main_thread, ok, run_git, run_git_ro, run_git_ro_capped};
 use crate::git::types::{FileDiff, FileEntry};
 use crate::trash::trash_path;
 
@@ -420,8 +420,11 @@ pub async fn git_run_changes(
     .map_err(|e| e.to_string())?
 }
 
+/// `async` like `git_run_changes`: the changes view and the review ask
+/// for one file at a time, each a `git diff` that can run long on a big
+/// file. Both already drop a stale answer by `diffToken`.
 #[tauri::command]
-pub fn git_diff_since(
+pub async fn git_diff_since(
     cwd: String,
     base_sha: String,
     path: String,
@@ -429,7 +432,10 @@ pub fn git_diff_since(
     untracked: bool,
     until_sha: Option<String>,
 ) -> Result<FileDiff, String> {
-    diff_since(&cwd, &base_sha, &path, old_path.as_deref(), untracked, until_sha.as_deref())
+    off_main_thread(move || {
+        diff_since(&cwd, &base_sha, &path, old_path.as_deref(), untracked, until_sha.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]

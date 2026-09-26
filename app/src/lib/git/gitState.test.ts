@@ -262,17 +262,77 @@ describe("refresh", () => {
     expect(backend.gitDiff).toHaveBeenLastCalledWith("/r", "a.ts", null, true, false);
   });
 
-  it("drops a superseded result", async () => {
-    ensureGitView("ws", "/r");
-    let resolveFirst!: (v: StatusResult) => void;
-    vi.mocked(backend.gitStatus)
-      .mockImplementationOnce(() => new Promise((res) => (resolveFirst = res)))
-      .mockResolvedValueOnce({ unstaged: [], staged: [] });
-    const first = refresh("ws");
-    await refresh("ws");
-    resolveFirst(status);
-    await first;
-    expect(get(gitStore)["ws"].status).toEqual({ unstaged: [], staged: [] });
+  describe("one pass at a time", () => {
+    // The commands behind a pass run off the main thread now, so nothing
+    // serialises them any more: an npm install's burst of `git-changed`
+    // used to become a dozen passes of 14 git processes each, all at once.
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    };
+
+    it("a burst during a pass costs ONE more pass, which every caller waits for", async () => {
+      ensureGitView("ws", "/r");
+      let finishFirst!: (v: StatusResult) => void;
+      vi.mocked(backend.gitStatus)
+        .mockImplementationOnce(() => new Promise((res) => (finishFirst = res)))
+        .mockResolvedValueOnce({ unstaged: [], staged: [] });
+      const first = refresh("ws");
+      await flush();
+      let settled = 0;
+      const burst = Array.from({ length: 12 }, () => refresh("ws").then(() => settled++));
+      await flush();
+      expect(backend.gitRepoInfo).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(0);
+
+      finishFirst(status);
+      await first;
+      await Promise.all(burst);
+      // Waited for the pass that started AFTER them: a caller that
+      // refreshes after a mutation must read the tree the mutation left.
+      expect(settled).toBe(12);
+      expect(backend.gitRepoInfo).toHaveBeenCalledTimes(2);
+      expect(get(gitStore)["ws"].status).toEqual({ unstaged: [], staged: [] });
+    });
+
+    it("a pass that fails still runs the one queued behind it", async () => {
+      ensureGitView("ws", "/r");
+      let failFirst!: (e: unknown) => void;
+      vi.mocked(backend.gitRepoInfo).mockImplementationOnce(() => new Promise((_, rej) => (failFirst = rej)));
+      const first = refresh("ws");
+      const second = refresh("ws");
+      failFirst("fatal: index file corrupt");
+      await first;
+      await second;
+      expect(backend.gitRepoInfo).toHaveBeenCalledTimes(2);
+      expect(get(gitStore)["ws"].repo).toEqual(repo);
+    });
+
+    it("once idle, the next refresh starts at once", async () => {
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      await refresh("ws");
+      expect(backend.gitRepoInfo).toHaveBeenCalledTimes(2);
+    });
+
+    it("a worktree switch does not wait behind the old checkout's pass, whose answer never lands", async () => {
+      ensureGitView("ws", "/r");
+      let finishOld!: (v: StatusResult) => void;
+      vi.mocked(backend.gitStatus)
+        .mockImplementationOnce(() => new Promise((res) => (finishOld = res)))
+        .mockResolvedValueOnce({ unstaged: [], staged: [] });
+      const old = refresh("ws");
+      await flush();
+      await switchWorktree("ws", "/r-feature");
+      expect(backend.gitRepoInfo).toHaveBeenLastCalledWith("/r-feature");
+      expect(get(gitStore)["ws"].status).toEqual({ unstaged: [], staged: [] });
+
+      // Both views start their token count at 1, so the token alone
+      // would have let the old checkout's answer through.
+      finishOld(status);
+      await old;
+      expect(get(gitStore)["ws"].cwd).toBe("/r-feature");
+      expect(get(gitStore)["ws"].status).toEqual({ unstaged: [], staged: [] });
+    });
   });
 
   it("flags a missing git binary instead of erroring", async () => {

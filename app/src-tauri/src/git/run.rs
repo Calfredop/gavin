@@ -31,6 +31,17 @@ impl GitOutput {
     }
 }
 
+/// Runs `work` on the blocking pool, for a `#[tauri::command] async fn`
+/// to await. A plain `fn` command runs on the main thread, where every
+/// git process it waits on is a frozen window; `#[tauri::command(async)]`
+/// would instead park a runtime worker for up to GIT_TIMEOUT a process.
+/// The same call `get_git_baselines` makes, kept to one line per command.
+pub async fn off_main_thread<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work).await.map_err(|e| e.to_string())?
+}
+
 /// Runs `git <args>` in `cwd`. `Err` only when git can't be spawned
 /// (missing binary → GIT_NOT_FOUND, bad cwd, …) or times out; a non-zero
 /// exit is reported through `GitOutput::code` so callers decide.
@@ -417,6 +428,15 @@ mod tests {
         assert_eq!(out.stdout.len(), 101);
         let whole = run_git(".", &["stripspace"], Some(input.as_bytes())).unwrap();
         assert_eq!(whole.stdout.len(), input.len(), "no cap reads everything");
+    }
+
+    #[test]
+    fn off_main_thread_runs_the_work_on_another_thread_and_passes_its_result() {
+        let caller = std::thread::current().id();
+        let ran_on = tauri::async_runtime::block_on(off_main_thread(|| Ok(std::thread::current().id()))).unwrap();
+        assert_ne!(ran_on, caller);
+        let err = tauri::async_runtime::block_on(off_main_thread(|| Err::<(), _>("nope".to_string())));
+        assert_eq!(err, Err("nope".to_string()));
     }
 
     #[test]

@@ -317,34 +317,77 @@ async function loadDiff(workspaceId: string): Promise<void> {
   }
 }
 
-export async function refresh(workspaceId: string): Promise<void> {
-  const s = current(workspaceId);
-  if (!s) return;
-  const token = s.refreshToken + 1;
-  update(workspaceId, (st) => ({ ...st, refreshToken: token }));
+/// A view's refresh pass in flight, and the one queued behind it.
+interface RefreshFlight {
+  running: Promise<void>;
+  again: Promise<void> | null;
+}
+
+/// Keyed by workspace AND cwd: a worktree switch gets its own pass at
+/// once instead of waiting on one for a checkout the view has left.
+const refreshFlights = new Map<string, RefreshFlight>();
+
+/// Re-reads the view, one pass at a time. A call while a pass runs queues
+/// ONE more, shared by every caller that arrives before it starts, and
+/// resolves when that pass ends -- so a caller refreshing after a mutation
+/// still reads the tree the mutation left. The commands a pass awaits run
+/// off the main thread, so without this a burst of `git-changed` would
+/// run all its passes at once, a dozen git processes each.
+export function refresh(workspaceId: string): Promise<void> {
+  const cwd = current(workspaceId)?.cwd;
+  if (cwd === undefined) return Promise.resolve();
+  const key = `${workspaceId}\u0000${cwd}`;
+  const flight = refreshFlights.get(key);
+  if (flight) {
+    // Re-asked when its turn comes, for whatever cwd the view has by then.
+    const next = () => refresh(workspaceId);
+    return (flight.again ??= flight.running.then(next, next));
+  }
+  const started: RefreshFlight = { running: Promise.resolve(), again: null };
+  refreshFlights.set(key, started);
+  // Released by the pass itself rather than a `.finally` on it, which
+  // would add promise hops to every caller's wait.
+  started.running = refreshPass(workspaceId, () => {
+    if (refreshFlights.get(key) === started) refreshFlights.delete(key);
+  });
+  return started.running;
+}
+
+async function refreshPass(workspaceId: string, release: () => void): Promise<void> {
   try {
-    const repo = await backend.gitRepoInfo(s.cwd);
-    const status = repo.notARepo ? { unstaged: [], staged: [] } : await backend.gitStatus(s.cwd);
-    const refs = repo.notARepo ? null : await backend.gitRefs(s.cwd);
-    const mergeTool = repo.notARepo ? null : await backend.gitMergeToolName(s.cwd).catch(() => null);
-    let stale = false;
-    update(workspaceId, (st) => {
-      if (st.refreshToken !== token) {
-        stale = true;
-        return st;
+    const s = current(workspaceId);
+    if (!s) return;
+    const token = s.refreshToken + 1;
+    update(workspaceId, (st) => ({ ...st, refreshToken: token }));
+    // A worktree switch starts the replacing view's count from 0 as well,
+    // so the token alone can match an answer about the checkout it left.
+    const superseded = (st: GitViewState) => st.refreshToken !== token || st.cwd !== s.cwd;
+    try {
+      const repo = await backend.gitRepoInfo(s.cwd);
+      const status = repo.notARepo ? { unstaged: [], staged: [] } : await backend.gitStatus(s.cwd);
+      const refs = repo.notARepo ? null : await backend.gitRefs(s.cwd);
+      const mergeTool = repo.notARepo ? null : await backend.gitMergeToolName(s.cwd).catch(() => null);
+      let stale = false;
+      update(workspaceId, (st) => {
+        if (superseded(st)) {
+          stale = true;
+          return st;
+        }
+        return { ...applyStatus(st, status), repo, refs, mergeTool, gitMissing: false };
+      });
+      if (!stale) {
+        await loadDiff(workspaceId);
+        if (current(workspaceId)?.navSelection === "commits") await loadLog(workspaceId, true);
       }
-      return { ...applyStatus(st, status), repo, refs, mergeTool, gitMissing: false };
-    });
-    if (!stale) {
-      await loadDiff(workspaceId);
-      if (current(workspaceId)?.navSelection === "commits") await loadLog(workspaceId, true);
+    } catch (e) {
+      const text = errorText(e);
+      update(workspaceId, (st) => {
+        if (superseded(st)) return st;
+        return text === GIT_NOT_FOUND ? { ...st, gitMissing: true } : { ...st, error: `Refresh failed: ${text}` };
+      });
     }
-  } catch (e) {
-    const text = errorText(e);
-    update(workspaceId, (st) => {
-      if (st.refreshToken !== token) return st;
-      return text === GIT_NOT_FOUND ? { ...st, gitMissing: true } : { ...st, error: `Refresh failed: ${text}` };
-    });
+  } finally {
+    release();
   }
 }
 
