@@ -36,7 +36,7 @@
 
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How long the watchman CLI may take before the probe gives up. It is
@@ -354,21 +354,37 @@ fn watchman_binary() -> Option<String> {
 ///
 /// `--no-spawn --no-local` is belt and braces on top of that: it tells
 /// the client to fail rather than start a server if the one this module
-/// found has gone away between the probe and the call. There is no
-/// `timeout(1)` on macOS, so the deadline is enforced here -- and stdout
-/// is drained on a thread, the same deadlock avoidance
-/// `agent_models::run` documents: a child that fills the pipe buffer
-/// blocks forever if the parent waits before reading.
+/// found has gone away between the probe and the call.
 fn watchman_command(args: &[&str]) -> Option<String> {
     let bin = watchman_binary()?;
-    let mut child = crate::program::command(bin)
+    let mut command = crate::program::command(bin);
+    command
         .arg("--no-spawn")
         .arg("--no-local")
         .args(args)
         // A GUI app's cwd is whatever it was launched with, and
         // watchman resolves a relative root against it. Everything this
         // module passes is absolute; the temp dir makes that explicit.
-        .current_dir(std::env::temp_dir())
+        .current_dir(std::env::temp_dir());
+    stdout_by_deadline(command, Duration::from_secs(WATCHMAN_TIMEOUT_SECS as u64))
+}
+
+/// A command's stdout once it exits successfully; `None` when it cannot
+/// start, exits non-zero, or is still running at `timeout`, and is then
+/// killed.
+///
+/// There is no `timeout(1)` on macOS, so the deadline is enforced here.
+/// stdout is drained on a thread, the same deadlock avoidance
+/// `agent_models::run` documents: a child that fills the pipe buffer
+/// blocks forever if the parent waits before reading. And the drain IS
+/// the wait. The pipe reaches end-of-file when the child exits, so the
+/// answer arrives the moment it does, where a `try_wait` loop learned of
+/// it on its next 50 ms turn: `watch-list` measured 217 ms median that
+/// way and 186 ms this one, against the same server.
+/// The `wait` after it only reaps: the watchman CLI holds its stdout until
+/// it exits, and under `--no-spawn` starts nothing that could inherit it.
+fn stdout_by_deadline(mut command: Command, timeout: Duration) -> Option<String> {
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -379,29 +395,18 @@ fn watchman_command(args: &[&str]) -> Option<String> {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = pipe.read_to_end(&mut buf);
-        let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
+        let _ = tx.send(buf);
     });
-    let deadline = std::time::Instant::now() + Duration::from_secs(WATCHMAN_TIMEOUT_SECS as u64);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return None;
-                }
-                break;
-            }
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(_) => return None,
-        }
-    }
-    rx.recv_timeout(Duration::from_secs(2)).ok()
+    let Ok(stdout) = rx.recv_timeout(timeout) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    child
+        .wait()
+        .ok()?
+        .success()
+        .then(|| String::from_utf8_lossy(&stdout).into_owned())
 }
 
 /// The live watchman server, or `None` when there is not one.
@@ -502,6 +507,40 @@ mod tests {
         let text = path.to_string_lossy();
         assert!(text.ends_with("-state/pid"), "unexpected pidfile path: {text}");
         assert!(text.contains("/watchman/"), "unexpected pidfile path: {text}");
+    }
+
+    /// The drain is the wait, so it must still bring back all of a
+    /// child's stdout -- past a pipe buffer too, where waiting on the
+    /// exit before reading would deadlock.
+    #[cfg(unix)]
+    #[test]
+    fn stdout_by_deadline_returns_everything_the_child_wrote() {
+        let mut sh = crate::program::command("/bin/sh");
+        sh.args(["-c", "head -c 200000 /dev/zero | tr '\\0' x"]);
+        let out = stdout_by_deadline(sh, Duration::from_secs(10)).expect("sh exits 0");
+        assert_eq!(out.len(), 200_000);
+    }
+
+    /// A non-zero exit is no answer, whatever the child printed first.
+    #[cfg(unix)]
+    #[test]
+    fn stdout_by_deadline_refuses_a_failed_exit() {
+        let mut sh = crate::program::command("/bin/sh");
+        sh.args(["-c", "echo partial; exit 3"]);
+        assert_eq!(stdout_by_deadline(sh, Duration::from_secs(10)), None);
+    }
+
+    /// A child still running at the deadline answers `None` AT the
+    /// deadline, not when it would have finished: a wedged watchman is
+    /// the case where the poll must not wedge with it.
+    #[cfg(unix)]
+    #[test]
+    fn stdout_by_deadline_kills_a_child_that_overruns() {
+        let started = std::time::Instant::now();
+        let mut sleep = crate::program::command("/bin/sleep");
+        sleep.arg("30");
+        assert_eq!(stdout_by_deadline(sleep, Duration::from_millis(200)), None);
+        assert!(started.elapsed() < Duration::from_secs(5), "waited {:?}", started.elapsed());
     }
 
     /// The unsupported answer must be recognisable AS unsupported rather
