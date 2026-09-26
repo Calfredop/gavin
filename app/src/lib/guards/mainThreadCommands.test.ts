@@ -295,6 +295,52 @@ function everyCommand(): [string, string, string][] {
   });
 }
 
+// Building a window from a plain `fn` command deadlocks on Windows -- Tauri
+// documents it on every builder, a WebView2 limitation, and names `async`
+// commands as the remedy -- while on macOS the same code opens a window in
+// 100-300 ms, so nothing on the machine this was written on would show it.
+// Event handlers deadlock the same way, which is why this reads every
+// builder in src-tauri rather than every command: one may only sit inside
+// an async command. (`setup` is safe too; a window built there needs its
+// own exemption here.)
+describe("building a window", () => {
+  const BUILDER = /\b(?:WebviewWindowBuilder|WindowBuilder|WebviewBuilder)::(?:new|from_config)\(/g;
+  const COMMAND = /#\[tauri::command\]\s*(?:#\[[^\]]*\]\s*|\/\/\/[^\n]*\n\s*)*pub (async )?fn (\w+)\(/g;
+
+  /// [file, line, the command the builder sits in (if any), whether it is async]
+  const builders = Object.entries(RUST).flatMap(([path, text]) => {
+    const file = path.slice(path.indexOf("/src-tauri/src/") + "/src-tauri/src/".length);
+    return [...text.matchAll(BUILDER)].map((b): [string, number, string | undefined, boolean] => {
+      const at = b.index;
+      const line = text.slice(0, at).split("\n").length;
+      const around = [...text.matchAll(COMMAND)].find((c) => c.index < at && at < text.indexOf("\n}\n", c.index));
+      return [file, line, around?.[2], Boolean(around?.[1])];
+    });
+  });
+
+  it("is found by reading every source file", () => {
+    expect(builders.map(([, , command]) => command)).toContain("open_workspace_window");
+  });
+
+  for (const [file, line, command, isAsync] of builders) {
+    it(`${file}'s ${command ?? `line ${line}`} builds its window inside an async command`, () => {
+      expect(command, `the builder at ${file}:${line} is not inside a #[tauri::command]`).toBeDefined();
+      expect(isAsync, `${command} builds a window as a plain \`fn\`, which deadlocks on Windows`).toBe(true);
+    });
+  }
+
+  // The other half of the fix, and the half that must NOT move: an async
+  // command runs on a runtime worker, and the chrome is AppKit.
+  // `setWantsLayer` off the main thread leaves the new window blank.
+  it("open_workspace_window still applies its AppKit chrome on the main thread", () => {
+    const body = commandBody("workspace_window.rs", "open_workspace_window");
+    const hop = body.indexOf("run_on_main_thread(move ||");
+    expect(hop, "open_workspace_window no longer hops onto the main thread").toBeGreaterThan(-1);
+    expect(body.indexOf("round_window_corners(")).toBeGreaterThan(hop);
+    expect(body.indexOf("install_edge_double_click(")).toBeGreaterThan(hop);
+  });
+});
+
 /// A command that hands its wait to the blocking pool -- itself, through
 /// `off_main_thread`, or through git/ops.rs's `spawn_op`, the network ops'
 /// one-line form of it -- or to a command lane.

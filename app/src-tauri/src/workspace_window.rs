@@ -89,12 +89,18 @@ fn cascade_from(app: &AppHandle, opener: &str) -> Option<(f64, f64)> {
 /// this safe to wire behind "Open in New Window" on a row whose state the
 /// menu may have read a moment ago -- the worst a stale click can do is
 /// raise a window.
+///
+/// `async` although it awaits nothing. A plain `fn` command runs on the
+/// main thread, and building a webview window there DEADLOCKS on Windows
+/// (a WebView2 limitation Tauri documents on every window builder, with
+/// `async` as the remedy) -- the first workspace window would hang the
+/// app. macOS builds it either way, in 100-300 ms, so no Mac shows this.
 #[tauri::command]
-pub fn open_workspace_window(
+pub async fn open_workspace_window(
     workspace_id: String,
     app_handle: AppHandle,
     window: tauri::Window,
-    state: tauri::State<WorkspaceWindows>,
+    state: tauri::State<'_, WorkspaceWindows>,
 ) -> Result<String, String> {
     let label = format!("{WORKSPACE_WINDOW_PREFIX}{workspace_id}");
     // Its own window already, or a window it merely shares? The label is
@@ -131,7 +137,7 @@ pub fn open_workspace_window(
     // a different app, not a second window of this one.
     //
     // Hopped onto the main thread, unlike lib.rs's copy, which is already
-    // on it inside `setup`. A tauri command runs on a worker thread, and
+    // on it inside `setup`. An async command runs on a runtime worker, and
     // both of these are AppKit: `setWantsLayer`/`layer()` off the main
     // thread tears the webview's layer backing out from under it and the
     // window comes up BLANK -- correctly sized, correctly positioned, and
