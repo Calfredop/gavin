@@ -60,16 +60,26 @@
   // questions; re-scanning between screens would let the ground move
   // under an answer already given -- and the remover re-scans anyway,
   // which is where a genuinely stale plan is caught.
+  //
+  // `scanning` is plain, not `$state`: it only has to stop this effect
+  // starting a second scan. The scan runs off the main thread and takes
+  // seconds on a large root, and `ws` is a new object whenever anything
+  // in this workspace changes meanwhile -- a session opening, a page
+  // switch. A second scan landing after the first would reset the
+  // answers already being given.
+  let scanning = false;
   $effect(() => {
     const root = ws?.rootPath;
-    if (!root || footprint || scanError) return;
+    if (!root || footprint || scanError || scanning) return;
+    scanning = true;
     void backend
       .scanGavinFootprint(root)
       .then((found) => {
         footprint = found;
         answers = defaultAnswers(found);
       })
-      .catch((e) => (scanError = String(e)));
+      .catch((e) => (scanError = String(e)))
+      .finally(() => (scanning = false));
   });
 
   function toggleContext(path: string, on: boolean): void {

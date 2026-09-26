@@ -379,9 +379,14 @@ pub fn remove(root: &Path, plan: &RemovalPlan) -> Result<RemovalReport, String> 
     Ok(report)
 }
 
+/// `async` + `spawn_blocking`: the scan walks the whole root twelve deep,
+/// 150k entries and 2-7 s on a large repo's first walk, and as a plain
+/// `fn` all of it was main-thread time with the window frozen.
 #[tauri::command]
-pub fn scan_gavin_footprint(root_path: String) -> Result<GavinFootprint, String> {
-    scan(Path::new(&root_path))
+pub async fn scan_gavin_footprint(root_path: String) -> Result<GavinFootprint, String> {
+    tauri::async_runtime::spawn_blocking(move || scan(Path::new(&root_path)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// `token` is the grant `confirm_gate` minted when the human reached the
@@ -392,15 +397,22 @@ pub fn scan_gavin_footprint(root_path: String) -> Result<GavinFootprint, String>
 /// The subject is the root, not the plan: which workspace is being
 /// deleted is the question the human answered, and every switch in the
 /// plan is a choice made inside that answer.
+///
+/// `async` like the scan: the remover re-walks the root before it
+/// trashes anything, so the last button paid the walk a second time on
+/// the main thread. The token is spent first, before the work leaves
+/// for the blocking pool, so a refused grant still refuses at once.
 #[tauri::command]
-pub fn remove_gavin_footprint(
+pub async fn remove_gavin_footprint(
     root_path: String,
     plan: RemovalPlan,
     token: String,
-    gate: tauri::State<crate::confirm_gate::ConfirmGate>,
+    gate: tauri::State<'_, crate::confirm_gate::ConfirmGate>,
 ) -> Result<RemovalReport, String> {
     crate::confirm_gate::spend(&gate, &token, "remove_gavin_footprint", &root_path)?;
-    remove(Path::new(&root_path), &plan)
+    tauri::async_runtime::spawn_blocking(move || remove(Path::new(&root_path), &plan))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

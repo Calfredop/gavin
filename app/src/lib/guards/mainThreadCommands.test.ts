@@ -122,6 +122,11 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // every resume and review launch, auto-resume included.
   ["agent_tokens.rs", "card_run_tokens", "a whole agent transcript read and parsed, per conversation"],
   ["agent_tokens.rs", "conversation_log", "a readdir of every project directory, on every resume"],
+  // The delete wizard's scan walks the whole root twelve deep for
+  // `.gavin/` folders -- 150k entries in a large repo, 2-7 s cold -- and
+  // the remover walks it again before it trashes anything.
+  ["workspace_delete.rs", "scan_gavin_footprint", "a walk of the whole workspace root"],
+  ["workspace_delete.rs", "remove_gavin_footprint", "the same walk again, then a Trash move per item"],
 ];
 
 /// The command's text from its `#[tauri::command]` line to the first
