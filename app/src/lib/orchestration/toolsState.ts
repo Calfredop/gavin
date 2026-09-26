@@ -52,9 +52,19 @@ export function renderLibraryFor(
   return libraryFor(records, workspaceId) ?? libraryWithPromptOverrides(BUILTIN_TOOLS, workspaceId);
 }
 
+/// Loads in flight, by workspace. The scheduler asks for a missing
+/// library on every pass, and a pass runs on each emission of ten stores
+/// for every loaded workspace -- so without this, the passes that ran
+/// while one daemon round trip was on its way would each start another.
+const fetching = new Map<string, Promise<void>>();
+
 export async function fetchTools(workspaceId: string): Promise<void> {
   if (workspaceId in get(toolRecords) && get(toolRecords)[workspaceId] !== null) return;
-  await refreshTools(workspaceId);
+  const inFlight = fetching.get(workspaceId);
+  if (inFlight) return inFlight;
+  const load = refreshTools(workspaceId).finally(() => fetching.delete(workspaceId));
+  fetching.set(workspaceId, load);
+  return load;
 }
 
 export async function refreshTools(workspaceId: string): Promise<void> {
@@ -140,6 +150,9 @@ export async function deleteToolAction(workspaceId: string, toolId: string): Pro
 
 /** @internal test-only reset for module-level state */
 export function __resetForTesting(): void {
+  // First: emptying the store below ticks a running scheduler, which
+  // asks for the library again -- and that request has to survive.
+  fetching.clear();
   toolRecords.set({});
   toolErrors.set({});
 }

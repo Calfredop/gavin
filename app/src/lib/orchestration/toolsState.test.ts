@@ -93,6 +93,30 @@ describe("fetchTools", () => {
     expect(libraryFor(get(toolRecords), "ws-1")).toBeNull();
   });
 
+  // The rail scheduler asks for a missing library on every pass, and
+  // passes keep running while the first round trip is out.
+  it("shares one round trip between callers that arrive while it is out", async () => {
+    let land: (rows: ToolRecord[]) => void = () => {};
+    vi.mocked(backend.getTools).mockReturnValue(new Promise((resolve) => (land = resolve)));
+    const first = fetchTools("ws-1");
+    const second = fetchTools("ws-1");
+    land([record()]);
+    await Promise.all([first, second]);
+    expect(backend.getTools).toHaveBeenCalledTimes(1);
+    expect(get(toolRecords)["ws-1"]).toHaveLength(1);
+  });
+
+  // A failed load must not be remembered as one in flight, or nothing
+  // would ever ask again.
+  it("asks again after a failed load", async () => {
+    vi.mocked(backend.getTools).mockRejectedValueOnce(new Error("daemon down"));
+    await fetchTools("ws-1");
+    vi.mocked(backend.getTools).mockResolvedValue([]);
+    await fetchTools("ws-1");
+    expect(backend.getTools).toHaveBeenCalledTimes(2);
+    expect(get(toolRecords)["ws-1"]).toEqual([]);
+  });
+
   it("refreshTools re-reads even when the entry is already loaded", async () => {
     vi.mocked(backend.getTools).mockResolvedValue([]);
     await fetchTools("ws-1");

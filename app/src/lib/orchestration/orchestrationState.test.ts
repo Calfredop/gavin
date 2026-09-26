@@ -3648,6 +3648,37 @@ describe("the scheduler's trigger, with no hub view mounted", () => {
     );
   });
 
+  // The tool library was the one scheduler input only a TAB loaded: the
+  // Orchestration and Tools views fetched it, nothing else did, and every
+  // test above seeds it by hand. An agent tool step reads its kind from
+  // that library, so after an app start its agent could finish and the
+  // step sit `running` until the human opened the Orchestration tab --
+  // Grimoria's Fixes rail, 2026-09-26, parked on a finished Commit.
+  it("loads the tool library itself, so an agent tool step finishes without the tab", async () => {
+    vi.mocked(backend.getTools).mockResolvedValue([]);
+    toolsResetForTesting();
+    layoutStore.update((s) => ({ ...s, sessionStatusById: { "sess-1": "idle" }, sessionsSeenWorking: new Set(["sess-1"]) }));
+    await vi.waitFor(() =>
+      expect(backend.setStepRun).toHaveBeenCalledWith("t1", "done", "sess-1", null, null, null, null, "ws-1")
+    );
+    expect(backend.getTools).toHaveBeenCalledWith("ws-1");
+  });
+
+  // Every emission of ten stores ticks every loaded workspace, and the
+  // fetch is a daemon round trip on the drawing thread. A library that
+  // is still on its way must not be asked for again by each pass that
+  // runs meanwhile.
+  it("asks for a missing library once while it is on its way", async () => {
+    let land: (rows: never[]) => void = () => {};
+    vi.mocked(backend.getTools).mockReturnValue(new Promise((resolve) => (land = resolve)));
+    toolsResetForTesting();
+    for (let i = 0; i < 5; i++) layoutStore.update((s) => ({ ...s }));
+    await settle();
+    expect(backend.getTools).toHaveBeenCalledTimes(1);
+    land([]);
+    await vi.waitFor(() => expect(get(toolRecords)["ws-1"]).toEqual([]));
+  });
+
   it("stops when the app tears it down", async () => {
     stop?.();
     stop = null;

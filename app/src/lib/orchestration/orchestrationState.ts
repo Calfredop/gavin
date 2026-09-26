@@ -126,7 +126,7 @@ import { currentPrReports, prReportFor, prReports, requestPr, startPrPolling } f
 import { failingChecksNote, prExhaustedReason } from "$lib/git/pullRequest";
 import { stepsFromTemplate } from "$lib/orchestration/orchestrationGroups";
 import type { GroupTemplate } from "$lib/orchestration/orchestrationGroups";
-import { libraryFor, toolRecords } from "$lib/orchestration/toolsState";
+import { fetchTools, libraryFor, toolRecords } from "$lib/orchestration/toolsState";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
 import { breakOutChildren, guardCompletion } from "$lib/cards/cardCompletion";
 import { gavinTrees, patchPlanField } from "$lib/core/gavinState";
@@ -1119,10 +1119,11 @@ async function executeToolLaunch(
 ): Promise<boolean> {
   // null is "not fetched yet", NOT "empty" -- stalling here would turn a
   // cold start into a stalled rail. Leaving the step `pending` and
-  // writing nothing is safe: the tab re-ticks when the library lands
-  // (its $effect watches toolRecords), and nextActions will re-issue
-  // this same launch. nextActions makes the matching choice, passing a
-  // null library through launchBlocker rather than blocking on it.
+  // writing nothing is safe: the pass that issued this launch has
+  // already asked for the library (runTick), `toolRecords` is a tick
+  // input, and the pass its arrival runs re-issues this same launch.
+  // nextActions makes the matching choice, passing a null library
+  // through launchBlocker rather than blocking on it.
   const library = libraryFor(get(toolRecords), workspaceId);
   if (library === null) return false;
 
@@ -1998,6 +1999,17 @@ async function runTick(workspaceId: string): Promise<boolean> {
   // null, not [], for the same reason as worktrees above: an unloaded
   // tool library must not read as "every tool was deleted".
   const tools = libraryFor(get(toolRecords), workspaceId);
+  // And an unloaded one is asked for HERE, by the scheduler, because
+  // nothing else asks: only the Orchestration and Tools views ever
+  // fetched it. Without the library an agent tool step has no kind, so
+  // its finished turn never reads as finished and a tool step never
+  // launches -- a rail parked until the human opened its Orchestration
+  // tab, which is the bug a module-level scheduler exists to rule out.
+  // `toolRecords` is a tick input, so the library's arrival is itself
+  // the pass that reads it; fetchTools shares one round trip between the
+  // passes that run while it is on its way, and a failed one is asked
+  // for again by the next.
+  if (tools === null) void fetchTools(workspaceId);
   // An agent tool's session never exits, so its verdict is not in
   // sessionExits and never will be -- the daemon's live status is the
   // only thing that says its turn is over (see agentTurnEnded).
