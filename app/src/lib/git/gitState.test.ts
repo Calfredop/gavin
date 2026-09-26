@@ -855,6 +855,98 @@ describe("conflicts", () => {
     await openMergeTool("ws");
     expect(createSessionForCard).toHaveBeenCalledWith("ws", "/r", "git mergetool --no-prompt -- 'a.ts'");
   });
+
+  describe("answers that arrive after the selection moved on", () => {
+    // `git_conflict` and `git_diff` run off the main thread, so a click
+    // lands while one is still reading -- the frozen window used to make
+    // that impossible. An answer for a file no longer selected must not
+    // land, and the view must never show one file's conflict under
+    // another's selection: its buttons act on the selected path.
+    const deferred = <T,>() => {
+      let resolve!: (v: T) => void;
+      const promise = new Promise<T>((res) => (resolve = res));
+      return { promise, resolve };
+    };
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    };
+
+    it("a conflict still loading when a plain file is selected never lands", async () => {
+      vi.mocked(backend.gitStatus).mockResolvedValue(conflicted);
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      const slow = deferred<typeof info>();
+      vi.mocked(backend.gitConflict).mockReturnValueOnce(slow.promise);
+      const loading = select("ws", { path: "a.ts", area: "unstaged" });
+      await flush();
+      await select("ws", { path: "c.ts", area: "unstaged" });
+      slow.resolve(info);
+      await loading;
+      expect(get(gitStore)["ws"].conflict).toBeNull();
+    });
+
+    it("a conflict still loading when the selection is cleared never lands", async () => {
+      vi.mocked(backend.gitStatus).mockResolvedValue(conflicted);
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      const slow = deferred<typeof info>();
+      vi.mocked(backend.gitConflict).mockReturnValueOnce(slow.promise);
+      const loading = select("ws", { path: "a.ts", area: "unstaged" });
+      await flush();
+      await select("ws", null);
+      slow.resolve(info);
+      await loading;
+      expect(get(gitStore)["ws"].conflict).toBeNull();
+    });
+
+    it("a diff still loading when a conflicted file is selected never lands", async () => {
+      vi.mocked(backend.gitStatus).mockResolvedValue(conflicted);
+      vi.mocked(backend.gitConflict).mockResolvedValue(info);
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      const slow = deferred<Awaited<ReturnType<typeof backend.gitDiff>>>();
+      vi.mocked(backend.gitDiff).mockReturnValueOnce(slow.promise);
+      const loading = select("ws", { path: "c.ts", area: "unstaged" });
+      await flush();
+      await select("ws", { path: "a.ts", area: "unstaged" });
+      slow.resolve({ path: "c.ts", binary: false, tooLarge: false, hunks: [] });
+      await loading;
+      expect(get(gitStore)["ws"].diff).toBeNull();
+      expect(get(gitStore)["ws"].conflict?.path).toBe("a.ts");
+    });
+
+    it("moving to another conflicted file drops the previous one's conflict while the new one loads", async () => {
+      vi.mocked(backend.gitStatus).mockResolvedValue(conflicted);
+      vi.mocked(backend.gitConflict).mockResolvedValue(info);
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      await select("ws", { path: "a.ts", area: "unstaged" });
+      const slow = deferred<typeof info>();
+      vi.mocked(backend.gitConflict).mockReturnValueOnce(slow.promise);
+      const loading = select("ws", { path: "b.ts", area: "unstaged" });
+      await flush();
+      expect(get(gitStore)["ws"].conflict).toBeNull();
+      slow.resolve({ ...info, path: "b.ts" });
+      await loading;
+      expect(get(gitStore)["ws"].conflict?.path).toBe("b.ts");
+    });
+
+    it("a refresh of the same conflicted file keeps its conflict up while it reloads", async () => {
+      vi.mocked(backend.gitStatus).mockResolvedValue(conflicted);
+      vi.mocked(backend.gitConflict).mockResolvedValue(info);
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      await select("ws", { path: "a.ts", area: "unstaged" });
+      const slow = deferred<typeof info>();
+      vi.mocked(backend.gitConflict).mockReturnValueOnce(slow.promise);
+      const reloading = refresh("ws");
+      await flush();
+      expect(get(gitStore)["ws"].conflict?.path).toBe("a.ts");
+      slow.resolve(info);
+      await reloading;
+      expect(get(gitStore)["ws"].conflict?.path).toBe("a.ts");
+    });
+  });
 });
 
 

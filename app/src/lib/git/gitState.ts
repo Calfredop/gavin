@@ -297,18 +297,26 @@ async function loadDiff(workspaceId: string): Promise<void> {
   const s = current(workspaceId);
   if (!s) return;
   const entry = findEntry(s.status, s.selected);
+  // Clearing a pane also bumps its token: `git_diff` and `git_conflict`
+  // run off the main thread, so one started for the previous selection
+  // can still answer after this, and nothing else would stop it landing.
   if (!s.selected || !entry) {
-    update(workspaceId, (st) => ({ ...st, diff: null, conflict: null }));
+    update(workspaceId, (st) => ({
+      ...st,
+      diff: null,
+      diffToken: st.diffToken + 1,
+      conflict: null,
+      conflictToken: st.conflictToken + 1,
+    }));
     return;
   }
   if (entry.status === "U") {
-    update(workspaceId, (st) => ({ ...st, diff: null }));
+    update(workspaceId, (st) => ({ ...st, diff: null, diffToken: st.diffToken + 1 }));
     await loadConflict(workspaceId);
     return;
   }
-  update(workspaceId, (st) => (st.conflict ? { ...st, conflict: null } : st));
   const token = s.diffToken + 1;
-  update(workspaceId, (st) => ({ ...st, diffToken: token }));
+  update(workspaceId, (st) => ({ ...st, diffToken: token, conflict: null, conflictToken: st.conflictToken + 1 }));
   const sel = s.selected;
   try {
     const diff = await backend.gitDiff(s.cwd, sel.path, entry.oldPath ?? null, sel.area === "staged", entry.status === "?");
@@ -1517,7 +1525,10 @@ export async function loadConflict(workspaceId: string): Promise<void> {
   const sel = s?.selected;
   if (!s || !sel) return;
   const token = s.conflictToken + 1;
-  update(workspaceId, (st) => ({ ...st, conflictToken: token }));
+  // Another file's conflict goes while this one loads: the view's buttons
+  // act on the selected path, so it must never show a different one's.
+  // The same file's stays up, so a refresh does not flash "Loading".
+  update(workspaceId, (st) => ({ ...st, conflictToken: token, conflict: st.conflict?.path === sel.path ? st.conflict : null }));
   try {
     const conflict = await backend.gitConflict(s.cwd, sel.path);
     update(workspaceId, (st) => (st.conflictToken === token ? { ...st, conflict } : st));
