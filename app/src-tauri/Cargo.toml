@@ -49,6 +49,9 @@ serde_json = "1"
 anyhow = "1"
 notify = "8"
 notify-debouncer-mini = "0.7"
+# The Git watcher's gitignore matcher (git/watch.rs): an ignored path is a
+# change `git status` never shows, so it must not cost a refresh.
+ignore = "0.4"
 protocol = { path = "../../crates/protocol" }
 # The OS Trash, not `rm`: the delete wizard removes somebody's cards, and
 # a card in plans/done/ that git never tracked is otherwise gone for good.

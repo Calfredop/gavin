@@ -13,23 +13,28 @@
 //! writing git command including gavin's own. Crossing a network does
 //! not soften that rule -- it adds a round trip to every wasted poll.
 //!
-//! `is_relevant` is a transcription of the desktop's function of the same
-//! name, deliberately duplicated: the crate the two share is `protocol`,
-//! which carries wire types, and a filesystem predicate is not one. The
-//! two copies are tested on the same table of paths; change one and
-//! change the other.
+//! `is_relevant` and `IgnoreFilter` transcribe the desktop's items of the
+//! same names, deliberately duplicated: the crate the two share is
+//! `protocol`, which carries wire types, and a filesystem predicate is not
+//! one. The two copies are tested on the same table of paths; change one
+//! and change the other.
 
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use ignore::Match;
 use notify_debouncer_mini::Debouncer;
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const GIT_WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Which paths (relative to the worktree root) should trigger a refresh.
-/// Everything outside `.git/` counts; inside it only the state files the
-/// tab actually renders from. `*.lock` never counts -- `index.lock` is
-/// created by every writing git command including our own, and reacting
-/// to it would make the watcher chase its own tail.
+/// Everything outside `.git/` counts here, and `IgnoreFilter` then drops
+/// the gitignored ones; inside it only the state files the tab actually
+/// renders from. `*.lock` never counts -- `index.lock` is created by
+/// every writing git command including our own, and reacting to it would
+/// make the watcher chase its own tail.
 pub fn is_relevant(rel: &Path) -> bool {
     let mut comps = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned());
     let Some(first) = comps.next() else { return false };
@@ -90,6 +95,292 @@ pub fn relevant_event(root: &Path, gitdir: Option<&Path>, path: &Path) -> bool {
     }
 }
 
+/// `relevant_event` with git's ignore rules on top, for one watched
+/// worktree. Everything outside `.git/` used to count, gitignored paths
+/// included: a 4-second `npm install` into an ignored `node_modules/` was
+/// 30,220 events and a dozen `git-changed`, each a full refresh of a view
+/// with nothing new to show.
+///
+/// The rules come from the `ignore` crate's gitignore matcher, never from
+/// a `git check-ignore` per event. Each batch reads them afresh -- only
+/// the `.gitignore` files on the paths it touches, each parsed once -- so
+/// an edited `.gitignore` needs no invalidation: the next batch reads the
+/// new one.
+///
+/// What a pattern cannot say is whether a file is TRACKED, and `git
+/// status` shows a change to a tracked file whatever the rules say. A
+/// file force-added under an ignored folder is common (a third of the
+/// repos on the owner's disk have one, some of them source files), so
+/// those come from `git ls-files --cached --ignored` and keep counting.
+/// That is a git process, so its answer is kept between batches and read
+/// again only once the index or a rule has moved -- on this watcher's
+/// thread, never the main one.
+pub struct IgnoreFilter {
+    root: PathBuf,
+    gitdir: Option<PathBuf>,
+    /// `core.excludesFile`, then `info/exclude`: located by asking git the
+    /// first time a batch needs a verdict.
+    excludes: Option<Vec<PathBuf>>,
+    /// Their bytes as the last batch read them. Neither is reliably inside
+    /// the watch -- the first lives in the home folder, and a linked
+    /// worktree's `info/exclude` is in the main repo's gitdir -- so a
+    /// change to them is noticed here rather than as an event.
+    excludes_seen: Vec<u8>,
+    /// None until a verdict needs it, and again once it may be stale.
+    tracked: Option<TrackedIgnored>,
+}
+
+/// Tracked files an ignore rule matches, and every folder above one: an
+/// event on such a folder can be the only word of a change inside it.
+#[derive(Default)]
+struct TrackedIgnored {
+    files: HashSet<PathBuf>,
+    dirs: HashSet<PathBuf>,
+}
+
+impl TrackedIgnored {
+    fn contains(&self, rel: &Path) -> bool {
+        self.files.contains(rel) || self.dirs.contains(rel)
+    }
+}
+
+impl IgnoreFilter {
+    /// `root` and `gitdir` as the watch was pointed at them, which is how
+    /// event paths arrive.
+    pub fn new(root: &Path, gitdir: Option<&Path>) -> IgnoreFilter {
+        IgnoreFilter {
+            root: root.to_path_buf(),
+            gitdir: gitdir.map(Path::to_path_buf),
+            excludes: None,
+            excludes_seen: Vec::new(),
+            tracked: None,
+        }
+    }
+
+    /// Whether any path in one debounced batch is a change the Git tab
+    /// could show.
+    pub fn any_relevant<'a>(&mut self, batch: impl IntoIterator<Item = &'a Path>) -> bool {
+        let batch: Vec<&Path> = batch.into_iter().collect();
+        let mut rules = None;
+        // Over the whole batch first: the verdicts below stop at the first
+        // relevant path, and a rule change can sit behind it.
+        for &path in &batch {
+            if self.moves_tracked_set(path) {
+                self.tracked = None;
+            } else if let Some(rel) = self.worktree_rel(path) {
+                let dir = rel.parent().unwrap_or(Path::new(""));
+                // One in an ignored folder is one git never reads.
+                if rel.file_name() == Some(OsStr::new(".gitignore"))
+                    && (dir.as_os_str().is_empty() || !self.rules(&mut rules).matches(dir, true))
+                {
+                    self.tracked = None;
+                }
+            }
+        }
+        for &path in &batch {
+            if !relevant_event(&self.root, self.gitdir.as_deref(), path) {
+                continue;
+            }
+            // A `.git/` state file, or a path outside the watch.
+            let Some(rel) = self.worktree_rel(path) else { return true };
+            if !self.rules(&mut rules).matches(rel, is_dir(path)) {
+                return true;
+            }
+            match self.tracked_ignored() {
+                Some(tracked) if !tracked.contains(rel) => {}
+                // Tracked, or git could not say.
+                _ => return true,
+            }
+        }
+        false
+    }
+
+    /// `path` relative to the worktree when it is in the tree proper: not
+    /// the root itself, not `.git/`, not a linked worktree's gitdir.
+    fn worktree_rel<'p>(&self, path: &'p Path) -> Option<&'p Path> {
+        if self.gitdir.as_deref().is_some_and(|gd| path.starts_with(gd)) {
+            return None;
+        }
+        let rel = path.strip_prefix(&self.root).ok()?;
+        let first = rel.components().next()?;
+        (first.as_os_str() != ".git").then_some(rel)
+    }
+
+    /// The index or `info/exclude`: which files are tracked, or which rules
+    /// cover them, may have changed.
+    fn moves_tracked_set(&self, path: &Path) -> bool {
+        let in_gitdir = self.gitdir.as_deref().and_then(|gd| path.strip_prefix(gd).ok());
+        let Some(rel) = in_gitdir.or_else(|| path.strip_prefix(self.root.join(".git")).ok()) else {
+            return false;
+        };
+        rel == Path::new("index") || rel == Path::new("info/exclude")
+    }
+
+    /// This batch's rules, read on first use.
+    fn rules<'r>(&mut self, slot: &'r mut Option<Rules>) -> &'r mut Rules {
+        slot.get_or_insert_with(|| {
+            if self.excludes.is_none() {
+                self.excludes = Some(locate_excludes(&self.root));
+            }
+            let (rules, seen) = Rules::read(&self.root, self.excludes.as_deref().unwrap_or_default());
+            if seen != self.excludes_seen {
+                self.excludes_seen = seen;
+                self.tracked = None;
+            }
+            rules
+        })
+    }
+
+    /// The tracked files an ignore rule matches. None when git cannot say,
+    /// which counts the path asked about -- and ends the batch, so a
+    /// failing git runs once a batch, not once a path.
+    fn tracked_ignored(&mut self) -> Option<&TrackedIgnored> {
+        if self.tracked.is_none() {
+            self.tracked = load_tracked_ignored(&self.root);
+        }
+        self.tracked.as_ref()
+    }
+}
+
+/// One batch's reading of git's ignore rules. Each folder's `.gitignore`
+/// is parsed at most once and each folder's verdict remembered: a batch is
+/// typically thousands of paths under the same ignored folder.
+struct Rules {
+    root: PathBuf,
+    /// `core.excludesFile` then `info/exclude` in one matcher, where the
+    /// later line wins -- git's order between the two.
+    base: Gitignore,
+    gitignores: HashMap<PathBuf, Gitignore>,
+    dir_verdicts: HashMap<PathBuf, bool>,
+}
+
+impl Rules {
+    /// The rules, and the excludes files' bytes as read.
+    fn read(root: &Path, excludes: &[PathBuf]) -> (Rules, Vec<u8>) {
+        let mut builder = GitignoreBuilder::new(root);
+        let mut seen = Vec::new();
+        for file in excludes {
+            let bytes = std::fs::read(file).unwrap_or_default();
+            for line in String::from_utf8_lossy(&bytes).trim_start_matches('\u{feff}').lines() {
+                // A line the matcher cannot parse is skipped, as git does.
+                let _ = builder.add_line(Some(file.clone()), line);
+            }
+            seen.extend_from_slice(&bytes);
+            seen.push(0);
+        }
+        let rules = Rules {
+            root: root.to_path_buf(),
+            base: builder.build().unwrap_or_else(|_| Gitignore::empty()),
+            gitignores: HashMap::new(),
+            dir_verdicts: HashMap::new(),
+        };
+        (rules, seen)
+    }
+
+    /// Whether git ignores `rel`: it, or any folder above it, is excluded.
+    /// Git never descends into an ignored folder, so nothing below one can
+    /// be re-included.
+    fn matches(&mut self, rel: &Path, is_dir: bool) -> bool {
+        let mut prefix = PathBuf::new();
+        let mut components = rel.components().peekable();
+        while let Some(component) = components.next() {
+            prefix.push(component);
+            let excluded = if components.peek().is_none() {
+                self.excluded(&prefix, is_dir)
+            } else if let Some(&verdict) = self.dir_verdicts.get(&prefix) {
+                verdict
+            } else {
+                let verdict = self.excluded(&prefix, true);
+                self.dir_verdicts.insert(prefix.clone(), verdict);
+                verdict
+            };
+            if excluded {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// One path's own verdict, by git's precedence: the nearest
+    /// `.gitignore` with an opinion decides, then `info/exclude`, then
+    /// `core.excludesFile`.
+    fn excluded(&mut self, rel: &Path, is_dir: bool) -> bool {
+        let mut dir = rel.parent();
+        while let Some(d) = dir {
+            // Relative to that `.gitignore`'s own folder, which is what its
+            // anchored patterns are anchored to.
+            let sub = rel.strip_prefix(d).unwrap_or(rel);
+            match self.gitignore(d).matched(sub, is_dir) {
+                Match::Ignore(_) => return true,
+                Match::Whitelist(_) => return false,
+                Match::None => {}
+            }
+            dir = d.parent();
+        }
+        self.base.matched(rel, is_dir).is_ignore()
+    }
+
+    fn gitignore(&mut self, dir: &Path) -> &Gitignore {
+        let root = &self.root;
+        self.gitignores.entry(dir.to_path_buf()).or_insert_with(|| {
+            let dir = root.join(dir);
+            let mut builder = GitignoreBuilder::new(&dir);
+            // Most folders have none, and an unreadable one counts as none.
+            let _ = builder.add(dir.join(".gitignore"));
+            builder.build().unwrap_or_else(|_| Gitignore::empty())
+        })
+    }
+}
+
+/// Whether `path` is a folder now. A deleted one reads as a file, which
+/// at worst counts a path a folder-only pattern would have dropped.
+fn is_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
+}
+
+/// `core.excludesFile` and this repo's `info/exclude`: the ignore rules
+/// that are not a `.gitignore` in the tree. Asked of git, which knows the
+/// repo's own config and the includes a config file can pull in.
+fn locate_excludes(root: &Path) -> Vec<PathBuf> {
+    let path = |args: &[&str]| {
+        let out = git_stdout(root, args)?;
+        let line = String::from_utf8_lossy(&out).trim().to_string();
+        (!line.is_empty()).then(|| root.join(line))
+    };
+    let mut files = Vec::new();
+    // Unset is an exit 1, and then git reads its default location.
+    files.extend(
+        path(&["config", "--path", "--get", "core.excludesFile"])
+            .or_else(ignore::gitignore::gitconfig_excludes_path),
+    );
+    files.extend(path(&["rev-parse", "--git-path", "info/exclude"]));
+    files
+}
+
+fn load_tracked_ignored(root: &Path) -> Option<TrackedIgnored> {
+    let out = git_stdout(root, &["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"])?;
+    let mut tracked = TrackedIgnored::default();
+    for name in out.split(|&b| b == 0).filter(|name| !name.is_empty()) {
+        let file = PathBuf::from(String::from_utf8_lossy(name).into_owned());
+        let dirs = file.ancestors().skip(1).filter(|d| !d.as_os_str().is_empty());
+        tracked.dirs.extend(dirs.map(Path::to_path_buf));
+        tracked.files.insert(file);
+    }
+    Some(tracked)
+}
+
+/// `git <args>` in `root`: its stdout, when it exits 0.
+fn git_stdout(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let out = crate::program::command("git")
+        .arg("--no-optional-locks")
+        .args(args)
+        .current_dir(root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .ok()?;
+    out.status.success().then_some(out.stdout)
+}
+
 /// Starts the recursive, debounced watch on `root`, calling `on_change`
 /// when a relevant path moves. The returned debouncer owns the OS watch:
 /// drop it and the watch ends, which is how a closed connection takes its
@@ -101,14 +392,15 @@ pub fn spawn_worktree_watcher<F>(
 where
     F: Fn() + Send + 'static,
 {
-    let filter_root = root.to_path_buf();
-    let gitdir = gitdir_for(root);
-    let filter_gitdir = gitdir.clone();
+    // Resolved like the root (`confined_worktree`): events arrive under the
+    // resolved path, and one outside the gitdir as given would count.
+    let gitdir = gitdir_for(root).map(|gd| protocol::canonical_path(&gd).unwrap_or(gd));
+    let mut filter = IgnoreFilter::new(root, gitdir.as_deref());
     let mut debouncer = notify_debouncer_mini::new_debouncer(
         GIT_WATCH_DEBOUNCE,
         move |res: notify_debouncer_mini::DebounceEventResult| {
             let Ok(events) = res else { return };
-            if events.iter().any(|e| relevant_event(&filter_root, filter_gitdir.as_deref(), &e.path)) {
+            if filter.any_relevant(events.iter().map(|e| e.path.as_path())) {
                 on_change();
             }
         },
@@ -167,6 +459,180 @@ mod tests {
         assert!(!relevant_event(root, Some(gitdir), Path::new("/r/main/.git/worktrees/wt/logs/HEAD")));
         assert!(relevant_event(root, Some(gitdir), Path::new("/r/wt/src/a.ts")));
         assert!(relevant_event(root, None, Path::new("/r/wt/README.md")));
+    }
+
+    /// A repo with one commit whose ignore rules are only its own: the
+    /// machine's `core.excludesFile` is swapped for one inside `.git/`.
+    fn repo(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = protocol::canonical_path(dir.path()).unwrap();
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["config", "core.excludesFile", root.join(".git/test-excludes").to_str().unwrap()]);
+        for (rel, body) in files {
+            put(&root, rel, body);
+        }
+        git(&root, &["add", "-A"]);
+        git(&root, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"]);
+        (dir, root)
+    }
+
+    fn git(root: &Path, args: &[&str]) {
+        let out = crate::program::command("git").args(args).current_dir(root).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn put(root: &Path, rel: &str, body: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    fn counts(filter: &mut IgnoreFilter, root: &Path, rel: &str) -> bool {
+        filter.any_relevant([root.join(rel).as_path()])
+    }
+
+    #[test]
+    fn an_ignored_path_is_not_relevant() {
+        let (_dir, root) = repo(&[(".gitignore", "node_modules/\n/target\n*.log\n"), ("web/.gitignore", "dist/\n")]);
+        let ignored = ["node_modules/left-pad/index.js", "web/node_modules/p/index.js", "target/debug/app", "web/dist/app.js", "debug.log", "src/trace.log"];
+        for p in ignored {
+            put(&root, p, "x");
+        }
+        let mut filter = IgnoreFilter::new(&root, None);
+        for p in ignored {
+            assert!(!counts(&mut filter, &root, p), "{p} is ignored");
+        }
+        // A folder-only pattern covers the folder's own event as well.
+        assert!(!counts(&mut filter, &root, "web/node_modules"));
+        // `/target` is anchored to the root, and web's `dist/` to web/.
+        put(&root, "web/target/x", "x");
+        put(&root, "dist/x", "x");
+        assert!(counts(&mut filter, &root, "web/target/x"));
+        assert!(counts(&mut filter, &root, "dist/x"));
+    }
+
+    #[test]
+    fn a_tracked_path_and_an_untracked_unignored_one_are_relevant() {
+        let (_dir, root) = repo(&[(".gitignore", "node_modules/\n"), ("src/main.rs", "fn main() {}\n")]);
+        put(&root, "src/new.rs", "");
+        let mut filter = IgnoreFilter::new(&root, None);
+        assert!(counts(&mut filter, &root, "src/main.rs"));
+        assert!(counts(&mut filter, &root, "src/new.rs"));
+        // The `.git/` rule still holds underneath.
+        assert!(counts(&mut filter, &root, ".git/index"));
+        assert!(!counts(&mut filter, &root, ".git/index.lock"));
+    }
+
+    #[test]
+    fn a_batch_counts_when_any_path_in_it_does() {
+        let (_dir, root) = repo(&[(".gitignore", "node_modules/\n"), ("src/main.rs", "fn main() {}\n")]);
+        let mut batch: Vec<PathBuf> = (0..500).map(|i| root.join(format!("node_modules/p{i}/index.js"))).collect();
+        let mut filter = IgnoreFilter::new(&root, None);
+        assert!(!filter.any_relevant(batch.iter().map(PathBuf::as_path)));
+        batch.push(root.join("src/main.rs"));
+        assert!(filter.any_relevant(batch.iter().map(PathBuf::as_path)));
+    }
+
+    /// `git status` shows a change to a tracked file whatever the rules
+    /// say, and a file force-added under an ignored folder is common.
+    #[test]
+    fn a_tracked_file_an_ignore_rule_matches_stays_relevant() {
+        let (_dir, root) = repo(&[(".gitignore", "build/\n*.log\n")]);
+        put(&root, "build/keep.txt", "x");
+        put(&root, "keep.log", "x");
+        put(&root, "build/other.txt", "x");
+        git(&root, &["add", "-f", "build/keep.txt", "keep.log"]);
+        let mut filter = IgnoreFilter::new(&root, None);
+        assert!(counts(&mut filter, &root, "build/keep.txt"));
+        assert!(counts(&mut filter, &root, "keep.log"));
+        assert!(counts(&mut filter, &root, "build"));
+        assert!(!counts(&mut filter, &root, "build/other.txt"));
+    }
+
+    #[test]
+    fn a_gitignore_edit_rearms_the_matcher() {
+        let (_dir, root) = repo(&[(".gitignore", "node_modules/\n"), ("docs/guide.md", "x")]);
+        put(&root, "node_modules/p/index.js", "x");
+        let mut filter = IgnoreFilter::new(&root, None);
+        assert!(!counts(&mut filter, &root, "node_modules/p/index.js"));
+        put(&root, ".gitignore", "docs/\n");
+        assert!(counts(&mut filter, &root, ".gitignore"));
+        assert!(counts(&mut filter, &root, "node_modules/p/index.js"));
+        // A rule that newly covers a tracked file leaves it counting: the
+        // tracked set is re-read, not the one from before the edit.
+        assert!(counts(&mut filter, &root, "docs/guide.md"));
+        put(&root, "docs/draft.md", "x");
+        assert!(!counts(&mut filter, &root, "docs/draft.md"));
+    }
+
+    #[test]
+    fn an_index_change_rearms_the_tracked_set() {
+        let (_dir, root) = repo(&[(".gitignore", "build/\n")]);
+        put(&root, "build/a.txt", "x");
+        put(&root, "build/b.txt", "x");
+        let mut filter = IgnoreFilter::new(&root, None);
+        assert!(!counts(&mut filter, &root, "build/a.txt"));
+        git(&root, &["add", "-f", "build/a.txt"]);
+        assert!(counts(&mut filter, &root, ".git/index"));
+        assert!(counts(&mut filter, &root, "build/a.txt"));
+        assert!(!counts(&mut filter, &root, "build/b.txt"));
+    }
+
+    #[test]
+    fn the_nearest_gitignore_decides() {
+        let (_dir, root) = repo(&[(".gitignore", "*.log\n"), ("logs/.gitignore", "!keep.log\n")]);
+        put(&root, "logs/keep.log", "x");
+        put(&root, "logs/other.log", "x");
+        let mut filter = IgnoreFilter::new(&root, None);
+        assert!(counts(&mut filter, &root, "logs/keep.log"));
+        assert!(!counts(&mut filter, &root, "logs/other.log"));
+    }
+
+    #[test]
+    fn info_exclude_and_core_excludes_file_are_rules_too() {
+        let (_dir, root) = repo(&[]);
+        put(&root, ".git/info/exclude", "scratch/\n");
+        put(&root, ".git/test-excludes", "*.tmp\n");
+        put(&root, "scratch/a", "x");
+        put(&root, "a.tmp", "x");
+        let mut filter = IgnoreFilter::new(&root, None);
+        assert!(!counts(&mut filter, &root, "scratch/a"));
+        assert!(!counts(&mut filter, &root, "a.tmp"));
+        put(&root, ".git/test-excludes", "");
+        assert!(counts(&mut filter, &root, "a.tmp"));
+    }
+
+    #[test]
+    fn a_gitignore_inside_an_ignored_folder_is_not_read() {
+        let (_dir, root) = repo(&[(".gitignore", "node_modules/\n")]);
+        put(&root, "node_modules/p/.gitignore", "!*\n");
+        put(&root, "node_modules/p/index.js", "x");
+        let mut filter = IgnoreFilter::new(&root, None);
+        assert!(!counts(&mut filter, &root, "node_modules/p/.gitignore"));
+        assert!(!counts(&mut filter, &root, "node_modules/p/index.js"));
+    }
+
+    /// The real watch, on a root resolved the way `WatchGitWorktree`
+    /// resolves one.
+    #[test]
+    fn an_ignored_write_leaves_the_watcher_quiet() {
+        let (_dir, root) = repo(&[(".gitignore", "node_modules/\n")]);
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&hits);
+        let _watcher = spawn_worktree_watcher(&root, move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })
+        .unwrap();
+        put(&root, "node_modules/p/index.js", "x");
+        std::fs::write(root.join(".git").join("index.lock"), "x").unwrap();
+        std::thread::sleep(GIT_WATCH_DEBOUNCE * 3);
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0, "an ignored write must not wake it");
+        put(&root, "src/a.rs", "x");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while hits.load(std::sync::atomic::Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(hits.load(std::sync::atomic::Ordering::SeqCst) > 0, "an ordinary write must wake it");
     }
 
     /// The watch fires on an ordinary write and stays quiet for an
