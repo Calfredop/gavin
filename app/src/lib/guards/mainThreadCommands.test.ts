@@ -76,6 +76,11 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["git/commands.rs", "git_remove_remote", "`git remote remove`, which rewrites refs"],
   ["git/commands.rs", "git_init", "`git init`"],
   ["git/runchanges.rs", "git_discard_run", "`reset --hard` and a Trash move per untracked file"],
+  // Worktrees: a checkout of the whole tree, or a delete of one with its
+  // build output -- 30k files and 4-6.6 GB in this repo's, 2.7 s to
+  // unlink. Best-of-N adds N in a row and a sweep removes N in a row.
+  ["git/commands.rs", "git_worktree_add", "a checkout of the whole tree, post-checkout hook and LFS smudge"],
+  ["git/commands.rs", "git_worktree_remove", "deleting the whole tree, build output included, then watchman"],
   // Conflict resolution. The read re-runs on every refresh while a `U`
   // path is selected and after every resolve click, which is its own git
   // plus that refresh: 1.5-2.5 s a click, measured on the main thread.
@@ -87,10 +92,12 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
 ];
 
 /// The command's text from its `#[tauri::command]` line to the first
-/// line that closes a top-level item.
+/// line that closes a top-level item. Attributes may sit between the two,
+/// as `#[allow(clippy::too_many_arguments)]` does on a command with many
+/// arguments.
 function commandBody(file: string, command: string): string {
   const text = rust(file);
-  const at = text.search(new RegExp(`#\\[tauri::command\\]\\s*pub (async )?fn ${command}\\(`));
+  const at = text.search(new RegExp(`#\\[tauri::command\\]\\s*(#\\[[^\\]]*\\]\\s*)*pub (async )?fn ${command}\\(`));
   expect(at, `${command} is not a command in ${file}`).toBeGreaterThan(-1);
   return text.slice(at, text.indexOf("\n}\n", at));
 }

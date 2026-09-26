@@ -252,7 +252,14 @@ pub fn worktrees(cwd: &str) -> Result<Vec<WorktreeInfo>, String> {
 
 /// `new_branch`: `worktree add -b <branch> <path> [<from>]`; otherwise
 /// `worktree add <path> <branch>` for an existing branch.
-pub fn worktree_add(cwd: &str, path: &str, branch: &str, from: Option<&str>, new_branch: bool) -> Result<(), String> {
+///
+/// An action rather than a plain run: it checks the whole tree out,
+/// through the post-checkout hook and any LFS smudge, so it gets the op
+/// ceiling and `control` can stop it. A stop is a TERM, and git answers
+/// one during the checkout by deleting the half-made folder and its
+/// registration. A stop in the post-checkout hook leaves a whole
+/// worktree, which is git's own rule: a failed hook deletes nothing.
+pub fn worktree_add(cwd: &str, path: &str, branch: &str, from: Option<&str>, new_branch: bool, control: &OpControl) -> Result<(), String> {
     let mut args = vec!["worktree", "add"];
     if new_branch {
         args.extend(["-b", branch, "--", path]);
@@ -262,7 +269,7 @@ pub fn worktree_add(cwd: &str, path: &str, branch: &str, from: Option<&str>, new
     } else {
         args.extend(["--", path, branch]);
     }
-    ok(run_git(cwd, &args, None)?).map(|_| ())
+    ok(run_git_action(cwd, &args, &[], None, control)?).map(|_| ())
 }
 
 /// Removes a worktree, and tells watchman to stop watching it.
@@ -278,13 +285,19 @@ pub fn worktree_add(cwd: &str, path: &str, branch: &str, from: Option<&str>, new
 /// git then refuses to remove would have dropped a watch the human still
 /// wanted. `forget_root` is a no-op when no server is running, so the
 /// ordinary machine pays nothing for it.
+///
+/// The removal deletes build output too: gavin's own worktrees hold 30k
+/// files and 4-6.6 GB each, 2.7 s to unlink on this Mac and more on a
+/// busy disk. So it gets the op ceiling rather than GIT_TIMEOUT, and no
+/// cancel. Git has no cleanup for a remove stopped part-way, and one
+/// leaves the folder half deleted and still registered.
 pub fn worktree_remove(cwd: &str, path: &str, force: bool) -> Result<(), String> {
     let mut args = vec!["worktree", "remove"];
     if force {
         args.push("--force");
     }
     args.push(path);
-    ok(run_git(cwd, &args, None)?)?;
+    ok(run_git_action(cwd, &args, &[], None, &OpControl::default())?)?;
     crate::memory::forget_root(path);
     Ok(())
 }
@@ -293,14 +306,31 @@ pub fn worktree_prune(cwd: &str) -> Result<(), String> {
     ok(run_git(cwd, &["worktree", "prune"], None)?).map(|_| ())
 }
 
+// Adding and removing are `async` on the blocking pool as well: a
+// checkout of the whole tree, or a delete of one. Best-of-N adds its
+// candidates one after another, and a sweep or a discard removes its
+// worktrees one after another. Ordering is the caller's again: each
+// batch awaits one git before starting the next, under `busy`.
+
 #[tauri::command]
-pub fn git_worktree_add(cwd: String, path: String, branch: String, from: Option<String>, new_branch: bool) -> Result<(), String> {
-    worktree_add(&cwd, &path, &branch, from.as_deref(), new_branch)
+#[allow(clippy::too_many_arguments)]
+pub async fn git_worktree_add(
+    cwd: String,
+    path: String,
+    branch: String,
+    from: Option<String>,
+    new_branch: bool,
+    op_id: Option<String>,
+    app: AppHandle,
+    ops: State<'_, GitOps>,
+) -> Result<(), String> {
+    let op = RunningOp::register(&ops, &app, op_id);
+    off_main_thread(move || worktree_add(&cwd, &path, &branch, from.as_deref(), new_branch, &op.control)).await
 }
 
 #[tauri::command]
-pub fn git_worktree_remove(cwd: String, path: String, force: bool) -> Result<(), String> {
-    worktree_remove(&cwd, &path, force)
+pub async fn git_worktree_remove(cwd: String, path: String, force: bool) -> Result<(), String> {
+    off_main_thread(move || worktree_remove(&cwd, &path, force)).await
 }
 
 #[tauri::command]
@@ -1229,7 +1259,7 @@ mod ref_tests {
         let name = dir.path().file_name().unwrap().to_string_lossy().to_string();
         let wt = dir.path().parent().unwrap().join(format!("{name}-feature"));
         let wt_s = wt.to_str().unwrap().to_string();
-        worktree_add(cwd(&dir), &wt_s, "feature", None, true).unwrap();
+        worktree_add(cwd(&dir), &wt_s, "feature", None, true, &OpControl::default()).unwrap();
         let r = refs(cwd(&dir)).unwrap();
         assert_eq!(r.worktrees.len(), 2);
         assert!(r.worktrees[0].is_main);
@@ -1243,11 +1273,47 @@ mod ref_tests {
         assert_eq!(refs(cwd(&dir)).unwrap().worktrees.len(), 1);
 
         // Existing-branch mode, then prune after an external rm -rf.
-        worktree_add(cwd(&dir), &wt_s, "feature", None, false).unwrap();
+        worktree_add(cwd(&dir), &wt_s, "feature", None, false, &OpControl::default()).unwrap();
         std::fs::remove_dir_all(&wt).unwrap();
         assert!(refs(cwd(&dir)).unwrap().worktrees[1].prunable);
         worktree_prune(cwd(&dir)).unwrap();
         assert_eq!(refs(cwd(&dir)).unwrap().worktrees.len(), 1);
+    }
+
+    /// Why an add is safe to put a Cancel on. A stop during the checkout,
+    /// here stuck in a smudge filter the way an LFS download gets stuck,
+    /// is a TERM. Git answers it by deleting the half-made folder and its
+    /// registration. A SIGKILL would have left both: a folder holding
+    /// some of the files, and a `worktree list` entry pointing at it.
+    #[cfg(unix)]
+    #[test]
+    fn a_worktree_add_stopped_mid_checkout_leaves_nothing_behind() {
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration, Instant};
+        let dir = temp_repo();
+        write(&dir, ".gitattributes", "f.txt filter=slow\n");
+        git(cwd(&dir), &["add", ".gitattributes"]);
+        git(cwd(&dir), &["commit", "-q", "-m", "slow filter"]);
+        let started = dir.path().join("smudge-started");
+        git(cwd(&dir), &["config", "filter.slow.smudge", &format!("touch '{}'; sleep 30", started.display())]);
+        let outside = tempfile::tempdir().unwrap();
+        let wt = outside.path().join("slow");
+        let control = OpControl::default();
+        let cancel = control.cancel.clone();
+        let canceller = std::thread::spawn(move || {
+            // Once the checkout is under way, not before.
+            let t = Instant::now();
+            while !started.exists() {
+                assert!(t.elapsed() < Duration::from_secs(10), "the smudge filter never ran");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            cancel.store(true, Ordering::Relaxed);
+        });
+        let err = worktree_add(cwd(&dir), wt.to_str().unwrap(), "slow", None, true, &control).unwrap_err();
+        canceller.join().unwrap();
+        assert_eq!(err, "cancelled");
+        assert!(!wt.exists(), "the half-made worktree is still on disk");
+        assert_eq!(refs(cwd(&dir)).unwrap().worktrees.len(), 1, "the half-made worktree is still registered");
     }
 
     /// The sweep's first disqualifier. The listing has to survive both
@@ -1269,7 +1335,7 @@ mod ref_tests {
         let name = dir.path().file_name().unwrap().to_string_lossy().to_string();
         let wt = dir.path().parent().unwrap().join(format!("{name}-landed"));
         let wt_s = wt.to_str().unwrap().to_string();
-        worktree_add(cwd(&dir), &wt_s, "landed", None, false).unwrap();
+        worktree_add(cwd(&dir), &wt_s, "landed", None, false, &OpControl::default()).unwrap();
 
         let merged = merged_branches(cwd(&dir), &base).unwrap();
         // `landed` is checked out in the linked worktree, so git decorates

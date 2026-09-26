@@ -106,6 +106,11 @@ fn run_git_capped(cwd: &str, args: &[&str], stdin: Option<&[u8]>, stdout_cap: Op
 /// can cancel the action, and its stderr -- where git sends a hook's output
 /// -- goes to the op bar while it runs.
 ///
+/// `worktree add` counts as a checkout here. `worktree remove` runs here
+/// with a default `control`, for the ceiling alone: deleting a worktree
+/// with its build output can take longer than GIT_TIMEOUT, and a remove
+/// stopped part-way leaves the tree half deleted.
+///
 /// `env` is for `GIT_EDITOR=true`, so a cherry-pick or a `--continue`
 /// never waits on an editor nobody can see.
 pub fn run_git_action(
