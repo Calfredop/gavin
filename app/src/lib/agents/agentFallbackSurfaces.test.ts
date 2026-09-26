@@ -49,6 +49,16 @@ describe("fallback agent surfaces", () => {
     expect(source("Sidebar.svelte")).toContain("AgentArmWizard");
   });
 
+  it("offers a persisted Don't ask again, and a way back from it", () => {
+    const wizard = source("AgentArmWizard.svelte");
+    expect(wizard).toContain("Don't ask again");
+    expect(wizard).toMatch(/onclick=\{onDecline\}[^<]*Don't ask again/);
+    expect(source("Sidebar.svelte")).toContain("onDecline={() => void declineArmRequest()}");
+    expect(source("agentPauseState.ts")).toContain("declinedAgents");
+    expect(source("SettingsHubView.svelte")).toContain("askAgainToArm(workspaceId, id)");
+    expect(source("SettingsHubView.svelte")).toContain("Ask again");
+  });
+
   it("tries the workspace agent before the configured chain", () => {
     expect(source("agentPauseState.ts")).toContain("workspaceProfileId");
     expect(source("agentFallback.ts")).toContain("workspaceProfileId");

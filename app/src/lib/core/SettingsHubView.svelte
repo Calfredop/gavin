@@ -87,7 +87,7 @@
   import { tooltip } from "$lib/core/tooltip";
   import { MIN_PERIOD_MINUTES, validateCycle } from "$lib/agents/agentPause";
   import { agentPauseStore, editableCycle, nowStore, pauseFor } from "$lib/agents/agentPauseState";
-  import { armNewlyAdded } from "$lib/agents/agentFallbackState";
+  import { armNewlyAdded, askAgainToArm } from "$lib/agents/agentFallbackState";
   import {
     effectiveFallbackChain,
     fallbackThresholdFor,
@@ -1222,7 +1222,7 @@
             $agentDefaultsStore.agentFallback
           );
           void setWorkspaceFallback(workspaceId, chain).then(() => {
-            if (chain) armNewlyAdded(workspaceId, before, chain);
+            if (chain) void armNewlyAdded(workspaceId, before, chain);
           });
         }}
         onThresholdChange={(profileId, percent) =>
@@ -1234,6 +1234,24 @@
             },
           })}
       />
+      {#if (ws.declinedAgents ?? []).length > 0}
+        <!-- The one way back from the arming wizard's "Don't ask again":
+             without it the answer could only be undone by hand-editing
+             config.json. -->
+        <div class="sp-row">
+          <span class="sp-title">Not set up here, by your choice</span>
+          {#each ws.declinedAgents ?? [] as id (id)}
+            <div class="row">
+              <span>{$agentProfilesStore.find((p) => p.id === id)?.label ?? id}</span>
+              <button type="button" onclick={() => void askAgainToArm(workspaceId, id)}>Ask again</button>
+            </div>
+          {/each}
+          <p class="hint">
+            You chose "Don't ask again" when gavin offered to set these up, so launches here skip
+            them in the chain.
+          </p>
+        </div>
+      {/if}
     </section>
 
     <section hidden={!settingsFilter.visible("unattended-recovery") || selectedSection !== "unattended-recovery"}>

@@ -178,6 +178,34 @@ describe("decideLaunch", () => {
     ).toEqual({ kind: "arm", profileId: "codex" });
   });
 
+  it("walks past an unarmed agent the human said not to ask about again", () => {
+    expect(
+      decide({
+        chain: ["codex", "gemini"],
+        usageByProfile: { "claude-code": atLimit(99) },
+        armed: new Set(["gemini"]),
+        declined: new Set(["codex"]),
+      })
+    ).toEqual({ kind: "use", profileId: "gemini", viaFallback: true });
+    expect(
+      decide({
+        usageByProfile: { "claude-code": atLimit(99) },
+        armed: new Set(),
+        declined: new Set(["codex"]),
+      })
+    ).toEqual({ kind: "pause", why: "usage-limit" });
+  });
+
+  it("still uses a declined agent that was armed after all", () => {
+    expect(
+      decide({
+        usageByProfile: { "claude-code": atLimit(99) },
+        armed: new Set(["codex"]),
+        declined: new Set(["codex"]),
+      })
+    ).toEqual({ kind: "use", profileId: "codex", viaFallback: true });
+  });
+
   it("pauses when the chain is empty — today's pause-only behaviour", () => {
     expect(
       decide({
@@ -284,6 +312,18 @@ describe("agentsOwedArming", () => {
         chain: ["codex", "claude-code"],
         complexityProfiles: ["gemini", "codex"],
         armed: new Set(["codex"]),
+        workspaceProfileId: "claude-code",
+      })
+    ).toEqual(["gemini"]);
+  });
+
+  it("skips ids the human said not to ask about again", () => {
+    expect(
+      agentsOwedArming({
+        chain: ["codex"],
+        complexityProfiles: ["gemini"],
+        armed: new Set(),
+        declined: new Set(["codex"]),
         workspaceProfileId: "claude-code",
       })
     ).toEqual(["gemini"]);

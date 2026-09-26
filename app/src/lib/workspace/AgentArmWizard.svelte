@@ -22,14 +22,17 @@
   } from "$lib/agents/superpowers";
   import { AGENT_ARM_STEPS, nextAgentArmStep, type AgentArmStep } from "$lib/workspace/agentArm";
   import { sshLimitation } from "$lib/workspace/sshWorkspace";
+  import { tooltip } from "$lib/core/tooltip";
 
   interface Props {
     workspaceId: string;
     profileId: string;
     onClose: () => void;
     onArmed: () => void;
+    /// "Don't ask again": Cancel only lasts until the app restarts.
+    onDecline: () => void;
   }
-  let { workspaceId, profileId, onClose, onArmed }: Props = $props();
+  let { workspaceId, profileId, onClose, onArmed, onDecline }: Props = $props();
 
   const toLabel = $derived(
     $agentProfilesStore.find((p) => p.id === profileId)?.label ?? profileId
@@ -53,6 +56,9 @@
   let superpowers = $state<SuperpowersStatus | undefined>(undefined);
   let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
+  const declineHint = $derived(
+    `Stop offering to set up ${toLabel} in this workspace. Launches here skip it in the fallback chain until you choose Ask again in the workspace's Fallback agent settings.`
+  );
   const sshBlocked = $derived(sshLimitation(ws));
 
   async function refreshSuperpowers(): Promise<void> {
@@ -89,7 +95,10 @@
          machine; an ssh workspace's checkout is on the host. -->
     <div class="wizard">
       <p class="ssh-notice">{sshBlocked}</p>
-      <div class="ssh-actions"><button type="button" onclick={onClose}>Close</button></div>
+      <div class="ssh-actions">
+        <button type="button" class="ghost" use:tooltip={declineHint} onclick={onDecline}>Don't ask again</button>
+        <button type="button" onclick={onClose}>Close</button>
+      </div>
     </div>
   {:else}
   <div class="wizard">
@@ -120,6 +129,7 @@
         />
         <div class="actions below">
           <button type="button" class="ghost" onclick={onClose}>Cancel</button>
+          <button type="button" class="ghost" use:tooltip={declineHint} onclick={onDecline}>Don't ask again</button>
         </div>
       {:else}
         <SuperpowersStep
@@ -152,6 +162,7 @@
   .ssh-actions {
     display: flex;
     justify-content: flex-end;
+    gap: 8px;
   }
   .ssh-actions button {
     background: var(--surface-overlay);
@@ -161,6 +172,10 @@
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;
+  }
+  .ssh-actions button.ghost {
+    background: transparent;
+    color: var(--text-subtle);
   }
   .wizard {
     width: 640px;

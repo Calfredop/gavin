@@ -1043,6 +1043,7 @@ mod workspaces_data_tests {
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            declined_agents: Vec::new(),
             ssh: None,
             action_prompt_overrides: HashMap::new(),
         };
@@ -1284,6 +1285,7 @@ mod workspace_migration_tests {
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            declined_agents: Vec::new(),
             ssh: None,
             action_prompt_overrides: HashMap::new(),
         }
@@ -3792,6 +3794,7 @@ mod resolve_workspaces_tests {
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            declined_agents: Vec::new(),
             ssh: None,
             action_prompt_overrides: HashMap::new(),
         }
@@ -4580,6 +4583,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            declined_agents: Vec::new(),
             ssh: None,
             action_prompt_overrides: HashMap::new(),
             },
@@ -6196,6 +6200,7 @@ mod main_session_tests {
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            declined_agents: Vec::new(),
             ssh: None,
             action_prompt_overrides: HashMap::new(),
         }
@@ -6777,6 +6782,7 @@ mod attach_target_tests {
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            declined_agents: Vec::new(),
             ssh: None,
             action_prompt_overrides: HashMap::new(),
         }

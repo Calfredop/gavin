@@ -8,7 +8,12 @@
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import AgentUsageModal from "$lib/agents/AgentUsageModal.svelte";
   import { activePause, nowStore, usageRefreshingStore, worstUsageProjection } from "$lib/agents/agentPauseState";
-  import { armRequest, completeArmRequest, dismissArmRequest } from "$lib/agents/agentFallbackState";
+  import {
+    armRequest,
+    completeArmRequest,
+    declineArmRequest,
+    dismissArmRequest,
+  } from "$lib/agents/agentFallbackState";
   import { pauseLabel } from "$lib/agents/agentPause";
   import { fleetStripLine, launchGateVerdict } from "$lib/agents/launchQueue";
   import { projectionTooltip } from "$lib/agents/usageProjection";
@@ -1851,6 +1856,7 @@
     profileId={$armRequest.profileId}
     onClose={dismissArmRequest}
     onArmed={() => void completeArmRequest()}
+    onDecline={() => void declineArmRequest()}
   />
 {/if}
 

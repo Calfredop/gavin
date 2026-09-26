@@ -27,6 +27,7 @@ const layout = vi.hoisted(() => {
       id: string;
       agentFallback?: string[] | null;
       armedAgents?: string[];
+      declinedAgents?: string[];
     }>,
     activeWorkspaceId: null as string | null,
   });
@@ -51,6 +52,18 @@ const layout = vi.hoisted(() => {
         ),
       }));
     }),
+    setAgentArmDeclined: vi.fn(
+      async (workspaceId: string, profileId: string, declined: boolean) => {
+        layoutState.update((s) => ({
+          ...s,
+          workspaces: s.workspaces.map((w) => {
+            if (w.id !== workspaceId) return w;
+            const rest = (w.declinedAgents ?? []).filter((id) => id !== profileId);
+            return { ...w, declinedAgents: declined ? [...rest, profileId] : rest };
+          }),
+        }));
+      }
+    ),
   };
 });
 
@@ -59,7 +72,9 @@ vi.mock("$lib/core/layoutState", () => layout);
 import {
   armNewlyAdded,
   armRequest,
+  askAgainToArm,
   completeArmRequest,
+  declineArmRequest,
   dismissArmRequest,
   owedArming,
   requestArm,
@@ -94,6 +109,14 @@ describe("owedArming", () => {
     layout.workspaceComplexityTable.mockReturnValue({});
     expect(owedArming("w1")).toEqual(["codex", "gemini"]);
   });
+
+  it("leaves out an agent the human said not to ask about again", () => {
+    layout.layoutState.set({
+      workspaces: [{ id: "w1", agentFallback: ["codex", "gemini"], declinedAgents: ["codex"] }],
+      activeWorkspaceId: "w1",
+    });
+    expect(owedArming("w1")).toEqual(["gemini"]);
+  });
 });
 
 describe("armNewlyAdded", () => {
@@ -106,6 +129,16 @@ describe("armNewlyAdded", () => {
     armNewlyAdded("w1", ["codex", "gemini"], ["gemini", "codex"]);
     expect(get(armRequest)).toBeNull();
   });
+
+  it("asks again about an agent the human explicitly put back in the chain", async () => {
+    layout.layoutState.set({
+      workspaces: [{ id: "w1", agentFallback: ["gemini"], declinedAgents: ["gemini"] }],
+      activeWorkspaceId: "w1",
+    });
+    await armNewlyAdded("w1", [], ["gemini"]);
+    expect(layout.setAgentArmDeclined).toHaveBeenCalledWith("w1", "gemini", false);
+    expect(get(armRequest)).toEqual({ workspaceId: "w1", profileId: "gemini" });
+  });
 });
 
 describe("requestArm", () => {
@@ -114,6 +147,36 @@ describe("requestArm", () => {
     dismissArmRequest();
     requestArm("w-dismiss", "codex");
     expect(get(armRequest)).toBeNull();
+  });
+});
+
+describe("declineArmRequest", () => {
+  it("records the choice so no later focus or launch reopens the wizard", async () => {
+    layout.layoutState.set({
+      workspaces: [{ id: "w-decline", agentFallback: ["codex"] }],
+      activeWorkspaceId: null,
+    });
+    requestArm("w-decline", "codex");
+    await declineArmRequest();
+    expect(get(armRequest)).toBeNull();
+    expect(layout.setAgentArmDeclined).toHaveBeenCalledWith("w-decline", "codex", true);
+    expect(owedArming("w-decline")).toEqual([]);
+    requestArm("w-decline", "codex");
+    expect(get(armRequest)).toBeNull();
+  });
+});
+
+describe("askAgainToArm", () => {
+  it("drops the recorded choice and opens the wizard", async () => {
+    layout.layoutState.set({
+      workspaces: [{ id: "w-again", agentFallback: ["codex"] }],
+      activeWorkspaceId: null,
+    });
+    requestArm("w-again", "codex");
+    await declineArmRequest();
+    await askAgainToArm("w-again", "codex");
+    expect(layout.setAgentArmDeclined).toHaveBeenLastCalledWith("w-again", "codex", false);
+    expect(get(armRequest)).toEqual({ workspaceId: "w-again", profileId: "codex" });
   });
 });
 

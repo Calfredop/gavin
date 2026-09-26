@@ -15,6 +15,8 @@
 // override. "Armed" is a set the workspace records after setup-only
 // Integration/Superpowers for that profile — the workspace's own active
 // profile is treated as armed by the init/switch wizard, not this list.
+// "Declined" is the set the human answered "Don't ask again" for: it is
+// never offered for arming in that workspace, so the chain walks past it.
 
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import { usageBlock, usageForLaunchGate } from "$lib/agents/agentUsage";
@@ -104,6 +106,10 @@ export interface LaunchDecisionInput {
   chain: readonly string[];
   usageByProfile: Record<string, AgentUsageReport | undefined>;
   armed: ReadonlySet<string> | ((id: string) => boolean);
+  /// Unarmed agents the human said not to ask about again in this
+  /// workspace. The walk skips them rather than stalling on a setup
+  /// wizard nobody will be shown. An armed one is still used.
+  declined?: ReadonlySet<string>;
   limitEnabled: boolean;
   /// Pause-cycle percent. New launches ignore this in favour of each
   /// profile's `fallbackThresholds`; resume uses this so the leftover
@@ -150,7 +156,10 @@ export function decideLaunch(input: LaunchDecisionInput): FallbackDecision {
     // The workspace's own agent is armed by init / agent-change, not by
     // the fallback-arming list. Asking to set it up again would block the
     // one hop this field exists to make.
-    if (id !== workspace && !isArmed(input.armed, id)) return { kind: "arm", profileId: id };
+    if (id !== workspace && !isArmed(input.armed, id)) {
+      if (input.declined?.has(id)) continue;
+      return { kind: "arm", profileId: id };
+    }
     return { kind: "use", profileId: id, viaFallback: true };
   }
 
@@ -159,16 +168,18 @@ export function decideLaunch(input: LaunchDecisionInput): FallbackDecision {
 
 /// Agents this workspace still needs setup-only arming for: every chain
 /// entry and every complexity-table profile, except the workspace's own
-/// active profile (armed by init / agent-change).
+/// active profile (armed by init / agent-change) and any the human said
+/// not to ask about again.
 export function agentsOwedArming(input: {
   chain: readonly string[];
   complexityProfiles: readonly string[];
   armed: ReadonlySet<string>;
+  declined?: ReadonlySet<string>;
   workspaceProfileId: string;
 }): string[] {
   const skip = input.workspaceProfileId.trim();
   return sanitizeChain([...input.chain, ...input.complexityProfiles]).filter(
-    (id) => id !== skip && !input.armed.has(id)
+    (id) => id !== skip && !input.armed.has(id) && !input.declined?.has(id)
   );
 }
 

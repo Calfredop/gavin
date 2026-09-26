@@ -449,6 +449,13 @@ pub struct Workspace {
     /// not this list. Empty is the ordinary case.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub armed_agents: Vec<String>,
+    /// Profile ids the human answered "Don't ask again" for in that
+    /// arming wizard. Never offered for arming in this workspace again,
+    /// and the fallback walk skips them while they stay unarmed. Persisted
+    /// because a Cancel remembered only in memory asked again on every
+    /// launch of the app. Empty is the ordinary case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declined_agents: Vec<String>,
     /// Overrides of shipped agent action prompts for this workspace,
     /// keyed by catalog id. Empty inherits the app-wide map on
     /// `AgentDefaultsConfig::action_prompt_overrides` (and then the
@@ -1113,6 +1120,7 @@ mod tests {
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
+            declined_agents: Vec::new(),
             ssh: None,
             action_prompt_overrides: HashMap::new(),
         }
@@ -1177,6 +1185,7 @@ mod tests {
         let mut ws = sample_workspace();
         ws.agent_fallback = Some(vec!["codex".to_string(), "gemini".to_string()]);
         ws.armed_agents = vec!["codex".to_string()];
+        ws.declined_agents = vec!["gemini".to_string()];
         save(dir.path(), &AppConfig { workspaces: vec![ws], ..Default::default() }).unwrap();
         let loaded = load(dir.path()).unwrap();
         assert_eq!(
@@ -1184,6 +1193,7 @@ mod tests {
             Some(["codex".to_string(), "gemini".to_string()].as_slice())
         );
         assert_eq!(loaded.workspaces[0].armed_agents, vec!["codex".to_string()]);
+        assert_eq!(loaded.workspaces[0].declined_agents, vec!["gemini".to_string()]);
 
         std::fs::write(
             config_path(dir.path()),
@@ -1193,6 +1203,7 @@ mod tests {
         let old = load(dir.path()).unwrap();
         assert_eq!(old.workspaces[0].agent_fallback, None);
         assert!(old.workspaces[0].armed_agents.is_empty());
+        assert!(old.workspaces[0].declined_agents.is_empty());
         assert!(old.agent_defaults.agent_fallback.is_empty());
         assert!(old.agent_defaults.fallback_thresholds.is_empty());
     }

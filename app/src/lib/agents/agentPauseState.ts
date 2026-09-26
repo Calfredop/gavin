@@ -416,6 +416,7 @@ export function launchDecision(
     chain,
     usageByProfile: get(agentUsageStore),
     armed,
+    declined: new Set(workspace?.declinedAgents ?? []),
     limitEnabled: cycle?.limitEnabled ?? false,
     limitPercent: cycle?.limitPercent ?? DEFAULT_CYCLE.limitPercent,
     fallbackThresholds: get(agentDefaultsStore).fallbackThresholds,

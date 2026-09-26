@@ -2894,7 +2894,8 @@ export async function setWorkspaceFallback(
 }
 
 /// Record that this profile's setup-only arming finished in this
-/// workspace. Idempotent: a second arm of the same id is a no-op.
+/// workspace. Idempotent: a second arm of the same id is a no-op. Arming
+/// is an answer too, so it drops an earlier "Don't ask again" for the id.
 export async function markAgentArmed(workspaceId: string, profileId: string): Promise<void> {
   const id = profileId.trim();
   if (!id) return;
@@ -2902,11 +2903,41 @@ export async function markAgentArmed(workspaceId: string, profileId: string): Pr
   const workspaces = state.workspaces.map((w) => {
     if (w.id !== workspaceId) return w;
     const have = new Set(w.armedAgents ?? []);
-    if (have.has(id)) return w;
-    return { ...w, armedAgents: [...have, id] };
+    const declined = w.declinedAgents ?? [];
+    if (have.has(id) && !declined.includes(id)) return w;
+    return withDeclined({ ...w, armedAgents: [...have, id] }, declined.filter((d) => d !== id));
   });
   layoutState.update((s) => ({ ...s, workspaces }));
   await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// Record (or withdraw) the human's "Don't ask again" for arming this
+/// profile in this workspace. Persisted beside `armedAgents`, because a
+/// Cancel remembered only in memory reopens the wizard on every launch.
+export async function setAgentArmDeclined(
+  workspaceId: string,
+  profileId: string,
+  declined: boolean
+): Promise<void> {
+  const id = profileId.trim();
+  if (!id) return;
+  const state = get(layoutState);
+  const workspaces = state.workspaces.map((w) => {
+    if (w.id !== workspaceId) return w;
+    const have = w.declinedAgents ?? [];
+    if (have.includes(id) === declined) return w;
+    const rest = have.filter((d) => d !== id);
+    return withDeclined(w, declined ? [...rest, id] : rest);
+  });
+  layoutState.update((s) => ({ ...s, workspaces }));
+  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+}
+
+/// An empty declined list is stored as ABSENT, the ordinary case.
+function withDeclined(w: Workspace, declined: string[]): Workspace {
+  if (declined.length > 0) return { ...w, declinedAgents: declined };
+  const { declinedAgents: _dropped, ...rest } = w;
+  return rest;
 }
 
 // Git tab preferences (splitter widths, diff layout, discard-confirm

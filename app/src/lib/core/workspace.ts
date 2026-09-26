@@ -193,6 +193,10 @@ export interface Workspace {
   /// switching the active agent. The workspace's own profile is not
   /// listed here — init and agent-change cover that.
   armedAgents?: string[];
+  /// Profile ids the human answered "Don't ask again" for in the arming
+  /// wizard. Never offered for arming here, and the fallback walk skips
+  /// them while they stay unarmed. Absent is the ordinary case.
+  declinedAgents?: string[];
   /// When this workspace was pinned to the top of the sidebar, epoch
   /// milliseconds; absent means not pinned. Same rule and same reason as
   /// `Page.pinnedAt`, one level up.
