@@ -243,6 +243,12 @@ export function workspaceWindows(): Promise<Record<string, string>> {
   return invoke("workspace_windows");
 }
 
+/// Which window runs the app's pollers, and which windows are open. See
+/// workspace_window.rs's `DutyWindow`.
+export function appDuty(): Promise<{ holder: string; windows: string[] }> {
+  return invoke("app_duty");
+}
+
 /// Opens a window for a workspace, answering with the label that now
 /// holds it. Idempotent: a workspace that already has a window is raised
 /// rather than given a second one.

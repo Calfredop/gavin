@@ -77,6 +77,7 @@ pub fn run() {
         .manage(pull_request::PrCache::new())
         .manage(agent_tokens::TokenCache::new())
         .manage(workspace_window::WorkspaceWindows::default())
+        .manage(workspace_window::DutyWindow::default())
         .manage(remote::RemoteLinks::default())
         .manage(remote::SessionHosts::default())
         .setup(|app| {
@@ -95,6 +96,14 @@ pub fn run() {
                 }
             });
             Ok(())
+        })
+        // Every window's destroy, the main one's included: the duty
+        // window's handover has to hear the one window
+        // open_workspace_window never built.
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                workspace_window::on_window_destroyed(window.app_handle(), window.label());
+            }
         })
         .invoke_handler(tauri::generate_handler![
             session::write_input,
@@ -241,6 +250,7 @@ pub fn run() {
             workspace_window::focus_workspace_window,
             workspace_window::close_all_workspace_windows,
             workspace_window::close_workspace_window,
+            workspace_window::app_duty,
             workspace_delete::scan_gavin_footprint,
             workspace_delete::remove_gavin_footprint,
             git::git_repo_info,
