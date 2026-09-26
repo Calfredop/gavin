@@ -186,6 +186,14 @@ pub fn reset(cwd: &str, sha: &str, mode: &str) -> Result<(), String> {
 // they measured 6-7 s of frozen window a minute with one view open.
 // Ordering is the caller's: each store write in gitState.ts checks its own
 // token, and `refresh()` runs one pass at a time per view.
+//
+// So are the actions -- what the Git tab's buttons run. Each is its own
+// git plus the refresh after it, 0.7-1.3 s a click with no hooks at all,
+// and the ones that run hooks, sign, or check out through a filter wait
+// on whatever those do. Ordering is the caller's here too: `runWithReason`
+// holds `busy` for the whole action and `runBlocker` refuses a second
+// one, and the rail's branch switch runs inside its workspace's `ticking`
+// guard.
 
 #[tauri::command]
 pub async fn git_log(cwd: String, all: bool, skip: usize, limit: usize) -> Result<LogPage, String> {
@@ -198,28 +206,28 @@ pub async fn git_commit_detail(cwd: String, sha: String) -> Result<CommitDetail,
 }
 
 #[tauri::command]
-pub fn git_checkout_commit(cwd: String, sha: String) -> Result<(), String> {
-    checkout_commit(&cwd, &sha)
+pub async fn git_checkout_commit(cwd: String, sha: String) -> Result<(), String> {
+    off_main_thread(move || checkout_commit(&cwd, &sha)).await
 }
 
 #[tauri::command]
-pub fn git_cherry_pick(cwd: String, sha: String) -> Result<(), String> {
-    cherry_pick(&cwd, &sha)
+pub async fn git_cherry_pick(cwd: String, sha: String) -> Result<(), String> {
+    off_main_thread(move || cherry_pick(&cwd, &sha)).await
 }
 
 #[tauri::command]
-pub fn git_revert(cwd: String, sha: String) -> Result<(), String> {
-    revert(&cwd, &sha)
+pub async fn git_revert(cwd: String, sha: String) -> Result<(), String> {
+    off_main_thread(move || revert(&cwd, &sha)).await
 }
 
 #[tauri::command]
-pub fn git_reset(cwd: String, sha: String, mode: String) -> Result<(), String> {
-    reset(&cwd, &sha, &mode)
+pub async fn git_reset(cwd: String, sha: String, mode: String) -> Result<(), String> {
+    off_main_thread(move || reset(&cwd, &sha, &mode)).await
 }
 
 #[tauri::command]
-pub fn git_continue_in_progress(cwd: String, kind: String) -> Result<(), String> {
-    continue_in_progress(&cwd, &kind)
+pub async fn git_continue_in_progress(cwd: String, kind: String) -> Result<(), String> {
+    off_main_thread(move || continue_in_progress(&cwd, &kind)).await
 }
 
 // ---- SP3: worktrees ---------------------------------------------------------
@@ -555,18 +563,18 @@ pub fn stash_files(cwd: &str, index: u32) -> Result<Vec<crate::git::types::FileE
 }
 
 #[tauri::command]
-pub fn git_checkout(cwd: String, name: String, track_remote: Option<String>) -> Result<(), String> {
-    checkout(&cwd, &name, track_remote.as_deref())
+pub async fn git_checkout(cwd: String, name: String, track_remote: Option<String>) -> Result<(), String> {
+    off_main_thread(move || checkout(&cwd, &name, track_remote.as_deref())).await
 }
 
 #[tauri::command]
-pub fn git_create_branch(cwd: String, name: String, from: Option<String>, checkout: bool) -> Result<(), String> {
-    create_branch(&cwd, &name, from.as_deref(), checkout)
+pub async fn git_create_branch(cwd: String, name: String, from: Option<String>, checkout: bool) -> Result<(), String> {
+    off_main_thread(move || create_branch(&cwd, &name, from.as_deref(), checkout)).await
 }
 
 #[tauri::command]
-pub fn git_delete_branch(cwd: String, name: String, force: bool) -> Result<(), String> {
-    delete_branch(&cwd, &name, force)
+pub async fn git_delete_branch(cwd: String, name: String, force: bool) -> Result<(), String> {
+    off_main_thread(move || delete_branch(&cwd, &name, force)).await
 }
 
 #[tauri::command]
@@ -575,48 +583,48 @@ pub fn git_merged_branches(cwd: String, base: String) -> Result<Vec<String>, Str
 }
 
 #[tauri::command]
-pub fn git_merge(cwd: String, branch: String) -> Result<(), String> {
-    merge(&cwd, &branch)
+pub async fn git_merge(cwd: String, branch: String) -> Result<(), String> {
+    off_main_thread(move || merge(&cwd, &branch)).await
 }
 
 #[tauri::command]
-pub fn git_abort_in_progress(cwd: String, kind: String) -> Result<(), String> {
-    abort_in_progress(&cwd, &kind)
+pub async fn git_abort_in_progress(cwd: String, kind: String) -> Result<(), String> {
+    off_main_thread(move || abort_in_progress(&cwd, &kind)).await
 }
 
 #[tauri::command]
-pub fn git_continue_rebase(cwd: String) -> Result<(), String> {
-    continue_rebase(&cwd)
+pub async fn git_continue_rebase(cwd: String) -> Result<(), String> {
+    off_main_thread(move || continue_rebase(&cwd)).await
 }
 
 #[tauri::command]
-pub fn git_add_remote(cwd: String, name: String, url: String) -> Result<(), String> {
-    add_remote(&cwd, &name, &url)
+pub async fn git_add_remote(cwd: String, name: String, url: String) -> Result<(), String> {
+    off_main_thread(move || add_remote(&cwd, &name, &url)).await
 }
 
 #[tauri::command]
-pub fn git_remove_remote(cwd: String, name: String) -> Result<(), String> {
-    remove_remote(&cwd, &name)
+pub async fn git_remove_remote(cwd: String, name: String) -> Result<(), String> {
+    off_main_thread(move || remove_remote(&cwd, &name)).await
 }
 
 #[tauri::command]
-pub fn git_stash_push(cwd: String, message: String, include_untracked: bool) -> Result<(), String> {
-    stash_push(&cwd, &message, include_untracked)
+pub async fn git_stash_push(cwd: String, message: String, include_untracked: bool) -> Result<(), String> {
+    off_main_thread(move || stash_push(&cwd, &message, include_untracked)).await
 }
 
 #[tauri::command]
-pub fn git_stash_pop(cwd: String, index: u32) -> Result<(), String> {
-    stash_pop(&cwd, index)
+pub async fn git_stash_pop(cwd: String, index: u32) -> Result<(), String> {
+    off_main_thread(move || stash_pop(&cwd, index)).await
 }
 
 #[tauri::command]
-pub fn git_stash_apply(cwd: String, index: u32) -> Result<(), String> {
-    stash_apply(&cwd, index)
+pub async fn git_stash_apply(cwd: String, index: u32) -> Result<(), String> {
+    off_main_thread(move || stash_apply(&cwd, index)).await
 }
 
 #[tauri::command]
-pub fn git_stash_drop(cwd: String, index: u32) -> Result<(), String> {
-    stash_drop(&cwd, index)
+pub async fn git_stash_drop(cwd: String, index: u32) -> Result<(), String> {
+    off_main_thread(move || stash_drop(&cwd, index)).await
 }
 
 #[tauri::command]
@@ -625,43 +633,43 @@ pub fn git_stash_files(cwd: String, index: u32) -> Result<Vec<crate::git::types:
 }
 
 #[tauri::command]
-pub fn git_stage_files(cwd: String, paths: Vec<String>) -> Result<(), String> {
-    stage_files(&cwd, &paths)
+pub async fn git_stage_files(cwd: String, paths: Vec<String>) -> Result<(), String> {
+    off_main_thread(move || stage_files(&cwd, &paths)).await
 }
 
 #[tauri::command]
-pub fn git_unstage_files(cwd: String, paths: Vec<String>) -> Result<(), String> {
-    unstage_files(&cwd, &paths)
+pub async fn git_unstage_files(cwd: String, paths: Vec<String>) -> Result<(), String> {
+    off_main_thread(move || unstage_files(&cwd, &paths)).await
 }
 
 #[tauri::command]
-pub fn git_stage_all(cwd: String) -> Result<(), String> {
-    stage_all(&cwd)
+pub async fn git_stage_all(cwd: String) -> Result<(), String> {
+    off_main_thread(move || stage_all(&cwd)).await
 }
 
 #[tauri::command]
-pub fn git_unstage_all(cwd: String) -> Result<(), String> {
-    unstage_all(&cwd)
+pub async fn git_unstage_all(cwd: String) -> Result<(), String> {
+    off_main_thread(move || unstage_all(&cwd)).await
 }
 
 #[tauri::command]
-pub fn git_apply_patch(cwd: String, patch: String, mode: String) -> Result<(), String> {
-    apply_patch(&cwd, &patch, &mode)
+pub async fn git_apply_patch(cwd: String, patch: String, mode: String) -> Result<(), String> {
+    off_main_thread(move || apply_patch(&cwd, &patch, &mode)).await
 }
 
 #[tauri::command]
-pub fn git_discard_files(cwd: String, tracked: Vec<String>, untracked: Vec<String>) -> Result<(), String> {
-    discard_files(&cwd, &tracked, &untracked)
+pub async fn git_discard_files(cwd: String, tracked: Vec<String>, untracked: Vec<String>) -> Result<(), String> {
+    off_main_thread(move || discard_files(&cwd, &tracked, &untracked)).await
 }
 
 #[tauri::command]
-pub fn git_commit(cwd: String, message: String, amend: bool) -> Result<(), String> {
-    commit(&cwd, &message, amend)
+pub async fn git_commit(cwd: String, message: String, amend: bool) -> Result<(), String> {
+    off_main_thread(move || commit(&cwd, &message, amend)).await
 }
 
 #[tauri::command]
-pub fn git_init(cwd: String) -> Result<(), String> {
-    init(&cwd)
+pub async fn git_init(cwd: String) -> Result<(), String> {
+    off_main_thread(move || init(&cwd)).await
 }
 
 #[tauri::command]
@@ -679,11 +687,10 @@ pub async fn git_status(cwd: String) -> Result<StatusResult, String> {
 /// cwd, in order, so the caller zips it onto the session ids the cwds
 /// came from; `null` means "checked, not in a repo".
 ///
-/// `async` + `spawn_blocking` rather than a plain sync command like its
-/// neighbours here: this one runs on the app's load path, where a
-/// `git status` over a large dirty checkout must not hold the main
-/// thread through the first paint. Same shape `git::ops` uses for its
-/// own long-running calls.
+/// `async` + `spawn_blocking`, the first command here to be: this one
+/// runs on the app's load path, where a `git status` over a large dirty
+/// checkout must not hold the main thread through the first paint. Same
+/// shape `git::ops` uses for its own long-running calls.
 #[tauri::command]
 pub async fn get_git_baselines(cwds: Vec<String>) -> Result<Vec<Option<protocol::GitStatus>>, String> {
     tauri::async_runtime::spawn_blocking(move || crate::git::baseline::git_baselines(&cwds))

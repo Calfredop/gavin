@@ -46,6 +46,36 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["git/commands.rs", "git_log", "`git log`, every refresh while History shows"],
   ["git/commands.rs", "git_commit_detail", "`git show` + `git diff-tree`"],
   ["git/runchanges.rs", "git_diff_since", "`git diff` against a run's baseline"],
+  // The Git tab's actions. Each is its own git plus the refresh after it,
+  // 0.7-1.3 s a click with no hooks at all; the ones that run hooks, sign
+  // or check files out through a filter wait on whatever those do -- a
+  // pre-commit suite, a pinentry or Touch ID prompt, an LFS download.
+  ["git/commands.rs", "git_commit", "hooks and commit signing"],
+  ["git/commands.rs", "git_merge", "hooks, signing and LFS smudge"],
+  ["git/commands.rs", "git_revert", "hooks and commit signing"],
+  ["git/commands.rs", "git_cherry_pick", "hooks and commit signing"],
+  ["git/commands.rs", "git_continue_in_progress", "hooks and commit signing"],
+  ["git/commands.rs", "git_continue_rebase", "hooks and commit signing"],
+  ["git/commands.rs", "git_checkout", "post-checkout hook and LFS smudge; the rail's branch switch too"],
+  ["git/commands.rs", "git_checkout_commit", "post-checkout hook and LFS smudge"],
+  ["git/commands.rs", "git_create_branch", "a checkout, when it switches to the branch"],
+  ["git/commands.rs", "git_abort_in_progress", "a checkout of the pre-merge tree"],
+  ["git/commands.rs", "git_reset", "a checkout, for --hard"],
+  ["git/commands.rs", "git_stash_push", "`stash push`: an add and a hard reset"],
+  ["git/commands.rs", "git_stash_pop", "a merge into the working tree"],
+  ["git/commands.rs", "git_stash_apply", "a merge into the working tree"],
+  ["git/commands.rs", "git_stash_drop", "`git stash drop`"],
+  ["git/commands.rs", "git_stage_files", "`git add`, and its clean filters"],
+  ["git/commands.rs", "git_unstage_files", "`git restore --staged`"],
+  ["git/commands.rs", "git_stage_all", "`git add -A` over the whole checkout"],
+  ["git/commands.rs", "git_unstage_all", "`git reset`"],
+  ["git/commands.rs", "git_apply_patch", "`git apply`"],
+  ["git/commands.rs", "git_discard_files", "`git checkout` and `git clean`"],
+  ["git/commands.rs", "git_delete_branch", "`git branch -d`"],
+  ["git/commands.rs", "git_add_remote", "`git remote add`"],
+  ["git/commands.rs", "git_remove_remote", "`git remote remove`, which rewrites refs"],
+  ["git/commands.rs", "git_init", "`git init`"],
+  ["git/runchanges.rs", "git_discard_run", "`reset --hard` and a Trash move per untracked file"],
 ];
 
 /// The command's text from its `#[tauri::command]` line to the first

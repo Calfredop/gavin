@@ -438,13 +438,15 @@ pub async fn git_diff_since(
     .await
 }
 
+/// `async` like the Git tab's own actions: a `reset --hard` of the run's
+/// whole checkout, then a Trash move per untracked file.
 #[tauri::command]
-pub fn git_discard_run(
+pub async fn git_discard_run(
     cwd: String,
     base_sha: String,
     untracked: Vec<String>,
 ) -> Result<DiscardReport, String> {
-    discard_run(&cwd, &base_sha, &untracked)
+    off_main_thread(move || discard_run(&cwd, &base_sha, &untracked)).await
 }
 
 #[cfg(test)]
