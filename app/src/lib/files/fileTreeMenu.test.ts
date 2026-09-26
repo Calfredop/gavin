@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   directoryMenuItems,
   fileMenuItems,
+  isWorktreeRoot,
   openLabel,
   rowMenuItems,
   trashPromptLines,
@@ -180,12 +181,37 @@ describe("a directory row's menu", () => {
 
 describe("the Trash prompt", () => {
   it("says what a folder costs, and that nothing is destroyed", () => {
-    const folder = trashPromptLines(node({ name: "app", isDir: true }));
+    const folder = trashPromptLines("/repo", node({ name: "app", isDir: true }));
     expect(folder[0]).toContain("everything in it");
-    expect(trashPromptLines(node())[0]).toBe("Moves README.md to the Trash.");
+    expect(trashPromptLines("/repo", node())[0]).toBe("Moves README.md to the Trash.");
     // The promise the whole trash route exists to make.
-    for (const lines of [folder, trashPromptLines(node())]) {
+    for (const lines of [folder, trashPromptLines("/repo", node())]) {
       expect(lines.at(-1)).toContain("put it back");
     }
+  });
+
+  it("names a worktree's own folder and points at the Git tab instead", () => {
+    const wt = node({ path: "/repo/.gavin-worktrees/feat-x", name: "feat-x", isDir: true });
+    expect(isWorktreeRoot("/repo", wt)).toBe(true);
+
+    const lines = trashPromptLines("/repo", wt);
+    expect(lines[0]).toContain("live git worktree");
+    expect(lines.some((l) => l.includes("Git tab"))).toBe(true);
+    expect(lines.some((l) => l.includes("git worktree remove"))).toBe(true);
+  });
+
+  it("treats a file nested inside a worktree as an ordinary trash", () => {
+    const nested = node({
+      path: "/repo/.gavin-worktrees/feat-x/src/main.rs",
+      name: "main.rs",
+      isDir: false,
+    });
+    expect(isWorktreeRoot("/repo", nested)).toBe(false);
+    expect(trashPromptLines("/repo", nested)[0]).toBe("Moves main.rs to the Trash.");
+  });
+
+  it("does not mistake the .gavin-worktrees folder itself for a worktree", () => {
+    const container = node({ path: "/repo/.gavin-worktrees", name: ".gavin-worktrees", isDir: true });
+    expect(isWorktreeRoot("/repo", container)).toBe(false);
   });
 });

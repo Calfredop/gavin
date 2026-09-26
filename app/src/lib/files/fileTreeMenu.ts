@@ -4,6 +4,7 @@
 // are testable without mounting a component.
 
 import type { FileNode } from "$lib/files/fileTree";
+import { WORKTREES_DIR } from "$lib/git/git";
 import { ignoreMenuItems, type IgnoreKind } from "$lib/git/gitIgnore";
 
 export interface FileTreeMenuItem {
@@ -140,10 +141,33 @@ export function rowMenuItems(
   return node.isDir ? directoryMenuItems(node, ctx, cb) : fileMenuItems(node, ctx, cb);
 }
 
+/// Whether trashing `node` would remove a live worktree checkout whole --
+/// the folder `git worktree add` itself landed, directly under
+/// `.gavin-worktrees`. Only that node's own removal skips `git worktree
+/// remove` and leaves the branch in a now-prunable entry; a file merely
+/// nested inside the checkout is an ordinary edit to it, no different
+/// from trashing anything else in a working tree.
+export function isWorktreeRoot(root: string, node: FileNode): boolean {
+  if (!node.isDir) return false;
+  const rel = relativeToRoot(root, node.path).split("/");
+  return rel.length === 2 && rel[0] === WORKTREES_DIR;
+}
+
 /// What the Trash prompt says. A whole directory is a different promise
 /// from one file, so it says which, and both say where the entry goes --
-/// the Trash, recoverable, never an `rm`.
-export function trashPromptLines(node: FileNode): string[] {
+/// the Trash, recoverable, never an `rm`. A worktree's own folder gets a
+/// third promise instead: the Trash does not know about `git worktree
+/// remove`, so trashing it here leaves the branch checked out in a
+/// prunable entry until someone runs the Git tab's sweep or the command
+/// by hand.
+export function trashPromptLines(root: string, node: FileNode): string[] {
+  if (isWorktreeRoot(root, node)) {
+    return [
+      `${node.name} is a live git worktree, not an ordinary folder.`,
+      "Moving it to the Trash does not run \"git worktree remove\" -- the branch stays checked out in a prunable entry.",
+      "Remove it from the Git tab instead, or run \"git worktree remove\" yourself.",
+    ];
+  }
   return [
     node.isDir
       ? `Moves the ${node.name} folder and everything in it to the Trash.`
