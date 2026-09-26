@@ -20,6 +20,7 @@
 
 use crate::command_lane::{Asked, CommandLane, DaemonLanes};
 use crate::config::{SshConfig, Workspace};
+use crate::stream_writer::StreamWriter;
 use crate::session::{
     attach_and_relay, list_valid_session_ids, non_session_tab_ids, resolve_sessions, send_request,
     BoardTabs, CardTabs, DaemonCompat, FileTabs, RelayOwner, WorkspacesState,
@@ -300,7 +301,7 @@ pub struct RemoteLink {
     /// lane is not worth that here.
     pub command: CommandLane,
     /// The streaming connection's writer, like `DaemonConnection`.
-    pub writer: Arc<Mutex<Stream>>,
+    pub writer: StreamWriter,
     /// The user's home on the host: the cwd fallback for sessions there.
     pub home: String,
     pub host_os: String,
@@ -892,7 +893,7 @@ pub fn open_link(cfg: &SshConfig) -> anyhow::Result<(Arc<RemoteLink>, Stream)> {
             return Err(anyhow::anyhow!("{}: {e}", cfg.host));
         }
     };
-    let writer = Arc::new(Mutex::new(stream_conn.try_clone()?));
+    let writer = StreamWriter::spawn(stream_conn.try_clone()?);
     let host_os = banner.host_os.clone();
     let home = banner.home.clone().unwrap_or_else(|| {
         // A host with no home named is a host misconfigured, but a
@@ -1371,7 +1372,7 @@ mod tests {
                 degraded: version < protocol::PROTOCOL_VERSION,
             },
             command: CommandLane::spawn(host.to_string(), command_side, version, None),
-            writer: Arc::new(Mutex::new(app_side)),
+            writer: StreamWriter::spawn(app_side),
             home: "/home/me".to_string(),
             host_os: "linux".to_string(),
             mcp_path: None,

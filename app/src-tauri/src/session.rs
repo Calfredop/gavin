@@ -1,6 +1,7 @@
 use crate::command_lane::{CommandLane, DaemonLanes, Redial};
 use crate::config::Workspace;
 use crate::layout::LayoutNode;
+use crate::stream_writer::StreamWriter;
 use protocol::{
     read_message, socket_path, write_message, Board, CardRun, CardSession, Column, ConflictNote,
     GroupTemplate, Label, Orchestration, Rail, Request, Response, ToolDef, ToolRun,
@@ -17,7 +18,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct DaemonConnection {
-    writer: Arc<Mutex<Stream>>,
+    writer: StreamWriter,
     /// Set while `reconnect` swaps the daemon underneath this connection,
     /// for the same reason a command lane has one: a keystroke then fails
     /// at once rather than riding a socket to the daemon being killed.
@@ -27,7 +28,7 @@ pub struct DaemonConnection {
 }
 
 impl DaemonConnection {
-    fn new(writer: Arc<Mutex<Stream>>) -> DaemonConnection {
+    fn new(writer: StreamWriter) -> DaemonConnection {
         DaemonConnection { writer, swapping: std::sync::atomic::AtomicBool::new(false) }
     }
 
@@ -2625,8 +2626,8 @@ fn reconnect_swapping(app_handle: &AppHandle, command: &CommandConnection) -> an
     *app_handle.state::<DaemonCompatState>().0.lock().unwrap() = Some(compat);
 
     let reads = open_command_stream(&socket, &compat)?;
-    let writer = Arc::clone(&app_handle.state::<DaemonConnection>().writer);
-    *writer.lock().unwrap() = stream_conn.try_clone()?;
+    let writer = app_handle.state::<DaemonConnection>().writer.clone();
+    writer.replace(stream_conn.try_clone()?);
     command.finish_swap(
         probe.into_inner().expect("protocol probe mutex poisoned"),
         reads,
@@ -2681,13 +2682,15 @@ pub fn gate(req: &Request, compat: &DaemonCompat) -> Result<(), String> {
         .map_err(|gated| format!("this {gated} — restart the daemon to use it"))
 }
 
+/// Gates `req` and queues it on a streaming connection, returning without
+/// waiting for the daemon to read it (`stream_writer.rs`).
 pub(crate) fn send_request(
-    writer: &Arc<Mutex<Stream>>,
+    writer: &StreamWriter,
     req: &Request,
     compat: &DaemonCompat,
 ) -> anyhow::Result<()> {
     gate(req, compat).map_err(|e| anyhow::anyhow!(e))?;
-    write_message(&mut *writer.lock().unwrap(), req)
+    writer.send(req)
 }
 
 /// The command lanes a route names: a link's, or the local daemon's with
@@ -2717,7 +2720,7 @@ pub(crate) fn with_writer<R>(
     route: crate::remote::Route,
     state: &DaemonConnection,
     compat: &DaemonCompatState,
-    f: impl FnOnce(&Arc<Mutex<Stream>>, &DaemonCompat) -> anyhow::Result<R>,
+    f: impl FnOnce(&StreamWriter, &DaemonCompat) -> anyhow::Result<R>,
 ) -> anyhow::Result<R> {
     match route {
         crate::remote::Route::Remote(link) => f(&link.writer, &link.compat),
@@ -4392,7 +4395,7 @@ impl RelayOwner {
 
 pub(crate) fn attach_and_relay(
     app_handle: &AppHandle,
-    writer: &Arc<Mutex<Stream>>,
+    writer: &StreamWriter,
     reader_stream: Stream,
     session_ids: Vec<String>,
     // By value, not `&`: `DaemonCompat` is `Copy`, and the relay thread
@@ -4408,7 +4411,7 @@ pub(crate) fn attach_and_relay(
     let epoch = app_handle.state::<ConnectionEpoch>().0.load(std::sync::atomic::Ordering::SeqCst);
     let mut reader = BufReader::new(reader_stream);
     let reader_app_handle = app_handle.clone();
-    let relay_writer = Arc::clone(writer);
+    let relay_writer = writer.clone();
     std::thread::spawn(move || {
         // Wait for the frontend to confirm its listeners are registered
         // before reading -- and therefore emitting -- anything from the
@@ -4635,7 +4638,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     );
     let lanes = command.lanes(compat);
 
-    let writer = Arc::new(Mutex::new(stream_conn.try_clone()?));
+    let writer = StreamWriter::spawn(stream_conn.try_clone()?);
     let reader_stream = stream_conn;
 
     let config_dir = app_handle.path().app_config_dir()?;
@@ -4741,7 +4744,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
 
     let session_ids = attachable_session_ids(&workspaces_data, &non_session_tab_ids);
 
-    app_handle.manage(DaemonConnection::new(Arc::clone(&writer)));
+    app_handle.manage(DaemonConnection::new(writer.clone()));
     app_handle.manage(command);
     app_handle.manage(WorkspacesState(Mutex::new(workspaces_data.clone())));
     app_handle.manage(SessionNames(Mutex::new(session_names)));
@@ -5163,7 +5166,7 @@ pub async fn kill_session(
 /// here, because the caller does the same thing with either.
 async fn adopt_session_impl(
     lanes: &DaemonLanes,
-    daemon_writer: &Arc<Mutex<Stream>>,
+    daemon_writer: &StreamWriter,
     session_id: String,
 ) -> anyhow::Result<bool> {
     let sessions = sessions_by_id(lanes.request(Request::ListSessions).await)?;
@@ -6179,7 +6182,7 @@ mod adopt_session_tests {
         }]);
         let (writer_client, attached, _d2) =
             fake_daemon_capturing_requests(vec![Response::Ok]);
-        let writer = Arc::new(Mutex::new(writer_client));
+        let writer = StreamWriter::spawn(writer_client);
 
         let alive = block_on(adopt_session_impl(
             &lanes_over(command_client),
@@ -6212,7 +6215,7 @@ mod adopt_session_tests {
             let (command_client, _d1) =
                 fake_daemon_replying_with(vec![Response::SessionList { sessions }]);
             let (writer_client, attached, _d2) = fake_daemon_capturing_requests(vec![]);
-            let writer = Arc::new(Mutex::new(writer_client));
+            let writer = StreamWriter::spawn(writer_client);
 
             let alive = block_on(adopt_session_impl(
                 &lanes_over(command_client),
@@ -6463,7 +6466,7 @@ mod restart_tests {
     #[test]
     fn the_streaming_connection_refuses_input_while_the_daemon_is_swapped() {
         let (client, _dir) = fake_daemon_replying_with(vec![]);
-        let conn = DaemonConnection::new(Arc::new(Mutex::new(client)));
+        let conn = DaemonConnection::new(StreamWriter::spawn(client));
         let compat = DaemonCompatState(Mutex::new(Some(parity_compat())));
         let write = |conn: &DaemonConnection| {
             let mut reached = false;

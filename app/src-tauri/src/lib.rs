@@ -17,6 +17,7 @@ mod program;
 mod pull_request;
 mod remote;
 mod session;
+mod stream_writer;
 mod superpowers;
 mod trash;
 mod typesafe;
