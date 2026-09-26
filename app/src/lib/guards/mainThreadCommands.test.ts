@@ -105,6 +105,10 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // Install button held the window for the whole network install.
   ["superpowers.rs", "superpowers_status", "`claude plugin list`, on every Settings visit"],
   ["superpowers.rs", "superpowers_install", "`claude plugin install` over the network, up to 180 s"],
+  // Once per launch, from bootstrap, in the same first seconds as the
+  // first usage poll and watchman read: `opencode models`, a start that
+  // alone takes 0.41-0.85 s, under a 15 s deadline.
+  ["agent_models.rs", "agent_model_catalog", "`opencode models`, at startup, up to 15 s"],
 ];
 
 /// The command's text from its `#[tauri::command]` line to the first
