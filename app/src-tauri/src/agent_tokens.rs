@@ -29,6 +29,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use tauri::Manager;
+
 use crate::agent_setup::{profile_by_id, TokenLog};
 
 /// How deep the codex rollout walk goes. Its sessions are filed
@@ -139,12 +141,26 @@ pub enum ConversationLog {
 ///
 /// Nothing here reaches the network and nothing needs a credential:
 /// these are files the CLI wrote on this machine.
+///
+/// `async` + `spawn_blocking`: the resolver is a readdir of every project
+/// directory (or a codex walk of up to `CODEX_MAX_FILES`), asked on every
+/// resume and review launch -- auto-resume included -- and as a plain
+/// `fn` that was the main thread's to wait on.
 #[tauri::command]
-pub fn conversation_log(profile_id: String, conversation_id: Option<String>) -> ConversationLog {
+pub async fn conversation_log(
+    profile_id: String,
+    conversation_id: Option<String>,
+) -> Result<ConversationLog, String> {
+    tauri::async_runtime::spawn_blocking(move || conversation_log_blocking(&profile_id, conversation_id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn conversation_log_blocking(profile_id: &str, conversation_id: Option<String>) -> ConversationLog {
     let Some(conversation_id) = conversation_id.filter(|id| !id.trim().is_empty()) else {
         return ConversationLog::Unknown;
     };
-    let Some(log) = profile_by_id(&profile_id).token_log else {
+    let Some(log) = profile_by_id(profile_id).token_log else {
         return ConversationLog::Unknown;
     };
     conversation_log_under(log, log_root(log).as_deref(), conversation_id.trim())
@@ -188,18 +204,32 @@ fn transcript_path(log: TokenLog, root: &Path, conversation_id: &str) -> Option<
 /// `CardRun::conversation_id`. Absent means the run was launched by a
 /// profile with no verified resume argv, and there is nothing to look
 /// up -- which is `Unsupported`, not a failure.
+///
+/// `async` + `spawn_blocking`: Run history asks once per conversation on
+/// every open and refresh, and a live run misses the cache every time --
+/// a whole transcript read and summed, up to 29 MB measured here, on the
+/// main thread while it was a plain `fn`. The cache is reached through
+/// the app handle, since a `State` cannot cross into the blocking task.
 #[tauri::command]
-pub fn card_run_tokens(
-    cache: tauri::State<'_, TokenCache>,
+pub async fn card_run_tokens(
+    app: tauri::AppHandle,
     profile_id: String,
     conversation_id: Option<String>,
-) -> TokenReport {
+) -> Result<TokenReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        card_run_tokens_blocking(&app.state::<TokenCache>(), &profile_id, conversation_id)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+fn card_run_tokens_blocking(cache: &TokenCache, profile_id: &str, conversation_id: Option<String>) -> TokenReport {
     let Some(conversation_id) = conversation_id.filter(|id| !id.trim().is_empty()) else {
         return TokenReport::Unsupported {
             reason: "gavin did not record a conversation id for this run".to_string(),
         };
     };
-    let Some(log) = profile_by_id(&profile_id).token_log else {
+    let Some(log) = profile_by_id(profile_id).token_log else {
         return TokenReport::Unsupported {
             reason: format!("gavin cannot read {profile_id}'s token counts"),
         };

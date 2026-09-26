@@ -115,6 +115,13 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // visit. One folder of 60,052 entries was 0.6-1.1 s of stat.
   ["fileviewer.rs", "read_file_for_viewer", "a disk read (an ssh round trip on a remote workspace), on every watch event"],
   ["fileviewer.rs", "list_directory", "a readdir and a stat per entry, per open folder, on every Files visit"],
+  // Run history reads one transcript per conversation on every open and
+  // refresh, and a live run's is re-read every time: whole files, up to
+  // 29 MB here. The resume check resolves through the same readdir of
+  // every project directory (or a codex walk of up to 4,000 files), on
+  // every resume and review launch, auto-resume included.
+  ["agent_tokens.rs", "card_run_tokens", "a whole agent transcript read and parsed, per conversation"],
+  ["agent_tokens.rs", "conversation_log", "a readdir of every project directory, on every resume"],
 ];
 
 /// The command's text from its `#[tauri::command]` line to the first
