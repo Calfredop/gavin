@@ -2297,7 +2297,13 @@ pub fn scan_root(root: &Path) -> GavinTree {
 /// inotify is genuinely non-recursive and a recursive watch there means
 /// one descriptor per directory, node_modules included, so the
 /// per-directory set stays the right answer on Linux.
-const ONE_RECURSIVE_WATCH: bool = cfg!(any(target_os = "macos", windows));
+///
+/// `pub(crate)`: `git_watch.rs` mirrors this exact split for the Git tab's
+/// worktree watch, which has its own reason to skip `.gavin-worktrees`
+/// (nested worktrees costing inotify a watch per directory, `node_modules`
+/// and `target` included) and reuses this constant rather than drifting a
+/// second copy of the platform test.
+pub(crate) const ONE_RECURSIVE_WATCH: bool = cfg!(any(target_os = "macos", windows));
 
 /// The directories worth watching, and how deeply. Mirrors `scan_root`'s
 /// own walk exactly, because watching what the scanner reads -- and
