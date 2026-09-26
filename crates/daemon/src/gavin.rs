@@ -2504,6 +2504,19 @@ fn floor_wait(since_last: Option<Duration>, position: u32) -> Duration {
     MIN_RESCAN_INTERVAL.saturating_sub(elapsed)
 }
 
+/// Whether a snapshot has to scan, rather than answer with the last
+/// tree. Not while that tree is younger than the floor, so GetGavinTree
+/// can't defeat MIN_RESCAN_INTERVAL; and not while a rescan is sleeping
+/// out the floor (`floored`), because that rescan scans the moment it
+/// wakes and pushes whatever changed -- scanning beside it would only
+/// keep the app's command waiting for a tree already on its way.
+fn snapshot_must_scan(since_last: Option<Duration>, floored: u32) -> bool {
+    if floored > 0 {
+        return false;
+    }
+    since_last.is_none_or(|elapsed| elapsed >= MIN_RESCAN_INTERVAL)
+}
+
 /// Called with every fresh scan, before the tree goes out, and given a
 /// chance to answer with something the app must be told FIRST. gavin.rs
 /// owns no databases, so the daemon hands that work in as a closure
@@ -2516,6 +2529,10 @@ struct WatcherInner {
     /// How deep into the current burst the last rescan was; see
     /// `burst_position`.
     burst: u32,
+    /// Rescans sleeping out the floor right now. They sleep with the lock
+    /// released, and a snapshot reads this to answer without scanning;
+    /// see `snapshot_must_scan`.
+    floored: u32,
     /// The watch set currently registered, so re-arming after a rescan
     /// can diff instead of tearing every watch down and rebuilding it.
     watched: HashMap<PathBuf, notify::RecursiveMode>,
@@ -2569,6 +2586,7 @@ impl GavinWatcher {
                 last_tree: None,
                 last_scan: None,
                 burst: 0,
+                floored: 0,
                 watched: HashMap::new(),
                 watch_limit_reported: false,
             }),
@@ -2593,9 +2611,9 @@ impl GavinWatcher {
                 let Some(watcher) = weak.upgrade() else { return };
                 let Ok(events) = res else { return };
                 // The guard is released before rescan_and_push, which
-                // takes the same lock (and may sleep out the floor under
-                // it). The debouncer calls this handler serially, so no
-                // second flush is ever waiting on that sleep.
+                // takes the same lock. The debouncer calls this handler
+                // serially, so no second flush is ever waiting on the
+                // floor that rescan may sleep out.
                 let relevant = {
                     let inner = watcher.inner.lock().unwrap();
                     events.iter().any(|e| {
@@ -2699,18 +2717,35 @@ impl GavinWatcher {
         Some(watch_limit_message(&self.root_path, wanted, refused_for_limit))
     }
 
-    /// The entire floor-check + scan + compare + emit sequence runs under
-    /// one lock (the HeuristicState lesson): two debouncer flushes, or a
-    /// flush racing the initial scan, can never interleave into an
-    /// out-of-order emission.
+    /// The scan + compare + emit sequence runs under one lock (the
+    /// HeuristicState lesson): two debouncer flushes, or a flush racing
+    /// the initial scan, can never interleave into an out-of-order
+    /// emission, because whichever takes the lock second also scans
+    /// second.
+    ///
+    /// The floor is slept out BEFORE that, with the lock released. It
+    /// used to be slept under it, and GetGavinTree -- a snapshot, which
+    /// needs the same lock -- held the app's command connection for up to
+    /// MIN_RESCAN_INTERVAL and the scan after it. The floor only paces
+    /// this rescan; nothing else has a reason to wait for it.
     pub fn rescan_and_push(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        let since_last = inner.last_scan.map(|t| t.elapsed());
-        let position = burst_position(since_last, inner.burst);
-        inner.burst = position;
-        let wait = floor_wait(since_last, position);
+        let wait = {
+            let mut inner = self.inner.lock().unwrap();
+            let since_last = inner.last_scan.map(|t| t.elapsed());
+            let position = burst_position(since_last, inner.burst);
+            inner.burst = position;
+            let wait = floor_wait(since_last, position);
+            if !wait.is_zero() {
+                inner.floored += 1;
+            }
+            wait
+        };
         if !wait.is_zero() {
             std::thread::sleep(wait);
+        }
+        let mut inner = self.inner.lock().unwrap();
+        if !wait.is_zero() {
+            inner.floored -= 1;
         }
         let tree = scan_root(&self.root_path);
         inner.last_scan = Some(Instant::now());
@@ -2759,11 +2794,13 @@ impl GavinWatcher {
 
     /// Fresh scan for GetGavinTree -- shares the floor/dedup state so a
     /// snapshot request can't defeat MIN_RESCAN_INTERVAL, but always
-    /// returns a tree (even when unchanged).
+    /// returns a tree (even when unchanged). Never waits on a rescan's
+    /// floor, which is slept out with the lock released; it can wait on
+    /// a scan already running, and then answers with that scan's tree.
     pub fn snapshot(&self) -> GavinTree {
         let mut inner = self.inner.lock().unwrap();
-        if let (Some(last), Some(tree)) = (inner.last_scan, &inner.last_tree) {
-            if last.elapsed() < MIN_RESCAN_INTERVAL {
+        if let Some(tree) = &inner.last_tree {
+            if !snapshot_must_scan(inner.last_scan.map(|t| t.elapsed()), inner.floored) {
                 return tree.clone();
             }
         }
@@ -5593,6 +5630,112 @@ mod tests {
         assert_eq!(burst_position(Some(Duration::from_millis(10)), 2), 3);
         // ...until one quiet gap ends it.
         assert_eq!(burst_position(Some(QUIET_PERIOD + Duration::from_millis(1)), 3), 0);
+    }
+
+    #[test]
+    fn a_snapshot_scans_only_when_no_scan_is_recent_or_on_its_way() {
+        // Nothing scanned yet.
+        assert!(snapshot_must_scan(None, 0));
+        // Inside the floor the last scan answers, so GetGavinTree can't
+        // defeat MIN_RESCAN_INTERVAL...
+        assert!(!snapshot_must_scan(Some(Duration::from_millis(300)), 0));
+        // ...and past it, it scans.
+        assert!(snapshot_must_scan(Some(MIN_RESCAN_INTERVAL), 0));
+        // Unless a rescan is sleeping out the floor: it scans the moment
+        // it wakes and pushes whatever changed, so a second scan beside
+        // it is a wait for a tree already on its way.
+        assert!(!snapshot_must_scan(Some(MIN_RESCAN_INTERVAL + Duration::from_millis(5)), 1));
+    }
+
+    #[test]
+    fn a_snapshot_never_waits_on_a_rescan_sleeping_out_its_floor() {
+        // GetGavinTree answers the app's command connection, so a
+        // snapshot queued behind a floored rescan held that connection
+        // for the rest of MIN_RESCAN_INTERVAL and the scan after it.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+
+        let (_ours, theirs) = Stream::pair().unwrap();
+        let watcher =
+            GavinWatcher::start("ws-1".to_string(), root, Arc::new(Mutex::new(theirs)), None);
+        // The initial scan opened a burst and this is its free rescan,
+        // so the next one is floored.
+        watcher.rescan_and_push();
+        let floored = {
+            let watcher = Arc::clone(&watcher);
+            std::thread::spawn(move || watcher.rescan_and_push())
+        };
+        // Long enough for it to be asleep, well short of the floor.
+        std::thread::sleep(Duration::from_millis(250));
+
+        let asked = Instant::now();
+        let tree = watcher.snapshot();
+        let waited = asked.elapsed();
+
+        assert!(!floored.is_finished(), "the snapshot waited for the floored rescan to finish");
+        assert!(waited < MIN_RESCAN_INTERVAL / 4, "a snapshot took {waited:?} beside a floored rescan");
+        assert_eq!(tree.contexts.len(), 1);
+        floored.join().unwrap();
+    }
+
+    #[test]
+    fn a_rescan_that_wakes_while_another_is_emitting_scans_after_it() {
+        use std::io::BufReader;
+
+        // The floor is slept out with the lock released, but the scan
+        // after it still waits for the lock. A rescan that scanned the
+        // moment it woke, while another flush held the lock mid-emission,
+        // would take its tree from BEFORE that flush finished -- pushing
+        // an older tree after a newer one, or, as here, missing a change
+        // made while it waited and pushing nothing.
+        //
+        // The card lands in an OUTSIDE context, which nothing watches:
+        // the only rescans are this test's.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside = outside_dir.path().canonicalize().unwrap();
+        add_external_context(&root, &outside).unwrap();
+
+        let (ours, theirs) = Stream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let watcher =
+            GavinWatcher::start("ws-1".to_string(), root, Arc::new(Mutex::new(theirs)), None);
+        let mut reader = BufReader::new(ours);
+        let _initial: Option<Response> = protocol::read_message(&mut reader).unwrap();
+
+        watcher.rescan_and_push(); // the burst's free rescan
+        let floored = {
+            let watcher = Arc::clone(&watcher);
+            std::thread::spawn(move || watcher.rescan_and_push())
+        };
+        while watcher.inner.lock().unwrap().floored == 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // Stand in for the other flush: hold the lock until well after
+        // the floored rescan has woken, and change the tree just before
+        // letting go.
+        let emitting = watcher.inner.lock().unwrap();
+        std::thread::sleep(MIN_RESCAN_INTERVAL + Duration::from_millis(400));
+        let plans = outside.join(GAVIN_DIR).join("plans");
+        std::fs::create_dir_all(&plans).unwrap();
+        std::fs::write(plans.join("late.md"), "---\nstatus: To Do\n---\n").unwrap();
+        drop(emitting);
+
+        floored.join().unwrap();
+        let pushed: Option<Response> = protocol::read_message(&mut reader)
+            .expect("no push: the rescan scanned before the lock was released and missed the card");
+        match pushed {
+            Some(Response::GavinTreeChanged { tree, .. }) => assert!(
+                tree.contexts.iter().flat_map(|c| &c.plans).any(|p| p.file_name == "late.md"),
+                "the rescan pushed a tree scanned before the lock was released: {:?}",
+                tree.contexts
+            ),
+            other => panic!("expected a tree push, got {other:?}"),
+        }
     }
 
     #[test]
