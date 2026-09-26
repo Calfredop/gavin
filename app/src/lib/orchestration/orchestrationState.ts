@@ -469,10 +469,30 @@ function rereadAfterOtherWindowWrote(workspaceId: string): void {
 
 const pendingSaves = new Map<string, number>();
 
+/// Which read a workspace's plan is waiting for. Every push, fetch,
+/// refresh and save takes the next number, and a read applies its answer
+/// only if its number is still the latest. `pendingSaves` alone no longer
+/// covers it: the plan is read off the main thread now, so answers race
+/// back -- an earlier refresh can land after a later one or after a push
+/// newer than it, and a refresh taken before a save can land after that
+/// save has resolved and cleared `pendingSaves`, putting the pre-save
+/// plan back.
+const planEpochs = new Map<string, number>();
+
+function nextPlanEpoch(workspaceId: string): number {
+  const epoch = (planEpochs.get(workspaceId) ?? 0) + 1;
+  planEpochs.set(workspaceId, epoch);
+  return epoch;
+}
+
 export async function fetchOrchestration(workspaceId: string): Promise<void> {
   if (workspaceId in get(orchestrations)) return;
+  const epoch = nextPlanEpoch(workspaceId);
   try {
     const orch = dropImpossibleSteps(await backend.getOrchestration(workspaceId));
+    // A push (which ticks for itself) or a refresh may have brought a
+    // newer plan while this first read waited.
+    if (planEpochs.get(workspaceId) !== epoch && workspaceId in get(orchestrations)) return;
     orchestrations.update((s) => ({ ...s, [workspaceId]: orch }));
   } catch {
     // Leave it unset; the tab renders its loading state and the next
@@ -487,13 +507,16 @@ export async function fetchOrchestration(workspaceId: string): Promise<void> {
   await tick(workspaceId);
 }
 
-/// Re-reads from SQLite. Skipped while a save is in flight, and checked
-/// again afterwards for saves that started meanwhile.
+/// Re-reads from SQLite. Skipped while a save is in flight, and dropped
+/// afterwards if a save, a push or a newer read started meanwhile
+/// (planEpochs).
 export async function refreshOrchestration(workspaceId: string): Promise<void> {
   if ((pendingSaves.get(workspaceId) ?? 0) > 0) return;
+  const epoch = nextPlanEpoch(workspaceId);
   try {
     const orch = dropImpossibleSteps(await backend.getOrchestration(workspaceId));
     if ((pendingSaves.get(workspaceId) ?? 0) > 0) return;
+    if (planEpochs.get(workspaceId) !== epoch) return;
     orchestrations.update((s) => ({ ...s, [workspaceId]: orch }));
   } catch {
     // Keep showing what we have.
@@ -518,6 +541,7 @@ export async function mutatePlan(
   if (!current) return null;
   const updated = mutate(current);
   orchestrations.update((s) => ({ ...s, [workspaceId]: updated }));
+  nextPlanEpoch(workspaceId);
   pendingSaves.set(workspaceId, (pendingSaves.get(workspaceId) ?? 0) + 1);
   try {
     await backend.setOrchestration(workspaceId, updated.rails, updated.conflictNotes);
@@ -543,6 +567,7 @@ async function mutateRunState(
   if (!current) return;
   const updated = apply(current);
   orchestrations.update((s) => ({ ...s, [workspaceId]: updated }));
+  nextPlanEpoch(workspaceId);
   pendingSaves.set(workspaceId, (pendingSaves.get(workspaceId) ?? 0) + 1);
   try {
     await persist();
@@ -2328,6 +2353,7 @@ function cardTitleFor(workspaceId: string, step: Step): string | null {
 export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   const unlisten = await listen<[string, Orchestration]>("orchestration-changed", (event) => {
     const [workspaceId, incoming] = event.payload;
+    nextPlanEpoch(workspaceId);
     let runStateMoved = false;
     orchestrations.update((m) => {
       const current = m[workspaceId];
@@ -2434,6 +2460,7 @@ export function __resetForTesting(): void {
   decoyEditsByWorkspace.set({});
   decoyInFlight.clear();
   pendingSaves.clear();
+  planEpochs.clear();
   for (const pending of rereads.values()) clearTimeout(pending);
   rereads.clear();
   ticking.clear();

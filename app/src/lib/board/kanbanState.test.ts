@@ -180,6 +180,53 @@ describe("refreshBoard", () => {
     await pending;
   });
 
+  // The board is read off the main thread now: answers race back, and a
+  // read taken before a save can land after that save has resolved.
+  it("drops an answer taken before a save that resolved while it waited", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+    await fetchBoard("ws-1");
+    let answer!: (b: Board) => void;
+    vi.mocked(backend.getBoard).mockImplementationOnce(() => new Promise((r) => (answer = r)));
+    const refreshing = refreshBoard("ws-1");
+
+    vi.mocked(backend.setBoard).mockResolvedValue(undefined);
+    await addColumnAction("ws-1", newColumn);
+    answer(emptyBoard());
+    await refreshing;
+
+    expect(get(kanbanState)["ws-1"].columns).toHaveLength(2);
+  });
+
+  it("drops an earlier refresh whose answer arrives after a later one's", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+    await fetchBoard("ws-1");
+    const newer: Board = { ...emptyBoard(), labels: [{ id: "l", name: "L", color: "#fff" }] };
+    let first!: (b: Board) => void;
+    vi.mocked(backend.getBoard).mockImplementationOnce(() => new Promise((r) => (first = r)));
+    const firstDone = refreshBoard("ws-1");
+    vi.mocked(backend.getBoard).mockResolvedValueOnce(newer);
+    await refreshBoard("ws-1");
+
+    first(emptyBoard());
+    await firstDone;
+
+    expect(get(kanbanState)["ws-1"]).toEqual(newer);
+  });
+
+  it("a first load does not overwrite a newer board a refresh loaded meanwhile", async () => {
+    const newer: Board = { ...emptyBoard(), labels: [{ id: "l", name: "L", color: "#fff" }] };
+    let first!: (b: Board) => void;
+    vi.mocked(backend.getBoard).mockImplementationOnce(() => new Promise((r) => (first = r)));
+    const loading = fetchBoard("ws-1");
+    vi.mocked(backend.getBoard).mockResolvedValueOnce(newer);
+    await refreshBoard("ws-1");
+
+    first(emptyBoard());
+    await loading;
+
+    expect(get(kanbanState)["ws-1"]).toEqual(newer);
+  });
+
   it("a failed refresh keeps the board we have", async () => {
     vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
     await fetchBoard("ws-1");

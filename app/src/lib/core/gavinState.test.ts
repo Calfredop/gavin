@@ -11,6 +11,7 @@ vi.mock("$lib/core/backend", () => ({
   watchGavinRoot: vi.fn().mockResolvedValue(undefined),
   unwatchGavinRoot: vi.fn().mockResolvedValue(undefined),
   getBoard: vi.fn().mockResolvedValue({ columns: [], labels: [], cardSessions: [] }),
+  getGavinTree: vi.fn(),
 }));
 
 import { listen } from "@tauri-apps/api/event";
@@ -21,6 +22,7 @@ import {
   watchRootedWorkspaces,
   patchPlanField,
   patchPlanPath,
+  refreshGavinTree,
   __resetForTesting,
 } from "$lib/core/gavinState";
 import type { GavinTree } from "$lib/core/gavin";
@@ -214,5 +216,64 @@ describe("gavinState", () => {
     const before = get(gavinTrees)["ws-1"];
     patchPlanPath("ws-1", "/ws/nope.md", "/ws/done/nope.md");
     expect(get(gavinTrees)["ws-1"]).toEqual(before);
+  });
+});
+
+// The tree read is answered off the main thread, behind whatever else the
+// daemon's reads lane is doing -- so it can land after the watcher's newer
+// push, or after a later refresh's answer.
+describe("refreshGavinTree", () => {
+  const older: GavinTree = { rootPath: "/older", rootMissing: false, contexts: [] };
+  const newer: GavinTree = { rootPath: "/newer", rootMissing: false, contexts: [] };
+
+  function deferredTree(): (t: GavinTree) => void {
+    let answer!: (t: GavinTree) => void;
+    vi.mocked(backend.getGavinTree).mockImplementationOnce(() => new Promise((r) => (answer = r)));
+    return (t) => answer(t);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetForTesting();
+  });
+
+  it("applies its answer when nothing newer arrived", async () => {
+    vi.mocked(backend.getGavinTree).mockResolvedValueOnce(newer);
+    await refreshGavinTree("ws-1");
+    expect(get(gavinTrees)["ws-1"]).toEqual(newer);
+  });
+
+  it("does not put an older tree back over a push that landed while it waited", async () => {
+    await initGavinListeners();
+    const push = vi.mocked(listen).mock.calls[0][1] as (e: { payload: [string, GavinTree] }) => void;
+    const answer = deferredTree();
+    const refreshing = refreshGavinTree("ws-1");
+    push({ payload: ["ws-1", newer] });
+    answer(older);
+    await refreshing;
+    expect(get(gavinTrees)["ws-1"]).toEqual(newer);
+  });
+
+  it("drops an earlier refresh whose answer arrives after a later one's", async () => {
+    const first = deferredTree();
+    const firstDone = refreshGavinTree("ws-1");
+    const second = deferredTree();
+    const secondDone = refreshGavinTree("ws-1");
+    second(newer);
+    await secondDone;
+    first(older);
+    await firstDone;
+    expect(get(gavinTrees)["ws-1"]).toEqual(newer);
+  });
+
+  it("keeps each workspace's refresh to itself", async () => {
+    const one = deferredTree();
+    const oneDone = refreshGavinTree("ws-1");
+    vi.mocked(backend.getGavinTree).mockResolvedValueOnce(newer);
+    await refreshGavinTree("ws-2");
+    one(older);
+    await oneDone;
+    expect(get(gavinTrees)["ws-1"]).toEqual(older);
+    expect(get(gavinTrees)["ws-2"]).toEqual(newer);
   });
 });

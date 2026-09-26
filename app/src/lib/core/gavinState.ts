@@ -49,6 +49,20 @@ export async function refreshWorktreeSetup(workspaceId: string, rootPath: string
   });
 }
 
+// Which tree a workspace's store entry is waiting for. Every push and
+// every refreshGavinTree takes the next number, and a refresh applies its
+// answer only if its number is still the latest: the read is answered off
+// the main thread now, behind whatever the daemon is doing, so it can land
+// after the watcher's newer push -- or after a later refresh's answer --
+// and must not put the older tree back.
+const treeEpochs = new Map<string, number>();
+
+function nextTreeEpoch(workspaceId: string): number {
+  const epoch = (treeEpochs.get(workspaceId) ?? 0) + 1;
+  treeEpochs.set(workspaceId, epoch);
+  return epoch;
+}
+
 // Guards watchRootedWorkspaces against double-registration: bootstrap has
 // two "workspaces are ready" paths (the workspaces-ready event and
 // pollForStartupState), and whichever runs second must be a no-op.
@@ -60,6 +74,7 @@ let watchedOnce = false;
 export async function initGavinListeners(): Promise<UnlistenFn> {
   return listen<[string, GavinTree]>("gavin-tree-changed", (event) => {
     const [workspaceId, tree] = event.payload;
+    nextTreeEpoch(workspaceId);
     gavinTrees.update((m) => ({ ...m, [workspaceId]: tree }));
     // config.toml sits inside the watched root, so its `[worktree] setup`
     // is re-read here rather than on a watcher of its own -- and it must
@@ -98,10 +113,13 @@ export function watchRootedWorkspaces(workspaces: Workspace[]): void {
 // On-demand rescan for mutations the watcher can't see: outside contexts
 // (extra_contexts) live beyond the watched root, so creating or deleting
 // files there never produces a push. Replaces the store entry exactly
-// like a push would. Best-effort -- a failure leaves the last tree up.
+// like a push would -- unless a push or a newer refresh landed while it
+// waited (treeEpochs). Best-effort -- a failure leaves the last tree up.
 export async function refreshGavinTree(workspaceId: string): Promise<void> {
+  const epoch = nextTreeEpoch(workspaceId);
   try {
     const tree = await backend.getGavinTree(workspaceId);
+    if (treeEpochs.get(workspaceId) !== epoch) return;
     gavinTrees.update((m) => ({ ...m, [workspaceId]: tree }));
     if (tree.rootPath) void refreshWorktreeSetup(workspaceId, tree.rootPath);
   } catch {
@@ -221,6 +239,7 @@ export function patchPlanField(
 /** @internal test-only reset for module-level state */
 export function __resetForTesting(): void {
   watchedOnce = false;
+  treeEpochs.clear();
   gavinTrees.set({});
   worktreeSetups.set({});
 }

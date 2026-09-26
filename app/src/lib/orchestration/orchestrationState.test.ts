@@ -318,6 +318,7 @@ import {
   startScheduler,
   initOrchestrationListeners,
   mutatePlan,
+  refreshOrchestration,
   setRailRunAction,
   setStepRunAction,
   saveErrors,
@@ -439,6 +440,60 @@ describe("fetchOrchestration", () => {
     vi.mocked(backend.getOrchestration).mockRejectedValue(new Error("nope"));
     await fetchOrchestration("ws-1");
     expect(get(orchestrations)["ws-1"]).toBeUndefined();
+  });
+});
+
+// The plan is read off the main thread now: answers race back, and one
+// can land after a save, a push or a later read that is newer than it.
+describe("refreshOrchestration", () => {
+  function deferredPlan(): (o: Orchestration) => void {
+    let answer!: (o: Orchestration) => void;
+    vi.mocked(backend.getOrchestration).mockImplementationOnce(() => new Promise((r) => (answer = r)));
+    return (o) => answer(o);
+  }
+
+  const railIds = (): string[] => get(orchestrations)["ws-1"].rails.map((r) => r.id);
+
+  it("drops an earlier refresh whose answer arrives after a later one's", async () => {
+    vi.mocked(backend.getOrchestration).mockResolvedValueOnce(withRails("r1"));
+    await fetchOrchestration("ws-1");
+    const first = deferredPlan();
+    const firstDone = refreshOrchestration("ws-1");
+    vi.mocked(backend.getOrchestration).mockResolvedValueOnce(withRails("r2"));
+    await refreshOrchestration("ws-1");
+
+    first(withRails("r1"));
+    await firstDone;
+
+    expect(railIds()).toEqual(["r2"]);
+  });
+
+  it("drops an answer taken before a run-state write that resolved while it waited", async () => {
+    vi.mocked(backend.getOrchestration).mockResolvedValueOnce(withRails("r1"));
+    await fetchOrchestration("ws-1");
+    const answer = deferredPlan();
+    const refreshing = refreshOrchestration("ws-1");
+    vi.mocked(backend.setRailRun).mockResolvedValue(undefined);
+    await setRailRunAction("ws-1", "r1", "paused", null);
+
+    answer(withRails("r1"));
+    await refreshing;
+
+    expect(get(orchestrations)["ws-1"].railRuns).toEqual([
+      { railId: "r1", state: "paused", currentStageId: null },
+    ]);
+  });
+
+  it("a first load does not overwrite a newer plan a refresh brought meanwhile", async () => {
+    const first = deferredPlan();
+    const loading = fetchOrchestration("ws-1");
+    vi.mocked(backend.getOrchestration).mockResolvedValueOnce(withRails("r2"));
+    await refreshOrchestration("ws-1");
+
+    first(withRails("r1"));
+    await loading;
+
+    expect(railIds()).toEqual(["r2"]);
   });
 });
 
@@ -3740,6 +3795,22 @@ describe("a rail armed from outside the app (a push carrying run state)", () => 
   afterEach(() => {
     stop?.();
     stop = null;
+  });
+
+  it("does not put an older plan back over a push that landed while a refresh waited", async () => {
+    let answer!: (o: Orchestration) => void;
+    vi.mocked(backend.getOrchestration).mockImplementationOnce(() => new Promise((r) => (answer = r)));
+    const refreshing = refreshOrchestration("ws-1");
+    const pushed: Orchestration = {
+      ...boundRail(),
+      conflictNotes: [{ id: "n1", stepIds: [], note: "an agent wrote this" }],
+    };
+    tauriEvents.handlers.get("orchestration-changed")?.({ payload: ["ws-1", pushed] });
+
+    answer(boundRail());
+    await refreshing;
+
+    expect(get(orchestrations)["ws-1"].conflictNotes).toEqual(pushed.conflictNotes);
   });
 
   it("adopts the running row and launches the rail's first step", async () => {
