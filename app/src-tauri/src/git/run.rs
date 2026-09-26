@@ -113,7 +113,14 @@ fn run_git_capped(cwd: &str, args: &[&str], stdin: Option<&[u8]>, stdout_cap: Op
         let _ = err_tx.send(buf);
     });
 
+    // Polled on a doubling pause from 1 ms, not a flat 20: most git reads
+    // finish in a few milliseconds, and the flat tick rounded every one up
+    // to 20 -- a Git-view refresh runs 14 in a row. Not a blocking `wait`
+    // on a helper thread: that thread would own the child, and the kill
+    // at the deadline would have to go by pid to a process it may already
+    // have reaped.
     let deadline = Instant::now() + GIT_TIMEOUT;
+    let mut pause = Duration::from_millis(1);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -123,7 +130,8 @@ fn run_git_capped(cwd: &str, args: &[&str], stdin: Option<&[u8]>, stdout_cap: Op
                     let _ = child.wait();
                     return Err(format!("git {} timed out after {}s", args.join(" "), GIT_TIMEOUT.as_secs()));
                 }
-                std::thread::sleep(Duration::from_millis(20));
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(Duration::from_millis(20));
             }
             Err(e) => return Err(format!("failed waiting for git: {e}")),
         }
