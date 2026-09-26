@@ -66,8 +66,15 @@ pub fn repo_info(cwd: &str) -> Result<RepoInfo, String> {
     } else {
         Some(ok(run_git_ro(cwd, &["log", "-1", "--format=%B"])?)?.stdout_str().trim_end().to_string())
     };
-    let git_dir = Path::new(git_dir.trim());
-    let in_progress = if git_dir.join("MERGE_HEAD").exists() {
+    let in_progress = in_progress_at(Path::new(git_dir.trim()));
+    Ok(RepoInfo { not_a_repo: false, root: Some(root), branch, detached, unborn, author, head_message, in_progress })
+}
+
+/// The operation a repository is stopped in the middle of, from the state
+/// files under its git dir: `repo_info`'s `in_progress`, and what the
+/// conflict labels are named after.
+pub fn in_progress_at(git_dir: &Path) -> Option<String> {
+    if git_dir.join("MERGE_HEAD").exists() {
         Some("merge".to_string())
     } else if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
         Some("rebase".to_string())
@@ -77,8 +84,7 @@ pub fn repo_info(cwd: &str) -> Result<RepoInfo, String> {
         Some("revert".to_string())
     } else {
         None
-    };
-    Ok(RepoInfo { not_a_repo: false, root: Some(root), branch, detached, unborn, author, head_message, in_progress })
+    }
 }
 
 pub fn status(cwd: &str) -> Result<StatusResult, String> {

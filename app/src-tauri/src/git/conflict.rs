@@ -4,7 +4,7 @@
 //! conflicted path, plus writes that never mark a file resolved while
 //! conflict markers remain.
 
-use crate::git::commands::repo_info;
+use crate::git::commands::in_progress_at;
 use crate::git::run::{off_main_thread, ok, read_repo_file, run_git, run_git_ro};
 use crate::git::types::{ConflictInfo, ConflictLabels};
 use std::path::Path;
@@ -74,16 +74,19 @@ fn head_subject(cwd: &str, rev: &str) -> String {
     run_git_ro(cwd, &["log", "-1", "--format=%h %s", rev]).map(|o| o.stdout_str().trim().to_string()).unwrap_or_else(|_| rev.to_string())
 }
 
+/// The two sides' names. Only the git dir and HEAD's branch are read up
+/// front: this runs on every conflict load, and it used to take the whole
+/// `repo_info` for its `in_progress` -- five processes, two of them the
+/// same reads as the two here.
 fn labels(cwd: &str) -> Result<ConflictLabels, String> {
-    let info = repo_info(cwd)?;
+    let git_dir = ok(run_git_ro(cwd, &["rev-parse", "--absolute-git-dir"])?)?.stdout_str().trim().to_string();
+    let git_dir = Path::new(&git_dir);
     let head_branch = match run_git_ro(cwd, &["symbolic-ref", "--short", "-q", "HEAD"])? {
         o if o.code == 0 => o.stdout_str().trim().to_string(),
         _ => "HEAD".to_string(),
     };
-    let git_dir = ok(run_git_ro(cwd, &["rev-parse", "--absolute-git-dir"])?)?.stdout_str().trim().to_string();
-    let git_dir = Path::new(&git_dir);
-    let op = info.in_progress.as_deref().unwrap_or("");
-    Ok(match op {
+    let op = in_progress_at(git_dir);
+    Ok(match op.as_deref().unwrap_or("") {
         "merge" => ConflictLabels { ours: head_branch, theirs: short_name(cwd, "MERGE_HEAD"), operation: "merge".into() },
         "rebase" => {
             // During a rebase git's "ours" is the upstream being rebased onto
@@ -271,7 +274,7 @@ mod tests {
     use super::*;
     use crate::git::commands::testutil::*;
     use crate::git::commands::{checkout, create_branch, status};
-    use crate::git::run::OpControl;
+    use crate::git::run::{git_calls_of, OpControl};
 
     fn commit_all(dir: &tempfile::TempDir, msg: &str) {
         git(cwd(dir), &["add", "-A"]);
@@ -319,6 +322,27 @@ mod tests {
         assert!(c.theirs.as_deref().unwrap().contains("FEATURE"));
         assert_eq!((c.labels.ours.as_str(), c.labels.theirs.as_str(), c.labels.operation.as_str()), ("main", "feature", "merge"));
         assert_eq!((c.eol.as_str(), c.final_newline), ("lf", true));
+    }
+
+    /// The labels used to be `repo_info` over again -- five processes, two
+    /// of which they then ran a second time themselves -- on every conflict
+    /// load, which is every refresh while a `U` path is selected. What a
+    /// merge's labels need is the git dir, HEAD's branch and MERGE_HEAD's
+    /// name, one process each.
+    #[test]
+    fn labels_run_no_second_repo_info() {
+        let dir = text_conflict();
+        let (labels, calls) = git_calls_of(|| labels(cwd(&dir)));
+        assert_eq!(labels.unwrap().operation, "merge");
+        let calls: Vec<&str> = calls.iter().map(|c| c.trim_start_matches("--no-optional-locks ")).collect();
+        assert_eq!(
+            calls,
+            [
+                "rev-parse --absolute-git-dir",
+                "symbolic-ref --short -q HEAD",
+                "name-rev --name-only --refs=refs/heads/* --refs=refs/remotes/* MERGE_HEAD",
+            ]
+        );
     }
 
     #[test]

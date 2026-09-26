@@ -251,6 +251,8 @@ fn run_local(
     if !std::path::Path::new(cwd).is_dir() {
         return Err(format!("directory not found: {cwd}"));
     }
+    #[cfg(test)]
+    note_git_call(args);
     let mut child = git_command(cwd)
         .args(args)
         .envs(env.iter().copied())
@@ -329,6 +331,31 @@ fn run_local(
     let stdout = out_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
     let stderr = err_rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
     Ok(GitOutput { stdout, stderr, code: status.code().unwrap_or(-1) })
+}
+
+#[cfg(test)]
+thread_local! {
+    static GIT_CALLS: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn note_git_call(args: &[&str]) {
+    GIT_CALLS.with(|calls| {
+        if let Some(calls) = calls.borrow_mut().as_mut() {
+            calls.push(args.join(" "));
+        }
+    });
+}
+
+/// Runs `work` and returns the git command lines it ran, one string each:
+/// how a test pins what a read costs in processes. Per thread, so the
+/// suite's parallel tests stay out of each other's count -- which also
+/// means only a git run on the calling thread is counted.
+#[cfg(test)]
+pub fn git_calls_of<T>(work: impl FnOnce() -> T) -> (T, Vec<String>) {
+    GIT_CALLS.with(|calls| *calls.borrow_mut() = Some(Vec::new()));
+    let out = work();
+    (out, GIT_CALLS.with(|calls| calls.borrow_mut().take().unwrap_or_default()))
 }
 
 /// A file inside the repository at `cwd`, read wherever that repository
