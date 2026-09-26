@@ -164,22 +164,31 @@ pub fn viewable_extensions() -> Vec<String> {
 /// host's daemon (`ReadWorkspaceFile`, v39) and answers in the same
 /// shape, so every reader of this command -- the card modal, a card run's
 /// composition, the editor -- works there unchanged.
+///
+/// `async` + `spawn_blocking`: it re-runs without anyone asking -- on
+/// every `file-changed` for an open editor tab or card modal, on Home
+/// visits, rail steps and card launches -- and as a plain `fn` each of
+/// those was a disk read (or an ssh round trip) on the main thread. The
+/// readers that re-read on a watch event carry a ticket, since answers
+/// can now arrive out of order.
 #[tauri::command]
-pub fn read_file_for_viewer(
-    path: String,
-    app_handle: AppHandle,
-    workspaces: State<WorkspacesState>,
-) -> Result<FileContent, String> {
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_path(&app_handle, &path)? {
-        let root = remote_root_for(&app_handle, &path)?;
-        let (content, truncated) = link.read_file(&root, &path).map_err(|e| e.to_string())?;
+pub async fn read_file_for_viewer(path: String, app_handle: AppHandle) -> Result<FileContent, String> {
+    tauri::async_runtime::spawn_blocking(move || read_file_for_viewer_blocking(&path, &app_handle))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn read_file_for_viewer_blocking(path: &str, app_handle: &AppHandle) -> Result<FileContent, String> {
+    if let crate::remote::Route::Remote(link) = crate::remote::route_for_path(app_handle, path)? {
+        let root = remote_root_for(app_handle, path)?;
+        let (content, truncated) = link.read_file(&root, path).map_err(|e| e.to_string())?;
         return Ok(match content {
             Some(content) => FileContent { content, truncated, exists: true },
             None => FileContent { content: String::new(), truncated: false, exists: false },
         });
     }
-    let roots = allowed_roots(&workspaces.0.lock().unwrap());
-    read_file_for_viewer_impl(&path, &roots)
+    let roots = allowed_roots(&app_handle.state::<WorkspacesState>().0.lock().unwrap());
+    read_file_for_viewer_impl(path, &roots)
 }
 
 /// The ssh workspace root a path belongs to, for the request's
