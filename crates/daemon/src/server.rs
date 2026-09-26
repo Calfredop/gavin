@@ -2928,7 +2928,13 @@ impl SessionManager {
     /// re-keying happens here, beside the write, exactly as
     /// `delete_card_file` keeps its unlinking beside the delete.
     pub fn set_plan_field(&self, path: &str, key: &str, value: &str) -> anyhow::Result<String> {
-        let moved = crate::gavin::set_plan_field(std::path::Path::new(path), key, value)?;
+        let index = self.card_index_for(path);
+        let moved = crate::gavin::set_plan_field(
+            std::path::Path::new(path),
+            key,
+            value,
+            index.as_deref(),
+        )?;
         Ok(self.follow_card_move(path, moved))
     }
 
@@ -2938,14 +2944,27 @@ impl SessionManager {
     /// kanban and the orchestration databases, so a move that skipped
     /// this would silently orphan a bound session or a rail step.
     pub fn archive_card(&self, path: &str) -> anyhow::Result<String> {
-        let moved = crate::gavin::archive_card(std::path::Path::new(path))?;
+        let index = self.card_index_for(path);
+        let moved = crate::gavin::archive_card(std::path::Path::new(path), index.as_deref())?;
         Ok(self.follow_card_move(path, moved))
     }
 
     /// The inverse; see `archive_card`.
     pub fn unarchive_card(&self, path: &str) -> anyhow::Result<String> {
-        let moved = crate::gavin::unarchive_card(std::path::Path::new(path))?;
+        let index = self.card_index_for(path);
+        let moved = crate::gavin::unarchive_card(std::path::Path::new(path), index.as_deref())?;
         Ok(self.follow_card_move(path, moved))
+    }
+
+    /// The card index of the watcher whose last scan listed this card,
+    /// which a plan's move reads its nested children from instead of
+    /// parsing every card in the root. None for a card no scan has seen
+    /// yet -- created since, or spelled differently from the scan -- and
+    /// the move then reads every card, as it always did.
+    fn card_index_for(&self, path: &str) -> Option<Arc<crate::gavin::CardIndex>> {
+        let path = std::path::Path::new(path);
+        let watchers: Vec<_> = self.gavin_watchers.lock().unwrap().values().cloned().collect();
+        watchers.iter().filter_map(|w| w.card_index()).find(|index| index.knows(path))
     }
 
     /// Re-keys a card's session binding and rail steps onto the path it
@@ -10032,6 +10051,53 @@ mod tests {
             }
             other => panic!("expected OrchestrationChanged, got {other:?}"),
         }
+    }
+
+    /// A plan's move finds its nested children through the index of the
+    /// watcher that scanned it, and a card no watcher has scanned gets
+    /// none -- its move reads every card, as every move used to.
+    #[test]
+    fn a_card_move_reads_the_watching_workspaces_card_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let root = ws.path().canonicalize().unwrap();
+        let plans = root.join(".gavin-root").join("plans");
+        let plan = plans.join("big.md");
+        std::fs::write(&plan, "---\ntitle: Big\nstatus: To Do\n---\n").unwrap();
+        let child = "---\nkind: task\ntitle: S\nparent: big.md\n---\n";
+        std::fs::write(plans.join("step.md"), child).unwrap();
+        let plan = plan.to_string_lossy().to_string();
+
+        let elsewhere = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(elsewhere.path(), "Other").unwrap();
+        let unwatched =
+            elsewhere.path().canonicalize().unwrap().join(".gavin-root").join("plans").join("x.md");
+        std::fs::write(&unwatched, "---\ntitle: X\n---\n").unwrap();
+        assert!(manager.card_index_for(&unwatched.to_string_lossy()).is_none());
+
+        let (ours, theirs) = Stream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        SessionManager::watch_gavin_root(
+            &manager,
+            "ws-1",
+            &root.to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+        );
+        let mut reader = line_reader(ours);
+        assert!(matches!(
+            read_message::<_, Response>(&mut reader).unwrap().unwrap(),
+            Response::GavinTreeChanged { .. }
+        ));
+
+        let index = manager.card_index_for(&plan).expect("the watcher's scan listed the plan");
+        assert!(index.knows(std::path::Path::new(&plan)));
+        assert!(manager.card_index_for(&unwatched.to_string_lossy()).is_none());
+        let filed = manager.set_plan_field(&plan, "status", "Done").unwrap();
+        assert_eq!(filed, plans.join("done").join("big.md").to_string_lossy());
+        assert!(plans.join("done").join("step.md").is_file());
     }
 
     /// The archive's bulk delete is the one action that ends a card for
