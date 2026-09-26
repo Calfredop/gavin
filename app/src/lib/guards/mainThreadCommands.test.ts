@@ -99,6 +99,12 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // of main thread a minute.
   ["memory.rs", "watchman_status", "the `watchman watch-list` CLI, every 30 s poll"],
   ["memory.rs", "watchman_forget", "the `watchman watch-del` CLI, once per dropped root"],
+  // Every Settings visit, every workspace or profile change there, a Home
+  // visit with no recorded answer, and the wizards' Superpowers step:
+  // `claude plugin list`, a Node start, measured at 0.48-0.90 s. The
+  // Install button held the window for the whole network install.
+  ["superpowers.rs", "superpowers_status", "`claude plugin list`, on every Settings visit"],
+  ["superpowers.rs", "superpowers_install", "`claude plugin install` over the network, up to 180 s"],
 ];
 
 /// The command's text from its `#[tauri::command]` line to the first

@@ -25,7 +25,10 @@ use serde::Serialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{PoisonError, RwLock};
 use std::time::{Duration, Instant};
+
+use tauri::Manager;
 
 /// The package name, marketplace-agnostic. Upstream documents a second
 /// source (`superpowers@superpowers-marketplace`) and a human who
@@ -45,6 +48,18 @@ const DETECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// the run is hidden, and a hidden run with no ceiling is a spinner with
 /// no end.
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Every `claude plugin` run gavin makes: a check reads, an install
+/// writes.
+///
+/// While the commands ran on the main thread, the main thread was this
+/// lock. Off it, a human who leaves Settings mid-install comes back to an
+/// Install button, and a second click would start a second install
+/// against the same plugin cache -- `~/.claude/plugins`, user-global, so
+/// one lock for the machine rather than one per root. A check waits an
+/// install out too: asked for during one, its row says "checking" until
+/// it can say what the install did.
+static CLAUDE_PLUGINS: RwLock<()> = RwLock::new(());
 
 /// What gavin can say about Superpowers for one workspace.
 ///
@@ -354,7 +369,13 @@ fn detect(
             // cwd is the root, not the app's: `enabled` is answered
             // relative to it, and answering it anywhere else answers a
             // different question.
-            match run(&bin, &["plugin", "list", "--json"], root, DETECT_TIMEOUT) {
+            let listed = {
+                // Nothing lives inside the lock, so a run that panicked
+                // holding it left nothing torn behind.
+                let _reading = CLAUDE_PLUGINS.read().unwrap_or_else(PoisonError::into_inner);
+                run(&bin, &["plugin", "list", "--json"], root, DETECT_TIMEOUT)
+            };
+            match listed {
                 Ok(r) if r.code == 0 => Detected {
                     installed: Some(claude_list_says_installed(&r.stdout)),
                     blocked: String::new(),
@@ -505,29 +526,46 @@ fn overlay_profile_id(root: &Path, overlay: Option<&str>) -> String {
         .unwrap_or_else(|| profile_id_for(root))
 }
 
+/// Whether the human told gavin this root has Superpowers installed.
+fn said_installed(marks: &crate::session::SuperpowersMarks, root_path: &str) -> bool {
+    matches!(
+        marks.0.lock().unwrap().get(root_path),
+        Some(crate::config::SuperpowersMark::Installed)
+    )
+}
+
 /// `agent_command` is the workspace's RESOLVED launch command -- the
 /// repo's `[agent] command` only where the human has approved this
 /// workspace's config, and the profile table's own everywhere else. It is
 /// a parameter rather than a read because this command runs on a tab
 /// render: see `binary_for`.
+///
+/// `async` + `spawn_blocking`: the Claude Code detector is `claude plugin
+/// list`, a Node start measured at 0.48-0.90 s, and this runs on every
+/// Settings visit, every workspace or profile change there, and every
+/// Home visit to a workspace with no recorded answer. As a plain `fn` each
+/// of those froze the window for the whole run. The mark is read before
+/// the hand-off because a borrowed `State` cannot follow the work onto
+/// the blocking pool.
 #[tauri::command]
-pub fn superpowers_status(
+pub async fn superpowers_status(
     root_path: String,
     agent_command: Option<String>,
     profile_id: Option<String>,
-    marks: tauri::State<crate::session::SuperpowersMarks>,
-) -> Status {
-    let root = PathBuf::from(&root_path);
-    let asserted = matches!(
-        marks.0.lock().unwrap().get(&root_path),
-        Some(crate::config::SuperpowersMark::Installed)
-    );
-    status_for(
-        &root,
-        &overlay_profile_id(&root, profile_id.as_deref()),
-        asserted,
-        agent_command.as_deref(),
-    )
+    marks: tauri::State<'_, crate::session::SuperpowersMarks>,
+) -> Result<Status, String> {
+    let asserted = said_installed(&marks, &root_path);
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = PathBuf::from(&root_path);
+        status_for(
+            &root,
+            &overlay_profile_id(&root, profile_id.as_deref()),
+            asserted,
+            agent_command.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| format!("the Superpowers check did not run: {e}"))
 }
 
 /// Runs the install and reports the status that follows it. A non-zero
@@ -535,35 +573,60 @@ pub fn superpowers_status(
 /// honest answer to "did that work" is what the detector says next, not
 /// what the installer claimed. `Err` is reserved for the two cases where
 /// no install was attempted at all.
+///
+/// `async` + `spawn_blocking`: the install fetches a marketplace over the
+/// network for up to `INSTALL_TIMEOUT`, and as a plain `fn` the window was
+/// frozen for all of it. The app handle crosses rather than a borrowed
+/// `State` because the mark is read after the run, as it always was.
 #[tauri::command]
-pub fn superpowers_install(
+pub async fn superpowers_install(
+    app: tauri::AppHandle,
     root_path: String,
     agent_command: Option<String>,
     profile_id: Option<String>,
-    marks: tauri::State<crate::session::SuperpowersMarks>,
 ) -> Result<Status, String> {
-    let root = PathBuf::from(&root_path);
-    let profile_id = overlay_profile_id(&root, profile_id.as_deref());
+    tauri::async_runtime::spawn_blocking(move || {
+        install(
+            &root_path,
+            agent_command.as_deref(),
+            profile_id.as_deref(),
+            &app.state::<crate::session::SuperpowersMarks>(),
+        )
+    })
+    .await
+    .map_err(|e| format!("the Superpowers install did not run: {e}"))?
+}
+
+fn install(
+    root_path: &str,
+    agent_command: Option<&str>,
+    profile_id: Option<&str>,
+    marks: &crate::session::SuperpowersMarks,
+) -> Result<Status, String> {
+    let root = PathBuf::from(root_path);
+    let profile_id = overlay_profile_id(&root, profile_id);
     if !matches!(mechanism(&profile_id), Mechanism::ClaudeCli) {
         let label = crate::agent_setup::profile_by_id(&profile_id).label;
         return Err(format!("gavin cannot install Superpowers for {label}."));
     }
-    let bin = binary_for(agent_command.as_deref(), crate::agent_setup::profile_by_id(&profile_id));
+    let bin = binary_for(agent_command, crate::agent_setup::profile_by_id(&profile_id));
     // `-y` is not optional: the CLI's own help says the confirmation is
     // required when stdin or stdout is not a TTY, and a hidden run has
     // neither.
-    let out = run(
-        &bin,
-        &["plugin", "install", CLAUDE_PLUGIN_ID, "--scope", "project", "-y"],
-        &root,
-        INSTALL_TIMEOUT,
-    )?;
+    let out = {
+        // Released before the check below, which reads under the same
+        // lock and would otherwise wait on itself.
+        let _writing = CLAUDE_PLUGINS.write().unwrap_or_else(PoisonError::into_inner);
+        run(
+            &bin,
+            &["plugin", "install", CLAUDE_PLUGIN_ID, "--scope", "project", "-y"],
+            &root,
+            INSTALL_TIMEOUT,
+        )?
+    };
     let log = out.combined();
-    let asserted = matches!(
-        marks.0.lock().unwrap().get(&root_path),
-        Some(crate::config::SuperpowersMark::Installed)
-    );
-    let mut status = status_for(&root, &profile_id, asserted, agent_command.as_deref());
+    let asserted = said_installed(marks, root_path);
+    let mut status = status_for(&root, &profile_id, asserted, agent_command);
     if out.code != 0 && status.state != State::Verified.id() {
         status.detail = format!("Install exited with status {} — see the output.", out.code);
     }
@@ -865,6 +928,69 @@ mod tests {
             "expected superpowers active here; got: {}",
             out.stdout
         );
+    }
+
+    /// A stand-in `claude` that logs when each run starts and ends, and
+    /// takes long enough that two runs left to themselves overlap. Its
+    /// second argument is the subcommand: `install` or `list`.
+    #[cfg(unix)]
+    fn logging_claude(dir: &Path) -> (String, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let log = dir.join("runs.log");
+        let bin = dir.join("claude");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\necho \"start $2\" >> '{0}'\nsleep 0.3\necho \"end $2\" >> '{0}'\necho '[]'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (bin.to_str().unwrap().to_string(), log)
+    }
+
+    /// Two installs, and a check asked for while they run, never overlap
+    /// an install -- checks may overlap each other.
+    ///
+    /// The main thread used to guarantee this by freezing. Off it, a human
+    /// who leaves Settings mid-install comes back to an Install button,
+    /// and a second click would start a second install against the same
+    /// user-global plugin cache.
+    #[cfg(unix)]
+    #[test]
+    fn claude_plugin_runs_never_overlap_an_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let (claude, log) = logging_claude(dir.path());
+        let root = dir.path().to_str().unwrap();
+        let marks = crate::session::SuperpowersMarks(std::sync::Mutex::new(Default::default()));
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                s.spawn(|| install(root, Some(&claude), Some("claude-code"), &marks).unwrap());
+            }
+            s.spawn(|| status_for(dir.path(), "claude-code", false, Some(&claude)));
+        });
+
+        let log = std::fs::read_to_string(log).unwrap();
+        let (mut installing, mut listing) = (0, 0);
+        for line in log.lines() {
+            match line {
+                "start install" => {
+                    assert!(installing == 0 && listing == 0, "an install overlapped a run:\n{log}");
+                    installing += 1;
+                }
+                "end install" => installing -= 1,
+                "start list" => {
+                    assert_eq!(installing, 0, "a check overlapped an install:\n{log}");
+                    listing += 1;
+                }
+                "end list" => listing -= 1,
+                other => panic!("unexpected line {other:?}"),
+            }
+        }
+        // Two installs, each followed by its own check, plus the third.
+        assert_eq!(log.lines().filter(|l| *l == "start install").count(), 2, "{log}");
+        assert_eq!(log.lines().filter(|l| *l == "start list").count(), 3, "{log}");
     }
 
     /// A profile installed from inside its own TUI answers None with a

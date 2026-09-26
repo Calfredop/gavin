@@ -58,7 +58,12 @@
   let superpowers = $state<SuperpowersStatus | undefined>(undefined);
   let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
 
+  // The Superpowers check answers off the main thread, so a reread can
+  // land after a newer one -- and this one lands as a whole, file bodies
+  // and all. Only the newest may write.
+  let rereadToken = 0;
   async function reread(): Promise<void> {
+    const mine = ++rereadToken;
     const root = ws?.rootPath;
     if (!root) return;
     const [agentFile, prd, sp, marks] = await Promise.all([
@@ -70,6 +75,7 @@
       backend.superpowersStatus(root, agentCfg.command).catch(() => UNKNOWN_STATUS),
       backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
     ]);
+    if (mine !== rereadToken) return;
     agentFileBody = agentFile?.exists ? agentFile.content : null;
     prdBody = prd?.exists ? prd.content : null;
     superpowers = sp;

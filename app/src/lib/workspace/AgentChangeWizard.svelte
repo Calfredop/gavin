@@ -94,13 +94,19 @@
 
   const ws = $derived($layoutState.workspaces.find((w) => w.id === workspaceId) ?? null);
 
+  // The check answers off the main thread, so an older refresh can land
+  // after a newer one -- the one after Install, or after the command
+  // changed. Only the newest may write.
+  let spToken = 0;
   async function refreshSuperpowers(): Promise<void> {
+    const mine = ++spToken;
     const root = ws?.rootPath;
     if (!root) return;
     const [sp, marks] = await Promise.all([
       backend.superpowersStatus(root, pendingAgent.command).catch(() => UNKNOWN_STATUS),
       backend.getSuperpowersMarks().catch(() => ({}) as Record<string, SuperpowersMark>),
     ]);
+    if (mine !== spToken) return;
     superpowers = sp;
     superpowersMark = marks[root];
   }
