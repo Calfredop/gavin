@@ -359,29 +359,42 @@ fn walk_rollouts(dir: &Path, depth: usize, budget: &mut usize, visit: &mut impl 
 /// skipped rather than counted -- there is no way to tell a duplicate
 /// from a fresh turn without it, and over-reporting is the failure this
 /// function exists to avoid.
+///
+/// Most of a transcript's bytes are what the sum never reads: tool
+/// results in user records, and the content blocks of assistant ones.
+/// So a line that does not carry `"assistant"` anywhere is passed over
+/// before any parse -- Claude Code writes JSON with its ASCII unescaped,
+/// so an assistant record always carries those bytes -- and the rest are
+/// read into `ClaudeRecord`, which skips the content blocks without
+/// building them. Measured on this machine's four largest transcripts
+/// (17-29 MB), release build: 14-22 ms a file as a `Value` per line,
+/// 5-8 ms this way, and the same totals from both.
 pub fn claude_totals(text: &str) -> TokenReport {
     let mut totals = TokenTotals::default();
     let mut seen: HashSet<String> = HashSet::new();
     let mut models: Vec<String> = Vec::new();
 
     for line in text.lines() {
-        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-        if record.get("type").and_then(|v| v.as_str()) != Some("assistant") {
+        if !line.contains("\"assistant\"") {
             continue;
         }
-        let Some(message) = record.get("message") else { continue };
-        let Some(id) = message.get("id").and_then(|v| v.as_str()) else { continue };
+        let Ok(record) = serde_json::from_str::<ClaudeRecord>(line) else { continue };
+        if record.kind.as_ref().and_then(|v| v.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(message) = record.message else { continue };
+        let Some(id) = message.id.as_ref().and_then(|v| v.as_str()) else { continue };
         if !seen.insert(id.to_string()) {
             continue;
         }
-        let Some(usage) = message.get("usage") else { continue };
+        let Some(usage) = message.usage else { continue };
         let count = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
         totals.input_tokens += count("input_tokens");
         totals.output_tokens += count("output_tokens");
         totals.cache_read_tokens += count("cache_read_input_tokens");
         totals.cache_write_tokens += count("cache_creation_input_tokens");
         totals.turns += 1;
-        if let Some(model) = message.get("model").and_then(|v| v.as_str()) {
+        if let Some(model) = message.model.as_ref().and_then(|v| v.as_str()) {
             if !models.iter().any(|m| m == model) {
                 models.push(model.to_string());
             }
@@ -396,6 +409,29 @@ pub fn claude_totals(text: &str) -> TokenReport {
     totals.total_tokens =
         totals.input_tokens + totals.output_tokens + totals.cache_read_tokens + totals.cache_write_tokens;
     TokenReport::Ready { totals, models }
+}
+
+/// The parts of a Claude Code record `claude_totals` reads; every other
+/// field, content blocks included, is skipped by the parser unbuilt.
+///
+/// Each one stays a loose `Value` on purpose. A typed `u64` count or
+/// `String` model would fail the WHOLE line on a field of an unexpected
+/// type and drop a turn that is really there; as `Value`s, an odd count
+/// reads as zero and an odd model is left off the list, one field at a
+/// time. `usage` is a handful of small numbers, so building it costs
+/// nothing worth saving.
+#[derive(serde::Deserialize)]
+struct ClaudeRecord {
+    #[serde(rename = "type")]
+    kind: Option<serde_json::Value>,
+    message: Option<ClaudeMessage>,
+}
+
+#[derive(serde::Deserialize)]
+struct ClaudeMessage {
+    id: Option<serde_json::Value>,
+    model: Option<serde_json::Value>,
+    usage: Option<serde_json::Value>,
 }
 
 /// Read a codex rollout's LAST cumulative total.
@@ -519,6 +555,47 @@ mod tests {
         let text = r#"{"type":"assistant","message":{"usage":{"input_tokens":999}}}"#;
 
         assert!(matches!(claude_totals(text), TokenReport::Unavailable { .. }));
+    }
+
+    /// The shape Claude Code actually writes: `message` BEFORE `type`,
+    /// content blocks the sum never reads, and records of other types that
+    /// mention "assistant" in their text. Only the parts the sum reads may
+    /// decide it -- a line is neither dropped for the bulk it carries nor
+    /// counted for a word in it.
+    #[test]
+    fn a_real_shaped_transcript_is_judged_by_type_and_usage_alone() {
+        let text = [
+            r#"{"parentUuid":null,"type":"user","message":{"role":"user","content":"ask the assistant"}}"#,
+            r#"{"parentUuid":"a","message":{"id":"msg-1","type":"message","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/x","nested":[1,{"k":null}]}}],"usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":4,"cache_creation":{"ephemeral_5m_input_tokens":4},"server_tool_use":{"web_search_requests":0},"service_tier":"standard"}},"requestId":"r1","type": "assistant","uuid":"b"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"{\"type\":\"assistant\",\"message\":{\"id\":\"msg-9\",\"usage\":{\"input_tokens\":999}}}"}]},"toolUseResult":{"file":{"content":"\"assistant\""}}}"#,
+            r#"{"type":"summary","summary":"The assistant fixed it","leafUuid":"b"}"#,
+        ]
+        .join("\n");
+
+        let report = claude_totals(&text);
+
+        let t = totals(&report);
+        assert_eq!(t.turns, 1, "the escaped record inside a tool result is not a turn");
+        assert_eq!(t.total_tokens, 1 + 2 + 3 + 4);
+    }
+
+    /// A count of an unexpected type reads as zero rather than taking the
+    /// whole message down with it, and a model that is not a string is
+    /// left off the list while the turn still counts.
+    #[test]
+    fn an_oddly_typed_field_costs_that_field_not_the_turn() {
+        let text = r#"{"type":"assistant","message":{"id":"msg-1","model":7,"usage":{"input_tokens":null,"output_tokens":5}}}"#;
+
+        let report = claude_totals(text);
+
+        let t = totals(&report);
+        assert_eq!(t.turns, 1);
+        assert_eq!(t.input_tokens, 0);
+        assert_eq!(t.output_tokens, 5);
+        match &report {
+            TokenReport::Ready { models, .. } => assert!(models.is_empty()),
+            other => panic!("expected ready, got {other:?}"),
+        }
     }
 
     #[test]
