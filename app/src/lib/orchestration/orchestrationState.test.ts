@@ -1213,8 +1213,10 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
     // And the card is left where it was: no In Progress for a run that
     // never happened.
     expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
-    // Pausing the rail is rule 5's job on the next tick, the same as for
-    // every other stall -- this is the launch half.
+    // And the rail stops here, in the launch itself: no later pass would
+    // pause it, because a stalled step on a running rail reads as one to
+    // retry.
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "paused", "s1", "ws-1");
   });
 
   it("the rail's second launch reuses that page", async () => {
@@ -1513,12 +1515,17 @@ describe("executeActions", () => {
       "ws-1",
     );
     expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+    // The one launch stall that leaves its rail RUNNING, because it is
+    // the one that clears itself: the sweep frees the card and the next
+    // pass retries the step. Paused, it would wait on a human for a
+    // lock nobody has to lift.
+    expect(backend.setRailRun).not.toHaveBeenCalled();
   });
 
-  it("a step whose card has a missing attachment stalls with the file named, spawning nothing", async () => {
-    // The rail's half of the run gate. A stalled step is what rule 5
-    // pauses the rail on, so the reason reaches the chip -- launching
-    // with a dead path would carry the damage into every later stage.
+  it("a step whose card has a missing attachment stalls with the file named and pauses its rail, spawning nothing", async () => {
+    // The rail's half of the run gate. The reason reaches the chip and
+    // the rail stops -- launching with a dead path would carry the
+    // damage into every later stage.
     cardAttachments.a = ["docs/spec.md"];
     vi.mocked(backend.attachmentStatus).mockResolvedValue([
       {
@@ -1542,6 +1549,51 @@ describe("executeActions", () => {
       null,
       "ws-1",
     );
+    expect(backend.setRailRun).toHaveBeenCalledWith("r1", "paused", "s1", "ws-1");
+    expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
+  });
+
+  // What a launch stall used to add up to across passes. It left its
+  // rail `running`: rule 5 pauses only on a stall nextActions decides,
+  // and by the next pass this one reads as a stalled step on a running
+  // rail, which rule 2 retries. So every emission of every scheduler
+  // input re-checked the card's attachments and re-wrote the same
+  // stall, under a rail header saying "running" about a rail that was
+  // going nowhere -- Grimoria's Fixes rail, 2026-09-26.
+  it("a launch that stalls is not retried by the passes after it", async () => {
+    boardStore.set({
+      "ws-1": {
+        columns: [
+          { id: "c0", name: "To Do", position: 0 },
+          { id: "c1", name: "Done", position: 1 },
+        ],
+        labels: [],
+        cardSessions: [],
+      },
+    });
+    setLayoutState({
+      workspaces: [{ id: "ws-1", pages: [{ id: "p1", name: "backend", layout: { type: "leaf", tabs: [] } }] }],
+    });
+    toolRecords.set({ "ws-1": [] });
+    cardAttachments.a = ["docs/spec.md"];
+    vi.mocked(backend.attachmentStatus).mockResolvedValue([
+      {
+        path: "docs/spec.md",
+        absolutePath: "/x/wt/docs/spec.md",
+        exists: false,
+        location: "root",
+        refusedReason: null,
+      },
+    ]);
+
+    await tick("ws-1");
+    await tick("ws-1");
+    await tick("ws-1");
+
+    expect(backend.attachmentStatus).toHaveBeenCalledTimes(1);
+    expect(get(orchestrations)["ws-1"].railRuns).toEqual([
+      { railId: "r1", state: "paused", currentStageId: "s1" },
+    ]);
     expect(layoutStateModule.createSessionOnPage).not.toHaveBeenCalled();
   });
 

@@ -61,7 +61,9 @@ describe("a tool this machine cannot run", () => {
     const at = state.indexOf("const unsupported = toolPlatformBlockedReason(");
     expect(at).toBeGreaterThan(0);
     const after = state.slice(at, at + 260);
-    expect(after).toMatch(/setStepRunAction\(workspaceId, step\.id, "stalled", null, unsupported\)/);
+    // stallLaunch, not a bare stall write: a launch stall has to pause
+    // its rail, or every later pass relaunches the step.
+    expect(after).toMatch(/stallLaunch\(workspaceId, step\.id, unsupported\)/);
     // Before the kind branches: this is a fact about the tool, not about
     // what running it would involve.
     expect(at).toBeLessThan(state.indexOf('if (tool.kind === "gavin")'));

@@ -1055,8 +1055,7 @@ async function executeGavinAction(
   step: Step,
   tool: Tool
 ): Promise<boolean> {
-  const stall = (reason: string): Promise<void> =>
-    setStepRunAction(workspaceId, step.id, "stalled", null, reason);
+  const stall = (reason: string): Promise<void> => stallLaunch(workspaceId, step.id, reason);
 
   // A tool the human duplicated and re-pointed, or one shipped by a
   // NEWER gavin whose plan this daemon still holds. Naming the body is
@@ -1088,8 +1087,8 @@ async function executeGavinAction(
   const verdict = startRailVerdict(orch, rail.id, resolveToolParam(tool, stepParams(step), "rail"));
   if (verdict.kind === "refuse") {
     await stall(verdict.reason);
-    // A stall is rule 5's business and it already paused this rail;
-    // re-ticking would only re-read a rail that is going nowhere.
+    // The stall has already paused this rail (stallLaunch); re-ticking
+    // would only re-read a rail that is going nowhere.
     return false;
   }
 
@@ -1129,7 +1128,7 @@ async function executeToolLaunch(
 
   const tool = findTool(library, step.toolId as string);
   if (!tool) {
-    await setStepRunAction(workspaceId, step.id, "stalled", null, "tool is no longer in the library");
+    await stallLaunch(workspaceId, step.id, "tool is no longer in the library");
     return false;
   }
 
@@ -1145,7 +1144,7 @@ async function executeToolLaunch(
   // tool and not about what running it would involve.
   const unsupported = toolPlatformBlockedReason(tool, currentPlatform());
   if (unsupported) {
-    await setStepRunAction(workspaceId, step.id, "stalled", null, unsupported);
+    await stallLaunch(workspaceId, step.id, unsupported);
     return false;
   }
 
@@ -1172,11 +1171,9 @@ async function executeToolLaunch(
       // the pass that scheduled this ran against a library that may not
       // have loaded, and an unbound rail must never leave a step
       // waiting on a pull request that cannot exist.
-      await setStepRunAction(
+      await stallLaunch(
         workspaceId,
         step.id,
-        "stalled",
-        null,
         "this rail binds no branch, so there is no pull request to wait for"
       );
       return false;
@@ -1233,13 +1230,7 @@ async function executeToolLaunch(
     const tree = get(gavinTrees)[workspaceId];
     const cwd = rail.worktreePath ?? (tree && !tree.rootMissing ? tree.rootPath : null);
     if (!cwd) {
-      await setStepRunAction(
-        workspaceId,
-        step.id,
-        "stalled",
-        null,
-        "no worktree bound and the workspace has no root"
-      );
+      await stallLaunch(workspaceId, step.id, "no worktree bound and the workspace has no root");
       return false;
     }
     const rootFolder =
@@ -1247,13 +1238,7 @@ async function executeToolLaunch(
         ? tree.rootPath
         : workspaceRootPath(workspaceId);
     if (!rootFolder) {
-      await setStepRunAction(
-        workspaceId,
-        step.id,
-        "stalled",
-        null,
-        "this workspace has no root to file findings into"
-      );
+      await stallLaunch(workspaceId, step.id, "this workspace has no root to file findings into");
       return false;
     }
     const params = stepParams(step);
@@ -1291,7 +1276,7 @@ async function executeToolLaunch(
       switchToTerminal: false,
     });
     if (err) {
-      await setStepRunAction(workspaceId, step.id, "stalled", null, err);
+      await stallLaunch(workspaceId, step.id, err);
       return false;
     }
     await setStepRunAction(workspaceId, step.id, "running", null, null, null, cwd, 0);
@@ -1302,13 +1287,7 @@ async function executeToolLaunch(
   const tree = get(gavinTrees)[workspaceId];
   const cwd = rail.worktreePath ?? (tree && !tree.rootMissing ? tree.rootPath : null);
   if (!cwd) {
-    await setStepRunAction(
-      workspaceId,
-      step.id,
-      "stalled",
-      null,
-      "no worktree bound and the workspace has no root"
-    );
+    await stallLaunch(workspaceId, step.id, "no worktree bound and the workspace has no root");
     return false;
   }
 
@@ -1344,19 +1323,13 @@ async function executeToolLaunch(
   // than failed, and the reason names the agent -- a rail that stops
   // saying "could not start" would send the human looking at the tool.
   if (command === null) {
-    await setStepRunAction(
-      workspaceId,
-      step.id,
-      "stalled",
-      null,
-      noPromptReason(agent.label)
-    );
+    await stallLaunch(workspaceId, step.id, noPromptReason(agent.label));
     return false;
   }
 
   const sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command);
   if (!sessionId) {
-    await setStepRunAction(workspaceId, step.id, "stalled", null, `could not start ${tool.name}`);
+    await stallLaunch(workspaceId, step.id, `could not start ${tool.name}`);
     return false;
   }
   // A command tool's PTY can close in well under a second, so the tab
@@ -1416,7 +1389,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
 
   const entry = cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath);
   if (!entry) {
-    await setStepRunAction(workspaceId, stepId, "stalled", null, "card file is missing");
+    await stallLaunch(workspaceId, stepId, "card file is missing");
     return false;
   }
 
@@ -1425,7 +1398,9 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // would compose is about to stop being true. A stall and not a failure
   // -- the sweep frees the card when the develop run ends, and the rail
   // picks the step up on the next tick with the card the human actually
-  // asked for.
+  // asked for. Which is why this is the one launch stall that leaves its
+  // rail running rather than going through stallLaunch: paused, the rail
+  // would wait on a human for a lock nobody has to lift.
   const developing = developingBlocker(workspaceId, step.cardPath);
   if (developing) {
     await setStepRunAction(workspaceId, stepId, "stalled", null, DEVELOPING_STALL);
@@ -1445,13 +1420,13 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // The same gate a board Run uses, and for the same reason -- but here
   // the refusal STALLS the step instead of starting it. A rail that ran
   // a card with a dead attachment would carry the damage into every
-  // stage after it, so the reason lands on the chip and rule 5 pauses
-  // the rail, exactly as a failed launch does.
+  // stage after it, so the reason lands on the chip and the rail pauses,
+  // exactly as a failed launch does.
   const resolved = await resolveAttachmentsForRun(workspaceId, entry.plan.attachments ?? [], {
     root: worktree,
   });
   if ("error" in resolved) {
-    await setStepRunAction(workspaceId, stepId, "stalled", null, resolved.error);
+    await stallLaunch(workspaceId, stepId, resolved.error);
     return false;
   }
 
@@ -1467,15 +1442,15 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   // it over unattended.
   const file = await backend.readFileForViewer(step.cardPath);
   if (!file.exists) {
-    await setStepRunAction(workspaceId, stepId, "stalled", null, "card file is missing");
+    await stallLaunch(workspaceId, stepId, "card file is missing");
     return false;
   }
   const body = stripFrontmatter(file.content).trim();
   // The first-Run review (AG-01), as a rail can ask it: it cannot. A
   // scheduler tick runs with nobody necessarily watching this window, and
   // a modal raised from one would hold the rail open behind whatever is
-  // in front of it. So the step STALLS and names the card, rule 5 pauses
-  // the rail, and `stepAttentions` marks it -- the same shape the
+  // in front of it. So the step STALLS and names the card, the rail
+  // pauses, and `stepAttentions` marks it -- the same shape the
   // attachment gate above takes, and the same shape a `review` step takes
   // for the same reason: the rail is waiting on a person.
   //
@@ -1488,13 +1463,7 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
       attachments: entry.plan.attachments ?? [],
     })
   ) {
-    await setStepRunAction(
-      workspaceId,
-      stepId,
-      "stalled",
-      null,
-      unreviewedStallReason(entry.plan.title)
-    );
+    await stallLaunch(workspaceId, stepId, unreviewedStallReason(entry.plan.title));
     return false;
   }
   // The card picks its own agent, exactly as it does for a board Run: a
@@ -1511,11 +1480,9 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
   const decision = launchDecision(workspaceId, agent.profileId, false);
   if (decision.kind === "arm") {
     requestArm(workspaceId, decision.profileId);
-    await setStepRunAction(
+    await stallLaunch(
       workspaceId,
       stepId,
-      "stalled",
-      null,
       fallbackBlockedReason(decision) ?? "fallback agent is not set up"
     );
     return false;
@@ -1572,13 +1539,13 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     conversationId
   );
   if (command === null) {
-    await setStepRunAction(workspaceId, stepId, "stalled", null, noPromptReason(launchAgent.label));
+    await stallLaunch(workspaceId, stepId, noPromptReason(launchAgent.label));
     return false;
   }
   const baseSha = await baseShaForLaunch(cwd);
   const sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command);
   if (!sessionId) {
-    await setStepRunAction(workspaceId, stepId, "stalled", null, "could not start the agent");
+    await stallLaunch(workspaceId, stepId, "could not start the agent");
     return false;
   }
   void armFailureDetection(sessionId, launchAgent.failurePatterns);
@@ -1749,6 +1716,31 @@ async function stallStep(
     const current = orch.railRuns.find((r) => r.railId === rail.id)?.currentStageId ?? null;
     await setRailRunAction(workspaceId, rail.id, "paused", current);
   }
+}
+
+/// A launch that found it could not start its step: stall it and pause
+/// its rail, exactly as a stall nextActions decides does.
+///
+/// The executor has to pause the rail itself, because no later pass
+/// will. Rule 5 pauses only on a stall nextActions emits in that same
+/// pass, and by the next one this reads as a stalled step on a RUNNING
+/// rail -- which rule 2 retries. So a launch that only wrote `stalled`
+/// was relaunched by every emission of every scheduler input: the same
+/// attachment check and the same stall write, over and over, under a
+/// rail header that said "running" about a rail going nowhere. Paused,
+/// it is retried once per press of Play, like every other stall.
+///
+/// The plan is read fresh rather than passed in: a launch awaits the
+/// host before it can know it has failed, and whether the rail is still
+/// running is a question about now.
+///
+/// The develop lock is the one launch stall that does not come here
+/// (see DEVELOPING_STALL in executeLaunch): it clears itself, so the
+/// retry this prevents is the whole of how that step starts.
+async function stallLaunch(workspaceId: string, stepId: string, reason: string): Promise<void> {
+  const orch = get(orchestrations)[workspaceId];
+  if (!orch) return;
+  await stallStep(workspaceId, orch, stepId, reason);
 }
 
 /// Take a re-run card back OUT of the done column, when it is in it.
