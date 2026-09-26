@@ -30,7 +30,9 @@
     <span class="spinner" aria-hidden="true"></span>
     <span class="label">{op.label}…</span>
     <span class="line">{op.line ?? ""}</span>
-    <button type="button" onclick={() => cancelOp(workspaceId)}>Cancel</button>
+    {#if op.cancellable}
+      <button type="button" onclick={() => cancelOp(workspaceId)}>Cancel</button>
+    {/if}
   </div>
 {/if}
 

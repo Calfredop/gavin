@@ -85,9 +85,11 @@ export interface GitViewState {
   navSelection: NavSelection;
   /// Files of the selected stash (nav selection), read-only.
   stashFiles: FileEntry[] | null;
-  /// A running long op with its latest progress line: fetch/pull/push, or
-  /// an action that runs hooks (`runAction`), which holds `busy` as well.
-  op: { id: string; label: string; line: string | null } | null;
+  /// A running long op with its latest progress line: fetch/pull/push, an
+  /// action that runs hooks (`runAction`), or a worktree removal
+  /// (`runRemovals`). The last two hold `busy` as well. A removal cannot
+  /// be cancelled, so its bar offers no Cancel.
+  op: { id: string; label: string; line: string | null; cancellable: boolean } | null;
   // ---- SP4 ----
   log: { commits: CommitInfo[]; hasMore: boolean; all: boolean } | null;
   logLoading: boolean;
@@ -487,16 +489,37 @@ export function runAction(
   op: (cwd: string, opId: string) => Promise<void>
 ): Promise<RunResult> {
   const opId = crypto.randomUUID();
-  return mutate(workspaceId, label, (cwd) => op(cwd, opId), opId);
+  return mutate(workspaceId, label, (cwd) => op(cwd, opId), { id: opId, cancellable: true });
 }
 
-/// `runWithReason` and `runAction`: an `opId` makes the mutation an op
-/// too, for the length of the command.
+/// A mutation that removes worktrees, one `git worktree remove` after
+/// another. Each deletes the build output too, which takes seconds, and a
+/// sweep or a discard removes several. Off the main thread the window
+/// stays live through that, so the removal is an op, and its line names
+/// the folder it has reached: a Git tab locked with nothing saying why
+/// reads as hung. `reached(i, n, path)` sets that line.
+///
+/// No Cancel. Git has no cleanup for a remove stopped part-way, and one
+/// leaves the folder half deleted and still registered. Nothing on the
+/// host is registered under this id, so a stray cancel reaches nothing.
+function runRemovals(
+  workspaceId: string,
+  label: string,
+  op: (cwd: string, reached: (i: number, n: number, path: string) => void) => Promise<void>
+): Promise<RunResult> {
+  const id = crypto.randomUUID();
+  const reached = (i: number, n: number, path: string) =>
+    setOpLine(workspaceId, id, n === 1 ? folderName(path) : `${i + 1} of ${n}: ${folderName(path)}`);
+  return mutate(workspaceId, label, (cwd) => op(cwd, reached), { id, cancellable: false });
+}
+
+/// `runWithReason`, `runAction` and `runRemovals`: `asOp` makes the
+/// mutation an op too, for the length of the command.
 async function mutate(
   workspaceId: string,
   label: string,
   op: (cwd: string) => Promise<void>,
-  opId: string | null
+  asOp: { id: string; cancellable: boolean } | null
 ): Promise<RunResult> {
   const s = current(workspaceId);
   const blocked = runBlocker(s);
@@ -512,14 +535,14 @@ async function mutate(
   }
   // Busy either way: every surface that disables on `busy` alone must
   // stay disabled through an action too.
-  update(workspaceId, (st) => ({ ...st, busy: label, error: null, op: opId ? { id: opId, label, line: null } : st.op }));
-  const unlisten = opId ? await followProgress(workspaceId, opId) : null;
+  update(workspaceId, (st) => ({ ...st, busy: label, error: null, op: asOp ? { ...asOp, label, line: null } : st.op }));
+  const unlisten = asOp?.cancellable ? await followProgress(workspaceId, asOp.id) : null;
   let failure: string | null = null;
   try {
     await op(s.cwd);
   } catch (e) {
     const text = errorText(e);
-    failure = opId && text === "cancelled" ? `${label} cancelled` : `${label} failed: ${text}`;
+    failure = asOp?.cancellable && text === "cancelled" ? `${label} cancelled` : `${label} failed: ${text}`;
     update(workspaceId, (st) => ({ ...st, error: failure }));
   }
   unlisten?.();
@@ -529,7 +552,7 @@ async function mutate(
   update(workspaceId, (st) => ({
     ...st,
     busy: null,
-    op: opId && st.op?.id === opId ? null : st.op,
+    op: asOp && st.op?.id === asOp.id ? null : st.op,
     lineSelection: failure ? st.lineSelection : new Set(),
   }));
   await refresh(workspaceId);
@@ -1098,7 +1121,7 @@ export async function startOp(
   const s = current(workspaceId);
   if (!s || s.busy || s.op) return false;
   const id = crypto.randomUUID();
-  update(workspaceId, (st) => ({ ...st, op: { id, label, line: null }, error: null }));
+  update(workspaceId, (st) => ({ ...st, op: { id, label, line: null, cancellable: true }, error: null }));
   const unlisten = await followProgress(workspaceId, id);
   let okResult = true;
   try {
@@ -1117,15 +1140,20 @@ export async function startOp(
 /// Lands op `id`'s `git-op-progress` lines in the view's `op.line`.
 function followProgress(workspaceId: string, id: string): Promise<() => void> {
   return listen<{ opId: string; line: string }>("git-op-progress", (event) => {
-    if (event.payload.opId !== id) return;
-    update(workspaceId, (st) => (st.op?.id === id ? { ...st, op: { ...st.op, line: event.payload.line } } : st));
+    if (event.payload.opId === id) setOpLine(workspaceId, id, event.payload.line);
   });
 }
 
+/// Op `id`'s latest line, if it is still the running op.
+function setOpLine(workspaceId: string, id: string, line: string): void {
+  update(workspaceId, (st) => (st.op?.id === id ? { ...st, op: { ...st.op, line } } : st));
+}
+
 /// Stops the running op: fetch, pull, push, or an action (`runAction`).
+/// A worktree removal is an op with no cancel (`runRemovals`).
 export async function cancelOp(workspaceId: string): Promise<void> {
-  const id = current(workspaceId)?.op?.id;
-  if (id) await backend.gitCancelOp(id).catch(() => false);
+  const op = current(workspaceId)?.op;
+  if (op?.cancellable) await backend.gitCancelOp(op.id).catch(() => false);
 }
 
 function remoteOrOrigin(workspaceId: string): string {
@@ -1357,18 +1385,27 @@ export async function switchWorktree(workspaceId: string, path: string): Promise
 /// Reports its reason rather than a bare boolean: both of its callers --
 /// the fork dialog and a best-of-N launch -- are surfaces the Git tab's
 /// error banner is not on.
+///
+/// An action: it checks the whole tree out, through the post-checkout
+/// hook and any LFS smudge, so it has the op bar's Cancel, as a checkout
+/// does. A checkout stopped part-way leaves nothing behind: git deletes
+/// the half-made worktree itself.
 export function forkWorktree(
   workspaceId: string,
   opts: { path: string; branch: string; from: string | null; newBranch: boolean }
 ): Promise<RunResult> {
-  return runWithReason(workspaceId, "New worktree", (cwd) => backend.gitWorktreeAdd(cwd, opts.path, opts.branch, opts.from, opts.newBranch));
+  return runAction(workspaceId, "New worktree", (cwd, opId) =>
+    backend.gitWorktreeAdd(cwd, opts.path, opts.branch, opts.from, opts.newBranch, opId)
+  );
 }
 
-export function removeWorktree(workspaceId: string, path: string, force: boolean, deleteBranchName: string | null): Promise<boolean> {
-  return run(workspaceId, "Remove worktree", async (cwd) => {
+export async function removeWorktree(workspaceId: string, path: string, force: boolean, deleteBranchName: string | null): Promise<boolean> {
+  const result = await runRemovals(workspaceId, "Remove worktree", async (cwd, reached) => {
+    reached(0, 1, path);
     await backend.gitWorktreeRemove(cwd, path, force);
     if (deleteBranchName) await backend.gitDeleteBranch(cwd, deleteBranchName, false);
   });
+  return result.ok;
 }
 
 export function pruneWorktrees(workspaceId: string): Promise<boolean> {
@@ -1441,13 +1478,14 @@ export async function sweepFacts(
 /// checkout in far less: forcing on a minute-old answer is precisely the
 /// window git's blanket refusal used to cover. A read that fails forces
 /// nothing, so the unforced call goes out and git refuses it.
-export function sweepWorktrees(
+export async function sweepWorktrees(
   workspaceId: string,
   entries: readonly { path: string; branch: string | null }[],
   deleteBranches: boolean
 ): Promise<boolean> {
-  return run(workspaceId, "Sweep worktrees", async (cwd) => {
-    for (const entry of entries) {
+  const result = await runRemovals(workspaceId, "Sweep worktrees", async (cwd, reached) => {
+    for (const [i, entry] of entries.entries()) {
+      reached(i, entries.length, entry.path);
       const status = await backend.gitStatus(entry.path).catch(() => null);
       await backend.gitWorktreeRemove(cwd, entry.path, mayForceRemoval(status));
       // Never forced either: `branch -d` refuses anything unmerged, and
@@ -1456,6 +1494,7 @@ export function sweepWorktrees(
       if (deleteBranches && entry.branch) await backend.gitDeleteBranch(cwd, entry.branch, false);
     }
   });
+  return result.ok;
 }
 
 /// Remove the worktrees a best-of-N run is throwing away, FORCED --
@@ -1495,9 +1534,10 @@ export async function discardWorktrees(
   if (view && doomed.has(view.cwd.replace(/\/+$/, ""))) {
     await switchWorktree(workspaceId, rootPathOf(view));
   }
-  return run(workspaceId, "Discard worktrees", async (cwd) => {
+  const result = await runRemovals(workspaceId, "Discard worktrees", async (cwd, reached) => {
     let failure: unknown = null;
-    for (const entry of entries) {
+    for (const [i, entry] of entries.entries()) {
+      reached(i, entries.length, entry.path);
       try {
         await backend.gitWorktreeRemove(cwd, entry.path, true);
         if (deleteBranches && entry.branch) await backend.gitDeleteBranch(cwd, entry.branch, true);
@@ -1507,6 +1547,7 @@ export async function discardWorktrees(
     }
     if (failure) throw failure;
   });
+  return result.ok;
 }
 
 /// Merge a fork's branch into the ROOT checkout (G12). "conflict" means the

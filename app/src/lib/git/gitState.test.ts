@@ -132,7 +132,7 @@ import {
   stageFiles, stageAll, commit, setCommitDraft, setLineSelection,
   effectiveRemote, pushLabel, canSync, setActiveRemote, startOp, cancelOp, fetch, selectStash, selectChanges,
   checkout, createBranch, cherryPick,
-  switchWorktree, mergeBack, rootPathOf, removeWorktree, sweepFacts, sweepWorktrees,
+  switchWorktree, mergeBack, rootPathOf, removeWorktree, sweepFacts, sweepWorktrees, discardWorktrees,
   selectCommits, loadMore, selectCommit, selectDetailFile, setGraphAll,
   markResolved, saveConflict, openMergeTool,
   addIgnorePattern, loadIgnoreFile, saveIgnoreFile,
@@ -427,7 +427,7 @@ describe("run / mutations", () => {
     const view = get(gitStore)["ws"];
     expect(runBlocker(view)).toBeNull();
     expect(runBlocker({ ...view, busy: "Stage" })).toBe("Another git operation is still running (Stage)");
-    expect(runBlocker({ ...view, op: { id: "1", label: "Fetch", line: null } })).toBe(
+    expect(runBlocker({ ...view, op: { id: "1", label: "Fetch", line: null, cancellable: true } })).toBe(
       "Another git operation is still running (Fetch)"
     );
   });
@@ -758,6 +758,80 @@ describe("worktrees", () => {
     await removeWorktree("ws", "/r-feature", false, "feature");
     expect(backend.gitWorktreeRemove).toHaveBeenCalledWith("/r", "/r-feature", false);
     expect(backend.gitDeleteBranch).toHaveBeenCalledWith("/r", "feature", false);
+  });
+
+  // A fork checks the whole tree out, through the post-checkout hook and
+  // any LFS smudge: an op with a Cancel, like a checkout. A stop mid-
+  // checkout is a TERM, and git deletes the half-made worktree itself.
+  it("forkWorktree runs as an op whose id reaches the command", async () => {
+    ensureGitView("ws", "/r");
+    let finish!: () => void;
+    vi.mocked(backend.gitWorktreeAdd).mockImplementationOnce(() => new Promise<void>((res) => (finish = res)));
+    const done = forkWorktree("ws", { path: "/r-x", branch: "x", from: "main", newBranch: true });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const op = get(gitStore)["ws"].op;
+    expect(op).toMatchObject({ label: "New worktree", cancellable: true });
+    expect(backend.gitWorktreeAdd).toHaveBeenCalledWith("/r", "/r-x", "x", "main", true, op!.id);
+    finish();
+    expect(await done).toEqual({ ok: true, error: null });
+    expect(get(gitStore)["ws"].op).toBeNull();
+  });
+
+  // Removing deletes the build output too, seconds a worktree, and a
+  // sweep or a discard removes several in a row. Off the main thread the
+  // window stays live through that, so the op bar has to say what the
+  // locked Git tab is waiting on.
+  it("a sweep shows in the op bar with the folder it has reached", async () => {
+    ensureGitView("ws", "/r");
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] } as never);
+    const seen: unknown[] = [];
+    const note = async () => void seen.push(get(gitStore)["ws"].op);
+    vi.mocked(backend.gitWorktreeRemove).mockImplementationOnce(note).mockImplementationOnce(note);
+
+    await sweepWorktrees("ws", [{ path: "/r-a", branch: null }, { path: "/r-b/", branch: null }], false);
+
+    expect(seen).toEqual([
+      expect.objectContaining({ label: "Sweep worktrees", line: "1 of 2: r-a", cancellable: false }),
+      expect.objectContaining({ label: "Sweep worktrees", line: "2 of 2: r-b", cancellable: false }),
+    ]);
+    expect(get(gitStore)["ws"].op).toBeNull();
+  });
+
+  it("a discard shows its progress too, and keeps going past a failure", async () => {
+    ensureGitView("ws", "/r");
+    const seen: unknown[] = [];
+    vi.mocked(backend.gitWorktreeRemove)
+      .mockImplementationOnce(async () => {
+        seen.push(get(gitStore)["ws"].op);
+        throw "fatal: nope";
+      })
+      .mockImplementationOnce(async () => void seen.push(get(gitStore)["ws"].op));
+
+    expect(await discardWorktrees("ws", [{ path: "/r-a", branch: null }, { path: "/r-b", branch: null }], false)).toBe(false);
+
+    expect(seen).toEqual([
+      expect.objectContaining({ label: "Discard worktrees", line: "1 of 2: r-a", cancellable: false }),
+      expect.objectContaining({ label: "Discard worktrees", line: "2 of 2: r-b", cancellable: false }),
+    ]);
+    expect(get(gitStore)["ws"].error).toBe("Discard worktrees failed: fatal: nope");
+  });
+
+  // git has no cleanup for a remove stopped part-way: the folder is left
+  // half deleted and still registered. So a removal offers no Cancel, and
+  // one pressed anyway reaches nothing.
+  it("a single removal names its folder, and Cancel does not reach it", async () => {
+    ensureGitView("ws", "/r");
+    let finish!: () => void;
+    vi.mocked(backend.gitWorktreeRemove).mockImplementationOnce(() => new Promise<void>((res) => (finish = res)));
+    const done = removeWorktree("ws", "/r-feature", false, null);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(get(gitStore)["ws"].op).toMatchObject({ label: "Remove worktree", line: "r-feature", cancellable: false });
+
+    await cancelOp("ws");
+    expect(backend.gitCancelOp).not.toHaveBeenCalled();
+    finish();
+    expect(await done).toBe(true);
+    expect(get(gitStore)["ws"].op).toBeNull();
   });
 });
 
