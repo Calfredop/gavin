@@ -21,7 +21,10 @@ import { shareFromSize } from "$lib/panes/splitShare";
 //
 //   - Nothing is hidden. No `.gitignore` filter and no dotfile rule --
 //     `target/` and `node_modules/` sit at the top level like anything
-//     else, and cost nothing until someone opens them.
+//     else, and cost nothing until someone opens them. What opening one
+//     costs is bounded by the host instead: a folder past its cap lists
+//     only its first entries in this tree's order, and the tree says how
+//     many it left out rather than passing the rest off as all there is.
 //
 // State is treated as immutable: every function returns a new object
 // rather than mutating, so a Svelte 5 `$state` holder can assign the
@@ -67,10 +70,13 @@ export interface FileTreeState {
   /// rather than thrown away so the row can say why it is empty --
   /// "permission denied" and "empty folder" look identical otherwise.
   errors: Record<string, string>;
+  /// Entries a capped listing left out, keyed by directory. Absent for a
+  /// folder listed whole, which is nearly every one.
+  omitted: Record<string, number>;
 }
 
 export function emptyTree(root: string): FileTreeState {
-  return { root, children: {}, expanded: {}, errors: {} };
+  return { root, children: {}, expanded: {}, errors: {}, omitted: {} };
 }
 
 // ---- path arithmetic --------------------------------------------------
@@ -173,14 +179,25 @@ export function nodesFrom(dir: string, entries: DirEntry[]): FileNode[] {
 
 /// Records a successful read. Clears any error the directory carried, so
 /// a folder that failed once and then read stops explaining itself.
+/// `omitted` is what the host's cap left out of `entries`, and replaces
+/// whatever the last read of this folder said.
 export function withChildren(
   state: FileTreeState,
   dir: string,
-  entries: DirEntry[]
+  entries: DirEntry[],
+  omitted = 0
 ): FileTreeState {
   const errors = { ...state.errors };
   delete errors[dir];
-  return { ...state, children: { ...state.children, [dir]: nodesFrom(dir, entries) }, errors };
+  const left = { ...state.omitted };
+  if (omitted > 0) left[dir] = omitted;
+  else delete left[dir];
+  return {
+    ...state,
+    children: { ...state.children, [dir]: nodesFrom(dir, entries) },
+    errors,
+    omitted: left,
+  };
 }
 
 /// Records a failed read. The directory stays open and stays unloaded --
@@ -222,11 +239,13 @@ export function toggleDir(state: FileTreeState, dir: string): FileTreeState {
 export function forgetChildren(state: FileTreeState, dirs: string[]): FileTreeState {
   const children = { ...state.children };
   const errors = { ...state.errors };
+  const omitted = { ...state.omitted };
   for (const dir of dirs) {
     delete children[dir];
     delete errors[dir];
+    delete omitted[dir];
   }
-  return { ...state, children, errors };
+  return { ...state, children, errors, omitted };
 }
 
 /// Every directory currently loaded -- what Refresh forgets.
@@ -263,6 +282,9 @@ export interface TreeRow {
   /// say interchangeably.
   childCount: number;
   error: string | null;
+  /// Entries of this directory the host's cap left out of its listing.
+  /// 0 on a file and on any folder listed whole.
+  omitted: number;
 }
 
 export interface TreeView {
@@ -277,6 +299,9 @@ export interface TreeView {
   /// against it would report a match out of a smaller number than the
   /// matches themselves.
   total: number;
+  /// True when some folder the filter searched is only partly listed,
+  /// so a miss may be in the part the host left out.
+  partial: boolean;
 }
 
 /// What the tab says when a filter matches nothing.
@@ -288,6 +313,23 @@ export interface TreeView {
 /// folder it is in".
 export const NO_MATCH_MESSAGE = "No match in the folders you have opened.";
 
+/// What the tab says when a filter matches nothing, given the view. A
+/// folder too big to list whole was searched only as far as it lists,
+/// and a miss there is not a miss in the folder.
+export function noMatchMessage(view: TreeView): string {
+  return view.partial
+    ? `${NO_MATCH_MESSAGE} Folders too big to list in full were searched only as far as they are listed.`
+    : NO_MATCH_MESSAGE;
+}
+
+/// The note under an open folder the host's cap cut short, or null for
+/// one listed whole. Points at the one place that shows the rest.
+export function omittedNote(row: TreeRow): string | null {
+  if (row.omitted <= 0) return null;
+  const count = row.omitted.toLocaleString("en-US");
+  return `${count} more ${row.omitted === 1 ? "entry" : "entries"} not listed: this folder is too big to show whole. Reveal in Finder lists them all.`;
+}
+
 function rowFor(state: FileTreeState, node: FileNode, depth: number): TreeRow {
   return {
     node,
@@ -296,6 +338,7 @@ function rowFor(state: FileTreeState, node: FileNode, depth: number): TreeRow {
     loaded: !node.isDir || isLoaded(state, node.path),
     childCount: node.isDir ? (state.children[node.path]?.length ?? 0) : 0,
     error: state.errors[node.path] ?? null,
+    omitted: node.isDir ? (state.omitted[node.path] ?? 0) : 0,
   };
 }
 
@@ -359,7 +402,13 @@ export function visibleRows(state: FileTreeState, query = ""): TreeView {
   if (needle === "") {
     const plain: TreeRow[] = [];
     if (isExpanded(state, state.root)) walkPlain(state, state.root, 1, plain);
-    return { rows: [root, ...plain], filtering: false, shown: plain.length, total: plain.length };
+    return {
+      rows: [root, ...plain],
+      filtering: false,
+      shown: plain.length,
+      total: plain.length,
+      partial: false,
+    };
   }
   const matched: TreeRow[] = [];
   walkFiltered(state, state.root, 1, needle, matched);
@@ -370,6 +419,7 @@ export function visibleRows(state: FileTreeState, query = ""): TreeView {
     filtering: true,
     shown: matched.length,
     total: loadedNodeCount(state),
+    partial: Object.keys(state.omitted).length > 0,
   };
 }
 
@@ -424,6 +474,7 @@ export function afterDelete(state: FileTreeState, path: string): FileTreeState {
   const children = { ...state.children };
   const expanded = { ...state.expanded };
   const errors = { ...state.errors };
+  const omitted = { ...state.omitted };
   if (children[parent]) children[parent] = children[parent].filter((n) => n.path !== path);
   for (const key of Object.keys(children)) {
     if (key === path || isUnder(path, key)) delete children[key];
@@ -434,7 +485,10 @@ export function afterDelete(state: FileTreeState, path: string): FileTreeState {
   for (const key of Object.keys(errors)) {
     if (key === path || isUnder(path, key)) delete errors[key];
   }
-  return { ...state, children, expanded, errors };
+  for (const key of Object.keys(omitted)) {
+    if (key === path || isUnder(path, key)) delete omitted[key];
+  }
+  return { ...state, children, expanded, errors, omitted };
 }
 
 /// An entry that moved. Both ends are patched and the subtree is
@@ -451,6 +505,7 @@ export function afterRename(state: FileTreeState, from: string, to: string): Fil
   const children: Record<string, FileNode[]> = {};
   const expanded: Record<string, true> = {};
   const errors: Record<string, string> = {};
+  const omitted: Record<string, number> = {};
 
   const rekey = (key: string) => retargetPath(key, from, to);
   const rekeyNode = (node: FileNode): FileNode => {
@@ -463,6 +518,7 @@ export function afterRename(state: FileTreeState, from: string, to: string): Fil
   }
   for (const key of Object.keys(state.expanded)) expanded[rekey(key)] = true;
   for (const [key, message] of Object.entries(state.errors)) errors[rekey(key)] = message;
+  for (const [key, count] of Object.entries(state.omitted)) omitted[rekey(key)] = count;
 
   const node: FileNode = moved
     ? { ...moved, path: to, name: baseName(to) }
@@ -477,7 +533,7 @@ export function afterRename(state: FileTreeState, from: string, to: string): Fil
   if (children[toParent]) {
     children[toParent] = sortNodes([...children[toParent].filter((n) => n.path !== to), node]);
   }
-  return { ...state, children, expanded, errors };
+  return { ...state, children, expanded, errors, omitted };
 }
 
 // ---- restoring the tab ------------------------------------------------

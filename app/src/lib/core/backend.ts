@@ -145,11 +145,16 @@ export function tempDir(): Promise<string> {
 /// workspace ROOT alongside its target and the host refuses anything
 /// that resolves outside it -- see fileviewer.rs. One `list_directory`
 /// per opened folder, never a recursive walk and never a watcher: the
-/// tree refreshes on demand and after its own mutations.
+/// tree refreshes on demand and after its own mutations. A folder past
+/// the host's cap (2,000) answers its first entries in the tree's order
+/// and `omitted` counts the rest.
 export function listDirectory(
   root: string,
   path: string
-): Promise<{ name: string; isDir: boolean; size: number; symlink: boolean }[]> {
+): Promise<{
+  entries: { name: string; isDir: boolean; size: number; symlink: boolean }[];
+  omitted: number;
+}> {
   return invoke("list_directory", { root, path });
 }
 

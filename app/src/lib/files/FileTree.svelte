@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ChevronDown, ChevronRight, File, Folder, FolderOpen, Link } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import { formatSize, type FileNode, type TreeView } from "$lib/files/fileTree";
+  import { formatSize, omittedNote, type FileNode, type TreeView } from "$lib/files/fileTree";
   import { isViewableExtension } from "$lib/files/fileTypes";
   import { openContextMenuFromEvent } from "$lib/core/contextMenu";
   import { rowMenuItems, type FileTreeMenuCallbacks } from "$lib/files/fileTreeMenu";
@@ -180,6 +180,11 @@
         </div>
       {:else if !view.filtering && row.childCount === 0}
         <div class="note" style:padding-left={inset(row.depth + 1)}>Empty folder.</div>
+      {/if}
+      {#if row.omitted > 0}
+        <!-- Above the rows, not after two thousand of them: the folder
+             says it is cut short where the human is looking. -->
+        <div class="note" style:padding-left={inset(row.depth + 1)}>{omittedNote(row)}</div>
       {/if}
     {/if}
   {/each}

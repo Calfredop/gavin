@@ -109,9 +109,12 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // first usage poll and watchman read: `opencode models`, a start that
   // alone takes 0.41-0.85 s, under a 15 s deadline.
   ["agent_models.rs", "agent_model_catalog", "`opencode models`, at startup, up to 15 s"],
-  // Waits on no process, but re-runs without anyone asking: on every
-  // `file-changed` for an open editor tab or card modal.
+  // Neither waits on a process, but both re-run without anyone asking:
+  // the read on every `file-changed` for an open editor tab or card
+  // modal, the listing for every remembered open folder on every Files
+  // visit. One folder of 60,052 entries was 0.6-1.1 s of stat.
   ["fileviewer.rs", "read_file_for_viewer", "a disk read (an ssh round trip on a remote workspace), on every watch event"],
+  ["fileviewer.rs", "list_directory", "a readdir and a stat per entry, per open folder, on every Files visit"],
 ];
 
 /// The command's text from its `#[tauri::command]` line to the first

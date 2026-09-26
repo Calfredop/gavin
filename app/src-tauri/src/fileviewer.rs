@@ -14,6 +14,15 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// rendered: see `read_prefix`.
 pub const MAX_VIEWER_FILE_BYTES: usize = 1024 * 1024;
 
+/// A folder with more entries than this lists only the first this many,
+/// in the tree's own order, and says how many it left out. The Files
+/// tree draws every row it is given and re-lists each remembered open
+/// folder on every visit to the tab; `target/debug/deps` in this repo
+/// alone held 60,052 entries, 0.6-1.1 s of stat per listing before a
+/// single row was drawn. Two thousand keeps whole every folder a human
+/// browses by eye -- `target/debug/.fingerprint` here is 1,972.
+pub const MAX_LISTED_ENTRIES: usize = 2000;
+
 /// Matches the daemon's own GIT_STATUS_DEBOUNCE -- long enough to collapse
 /// the burst of events a single save produces, short enough to feel live.
 const FILE_WATCH_DEBOUNCE: Duration = Duration::from_millis(500);
@@ -737,6 +746,17 @@ pub struct DirEntryInfo {
     pub symlink: bool,
 }
 
+/// What `list_directory` answers: the entries it listed, and how many
+/// it left out past `MAX_LISTED_ENTRIES`. `omitted` is what lets the
+/// tree say a folder is only partly shown, instead of drawing the first
+/// two thousand of sixty thousand as if they were all there were.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirListing {
+    pub entries: Vec<DirEntryInfo>,
+    pub omitted: usize,
+}
+
 /// The workspace root as an absolute, symlink-free path. Canonicalized
 /// because every containment check below compares against it, and on
 /// macOS the same folder is reachable as both `/tmp/x` and
@@ -819,34 +839,60 @@ fn resolve_new(root: &Path, path: &str) -> Result<PathBuf, String> {
 ///
 /// Everything on disk is listed, dotfiles and `target/` and
 /// `node_modules/` included: filtering by `.gitignore` would hide files
-/// the human came here to find, and the cost of listing a large folder
-/// is only paid when they open it.
+/// the human came here to find. What a large folder costs is bounded
+/// instead: past `MAX_LISTED_ENTRIES` only the first entries in the
+/// tree's order are listed, and `omitted` says how many were not.
 ///
 /// Refuses a symlinked directory rather than listing through it, so the
 /// tree can never leave the root by following a link.
 ///
 /// For an ssh workspace's root the listing is the host daemon's
 /// (`ListWorkspaceDir`, v40): the same fields, from the machine the files
-/// are on, so the Files tree renders there unchanged.
+/// are on, so the Files tree renders there unchanged. The host lists the
+/// folder whole -- its answer has no field to say what it left out --
+/// so the cap is applied here, on what reaches the tree.
+///
+/// `async` + `spawn_blocking`: the Files tab re-lists every folder it
+/// remembers open on every visit, and one folder of 60,052 entries was
+/// 0.6-1.1 s of stat on the main thread before the cap existed.
 #[tauri::command]
-pub fn list_directory(root: String, path: String, app_handle: AppHandle) -> Result<Vec<DirEntryInfo>, String> {
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
-        return link
-            .list_dir(&root, &path)
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .map(|e| DirEntryInfo { name: e.name, is_dir: e.is_dir, size: e.size, symlink: e.symlink })
-                    .collect()
-            })
-            .map_err(|e| e.to_string());
-    }
-    list_directory_impl(root, path)
+pub async fn list_directory(root: String, path: String, app_handle: AppHandle) -> Result<DirListing, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+            let entries = link.list_dir(&root, &path).map_err(|e| e.to_string())?;
+            let mut entries: Vec<DirEntryInfo> = entries
+                .into_iter()
+                .map(|e| DirEntryInfo { name: e.name, is_dir: e.is_dir, size: e.size, symlink: e.symlink })
+                .collect();
+            entries.sort_by_cached_key(|e| tree_order(&e.name, e.is_dir));
+            let omitted = entries.len().saturating_sub(MAX_LISTED_ENTRIES);
+            entries.truncate(MAX_LISTED_ENTRIES);
+            return Ok(DirListing { entries, omitted });
+        }
+        list_directory_impl(root, path, MAX_LISTED_ENTRIES)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The sort key for the tree's own order -- fileTree.ts's
+/// `compareNodes`: directories first, then by name ignoring case, then
+/// case-sensitively so two names differing only in case still have one
+/// order. Which entries a capped listing keeps depends on it, so it has
+/// to be the tree's order and not plain name order, or a folder of
+/// sixty thousand files and three subfolders would list files and leave
+/// the subfolders out. The tree re-sorts what it is given, so the one
+/// place this and `localeCompare` can disagree -- punctuation and
+/// non-ASCII names -- decides only which entry falls either side of the
+/// cap, never the order anything is drawn in.
+fn tree_order(name: &str, is_dir: bool) -> (bool, String, String) {
+    (!is_dir, name.to_lowercase(), name.to_string())
 }
 
 /// The local listing, split out so the tests exercise the confinement
-/// without an `AppHandle` -- the command adds only the ssh route above.
-fn list_directory_impl(root: String, path: String) -> Result<Vec<DirEntryInfo>, String> {
+/// and the cap without an `AppHandle` -- the command adds only the ssh
+/// route above.
+fn list_directory_impl(root: String, path: String, cap: usize) -> Result<DirListing, String> {
     let root = canonical_root(&root)?;
     let meta = std::fs::symlink_metadata(&path).map_err(|e| format!("{path}: {e}"))?;
     if meta.file_type().is_symlink() {
@@ -857,13 +903,31 @@ fn list_directory_impl(root: String, path: String) -> Result<Vec<DirEntryInfo>, 
         return Err(format!("{path} is not a directory"));
     }
 
-    let mut entries = Vec::new();
+    // Every name first, with the entry's kind from the directory read
+    // itself: `DirEntry::file_type` comes from readdir's d_type on macOS
+    // and Linux, so ordering sixty thousand entries costs no stat each.
+    // It does not follow links, the same as the symlink_metadata below.
+    let mut found = Vec::new();
     for entry in std::fs::read_dir(&dir).map_err(|e| format!("{path}: {e}"))? {
         let entry = entry.map_err(|e| format!("{path}: {e}"))?;
-        let name = entry.file_name().to_string_lossy().to_string();
+        let Ok(file_type) = entry.file_type() else { continue };
+        let file_name = entry.file_name();
+        found.push((file_name.to_string_lossy().to_string(), file_type.is_dir(), file_name));
+    }
+    found.sort_by_cached_key(|(name, is_dir, _)| tree_order(name, *is_dir));
+    let omitted = found.len().saturating_sub(cap);
+    found.truncate(cap);
+
+    // Then a stat for only the entries kept -- the size a file row
+    // shows, and the kind again from the same metadata that decides it
+    // everywhere else here.
+    let mut entries = Vec::new();
+    for (name, _, file_name) in found {
         // symlink_metadata, not metadata: a link to a directory must not
         // read as one, and a link whose target is gone must still list.
-        let meta = match entry.path().symlink_metadata() {
+        // By the name as read, not the lossy one: a name that is not
+        // UTF-8 still lists, under its lossy spelling, as it always did.
+        let meta = match dir.join(&file_name).symlink_metadata() {
             Ok(meta) => meta,
             // A file that vanished between the read_dir and the stat is
             // not an error for the whole listing -- an agent writing in
@@ -879,12 +943,7 @@ fn list_directory_impl(root: String, path: String) -> Result<Vec<DirEntryInfo>, 
             symlink: file_type.is_symlink(),
         });
     }
-    // Name order only. Directories-before-files is the tree's rule and
-    // lives in fileTree.ts with the rest of the presentation; sorting
-    // here is just so the same folder does not come back in a different
-    // order each time read_dir is asked.
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(entries)
+    Ok(DirListing { entries, omitted })
 }
 
 /// Creates an empty file. `create_new` rather than a write, so an
@@ -1711,6 +1770,12 @@ mod tests {
         dir.path().join(rel).to_string_lossy().to_string()
     }
 
+    /// A listing under the real cap, for the tests about what a folder
+    /// lists rather than how much of it.
+    fn listed(root: String, path: String) -> Result<Vec<DirEntryInfo>, String> {
+        list_directory_impl(root, path, MAX_LISTED_ENTRIES).map(|listing| listing.entries)
+    }
+
     #[test]
     fn list_directory_reports_kind_size_and_link_for_every_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -1725,13 +1790,16 @@ mod tests {
         std::os::unix::fs::symlink(dir.path().join("Cargo.toml"), dir.path().join("link.toml"))
             .unwrap();
 
-        let entries = list_directory_impl(root_of(&dir), root_of(&dir)).unwrap();
+        let entries = listed(root_of(&dir), root_of(&dir)).unwrap();
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        // Sorted by name, so the same folder never comes back shuffled.
+        // In the tree's order -- folders first, then names ignoring case
+        // -- so the same folder never comes back shuffled, and a capped
+        // one keeps what the tree would have drawn first. The link is a
+        // leaf, so it sorts among the files whatever it points at.
         #[cfg(unix)]
-        assert_eq!(names, vec![".gitignore", "Cargo.toml", "link.toml", "src", "target"]);
+        assert_eq!(names, vec!["src", "target", ".gitignore", "Cargo.toml", "link.toml"]);
         #[cfg(not(unix))]
-        assert_eq!(names, vec![".gitignore", "Cargo.toml", "src", "target"]);
+        assert_eq!(names, vec!["src", "target", ".gitignore", "Cargo.toml"]);
 
         let toml = entries.iter().find(|e| e.name == "Cargo.toml").unwrap();
         assert!(!toml.is_dir);
@@ -1752,6 +1820,34 @@ mod tests {
     }
 
     #[test]
+    fn list_directory_past_the_cap_keeps_the_trees_first_entries_and_counts_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        // Names that sort differently by case than by byte, and folders
+        // that sort last by name: a cap over plain name order would keep
+        // `B.txt` over `a.txt` and drop both folders.
+        for name in ["B.txt", "a.txt", "c.txt", "d.txt"] {
+            std::fs::write(dir.path().join(name), name).unwrap();
+        }
+        std::fs::create_dir(dir.path().join("zz-folder")).unwrap();
+        std::fs::create_dir(dir.path().join("yy-folder")).unwrap();
+
+        let listing = list_directory_impl(root_of(&dir), root_of(&dir), 4).unwrap();
+
+        let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["yy-folder", "zz-folder", "a.txt", "B.txt"]);
+        assert_eq!(listing.omitted, 2);
+        // The kept ones are whole entries, stat and all.
+        let b = listing.entries.iter().find(|e| e.name == "B.txt").unwrap();
+        assert_eq!(b.size, "B.txt".len() as u64);
+        assert!(listing.entries[0].is_dir);
+
+        // Under the cap nothing is left out.
+        let whole = list_directory_impl(root_of(&dir), root_of(&dir), 6).unwrap();
+        assert_eq!(whole.entries.len(), 6);
+        assert_eq!(whole.omitted, 0);
+    }
+
+    #[test]
     fn list_directory_refuses_a_path_outside_the_root() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("ws");
@@ -1760,7 +1856,7 @@ mod tests {
         // "there was nothing there".
         std::fs::write(dir.path().join("secret.txt"), "s").unwrap();
 
-        let outside = list_directory_impl(
+        let outside = listed(
             root.to_string_lossy().to_string(),
             dir.path().to_string_lossy().to_string(),
         );
@@ -1768,7 +1864,7 @@ mod tests {
 
         // The classic traversal spelling, which canonicalize collapses
         // before the containment check ever runs.
-        let traversal = list_directory_impl(
+        let traversal = listed(
             root.to_string_lossy().to_string(),
             root.join("..").to_string_lossy().to_string(),
         );
@@ -1792,7 +1888,7 @@ mod tests {
         std::os::unix::fs::symlink(root.join("real"), root.join("inward")).unwrap();
 
         for link in ["escape", "inward"] {
-            let err = list_directory_impl(
+            let err = listed(
                 root.to_string_lossy().to_string(),
                 root.join(link).to_string_lossy().to_string(),
             )
@@ -1802,7 +1898,7 @@ mod tests {
 
         // The link is still LISTED in its parent -- as a leaf, so the
         // tree shows it without offering to open it.
-        let entries = list_directory_impl(
+        let entries = listed(
             root.to_string_lossy().to_string(),
             root.to_string_lossy().to_string(),
         )
@@ -1817,10 +1913,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "a").unwrap();
 
-        assert!(list_directory_impl(root_of(&dir), under(&dir, "a.txt"))
+        assert!(listed(root_of(&dir), under(&dir, "a.txt"))
             .unwrap_err()
             .contains("not a directory"));
-        assert!(list_directory_impl(root_of(&dir), under(&dir, "nope")).is_err());
+        assert!(listed(root_of(&dir), under(&dir, "nope")).is_err());
     }
 
     #[test]

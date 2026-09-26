@@ -15,7 +15,6 @@
   import { defaultMode } from "$lib/files/fileEditing";
   import {
     DEFAULT_TREE_SHARE,
-    NO_MATCH_MESSAGE,
     afterCreate,
     afterDelete,
     afterRename,
@@ -29,6 +28,7 @@
     joinPath,
     loadFilesMemory,
     loadedDirs,
+    noMatchMessage,
     parentPath,
     resolveTreeShare,
     restoreTargets,
@@ -137,9 +137,9 @@
     const mine = generation;
     reading = { ...reading, [dir]: true };
     try {
-      const entries = await backend.listDirectory(rootPath, dir);
+      const listing = await backend.listDirectory(rootPath, dir);
       if (mine !== generation) return;
-      tree = withChildren(tree, dir, entries);
+      tree = withChildren(tree, dir, listing.entries, listing.omitted);
     } catch (e) {
       if (mine !== generation) return;
       tree = withError(tree, dir, String(e instanceof Error ? e.message : e));
@@ -481,7 +481,7 @@
              folders that have been opened, because finding an unopened
              match would mean the recursive walk the lazy tree exists to
              avoid. -->
-        <div class="empty small">{NO_MATCH_MESSAGE}</div>
+        <div class="empty small">{noMatchMessage(view)}</div>
       {:else}
         <FileTree
           {view}
