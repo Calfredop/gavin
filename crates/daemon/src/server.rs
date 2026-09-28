@@ -1425,6 +1425,9 @@ pub struct SessionManager {
 #[derive(Debug, Clone)]
 struct PendingPairing {
     public_key: Vec<u8>,
+    /// The hardware key the Device proved it holds, which the row will
+    /// hold once the desk confirms (ADR 0001).
+    hardware_key: Vec<u8>,
     name: String,
     /// Where the human's answer goes, when someone is holding the
     /// Device's stream open for it. `None` for a handshake nobody is
@@ -1450,13 +1453,38 @@ pub struct AwaitedPairing {
 }
 
 /// What the human at the desk ruled on a pairing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum PairingDecision {
     /// Confirmed, and the row is written. The id is the one the store
-    /// filed the Device under.
-    Confirmed { device_id: String },
+    /// filed the Device under, and the key is the one the row now holds
+    /// for sealing this Device's notifications: the Device is told both.
+    Confirmed { device_id: String, notification_key: Vec<u8> },
     Rejected,
 }
+
+/// Hand-written, and it leaves the notification key out.
+impl std::fmt::Debug for PairingDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PairingDecision::Confirmed { device_id, .. } => f
+                .debug_struct("Confirmed")
+                .field("device_id", device_id)
+                .finish_non_exhaustive(),
+            PairingDecision::Rejected => f.write_str("Rejected"),
+        }
+    }
+}
+
+/// How many connections one Device may hold at once
+/// (`05-remote-access.md` §8, "the remote channel gets its own caps").
+///
+/// §8 said two, mirroring the desktop app's pair, for a phone that was
+/// one client. The Companion is a shell and the bundle it shows, and
+/// each may hold a connection or two of its own; four is both of them
+/// doing so. What the ceiling is for is unchanged: a Device, or whoever
+/// holds one, cannot make this daemon hold a thread and a socket for
+/// every connection it cares to open.
+pub const MAX_CONNECTIONS_PER_DEVICE: usize = 4;
 
 /// A live connection carrying a device identity, and the handle that
 /// closes it.
@@ -1682,18 +1710,108 @@ impl SessionManager {
     }
 
     /// Registers a live connection under its device id, returning the
-    /// token that removes it again. See `device_connections`.
-    fn register_device_connection(&self, device_id: &str, stream: Stream) -> u64 {
+    /// token that removes it again -- or why this Device's connection is
+    /// not one to serve. See `device_connections`.
+    fn register_device_connection(
+        &self,
+        device_id: &str,
+        stream: Stream,
+    ) -> Result<u64, protocol::device_wire::ConnectRefusal> {
+        use protocol::device_wire::ConnectRefusal;
+
         let token = self.next_device_connection.fetch_add(1, Ordering::SeqCst);
-        self.device_connections
-            .lock()
-            .unwrap()
-            .insert(token, DeviceConnection { device_id: device_id.to_string(), stream });
+        {
+            let mut live = self.device_connections.lock().unwrap();
+            let held = live.values().filter(|c| c.device_id == device_id).count();
+            if held >= MAX_CONNECTIONS_PER_DEVICE {
+                return Err(ConnectRefusal::Busy);
+            }
+            live.insert(token, DeviceConnection { device_id: device_id.to_string(), stream });
+        }
+        // The row is read AFTER the entry exists, and that order is the
+        // point. A revocation marks the row and then shuts the
+        // connections it finds. Whoever judged this Device did so before
+        // the connection was anywhere a revocation could find it, so the
+        // judgment is made again here: a revocation that came first is
+        // seen in the row, and one that comes after finds the entry.
+        if let Some(refusal) = self.device_refusal(device_id) {
+            self.device_connections.lock().unwrap().remove(&token);
+            return Err(refusal);
+        }
         // Announced after the entry exists, so an app that reacts to the
         // push by listing devices cannot see a device the daemon has not
         // finished registering.
         self.push_to_apps(&Response::DeviceConnected { device_id: device_id.to_string() });
-        token
+        Ok(token)
+    }
+
+    /// Why the Device filed under `device_id` may not hold a connection,
+    /// or `None` if it may. A daemon with no trust store has no Devices.
+    ///
+    /// Asked when a connection registers, and again for as long as it
+    /// is carried (`remote.rs`): the store is shared with a daemon that
+    /// cannot tell this one what it wrote, and a revocation pressed at
+    /// that one's desk shuts the connections IT holds.
+    pub(crate) fn device_refusal(
+        &self,
+        device_id: &str,
+    ) -> Option<protocol::device_wire::ConnectRefusal> {
+        use protocol::device_wire::ConnectRefusal;
+        match self.trust() {
+            None => Some(ConnectRefusal::NotPaired),
+            // A store that cannot be read has not said yes.
+            Some(trust) => match trust.admit_id(device_id) {
+                Ok(admission) => admission.connect_refusal(),
+                Err(_) => Some(ConnectRefusal::Other),
+            },
+        }
+    }
+
+    /// Takes on the connection of a Device whose handshake and signature
+    /// `remote.rs` has verified, and returns the end of it that
+    /// `remote.rs` keeps.
+    ///
+    /// What is handed back is one end of an in-process socket pair. The
+    /// other end is served by the connection loop the local socket's
+    /// connections run -- the same gate, the same handlers -- with the
+    /// identity fixed as this Device's and the Remote role, so what
+    /// travels over it is the daemon's own protocol and `remote.rs` has
+    /// only to copy it into and out of the Device's channel
+    /// (`05-remote-access.md` §5).
+    ///
+    /// It returns once the connection is registered, which is what makes
+    /// "connected" true when the Device is told it: from that moment a
+    /// revocation finds this connection and drops it. A Device that is
+    /// not to be served -- revoked a moment ago, or holding as many
+    /// connections as it may -- is refused, by name.
+    pub fn adopt_device(
+        self: &Arc<Self>,
+        device_id: &str,
+    ) -> anyhow::Result<Result<Stream, protocol::device_wire::ConnectRefusal>> {
+        let (near, far) = Stream::pair()?;
+        let (ready, readied) = std::sync::mpsc::sync_channel(1);
+        let manager = Arc::clone(self);
+        let identity = ClientIdentity::remote(device_id);
+        std::thread::Builder::new().name("device-connection".into()).spawn(move || {
+            if let Err(e) = serve_connection(far, manager, identity, Some(ready)) {
+                eprintln!("connection error: {e}");
+            }
+        })?;
+        match readied.recv() {
+            Ok(Ok(())) => Ok(Ok(near)),
+            Ok(Err(refusal)) => Ok(Err(refusal)),
+            Err(_) => anyhow::bail!("gavin-daemon: a device's connection ended before it began"),
+        }
+    }
+
+    /// `RemoveThisDevice`: deletes a Device's row. The connections are
+    /// the caller's to drop, once it has answered the one that asked.
+    ///
+    /// Not an error for a row that is already gone: a Device that asks
+    /// twice, on two connections, has what it asked for.
+    fn remove_device(&self, device_id: &str) -> anyhow::Result<()> {
+        self.trust_or_err()?.remove(device_id)?;
+        Ok(())
     }
 
     /// Registers a connection that took the `app` role and reads pushes,
@@ -1706,7 +1824,7 @@ impl SessionManager {
 
     /// Whether any desktop is currently listening (§7's precondition for
     /// a pairing that needs confirming).
-    fn an_app_is_live(&self) -> bool {
+    pub(crate) fn an_app_is_live(&self) -> bool {
         !self.app_connections.lock().unwrap().is_empty()
     }
 
@@ -1938,6 +2056,7 @@ impl SessionManager {
             device_id,
             name: outcome.name,
             public_key: outcome.public_key,
+            hardware_key: outcome.hardware_key,
             sas: outcome.sas,
             transport: outcome.transport,
         };
@@ -1947,6 +2066,7 @@ impl SessionManager {
             handshake.device_id.clone(),
             PendingPairing {
                 public_key: handshake.public_key.clone(),
+                hardware_key: handshake.hardware_key.clone(),
                 name: handshake.name.clone(),
                 decided,
                 ticket,
@@ -1968,18 +2088,30 @@ impl SessionManager {
                 "gavin-daemon: there is no pairing waiting for {device_id} — it may have expired"
             )
         })?;
+        // The key this Device's notifications will be sealed with,
+        // minted here and told to the Device in the verdict -- inside
+        // the channel the pairing handshake left, which is the one
+        // moment both ends are sure of each other. Pairing again mints
+        // another.
+        let notification_key = protocol::hex_decode(&protocol::random_hex(
+            protocol::device_wire::NOTIFICATION_KEY_BYTES,
+        )?)?;
         let written = self.trust_or_err()?.confirm_device(
             device_id,
-            &pending.public_key,
-            &pending.name,
-            crate::trust::DeviceRole::Remote,
+            &crate::trust::Registration {
+                public_key: pending.public_key.clone(),
+                name: pending.name.clone(),
+                role: crate::trust::DeviceRole::Remote,
+                hardware_key: pending.hardware_key.clone(),
+                notification_key,
+            },
         );
         let device = match written {
             Ok(device) => device,
             Err(e) => {
                 // Put it back, the waiting Device's channel with it. The
                 // write that realistically fails here is the device cap
-                // ("3 devices are already paired — revoke one before
+                // ("5 devices are already paired — revoke one before
                 // pairing another"), and that message is an instruction:
                 // revoke one, press Confirm again. Dropping the pending
                 // handshake would make the instruction impossible to
@@ -1990,11 +2122,21 @@ impl SessionManager {
                 return Err(e);
             }
         };
+        // A Device that paired AGAIN had a row, and may hold connections
+        // made under it. They were proved with the hardware key that row
+        // held, which is not the Device's any more: they go, and the
+        // Device connects with the key it has now.
+        self.shutdown_device_connections(|_, id| id == device.device_id);
         // After the row, never before: what the Device is told is that
         // it IS paired. A send that finds nobody waiting is a Device that
         // hung up, and the row stands -- the human confirmed it.
         if let Some(decided) = pending.decided {
-            let _ = decided.send(PairingDecision::Confirmed { device_id: device.device_id });
+            let _ = decided.send(PairingDecision::Confirmed {
+                device_id: device.device_id,
+                // What the row holds, read back from it: the Device and
+                // the daemon must seal and open with one key.
+                notification_key: device.notification_key.unwrap_or_default(),
+            });
         }
         Ok(())
     }
@@ -2115,11 +2257,10 @@ impl SessionManager {
     /// A failed shutdown is not an error worth propagating: the only way
     /// it fails is a socket that is already gone, which is the state this
     /// was asking for.
-    #[allow(dead_code)]
-    fn shutdown_device_connections(&self, want: impl Fn(&str) -> bool) -> usize {
+    fn shutdown_device_connections(&self, want: impl Fn(u64, &str) -> bool) -> usize {
         let live = self.device_connections.lock().unwrap();
         let mut dropped = 0;
-        for conn in live.values().filter(|c| want(&c.device_id)) {
+        for (_, conn) in live.iter().filter(|(token, c)| want(**token, &c.device_id)) {
             let _ = conn.stream.shutdown(Shutdown::Both);
             dropped += 1;
         }
@@ -2141,7 +2282,7 @@ impl SessionManager {
                 .ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon has no trust store"))?;
             trust.revoke(device_id)?
         };
-        let connections_dropped = self.shutdown_device_connections(|id| id == device_id);
+        let connections_dropped = self.shutdown_device_connections(|_, id| id == device_id);
         Ok(Revocation { newly_revoked, connections_dropped })
     }
 
@@ -2160,7 +2301,7 @@ impl SessionManager {
                 .ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon has no trust store"))?;
             trust.revoke_all()?
         };
-        let connections_dropped = self.shutdown_device_connections(|_| true);
+        let connections_dropped = self.shutdown_device_connections(|_, _| true);
         // A pairing in progress was for the key that has just gone: the
         // QR names it, and a Device that pinned it would hold a row no
         // connection could ever match. The offer goes, which also ends
@@ -4796,6 +4937,10 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         // This arm only exists so the match stays exhaustive; it is never
         // expected to fire.
         Request::Shutdown => Ok(Response::Ok),
+        // Intercepted too, for what it needs is the connection's own
+        // identity: which Device "this" is. Reaching here means it
+        // arrived with none.
+        Request::RemoveThisDevice => Err(not_a_device()),
         // A client newer than this daemon sent a request type we don't
         // know. Answer instead of the parse error that used to close the
         // whole connection (and every push riding on it).
@@ -4824,14 +4969,16 @@ pub enum Role {
     /// `gavin-mcp` holding a session token, scoped to the launching
     /// session's root and its own session id.
     Agent,
-    /// A paired device over the (not-yet-built) remote transport. Denied
-    /// everything in phase 1: the remote column of §6's table lands read
-    /// by read in phases 4 and 5, and "before that phase it is deny".
+    /// A paired Device, over the remote transport: a connection whose
+    /// Noise handshake completed with a key in the trust store, and
+    /// whose hardware signature over that handshake verified
+    /// (`remote.rs`, ADR 0001).
     ///
-    /// Constructed only by that future transport and by `authorize`'s
-    /// tests; carried now so the role is a first-class case in `authorize`
-    /// and cannot be forgotten when the transport lands.
-    #[allow(dead_code)]
+    /// It may remove its own Device and nothing else. What else it may
+    /// do is ADR 0004's -- everything the desktop app can, except manage
+    /// Devices -- and arrives with the command table and the forwarding
+    /// connection (companion-12); until then every other request is
+    /// refused.
     Remote,
 }
 
@@ -4888,12 +5035,10 @@ impl ClientIdentity {
         }
     }
 
-    /// A paired device over the remote transport. Nothing constructs this
-    /// in phase 2 -- there is no transport yet -- but it is the shape
-    /// phase 3's `remote.rs` hands to `handle_connection_as` once the
-    /// handshake has looked the static key up in `devices.sqlite`, and it
-    /// is what the revocation test builds its connection from.
-    #[cfg(test)]
+    /// A paired Device over the remote transport: what
+    /// `SessionManager::adopt_device` serves a connection as, once
+    /// `remote.rs` has looked the handshake's static key up in
+    /// `devices.sqlite` and verified the hardware signature.
     pub fn remote(device_id: &str) -> Self {
         Self {
             role: Role::Remote,
@@ -5189,8 +5334,32 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::CreateWorkspacePath { .. }
         | Request::RenameWorkspacePath { .. }
         | Request::TrashWorkspacePath { .. }
+        // A Device removing itself (v46). An agent is not a Device and
+        // holds none to remove.
+        | Request::RemoveThisDevice
         | Request::Unknown => false,
     }
+}
+
+/// What a `remote` connection may do: remove its own Device.
+///
+/// One request, until the daemon forwards commands (companion-12). ADR
+/// 0004 gives an unlocked Device everything the desktop app can do
+/// except manage Devices, and all of that is the desktop app's to do --
+/// the Device asks, the daemon checks the command against a table and
+/// hands it to the app. None of it is a request of this protocol that a
+/// Device sends the daemon directly, so none of this protocol's other
+/// requests open here, then or now.
+fn remote_allows(req: &Request) -> bool {
+    matches!(req, Request::RemoveThisDevice)
+}
+
+/// What `RemoveThisDevice` is answered on a connection that carries no
+/// Device.
+fn not_a_device() -> anyhow::Error {
+    anyhow::anyhow!(
+        "gavin-daemon: only a Device can remove itself — revoke it from the Devices list instead"
+    )
 }
 
 /// The process-starting / daemon-ending / launch-reconfiguring requests an
@@ -5262,9 +5431,7 @@ pub fn authorize(
         Role::App => true,
         Role::Local => !require_local_token || !is_privileged(req),
         Role::Agent => agent_allows(id, req),
-        // Phase 1: the remote transport does not exist and the remote
-        // column is deny throughout. Phases 4-5 open §6's reads and writes.
-        Role::Remote => false,
+        Role::Remote => remote_allows(req),
     };
     if allowed {
         Ok(())
@@ -5440,17 +5607,33 @@ fn handle_connection(stream: Stream, manager: Arc<SessionManager>) -> anyhow::Re
 /// what the revocation test builds a device-carrying connection from
 /// today, with no transport in sight.
 ///
-/// A `Hello` can still arrive on such a connection. It cannot lift the
-/// role -- `resolve_hello` only ever answers `app`, `agent` or `local`,
-/// and the remote transport does not read a daemon token off the wire --
-/// which is exactly the property §4 names: "a daemon token presented over
-/// the remote transport is ignored, not honoured". Phase 3 is where that
-/// gets its own test, because that is where there is a transport to
-/// present it over.
+/// A `Hello` can still arrive on such a connection, and changes nothing:
+/// an identity the transport fixed is the connection's for good, which is
+/// the property §4 names -- "a daemon token presented over the remote
+/// transport is ignored, not honoured".
+// The binary reaches the loop through `handle_connection` and
+// `SessionManager::adopt_device`; this is the same loop for a caller
+// that hands in an identity and waits on nothing, which is the tests.
+#[cfg_attr(not(test), allow(dead_code))]
 fn handle_connection_as(
     stream: Stream,
     manager: Arc<SessionManager>,
     initial_identity: ClientIdentity,
+) -> anyhow::Result<()> {
+    serve_connection(stream, manager, initial_identity, None)
+}
+
+/// Where a connection says it is being served, or why it will not be.
+type Ready = std::sync::mpsc::SyncSender<Result<(), protocol::device_wire::ConnectRefusal>>;
+
+/// `handle_connection_as`, telling `ready` once the connection is
+/// counted and registered and about to read its first request -- or that
+/// it is not going to be served, and why. `adopt_device` waits on it.
+fn serve_connection(
+    stream: Stream,
+    manager: Arc<SessionManager>,
+    initial_identity: ClientIdentity,
+    ready: Option<Ready>,
 ) -> anyhow::Result<()> {
     // The peer-uid floor, before anything else on this connection: a peer
     // whose uid is not this daemon's own is refused outright (§4). It only
@@ -5475,10 +5658,36 @@ fn handle_connection_as(
 
     let writer = Arc::new(Mutex::new(stream.try_clone()?));
 
+    // Counted before anything else on this connection runs, so a client
+    // that never sends a request still costs a slot for as long as it
+    // stays open (DP-05: `serve` spawns one thread per accepted
+    // connection with no other limit).
+    let count = manager.active_connections.fetch_add(1, Ordering::SeqCst) + 1;
+    let _slot = ConnectionSlot(&manager.active_connections);
+    let ceiling = manager.connection_ceiling.load(Ordering::SeqCst);
+    if count > ceiling {
+        // A Device is told through the verdict `remote.rs` sends it,
+        // inside its channel; what is written below is this protocol's,
+        // for a client on the local socket.
+        if let Some(ready) = ready {
+            let _ = ready.send(Err(protocol::device_wire::ConnectRefusal::Busy));
+            return Ok(());
+        }
+        let _ = write_message(
+            &mut *writer.lock().unwrap(),
+            &Response::Error {
+                message: format!(
+                    "gavin-daemon: connection ceiling reached ({ceiling} already open) — refusing this one"
+                ),
+            },
+        );
+        return Ok(());
+    }
+
     // A device-carrying connection is registered before the first request
     // is read, and removed by the guard however this function returns.
     // Registered from the identity the TRANSPORT handed in rather than
-    // from whatever a later `Hello` leaves behind, because a device id is
+    // from whatever a later `Hello` says, because a device id is
     // the transport's to set and a `Hello` can never introduce one (§4) --
     // so there is exactly one moment at which this is decidable, and it is
     // here, before the loop.
@@ -5487,19 +5696,38 @@ fn handle_connection_as(
     // revocation can close this connection from another thread without
     // waiting on `writer`'s mutex. Cloned only when there IS a device, so
     // an ordinary local connection pays nothing for it.
-    let _device_slot = match initial_identity.device_id.as_deref() {
+    let device_slot = match initial_identity.device_id.as_deref() {
         Some(device_id) => {
-            let token = manager.register_device_connection(device_id, stream.try_clone()?);
-            Some(DeviceConnectionSlot { manager: &manager, token })
+            match manager.register_device_connection(device_id, stream.try_clone()?) {
+                Ok(token) => Some(DeviceConnectionSlot { manager: &manager, token }),
+                // Not one to serve: revoked or removed since it was
+                // judged, or one connection more than a Device may hold.
+                // Nothing was announced and nothing is read.
+                Err(refusal) => {
+                    if let Some(ready) = ready {
+                        let _ = ready.send(Err(refusal));
+                    }
+                    return Ok(());
+                }
+            }
         }
         None => None,
     };
+    if let Some(ready) = ready {
+        let _ = ready.send(Ok(()));
+    }
 
     let mut reader = BufReader::new(stream);
 
-    // The connection's identity, whatever the transport decided, until a
-    // `Hello` says otherwise -- and fixed thereafter (§4). `hello_seen`
-    // refuses a second `Hello`.
+    // The connection's identity: whatever the transport decided, for
+    // good, or `local` until a `Hello` says otherwise and fixed
+    // thereafter (§4). `hello_seen` refuses a second `Hello`.
+    //
+    // "The transport caps the role" (§4). A connection that arrived as a
+    // Device's is a Device's whatever it goes on to say: its identity
+    // was proved by a handshake and a hardware signature, and a `Hello`
+    // proves less than either.
+    let fixed_by_transport = initial_identity.device_id.is_some();
     let mut identity = initial_identity;
     let mut hello_seen = false;
 
@@ -5520,25 +5748,6 @@ fn handle_connection_as(
     // watcher owned by the connection is then dropped by the language
     // rather than by a cleanup path that has to notice the link is gone.
     let mut git_watchers: HashMap<String, (Arc<crate::git_watch::WorktreeWatch>, usize)> = HashMap::new();
-
-    // Counted before anything else on this connection runs, so a client
-    // that never sends a request still costs a slot for as long as it
-    // stays open (DP-05: `serve` spawns one thread per accepted
-    // connection with no other limit).
-    let count = manager.active_connections.fetch_add(1, Ordering::SeqCst) + 1;
-    let _slot = ConnectionSlot(&manager.active_connections);
-    let ceiling = manager.connection_ceiling.load(Ordering::SeqCst);
-    if count > ceiling {
-        let _ = write_message(
-            &mut *writer.lock().unwrap(),
-            &Response::Error {
-                message: format!(
-                    "gavin-daemon: connection ceiling reached ({ceiling} already open) — refusing this one"
-                ),
-            },
-        );
-        return Ok(());
-    }
 
     loop {
         let req: Option<Request> = read_message(&mut reader)?;
@@ -5562,6 +5771,27 @@ fn handle_connection_as(
                 continue;
             }
             hello_seen = true;
+            // A `Hello` on a Device's connection is answered and changes
+            // nothing. Whatever it presents is not looked at -- "a daemon
+            // token presented over the remote transport is ignored, not
+            // honoured" (§4) -- and that includes presenting nothing,
+            // which on the local socket is the `local` role and the run
+            // of the daemon. There is no `server_proof`: the handshake
+            // already proved this daemon to the Device, by the key the
+            // Device pinned when it paired.
+            if fixed_by_transport {
+                write_message(
+                    &mut *writer.lock().unwrap(),
+                    &Response::HelloAck {
+                        role: "remote".to_string(),
+                        daemon_version: protocol::PROTOCOL_VERSION,
+                        session_id: None,
+                        server_proof: None,
+                        workspace_root: None,
+                    },
+                )?;
+                continue;
+            }
             let (id, ack) = manager.resolve_hello(auth, nonce);
             identity = id;
             // Only a connection that can READ a push is registered for
@@ -5585,6 +5815,40 @@ fn handle_connection_as(
         if let Err(forbidden) = authorize(&identity, &req, require_local_token()) {
             write_message(&mut *writer.lock().unwrap(), &forbidden)?;
             continue;
+        }
+
+        // Intercepted because what it needs is this connection's own
+        // identity: the request names no Device, so that a Device can
+        // remove itself and nobody else.
+        if matches!(req, Request::RemoveThisDevice) {
+            let Some(device_id) = identity.device_id.clone() else {
+                write_message(
+                    &mut *writer.lock().unwrap(),
+                    &Response::Error { message: not_a_device().to_string() },
+                )?;
+                continue;
+            };
+            if let Err(e) = manager.remove_device(&device_id) {
+                write_message(
+                    &mut *writer.lock().unwrap(),
+                    &Response::Error { message: e.to_string() },
+                )?;
+                continue;
+            }
+            // Answered first, then let go. This connection ends by
+            // returning, so the answer is ahead of the close on the
+            // wire; every other connection the Device holds is shut from
+            // here, as a revocation shuts them.
+            //
+            // Whether or not the answer could be written. A Device that
+            // asked and hung up has been removed all the same, and a
+            // connection left open for it would be one the desk has no
+            // row to revoke.
+            let answered = write_message(&mut *writer.lock().unwrap(), &Response::Ok);
+            let own = device_slot.as_ref().map(|slot| slot.token);
+            manager.shutdown_device_connections(|token, id| id == device_id && Some(token) != own);
+            answered?;
+            break;
         }
 
         if let Request::Attach { id } = req {
@@ -6689,20 +6953,41 @@ mod tests {
         ));
     }
 
+    /// The Remote role until the daemon forwards commands (companion-12):
+    /// a Device may remove itself, and is refused everything else --
+    /// every read, every write, and every Trust request above all.
     #[test]
-    fn a_remote_identity_is_denied_every_request_in_phase_one() {
+    fn a_remote_identity_may_remove_itself_and_nothing_else() {
         let id = ClientIdentity::remote("dev-1");
+        let mut allowed = Vec::new();
         for req in one_of_every_request_variant_for_authorize() {
             // Hello is never authorized (it sets the role), so skip it.
             if matches!(req, Request::Hello { .. }) {
                 continue;
             }
-            assert!(
-                matches!(authorize(&id, &req, false), Err(Response::Forbidden { role, .. }) if role == "remote"),
-                "remote should be refused {} in phase 1",
-                request_type_name(&req)
-            );
+            for switch in [false, true] {
+                match authorize(&id, &req, switch) {
+                    Ok(()) => allowed.push(request_type_name(&req)),
+                    Err(Response::Forbidden { role, request_type }) => {
+                        assert_eq!(role, "remote");
+                        assert_eq!(request_type, request_type_name(&req));
+                    }
+                    Err(other) => panic!("expected Forbidden, got {other:?}"),
+                }
+            }
         }
+        assert_eq!(allowed, vec!["RemoveThisDevice", "RemoveThisDevice"]);
+    }
+
+    /// Removing a Device is something a Device does to itself. An agent
+    /// holds no Device to remove, and must not be able to ask.
+    #[test]
+    fn an_agent_may_not_remove_a_device() {
+        let agent = ClientIdentity::agent("sess-1", "/tmp/ws", "/tmp/ws");
+        assert!(matches!(
+            authorize(&agent, &Request::RemoveThisDevice, false),
+            Err(Response::Forbidden { role, .. }) if role == "agent"
+        ));
     }
 
     /// A representative request of every variant, for sweeping `authorize`.
@@ -6808,6 +7093,7 @@ mod tests {
             Request::ToolRuns { workspace_id: "w".into() },
             Request::GetProtocolVersion,
             Request::Shutdown,
+            Request::RemoveThisDevice,
         ]
     }
 
@@ -8981,10 +9267,24 @@ mod tests {
     }
 
     fn pair_device(manager: &SessionManager, device_id: &str, key: u8) {
+        // A stand-in hardware key, by its shape: what these connections
+        // are is decided by the identity they are handed, and no
+        // signature is verified on the way.
+        let mut hardware_key = vec![0x04];
+        hardware_key.extend_from_slice(&[key; 64]);
         manager
             .trust()
             .unwrap()
-            .confirm_device(device_id, &[key; 32], device_id, crate::trust::DeviceRole::Remote)
+            .confirm_device(
+                device_id,
+                &crate::trust::Registration {
+                    public_key: vec![key; 32],
+                    name: device_id.to_string(),
+                    role: crate::trust::DeviceRole::Remote,
+                    hardware_key,
+                    notification_key: vec![key; 32],
+                },
+            )
             .unwrap();
     }
 
@@ -9086,6 +9386,396 @@ mod tests {
         let outcome = manager.revoke_device("dev-1").unwrap();
         assert!(outcome.newly_revoked);
         assert_eq!(outcome.connections_dropped, 0);
+    }
+
+    // -- The Remote role over the wire (v46) ---------------------------
+
+    /// A Device's connection, the way `remote.rs` makes one: adopted by
+    /// the manager once a handshake and a signature have said whose it
+    /// is. Returns the Device's end, with every read bounded.
+    fn adopt(manager: &Arc<SessionManager>, device_id: &str) -> AppConn {
+        let stream = manager
+            .adopt_device(device_id)
+            .unwrap()
+            .unwrap_or_else(|refused| panic!("{device_id} was refused: {refused:?}"));
+        let _guard = release_on_close(&stream);
+        let reader = line_reader(stream.try_clone().unwrap());
+        AppConn { stream, reader, _guard }
+    }
+
+    fn hello(auth: protocol::HelloAuth) -> Request {
+        Request::Hello {
+            client: "companion".into(),
+            protocol_version: protocol::PROTOCOL_VERSION,
+            auth,
+            nonce: "n".into(),
+            connection: None,
+        }
+    }
+
+    /// Review focus 1, and §4: "a daemon token presented over the remote
+    /// transport is ignored, not honoured". The connection loop used to
+    /// take whatever a `Hello` resolved to as the connection's identity
+    /// -- and no credential at all resolves to `local`, which may do
+    /// anything. A Device that said hello would have stopped being one.
+    #[test]
+    fn a_hello_on_a_device_connection_cannot_change_its_role() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+        let session_token = "a-session-token";
+
+        for auth in [
+            protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+            protocol::HelloAuth::None,
+            protocol::HelloAuth::SessionToken { token: session_token.into() },
+        ] {
+            let mut device = adopt(&manager, "dev-1");
+            match device.request(&hello(auth.clone())) {
+                Response::HelloAck { role, server_proof, session_id, workspace_root, .. } => {
+                    assert_eq!(role, "remote", "{auth:?} changed the role");
+                    assert_eq!(server_proof, None, "the daemon token proved nothing here");
+                    assert_eq!(session_id, None);
+                    assert_eq!(workspace_root, None);
+                }
+                other => panic!("expected HelloAck, got {other:?}"),
+            }
+            // And what it may do is what it could do before it said so.
+            for req in [
+                Request::ListSessions,
+                Request::BeginPairing,
+                Request::RevokeAllDevices,
+                Request::GetProtocolVersion,
+            ] {
+                match device.request(&req) {
+                    Response::Forbidden { role, .. } => assert_eq!(role, "remote"),
+                    other => panic!("{auth:?} then {req:?} was answered {other:?}"),
+                }
+            }
+            // It was never registered as a desk, so no pairing dialog or
+            // device push is sent to it.
+            assert!(!manager.an_app_is_live(), "{auth:?} made a Device a desk");
+            // Still a Device's connection: a revocation would find it.
+            assert_eq!(
+                manager
+                    .device_connections
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|c| c.device_id == "dev-1")
+                    .count(),
+                1
+            );
+            device.close();
+            await_no_connection_for(&manager, "dev-1");
+        }
+    }
+
+    /// The Companion spec, user story 11. The row goes, every connection
+    /// the Device holds goes with it, and the Device is answered before
+    /// it is let go.
+    #[test]
+    fn a_device_removing_itself_loses_its_row_and_every_connection_it_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+        pair_device(&manager, "dev-1", 1);
+        pair_device(&manager, "dev-2", 2);
+        let key_before = manager.trust().unwrap().static_public_key().unwrap();
+
+        let mut asking = adopt(&manager, "dev-1");
+        let other_connection = adopt(&manager, "dev-1");
+        let mut spared = adopt(&manager, "dev-2");
+
+        assert!(matches!(asking.request(&Request::RemoveThisDevice), Response::Ok));
+
+        await_no_connection_for(&manager, "dev-1");
+        assert_closed(&asking.stream, "the connection that asked");
+        assert_closed(&other_connection.stream, "the Device's other connection");
+
+        // Its own row, and only that.
+        let left: Vec<String> =
+            manager.trust().unwrap().list().unwrap().into_iter().map(|d| d.device_id).collect();
+        assert_eq!(left, vec!["dev-2"]);
+        assert!(!manager.trust().unwrap().device("dev-2").unwrap().unwrap().is_revoked());
+        assert_eq!(manager.trust().unwrap().static_public_key().unwrap(), key_before);
+        match spared.request(&Request::ListSessions) {
+            Response::Forbidden { role, .. } => assert_eq!(role, "remote"),
+            other => panic!("the other Device's connection answered {other:?}"),
+        }
+
+        // The desk hears the connections close, which is what makes it
+        // read the list again.
+        let mut disconnected = 0;
+        while disconnected < 2 {
+            if let Response::DeviceDisconnected { device_id } = app.next() {
+                assert_eq!(device_id, "dev-1");
+                disconnected += 1;
+            }
+        }
+    }
+
+    /// A Device that asks to be removed and hangs up before it is
+    /// answered has still been removed, and its other connections go
+    /// with its row. A connection served for a Device the store has
+    /// never heard of is one the desk has no row to revoke.
+    #[test]
+    fn a_device_that_asks_to_be_removed_and_hangs_up_loses_its_other_connections() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+        pair_device(&manager, "dev-2", 2);
+
+        for round in 0..8 {
+            pair_device(&manager, "dev-1", 1);
+            let mut asking = adopt(&manager, "dev-1");
+            let other_connection = adopt(&manager, "dev-1");
+            let mut spared = adopt(&manager, "dev-2");
+
+            // Asks, and is gone before the answer can be written.
+            asking.send(&Request::RemoveThisDevice);
+            asking.close();
+
+            await_no_connection_for(&manager, "dev-1");
+            assert_closed(&other_connection.stream, "the Device's other connection");
+            assert!(
+                manager.trust().unwrap().device("dev-1").unwrap().is_none(),
+                "round {round}: the row was not removed"
+            );
+            match spared.request(&Request::ListSessions) {
+                Response::Forbidden { role, .. } => assert_eq!(role, "remote"),
+                other => panic!("the other Device's connection answered {other:?}"),
+            }
+            spared.close();
+            await_no_connection_for(&manager, "dev-2");
+        }
+    }
+
+    /// Pairing again replaces both of a Device's keys. A connection it
+    /// already holds was proved with the hardware key it had, which is
+    /// no longer the Device's: it goes, and the Device connects again
+    /// with the one it has now.
+    #[test]
+    fn pairing_again_drops_the_connections_made_under_the_old_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        let qr = offered(&mut app);
+        let (first, phone) = run_ceremony(&manager, &qr, "iPhone");
+        let first = first.unwrap();
+        let phone = phone.unwrap();
+        assert!(matches!(app.next(), Response::DevicePairingRequested { .. }));
+        manager.confirm_pairing(&first.device_id).unwrap();
+        pair_device(&manager, "dev-2", 2);
+
+        let held = adopt(&manager, &first.device_id);
+        let mut spared = adopt(&manager, "dev-2");
+
+        // The same Noise key, pairing again: what the store holds is
+        // replaced, as `pairing_again_replaces_both_keys` has it.
+        let before = manager.trust().unwrap().device(&first.device_id).unwrap().unwrap();
+        manager
+            .pending_pairings
+            .lock()
+            .unwrap()
+            .insert(
+                first.device_id.clone(),
+                PendingPairing {
+                    public_key: phone.public_key.clone(),
+                    hardware_key: crate::unlock::testing::HardwareKey::generate().public(),
+                    name: "iPhone".into(),
+                    decided: None,
+                    ticket: 9_999,
+                },
+            );
+        manager.confirm_pairing(&first.device_id).unwrap();
+        let after = manager.trust().unwrap().device(&first.device_id).unwrap().unwrap();
+        assert_ne!(after.hardware_key, before.hardware_key);
+        assert_ne!(after.notification_key, before.notification_key);
+
+        await_no_connection_for(&manager, &first.device_id);
+        assert_closed(&held.stream, "a connection proved under the old keys");
+        match spared.request(&Request::ListSessions) {
+            Response::Forbidden { role, .. } => assert_eq!(role, "remote"),
+            other => panic!("the other Device's connection answered {other:?}"),
+        }
+    }
+
+    /// Review focus 2, as the race it is. A revocation marks the row
+    /// and then shuts the connections it finds, so a connection has to
+    /// be somewhere a revocation can find it BEFORE its row is read --
+    /// read first and registered second, a revocation that landed
+    /// between the two would shut nothing and be seen by nobody.
+    ///
+    /// The trust store's lock is what holds the two apart here: with it
+    /// held, the connection can register and cannot read its row.
+    #[test]
+    fn a_connection_is_where_a_revocation_finds_it_before_its_row_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+
+        let store = manager.trust().unwrap();
+        let adopting = {
+            let manager = Arc::clone(&manager);
+            std::thread::spawn(move || manager.adopt_device("dev-1").unwrap())
+        };
+
+        // Registered, with its row still unread.
+        let deadline = Instant::now() + PROCESS_BUDGET;
+        while manager.device_connections.lock().unwrap().is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "the connection read its row before it could be found"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // The revocation, in its two halves: the row, and the
+        // connections there are to find.
+        assert!(store.revoke("dev-1").unwrap());
+        drop(store);
+        let found = manager.shutdown_device_connections(|_, id| id == "dev-1");
+
+        let adopted = adopting.join().unwrap();
+        assert!(
+            found == 1 || adopted.is_err(),
+            "the revocation found nothing to shut and the connection was served all the same"
+        );
+        match adopted {
+            Err(refusal) => {
+                assert_eq!(refusal, protocol::device_wire::ConnectRefusal::Revoked)
+            }
+            // Found and shut by the revocation instead.
+            Ok(stream) => assert_closed(&stream, "a connection the revocation found"),
+        }
+        await_no_connection_for(&manager, "dev-1");
+    }
+
+    #[test]
+    fn a_pairing_decision_does_not_print_the_notification_key() {
+        let decision = PairingDecision::Confirmed {
+            device_id: "dev-1".into(),
+            notification_key: vec![0xa7; 32],
+        };
+        let shown = format!("{decision:?}");
+        assert!(shown.contains("dev-1"), "{shown}");
+        assert!(!shown.contains("167") && !shown.to_lowercase().contains("a7"), "{shown}");
+    }
+
+    /// `RemoveThisDevice` names nobody: what it removes is the Device
+    /// the connection is. On a connection that is no Device's there is
+    /// nothing for it to mean.
+    #[test]
+    fn removing_this_device_from_a_connection_that_is_no_device_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+        let mut app = connect_as_app(&manager);
+
+        match app.request(&Request::RemoveThisDevice) {
+            Response::Error { message } => {
+                assert!(message.contains("only a Device"), "{message}")
+            }
+            other => panic!("expected an Error, got {other:?}"),
+        }
+        assert_eq!(manager.trust().unwrap().list().unwrap().len(), 1);
+    }
+
+    /// Review focus 2. A revocation marks the row and then shuts the
+    /// connections it finds; one that registers a moment after is found
+    /// by nobody. So a connection reads its row again once it has
+    /// registered, and one whose Device is no longer trusted is not
+    /// served.
+    #[test]
+    fn a_device_that_is_not_trusted_is_not_adopted() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+        pair_device(&manager, "dev-1", 1);
+        pair_device(&manager, "dev-2", 2);
+
+        manager.revoke_device("dev-1").unwrap();
+        assert_eq!(
+            manager.adopt_device("dev-1").unwrap().err(),
+            Some(protocol::device_wire::ConnectRefusal::Revoked)
+        );
+        assert_eq!(
+            manager.adopt_device("never-paired").unwrap().err(),
+            Some(protocol::device_wire::ConnectRefusal::NotPaired)
+        );
+        await_no_connection_for(&manager, "dev-1");
+        await_no_connection_for(&manager, "never-paired");
+
+        // The desk was told of no connection: there was none.
+        let _served = adopt(&manager, "dev-2");
+        match app.next() {
+            Response::DeviceConnected { device_id } => assert_eq!(device_id, "dev-2"),
+            other => panic!("expected dev-2 to be the first to connect, got {other:?}"),
+        }
+    }
+
+    /// Review focus 5. The dev build's daemon and the release build's
+    /// share one trust store, so both are registered with the Relay under
+    /// one key and either can serve a Device's connection. The one with
+    /// a desktop app in front of it is the one the Device came for, so a
+    /// daemon with nobody at the desk waits a moment before it picks a
+    /// connection up -- and picks it up all the same if nobody else has.
+    #[test]
+    fn a_daemon_with_nobody_at_the_desk_gives_way() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let alone = crate::remote::deference(&manager);
+        assert!(alone > Duration::ZERO);
+        assert!(alone < Duration::from_secs(2), "a Device is waiting on this: {alone:?}");
+
+        // A command connection is not a desk: nothing can be shown on it.
+        let _command = connect_as_app_kind(&manager, Some(protocol::ConnectionKind::Command));
+        assert_eq!(crate::remote::deference(&manager), alone);
+
+        let app = connect_as_app(&manager);
+        assert_eq!(crate::remote::deference(&manager), Duration::ZERO);
+
+        app.close();
+        let deadline = Instant::now() + PROCESS_BUDGET;
+        while crate::remote::deference(&manager).is_zero() {
+            assert!(Instant::now() < deadline, "the app connection never closed");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// `05-remote-access.md` §8, "the remote channel gets its own caps":
+    /// a ceiling on the connections one Device holds at once.
+    #[test]
+    fn a_device_holds_no_more_connections_than_the_ceiling() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        pair_device(&manager, "dev-1", 1);
+        pair_device(&manager, "dev-2", 2);
+
+        let mut held: Vec<AppConn> =
+            (0..MAX_CONNECTIONS_PER_DEVICE).map(|_| adopt(&manager, "dev-1")).collect();
+        assert_eq!(
+            manager.adopt_device("dev-1").unwrap().err(),
+            Some(protocol::device_wire::ConnectRefusal::Busy)
+        );
+        // The ceiling is each Device's own.
+        let _other = adopt(&manager, "dev-2");
+
+        // And it comes back down when a connection closes.
+        held.pop().unwrap().close();
+        let deadline = Instant::now() + PROCESS_BUDGET;
+        let refused = loop {
+            match manager.adopt_device("dev-1").unwrap() {
+                Ok(stream) => break stream,
+                Err(_) => {
+                    assert!(Instant::now() < deadline, "the ceiling never came back down");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        };
+        drop(refused);
     }
 
     /// A daemon with no trust store says so by name. The alternative --
@@ -9781,8 +10471,10 @@ mod tests {
         let manager = paired_manager(&dir);
         let mut app = connect_as_app(&manager);
 
-        // The cap, filled.
-        for (i, id) in ["dev-a", "dev-b", "dev-c"].iter().enumerate() {
+        // The cap, filled: five Devices.
+        let paired = ["dev-a", "dev-b", "dev-c", "dev-d", "dev-e"];
+        assert_eq!(manager.trust().unwrap().device_cap(), paired.len());
+        for (i, id) in paired.iter().enumerate() {
             pair_device(&manager, id, (i + 10) as u8);
         }
 
@@ -9790,16 +10482,18 @@ mod tests {
             Response::PairingOffer { qr, .. } => protocol::PairingQr::parse(&qr).unwrap(),
             other => panic!("{other:?}"),
         };
-        let (daemon, _) = run_ceremony(&manager, &qr, "a fourth phone");
+        let (daemon, _) = run_ceremony(&manager, &qr, "a sixth phone");
         let fourth = daemon.unwrap().device_id;
         assert!(matches!(app.next(), Response::DevicePairingRequested { .. }));
 
         match app.request(&Request::ConfirmPairing { device_id: fourth.clone() }) {
             Response::Error { message } => {
-                assert!(message.contains("already paired"), "{message}")
+                assert!(message.contains("already paired"), "{message}");
+                assert!(message.contains("the limit is 5"), "{message}");
             }
             other => panic!("expected the cap to refuse, got {other:?}"),
         }
+        assert_eq!(manager.trust().unwrap().list().unwrap().len(), 5);
 
         // The human does what the message said, and presses Confirm
         // again -- without re-running the ceremony on the phone.
@@ -10312,6 +11006,13 @@ mod tests {
 
     const LONG: Duration = Duration::from_secs(60);
 
+    /// The notification key the store holds for `device_id`, as the
+    /// verdict carries it.
+    fn notification_key_of(manager: &SessionManager, device_id: &str) -> String {
+        let row = manager.trust().unwrap().device(device_id).unwrap().unwrap();
+        protocol::hex_encode(&row.notification_key.unwrap())
+    }
+
     #[test]
     fn the_wait_ends_with_the_desks_answer() {
         use protocol::device_wire::PairingVerdict;
@@ -10327,7 +11028,7 @@ mod tests {
         ));
         assert_eq!(
             crate::remote::await_decision(&manager, &pairing, &mut Line::open(), LONG, || true),
-            PairingVerdict::Paired { device_id: id }
+            PairingVerdict::Paired { notification_key: notification_key_of(&manager, &id), device_id: id }
         );
 
         let pairing = awaiting(&manager, &mut app);
@@ -10426,8 +11127,13 @@ mod tests {
 
         let verdict = crate::remote::await_decision(&manager, &pairing, &mut line, LONG, || true);
 
-        assert_eq!(verdict, PairingVerdict::Paired { device_id: id.clone() });
-        assert!(manager.trust().unwrap().device(&id).unwrap().is_some());
+        assert_eq!(
+            verdict,
+            PairingVerdict::Paired {
+                device_id: id.clone(),
+                notification_key: notification_key_of(&manager, &id),
+            }
+        );
     }
 
     /// A token belongs to the Relay that issued it. Saving another
@@ -10490,14 +11196,65 @@ mod tests {
             app.request(&Request::ConfirmPairing { device_id: handshake.device_id.clone() }),
             Response::Ok
         ));
-        assert_eq!(
-            decided.recv_timeout(PROCESS_BUDGET).unwrap(),
-            PairingDecision::Confirmed { device_id: handshake.device_id.clone() }
-        );
+        match decided.recv_timeout(PROCESS_BUDGET).unwrap() {
+            PairingDecision::Confirmed { device_id, .. } => {
+                assert_eq!(device_id, handshake.device_id)
+            }
+            other => panic!("expected Confirmed, got {other:?}"),
+        }
         assert!(
             manager.trust().unwrap().device(&handshake.device_id).unwrap().is_some(),
             "the decision was sent before the row existed"
         );
+    }
+
+    /// ADR 0001 and the Companion spec, "Pairing and the trust store":
+    /// the row holds the hardware key the Device proved it holds, and
+    /// the key this daemon will seal its notifications with -- minted
+    /// when the desk confirmed, and told to the Device in the same
+    /// breath.
+    #[test]
+    fn a_confirmed_pairing_stores_the_hardware_key_and_mints_a_notification_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        let mut minted = Vec::new();
+        for name in ["iPhone", "iPad"] {
+            let qr = offered(&mut app);
+            let (handshake, decided) = run_ceremony_awaited(&manager, &qr, name);
+            assert!(matches!(app.next(), Response::DevicePairingRequested { .. }));
+            assert_eq!(handshake.hardware_key.len(), protocol::device_wire::HARDWARE_KEY_BYTES);
+            assert!(matches!(
+                app.request(&Request::ConfirmPairing { device_id: handshake.device_id.clone() }),
+                Response::Ok
+            ));
+
+            let row = manager.trust().unwrap().device(&handshake.device_id).unwrap().unwrap();
+            assert_eq!(row.hardware_key, Some(handshake.hardware_key.clone()));
+            let key = row.notification_key.expect("no notification key was stored");
+            assert_eq!(key.len(), protocol::device_wire::NOTIFICATION_KEY_BYTES);
+
+            // What the Device is told is what was stored.
+            assert_eq!(
+                decided.recv_timeout(PROCESS_BUDGET).unwrap(),
+                PairingDecision::Confirmed {
+                    device_id: handshake.device_id.clone(),
+                    notification_key: key.clone(),
+                }
+            );
+            minted.push(key);
+        }
+        assert_ne!(minted[0], minted[1], "a notification key is one Device's");
+        assert_ne!(minted[0], vec![0u8; 32]);
+
+        // The desk's list does not carry either key: neither is
+        // anything a screen has a use for.
+        let listed = serde_json::to_string(&app.request(&Request::ListDevices)).unwrap();
+        for key in &minted {
+            assert!(!listed.contains(&protocol::hex_encode(key)), "{listed}");
+        }
+        assert!(!listed.to_lowercase().contains("key"), "{listed}");
     }
 
     #[test]
@@ -10548,10 +11305,12 @@ mod tests {
             app.request(&Request::ConfirmPairing { device_id: handshake.device_id.clone() }),
             Response::Ok
         ));
-        assert_eq!(
-            decided.recv_timeout(PROCESS_BUDGET).unwrap(),
-            PairingDecision::Confirmed { device_id: handshake.device_id }
-        );
+        match decided.recv_timeout(PROCESS_BUDGET).unwrap() {
+            PairingDecision::Confirmed { device_id, .. } => {
+                assert_eq!(device_id, handshake.device_id)
+            }
+            other => panic!("expected Confirmed, got {other:?}"),
+        }
     }
 
     /// Pressing "Pair a device" again starts over. The dialog that was

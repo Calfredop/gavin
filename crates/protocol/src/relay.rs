@@ -42,6 +42,10 @@ pub const MAX_STREAM_MESSAGE_BYTES: usize = 128 * 1024;
 /// later needs no Relay release.
 pub const PURPOSE_PAIR: &str = "pair";
 
+/// The purpose of a stream a paired Device connects on: the `IK`
+/// handshake, the Device's proof, and then its requests.
+pub const PURPOSE_CONNECT: &str = "connect";
+
 /// The longest purpose label the Relay will forward.
 pub const MAX_PURPOSE_BYTES: usize = 32;
 
@@ -450,6 +454,18 @@ mod tests {
             crate::hex_encode(&Sha256::digest([1u8; 32])),
             "the context string must be part of the digest"
         );
+    }
+
+    /// Two purposes, and the Relay reads neither: each is a label it
+    /// forwards. Both have to be labels it WILL forward.
+    #[test]
+    fn a_stream_is_for_pairing_or_for_connecting() {
+        assert_eq!(PURPOSE_PAIR, "pair");
+        assert_eq!(PURPOSE_CONNECT, "connect");
+        for purpose in [PURPOSE_PAIR, PURPOSE_CONNECT] {
+            assert!(purpose.len() <= MAX_PURPOSE_BYTES);
+            assert!(purpose.bytes().all(|b| b.is_ascii_lowercase()), "{purpose}");
+        }
     }
 
     #[test]

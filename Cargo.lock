@@ -728,6 +728,8 @@ version = "0.1.0"
 dependencies = [
  "gavin-relay",
  "protocol",
+ "ring",
+ "serde_json",
  "snow",
 ]
 
@@ -1550,6 +1552,7 @@ dependencies = [
  "portable-pty",
  "protocol",
  "rcgen",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",

@@ -1,4 +1,5 @@
 mod bridge;
+mod connect;
 mod gavin;
 mod git_status;
 mod git_watch;
@@ -20,6 +21,7 @@ mod status;
 mod testing;
 mod trash;
 mod trust;
+mod unlock;
 
 use kanban::KanbanStore;
 use registry::{secure_db_file, Registry};

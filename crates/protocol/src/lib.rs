@@ -36,6 +36,22 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v46 is the second slice of the Device wire (`companion-11`): a paired
+/// Device connects. It adds `RemoveThisDevice`, by which a Device deletes
+/// its own row -- one new TYPE, gated by `min_version_for`, and the only
+/// request the Remote role may make until the daemon forwards commands.
+/// Nothing in the desktop app sends it, so no `FEATURE_MIN_VERSION` entry
+/// is owed: there is no surface for one to grey.
+///
+/// The rest of v46 is not on this wire. Pairing registers the Device's
+/// hardware key and agrees a notification key, and a connection is Noise
+/// `IK` followed by the hardware key's signature -- all of it between the
+/// daemon and the Companion core, inside the Relay's pipe
+/// (`device_wire`). What the number does for that half is ride in the
+/// pairing QR: a Device declines a QR drawn by a daemon older than
+/// `PAIRING_MIN_VERSION`, which would neither read its proof nor send it
+/// a notification key.
+///
 /// v45 is the first slice of the Device wire (`companion-10`): the daemon
 /// dials a Relay while remote access is on, and the Relay admits only
 /// peers that hold its admission token, so the token has to reach the
@@ -528,7 +544,12 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 45;
+pub const PROTOCOL_VERSION: u32 = 46;
+
+/// The oldest daemon a Device can pair with: the first whose pairing
+/// reads the Device's proof and answers with a notification key. Read by
+/// the Companion core against the `protocolVersion` a pairing QR carries.
+pub const PAIRING_MIN_VERSION: u32 = 46;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -1370,6 +1391,18 @@ pub enum Request {
         relay_admission: Option<String>,
     },
 
+    /// A Device removes itself from this Workstation (v46): its row is
+    /// deleted and every connection it holds is dropped.
+    ///
+    /// It names no Device. Which row goes is decided by the connection
+    /// the request arrived on, whose identity the Noise handshake fixed
+    /// -- so a Device can remove itself and nothing else, and a request
+    /// that arrives on a connection that is no Device's is an error.
+    /// Managing Devices is otherwise the desk's alone (ADR 0004); this is
+    /// the one exception the spec makes, and it only ever takes trust
+    /// away.
+    RemoveThisDevice,
+
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
     /// a daemon it owns without `pkill`, which cannot distinguish this
@@ -1640,6 +1673,13 @@ pub fn min_version_for(req: &Request) -> u32 {
         | Request::RevokeDevice { .. }
         | Request::RevokeAllDevices
         | Request::SetRemoteAccess { .. } => 42,
+
+        // A Device removing itself (v46). Sent by a Device over the
+        // Device wire and by nothing in the desktop app, so there is no
+        // surface to owe a FEATURE_MIN_VERSION entry. The gate that
+        // matters is the role: `server::authorize` allows it to `remote`,
+        // and the handler refuses a connection that carries no Device.
+        Request::RemoveThisDevice => 46,
 
         Request::Shutdown => 12,
 
@@ -4231,6 +4271,30 @@ mod tests {
         assert_eq!(PairingQr::parse(old).unwrap().relay_admission, None);
     }
 
+    /// The one request a Device makes of its own accord until the daemon
+    /// forwards commands: it names no Device, because the connection it
+    /// arrives on already is one.
+    #[test]
+    fn remove_this_device_names_nobody_and_is_gated_at_46() {
+        let req = Request::RemoveThisDevice;
+        assert_eq!(serde_json::to_string(&req).unwrap(), r#"{"type":"RemoveThisDevice"}"#);
+        assert_eq!(min_version_for(&req), 46);
+        assert!(matches!(
+            serde_json::from_str::<Request>(r#"{"type":"RemoveThisDevice"}"#).unwrap(),
+            Request::RemoveThisDevice
+        ));
+    }
+
+    /// A pairing is the proof after the handshake and the notification
+    /// key in the verdict, and a daemon older than 46 does neither. The
+    /// QR says which daemon drew it, so a Device can decline before it
+    /// has used the secret.
+    #[test]
+    fn a_device_pairs_with_a_daemon_that_registers_its_hardware_key() {
+        assert_eq!(PAIRING_MIN_VERSION, 46);
+        assert!(PAIRING_MIN_VERSION <= PROTOCOL_VERSION);
+    }
+
     /// An app older than v45 sends no `relay_admission`, and the daemon
     /// must read that as "leave the token alone" -- so the absence has to
     /// survive the parse as `None`, and a request that names none has to
@@ -5412,7 +5476,10 @@ mod tests {
         // v45: the Relay's admission token -- `SetRemoteAccess.
         // relay_admission`, `Devices.relay_admission_set` and the QR's
         // `relayAdmission`. Widened payloads again and no new TYPE.
-        assert_eq!(PROTOCOL_VERSION, 45);
+        // v46: RemoveThisDevice -- a Device deleting its own row, over the
+        // connection the Device wire's second slice gives it. One new
+        // TYPE.
+        assert_eq!(PROTOCOL_VERSION, 46);
     }
 
     #[test]
@@ -5828,6 +5895,8 @@ mod tests {
             Request::RevokeDevice { device_id: "d1".into() },
             Request::RevokeAllDevices,
             Request::SetRemoteAccess { enabled: true, relay_url: None, relay_admission: None },
+            // v46: a Device removing itself.
+            Request::RemoveThisDevice,
             Request::Unknown,
         ]
     }
@@ -5921,6 +5990,9 @@ mod tests {
         // GetCardSession -- one binding with its command, now the board
         // read leaves the command out.
         expected.insert(43, 1);
+        // RemoveThisDevice -- the one request the Remote role may make
+        // until the daemon forwards commands.
+        expected.insert(46, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

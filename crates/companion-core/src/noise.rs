@@ -51,6 +51,12 @@ pub(crate) fn pairing_params() -> Result<NoiseParams, CoreError> {
         .map_err(|e| CoreError::Handshake(format!("bad Noise parameters: {e:?}")))
 }
 
+pub(crate) fn connect_params() -> Result<NoiseParams, CoreError> {
+    protocol::device_wire::CONNECT_NOISE_PARAMS
+        .parse()
+        .map_err(|e| CoreError::Handshake(format!("bad Noise parameters: {e:?}")))
+}
+
 /// A builder for `params` whose only random source is `entropy`.
 pub(crate) fn builder<'a>(params: NoiseParams, entropy: Entropy) -> snow::Builder<'a> {
     snow::Builder::with_resolver(

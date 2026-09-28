@@ -49,14 +49,17 @@ use rusqlite::{params, Connection};
 /// other one cannot read this file.
 pub const NOISE_PARAMS: &str = protocol::PAIRING_NOISE_PARAMS;
 
-/// How many paired, unrevoked devices the store will hold (§3: "Three
-/// devices by default (Settings can raise it)").
+/// How many paired, unrevoked devices the store will hold.
+///
+/// Five: a phone, a tablet and a spare, with room over. §3 said three
+/// and the Companion spec raised it ("Pairing and the trust store",
+/// answering §11 Q3).
 ///
 /// A store rule, not a UI one, because the store is what a compromised or
 /// buggy caller reaches: the cap has to hold whether the insert came from
 /// the Settings panel or from a pairing handshake that ran without one.
-/// `set_device_cap` is the seam the settings task raises it through.
-pub const DEFAULT_DEVICE_CAP: usize = 3;
+/// `set_device_cap` is the seam a setting would raise it through.
+pub const DEFAULT_DEVICE_CAP: usize = 5;
 
 /// How long a device may go unseen before it must re-pair (§3: "a device
 /// unseen for ninety days is shown greyed with 're-pair to use', and is
@@ -148,7 +151,7 @@ impl DeviceRole {
 }
 
 /// One row of the trust store.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Device {
     pub device_id: String,
     /// The device's Noise static public key -- the thing the handshake
@@ -161,6 +164,65 @@ pub struct Device {
     pub created_at_us: i64,
     pub last_seen_at_us: i64,
     pub revoked_at_us: Option<i64>,
+    /// The public half of the Device's hardware key (ADR 0001): the
+    /// uncompressed SEC1 point of a P-256 key, as the Device registered
+    /// it when it paired. Every connection is signed by this key, and
+    /// `unlock.rs` is what checks that it was.
+    ///
+    /// `None` for a row written before the column existed. Such a row
+    /// cannot connect, and `admit` says so by name.
+    pub hardware_key: Option<Vec<u8>>,
+    /// What this daemon seals this Device's notifications with, agreed
+    /// when it paired. `None` for a row from before the column.
+    ///
+    /// Beside the daemon's own private key, in the file that is `0600`
+    /// for exactly that: both are secrets the daemon has to be able to
+    /// read at 02:00 with nobody at the desk.
+    pub notification_key: Option<Vec<u8>>,
+}
+
+/// Hand-written, and it leaves the notification key out. A row reaches
+/// an error message or a log line by being formatted -- `Admission`
+/// carries one, and is -- and the one secret a row holds must not go
+/// with it. The other keys are public halves.
+impl std::fmt::Debug for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Device")
+            .field("device_id", &self.device_id)
+            .field("name", &self.name)
+            .field("role", &self.role)
+            .field("public_key", &protocol::hex_encode(&self.public_key))
+            .field("hardware_key", &self.hardware_key.as_deref().map(protocol::hex_encode))
+            .field("created_at_us", &self.created_at_us)
+            .field("last_seen_at_us", &self.last_seen_at_us)
+            .field("revoked_at_us", &self.revoked_at_us)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a pairing the desk confirmed hands the store: the Device's two
+/// keys, the key its notifications will be sealed with, and what to call
+/// it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Registration {
+    /// The Device's Noise static public key.
+    pub public_key: Vec<u8>,
+    pub name: String,
+    pub role: DeviceRole,
+    pub hardware_key: Vec<u8>,
+    pub notification_key: Vec<u8>,
+}
+
+/// Without the notification key, as `Device`'s is.
+impl std::fmt::Debug for Registration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Registration")
+            .field("name", &self.name)
+            .field("role", &self.role)
+            .field("public_key", &protocol::hex_encode(&self.public_key))
+            .field("hardware_key", &protocol::hex_encode(&self.hardware_key))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Device {
@@ -197,6 +259,11 @@ pub enum Admission {
     /// The row's role is one this build does not recognise, so this build
     /// cannot say what it would be allowed to do. See `DeviceRole::Other`.
     UnreadableRole(Device),
+    /// The row holds no hardware key, so there is nothing to verify a
+    /// connection's signature against. Refused here, by name, and not
+    /// left to fail as a signature that did not verify: the Device did
+    /// nothing wrong, and what it has to do is pair again.
+    NoHardwareKey(Device),
 }
 
 impl Admission {
@@ -204,6 +271,23 @@ impl Admission {
         match self {
             Admission::Admitted(d) => Some(d),
             _ => None,
+        }
+    }
+
+    /// Why the device's connection is refused, as the Device is told
+    /// it. `None` when it is not refused.
+    pub fn connect_refusal(&self) -> Option<protocol::device_wire::ConnectRefusal> {
+        use protocol::device_wire::ConnectRefusal;
+        match self {
+            Admission::Admitted(_) => None,
+            Admission::Unknown => Some(ConnectRefusal::NotPaired),
+            Admission::Revoked(_) => Some(ConnectRefusal::Revoked),
+            Admission::Stale(_) => Some(ConnectRefusal::Stale),
+            // Pairing again is what gives the row a hardware key.
+            Admission::NoHardwareKey(_) => Some(ConnectRefusal::PairAgain),
+            // Pairing again would not help: the row was written by a
+            // Gavin newer than this one, and would be again.
+            Admission::UnreadableRole(_) => Some(ConnectRefusal::Other),
         }
     }
 
@@ -220,6 +304,9 @@ impl Admission {
             Admission::UnreadableRole(_) => {
                 Some("this device was paired by a newer gavin — update gavin to use it")
             }
+            Admission::NoHardwareKey(_) => Some(
+                "this device was paired before gavin checked its hardware key — pair it again to use it",
+            ),
         }
     }
 }
@@ -284,7 +371,8 @@ impl TrustStore {
     /// CREATE above -- deliberately, at v1, so that both paths (fresh
     /// file, existing file) run the same statement and
     /// `a_devices_database_from_before_revocation_gains_the_column` is a
-    /// test the next column can be added by copying.
+    /// test the next column can be added by copying. The two after it
+    /// were: `a_phase_two_trust_store_gains_the_hardware_key_column`.
     ///
     /// The unique index on `public_key` is an index rather than a column
     /// constraint for the same reason: SQLite cannot ALTER a UNIQUE onto
@@ -321,8 +409,14 @@ impl TrustStore {
         // `Registry::open`.
         //
         // Nullable with no default: `NULL` is exactly "not revoked", and
-        // there is no timestamp that means it.
-        for stmt in ["ALTER TABLE devices ADD COLUMN revoked_at_us INTEGER"] {
+        // there is no timestamp that means it. The two keys likewise: a
+        // row from before them holds none, and there is no key that
+        // means that.
+        for stmt in [
+            "ALTER TABLE devices ADD COLUMN revoked_at_us INTEGER",
+            "ALTER TABLE devices ADD COLUMN hardware_key BLOB",
+            "ALTER TABLE devices ADD COLUMN notification_key BLOB",
+        ] {
             let _ = conn.execute(stmt, []);
         }
         let store = Self { conn, device_cap: DEFAULT_DEVICE_CAP };
@@ -508,40 +602,73 @@ impl TrustStore {
     /// a new phone: the human just compared a six-digit code and pressed
     /// confirm. Revocation is "this device is no longer trusted", not a
     /// ban.
+    ///
+    /// A revived row takes the keys this pairing registered. The
+    /// hardware key is whatever the Device proved it holds a moment ago,
+    /// and the notification key was agreed in the channel that pairing
+    /// left: the ones the row held belong to a pairing that is over.
     pub fn confirm_device(
         &self,
         device_id: &str,
-        public_key: &[u8],
-        name: &str,
-        role: DeviceRole,
+        device: &Registration,
     ) -> anyhow::Result<Device> {
-        self.confirm_device_at(device_id, public_key, name, role, now_us())
+        self.confirm_device_at(device_id, device, now_us())
     }
 
     pub fn confirm_device_at(
         &self,
         device_id: &str,
-        public_key: &[u8],
-        name: &str,
-        role: DeviceRole,
+        device: &Registration,
         now_us: i64,
     ) -> anyhow::Result<Device> {
+        let Registration { public_key, name, role, hardware_key, notification_key } = device;
         if let Some(existing) = self.device_for_key(public_key)? {
+            // A Device that is trusted already is asking for the slot it
+            // has. One that was revoked gave its slot up, and is asking
+            // for one like any other: without this, five Devices, one
+            // revoked and replaced, and the revoked one paired again
+            // would be six.
+            if existing.is_revoked() {
+                self.room_for_one_more()?;
+            }
             self.conn.execute(
                 "UPDATE devices
-                    SET name = ?2, role = ?3, last_seen_at_us = ?4, revoked_at_us = NULL
+                    SET name = ?2, role = ?3, last_seen_at_us = ?4, revoked_at_us = NULL,
+                        hardware_key = ?5, notification_key = ?6
                   WHERE device_id = ?1",
-                params![existing.device_id, name, role.as_str(), now_us],
+                params![
+                    existing.device_id,
+                    name,
+                    role.as_str(),
+                    now_us,
+                    hardware_key,
+                    notification_key
+                ],
             )?;
             return self
                 .device(&existing.device_id)?
                 .ok_or_else(|| anyhow::anyhow!("devices.sqlite: revived device vanished"));
         }
 
-        // The cap counts UNREVOKED devices only. Counting revoked rows
-        // would mean three revocations brick pairing until someone went
-        // at the file with sqlite3 -- and a revoked device is precisely
-        // one that is not using its slot.
+        self.room_for_one_more()?;
+        self.conn.execute(
+            "INSERT INTO devices
+                (device_id, public_key, name, role, created_at_us, last_seen_at_us, revoked_at_us,
+                 hardware_key, notification_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, NULL, ?6, ?7)",
+            params![device_id, public_key, name, role.as_str(), now_us, hardware_key, notification_key],
+        )?;
+        self.device(device_id)?
+            .ok_or_else(|| anyhow::anyhow!("devices.sqlite: inserted device vanished"))
+    }
+
+    /// Refuses when every slot is taken.
+    ///
+    /// The cap counts UNREVOKED devices only. Counting revoked rows
+    /// would mean five revocations brick pairing until someone went at
+    /// the file with sqlite3 -- and a revoked device is precisely one
+    /// that is not using its slot.
+    fn room_for_one_more(&self) -> anyhow::Result<()> {
         let active = self.active_device_count()?;
         if active >= self.device_cap {
             anyhow::bail!(
@@ -549,14 +676,7 @@ impl TrustStore {
                 self.device_cap
             );
         }
-        self.conn.execute(
-            "INSERT INTO devices
-                (device_id, public_key, name, role, created_at_us, last_seen_at_us, revoked_at_us)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5, NULL)",
-            params![device_id, public_key, name, role.as_str(), now_us],
-        )?;
-        self.device(device_id)?
-            .ok_or_else(|| anyhow::anyhow!("devices.sqlite: inserted device vanished"))
+        Ok(())
     }
 
     /// How many devices are currently using a slot against the cap.
@@ -589,6 +709,22 @@ impl TrustStore {
               WHERE device_id = ?1 AND revoked_at_us IS NULL",
             params![device_id, now_us],
         )?;
+        Ok(changed > 0)
+    }
+
+    /// Deletes one device's row. `true` if there was one.
+    ///
+    /// What a Device does to itself (`RemoveThisDevice`), and the one
+    /// write to this table that takes a row away: a revocation keeps the
+    /// row so the desk can see what was revoked and when, and a Device
+    /// that has left is not something the desk did. Its key is then a
+    /// key the store has never seen, and its slot is free.
+    ///
+    /// This is only the row. Dropping the Device's connections is
+    /// `SessionManager::remove_device`'s half, as it is for `revoke`.
+    pub fn remove(&self, device_id: &str) -> anyhow::Result<bool> {
+        let changed =
+            self.conn.execute("DELETE FROM devices WHERE device_id = ?1", params![device_id])?;
         Ok(changed > 0)
     }
 
@@ -639,25 +775,56 @@ impl TrustStore {
     }
 
     pub fn admit_at(&self, public_key: &[u8], now_us: i64) -> anyhow::Result<Admission> {
-        let device = match self.device_for_key(public_key)? {
-            Some(d) => d,
-            None => return Ok(Admission::Unknown),
-        };
-        if device.is_revoked() {
-            return Ok(Admission::Revoked(device));
-        }
-        if matches!(device.role, DeviceRole::Other(_)) {
-            return Ok(Admission::UnreadableRole(device));
-        }
-        if device.is_stale_at(now_us) {
-            return Ok(Admission::Stale(device));
-        }
-        Ok(Admission::Admitted(device))
+        Ok(judge(self.device_for_key(public_key)?, now_us))
+    }
+
+    /// May the device filed under this id stay connected?
+    ///
+    /// The same judgment as `admit`, reached from the other end: a
+    /// connection that is already open carries the id the handshake's
+    /// key was filed under, and is judged again by it once it has
+    /// registered (`server::serve_connection`).
+    pub fn admit_id(&self, device_id: &str) -> anyhow::Result<Admission> {
+        self.admit_id_at(device_id, now_us())
+    }
+
+    pub fn admit_id_at(&self, device_id: &str, now_us: i64) -> anyhow::Result<Admission> {
+        Ok(judge(self.device(device_id)?, now_us))
     }
 }
 
-const DEVICE_COLUMNS: &str =
-    "device_id, public_key, name, role, created_at_us, last_seen_at_us, revoked_at_us";
+#[cfg(test)]
+impl TrustStore {
+    /// Writes to the file as nothing in the daemon does, for a test in
+    /// another module that needs a row the store would never write.
+    pub(crate) fn raw(&self, sql: &str) {
+        self.conn.execute(sql, []).unwrap();
+    }
+}
+
+/// What a row is told, in the order a human would want it said: a
+/// revoked Device is one they revoked, whatever else is true of its row.
+fn judge(device: Option<Device>, now_us: i64) -> Admission {
+    let Some(device) = device else {
+        return Admission::Unknown;
+    };
+    if device.is_revoked() {
+        return Admission::Revoked(device);
+    }
+    if matches!(device.role, DeviceRole::Other(_)) {
+        return Admission::UnreadableRole(device);
+    }
+    if device.is_stale_at(now_us) {
+        return Admission::Stale(device);
+    }
+    if device.hardware_key.is_none() {
+        return Admission::NoHardwareKey(device);
+    }
+    Admission::Admitted(device)
+}
+
+const DEVICE_COLUMNS: &str = "device_id, public_key, name, role, created_at_us, last_seen_at_us, \
+     revoked_at_us, hardware_key, notification_key";
 
 fn device_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
     Ok(Device {
@@ -668,6 +835,8 @@ fn device_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
         created_at_us: row.get(4)?,
         last_seen_at_us: row.get(5)?,
         revoked_at_us: row.get(6)?,
+        hardware_key: row.get(7)?,
+        notification_key: row.get(8)?,
     })
 }
 
@@ -695,6 +864,26 @@ mod tests {
     /// is the size the real ones are.
     fn key(tag: u8) -> Vec<u8> {
         vec![tag; 32]
+    }
+
+    /// A stand-in hardware key, by its shape. Whether a signature
+    /// verifies against one is `unlock.rs`'s to test; here it is a
+    /// column.
+    fn hardware(tag: u8) -> Vec<u8> {
+        let mut key = vec![0x04];
+        key.extend_from_slice(&[tag; 64]);
+        key
+    }
+
+    /// What a pairing the desk confirmed hands the store.
+    fn device(tag: u8, name: &str) -> Registration {
+        Registration {
+            public_key: key(tag),
+            name: name.to_string(),
+            role: DeviceRole::Remote,
+            hardware_key: hardware(tag),
+            notification_key: vec![tag; 32],
+        }
     }
 
     fn open_store(dir: &tempfile::TempDir) -> TrustStore {
@@ -769,7 +958,7 @@ mod tests {
         let store = open_store(&dir);
 
         let device = store
-            .confirm_device("dev-1", &key(1), "Pixel", DeviceRole::Remote)
+            .confirm_device("dev-1", &device(1, "Pixel"))
             .unwrap();
         assert_eq!(device.device_id, "dev-1");
         assert_eq!(device.name, "Pixel");
@@ -785,7 +974,7 @@ mod tests {
     fn a_revoked_device_is_listed_as_revoked_and_refused() {
         let dir = tempfile::tempdir().unwrap();
         let store = open_store(&dir);
-        store.confirm_device("dev-1", &key(1), "Pixel", DeviceRole::Remote).unwrap();
+        store.confirm_device("dev-1", &device(1, "Pixel")).unwrap();
 
         assert!(store.revoke("dev-1").unwrap());
 
@@ -813,7 +1002,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = open_store(&dir);
         let paired = store
-            .confirm_device("dev-1", &key(1), "Pixel", DeviceRole::Remote)
+            .confirm_device("dev-1", &device(1, "Pixel"))
             .unwrap();
         store.revoke("dev-1").unwrap();
         assert_eq!(store.active_device_count().unwrap(), 0);
@@ -823,7 +1012,7 @@ mod tests {
         // back, which is what keeps a later revoke aimed at the right
         // device.
         let revived = store
-            .confirm_device("dev-2", &key(1), "Pixel (again)", DeviceRole::Remote)
+            .confirm_device("dev-2", &device(1, "Pixel (again)"))
             .unwrap();
         assert_eq!(revived.device_id, "dev-1");
         assert_eq!(revived.created_at_us, paired.created_at_us);
@@ -837,8 +1026,8 @@ mod tests {
     fn revoke_all_rotates_the_key_so_the_old_public_key_no_longer_matches() {
         let dir = tempfile::tempdir().unwrap();
         let store = open_store(&dir);
-        store.confirm_device("dev-1", &key(1), "Pixel", DeviceRole::Remote).unwrap();
-        store.confirm_device("dev-2", &key(2), "iPhone", DeviceRole::Remote).unwrap();
+        store.confirm_device("dev-1", &device(1, "Pixel")).unwrap();
+        store.confirm_device("dev-2", &device(2, "iPhone")).unwrap();
         let before = store.static_public_key().unwrap();
 
         let after = store.revoke_all().unwrap();
@@ -868,10 +1057,10 @@ mod tests {
         let store = open_store(&dir);
         let paired_at = 1_000 * DAY_US;
         store
-            .confirm_device_at("stale", &key(1), "Old phone", DeviceRole::Remote, paired_at)
+            .confirm_device_at("stale", &device(1, "Old phone"), paired_at)
             .unwrap();
         store
-            .confirm_device_at("fresh", &key(2), "New phone", DeviceRole::Remote, paired_at)
+            .confirm_device_at("fresh", &device(2, "New phone"), paired_at)
             .unwrap();
 
         // One of them was seen again on day 60; the other never was.
@@ -904,41 +1093,345 @@ mod tests {
 
         // And re-pairing is what clears it, exactly as §3 says.
         store
-            .confirm_device_at("stale", &key(1), "Old phone", DeviceRole::Remote, day_91)
+            .confirm_device_at("stale", &device(1, "Old phone"), day_91)
             .unwrap();
         assert!(store.admit_at(&key(1), day_91).unwrap().admitted().is_some());
     }
 
+    /// The Companion spec, "Pairing and the trust store": "the device
+    /// cap rises from three to five" -- a phone, a tablet and a spare.
     #[test]
-    fn the_store_holds_three_devices_and_refuses_the_fourth() {
+    fn the_store_holds_five_devices_and_refuses_the_sixth() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = open_store(&dir);
-        assert_eq!(store.device_cap(), 3);
+        assert_eq!(store.device_cap(), 5);
 
-        for n in 1..=3u8 {
-            store
-                .confirm_device(&format!("dev-{n}"), &key(n), "Phone", DeviceRole::Remote)
-                .unwrap();
+        for n in 1..=5u8 {
+            store.confirm_device(&format!("dev-{n}"), &device(n, "Phone")).unwrap();
         }
 
-        let err = store
-            .confirm_device("dev-4", &key(4), "One too many", DeviceRole::Remote)
-            .unwrap_err();
+        let err = store.confirm_device("dev-6", &device(6, "One too many")).unwrap_err();
         assert!(err.to_string().contains("already paired"), "{err}");
-        assert_eq!(store.list().unwrap().len(), 3);
+        assert!(err.to_string().contains("the limit is 5"), "{err}");
+        assert_eq!(store.list().unwrap().len(), 5);
+        assert!(store.device("dev-6").unwrap().is_none());
+
+        // A Device that is already one of the five pairs again: it is
+        // asking for the slot it has.
+        store.confirm_device("dev-9", &device(3, "Phone, again")).unwrap();
+        assert_eq!(store.active_device_count().unwrap(), 5);
 
         // Revoking one frees the slot the cap was counting.
         store.revoke("dev-2").unwrap();
+        store.confirm_device("dev-6", &device(6, "Now it fits")).unwrap();
+
+        // And the cap is a store rule a setting can raise.
+        store.set_device_cap(6);
+        store.confirm_device("dev-7", &device(7, "Raised")).unwrap();
+        assert_eq!(store.active_device_count().unwrap(), 6);
+    }
+
+    /// The cap counts the Devices that are trusted, however they came
+    /// to be. A revoked Device that pairs again is asking for a slot
+    /// like any other: five, one revoked, a sixth paired in its place --
+    /// and the revoked one is back for a slot that has been given away.
+    #[test]
+    fn a_revoked_device_pairing_again_takes_a_slot_like_any_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        for n in 1..=5u8 {
+            store.confirm_device(&format!("dev-{n}"), &device(n, "Phone")).unwrap();
+        }
+        store.revoke("dev-2").unwrap();
+        store.confirm_device("dev-6", &device(6, "In its place")).unwrap();
+        assert_eq!(store.active_device_count().unwrap(), 5);
+
+        let err = store.confirm_device("dev-9", &device(2, "Back again")).unwrap_err();
+        assert!(err.to_string().contains("already paired"), "{err}");
+        assert!(err.to_string().contains("the limit is 5"), "{err}");
+        assert_eq!(store.active_device_count().unwrap(), 5);
+        // Refused, and left as it was: still revoked, under its own
+        // name, with the keys it had.
+        let refused = store.device("dev-2").unwrap().unwrap();
+        assert!(refused.is_revoked());
+        assert_eq!(refused.name, "Phone");
+        assert!(matches!(store.admit(&key(2)).unwrap(), Admission::Revoked(_)));
+
+        // With room made for it, it pairs again under the id it had.
+        store.revoke("dev-6").unwrap();
+        let back = store.confirm_device("dev-9", &device(2, "Back again")).unwrap();
+        assert_eq!(back.device_id, "dev-2");
+        assert!(!back.is_revoked());
+        assert_eq!(store.active_device_count().unwrap(), 5);
+    }
+
+    /// A row reaches an error message or a log line by being formatted,
+    /// and the notification key must not reach either.
+    #[test]
+    fn a_device_does_not_print_its_notification_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        let registration = Registration { notification_key: vec![0xa7; 32], ..device(1, "Pixel") };
+        let paired = store.confirm_device("dev-1", &registration).unwrap();
+
+        for shown in [
+            format!("{paired:?}"),
+            format!("{registration:?}"),
+            format!("{:?}", store.admit(&key(1)).unwrap()),
+        ] {
+            assert!(shown.contains("Pixel"), "{shown}");
+            assert!(!shown.contains("167"), "the key, as bytes: {shown}");
+            assert!(!shown.to_lowercase().contains("a7a7"), "the key, as hex: {shown}");
+        }
+    }
+
+    /// ADR 0001: the Device registers its hardware key at pairing, and
+    /// the Companion spec has each pairing agree a notification key.
+    /// Both are the row's.
+    #[test]
+    fn a_confirmed_device_keeps_the_keys_it_paired_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        let paired = store.confirm_device("dev-1", &device(1, "Pixel")).unwrap();
+        assert_eq!(paired.hardware_key, Some(hardware(1)));
+        assert_eq!(paired.notification_key, Some(vec![1u8; 32]));
+
+        // And they are there after a restart, which is when a Device
+        // next connects.
+        let read = open_store(&dir).device("dev-1").unwrap().unwrap();
+        assert_eq!(read, paired);
+    }
+
+    /// A Device that pairs again keeps its row, and the row takes what
+    /// the new pairing registered. The old notification key goes with
+    /// the old pairing: it was agreed in a channel that is over.
+    #[test]
+    fn pairing_again_replaces_both_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        store.confirm_device("dev-1", &device(1, "Pixel")).unwrap();
+
+        let again = Registration {
+            hardware_key: hardware(0x51),
+            notification_key: vec![0x52; 32],
+            ..device(1, "Pixel")
+        };
+        let revived = store.confirm_device("dev-2", &again).unwrap();
+        assert_eq!(revived.device_id, "dev-1", "the same Noise key is the same Device");
+        assert_eq!(revived.hardware_key, Some(hardware(0x51)));
+        assert_eq!(revived.notification_key, Some(vec![0x52; 32]));
+        assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    /// A row that holds no hardware key cannot pass the check every
+    /// connection has to pass, so it is refused by name before any
+    /// signature is asked for. Pairing again is what gives it one.
+    #[test]
+    fn a_device_with_no_hardware_key_is_told_to_pair_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        store.confirm_device("dev-1", &device(1, "Pixel")).unwrap();
         store
-            .confirm_device("dev-4", &key(4), "Now it fits", DeviceRole::Remote)
+            .conn
+            .execute("UPDATE devices SET hardware_key = NULL WHERE device_id = 'dev-1'", [])
             .unwrap();
 
-        // And the cap is a store rule the settings task can raise.
-        store.set_device_cap(5);
+        match store.admit(&key(1)).unwrap() {
+            Admission::NoHardwareKey(d) => assert_eq!(d.device_id, "dev-1"),
+            other => panic!("expected NoHardwareKey, got {other:?}"),
+        }
+        let refusal = store.admit(&key(1)).unwrap().refusal().unwrap();
+        assert!(refusal.contains("pair it again"), "{refusal}");
+
+        store.confirm_device("dev-1", &device(1, "Pixel")).unwrap();
+        assert!(store.admit(&key(1)).unwrap().admitted().is_some());
+    }
+
+    /// Each refusal is a different thing for the Companion to tell the
+    /// human holding it, so each is told to the Device as what it is.
+    #[test]
+    fn a_refusal_is_told_to_the_device_as_what_it_is() {
+        use protocol::device_wire::ConnectRefusal;
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        let paired_at = 1_000 * DAY_US;
+        for (n, id) in [(1u8, "fine"), (2, "revoked"), (3, "stale"), (4, "keyless"), (5, "kiosk")] {
+            store.confirm_device_at(id, &device(n, id), paired_at).unwrap();
+        }
+        store.revoke("revoked").unwrap();
         store
-            .confirm_device("dev-5", &key(5), "Raised", DeviceRole::Remote)
+            .conn
+            .execute("UPDATE devices SET hardware_key = NULL WHERE device_id = 'keyless'", [])
             .unwrap();
+        store.conn.execute("UPDATE devices SET role = 'kiosk' WHERE device_id = 'kiosk'", []).unwrap();
+        let day_80 = paired_at + 80 * DAY_US;
+        for id in ["fine", "revoked", "keyless", "kiosk"] {
+            store.touch_at(id, day_80).unwrap();
+        }
+
+        let day_91 = paired_at + 91 * DAY_US;
+        let told = |id: &str| store.admit_id_at(id, day_91).unwrap().connect_refusal();
+        assert_eq!(told("fine"), None);
+        assert_eq!(told("revoked"), Some(ConnectRefusal::Revoked));
+        assert_eq!(told("stale"), Some(ConnectRefusal::Stale));
+        assert_eq!(told("keyless"), Some(ConnectRefusal::PairAgain));
+        assert_eq!(told("kiosk"), Some(ConnectRefusal::Other));
+        assert_eq!(told("never-paired"), Some(ConnectRefusal::NotPaired));
+    }
+
+    /// A connection is judged by the key that completed its handshake;
+    /// a connection that is already open is judged again by the id it
+    /// carries. The two must agree.
+    #[test]
+    fn a_device_is_judged_the_same_by_its_id_as_by_its_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        let paired_at = 1_000 * DAY_US;
+        store.confirm_device_at("dev-1", &device(1, "Pixel"), paired_at).unwrap();
+        store.confirm_device_at("dev-2", &device(2, "iPhone"), paired_at).unwrap();
+        store.revoke("dev-2").unwrap();
+
+        for now in [paired_at, paired_at + 91 * DAY_US] {
+            assert_eq!(
+                store.admit_id_at("dev-1", now).unwrap(),
+                store.admit_at(&key(1), now).unwrap()
+            );
+            assert_eq!(
+                store.admit_id_at("dev-2", now).unwrap(),
+                store.admit_at(&key(2), now).unwrap()
+            );
+        }
+        assert!(store.admit_id_at("dev-1", paired_at).unwrap().admitted().is_some());
+        assert!(matches!(store.admit_id_at("dev-2", paired_at).unwrap(), Admission::Revoked(_)));
+        assert_eq!(store.admit_id("never-paired").unwrap(), Admission::Unknown);
+    }
+
+    /// The Companion spec, user story 11: "a Device [can] remove itself
+    /// from a Workstation". The row goes -- it is not marked, as a
+    /// revocation marks it -- and no other row is touched.
+    #[test]
+    fn removing_a_device_deletes_only_its_own_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        store.confirm_device("dev-1", &device(1, "Pixel")).unwrap();
+        let kept = store.confirm_device("dev-2", &device(2, "iPhone")).unwrap();
+        store.confirm_device("dev-3", &device(3, "Tablet")).unwrap();
+        store.revoke("dev-3").unwrap();
+        let revoked = store.device("dev-3").unwrap().unwrap();
+        let key_before = store.static_public_key().unwrap();
+
+        assert!(store.remove("dev-1").unwrap());
+
+        assert_eq!(store.list().unwrap(), vec![kept, revoked]);
+        assert!(store.device("dev-1").unwrap().is_none());
+        assert_eq!(
+            store.static_public_key().unwrap(),
+            key_before,
+            "one Device leaving is not a reason to strand the others"
+        );
+        // Removing what is not there removes nothing and says so.
+        assert!(!store.remove("dev-1").unwrap());
+        assert!(!store.remove("never-paired").unwrap());
+        assert_eq!(store.list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_removed_device_is_unknown_and_frees_its_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        for n in 1..=5u8 {
+            store.confirm_device(&format!("dev-{n}"), &device(n, "Phone")).unwrap();
+        }
+        assert!(store.remove("dev-4").unwrap());
+
+        assert_eq!(store.admit(&key(4)).unwrap(), Admission::Unknown);
         assert_eq!(store.active_device_count().unwrap(), 4);
+        store.confirm_device("dev-6", &device(6, "In its place")).unwrap();
+
+        // It may pair again, and is then a Device the store has never
+        // seen: a new row, under the id it is given.
+        store.revoke("dev-1").unwrap();
+        let again = store.confirm_device("dev-7", &device(4, "Back")).unwrap();
+        assert_eq!(again.device_id, "dev-7");
+    }
+
+    /// The trap CLAUDE.md names, against the store this daemon finds on
+    /// a machine that paired in phase 2: the schema as phase 2 left it,
+    /// built by hand, with a Device and the settings in it. `CREATE
+    /// TABLE IF NOT EXISTS` is a no-op against that file, so the two
+    /// columns reach it only through their own `ALTER TABLE`.
+    #[test]
+    fn a_phase_two_trust_store_gains_the_hardware_key_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("devices.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE devices (
+                    device_id TEXT PRIMARY KEY,
+                    public_key BLOB NOT NULL,
+                    name TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'remote',
+                    created_at_us INTEGER NOT NULL,
+                    last_seen_at_us INTEGER NOT NULL,
+                    revoked_at_us INTEGER
+                );
+                CREATE TABLE trust_meta (key TEXT PRIMARY KEY, value BLOB NOT NULL);
+                CREATE UNIQUE INDEX devices_by_public_key ON devices (public_key);
+                INSERT INTO trust_meta (key, value) VALUES
+                    ('static_private_key', X'1111111111111111111111111111111111111111111111111111111111111111'),
+                    ('static_public_key', X'2222222222222222222222222222222222222222222222222222222222222222'),
+                    ('remote_access_enabled', X'31'),
+                    ('remote_access_relay_url', CAST('wss://relay.example/gavin' AS BLOB));
+                INSERT INTO devices
+                    (device_id, public_key, name, role, created_at_us, last_seen_at_us, revoked_at_us)
+                VALUES
+                    ('old-1', X'0101010101010101010101010101010101010101010101010101010101010101',
+                     'Paired in phase two', 'remote', 1, 1, NULL),
+                    ('old-2', X'0202020202020202020202020202020202020202020202020202020202020202',
+                     'Revoked in phase two', 'remote', 1, 1, 7)",
+            )
+            .unwrap();
+        }
+
+        let store = TrustStore::open(&path).unwrap();
+
+        // What was there is as it was.
+        assert_eq!(store.static_public_key().unwrap(), vec![0x22; 32]);
+        assert_eq!(store.static_private_key().unwrap(), vec![0x11; 32]);
+        assert!(store.remote_access().unwrap().enabled);
+        let old = store.device("old-1").unwrap().unwrap();
+        assert_eq!(old.name, "Paired in phase two");
+        assert_eq!(old.public_key, key(1));
+        assert!(!old.is_revoked());
+        assert_eq!(store.device("old-2").unwrap().unwrap().revoked_at_us, Some(7));
+
+        // The rows that predate the columns hold no keys -- absent, not
+        // empty -- and so cannot connect until they pair again.
+        assert_eq!(old.hardware_key, None);
+        assert_eq!(old.notification_key, None);
+        assert!(matches!(
+            store.admit_at(&key(1), 2).unwrap(),
+            Admission::NoHardwareKey(_)
+        ));
+        // Revoked is still what a revoked row is told first.
+        assert!(matches!(store.admit_at(&key(2), 2).unwrap(), Admission::Revoked(_)));
+
+        // And the columns are writable on the old file: the phase-two
+        // Device pairs again and keeps its row.
+        let paired = store.confirm_device_at("dev-new", &device(1, "Paired again"), 3).unwrap();
+        assert_eq!(paired.device_id, "old-1");
+        assert_eq!(paired.created_at_us, 1);
+        assert_eq!(paired.hardware_key, Some(hardware(1)));
+        assert_eq!(paired.notification_key, Some(vec![1u8; 32]));
+        assert!(store.admit_at(&key(1), 3).unwrap().admitted().is_some());
+
+        // Opening it again runs the same statements against a file that
+        // now has the columns, and loses nothing.
+        drop(store);
+        let reopened = TrustStore::open(&path).unwrap();
+        assert_eq!(reopened.device("old-1").unwrap().unwrap(), paired);
+        assert_eq!(reopened.list().unwrap().len(), 2);
     }
 
     #[test]
@@ -948,7 +1441,7 @@ mod tests {
         // `remote` would be granting a role rather than reading one.
         let dir = tempfile::tempdir().unwrap();
         let store = open_store(&dir);
-        store.confirm_device("dev-1", &key(1), "From the future", DeviceRole::Remote).unwrap();
+        store.confirm_device("dev-1", &device(1, "From the future")).unwrap();
         store
             .conn
             .execute("UPDATE devices SET role = 'kiosk' WHERE device_id = 'dev-1'", [])
@@ -968,7 +1461,7 @@ mod tests {
         let store = open_store(&dir);
         let paired_at = 1_000 * DAY_US;
         store
-            .confirm_device_at("dev-1", &key(1), "Pixel", DeviceRole::Remote, paired_at)
+            .confirm_device_at("dev-1", &device(1, "Pixel"), paired_at)
             .unwrap();
 
         let day_80 = paired_at + 80 * DAY_US;
@@ -1061,11 +1554,11 @@ mod tests {
         }
 
         let store = TrustStore::open(&path).unwrap();
-        store.confirm_device("dev-1", &key(1), "Pixel", DeviceRole::Remote).unwrap();
+        store.confirm_device("dev-1", &device(1, "Pixel")).unwrap();
         // The same key again revives the one row rather than inserting a
         // second one -- which is only true because the index reached this
         // pre-existing table.
-        store.confirm_device("dev-2", &key(1), "Pixel", DeviceRole::Remote).unwrap();
+        store.confirm_device("dev-2", &device(1, "Pixel")).unwrap();
         assert_eq!(store.list().unwrap().len(), 1);
     }
 

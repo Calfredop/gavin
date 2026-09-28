@@ -13,11 +13,18 @@ pub enum CoreError {
     /// The Workstation that answered is not the one whose QR was scanned.
     /// The pairing secret was not used.
     WrongWorkstation,
+    /// The hardware public key the shell handed in is not one.
+    HardwareKey(String),
     /// The Noise handshake failed.
     Handshake(String),
-    /// A frame that could not be opened or read.
+    /// A frame that could not be opened or read. The connection it
+    /// arrived on is over: see `channel::Channel`.
     Frame(String),
-    /// Bytes arrived after the pairing had ended.
+    /// Asked for something the exchange has not reached, or is past: a
+    /// proof before there is a handshake to prove, a message before the
+    /// Workstation has said the Device is connected.
+    NotReady,
+    /// Bytes arrived after the exchange had ended.
     Finished,
 }
 
@@ -30,9 +37,15 @@ impl std::fmt::Display for CoreError {
                 f,
                 "this is not the Workstation whose code was scanned — the pairing was abandoned"
             ),
-            CoreError::Handshake(why) => write!(f, "the pairing handshake failed: {why}"),
+            CoreError::HardwareKey(why) => {
+                write!(f, "this Device's hardware key cannot be used: {why}")
+            }
+            CoreError::Handshake(why) => {
+                write!(f, "the handshake with the Workstation failed: {why}")
+            }
             CoreError::Frame(why) => write!(f, "a message from the Workstation could not be read: {why}"),
-            CoreError::Finished => write!(f, "the pairing has already ended"),
+            CoreError::NotReady => write!(f, "the exchange with the Workstation is not at that point"),
+            CoreError::Finished => write!(f, "the exchange with the Workstation has already ended"),
         }
     }
 }

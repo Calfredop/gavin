@@ -27,6 +27,10 @@ snow = "0.10.0"
 # none of the Relay itself -- the daemon runs no async runtime, and with
 # `server` off this brings none in.
 gavin-relay = { path = "../gavin-relay", default-features = false, features = ["client"] }
+# Verifying a Device's hardware signature (`unlock.rs`): ECDSA over
+# P-256. Already built, at this version, under the TLS the dial above
+# runs on, so naming it here adds nothing to what is compiled.
+ring = "0.17"
 # The OS Trash, not `rm`, for `TrashWorkspacePath` (v42). The desktop's
 # promise is that nothing gavin removes on the human's behalf is
 # unrecoverable; a workspace reached over ssh does not get a weaker one,

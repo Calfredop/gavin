@@ -21,19 +21,39 @@
 //! call to `client::dial` for the Relay connection is behind `desired`
 //! returning something.
 //!
-//! **What it serves.** This is the first slice of the Device wire: the
-//! one kind of stream a Device can open is a pairing stream, which is
-//! handed to the pairing responder phase 2 built (`pair_over`) unchanged.
-//! The connection handshake -- Noise `IK`, and the hardware signature
-//! that is the Unlock's enforcement -- is the next slice, and a stream
-//! announced for any purpose but pairing is left where it is.
+//! **What it serves.** Two kinds of stream, told apart by the purpose
+//! the Relay announces them for.
+//!
+//! - A **pairing** stream is handed to the pairing responder phase 2
+//!   built (`pair_over`), and held open until the desk has ruled.
+//! - A **connection** is a paired Device's: Noise `IK`, then the
+//!   Device's hardware signature over the handshake (`connect.rs`, ADR
+//!   0001). Once that verifies the connection is the manager's
+//!   (`SessionManager::adopt_device`), which serves it as the Remote
+//!   role with the loop the local socket's connections run. What is left
+//!   for this module is to carry bytes: frames opened and handed to that
+//!   loop, its replies sealed and sent back.
+//!
+//! A stream announced for any other purpose is left where it is.
+//!
+//! **What ends a Device's connection.** The Device hanging up; the Relay
+//! going; a frame that does not open; remote access being turned off or
+//! pointed elsewhere; and the manager letting go of its end -- which is
+//! what a revocation, "Revoke all" and a Device removing itself all come
+//! to. Each of them ends both halves.
 
+use crate::connect;
 use crate::pairing;
 use crate::server::{AwaitedPairing, PairingDecision, SessionManager};
-use gavin_relay::client::{self, DialError, DialOptions, RelayConnection};
-use protocol::device_wire::PairingVerdict;
-use protocol::relay::{self, RelayHello, RelayReply};
+use gavin_relay::client::{self, DialError, DialOptions, RelayConnection, RelayStream};
+use protocol::device_wire::{ConnectVerdict, PairingVerdict, MAX_PAYLOAD};
+use protocol::relay::{self, RefusalReason, RelayHello, RelayReply};
+use protocol::transport::Stream;
+use std::io::{Read, Write};
+use std::net::Shutdown;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::VecDeque;
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -65,11 +85,17 @@ const BACKOFF_CEILING: Duration = Duration::from_secs(60);
 /// still a Relay that is failing.
 const SETTLED: Duration = Duration::from_secs(30);
 
-/// How long each read of the pairing handshake may take. A Device that
-/// has been picked up says its first message at once and its last as soon
-/// as it has read ours; ten seconds is a slow network, and what it bounds
-/// is how long a peer that says nothing holds one of `MAX_STREAMS`.
-const HANDSHAKE_READ: Duration = Duration::from_secs(10);
+/// How long a stream that has been picked up has to become what it is
+/// for: a pairing the desk can be asked about, or a connection whose
+/// proof has verified. The handshake and the proof together, not each
+/// read of them -- a peer that sends a byte inside every timeout would
+/// otherwise never run out of time (`Within`).
+///
+/// A Device that has been picked up says its first message at once and
+/// each one after as soon as it has read ours; ten seconds is a slow
+/// network. What it bounds is how long a peer that is not a Device holds
+/// one of the places there are.
+const HANDSHAKE: Duration = Duration::from_secs(10);
 
 /// How often the trust store is re-read while nothing has said it
 /// changed.
@@ -87,33 +113,204 @@ const STORE_POLL: Duration = Duration::from_secs(2);
 /// window, in which the human is comparing six digits.
 const DECISION: Duration = Duration::from_secs(2 * 60);
 
-/// How many streams are served at once. Each is a thread and a socket,
-/// held for as long as a handshake and a human's answer take, and what
+/// How many streams are being let in at once: pairing streams, for as
+/// long as a handshake and a human's answer take, and connections until
+/// the Device has proved itself. Each is a thread and a socket, and what
 /// asks for one is anything the Relay admitted -- so there is a ceiling,
 /// and an announcement that arrives above it is left unanswered
 /// (`05-remote-access.md` §8, "the remote channel gets its own caps").
 /// One desk pairs one Device at a time; the rest is room for a retry.
+///
+/// This is the ceiling on PAIRINGS. Connections being let in have one
+/// of their own, `MAX_CONNECTING`.
 const MAX_STREAMS: usize = 4;
 
-/// Streams being served right now, across every connection to the Relay
-/// this daemon has held.
-static STREAMS: AtomicUsize = AtomicUsize::new(0);
+/// How many connections are being let in at once: picked up, and not
+/// yet proved.
+///
+/// Apart from the pairings', because what asks for a connection can ask
+/// at any time -- anything the Relay admits, with the desk showing
+/// nothing -- and must not be able to take the places the owner needs to
+/// pair a Device. A connection that has proved itself gives its place
+/// back: from then on what bounds it is how many Devices there are and
+/// how many connections each may hold
+/// (`server::MAX_CONNECTIONS_PER_DEVICE`).
+const MAX_CONNECTING: usize = 8;
 
-/// One of the `MAX_STREAMS`, given back however the serving ends.
-struct Serving;
+/// How long what a Device sent may wait on the connection loop before
+/// the connection is given up on. The loop reads as fast as requests
+/// arrive; one that has not taken what it was handed in this long is
+/// one whose replies the Device is not reading.
+const UNREAD: Duration = Duration::from_secs(30);
+
+/// How many lines the streams the Relay hands over may write to the
+/// log in a minute. Anything the Relay admits can ask for a connection,
+/// as often as it likes, and each one that fails is a line.
+const LOG_LINES: usize = 12;
+const LOG_WINDOW: Duration = Duration::from_secs(60);
+
+/// How long a daemon with no desktop app in front of it waits before it
+/// picks a connection up.
+///
+/// The dev build's daemon and the release build's share one trust store,
+/// so both register with the Relay under one key, and the Relay
+/// announces a Device's stream to both. Either can serve it -- they hold
+/// the same Devices -- but the one the Device came for is the one whose
+/// desktop app is running, since that app is what answers it (ADR 0003).
+/// So that one goes first. A daemon on its own picks the stream up a
+/// moment later all the same: "desktop app not running" is an answer,
+/// and a Device is owed it.
+const DEFERENCE: Duration = Duration::from_millis(400);
+
+/// How often a connection that is carrying something is looked at, and
+/// how often one that is not. The dial is blocking I/O on one socket, so
+/// what a reply from the daemon waits on, at the most, is one of these.
+const TICK_BUSY: Duration = Duration::from_millis(5);
+const TICK_IDLE: Duration = Duration::from_millis(50);
+
+/// How long after it last carried something a connection is still busy.
+const RECENT: Duration = Duration::from_secs(2);
+
+/// How much of the daemon's reply is read at a time, and so how much one
+/// frame carries: a quarter of what a frame could, so that one large
+/// reply does not make every frame after it wait.
+const CHUNK: usize = 16 * 1024;
+
+/// How many chunks wait to be carried, each way, before whoever is
+/// writing them is made to wait.
+const WAITING: usize = 16;
+
+/// Pairings being served right now, and connections being let in,
+/// across every connection to the Relay this daemon has held.
+static PAIRING: AtomicUsize = AtomicUsize::new(0);
+static CONNECTING: AtomicUsize = AtomicUsize::new(0);
+
+/// One of the places there are for what a stream is for, given back
+/// however the serving ends.
+struct Serving(&'static AtomicUsize);
 
 impl Serving {
-    fn begin() -> Option<Self> {
-        STREAMS
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < MAX_STREAMS).then_some(n + 1))
+    fn begin(purpose: Purpose) -> Option<Self> {
+        let (held, ceiling) = match purpose {
+            Purpose::Pair => (&PAIRING, MAX_STREAMS),
+            Purpose::Connect => (&CONNECTING, MAX_CONNECTING),
+        };
+        held.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < ceiling).then_some(n + 1))
             .ok()
-            .map(|_| Serving)
+            .map(|_| Serving(held))
     }
 }
 
 impl Drop for Serving {
     fn drop(&mut self) {
-        STREAMS.fetch_sub(1, Ordering::SeqCst);
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// A stream whose reads can be bounded.
+pub(crate) trait Timed: Read + Write {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> std::io::Result<()>;
+}
+
+impl Timed for RelayStream {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> std::io::Result<()> {
+        RelayStream::set_read_timeout(self, timeout)
+    }
+}
+
+/// A stream, until a deadline: everything read through it has to arrive
+/// by then.
+///
+/// A timeout on each read bounds a peer that says nothing. It does not
+/// bound one that says a byte at a time, each inside the timeout, and a
+/// frame may claim sixty-five thousand of them.
+struct Within<'a, S: Timed> {
+    stream: &'a mut S,
+    until: Instant,
+}
+
+impl<'a, S: Timed> Within<'a, S> {
+    fn new(stream: &'a mut S, within: Duration) -> Self {
+        Self { stream, until: Instant::now() + within }
+    }
+}
+
+impl<S: Timed> Read for Within<'_, S> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the handshake did not finish in time",
+            ));
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        self.stream.read(buf)
+    }
+}
+
+impl<S: Timed> Write for Within<'_, S> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.stream.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+/// What the streams the Relay hands over may write to the log.
+#[derive(Default)]
+struct LogBudget {
+    window: Option<Instant>,
+    said: usize,
+    unsaid: usize,
+}
+
+/// What became of a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Logged {
+    Line,
+    /// Written, after this many that were not.
+    LineAfter(usize),
+    Nothing,
+}
+
+impl LogBudget {
+    fn spend(&mut self, now: Instant) -> Logged {
+        let fresh = self.window.is_none_or(|began| now.duration_since(began) >= LOG_WINDOW);
+        if fresh {
+            let unsaid = std::mem::take(&mut self.unsaid);
+            self.window = Some(now);
+            self.said = 1;
+            return if unsaid == 0 { Logged::Line } else { Logged::LineAfter(unsaid) };
+        }
+        if self.said < LOG_LINES {
+            self.said += 1;
+            Logged::Line
+        } else {
+            self.unsaid += 1;
+            Logged::Nothing
+        }
+    }
+}
+
+static LOGGED: Mutex<LogBudget> = Mutex::new(LogBudget { window: None, said: 0, unsaid: 0 });
+
+/// Says something about a stream the Relay handed over, if there is
+/// still room in the log for it.
+fn note(line: String) {
+    let spent = LOGGED.lock().map(|mut budget| budget.spend(Instant::now()));
+    match spent {
+        Ok(Logged::Line) => eprintln!("gavin-daemon: {line}"),
+        Ok(Logged::LineAfter(unsaid)) => {
+            eprintln!(
+                "gavin-daemon: {unsaid} more streams from the Relay failed or were refused, \
+                 and went unsaid"
+            );
+            eprintln!("gavin-daemon: {line}");
+        }
+        Ok(Logged::Nothing) | Err(_) => {}
     }
 }
 
@@ -354,18 +551,29 @@ fn attend(
                 // Decided here, on the one thread that reads
                 // announcements, so that what a flood of them costs is
                 // this comparison and not a thread apiece.
-                if wanted(manager, &purpose) {
-                    if let Some(serving) = Serving::begin() {
+                if let Some(purpose) = wanted(manager, &purpose) {
+                    if let Some(serving) = Serving::begin(purpose) {
                         let manager = Arc::clone(manager);
                         let dial = dial.clone();
                         let started = std::thread::Builder::new()
                             .name("relay-stream".into())
-                            .spawn(move || {
-                                let _serving = serving;
-                                if let Err(e) = pair_through(&manager, &dial, &stream) {
-                                    eprintln!(
-                                        "gavin-daemon: a pairing through the Relay did not complete: {e}"
-                                    );
+                            .spawn(move || match purpose {
+                                Purpose::Pair => {
+                                    let _serving = serving;
+                                    if let Err(e) = pair_through(&manager, &dial, &stream) {
+                                        note(format!(
+                                            "a pairing through the Relay did not complete: {e}"
+                                        ));
+                                    }
+                                }
+                                Purpose::Connect => {
+                                    if let Err(e) =
+                                        connect_through(&manager, &dial, &stream, serving)
+                                    {
+                                        note(format!(
+                                            "a connection through the Relay was not made: {e}"
+                                        ));
+                                    }
                                 }
                             });
                         if let Err(e) = started {
@@ -424,30 +632,357 @@ fn attend(
     }
 }
 
-/// Whether this daemon picks up a stream announced for `purpose`.
-fn wanted(manager: &SessionManager, purpose: &str) -> bool {
-    // The one purpose this build serves. A stream for any other is left
-    // for the Relay to time out: refusing it would take a connection, and
-    // there is nothing to say on it.
-    if purpose != relay::PURPOSE_PAIR {
-        return false;
+/// What a stream this daemon picks up is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    Pair,
+    Connect,
+}
+
+/// What this daemon picks a stream announced for `purpose` up as, or
+/// `None` if it leaves it where it is.
+fn wanted(manager: &SessionManager, purpose: &str) -> Option<Purpose> {
+    match purpose {
+        // The Relay announces a stream to every daemon registered under
+        // this Workstation's key, and the dev build and the release
+        // build share one. The daemon whose desk is showing the QR is
+        // the one holding the offer; any other leaves the stream to it.
+        relay::PURPOSE_PAIR => manager.has_pairing_offer().then_some(Purpose::Pair),
+        // Any daemon that holds the Device's row can serve it, and both
+        // do. Which goes first is `deference`'s.
+        relay::PURPOSE_CONNECT => Some(Purpose::Connect),
+        // A stream for anything else is left for the Relay to time out:
+        // refusing it would take a connection, and there is nothing to
+        // say on it.
+        _ => None,
     }
-    // The Relay announces a stream to every daemon registered under this
-    // Workstation's key, and the dev build and the release build share
-    // one. The daemon whose desk is showing the QR is the one holding the
-    // offer; any other leaves the stream to it.
-    manager.has_pairing_offer()
+}
+
+/// How long this daemon waits before it picks a connection up. See
+/// `DEFERENCE`.
+pub(crate) fn deference(manager: &SessionManager) -> Duration {
+    if manager.an_app_is_live() {
+        Duration::ZERO
+    } else {
+        DEFERENCE
+    }
+}
+
+/// Serves a paired Device's connection: the handshake, the proof, and
+/// then its requests, for as long as it stays.
+fn connect_through(
+    manager: &Arc<SessionManager>,
+    dial: &Dial,
+    stream: &str,
+    serving: Serving,
+) -> anyhow::Result<()> {
+    let wait = deference(manager);
+    if !wait.is_zero() {
+        std::thread::sleep(wait);
+    }
+    let hello = RelayHello::stream(&dial.token, &dial.rendezvous, stream);
+    let mut stream = match client::dial(&dial.url, &hello, &DialOptions::default()) {
+        Ok(connection) => connection.into_stream(),
+        // Another daemon registered under this key picked it up.
+        Err(DialError::Refused(RefusalReason::Gone)) => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+
+    // Lifted out of the store so that neither the handshake nor the
+    // Device's proof is waited for with the trust lock held: see
+    // `pairing::ResponderKeys`.
+    let keys = {
+        let trust = no_store(manager.trust())?;
+        pairing::ResponderKeys::from_store(&trust)?
+    };
+    let accepted = connect::run_responder(&mut Within::new(&mut stream, HANDSHAKE), &keys, |key| {
+        no_store(manager.trust())?.admit(key)
+    });
+    let mut accepted = match accepted {
+        Ok(Ok(accepted)) => accepted,
+        // Refused, and told so.
+        Ok(Err(refused)) => {
+            stream.close();
+            note(refusal(&refused));
+            return Ok(());
+        }
+        Err(e) => {
+            stream.close();
+            return Err(e);
+        }
+    };
+
+    // Registered before the Device is told it is connected, so that
+    // "connected" is true when it is said: from here a revocation finds
+    // this connection. The manager judges the Device again as it takes
+    // the connection on, for the revocation that came a moment ago.
+    let device_id = accepted.device.device_id.clone();
+    let near = match manager.adopt_device(&device_id)? {
+        Ok(near) => near,
+        Err(reason) => {
+            let verdict = ConnectVerdict::Refused { reason };
+            let _ = connect::send_verdict(&mut stream, &mut accepted.transport, &verdict);
+            stream.close();
+            note(refusal(&connect::Refused {
+                reason,
+                device_id: Some(device_id),
+                why: None,
+            }));
+            return Ok(());
+        }
+    };
+    // Seen. §3's ninety days are counted from a connection that was
+    // made, which is this -- never from one that was only asked for.
+    if let Some(trust) = manager.trust() {
+        let _ = trust.touch(&device_id);
+    }
+    let connected = ConnectVerdict::Connected { device_id: device_id.clone() };
+    if let Err(e) = connect::send_verdict(&mut stream, &mut accepted.transport, &connected) {
+        let _ = near.shutdown(Shutdown::Both);
+        stream.close();
+        return Err(e);
+    }
+    // No longer one of the streams being let in.
+    drop(serving);
+
+    let ended = carry(&mut stream, &mut accepted.transport, &near, || {
+        // The dial this connection came in by is still the one wanted,
+        // and the Device is still one to serve. Both are read from the
+        // store, which a daemon that cannot poke this one also writes:
+        // a revocation pressed at ITS desk marks the row and shuts the
+        // connections IT holds, and this one is not among them.
+        desired(manager).as_ref() == Some(dial) && manager.device_refusal(&device_id).is_none()
+    });
+    // Both halves, however it ended: the manager's end, so that its loop
+    // stops reading and the desk is told the Device has gone; and the
+    // Device's.
+    let _ = near.shutdown(Shutdown::Both);
+    stream.close();
+    if let Carried::Broken(why) = ended {
+        note(format!("{device_id}'s connection was dropped: {why}"));
+    }
+    Ok(())
+}
+
+/// What the log says of a Device that was refused.
+fn refusal(refused: &connect::Refused) -> String {
+    let who = refused.device_id.as_deref().unwrap_or("a device that is not paired");
+    match (&refused.reason, &refused.why) {
+        (protocol::device_wire::ConnectRefusal::Unlock, Some(why)) => {
+            format!("{who} did not prove it is unlocked, and was refused: {why}")
+        }
+        (reason, _) => format!("{who} was refused a connection: {reason}"),
+    }
+}
+
+fn no_store<T>(store: Option<T>) -> anyhow::Result<T> {
+    store.ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon has no trust store"))
+}
+
+/// How carrying a Device's connection ended.
+enum Carried {
+    /// One end or the other let go, or the dial stopped being wanted.
+    Over,
+    /// Something on the way was not as it should be.
+    Broken(String),
+}
+
+/// The next whole frame in `arrived`, without its length prefix, if one
+/// has arrived.
+fn next_frame(arrived: &mut Vec<u8>) -> Option<Vec<u8>> {
+    if arrived.len() < pairing::FRAME_PREFIX {
+        return None;
+    }
+    let len = u16::from_be_bytes([arrived[0], arrived[1]]) as usize;
+    if arrived.len() < pairing::FRAME_PREFIX + len {
+        return None;
+    }
+    let frame = arrived[pairing::FRAME_PREFIX..pairing::FRAME_PREFIX + len].to_vec();
+    arrived.drain(..pairing::FRAME_PREFIX + len);
+    Some(frame)
+}
+
+/// How long to wait on the Device, `since` its connection last carried
+/// anything.
+fn tick(since: Duration) -> Duration {
+    if since < RECENT {
+        TICK_BUSY
+    } else {
+        TICK_IDLE
+    }
+}
+
+/// What the connection loop wrote, as it wrote it, for as long as it
+/// holds its end open.
+fn replies(near: &Stream) -> std::io::Result<Receiver<Vec<u8>>> {
+    let mut reading = near.try_clone()?;
+    let (send, replies) = sync_channel::<Vec<u8>>(WAITING);
+    std::thread::Builder::new().name("device-replies".into()).spawn(move || {
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            match reading.read(&mut buf) {
+                // The loop let go of its end, or whoever was carrying
+                // its replies has stopped.
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if send.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    })?;
+    Ok(replies)
+}
+
+/// Where what the Device sent is handed to the connection loop, as the
+/// loop has room for it.
+///
+/// A thread of its own, because a write to the loop can wait: the loop
+/// answers each request before it reads the next, and an answer nobody
+/// has room for holds it. Whoever is carrying the connection must be
+/// able to go on taking those answers away meanwhile, which a write of
+/// its own would stop it doing.
+fn requests(near: &Stream) -> std::io::Result<SyncSender<Vec<u8>>> {
+    let mut writing = near.try_clone()?;
+    let (requests, handed) = sync_channel::<Vec<u8>>(WAITING);
+    std::thread::Builder::new().name("device-requests".into()).spawn(move || {
+        for payload in handed {
+            if writing.write_all(&payload).is_err() {
+                break;
+            }
+        }
+    })?;
+    Ok(requests)
+}
+
+/// Carries a connection: what the Device sends is opened and handed to
+/// the connection loop at the other end of `near`, and what the loop
+/// writes is sealed and sent to the Device.
+///
+/// Bytes both ways, and nothing here reads them as anything else. The
+/// connection loop is what takes a request out of them, and refuses it.
+///
+/// **Nothing here waits on the connection loop.** Its replies are read
+/// by one thread and what it is handed is written by another, so that
+/// this one is always free to look at the Device, at the replies and at
+/// whether the connection is still wanted. The one write it makes is to
+/// the Relay, which has a timeout.
+fn carry(
+    stream: &mut RelayStream,
+    transport: &mut snow::TransportState,
+    near: &Stream,
+    still_wanted: impl Fn() -> bool,
+) -> Carried {
+    let (replies, requests) = match (replies(near), requests(near)) {
+        (Ok(replies), Ok(requests)) => (replies, requests),
+        (Err(e), _) | (_, Err(e)) => return Carried::Broken(e.to_string()),
+    };
+
+    let mut arrived = Vec::new();
+    // What the Device sent, opened, and not yet taken by the loop.
+    let mut held: VecDeque<Vec<u8>> = VecDeque::new();
+    let mut held_since: Option<Instant> = None;
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut sealed = vec![0u8; pairing::MAX_NOISE_MESSAGE];
+    let mut carried = Instant::now();
+    let mut asked = Instant::now();
+    loop {
+        // The loop's replies first: whatever it has written since.
+        loop {
+            match replies.try_recv() {
+                Ok(reply) => {
+                    for piece in reply.chunks(MAX_PAYLOAD) {
+                        let sent = pairing::seal(transport, piece, &mut sealed)
+                            .and_then(|n| pairing::write_frame(stream, &sealed[..n]));
+                        if let Err(e) = sent {
+                            return Carried::Broken(e.to_string());
+                        }
+                    }
+                    carried = Instant::now();
+                }
+                Err(TryRecvError::Empty) => break,
+                // The loop let go of its end, having said everything it
+                // had to say: the Device was revoked, or removed itself.
+                Err(TryRecvError::Disconnected) => return Carried::Over,
+            }
+        }
+
+        // Then what the Device sent, for as much of it as there is room.
+        while let Some(payload) = held.pop_front() {
+            match requests.try_send(payload) {
+                Ok(()) => carried = Instant::now(),
+                Err(TrySendError::Full(payload)) => {
+                    held.push_front(payload);
+                    break;
+                }
+                Err(TrySendError::Disconnected(_)) => return Carried::Over,
+            }
+        }
+
+        // Remote access turned off or pointed at another Relay, or the
+        // Device revoked: the daemon lets go of what it is carrying.
+        if asked.elapsed() >= POLL {
+            asked = Instant::now();
+            if !still_wanted() {
+                return Carried::Over;
+            }
+        }
+
+        // Nothing more is read from the Device while the loop has not
+        // taken what it already sent. What is waiting is then never more
+        // than one read of the stream, and a Device that sends without
+        // reading is held to the pace it reads at.
+        if !held.is_empty() {
+            let since = *held_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= UNREAD {
+                return Carried::Broken(
+                    "what the device sent went unread: it is sending faster than it reads".into(),
+                );
+            }
+            std::thread::sleep(TICK_BUSY);
+            continue;
+        }
+        held_since = None;
+
+        // Then the Device. The wait IS the read, as it is while a
+        // pairing waits on the desk: it is what answers the Relay's
+        // keepalives.
+        let _ = stream.set_read_timeout(Some(tick(carried.elapsed())));
+        match stream.read(&mut buf) {
+            Ok(0) => return Carried::Over,
+            Ok(n) => {
+                carried = Instant::now();
+                arrived.extend_from_slice(&buf[..n]);
+                while let Some(frame) = next_frame(&mut arrived) {
+                    // A frame that does not open was altered, repeated
+                    // or moved on its way. It is not read, and nor is
+                    // anything after it: the channel counts its frames,
+                    // and the count is now wrong for good.
+                    match pairing::open(transport, &frame) {
+                        Ok(payload) => held.push_back(payload),
+                        Err(e) => return Carried::Broken(e.to_string()),
+                    }
+                }
+            }
+            Err(e) if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) => {}
+            Err(e) => return Carried::Broken(e.to_string()),
+        }
+    }
 }
 
 fn pair_through(manager: &Arc<SessionManager>, dial: &Dial, stream: &str) -> anyhow::Result<()> {
     let hello = RelayHello::stream(&dial.token, &dial.rendezvous, stream);
     let mut stream = client::dial(&dial.url, &hello, &DialOptions::default())?.into_stream();
-    stream.set_read_timeout(Some(HANDSHAKE_READ))?;
 
     // Phase 2's responder, over the Relay's pipe. A handshake that fails
     // -- a wrong secret, an expired offer, no desk to ask -- ends here,
     // and dropping the stream is what tells the Device.
-    let mut pairing = match manager.pair_over_awaited(&mut stream) {
+    let awaited = manager.pair_over_awaited(&mut Within::new(&mut stream, HANDSHAKE));
+    let mut pairing = match awaited {
         Ok(pairing) => pairing,
         Err(e) => {
             stream.close();
@@ -489,8 +1024,6 @@ pub(crate) fn await_decision(
     within: Duration,
     still_wanted: impl Fn() -> bool,
 ) -> PairingVerdict {
-    use std::sync::mpsc::TryRecvError;
-
     let deadline = Instant::now() + within;
     let mut asked = Instant::now();
     loop {
@@ -524,7 +1057,10 @@ pub(crate) fn await_decision(
 
 fn said(decision: PairingDecision) -> PairingVerdict {
     match decision {
-        PairingDecision::Confirmed { device_id } => PairingVerdict::Paired { device_id },
+        PairingDecision::Confirmed { device_id, notification_key } => PairingVerdict::Paired {
+            device_id,
+            notification_key: protocol::hex_encode(&notification_key),
+        },
         PairingDecision::Rejected => PairingVerdict::Rejected,
     }
 }
@@ -673,28 +1209,164 @@ mod tests {
     }
 
     /// A pairing stream is picked up by the daemon that is offering a
-    /// pairing, and by no other; a stream for anything else is picked up
-    /// by nobody, yet.
+    /// pairing, and by no other. A connection is picked up whether or
+    /// not one is: a Device that has paired needs nobody at the desk to
+    /// let it in. A stream for anything else is picked up by nobody.
     #[test]
-    fn only_a_pairing_stream_is_wanted_and_only_while_a_pairing_is_offered() {
+    fn a_stream_is_picked_up_for_what_it_is_for() {
         let dir = tempfile::tempdir().unwrap();
         let manager = manager(&dir);
-        assert!(!wanted(&manager, relay::PURPOSE_PAIR), "no offer was made");
+        assert_eq!(wanted(&manager, relay::PURPOSE_PAIR), None, "no offer was made");
+        assert_eq!(wanted(&manager, relay::PURPOSE_CONNECT), Some(Purpose::Connect));
 
         manager.begin_pairing().unwrap();
-        assert!(wanted(&manager, relay::PURPOSE_PAIR));
-        assert!(!wanted(&manager, "connect"));
-        assert!(!wanted(&manager, ""));
+        assert_eq!(wanted(&manager, relay::PURPOSE_PAIR), Some(Purpose::Pair));
+        assert_eq!(wanted(&manager, relay::PURPOSE_CONNECT), Some(Purpose::Connect));
+        for purpose in ["", "forward", "Connect", "pair "] {
+            assert_eq!(wanted(&manager, purpose), None, "{purpose:?}");
+        }
+    }
+
+    /// What the daemon carries between a Device and the connection loop
+    /// is bytes, and a frame ends wherever the Device's write did.
+    #[test]
+    fn frames_are_taken_out_of_what_arrived_as_they_become_whole() {
+        let mut arrived = Vec::new();
+        assert_eq!(next_frame(&mut arrived), None);
+
+        arrived.extend_from_slice(&[0x00, 0x03, b'a', b'b']);
+        assert_eq!(next_frame(&mut arrived), None, "a frame that is one byte short");
+        arrived.extend_from_slice(&[b'c', 0x00, 0x00, 0x00]);
+        assert_eq!(next_frame(&mut arrived).as_deref(), Some(&b"abc"[..]));
+        assert_eq!(next_frame(&mut arrived).as_deref(), Some(&b""[..]), "an empty frame");
+        assert_eq!(next_frame(&mut arrived), None, "half a length");
+        assert_eq!(arrived, vec![0x00]);
+    }
+
+    /// The daemon looks at a connection that is carrying something far
+    /// more often than at one that is not.
+    #[test]
+    fn a_quiet_connection_is_looked_at_less_often() {
+        assert_eq!(tick(Duration::ZERO), TICK_BUSY);
+        assert_eq!(tick(RECENT - Duration::from_millis(1)), TICK_BUSY);
+        assert_eq!(tick(RECENT), TICK_IDLE);
+        assert_eq!(tick(Duration::from_secs(3600)), TICK_IDLE);
+        assert!(TICK_BUSY < TICK_IDLE);
     }
 
     #[test]
     fn no_more_streams_are_served_at_once_than_the_ceiling() {
-        let held: Vec<Serving> = std::iter::from_fn(Serving::begin).take(MAX_STREAMS + 3).collect();
+        let pairing = || Serving::begin(Purpose::Pair);
+        let held: Vec<Serving> = std::iter::from_fn(pairing).take(MAX_STREAMS + 3).collect();
         assert_eq!(held.len(), MAX_STREAMS);
-        assert!(Serving::begin().is_none(), "a stream above the ceiling was served");
+        assert!(pairing().is_none(), "a stream above the ceiling was served");
 
         drop(held);
-        assert!(Serving::begin().is_some(), "the ceiling did not come back down");
+        assert!(pairing().is_some(), "the ceiling did not come back down");
+    }
+
+    /// A connection can be asked for at any time by anything the Relay
+    /// admits; a pairing only while the desk is showing a QR. However
+    /// many of the first there are, they are not what keeps the owner
+    /// from the second.
+    #[test]
+    fn connections_being_let_in_do_not_take_the_places_pairing_needs() {
+        let connecting = || Serving::begin(Purpose::Connect);
+        let held: Vec<Serving> = std::iter::from_fn(connecting).take(MAX_CONNECTING + 3).collect();
+        assert_eq!(held.len(), MAX_CONNECTING);
+        assert!(connecting().is_none(), "a connection above the ceiling was let in");
+
+        let pairing: Vec<Serving> =
+            std::iter::from_fn(|| Serving::begin(Purpose::Pair)).take(MAX_STREAMS).collect();
+        assert_eq!(pairing.len(), MAX_STREAMS, "the connections took the pairings' places");
+
+        drop(held);
+        assert!(connecting().is_some(), "the ceiling did not come back down");
+    }
+
+    /// A stream that gives up a byte whenever it is asked, after making
+    /// the asker wait.
+    struct Trickle {
+        every: Duration,
+        timeout: Option<Duration>,
+        read: usize,
+    }
+
+    impl std::io::Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.timeout.is_some_and(|timeout| timeout < self.every) {
+                std::thread::sleep(self.timeout.unwrap());
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            std::thread::sleep(self.every);
+            buf[0] = 0xff;
+            self.read += 1;
+            Ok(1)
+        }
+    }
+
+    impl std::io::Write for Trickle {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Timed for Trickle {
+        fn set_read_timeout(&mut self, timeout: Option<Duration>) -> std::io::Result<()> {
+            self.timeout = timeout;
+            Ok(())
+        }
+    }
+
+    /// The handshake has a deadline, not each read of it. A peer that
+    /// sends a byte inside every timeout would otherwise never run out
+    /// of time, and four of them are every place there is.
+    #[test]
+    fn a_handshake_has_one_deadline_however_slowly_it_arrives() {
+        let mut trickle = Trickle { every: Duration::from_millis(20), timeout: None, read: 0 };
+        let started = Instant::now();
+        let mut within = Within::new(&mut trickle, Duration::from_millis(300));
+
+        // A frame that claims more than will ever arrive in time.
+        let mut frame = vec![0u8; 4096];
+        let err = std::io::Read::read_exact(&mut within, &mut frame).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut, "{err}");
+        let took = started.elapsed();
+        assert!(took >= Duration::from_millis(300), "gave up early: {took:?}");
+        assert!(took < Duration::from_secs(2), "every byte renewed the wait: {took:?}");
+        assert!(trickle.read > 3 && trickle.read < 30, "{} bytes were read", trickle.read);
+    }
+
+    #[test]
+    fn a_handshake_that_arrives_in_time_is_read_whole() {
+        let mut trickle = Trickle { every: Duration::from_millis(1), timeout: None, read: 0 };
+        let mut within = Within::new(&mut trickle, Duration::from_secs(20));
+        let mut frame = vec![0u8; 64];
+        std::io::Read::read_exact(&mut within, &mut frame).unwrap();
+        assert_eq!(frame, vec![0xff; 64]);
+    }
+
+    /// What a peer can make the daemon write to its log is bounded.
+    /// Anything the Relay admits can ask for a connection, as often as
+    /// it likes, and each one that fails is a line.
+    #[test]
+    fn what_refused_connections_write_to_the_log_is_bounded() {
+        let mut budget = LogBudget::default();
+        let start = Instant::now();
+
+        let said: Vec<Logged> = (0..LOG_LINES + 5).map(|_| budget.spend(start)).collect();
+        assert!(said[..LOG_LINES].iter().all(|s| *s == Logged::Line), "{said:?}");
+        assert!(said[LOG_LINES..].iter().all(|s| *s == Logged::Nothing), "{said:?}");
+
+        // Still inside the window.
+        assert_eq!(budget.spend(start + LOG_WINDOW - Duration::from_secs(1)), Logged::Nothing);
+        // The next window says how much went unsaid, once.
+        assert_eq!(budget.spend(start + LOG_WINDOW), Logged::LineAfter(6));
+        assert_eq!(budget.spend(start + LOG_WINDOW), Logged::Line);
     }
 
     #[test]

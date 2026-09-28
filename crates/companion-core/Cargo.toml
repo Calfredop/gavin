@@ -9,7 +9,7 @@ edition = "2021"
 # default, because neither exists where the core's other build runs --
 # `wasm32-unknown-unknown`, inside the Companion shell, where the
 # transport is the webview's and the randomness is handed in by the host.
-test-device = ["dep:gavin-relay", "protocol/os"]
+test-device = ["dep:gavin-relay", "dep:ring", "dep:serde_json", "protocol/os"]
 
 [dependencies]
 # Without its `os` feature: the wire types, the pairing SAS and the two
@@ -29,3 +29,12 @@ snow = { version = "0.10.0", default-features = false, features = [
 ] }
 
 gavin-relay = { path = "../gavin-relay", default-features = false, features = ["client"], optional = true }
+
+# The test Device's stand-in for a phone's hardware key: a P-256 key in
+# memory. The version the Relay's client already brings in under rustls,
+# so the test Device adds nothing to what is built. The core itself never
+# signs -- a phone's hardware does -- and links none of this.
+ring = { version = "0.17", optional = true }
+
+# The test Device writes the daemon's requests and reads its replies.
+serde_json = { version = "1", optional = true }

@@ -17,6 +17,9 @@ pub struct Entropy {
 /// How much a pairing handshake draws: one ephemeral key.
 pub const PAIRING_ENTROPY: usize = 32;
 
+/// How much a connection handshake draws: one ephemeral key.
+pub const CONNECT_ENTROPY: usize = 32;
+
 /// How much generating the Device's static key draws.
 pub const KEY_ENTROPY: usize = 32;
 
