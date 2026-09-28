@@ -10,7 +10,8 @@
 //! minted for the run, which the daemon trusts the way it trusts any
 //! other: through the machine's certificate store, which `SSL_CERT_FILE`
 //! stands in for. This file plays the desk: the two connections the
-//! desktop app holds, the push one and the command one.
+//! desktop app holds, the push one and the command one -- and, for the
+//! forwarding tests, a scripted stand-in on the Forward connection.
 //!
 //! What each test asserts is what one of those three parties would
 //! observe -- six digits, a refusal, a row in a list read back later, a
@@ -344,6 +345,303 @@ fn eventually(what: &str, check: impl Fn() -> bool) {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+impl Workstation {
+    /// The daemon's local endpoint, for a desk connection this test opens
+    /// itself (the forwarding stand-in).
+    fn endpoint(&self) -> Endpoint {
+        Endpoint::new(self.data.join(protocol::profile_file_name(
+            "daemon",
+            "sock",
+            protocol::BuildProfile::current(),
+        )))
+    }
+
+    /// Opens the desktop's forwarding connection (v47).
+    fn open_forwarding(&self) -> Desk {
+        Desk::connect(&self.endpoint(), &self.daemon_token, ConnectionKind::Forward)
+    }
+}
+
+/// A scripted desktop stand-in on the forwarding connection: answers
+/// every `ForwardCommand` with a fixed value, and can offer events.
+struct StandIn {
+    /// What reached it, in order.
+    received: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+    /// Stop the loop.
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    join: Option<std::thread::JoinHandle<()>>,
+    /// Sends an event to offer, from the test thread.
+    offer: Option<std::sync::mpsc::Sender<(String, serde_json::Value)>>,
+}
+
+impl StandIn {
+    /// Answers every forwarded command with `value`.
+    fn answering(mut desk: Desk, value: serde_json::Value) -> Self {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (offer_tx, offer_rx) = std::sync::mpsc::channel::<(String, serde_json::Value)>();
+        let received_thread = Arc::clone(&received);
+        let stop_thread = Arc::clone(&stop);
+        let join = std::thread::spawn(move || {
+            desk.stream.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+            while !stop_thread.load(std::sync::atomic::Ordering::SeqCst) {
+                while let Ok((event, payload)) = offer_rx.try_recv() {
+                    let resp = desk.request(&Request::OfferDesktopEvent { event, payload });
+                    assert!(matches!(resp, Response::Ok), "{resp:?}");
+                }
+                match read_message::<_, Response>(&mut desk.reader) {
+                    Ok(Some(Response::ForwardCommand { call_id, command, args })) => {
+                        received_thread.lock().unwrap().push((command, args));
+                        let resp = desk.request(&Request::ForwardResult {
+                            call_id,
+                            value: Some(value.clone()),
+                            error: None,
+                        });
+                        assert!(matches!(resp, Response::Ok), "{resp:?}");
+                    }
+                    Ok(Some(other)) => panic!("stand-in saw {other:?}"),
+                    Ok(None) => break,
+                    Err(e) => {
+                        let msg = format!("{e:#}");
+                        if msg.contains("timed out")
+                            || msg.contains("WouldBlock")
+                            || msg.contains("Resource temporarily unavailable")
+                        {
+                            continue;
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            received,
+            stop,
+            join: Some(join),
+            offer: Some(offer_tx),
+        }
+    }
+
+    fn received(&self) -> Vec<(String, serde_json::Value)> {
+        self.received.lock().unwrap().clone()
+    }
+
+    fn offer_event(&self, event: &str, payload: serde_json::Value) {
+        self.offer
+            .as_ref()
+            .unwrap()
+            .send((event.to_string(), payload))
+            .unwrap();
+        // Give the stand-in a moment to write it.
+        std::thread::sleep(Duration::from_millis(80));
+    }
+}
+
+impl Drop for StandIn {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.offer.take();
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+// -- forwarding (companion-12) ------------------------------------------
+
+/// An allowed command reaches the stand-in, and its result returns.
+#[test]
+fn an_allowed_command_reaches_the_stand_in_and_its_result_returns() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    let mut connection = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+
+    let stand_in = StandIn::answering(
+        workstation.open_forwarding(),
+        serde_json::json!({"columns": [], "labels": []}),
+    );
+
+    let args = serde_json::json!({"workspaceId": "w1"});
+    match connection
+        .request(
+            &Request::InvokeDesktop { command: "get_board".into(), args: args.clone() },
+            SOON,
+        )
+        .unwrap()
+    {
+        Response::DesktopResult { value, error } => {
+            assert_eq!(error, None);
+            assert_eq!(value, Some(serde_json::json!({"columns": [], "labels": []})));
+        }
+        other => panic!("expected DesktopResult, got {other:?}"),
+    }
+
+    eventually("the stand-in saw the command", || {
+        stand_in.received() == vec![("get_board".into(), args.clone())]
+    });
+}
+
+/// Trust and layout-saving commands are refused before any forwarding.
+#[test]
+fn trust_and_layout_commands_are_refused_before_any_forwarding() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    let mut connection = device.connect(&paired).unwrap();
+    let _ = workstation.connected();
+
+    let stand_in = StandIn::answering(workstation.open_forwarding(), serde_json::json!(null));
+
+    for command in [
+        "begin_pairing",
+        "list_devices",
+        "revoke_device",
+        "set_remote_access",
+        "set_workspaces_state",
+        "set_board_tabs",
+        "set_file_tabs",
+        "set_card_tabs",
+    ] {
+        match connection
+            .request(
+                &Request::InvokeDesktop {
+                    command: command.into(),
+                    args: serde_json::json!({}),
+                },
+                SOON,
+            )
+            .unwrap()
+        {
+            Response::Error { message } => {
+                assert!(
+                    message.contains("may not invoke") && message.contains(command),
+                    "{command}: {message}"
+                );
+            }
+            other => panic!("{command} was answered {other:?}"),
+        }
+    }
+
+    assert_eq!(stand_in.received(), vec![], "a refused command reached the stand-in");
+}
+
+/// An unknown command name is refused.
+#[test]
+fn an_unknown_command_name_is_refused() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    let mut connection = device.connect(&paired).unwrap();
+    let _ = workstation.connected();
+
+    let stand_in = StandIn::answering(workstation.open_forwarding(), serde_json::json!(null));
+
+    match connection
+        .request(
+            &Request::InvokeDesktop {
+                command: "not_a_real_command".into(),
+                args: serde_json::json!({}),
+            },
+            SOON,
+        )
+        .unwrap()
+    {
+        Response::Error { message } => {
+            assert!(message.contains("unknown desktop command"), "{message}");
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+    assert_eq!(stand_in.received(), vec![]);
+}
+
+/// Events reach only the Devices that subscribed.
+#[test]
+fn events_reach_only_the_devices_that_subscribed() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let listening = device(&relay, "Listening");
+    let quiet = device(&relay, "Quiet");
+    let paired_listening = workstation.pair(&listening);
+    let paired_quiet = workstation.pair(&quiet);
+
+    let mut listening_conn = listening.connect(&paired_listening).unwrap();
+    assert_eq!(workstation.connected(), paired_listening.device_id);
+    let mut quiet_conn = quiet.connect(&paired_quiet).unwrap();
+    assert_eq!(workstation.connected(), paired_quiet.device_id);
+
+    let stand_in = StandIn::answering(workstation.open_forwarding(), serde_json::json!(null));
+
+    match listening_conn
+        .request(&Request::ListenDesktop { event: "status-changed".into() }, SOON)
+        .unwrap()
+    {
+        Response::Ok => {}
+        other => panic!("expected Ok, got {other:?}"),
+    }
+    // Quiet never listens.
+
+    stand_in.offer_event("status-changed", serde_json::json!({"id": "s1", "status": "idle"}));
+
+    match listening_conn.next(SOON).unwrap() {
+        Response::DesktopEvent { event, payload } => {
+            assert_eq!(event, "status-changed");
+            assert_eq!(payload, serde_json::json!({"id": "s1", "status": "idle"}));
+        }
+        other => panic!("expected DesktopEvent, got {other:?}"),
+    }
+
+    // The quiet Device must not see it.
+    match quiet_conn.next(Duration::from_millis(400)) {
+        Err(TestDeviceError::TimedOut) => {}
+        Ok(Response::DesktopEvent { .. }) => {
+            panic!("a Device that did not listen got an event")
+        }
+        other => panic!("expected silence, got {other:?}"),
+    }
+}
+
+/// "desktop app not running" is answered when the stand-in is absent.
+#[test]
+fn desktop_app_not_running_is_answered_when_the_stand_in_is_absent() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    let mut connection = device.connect(&paired).unwrap();
+    let _ = workstation.connected();
+
+    // Push and command are live; the forwarding connection is not.
+    match connection
+        .request(
+            &Request::InvokeDesktop {
+                command: "get_board".into(),
+                args: serde_json::json!({}),
+            },
+            SOON,
+        )
+        .unwrap()
+    {
+        Response::Error { message } => {
+            assert!(
+                message.contains("desktop app not running"),
+                "{message}"
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
 
 // -- pairing ------------------------------------------------------------
 
@@ -945,8 +1243,9 @@ fn a_paired_device_connects_and_is_given_the_remote_role() {
     assert_eq!(relay.relay.stats().streams, streams + 1);
     assert_eq!(relay.relay.stats().streams_open, 1);
 
-    // The Remote role, until the daemon forwards commands: every request
-    // is refused by name, and the connection goes on being served.
+    // The Remote role refuses the daemon's own requests: everything a
+    // Device might try that is not RemoveThisDevice or a forwarded
+    // desktop command. Trust above all.
     for request in refused_to_a_device() {
         assert_refused(&mut connection, &request);
     }

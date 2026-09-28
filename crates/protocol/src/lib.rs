@@ -22,6 +22,9 @@ pub mod transport;
 // depends on them from `wasm32-unknown-unknown`.
 pub mod device_wire;
 pub mod relay;
+pub mod remote_commands;
+
+pub use remote_commands::{allowance_for, remote_command_table, RemoteAllowance};
 
 /// Cap on a single protocol line, so a client that never sends a newline
 /// can't grow the daemon's read buffer unbounded. `pub` so gavin-mcp's
@@ -36,12 +39,22 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v47 is the third slice of the Device wire (`companion-12`): the daemon
+/// forwards gated desktop commands. It adds `InvokeDesktop`,
+/// `ListenDesktop`, `UnlistenDesktop`, `ForwardResult` and
+/// `OfferDesktopEvent` -- five new TYPES, gated by `min_version_for` --
+/// and widens `Hello`'s `connection` with `Forward` for the desktop's
+/// forwarding connection. The Remote role command table lives in
+/// `remote_commands`. Nothing in the desktop app sends the new requests
+/// yet (companion-13 opens the connection and the dispatcher), so no
+/// `FEATURE_MIN_VERSION` entry is owed on this bump.
+///
 /// v46 is the second slice of the Device wire (`companion-11`): a paired
 /// Device connects. It adds `RemoveThisDevice`, by which a Device deletes
-/// its own row -- one new TYPE, gated by `min_version_for`, and the only
-/// request the Remote role may make until the daemon forwards commands.
-/// Nothing in the desktop app sends it, so no `FEATURE_MIN_VERSION` entry
-/// is owed: there is no surface for one to grey.
+/// its own row -- one new TYPE, gated by `min_version_for`, and (until
+/// v47) the only request the Remote role may make. Nothing in the
+/// desktop app sends it, so no `FEATURE_MIN_VERSION` entry is owed: there
+/// is no surface for one to grey.
 ///
 /// The rest of v46 is not on this wire. Pairing registers the Device's
 /// hardware key and agrees a notification key, and a connection is Noise
@@ -544,7 +557,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 46;
+pub const PROTOCOL_VERSION: u32 = 47;
 
 /// The oldest daemon a Device can pair with: the first whose pairing
 /// reads the Device's proof and answers with a notification key. Read by
@@ -1403,6 +1416,52 @@ pub enum Request {
     /// away.
     RemoveThisDevice,
 
+    /// A Device asks the daemon to invoke a desktop Tauri command (v47).
+    ///
+    /// The daemon checks `command` against the Remote role table
+    /// (`remote_commands`), forwards an allowed name to the desktop's
+    /// forwarding connection, and answers with `DesktopResult`. A refused
+    /// or unknown name never reaches the desktop. With no forwarding
+    /// connection live the answer is `Error` carrying "desktop app not
+    /// running".
+    InvokeDesktop {
+        command: String,
+        /// The arguments the command takes, as the webview's `invoke`
+        /// would pass them -- typically a JSON object.
+        args: serde_json::Value,
+    },
+
+    /// A Device asks to receive pushes for a desktop event by name (v47).
+    ///
+    /// Events the desktop offers on its forwarding connection
+    /// (`OfferDesktopEvent`) are then written to every Device connection
+    /// that has listened for that name, as `Response::DesktopEvent`.
+    ListenDesktop { event: String },
+
+    /// Stop receiving a previously listened desktop event (v47).
+    UnlistenDesktop { event: String },
+
+    /// The desktop app's answer to a `ForwardCommand` (v47).
+    ///
+    /// Arrives on the forwarding connection. `error` present means the
+    /// command failed; otherwise `value` is what the handler returned
+    /// (including JSON `null`).
+    ForwardResult {
+        call_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+
+    /// A desktop event the host emitted, offered on the forwarding
+    /// connection (v47). The daemon relays it to Devices that listened
+    /// for `event`.
+    OfferDesktopEvent {
+        event: String,
+        payload: serde_json::Value,
+    },
+
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
     /// a daemon it owns without `pkill`, which cannot distinguish this
@@ -1438,11 +1497,12 @@ pub enum HelloAuth {
     SessionToken { token: String },
 }
 
-/// Which of the desktop app's connections a `Hello` is introducing (v44).
+/// Which of the desktop app's connections a `Hello` is introducing (v44;
+/// `Forward` added in v47).
 ///
-/// The app opens two connections to its daemon and both prove the daemon
-/// token, so both become `app`. They are not alike: the push connection is
-/// read continuously for whatever the daemon sends it, and the command
+/// The app opens connections to its daemon and each proves the daemon
+/// token, so each becomes `app`. They are not alike: the push connection
+/// is read continuously for whatever the daemon sends it, and the command
 /// connection is read only as the answer to the request just written, the
 /// next message taken to be that answer. A push written to the command
 /// connection while a request is in flight is read as the answer, and the
@@ -1455,6 +1515,12 @@ pub enum HelloAuth {
 /// a client older than v44 does and is kept as it was, so an older app
 /// keeps the pushes on both of its connections, and the command lane's own
 /// skip of them (`is_unsolicited` in the app) stays for exactly that case.
+///
+/// `Forward` (v47) is the third: the daemon hands it gated commands to run
+/// and it hands back results and events (ADR 0003). It reads
+/// `ForwardCommand` pushes the way a push connection reads device pushes,
+/// and writes `ForwardResult` / `OfferDesktopEvent` as requests. It is
+/// not sent the device pushes -- those stay on `Push`.
 ///
 /// `Unknown` is a kind a newer client sent that this daemon has never
 /// heard of. It has to be a value and not a parse error, for the reason
@@ -1469,6 +1535,9 @@ pub enum ConnectionKind {
     Push,
     /// Written a request and read for its answer, and nothing else.
     Command,
+    /// The desktop's forwarding connection (v47): reads `ForwardCommand`
+    /// and writes results and events.
+    Forward,
     /// A kind a newer client sent. Deserialize-only: never constructed or
     /// sent by us.
     #[serde(other)]
@@ -1680,6 +1749,17 @@ pub fn min_version_for(req: &Request) -> u32 {
         // matters is the role: `server::authorize` allows it to `remote`,
         // and the handler refuses a connection that carries no Device.
         Request::RemoveThisDevice => 46,
+
+        // Forwarding gated desktop commands (v47). Five new TYPES: three
+        // a Device sends, two the desktop's forwarding connection sends.
+        // companion-13 is the surface that opens the forwarding
+        // connection; until then nothing in the desktop app sends any of
+        // these, so no FEATURE_MIN_VERSION entry is owed on this bump.
+        Request::InvokeDesktop { .. }
+        | Request::ListenDesktop { .. }
+        | Request::UnlistenDesktop { .. }
+        | Request::ForwardResult { .. }
+        | Request::OfferDesktopEvent { .. } => 47,
 
         Request::Shutdown => 12,
 
@@ -2335,6 +2415,35 @@ pub enum Response {
     /// Push to every live `app` connection: a paired device's connection
     /// closed, whether it hung up or a revocation cut it.
     DeviceDisconnected { device_id: String },
+
+    /// The answer to `InvokeDesktop` (v47): what the desktop command
+    /// returned, or the error string it failed with.
+    ///
+    /// `error` present means the command failed; otherwise `value` is the
+    /// handler's return (including JSON `null`). Distinct from a refused
+    /// command (which never reaches the desktop and is answered `Error`
+    /// naming the refusal) and from "desktop app not running".
+    DesktopResult {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+
+    /// Push to the desktop's forwarding connection (v47): run this Tauri
+    /// command and answer with `ForwardResult { call_id, … }`.
+    ForwardCommand {
+        call_id: u64,
+        command: String,
+        args: serde_json::Value,
+    },
+
+    /// Push to every Device connection that listened for `event` (v47):
+    /// a desktop event the host offered on its forwarding connection.
+    DesktopEvent {
+        event: String,
+        payload: serde_json::Value,
+    },
 }
 
 /// One row of the trust store, as the Settings device list reads it
@@ -4271,9 +4380,8 @@ mod tests {
         assert_eq!(PairingQr::parse(old).unwrap().relay_admission, None);
     }
 
-    /// The one request a Device makes of its own accord until the daemon
-    /// forwards commands: it names no Device, because the connection it
-    /// arrives on already is one.
+    /// A Device deleting its own row: it names no Device, because the
+    /// connection it arrives on already is one.
     #[test]
     fn remove_this_device_names_nobody_and_is_gated_at_46() {
         let req = Request::RemoveThisDevice;
@@ -4283,6 +4391,47 @@ mod tests {
             serde_json::from_str::<Request>(r#"{"type":"RemoveThisDevice"}"#).unwrap(),
             Request::RemoveThisDevice
         ));
+    }
+
+    /// Forwarding requests are gated at 47 and round-trip on the wire.
+    #[test]
+    fn invoke_desktop_and_friends_are_gated_at_47() {
+        let invoke = Request::InvokeDesktop {
+            command: "get_board".into(),
+            args: serde_json::json!({"workspaceId": "w"}),
+        };
+        assert_eq!(min_version_for(&invoke), 47);
+        let v = serde_json::to_value(&invoke).unwrap();
+        assert_eq!(v["type"], "InvokeDesktop");
+        assert_eq!(v["command"], "get_board");
+        assert_eq!(v["args"]["workspaceId"], "w");
+        assert!(matches!(
+            serde_json::from_value::<Request>(v).unwrap(),
+            Request::InvokeDesktop { .. }
+        ));
+
+        assert_eq!(min_version_for(&Request::ListenDesktop { event: "e".into() }), 47);
+        assert_eq!(min_version_for(&Request::UnlistenDesktop { event: "e".into() }), 47);
+        assert_eq!(
+            min_version_for(&Request::ForwardResult { call_id: 1, value: None, error: None }),
+            47
+        );
+        assert_eq!(
+            min_version_for(&Request::OfferDesktopEvent {
+                event: "e".into(),
+                payload: serde_json::json!({}),
+            }),
+            47
+        );
+
+        let forward = Response::ForwardCommand {
+            call_id: 7,
+            command: "get_board".into(),
+            args: serde_json::json!({}),
+        };
+        let v = serde_json::to_value(&forward).unwrap();
+        assert_eq!(v["type"], "ForwardCommand");
+        assert_eq!(v["call_id"], 7);
     }
 
     /// A pairing is the proof after the handshake and the notification
@@ -4620,7 +4769,11 @@ mod tests {
 
     #[test]
     fn a_hello_names_its_connection_in_kebab_case() {
-        for (kind, wire) in [(ConnectionKind::Push, "push"), (ConnectionKind::Command, "command")] {
+        for (kind, wire) in [
+            (ConnectionKind::Push, "push"),
+            (ConnectionKind::Command, "command"),
+            (ConnectionKind::Forward, "forward"),
+        ] {
             let hello = Request::Hello {
                 client: "app".into(),
                 protocol_version: PROTOCOL_VERSION,
@@ -4642,7 +4795,7 @@ mod tests {
     /// then the client has no identity at all.
     #[test]
     fn a_connection_kind_from_a_newer_client_is_a_value_not_a_parse_error() {
-        let line = r#"{"type":"Hello","client":"app","protocol_version":99,"auth":{"kind":"none"},"nonce":"n","connection":"forward"}"#;
+        let line = r#"{"type":"Hello","client":"app","protocol_version":99,"auth":{"kind":"none"},"nonce":"n","connection":"telepathy"}"#;
         match serde_json::from_str::<Request>(line).unwrap() {
             Request::Hello { connection, .. } => {
                 assert_eq!(connection, Some(ConnectionKind::Unknown));
@@ -4652,13 +4805,15 @@ mod tests {
         }
     }
 
-    /// Who is sent the device pushes. The command connection is the one
-    /// that must not be: it reads the next message as its reply.
+    /// Who is sent the device pushes. The command and forwarding
+    /// connections must not be: each reads the next message as a reply
+    /// (or a ForwardCommand), and a device push would take that place.
     #[test]
     fn only_a_push_connection_or_an_unnamed_one_takes_device_pushes() {
         assert!(ConnectionKind::takes_device_pushes(Some(ConnectionKind::Push)));
         assert!(ConnectionKind::takes_device_pushes(None));
         assert!(!ConnectionKind::takes_device_pushes(Some(ConnectionKind::Command)));
+        assert!(!ConnectionKind::takes_device_pushes(Some(ConnectionKind::Forward)));
         assert!(!ConnectionKind::takes_device_pushes(Some(ConnectionKind::Unknown)));
     }
 
@@ -5479,7 +5634,12 @@ mod tests {
         // v46: RemoveThisDevice -- a Device deleting its own row, over the
         // connection the Device wire's second slice gives it. One new
         // TYPE.
-        assert_eq!(PROTOCOL_VERSION, 46);
+        // v47: InvokeDesktop, ListenDesktop, UnlistenDesktop,
+        // ForwardResult, OfferDesktopEvent -- the Device asks, the
+        // desktop's forwarding connection answers. Five new TYPES. The
+        // `Hello.connection` value `Forward` is a widened payload and
+        // invisible here.
+        assert_eq!(PROTOCOL_VERSION, 47);
     }
 
     #[test]
@@ -5897,6 +6057,22 @@ mod tests {
             Request::SetRemoteAccess { enabled: true, relay_url: None, relay_admission: None },
             // v46: a Device removing itself.
             Request::RemoveThisDevice,
+            // v47: forwarding gated desktop commands.
+            Request::InvokeDesktop {
+                command: "get_board".into(),
+                args: serde_json::json!({}),
+            },
+            Request::ListenDesktop { event: "status-changed".into() },
+            Request::UnlistenDesktop { event: "status-changed".into() },
+            Request::ForwardResult {
+                call_id: 1,
+                value: Some(serde_json::json!(null)),
+                error: None,
+            },
+            Request::OfferDesktopEvent {
+                event: "status-changed".into(),
+                payload: serde_json::json!({}),
+            },
             Request::Unknown,
         ]
     }
@@ -5990,9 +6166,11 @@ mod tests {
         // GetCardSession -- one binding with its command, now the board
         // read leaves the command out.
         expected.insert(43, 1);
-        // RemoveThisDevice -- the one request the Remote role may make
-        // until the daemon forwards commands.
+        // RemoveThisDevice -- a Device deleting its own row.
         expected.insert(46, 1);
+        // InvokeDesktop + Listen/UnlistenDesktop + ForwardResult +
+        // OfferDesktopEvent -- forwarding gated desktop commands.
+        expected.insert(47, 5);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

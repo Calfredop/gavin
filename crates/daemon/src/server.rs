@@ -1414,6 +1414,26 @@ pub struct SessionManager {
     /// not an error: an op that finished a moment before the cancel is
     /// the ordinary race.
     git_ops: Mutex<HashMap<String, crate::gavin::SharedChild>>,
+    /// The desktop's forwarding connection (v47), if any: the one that
+    /// Hello'd as `ConnectionKind::Forward`. At most one -- two desks
+    /// both answering the same invoke would run every command twice.
+    forwarding: Mutex<Option<(u64, Arc<Mutex<Stream>>)>>,
+    next_forwarding: AtomicU64,
+    /// Hands out `ForwardCommand.call_id`.
+    next_forward_call: AtomicU64,
+    /// Waiters for a `ForwardResult`, keyed by that call id.
+    pending_forwards: Mutex<HashMap<u64, std::sync::mpsc::SyncSender<ForwardOutcome>>>,
+    /// Device connections listening for a desktop event name (v47).
+    /// Each entry carries the device-connection token so a Drop clears
+    /// only that connection's listens.
+    event_subscribers: Mutex<HashMap<String, Vec<(u64, Arc<Mutex<Stream>>)>>>,
+}
+
+/// What the desktop answered for one forwarded call — or that it went
+/// away before answering.
+enum ForwardOutcome {
+    Done { value: Option<serde_json::Value>, error: Option<String> },
+    DesktopGone,
 }
 
 /// A completed handshake the human has not yet ruled on.
@@ -1512,6 +1532,7 @@ struct DeviceConnectionSlot<'a> {
 
 impl Drop for DeviceConnectionSlot<'_> {
     fn drop(&mut self) {
+        self.manager.clear_event_subscriptions(self.token);
         let gone = self.manager.device_connections.lock().unwrap().remove(&self.token);
         // The `DeviceDisconnected` push lives HERE, on the one path every
         // connection leaves by, rather than beside each thing that can
@@ -1527,6 +1548,25 @@ impl Drop for DeviceConnectionSlot<'_> {
             self.manager
                 .push_to_apps(&Response::DeviceDisconnected { device_id: conn.device_id });
         }
+    }
+}
+
+/// Removes the forwarding connection when its thread ends, and fails
+/// every call still waiting on it.
+struct ForwardingSlot<'a> {
+    manager: &'a SessionManager,
+    token: u64,
+}
+
+impl Drop for ForwardingSlot<'_> {
+    fn drop(&mut self) {
+        {
+            let mut slot = self.manager.forwarding.lock().unwrap();
+            if slot.as_ref().is_some_and(|(t, _)| *t == self.token) {
+                *slot = None;
+            }
+        }
+        self.manager.fail_pending_forwards();
     }
 }
 
@@ -1604,6 +1644,11 @@ impl SessionManager {
             remote_wake: Arc::new(crate::remote::Wake::default()),
             next_pairing_ticket: AtomicU64::new(0),
             git_ops: Mutex::new(HashMap::new()),
+            forwarding: Mutex::new(None),
+            next_forwarding: AtomicU64::new(0),
+            next_forward_call: AtomicU64::new(0),
+            pending_forwards: Mutex::new(HashMap::new()),
+            event_subscribers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1822,10 +1867,128 @@ impl SessionManager {
         token
     }
 
+    /// Registers the desktop's forwarding connection (v47). Replaces any
+    /// previous one: two desks must not both answer the same invoke.
+    fn register_forwarding(&self, writer: Arc<Mutex<Stream>>) -> u64 {
+        let token = self.next_forwarding.fetch_add(1, Ordering::SeqCst);
+        *self.forwarding.lock().unwrap() = Some((token, writer));
+        token
+    }
+
     /// Whether any desktop is currently listening (§7's precondition for
     /// a pairing that needs confirming).
     pub(crate) fn an_app_is_live(&self) -> bool {
         !self.app_connections.lock().unwrap().is_empty()
+    }
+
+    /// Fail every forwarded call still waiting: the desktop went away.
+    fn fail_pending_forwards(&self) {
+        let pending: Vec<_> = self.pending_forwards.lock().unwrap().drain().map(|(_, tx)| tx).collect();
+        for tx in pending {
+            let _ = tx.send(ForwardOutcome::DesktopGone);
+        }
+    }
+
+    /// Check the command table, hand an allowed call to the desktop, and
+    /// wait for its `ForwardResult`.
+    fn invoke_desktop(&self, command: &str, args: serde_json::Value) -> Response {
+        match protocol::allowance_for(command) {
+            None => Response::Error {
+                message: format!("gavin-daemon: unknown desktop command `{command}`"),
+            },
+            Some(protocol::RemoteAllowance::Refused) => Response::Error {
+                message: format!("gavin-daemon: remote role may not invoke `{command}`"),
+            },
+            Some(protocol::RemoteAllowance::Allowed) => {
+                let writer = {
+                    let slot = self.forwarding.lock().unwrap();
+                    match slot.as_ref() {
+                        Some((_, w)) => Arc::clone(w),
+                        None => {
+                            return Response::Error {
+                                message: "gavin-daemon: desktop app not running".into(),
+                            };
+                        }
+                    }
+                };
+                let call_id = self.next_forward_call.fetch_add(1, Ordering::SeqCst);
+                let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                self.pending_forwards.lock().unwrap().insert(call_id, tx);
+                let push = Response::ForwardCommand {
+                    call_id,
+                    command: command.to_string(),
+                    args,
+                };
+                if write_message(&mut *writer.lock().unwrap(), &push).is_err() {
+                    self.pending_forwards.lock().unwrap().remove(&call_id);
+                    return Response::Error {
+                        message: "gavin-daemon: desktop app not running".into(),
+                    };
+                }
+                match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+                    Ok(ForwardOutcome::Done { value, error }) => {
+                        Response::DesktopResult { value, error }
+                    }
+                    Ok(ForwardOutcome::DesktopGone) | Err(_) => {
+                        self.pending_forwards.lock().unwrap().remove(&call_id);
+                        Response::Error {
+                            message: "gavin-daemon: desktop app not running".into(),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Deliver a `ForwardResult` to the waiter that owns `call_id`.
+    fn complete_forward(&self, call_id: u64, value: Option<serde_json::Value>, error: Option<String>) {
+        if let Some(tx) = self.pending_forwards.lock().unwrap().remove(&call_id) {
+            let _ = tx.send(ForwardOutcome::Done { value, error });
+        }
+    }
+
+    /// Record that this device connection wants `event` pushes.
+    fn listen_desktop(&self, token: u64, event: &str, writer: Arc<Mutex<Stream>>) {
+        let mut subs = self.event_subscribers.lock().unwrap();
+        let list = subs.entry(event.to_string()).or_default();
+        if !list.iter().any(|(t, _)| *t == token) {
+            list.push((token, writer));
+        }
+    }
+
+    /// Stop receiving `event` on this device connection.
+    fn unlisten_desktop(&self, token: u64, event: &str) {
+        let mut subs = self.event_subscribers.lock().unwrap();
+        if let Some(list) = subs.get_mut(event) {
+            list.retain(|(t, _)| *t != token);
+            if list.is_empty() {
+                subs.remove(event);
+            }
+        }
+    }
+
+    /// Drop every event subscription this device connection held.
+    fn clear_event_subscriptions(&self, token: u64) {
+        let mut subs = self.event_subscribers.lock().unwrap();
+        subs.retain(|_, list| {
+            list.retain(|(t, _)| *t != token);
+            !list.is_empty()
+        });
+    }
+
+    /// Relay a desktop event to every Device that listened for its name.
+    fn relay_desktop_event(&self, event: &str, payload: serde_json::Value) {
+        let writers: Vec<Arc<Mutex<Stream>>> = self
+            .event_subscribers
+            .lock()
+            .unwrap()
+            .get(event)
+            .map(|list| list.iter().map(|(_, w)| Arc::clone(w)).collect())
+            .unwrap_or_default();
+        let push = Response::DesktopEvent { event: event.to_string(), payload };
+        for writer in writers {
+            let _ = write_message(&mut *writer.lock().unwrap(), &push);
+        }
     }
 
     /// Writes a push to every live `app` connection that reads pushes.
@@ -4941,6 +5104,18 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         // identity: which Device "this" is. Reaching here means it
         // arrived with none.
         Request::RemoveThisDevice => Err(not_a_device()),
+        // Forwarding (v47) is intercepted in the connection loop: invoke
+        // needs the forwarding writer and a waiter, listen needs this
+        // connection's writer, and the desktop's answers land on the
+        // forwarding connection. Reaching here means that intercept was
+        // skipped.
+        Request::InvokeDesktop { .. }
+        | Request::ListenDesktop { .. }
+        | Request::UnlistenDesktop { .. }
+        | Request::ForwardResult { .. }
+        | Request::OfferDesktopEvent { .. } => {
+            Err(anyhow::anyhow!("gavin-daemon: forwarding request reached handle_request"))
+        }
         // A client newer than this daemon sent a request type we don't
         // know. Answer instead of the parse error that used to close the
         // whole connection (and every push riding on it).
@@ -4974,11 +5149,9 @@ pub enum Role {
     /// whose hardware signature over that handshake verified
     /// (`remote.rs`, ADR 0001).
     ///
-    /// It may remove its own Device and nothing else. What else it may
-    /// do is ADR 0004's -- everything the desktop app can, except manage
-    /// Devices -- and arrives with the command table and the forwarding
-    /// connection (companion-12); until then every other request is
-    /// refused.
+    /// It may remove its own Device, and it may ask the daemon to forward
+    /// a gated desktop command or to listen for a desktop event (ADR
+    /// 0003, companion-12). Everything else is refused.
     Remote,
 }
 
@@ -5337,21 +5510,33 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // A Device removing itself (v46). An agent is not a Device and
         // holds none to remove.
         | Request::RemoveThisDevice
+        // Forwarding (v47): a Device's, or the desktop's answer to one.
+        | Request::InvokeDesktop { .. }
+        | Request::ListenDesktop { .. }
+        | Request::UnlistenDesktop { .. }
+        | Request::ForwardResult { .. }
+        | Request::OfferDesktopEvent { .. }
         | Request::Unknown => false,
     }
 }
 
-/// What a `remote` connection may do: remove its own Device.
+/// What a `remote` connection may do: remove itself, and ask the daemon
+/// to forward a gated desktop command or listen for a desktop event.
 ///
-/// One request, until the daemon forwards commands (companion-12). ADR
-/// 0004 gives an unlocked Device everything the desktop app can do
+/// ADR 0004 gives an unlocked Device everything the desktop app can do
 /// except manage Devices, and all of that is the desktop app's to do --
 /// the Device asks, the daemon checks the command against a table and
 /// hands it to the app. None of it is a request of this protocol that a
-/// Device sends the daemon directly, so none of this protocol's other
-/// requests open here, then or now.
+/// Device sends the daemon's own handlers for, so none of those open
+/// here.
 fn remote_allows(req: &Request) -> bool {
-    matches!(req, Request::RemoveThisDevice)
+    matches!(
+        req,
+        Request::RemoveThisDevice
+            | Request::InvokeDesktop { .. }
+            | Request::ListenDesktop { .. }
+            | Request::UnlistenDesktop { .. }
+    )
 }
 
 /// What `RemoveThisDevice` is answered on a connection that carries no
@@ -5742,6 +5927,9 @@ fn serve_connection(
     // terminal is not a screen a human is looking at. And only an `app`
     // connection that reads pushes -- not the app's command connection.
     let mut _app_slot: Option<AppConnectionSlot> = None;
+    // The desktop's forwarding connection (v47). Same lifetime reasoning
+    // as `_app_slot`: the guard outlives the Hello branch.
+    let mut _forwarding_slot: Option<ForwardingSlot> = None;
     // This connection's git worktree watchers (v42), refcounted per cwd
     // like the desktop's own. Deliberately a LOCAL, not `SessionManager`
     // state: a link that drops takes its connection with it, and a
@@ -5802,6 +5990,13 @@ fn serve_connection(
                 let token = manager.register_app_connection(Arc::clone(&writer));
                 _app_slot = Some(AppConnectionSlot { manager: &manager, token });
             }
+            // The forwarding connection (v47): the daemon hands it gated
+            // commands and it hands back results and events. Not a push
+            // connection -- device pushes stay on Push.
+            if identity.role == Role::App && *connection == Some(protocol::ConnectionKind::Forward) {
+                let token = manager.register_forwarding(Arc::clone(&writer));
+                _forwarding_slot = Some(ForwardingSlot { manager: &manager, token });
+            }
             write_message(&mut *writer.lock().unwrap(), &ack)?;
             continue;
         }
@@ -5849,6 +6044,60 @@ fn serve_connection(
             manager.shutdown_device_connections(|token, id| id == device_id && Some(token) != own);
             answered?;
             break;
+        }
+
+        // Forwarding (v47): a Device asks the daemon to run a desktop
+        // command. The table is checked before any write to the desktop;
+        // the result comes back on the forwarding connection as
+        // `ForwardResult`.
+        if let Request::InvokeDesktop { command, args } = req {
+            let resp = manager.invoke_desktop(&command, args);
+            write_message(&mut *writer.lock().unwrap(), &resp)?;
+            continue;
+        }
+
+        if let Request::ListenDesktop { event } = req {
+            let Some(slot) = device_slot.as_ref() else {
+                write_message(
+                    &mut *writer.lock().unwrap(),
+                    &Response::Error {
+                        message: "gavin-daemon: only a Device can listen for desktop events"
+                            .into(),
+                    },
+                )?;
+                continue;
+            };
+            manager.listen_desktop(slot.token, &event, Arc::clone(&writer));
+            write_message(&mut *writer.lock().unwrap(), &Response::Ok)?;
+            continue;
+        }
+
+        if let Request::UnlistenDesktop { event } = req {
+            let Some(slot) = device_slot.as_ref() else {
+                write_message(
+                    &mut *writer.lock().unwrap(),
+                    &Response::Error {
+                        message: "gavin-daemon: only a Device can unlisten desktop events".into(),
+                    },
+                )?;
+                continue;
+            };
+            manager.unlisten_desktop(slot.token, &event);
+            write_message(&mut *writer.lock().unwrap(), &Response::Ok)?;
+            continue;
+        }
+
+        // The desktop's answers on the forwarding connection.
+        if let Request::ForwardResult { call_id, value, error } = req {
+            manager.complete_forward(call_id, value, error);
+            write_message(&mut *writer.lock().unwrap(), &Response::Ok)?;
+            continue;
+        }
+
+        if let Request::OfferDesktopEvent { event, payload } = req {
+            manager.relay_desktop_event(&event, payload);
+            write_message(&mut *writer.lock().unwrap(), &Response::Ok)?;
+            continue;
         }
 
         if let Request::Attach { id } = req {
@@ -6953,9 +7202,9 @@ mod tests {
         ));
     }
 
-    /// The Remote role until the daemon forwards commands (companion-12):
-    /// a Device may remove itself, and is refused everything else --
-    /// every read, every write, and every Trust request above all.
+    /// The Remote role (companion-12): a Device may remove itself, invoke
+    /// a gated desktop command, and listen for desktop events -- and is
+    /// refused everything else, Trust requests above all.
     #[test]
     fn a_remote_identity_may_remove_itself_and_nothing_else() {
         let id = ClientIdentity::remote("dev-1");
@@ -6976,7 +7225,20 @@ mod tests {
                 }
             }
         }
-        assert_eq!(allowed, vec!["RemoveThisDevice", "RemoveThisDevice"]);
+        allowed.sort();
+        assert_eq!(
+            allowed,
+            vec![
+                "InvokeDesktop",
+                "InvokeDesktop",
+                "ListenDesktop",
+                "ListenDesktop",
+                "RemoveThisDevice",
+                "RemoveThisDevice",
+                "UnlistenDesktop",
+                "UnlistenDesktop",
+            ]
+        );
     }
 
     /// Removing a Device is something a Device does to itself. An agent
@@ -7094,6 +7356,17 @@ mod tests {
             Request::GetProtocolVersion,
             Request::Shutdown,
             Request::RemoveThisDevice,
+            Request::InvokeDesktop {
+                command: "get_board".into(),
+                args: serde_json::json!({}),
+            },
+            Request::ListenDesktop { event: "e".into() },
+            Request::UnlistenDesktop { event: "e".into() },
+            Request::ForwardResult { call_id: 1, value: None, error: None },
+            Request::OfferDesktopEvent {
+                event: "e".into(),
+                payload: serde_json::json!({}),
+            },
         ]
     }
 
