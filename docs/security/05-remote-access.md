@@ -955,10 +955,13 @@ proved at the same seam. What was settled by building it:
   stream. The one with a desktop app connected picks it up at once; one with
   nobody at the desk waits 400 ms first, and picks it up all the same if
   nobody else has.
-- **The Remote role may do one thing**: `RemoveThisDevice`, which names no
-  Device — the connection it arrives on is one — deletes that row and drops
-  every connection the Device holds. Everything else is `Forbidden` until
-  the daemon forwards commands (companion-12).
+- **The Remote role may remove itself and ask the daemon to forward a
+  gated desktop command** (`InvokeDesktop`, `ListenDesktop`,
+  `UnlistenDesktop`): the command table refuses Trust, layout-saving,
+  window, updater and external-open names before any write to the
+  desktop, and with no forwarding connection live the answer is
+  "desktop app not running" (companion-12). Everything else is
+  `Forbidden`.
 - **The `IK` half of the proof phase 2 left owing is discharged**
   (`after_revoke_all_an_old_devices_ik_is_refused`): after "Revoke all" a
   Device that pinned the old key finds nobody at the old rendezvous; shown
