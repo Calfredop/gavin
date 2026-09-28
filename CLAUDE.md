@@ -173,3 +173,17 @@ Write commit messages as the human author: `type(scope): imperative summary`,
 then a body explaining **why** the change is right — the constraint it
 respects, the failure it prevents, the alternative it rejects. The reasoning
 is the value; the authorship is not part of the record.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are gavin cards in `.gavin-root/plans/`; a spec's full text lives in `docs/superpowers/specs/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default role labels, written in a card's `labels:` header field. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.

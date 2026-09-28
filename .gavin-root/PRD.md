@@ -127,10 +127,14 @@ items had shipped.
    and a board card still show a waiting agent as idle, and the "finished"
    notification fires before the verdict lands. The Decisions tab gathers all of
    it in one place.
-5. **Remote access, phase 2.** Phase 1 (client identity and roles on the local
-   socket) landed. The trust store, the pairing handshake, revocation and the
-   Settings section do not exist yet — `trust.rs` and `pairing.rs` are unwritten.
-   It must not open a listener or dial a relay.
+5. **The Companion.** Remote access phases 1 and 2 have landed: client identity
+   on the local socket, plus the trust store, the pairing handshake, revocation
+   and the Settings section (`PROTOCOL_VERSION` 42). No transport exists yet.
+   What comes next is a phone app for iOS and Android that pairs with each
+   Workstation and reaches it through a Relay. One Unlock gives it full control
+   of the running desktop app: everything except managing Devices. The spec is
+   `docs/superpowers/specs/2026-09-27-companion-design.md`, the decisions are
+   ADRs 0001–0005, and the card is `companion.md`.
 
 **On confirming the rendered surface.** The suites cannot reach it, and the
 retired smoke checklist is not coming back as a routine UI backlog. But checks
