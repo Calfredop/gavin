@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   ADMISSION_NOTE,
+  KEEP_RUNNING_NOTE,
   NO_DEVICES,
   PAIRING_IDLE,
   RELAY_NOTE,
@@ -319,6 +320,14 @@ describe("the section's copy", () => {
     // The claim the section used to make, and must not make any more.
     expect(TRANSPORT_NOTE).not.toContain("no transport");
     expect(TRANSPORT_NOTE).not.toContain("nothing dials");
+  });
+
+  // Keep-running mode: the switch now changes what the red button does,
+  // and the section is the only place that can say so before it happens.
+  it("says closing keeps gavin in the menu bar and the Mac awake for a running agent", () => {
+    expect(KEEP_RUNNING_NOTE).toContain("menu bar");
+    expect(KEEP_RUNNING_NOTE).toContain("Quit");
+    expect(KEEP_RUNNING_NOTE).toContain("idle-sleep while an agent is running");
   });
 
   it("says the Relay cannot read what it carries", () => {

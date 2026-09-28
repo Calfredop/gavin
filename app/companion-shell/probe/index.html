@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Bundle probe</title>
+    <style>
+      body { margin: 0; padding: max(16px, env(safe-area-inset-top)) 16px 16px; background: #1e1e1e; color: #ddd;
+             font: 13px/1.45 -apple-system, system-ui, sans-serif; }
+      h1 { font-size: 15px; margin: 0 0 8px; }
+      pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
+      iframe { width: 1px; height: 1px; border: 0; opacity: 0; }
+    </style>
+  </head>
+  <body>
+    <h1>Bundle probe (debug builds only)</h1>
+    <pre id="out"></pre>
+    <!-- What each frame runs, as an inert block: the page's policy hashes
+         every inline script it serves, and a srcdoc frame inherits that
+         policy, so this exact text is the one inline script a frame may run.
+         It tries the channel every way a frame could reach it. -->
+    <script type="text/plain" id="frame-script">
+(function () {
+  var frame = document.currentScript && document.currentScript.dataset.frame;
+  var attempts = [];
+  var invoke = JSON.stringify({ v: 1, type: "invoke", id: 900, cmd: "probe_from_frame", args: { frame: frame } });
+  function attempt(how, fn) {
+    try { attempts.push({ how: how, outcome: fn() }); }
+    catch (e) { attempts.push({ how: how, outcome: "failed: " + e }); }
+  }
+  attempt("window.gavinChannel", function () {
+    if (!window.gavinChannel) return "failed: not defined in this frame";
+    window.gavinChannel.postMessage(invoke);
+    return "posted";
+  });
+  attempt("webkit.messageHandlers.gavinChannel", function () {
+    var h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.gavinChannel;
+    if (!h) return "failed: not visible in this frame";
+    h.postMessage(invoke);
+    return "posted";
+  });
+  // A frame of the page's own origin shares everything with it, the
+  // channel included; only a frame of another origin is kept out.
+  if (frame === "other-origin") {
+    attempt("parent.gavinChannel", function () {
+      var c = window.parent.gavinChannel;
+      if (!c) return "failed: not visible from this frame";
+      c.postMessage(invoke);
+      return "posted";
+    });
+  }
+  window.parent.postMessage({ probeFrame: frame, attempts: attempts }, "*");
+})();
+</script>
+    <script src="probe.js"></script>
+  </body>
+</html>

@@ -12,6 +12,7 @@ mod fileviewer;
 mod forwarding;
 mod git;
 mod home;
+mod keep_running;
 mod layout;
 mod mac_window;
 mod memory;
@@ -25,6 +26,7 @@ mod trash;
 mod typesafe;
 mod updater;
 mod workspace_delete;
+mod workspace_settings;
 mod workspace_window;
 mod worktree_setup;
 
@@ -86,11 +88,17 @@ pub fn run() {
         .manage(remote::RemoteLinks::default())
         .manage(remote::SessionHosts::default())
         .manage(forwarding::Forwarding::default())
+        .manage(keep_running::SleepHold::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 mac_window::round_window_corners(&window, 10.0);
                 mac_window::install_edge_double_click(&window, 6.0);
+            }
+            // Its rails keep time with the window closed to the menu bar,
+            // minimized, or on another Space (keep_running.rs).
+            if let Some(window) = app.get_webview_window("main") {
+                keep_running::keep_timers_on_time(&window);
             }
 
             let handle = app.handle().clone();
@@ -128,6 +136,8 @@ pub fn run() {
             session::set_failure_patterns,
             session::get_workspaces_state,
             session::set_workspaces_state,
+            workspace_settings::get_workspace_settings,
+            workspace_settings::set_workspace_settings,
             session::get_theme_pref,
             session::set_theme_pref,
             session::get_terminal_font_size,
@@ -260,6 +270,8 @@ pub fn run() {
             workspace_window::close_all_workspace_windows,
             workspace_window::close_workspace_window,
             workspace_window::app_duty,
+            keep_running::hide_to_menu_bar,
+            keep_running::set_sleep_hold,
             workspace_delete::scan_gavin_footprint,
             workspace_delete::remove_gavin_footprint,
             git::git_repo_info,
@@ -327,6 +339,17 @@ pub fn run() {
             updater::install_update,
             fileviewer::temp_dir
         ])
-        .run(context)
-        .expect("error while running tauri application");
+        .build(context)
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // A click on the Dock icon with nothing on screen: the main
+            // window is closed to the menu bar (keep_running.rs), and this
+            // is the other way a Mac user expects to bring it back.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
+                keep_running::reopen_main_window(app);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }

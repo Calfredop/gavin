@@ -4,6 +4,7 @@ import { source } from "$lib/sources";
 import { FEATURE_MIN_VERSION } from "$lib/core/daemonCompat";
 import {
   ADMISSION_NOTE,
+  KEEP_RUNNING_NOTE,
   NO_DEVICES,
   RELAY_NOTE,
   STALE_NOTE,
@@ -184,12 +185,14 @@ describe("the Settings section", () => {
     expect(VIEW).toContain("transportNote($daemonCompat)");
     expect(VIEW).toContain("{transportLine}");
     expect(VIEW).not.toContain("{TRANSPORT_NOTE}");
+    expect(VIEW).toContain("{KEEP_RUNNING_NOTE}");
     expect(VIEW).toContain("{RELAY_NOTE}");
     expect(VIEW).toContain("{ADMISSION_NOTE}");
     expect(VIEW).toContain("{NO_DEVICES}");
     // The strings themselves live in the module, not the markup.
     expect(MODULE).toContain(TRANSPORT_NOTE);
     expect(VIEW).not.toContain(TRANSPORT_NOTE);
+    expect(VIEW).not.toContain(KEEP_RUNNING_NOTE);
     expect(VIEW).not.toContain(RELAY_NOTE);
     expect(VIEW).not.toContain(ADMISSION_NOTE);
     expect(VIEW).not.toContain(NO_DEVICES);

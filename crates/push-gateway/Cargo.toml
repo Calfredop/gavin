@@ -1,0 +1,30 @@
+[package]
+name = "gavin-push-gateway"
+version = "0.1.0"
+edition = "2021"
+description = "Delivers the Companion's end-to-end encrypted notifications through Apple and Google"
+
+[[bin]]
+name = "gavin-push-gateway"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+# `matched-path` so the request log names the ROUTE, never the raw path a
+# caller typed; the rest of axum's defaults (form, query, tracing) are unused.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "tokio"] }
+base64 = "0.22"
+# ring, not aws-lc-rs: ring is already the workspace's rustls provider (the
+# updater's reqwest uses it), and it signs everything this service signs --
+# the permissions, the APNs ES256 token and the Google RS256 assertion -- so
+# nothing needs a C toolchain beyond what ring already builds.
+reqwest = { version = "0.13", default-features = false, features = ["form", "http2", "json", "rustls-no-provider"] }
+ring = "0.17"
+rusqlite = { version = "0.31", features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+
+[dev-dependencies]
+tempfile = "3"

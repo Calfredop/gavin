@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%sveltekit.assets%/favicon.png" />
+    <!-- viewport-fit=cover: the shell draws the bundle full-screen, so the
+         page has to know about the notch and the home indicator itself. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Gavin</title>
+    <script>
+      // Pre-boot guess so the first frame isn't the wrong theme. The
+      // Workstation's stored preference arrives over the channel and
+      // overwrites this; dark is the fallback, matching resolveTheme.
+      try {
+        document.documentElement.dataset.theme =
+          window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      } catch (_) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    </script>
+    %sveltekit.head%
+  </head>
+  <body>
+    <div style="display: contents">%sveltekit.body%</div>
+  </body>
+</html>

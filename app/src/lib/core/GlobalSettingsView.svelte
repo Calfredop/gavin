@@ -85,6 +85,7 @@
   import {
     ADMISSION_CLEAR,
     ADMISSION_NOTE,
+    KEEP_RUNNING_NOTE,
     NO_DEVICES,
     PAIRING_IDLE,
     RELAY_NOTE,
@@ -1454,6 +1455,7 @@
           Remote access
         </label>
       </span>
+      <p class="hint">{KEEP_RUNNING_NOTE}</p>
 
       <div class="row endpoint-row">
         <span>Relay URL</span>

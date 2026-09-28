@@ -30,5 +30,10 @@ npm run build    # SPA build (adapter-static)
 npm run bundle   # tauri build — the shipped app
 ```
 
+`companion/` is the Companion web bundle: the UI a phone runs to work on a
+Workstation, built from this same library behind a remote shim. It has its own
+suite (`npm run companion:test`, `companion:check`, `companion:build`) and its
+own [README](companion/README.md).
+
 Run these from `app/`, not the repo root. `cargo test --workspace` from the
 repo root covers `src-tauri` along with the rest of the Rust workspace.

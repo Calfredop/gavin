@@ -53,6 +53,10 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("set_failure_patterns", RemoteAllowance::Allowed),
     ("get_workspaces_state", RemoteAllowance::Allowed),
     ("set_workspaces_state", RemoteAllowance::Refused), // layout-saving
+    // A workspace's settings, apart from its layout so a Device can change
+    // one without the other (ADR 0006).
+    ("get_workspace_settings", RemoteAllowance::Allowed),
+    ("set_workspace_settings", RemoteAllowance::Allowed),
     ("get_theme_pref", RemoteAllowance::Allowed),
     ("set_theme_pref", RemoteAllowance::Allowed),
     ("get_terminal_font_size", RemoteAllowance::Allowed),
@@ -185,6 +189,10 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("close_all_workspace_windows", RemoteAllowance::Refused), // window management
     ("close_workspace_window", RemoteAllowance::Refused), // window management
     ("app_duty", RemoteAllowance::Refused), // window management
+    ("hide_to_menu_bar", RemoteAllowance::Refused), // window management
+    // The duty window holds the Mac awake while an agent runs; a Device
+    // letting go of it would let the Mac sleep under its own connection.
+    ("set_sleep_hold", RemoteAllowance::Refused), // meaningless away from the desk
     ("scan_gavin_footprint", RemoteAllowance::Refused), // meaningless away from the desk
     ("remove_gavin_footprint", RemoteAllowance::Refused), // meaningless away from the desk
     ("git_repo_info", RemoteAllowance::Allowed),
@@ -290,6 +298,15 @@ mod tests {
         assert_eq!(allowance_for("git_status"), Some(RemoteAllowance::Allowed));
     }
 
+    /// ADR 0006: a workspace's settings are the Companion's to change, and
+    /// its layout never is -- which is why the two are separate commands.
+    #[test]
+    fn workspace_settings_are_allowed_where_the_layout_is_refused() {
+        assert_eq!(allowance_for("get_workspace_settings"), Some(RemoteAllowance::Allowed));
+        assert_eq!(allowance_for("set_workspace_settings"), Some(RemoteAllowance::Allowed));
+        assert_eq!(allowance_for("set_workspaces_state"), Some(RemoteAllowance::Refused));
+    }
+
     #[test]
     fn an_unknown_command_name_is_not_in_the_table() {
         assert_eq!(allowance_for("not_a_real_command"), None);
@@ -302,6 +319,8 @@ mod tests {
             "open_workspace_window",
             "close_workspace_window",
             "app_duty",
+            "hide_to_menu_bar",
+            "set_sleep_hold",
             "update_settings",
             "install_update",
             "open_path_externally",

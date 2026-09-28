@@ -464,6 +464,20 @@ export const FEATURE_MIN_VERSION = {
   // other about a socket being opened, and the next bump may move one
   // without the other.
   relayDial: 45,
+  // Companion encrypted notifications: the desk's notify/resolve batch,
+  // the Push gateway URL, and the Device's send permission. Three new
+  // TYPES, so `min_version_for` already refuses them against an older
+  // daemon. The consumer is the companion-notify driver that posts the
+  // desk's waiting-set diff; against an older daemon it stays quiet
+  // rather than throwing on every inbox change.
+  //
+  // 49, not the 44 they shipped at on main: the Device wire took 44..48
+  // on its own branch, and a daemon built there answers 45..48 without
+  // knowing any of the three. Gated at 44, the driver would send to one
+  // and be refused on every inbox change. A main-built v44 daemon, which
+  // does know them, is now told it is too old -- the cheap direction to
+  // be wrong in, and a rebuild and restart fix it.
+  companionNotifications: 49,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

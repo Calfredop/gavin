@@ -96,6 +96,7 @@ const META_RELAY_URL: &str = "remote_access_relay_url";
 /// written before the token existed needs no migration to gain it: the
 /// row is simply not there, and not there reads as "none".
 const META_RELAY_ADMISSION: &str = "remote_access_relay_admission";
+const META_PUSH_GATEWAY_URL: &str = "push_gateway_url";
 
 /// The daemon's clock, in microseconds since the epoch -- the same unit
 /// and the same saturating read as `registry::now_us`, so timestamps from
@@ -173,18 +174,25 @@ pub struct Device {
     /// cannot connect, and `admit` says so by name.
     pub hardware_key: Option<Vec<u8>>,
     /// What this daemon seals this Device's notifications with, agreed
-    /// when it paired. `None` for a row from before the column.
+    /// when it paired (06 §5.6). `None` for a row from before the column,
+    /// or after a revoke cleared it.
     ///
     /// Beside the daemon's own private key, in the file that is `0600`
     /// for exactly that: both are secrets the daemon has to be able to
     /// read at 02:00 with nobody at the desk.
     pub notification_key: Option<Vec<u8>>,
+    /// The Device's send permission for this Workstation, handed over the
+    /// encrypted channel after the shell mints it at the Push gateway.
+    /// A credential: it is what the gateway takes as the Bearer token.
+    pub send_permission: Option<String>,
+    /// Next AEAD counter to seal with for this Device.
+    pub notify_counter: u64,
 }
 
-/// Hand-written, and it leaves the notification key out. A row reaches
-/// an error message or a log line by being formatted -- `Admission`
-/// carries one, and is -- and the one secret a row holds must not go
-/// with it. The other keys are public halves.
+/// Hand-written, and it leaves the notification key and the send
+/// permission out. A row reaches an error message or a log line by being
+/// formatted -- `Admission` carries one, and is -- and the two secrets a
+/// row holds must not go with it. The other keys are public halves.
 impl std::fmt::Debug for Device {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Device")
@@ -196,6 +204,7 @@ impl std::fmt::Debug for Device {
             .field("created_at_us", &self.created_at_us)
             .field("last_seen_at_us", &self.last_seen_at_us)
             .field("revoked_at_us", &self.revoked_at_us)
+            .field("notify_counter", &self.notify_counter)
             .finish_non_exhaustive()
     }
 }
@@ -411,11 +420,16 @@ impl TrustStore {
         // Nullable with no default: `NULL` is exactly "not revoked", and
         // there is no timestamp that means it. The two keys likewise: a
         // row from before them holds none, and there is no key that
-        // means that.
+        // means that. The send permission is the same absence: a Device
+        // that has handed over none has not asked to be woken.
         for stmt in [
             "ALTER TABLE devices ADD COLUMN revoked_at_us INTEGER",
             "ALTER TABLE devices ADD COLUMN hardware_key BLOB",
             "ALTER TABLE devices ADD COLUMN notification_key BLOB",
+            // Companion notifications (06 §5.6). Revoke clears the
+            // permission and the counter with the key.
+            "ALTER TABLE devices ADD COLUMN send_permission TEXT",
+            "ALTER TABLE devices ADD COLUMN notify_counter INTEGER NOT NULL DEFAULT 0",
         ] {
             let _ = conn.execute(stmt, []);
         }
@@ -554,6 +568,15 @@ impl TrustStore {
             settings.relay_admission.as_deref().unwrap_or("").trim().as_bytes(),
         )?;
         Ok(())
+    }
+
+    /// Base URL of the Push gateway this daemon posts ciphertext to.
+    pub fn push_gateway_url(&self) -> anyhow::Result<Option<String>> {
+        self.meta_text(META_PUSH_GATEWAY_URL)
+    }
+
+    pub fn set_push_gateway_url(&self, url: Option<&str>) -> anyhow::Result<()> {
+        self.set_meta(META_PUSH_GATEWAY_URL, url.unwrap_or("").trim().as_bytes())
     }
 
     // -- devices -------------------------------------------------------
@@ -705,7 +728,10 @@ impl TrustStore {
 
     pub fn revoke_at(&self, device_id: &str, now_us: i64) -> anyhow::Result<bool> {
         let changed = self.conn.execute(
-            "UPDATE devices SET revoked_at_us = ?2
+            "UPDATE devices SET revoked_at_us = ?2,
+                   notification_key = NULL,
+                   send_permission = NULL,
+                   notify_counter = 0
               WHERE device_id = ?1 AND revoked_at_us IS NULL",
             params![device_id, now_us],
         )?;
@@ -743,11 +769,55 @@ impl TrustStore {
 
     pub fn revoke_all_at(&self, now_us: i64) -> anyhow::Result<Vec<u8>> {
         self.conn.execute(
-            "UPDATE devices SET revoked_at_us = ?1 WHERE revoked_at_us IS NULL",
+            "UPDATE devices SET revoked_at_us = ?1,
+                   notification_key = NULL,
+                   send_permission = NULL,
+                   notify_counter = 0
+              WHERE revoked_at_us IS NULL",
             params![now_us],
         )?;
         self.write_fresh_keypair()?;
         self.static_public_key()
+    }
+
+    /// Store the per-Device notification key agreed at pairing.
+    pub fn set_notification_key(&self, device_id: &str, key: &[u8]) -> anyhow::Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE devices SET notification_key = ?2, notify_counter = 0
+              WHERE device_id = ?1 AND revoked_at_us IS NULL",
+            params![device_id, key],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Store (or replace) the Device's send permission for this Workstation.
+    pub fn set_send_permission(&self, device_id: &str, permission: &str) -> anyhow::Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE devices SET send_permission = ?2
+              WHERE device_id = ?1 AND revoked_at_us IS NULL",
+            params![device_id, permission],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Clear a Device's send permission (the Device cancelled it, or the
+    /// gateway refused it as cancelled/expired/invalid).
+    pub fn clear_send_permission(&self, device_id: &str) -> anyhow::Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE devices SET send_permission = NULL
+              WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Persist the next AEAD counter after a successful post.
+    pub fn set_notify_counter(&self, device_id: &str, counter: u64) -> anyhow::Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE devices SET notify_counter = ?2 WHERE device_id = ?1",
+            params![device_id, counter as i64],
+        )?;
+        Ok(changed > 0)
     }
 
     /// Records that a device was seen just now -- what holds the ninety-day
@@ -824,7 +894,7 @@ fn judge(device: Option<Device>, now_us: i64) -> Admission {
 }
 
 const DEVICE_COLUMNS: &str = "device_id, public_key, name, role, created_at_us, last_seen_at_us, \
-     revoked_at_us, hardware_key, notification_key";
+     revoked_at_us, hardware_key, notification_key, send_permission, notify_counter";
 
 fn device_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
     Ok(Device {
@@ -837,6 +907,8 @@ fn device_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
         revoked_at_us: row.get(6)?,
         hardware_key: row.get(7)?,
         notification_key: row.get(8)?,
+        send_permission: row.get(9)?,
+        notify_counter: row.get::<_, i64>(10).unwrap_or(0) as u64,
     })
 }
 
@@ -1172,7 +1244,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = open_store(&dir);
         let registration = Registration { notification_key: vec![0xa7; 32], ..device(1, "Pixel") };
-        let paired = store.confirm_device("dev-1", &registration).unwrap();
+        store.confirm_device("dev-1", &registration).unwrap();
+        // Nor the send permission, the gateway's Bearer token.
+        store.set_send_permission("dev-1", "v1.perm.bearer-secret").unwrap();
+        let paired = store.device("dev-1").unwrap().unwrap();
 
         for shown in [
             format!("{paired:?}"),
@@ -1182,6 +1257,7 @@ mod tests {
             assert!(shown.contains("Pixel"), "{shown}");
             assert!(!shown.contains("167"), "the key, as bytes: {shown}");
             assert!(!shown.to_lowercase().contains("a7a7"), "the key, as hex: {shown}");
+            assert!(!shown.contains("bearer-secret"), "the permission: {shown}");
         }
     }
 
@@ -1785,5 +1861,105 @@ mod tests {
     #[test]
     fn the_noise_parameters_are_the_protocol_crates() {
         assert_eq!(NOISE_PARAMS, protocol::PAIRING_NOISE_PARAMS);
+    }
+
+    /// Pairing writes the notification key (`confirm_device`); the send
+    /// permission and the counter come after, from the Device and from
+    /// the posts. Revoking clears all three, so a revoked phone gets no
+    /// more pushes.
+    #[test]
+    fn notification_key_and_permission_round_trip_and_revoke_clears_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        let paired = store.confirm_device("dev-1", &device(1, "phone")).unwrap();
+        assert_eq!(paired.notification_key, Some(vec![1u8; 32]));
+        assert!(paired.send_permission.is_none());
+        assert_eq!(paired.notify_counter, 0);
+
+        let notif = vec![9u8; 32];
+        assert!(store.set_notification_key("dev-1", &notif).unwrap());
+        assert!(store.set_send_permission("dev-1", "v1.perm.tag").unwrap());
+        assert!(store.set_notify_counter("dev-1", 7).unwrap());
+
+        let read = store.device("dev-1").unwrap().unwrap();
+        assert_eq!(read.notification_key.as_deref(), Some(notif.as_slice()));
+        assert_eq!(read.send_permission.as_deref(), Some("v1.perm.tag"));
+        assert_eq!(read.notify_counter, 7);
+
+        assert!(store.revoke("dev-1").unwrap());
+        let revoked = store.device("dev-1").unwrap().unwrap();
+        assert!(revoked.notification_key.is_none());
+        assert!(revoked.send_permission.is_none());
+        assert_eq!(revoked.notify_counter, 0);
+    }
+
+    /// A Device that pairs again while still trusted takes the new
+    /// notification key, and keeps the send permission it handed over
+    /// and the counter the posts reached. The permission is the phone's
+    /// grant for this Workstation, still good at the gateway -- which
+    /// clears it on its own if it is not. And the counter only goes up:
+    /// it is the phone's replay guard, not the nonce (that is random),
+    /// and a phone that keeps the highest counter it has seen from this
+    /// Workstation would drop every push after a restart as a replay.
+    #[test]
+    fn pairing_again_keeps_the_send_permission_and_the_counter() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        store.confirm_device("dev-1", &device(1, "Pixel")).unwrap();
+        store.set_send_permission("dev-1", "v1.perm.tag").unwrap();
+        store.set_notify_counter("dev-1", 7).unwrap();
+
+        let again = Registration { notification_key: vec![0x52; 32], ..device(1, "Pixel") };
+        let revived = store.confirm_device("dev-2", &again).unwrap();
+        assert_eq!(revived.device_id, "dev-1");
+        assert_eq!(revived.notification_key, Some(vec![0x52; 32]));
+        assert_eq!(revived.send_permission.as_deref(), Some("v1.perm.tag"));
+        assert_eq!(revived.notify_counter, 7);
+    }
+
+    #[test]
+    fn a_devices_database_from_before_notifications_gains_the_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("devices.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE devices (
+                    device_id TEXT PRIMARY KEY,
+                    public_key BLOB NOT NULL,
+                    name TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'remote',
+                    created_at_us INTEGER NOT NULL,
+                    last_seen_at_us INTEGER NOT NULL,
+                    revoked_at_us INTEGER
+                );
+                CREATE TABLE trust_meta (key TEXT PRIMARY KEY, value BLOB NOT NULL);
+                INSERT INTO devices
+                    (device_id, public_key, name, role, created_at_us, last_seen_at_us, revoked_at_us)
+                 VALUES ('dev-1', X'01', 'old', 'remote', 1, 1, NULL);",
+            )
+            .unwrap();
+        }
+        let store = TrustStore::open(&path).unwrap();
+        let device = store.device("dev-1").unwrap().unwrap();
+        assert!(device.notification_key.is_none());
+        assert!(device.send_permission.is_none());
+        assert_eq!(device.notify_counter, 0);
+        assert!(store.set_notification_key("dev-1", &[3u8; 32]).unwrap());
+        assert!(store.set_send_permission("dev-1", "v1.perm.tag").unwrap());
+    }
+
+    #[test]
+    fn push_gateway_url_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        assert_eq!(store.push_gateway_url().unwrap(), None);
+        store.set_push_gateway_url(Some("https://push.example")).unwrap();
+        assert_eq!(
+            store.push_gateway_url().unwrap().as_deref(),
+            Some("https://push.example")
+        );
+        store.set_push_gateway_url(Some("  ")).unwrap();
+        assert_eq!(store.push_gateway_url().unwrap(), None);
     }
 }

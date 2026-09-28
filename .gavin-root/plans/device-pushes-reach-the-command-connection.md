@@ -1,4 +1,5 @@
 ---
+order: 34816
 kind: note
 title: Phase 3: the device pushes reach the app COMMAND connection too
 status: To Do

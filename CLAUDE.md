@@ -36,6 +36,12 @@ mirrors it for the Settings hint; both suites read
 both sides. Add the case before changing either.
 - `app/` — SvelteKit + Svelte 5 + xterm.js; `app/src-tauri` — the Tauri host
   (git, file viewer, agent profiles)
+- `app/companion/` — the Companion web bundle: the desktop's own components
+  behind a remote shim, tested against the Demo Workstation. See its README.
+- `app/companion-shell/` — the Companion shell, the Capacitor store app: the
+  Workstations hub, and each bundle in a bridge-less webview behind the
+  shell's end of the channel. `scripts/probe.sh` proves the seal on a
+  Simulator or emulator. See its README.
 
 Design history lives in `docs/superpowers/{brainstorms,specs,plans}/`. Read the
 spec before re-deriving a decision — most of them record why the obvious option
@@ -46,6 +52,8 @@ was rejected.
 ```
 cargo test --workspace
 cd app && npm test && npm run check && npm run build
+cd app && npm run companion:test && npm run companion:check && npm run companion:build
+cd app/companion-shell && npm ci && cd .. && npm run companion-shell:test && npm run companion-shell:check && npm run companion-shell:build
 ```
 
 The daemon's `gavin::tests` are flaky under full-suite cargo parallelism

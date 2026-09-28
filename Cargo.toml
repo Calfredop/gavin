@@ -6,5 +6,6 @@ members = [
   "crates/gavin-mcp",
   "crates/gavin-relay",
   "crates/companion-core",
+  "crates/push-gateway",
   "app/src-tauri",
 ]

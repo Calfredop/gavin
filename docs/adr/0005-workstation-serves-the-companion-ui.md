@@ -24,6 +24,10 @@ The shell's combined attention inbox cannot run each Workstation's code. So the 
 `docs/research/2026-09-27-app-store-downloaded-code.md` found the architecture allowed in principle, but not as first sketched. Apple's DPLA §3.3.1(B) and Google Play's interpreter exception permit downloaded JavaScript that keeps the app's purpose. Capacitor, however, hands every plugin to any script in its webview, and that conflicts with Guideline 4.7.2 ("may not extend or expose native platform APIs") and with Play's JavaScript-interface rule. So:
 
 - **Bundles run in a separate webview with no Capacitor bridge.** It is still rendered seamlessly inside the Companion: a full-screen view in the app's own navigation, never a browser.
+  - **Never an iframe in the shell's webview.** Capacitor's iOS bridge answers every frame, so any frame there can call every plugin.
+  - **On Android, that webview runs in its own app process.** Otherwise it shares one renderer process with the shell's webview, which holds the Noise key and every Workstation's live connection.
+
+  Both were measured in `docs/research/2026-09-28-companion-device-keys.md`.
 - **The bundle's one outlet is a channel the shell owns.** It carries a closed, versioned set of typed messages, accepts them only from the bundle's origin, and reaches only that bundle's own Workstation. Remote invoke's `invoke` and `listen` are two of those message types.
 - **Native trust stays native.** Only the shell touches the hardware key, biometrics and push.
 - **Only signed bundles run, from an app-local origin.** Every other navigation is blocked, and store builds refuse unsigned or self-built bundles.

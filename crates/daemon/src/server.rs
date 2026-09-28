@@ -2457,6 +2457,86 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Encrypt each Companion notification event for every Device that
+    /// still holds a send permission, and post the ciphertext to the Push
+    /// gateway. The desk decides what to send; this is the send half.
+    pub fn push_companion_notify(
+        &self,
+        transport: &dyn crate::companion_push::PushTransport,
+        events: &[crate::companion_push::CompanionPushEvent],
+    ) -> anyhow::Result<usize> {
+        if events.is_empty() {
+            return Ok(0);
+        }
+        let (gateway_url, mut devices) = {
+            let trust = self.trust_or_err()?;
+            let Some(gateway_url) = trust.push_gateway_url()? else {
+                anyhow::bail!("gavin-daemon: no Push gateway URL configured");
+            };
+            let devices: Vec<crate::companion_push::DevicePushCreds> = trust
+                .list()?
+                .into_iter()
+                .filter(|d| !d.is_revoked())
+                .filter_map(|d| {
+                    let key = d.notification_key?;
+                    let permission = d.send_permission?;
+                    if permission.is_empty() {
+                        return None;
+                    }
+                    Some(crate::companion_push::DevicePushCreds {
+                        device_id: d.device_id,
+                        notification_key: key,
+                        send_permission: permission,
+                        next_counter: d.notify_counter,
+                    })
+                })
+                .collect();
+            (gateway_url, devices)
+        };
+        if devices.is_empty() {
+            return Ok(0);
+        }
+        let outcomes =
+            crate::companion_push::push_all(transport, &gateway_url, &mut devices, events);
+        let trust = self.trust_or_err()?;
+        let mut accepted = 0;
+        for (device_id, outcome) in &outcomes {
+            match outcome {
+                crate::companion_push::PushOutcome::Accepted => {
+                    accepted += 1;
+                    if let Some(creds) = devices.iter().find(|d| d.device_id == *device_id) {
+                        let _ = trust.set_notify_counter(device_id, creds.next_counter);
+                    }
+                }
+                crate::companion_push::PushOutcome::DropPermission { .. } => {
+                    let _ = trust.clear_send_permission(device_id);
+                }
+                _ => {}
+            }
+        }
+        Ok(accepted)
+    }
+
+    pub fn set_push_gateway_url(&self, url: Option<String>) -> anyhow::Result<()> {
+        self.trust_or_err()?.set_push_gateway_url(url.as_deref())
+    }
+
+    pub fn set_device_send_permission(
+        &self,
+        device_id: &str,
+        permission: String,
+    ) -> anyhow::Result<()> {
+        let trust = self.trust_or_err()?;
+        if permission.is_empty() {
+            if !trust.clear_send_permission(device_id)? {
+                anyhow::bail!("gavin-daemon: no such device {device_id}");
+            }
+        } else if !trust.set_send_permission(device_id, &permission)? {
+            anyhow::bail!("gavin-daemon: no such device {device_id}");
+        }
+        Ok(())
+    }
+
     /// The trust store, or the error every remote-access request answers
     /// when this daemon has none. Named rather than silent, for the
     /// reason `revoke_device` gives: a success that stored nothing is
@@ -5144,6 +5224,45 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::SetRemoteAccess { enabled, relay_url, relay_admission } => {
             manager.set_remote_access(enabled, relay_url, relay_admission).map(|_| Response::Ok)
         }
+        Request::SetPushGatewayUrl { url } => {
+            manager.set_push_gateway_url(url).map(|_| Response::Ok)
+        }
+        Request::SetDeviceSendPermission { device_id, permission } => manager
+            .set_device_send_permission(&device_id, permission)
+            .map(|_| Response::Ok),
+        Request::PushCompanionNotify { events } => {
+            let mapped: Vec<crate::companion_push::CompanionPushEvent> = events
+                .into_iter()
+                .map(|e| match e {
+                    protocol::CompanionNotifyEvent::Notify {
+                        id,
+                        kind,
+                        text,
+                        workspace_id,
+                        target,
+                    } => crate::companion_push::CompanionPushEvent::Notify {
+                        id,
+                        kind,
+                        text,
+                        workspace_id,
+                        target: match target {
+                            protocol::CompanionNotifyTarget::Session { session_id } => {
+                                crate::notify_crypto::NotifyTarget::Session { session_id }
+                            }
+                            protocol::CompanionNotifyTarget::Card { path } => {
+                                crate::notify_crypto::NotifyTarget::Card { path }
+                            }
+                        },
+                    },
+                    protocol::CompanionNotifyEvent::Resolve { id } => {
+                        crate::companion_push::CompanionPushEvent::Resolve { id }
+                    }
+                })
+                .collect();
+            manager
+                .push_companion_notify(&crate::companion_push::UreqTransport, &mapped)
+                .map(|_| Response::Ok)
+        }
         Request::GetBoardByRoot { root_path } => manager
             .board_by_root(&root_path)
             .map(|board| Response::Board { columns: board.columns, labels: board.labels, card_sessions: board.card_sessions }),
@@ -5555,6 +5674,9 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::RevokeDevice { .. }
         | Request::RevokeAllDevices
         | Request::SetRemoteAccess { .. }
+        | Request::SetPushGatewayUrl { .. }
+        | Request::SetDeviceSendPermission { .. }
+        | Request::PushCompanionNotify { .. }
         // What finishes them (v42): the streaming network ops and their
         // cancel, the worktree watch, the env-carrying run and the three
         // tree mutations. Same reasoning, and it does not weaken for the
@@ -5653,6 +5775,9 @@ fn is_privileged(req: &Request) -> bool {
             | Request::RevokeDevice { .. }
             | Request::RevokeAllDevices
             | Request::SetRemoteAccess { .. }
+            | Request::SetPushGatewayUrl { .. }
+            | Request::SetDeviceSendPermission { .. }
+            | Request::PushCompanionNotify { .. }
             // The v42 half of the same reach: another way to run git,
             // git run long, and three ways to change the tree. Its
             // cancel and the two watch requests stay OUT -- they start
@@ -7457,6 +7582,12 @@ mod tests {
                 call_id: 1,
                 items: vec![],
             },
+            Request::SetPushGatewayUrl { url: Some("https://push.example".into()) },
+            Request::SetDeviceSendPermission {
+                device_id: "d1".into(),
+                permission: "v1.perm".into(),
+            },
+            Request::PushCompanionNotify { events: vec![] },
         ]
     }
 

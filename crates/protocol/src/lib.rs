@@ -43,6 +43,26 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v49 is Companion notification sends: `PushCompanionNotify` (the desk
+/// decides; the daemon seals and posts), `SetPushGatewayUrl`, and
+/// `SetDeviceSendPermission` (the shell hands over a gateway permission).
+/// Ciphertext never crosses this socket -- only the plaintext the desk
+/// already knew, and the permission string the Device minted. Three new
+/// TYPES, gated by `min_version_for`; the app's
+/// `FEATURE_MIN_VERSION.companionNotifications` is what keeps the desk's
+/// driver quiet against an older daemon.
+///
+/// They shipped on main as v44 while the Device wire took 44..48 on its
+/// own branch, so two builds answer 44 and mean different things by it.
+/// Merged, they took the next number instead: a daemon built on the
+/// Device wire's branch answers 45..48 without knowing any of the three,
+/// and gated at 44 they would be sent to it and refused on every inbox
+/// change. A main-built v44 daemon, which does know them, is now refused
+/// them too -- the cheap direction to be wrong in, and a rebuild and
+/// restart from right. Nothing else is at risk from the shared number:
+/// the v44 below is a widened `Hello` and gates nothing, and the v45
+/// gates are above both builds' 44.
+///
 /// v48 is the attention request (`companion-14`, ADR 0005): the one
 /// deliberately stable API between the Companion shell and a Workstation.
 /// It adds `GetAttention` (a Device asks) and `AttentionResult` (the
@@ -570,7 +590,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 48;
+pub const PROTOCOL_VERSION: u32 = 49;
 
 /// The oldest daemon a Device can pair with: the first whose pairing
 /// reads the Device's proof and answers with a notification key. Read by
@@ -1499,6 +1519,27 @@ pub enum Request {
         items: Vec<AttentionItem>,
     },
 
+    /// Where this daemon posts Companion notification ciphertext.
+    /// `None` / empty clears it; with no URL the daemon will not push.
+    SetPushGatewayUrl {
+        url: Option<String>,
+    },
+
+    /// The Device's send permission for this Workstation, minted at the
+    /// Push gateway and handed over the encrypted channel. Empty clears
+    /// it (the Device cancelled that Workstation).
+    SetDeviceSendPermission {
+        device_id: String,
+        permission: String,
+    },
+
+    /// The desk decided what to notify (or resolve). The daemon seals
+    /// each event with that Device's notification key and posts to the
+    /// Push gateway. Plaintext only crosses the local socket.
+    PushCompanionNotify {
+        events: Vec<CompanionNotifyEvent>,
+    },
+
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
     /// a daemon it owns without `pkill`, which cannot distinguish this
@@ -1803,6 +1844,15 @@ pub fn min_version_for(req: &Request) -> u32 {
         // payload's own `ATTENTION_API_VERSION` is the compat gate for
         // fields, so no FEATURE_MIN_VERSION entry is owed.
         Request::GetAttention { .. } | Request::AttentionResult { .. } => 48,
+
+        // Companion encrypted notifications (ticket 25). Three new TYPES:
+        // the desk's notify/resolve batch, the Push gateway URL, and the
+        // Device's send permission for this Workstation. 49, not the 44
+        // they shipped at on main: a daemon from the Device wire's branch
+        // answers 45..48 without them (see `PROTOCOL_VERSION`).
+        Request::PushCompanionNotify { .. }
+        | Request::SetPushGatewayUrl { .. }
+        | Request::SetDeviceSendPermission { .. } => 49,
 
         Request::Shutdown => 12,
 
@@ -2539,6 +2589,30 @@ pub struct DeviceInfo {
     /// Unseen for ninety days: shown greyed with "re-pair to use", and
     /// refused until it is paired again (§3, "How many, for how long").
     pub stale: bool,
+}
+
+/// One Companion notification event the desk asks the daemon to seal and
+/// post. `Resolve` carries only `id`; the rest are for a fresh notify.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum CompanionNotifyEvent {
+    Notify {
+        id: String,
+        kind: String,
+        text: String,
+        workspace_id: String,
+        target: CompanionNotifyTarget,
+    },
+    Resolve {
+        id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum CompanionNotifyTarget {
+    Session { session_id: String },
+    Card { path: String },
 }
 
 /// What the pairing QR carries, and the whole of what it carries (§3,
@@ -5750,7 +5824,11 @@ mod tests {
         // invisible here.
         // v48: GetAttention + AttentionResult -- the one stable API
         // between the shell and a Workstation (ADR 0005). Two new TYPES.
-        assert_eq!(PROTOCOL_VERSION, 48);
+        // v49: Companion notifications -- PushCompanionNotify,
+        // SetPushGatewayUrl, SetDeviceSendPermission. Three new TYPES,
+        // which main shipped as v44 before the Device wire's 44..48 met
+        // them.
+        assert_eq!(PROTOCOL_VERSION, 49);
     }
 
     #[test]
@@ -6192,6 +6270,19 @@ mod tests {
                 call_id: 1,
                 items: vec![],
             },
+            // v49: Companion notifications.
+            Request::SetPushGatewayUrl {
+                url: Some("https://push.example".into()),
+            },
+            Request::SetDeviceSendPermission {
+                device_id: "d1".into(),
+                permission: "v1.perm".into(),
+            },
+            Request::PushCompanionNotify {
+                events: vec![CompanionNotifyEvent::Resolve {
+                    id: "session:s1".into(),
+                }],
+            },
             Request::Unknown,
         ]
     }
@@ -6292,6 +6383,9 @@ mod tests {
         expected.insert(47, 5);
         // GetAttention + AttentionResult -- the attention request.
         expected.insert(48, 2);
+        // Companion notifications: PushCompanionNotify,
+        // SetPushGatewayUrl, SetDeviceSendPermission.
+        expected.insert(49, 3);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
