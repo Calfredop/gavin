@@ -102,9 +102,26 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // and reaches nothing on its own, which is exactly why §3 rejects a
   // bare-token QR in favour of this ceremony.
   //
-  // `set_remote_access` stores two scalars the daemon does not act on --
-  // nothing listens and nothing dials in this phase -- and `list_devices`
-  // is a read that deliberately leaves the static keys behind.
+  // `set_remote_access` is the one the daemon now ACTS on: with the
+  // switch on and a Relay named, it dials that Relay. Ordinary all the
+  // same, by this table's own line -- it removes no work and ends no
+  // process -- and because of what a dial is: it opens no port on this
+  // machine, and what it carries is a rendezvous id and ciphertext the
+  // Relay has no key for. A script that names a Relay of its own choosing
+  // is handed no token with it: the daemon forgets the stored one when
+  // the Relay URL changes, and `list_devices` says whether a token is
+  // set and never what it is.
+  //
+  // What that does NOT mean is that a script in this origin cannot read
+  // the token. `begin_pairing` returns the pairing QR, and the QR
+  // carries the token with the Relay URL -- that is what a QR is for,
+  // and the desk has to draw it. Nor that pairing is out of a script's
+  // reach: with a transport, `set_remote_access`, `begin_pairing` and
+  // `confirm_pairing` are a whole ceremony with nobody looking, and the
+  // six digits only protect a confirmation a human makes. Both are
+  // `companion-31-gate-confirm-pairing.md`, which has to land before the
+  // Remote role can do anything; until it does, a Device that paired
+  // that way holds a row and no way to use it.
   begin_pairing: ["ordinary"],
   confirm_pairing: ["ordinary"],
   reject_pairing: ["ordinary"],

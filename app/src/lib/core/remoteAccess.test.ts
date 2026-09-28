@@ -1,12 +1,16 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  ADMISSION_NOTE,
   NO_DEVICES,
   PAIRING_IDLE,
   RELAY_NOTE,
   REVOKED_NOTE,
   STALE_NOTE,
   TRANSPORT_NOTE,
+  admissionAfterSave,
+  admissionPlaceholder,
+  admissionToSave,
   countdownLabel,
   deviceRows,
   formatSas,
@@ -18,14 +22,19 @@ import {
   pairingRejected,
   pairingRequested,
   pairingTick,
+  pairingUnavailable,
   qrDraw,
+  relayAdmissionBlocked,
   relayUrlHint,
+  relayUrlProblem,
   relayUrlToSave,
   remoteAccessBlocked,
+  transportNote,
   revokeAllCopy,
   revokeDeviceCopy,
   secondsLeft,
   type DeviceInfo,
+  type DeviceList,
   type PairingRequest,
   type PairingState,
 } from "$lib/core/remoteAccess";
@@ -297,18 +306,69 @@ describe("the prompts", () => {
 });
 
 describe("the section's copy", () => {
-  // The card's own requirement, and §10's "must not": remote access on,
-  // with no transport, is a store with rows in it and nothing to serve.
-  it("says nothing listens and nothing dials", () => {
-    expect(TRANSPORT_NOTE).toContain("Nothing listens and nothing dials");
-    expect(TRANSPORT_NOTE).toContain("does not exist yet");
-    // And says what IS real, so the switch does not read as decorative.
-    expect(TRANSPORT_NOTE).toContain("trust store");
+  // What the switch does, in the daemon's own terms. Since the daemon
+  // dials, the three things a human would want to know before turning
+  // it on are whether anything is opened on this machine (no), whether
+  // it keeps going with the window closed (yes), and what off means
+  // (nothing is dialled).
+  it("says the daemon dials out, opens no port, and dials nothing when off", () => {
+    expect(TRANSPORT_NOTE).toContain("dials the Relay");
+    expect(TRANSPORT_NOTE).toContain("opens no port");
+    expect(TRANSPORT_NOTE).toContain("window open or closed");
+    expect(TRANSPORT_NOTE).toContain("Off, it dials nothing");
+    // The claim the section used to make, and must not make any more.
+    expect(TRANSPORT_NOTE).not.toContain("no transport");
+    expect(TRANSPORT_NOTE).not.toContain("nothing dials");
   });
 
-  it("says the relay URL is stored as typed and rides in the QR", () => {
-    expect(RELAY_NOTE).toContain("LAN only");
-    expect(RELAY_NOTE).toContain("exactly as typed");
+  it("says the Relay cannot read what it carries", () => {
+    expect(TRANSPORT_NOTE).toContain("cannot read");
+  });
+
+  it("says the relay URL rides in the QR and what an empty one means", () => {
+    expect(RELAY_NOTE).toContain("pairing QR");
+    expect(RELAY_NOTE).toContain("Empty");
+    expect(RELAY_NOTE).toContain("wss://");
+  });
+
+  it("says where the admission token comes from and where it goes", () => {
+    expect(ADMISSION_NOTE).toContain("whoever runs the Relay");
+    expect(ADMISSION_NOTE).toContain("pairing QR");
+    // It is write-only on this screen, and the human should know that
+    // before they go looking for it.
+    expect(ADMISSION_NOTE).toContain("not shown again");
+    // And that it goes when the Relay does, before they find the field
+    // empty and take it for a fault.
+    expect(ADMISSION_NOTE).toContain("Changing the Relay URL forgets it");
+  });
+
+  // The note describes what the DAEMON does, so it has to be about the
+  // daemon that is running. One older than v45 has the switch and the
+  // URL and dials nothing: under the ordinary note a human would turn
+  // remote access on, see nothing wrong, and wait for a Device that
+  // cannot arrive.
+  describe("against a daemon that does not dial", () => {
+    const needed = FEATURE_MIN_VERSION.relayDial;
+    const old = { daemonVersion: needed - 1, appVersion: needed, degraded: true };
+    const current = { daemonVersion: needed, appVersion: needed, degraded: false };
+
+    it("is gated at the version that started dialling", () => {
+      expect(needed).toBe(45);
+    });
+
+    it("says the running daemon dials nothing, and what to do about it", () => {
+      const note = transportNote(old);
+      expect(note).not.toBe(TRANSPORT_NOTE);
+      expect(note).toContain("dials nothing");
+      expect(note).toContain(`v${needed}`);
+      expect(note).toContain("Restart the daemon");
+      expect(note).not.toContain("stays connected");
+    });
+
+    it("says the ordinary thing to a daemon that does, and before one has answered", () => {
+      expect(transportNote(current)).toBe(TRANSPORT_NOTE);
+      expect(transportNote(null)).toBe(TRANSPORT_NOTE);
+    });
   });
 });
 
@@ -319,13 +379,252 @@ describe("the relay URL", () => {
     expect(relayUrlToSave("   ")).toBeNull();
   });
 
-  // A hint, never a refusal: the daemon keeps the string raw and has no
-  // opinion about whose relay it is.
+  // A hint, never a refusal to SAVE: the daemon keeps the string as
+  // typed. But the daemon does have an opinion about what it will DIAL
+  // (`protocol::relay::RelayUrl`), and a URL it will not dial is one the
+  // human has to be told about here -- the daemon's only other way of
+  // saying so is a line in its log.
   it("hints at a missing scheme without refusing the value", () => {
     expect(relayUrlHint("relay.example")).toMatch(/wss:\/\//);
     expect(relayUrlHint("wss://relay.example")).toBeNull();
     expect(relayUrlHint("")).toBeNull();
     expect(relayUrlToSave("relay.example")).toBe("relay.example");
+  });
+
+  it("is silent about every URL the daemon will dial", () => {
+    for (const url of [
+      "wss://relay.example/gavin",
+      "  wss://relay.example/gavin  ",
+      "WSS://relay.example:8443",
+      "ws://127.0.0.1:9000",
+      "ws://localhost:9000/relay",
+      "ws://192.168.1.20:9000",
+      "ws://10.0.0.4",
+      "ws://172.20.1.1:1",
+      "ws://100.100.4.2:9000",
+      "ws://[::1]:9000",
+      "ws://[fe80::1]",
+      "ws://[fd12:3456::1]:9000",
+      "ws://studio.local:9000",
+      "wss://relay.example/@gavin",
+    ]) {
+      expect(relayUrlHint(url), url).toBeNull();
+    }
+  });
+
+  it("says a plain URL to a public host will not be dialled, and what to type", () => {
+    for (const url of ["ws://relay.example/gavin", "ws://8.8.8.8:9000", "ws://[2001:db8::1]:9000"]) {
+      const hint = relayUrlHint(url);
+      expect(hint, url).toContain("unencrypted");
+      expect(hint, url).toContain("wss://");
+    }
+  });
+
+  it("names what is wrong with a URL the daemon cannot read", () => {
+    expect(relayUrlHint("https://relay.example")).toContain("not https://");
+    expect(relayUrlHint("wss://")).toContain("no host");
+    expect(relayUrlHint("wss:///path")).toContain("no host");
+    expect(relayUrlHint("wss://relay.example:0")).toContain("port");
+    expect(relayUrlHint("wss://relay.example:99999")).toContain("port");
+    expect(relayUrlHint("wss://relay.example:abc")).toContain("port");
+    expect(relayUrlHint("wss://[::1")).toContain("no host");
+    expect(relayUrlHint("wss://token@relay.example")).toContain("admission token");
+    expect(relayUrlHint("wss://relay_one.example")).toContain("not a host name");
+  });
+
+  // Every one of these says the same thing last: the value was kept,
+  // and the daemon will not act on it.
+  it("says the value was saved and will not be dialled", () => {
+    for (const url of ["relay.example", "https://relay.example", "ws://relay.example"]) {
+      expect(relayUrlHint(url), url).toContain("will not dial");
+    }
+  });
+
+  // `relayUrlProblem` is a second implementation of a rule that lives
+  // in Rust (`protocol::relay::RelayUrl::parse`), and a mirror is only a
+  // mirror while something holds it to the original. This is that: one
+  // table, in `test-fixtures/relay-urls/`, asserted here and in the
+  // protocol crate's own suite. A disagreement between the two is a
+  // hint that says "the daemon will not dial it" about a URL the daemon
+  // is dialling, or says nothing about one it refuses.
+  describe("against the table it shares with the daemon", () => {
+    interface Case {
+      url: string;
+      dial?: { secure: boolean; host: string; port: number; local: boolean };
+      refuse?: string;
+    }
+    const raw = Object.values(
+      import.meta.glob("../../../../test-fixtures/relay-urls/cases.json", {
+        query: "?raw",
+        import: "default",
+        eager: true,
+      }) as Record<string, string>
+    )[0];
+    const cases = JSON.parse(raw) as Case[];
+
+    it("has the table", () => {
+      expect(cases.length).toBeGreaterThan(90);
+      for (const c of cases) {
+        expect(Number(c.dial !== undefined) + Number(c.refuse !== undefined), c.url).toBe(1);
+      }
+    });
+
+    it("is silent about every URL the daemon will dial", () => {
+      for (const c of cases.filter((c) => c.dial !== undefined)) {
+        expect(relayUrlProblem(c.url), JSON.stringify(c.url)).toBeNull();
+        expect(relayUrlHint(c.url), JSON.stringify(c.url)).toBeNull();
+      }
+    });
+
+    it("names the daemon's own reason for every URL it refuses", () => {
+      const seen = new Set<string>();
+      for (const c of cases.filter((c) => c.refuse !== undefined)) {
+        const problem = relayUrlProblem(c.url);
+        expect(problem?.kind, JSON.stringify(c.url)).toBe(c.refuse);
+        seen.add(c.refuse as string);
+      }
+      // Every refusal there is has a case.
+      expect([...seen].sort()).toEqual([
+        "credentials",
+        "host",
+        "no-host",
+        "no-scheme",
+        "plain-to-public-host",
+        "port",
+        "scheme",
+      ]);
+    });
+
+    // The one refusal with no hint: an empty field is not a mistake, it
+    // is no Relay.
+    it("hints at every refusal but an empty field", () => {
+      for (const c of cases.filter((c) => c.refuse !== undefined)) {
+        if (c.url.trim() === "") expect(relayUrlHint(c.url)).toBeNull();
+        else expect(relayUrlHint(c.url), JSON.stringify(c.url)).toContain("will not dial");
+      }
+    });
+  });
+});
+
+describe("the admission token", () => {
+  // The field is write-only: it starts empty whether or not a token is
+  // stored. So an empty field cannot mean "clear it" -- leaving the
+  // field alone would wipe the token every time the switch was toggled.
+  it("sends nothing for an empty field, which leaves the stored token alone", () => {
+    expect(admissionToSave("")).toBeUndefined();
+    expect(admissionToSave("   ")).toBeUndefined();
+  });
+
+  it("sends a typed token trimmed", () => {
+    expect(admissionToSave("  let-me-in\n")).toBe("let-me-in");
+  });
+
+  // What the daemon will hold after a save, so the field can say so at
+  // once instead of after the next read. The daemon's rule, mirrored: a
+  // token goes with the Relay it was given for.
+  describe("what is stored after a save", () => {
+    const stored = { relayUrl: "wss://relay.example", relayAdmissionSet: true };
+
+    it("is the token that was sent", () => {
+      expect(admissionAfterSave(stored, "wss://relay.example", "new")).toBe(true);
+      expect(admissionAfterSave({ ...stored, relayAdmissionSet: false }, null, "new")).toBe(true);
+    });
+
+    it("is nothing, when it was cleared", () => {
+      expect(admissionAfterSave(stored, "wss://relay.example", "")).toBe(false);
+    });
+
+    it("is what it was, when nothing was sent and the Relay is the same", () => {
+      expect(admissionAfterSave(stored, "wss://relay.example", undefined)).toBe(true);
+      expect(
+        admissionAfterSave({ ...stored, relayAdmissionSet: false }, "wss://relay.example", undefined)
+      ).toBe(false);
+    });
+
+    it("is nothing, when nothing was sent and the Relay changed", () => {
+      expect(admissionAfterSave(stored, "wss://other.example", undefined)).toBe(false);
+      expect(admissionAfterSave(stored, null, undefined)).toBe(false);
+    });
+  });
+
+  it("says whether one is stored, since it cannot show it", () => {
+    expect(admissionPlaceholder(true)).toContain("stored");
+    expect(admissionPlaceholder(true)).toContain("replace");
+    expect(admissionPlaceholder(false)).toContain("No token");
+  });
+
+  it("is gated on the daemon that keeps it", () => {
+    const needed = FEATURE_MIN_VERSION.relayAdmission;
+    expect(needed).toBe(45);
+    const reason = relayAdmissionBlocked({
+      daemonVersion: needed - 1,
+      appVersion: needed,
+      degraded: true,
+    });
+    expect(reason).toContain(`v${needed}`);
+    expect(reason).toContain("Restart the daemon");
+    expect(
+      relayAdmissionBlocked({ daemonVersion: needed, appVersion: needed, degraded: false })
+    ).toBeNull();
+    expect(relayAdmissionBlocked(null)).toBeNull();
+  });
+});
+
+describe("whether a Device can pair at all", () => {
+  const list = (over: Partial<DeviceList>): DeviceList => ({
+    devices: [],
+    remoteAccessEnabled: true,
+    relayUrl: "wss://relay.example/gavin",
+    relayAdmissionSet: true,
+    ...over,
+  });
+
+  const needed = FEATURE_MIN_VERSION.relayDial;
+  const dials = { daemonVersion: needed, appVersion: needed, degraded: false };
+
+  it("can, with remote access on and a Relay the daemon will dial", () => {
+    expect(pairingUnavailable(list({}), dials)).toBeNull();
+    // A Relay that asks for no token is the Relay's business.
+    expect(pairingUnavailable(list({ relayAdmissionSet: false }), dials)).toBeNull();
+    // Before the daemon has said which it is, the settings decide.
+    expect(pairingUnavailable(list({}), null)).toBeNull();
+  });
+
+  // A daemon older than v45 draws a QR and dials nothing: the Device
+  // that scans it is told the Workstation is not there.
+  it("cannot against a daemon that does not dial, and names the version", () => {
+    const reason = pairingUnavailable(list({}), {
+      daemonVersion: needed - 1,
+      appVersion: needed,
+      degraded: true,
+    });
+    expect(reason).toContain(`v${needed}`);
+    expect(reason).toContain("Restart the daemon");
+  });
+
+  // A QR drawn now would point a Device at a Relay the daemon is not
+  // connected to: the Device would scan it and be told the Workstation
+  // is not there.
+  it("cannot with remote access off, and says to turn it on", () => {
+    expect(pairingUnavailable(list({ remoteAccessEnabled: false }), dials)).toContain(
+      "Turn remote access on"
+    );
+  });
+
+  it("cannot with no Relay, and says to name one", () => {
+    expect(pairingUnavailable(list({ relayUrl: null }), dials)).toContain("Relay URL");
+  });
+
+  it("cannot with a Relay the daemon will not dial", () => {
+    expect(pairingUnavailable(list({ relayUrl: "ws://relay.example" }), dials)).toContain(
+      "will not dial"
+    );
+  });
+
+  // Unknown is not unavailable: before the list has been read there is
+  // nothing to say, and the version gate is what greys the button then.
+  it("has no opinion before the settings have been read", () => {
+    expect(pairingUnavailable(null, dials)).toBeNull();
   });
 });
 

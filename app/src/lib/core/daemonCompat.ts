@@ -431,6 +431,39 @@ export const FEATURE_MIN_VERSION = {
   // through the v40 file requests, so they work on a v41 host and sit
   // behind `sshGitFiles` with the rest of the tab.
   sshGitSync: 42,
+  // The Relay's admission token (`companion-10`). v45 widened
+  // `SetRemoteAccess` with `relay_admission`, and `min_version_for`
+  // cannot see a field: a v44 daemon parses the request, stores the
+  // switch and the URL, and drops the token on the floor. The field
+  // would take a token and keep nothing, and the human would find out
+  // when a Device that scanned the QR was refused by the Relay.
+  //
+  // Not a dead gate (CLAUDE.md): `remoteAccess.ts`'s
+  // `relayAdmissionBlocked` reads it, and the Settings section greys the
+  // admission field and its Clear button behind it, on top of the
+  // section's own `remoteAccess` gate.
+  //
+  // The switch and the Relay URL are NOT behind it. An older daemon
+  // stores both exactly as it always did, and what it does not do --
+  // dial -- is not something a gate on a field can say; the section's
+  // copy is where that lives.
+  relayAdmission: 45,
+  // The daemon DIALS (`companion-10`). Not a request type and not a
+  // widened payload: v45 changed what the daemon does with a setting it
+  // already stored, so `min_version_for` is blind to it in principle,
+  // like `cardCleanup` above. A v44 daemon takes the switch and the
+  // Relay URL exactly as a v45 one does and then dials nothing.
+  //
+  // Consumers, both in `remoteAccess.ts`: `transportNote`, which stops
+  // the section telling the human that the daemon is connected to a
+  // Relay it has never dialled; and `pairingUnavailable`, which greys
+  // Pair a device rather than drawing a QR no Device can use.
+  //
+  // The same number as `relayAdmission` and a separate entry, because
+  // they are separate promises: one is about a field being kept, the
+  // other about a socket being opened, and the next bump may move one
+  // without the other.
+  relayDial: 45,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

@@ -2,7 +2,13 @@ import { describe, it, expect } from "vitest";
 
 import { source } from "$lib/sources";
 import { FEATURE_MIN_VERSION } from "$lib/core/daemonCompat";
-import { NO_DEVICES, RELAY_NOTE, STALE_NOTE, TRANSPORT_NOTE } from "$lib/core/remoteAccess";
+import {
+  ADMISSION_NOTE,
+  NO_DEVICES,
+  RELAY_NOTE,
+  STALE_NOTE,
+  TRANSPORT_NOTE,
+} from "$lib/core/remoteAccess";
 
 // The Remote access section is drawn by a component no unit suite can
 // mount -- it needs a window, a daemon and a Tauri host -- so what a
@@ -173,13 +179,122 @@ describe("the Settings section", () => {
   });
 
   it("puts the section's own copy on screen rather than restating it", () => {
-    expect(VIEW).toContain("{TRANSPORT_NOTE}");
+    // Through `transportNote`, which says something else to a daemon
+    // that does not dial.
+    expect(VIEW).toContain("transportNote($daemonCompat)");
+    expect(VIEW).toContain("{transportLine}");
+    expect(VIEW).not.toContain("{TRANSPORT_NOTE}");
     expect(VIEW).toContain("{RELAY_NOTE}");
+    expect(VIEW).toContain("{ADMISSION_NOTE}");
     expect(VIEW).toContain("{NO_DEVICES}");
     // The strings themselves live in the module, not the markup.
+    expect(MODULE).toContain(TRANSPORT_NOTE);
     expect(VIEW).not.toContain(TRANSPORT_NOTE);
     expect(VIEW).not.toContain(RELAY_NOTE);
+    expect(VIEW).not.toContain(ADMISSION_NOTE);
     expect(VIEW).not.toContain(NO_DEVICES);
+  });
+
+  // The section used to say, truthfully, that nothing dialled. The
+  // daemon dials now, so no surface of it may go on saying otherwise --
+  // not the template, not the module, not the wrappers' own comments
+  // that a reader takes for the contract.
+  it("no longer says that nothing dials", () => {
+    for (const [name, text] of [
+      ["the template", VIEW],
+      ["the module", MODULE],
+      ["the backend wrappers", BACKEND],
+    ] as const) {
+      expect(text, name).not.toMatch(/nothing dials/i);
+      expect(text, name).not.toMatch(/no transport/i);
+      expect(text, name).not.toMatch(/stored and inert/i);
+    }
+  });
+});
+
+describe("the admission token", () => {
+  // v45 widened `SetRemoteAccess`, and the compat gate is per request
+  // TYPE: a v44 daemon parses the request and drops the token. The
+  // entry alone is a dead gate (CLAUDE.md); these are its consumers.
+  it("is a featureBlockedReason consumer of the relayAdmission entry", () => {
+    expect(MODULE).toContain('featureBlockedReason(compat, "relayAdmission")');
+    expect(VIEW).toContain("relayAdmissionBlocked($daemonCompat)");
+    expect(FEATURE_MIN_VERSION.relayAdmission).toBe(45);
+  });
+
+  it("greys the field and its Clear button behind that gate", () => {
+    const disabled = [...VIEW.matchAll(/disabled=\{([^}]*)\}/g)].map((m) => m[1]);
+    const gated = disabled.filter((d) => d.includes("admissionGate !== null"));
+    expect(gated.length).toBe(2);
+    // Behind the section's gate as well: a daemon too old for the
+    // section is too old for this.
+    for (const expression of gated) expect(expression).toContain("remoteAccessGate !== null");
+    expect(VIEW).toContain("{admissionGate}");
+  });
+
+  it("hangs that gate's tooltip on a wrapper too", () => {
+    expect(VIEW).toContain('use:tooltip={remoteAccessGate ?? admissionGate ?? ""}');
+    expect(VIEW).not.toMatch(/<input[^>]*use:tooltip=\{remoteAccessGate \?\? admissionGate/);
+    expect(VIEW).not.toMatch(/<button[^>]*use:tooltip=\{remoteAccessGate \?\? admissionGate/);
+  });
+
+  // The token is a credential: it is typed into a field that does not
+  // show it, and nothing reads it back onto the screen.
+  it("is typed into a field that does not show it, and is never read back", () => {
+    const field = VIEW.match(/<input[^>]*bind:value=\{admissionDraft\}[^>]*>/);
+    expect(field, "no admission field").not.toBeNull();
+    expect((field as RegExpMatchArray)[0]).toContain('type="password"');
+    expect((field as RegExpMatchArray)[0]).toContain('autocomplete="off"');
+    // What comes back from the daemon is whether, never what.
+    expect(rust("session.rs")).toContain("pub relay_admission_set: bool");
+    expect(rust("session.rs")).not.toMatch(/pub relay_admission: /);
+    expect(MODULE).toContain("relayAdmissionSet: boolean");
+  });
+
+  it("passes the token to the daemon under the name the host reads", () => {
+    expect(BACKEND).toContain("relayAdmission");
+    const command = rust("session.rs").match(/pub async fn set_remote_access\(([\s\S]*?)\n\}/);
+    expect((command as RegExpMatchArray)[0]).toContain("relay_admission: Option<String>");
+    expect((command as RegExpMatchArray)[0]).toContain(
+      "Request::SetRemoteAccess { enabled, relay_url, relay_admission }"
+    );
+  });
+
+  // Saving the switch or the URL must not touch the token: those two
+  // saves pass none, which the daemon reads as "unchanged".
+  it("leaves the token alone when the switch or the URL is saved", () => {
+    expect(VIEW).toContain("admissionToSave(admissionDraft)");
+    // And the field says at once what the daemon will hold afterwards,
+    // by the module's rule rather than one written into the template.
+    expect(VIEW).toContain("admissionAfterSave(devices, relayUrlToSave(relay), admission)");
+    // The switch, and the URL field losing focus: two arguments each.
+    expect(VIEW).toContain("void saveRemoteAccess(e.currentTarget.checked, relayDraft)}");
+    expect(VIEW).toContain(
+      "void saveRemoteAccess(devices?.remoteAccessEnabled ?? false, relayDraft);"
+    );
+    // Exactly two calls pass a token: the field's save, and Clear.
+    const withToken = [...VIEW.matchAll(/saveRemoteAccess\([^;]*relayDraft, ([^)]+)\)/g)].map(
+      (m) => m[1].trim()
+    );
+    expect(withToken.sort()).toEqual(["ADMISSION_CLEAR", "token"]);
+  });
+});
+
+describe("Pair a device", () => {
+  // A QR drawn with remote access off points a Device at a Relay the
+  // daemon is not connected to.
+  it("is offered only when a Device could pair", () => {
+    expect(VIEW).toContain("pairingUnavailable(devices, $daemonCompat)");
+    // `relayDial` is a gate like any other: the entry, and a consumer.
+    expect(MODULE).toContain('featureBlockedReason(compat, "relayDial")');
+    expect(FEATURE_MIN_VERSION.relayDial).toBe(45);
+    const button = VIEW.match(
+      /disabled=\{([^}]*)\}\s*onclick=\{\(\) => void startPairing\(\)\}/
+    );
+    expect(button, "the Pair a device button").not.toBeNull();
+    expect((button as RegExpMatchArray)[1]).toContain("remoteAccessGate !== null");
+    expect((button as RegExpMatchArray)[1]).toContain("pairingGate !== null");
+    expect(VIEW).toContain('use:tooltip={remoteAccessGate ?? pairingGate ?? ""}');
   });
 
   it("renders every column the device list promises", () => {
