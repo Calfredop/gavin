@@ -316,6 +316,13 @@ export function revokeAllCopy(): ConfirmCopy {
 export const TRANSPORT_NOTE =
   "Nothing listens and nothing dials: this build has no transport yet, so turning remote access on records the choice for a phone app that does not exist yet. What IS real is the trust store — a paired device is written to disk, and revoking one holds at 02:00 with gavin closed.";
 
+/// What turning the switch on changes at the desk today, said under the
+/// switch because nowhere else would: with it on, the red button no
+/// longer quits (keepRunning.ts), and a human who never read this would
+/// go looking for an app that did not close.
+export const KEEP_RUNNING_NOTE =
+  "While it is on, closing the window keeps gavin running in the menu bar — Quit is in that icon's menu — and your Mac does not idle-sleep while an agent is running. The display still sleeps.";
+
 /// The relay field's own line. The daemon keeps the URL raw and has no
 /// opinion about which relay you self-host, so neither does this.
 export const RELAY_NOTE =

@@ -461,13 +461,6 @@ export function createWorkspace(state: WorkspacesData, id: string, name: string)
   return { ...state, workspaces: [...state.workspaces, workspace], activeWorkspaceId: id };
 }
 
-export function renameWorkspace(state: WorkspacesData, workspaceId: string, name: string): WorkspacesData {
-  return {
-    ...state,
-    workspaces: state.workspaces.map((w) => (w.id === workspaceId ? { ...w, name } : w)),
-  };
-}
-
 /// Makes a workspace active and stamps it as last used. `now` is passed
 /// in rather than read from the clock so the stamp is testable and so
 /// every path that switches (a sidebar click, a jump-to-session, a page

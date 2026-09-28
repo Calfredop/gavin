@@ -41,3 +41,7 @@ _Avoid_: proxy, tunnel, server
 **Push gateway**:
 The publisher's service that delivers encrypted notifications to Devices through Apple and Google, and the only holder of the publisher's push credentials.
 _Avoid_: notification server, push server
+
+**Send permission**:
+What a Device gives one Workstation so that the Push gateway will deliver that Workstation's notifications to it. The Push gateway signs it, and the Device can cancel it.
+_Avoid_: push token (that is Apple's or Google's address for the Device), grant, subscription

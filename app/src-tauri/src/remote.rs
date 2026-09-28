@@ -1024,8 +1024,11 @@ pub fn link_workspace(app: &AppHandle, workspace_id: &str) -> anyhow::Result<()>
     let data = {
         let state = app.state::<WorkspacesState>();
         let mut state = state.0.lock().unwrap();
+        // Only the layout this resolved: the link took a network round
+        // trip, and a setting written meanwhile is newer than the copy
+        // taken before it.
         if let Some(slot) = state.workspaces.iter_mut().find(|w| w.id == workspace_id) {
-            *slot = ws.clone();
+            *slot = crate::workspace_settings::with_layout_of(slot, ws.clone());
         }
         state.clone()
     };

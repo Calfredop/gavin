@@ -10,7 +10,8 @@ Audit of commit `944eae2` (`PROTOCOL_VERSION` 34), 2026-09-08, on branch
 | [`02-app-surface.md`](02-app-surface.md) | Tauri host & frontend (S6–S8) | AS-01…09 |
 | [`03-agent-surface.md`](03-agent-surface.md) | agents & workspace content (S4, S5, S9, S10) | AG-01…09 |
 | [`04-supply-chain.md`](04-supply-chain.md) (+ raw output in [`04-supply-chain/`](04-supply-chain/)) | dependencies, build, release (S11) | SC-01…11 |
-| [`05-remote-access.md`](05-remote-access.md) | remote-access design (S12) — a proposal, no findings | — |
+| [`05-remote-access.md`](05-remote-access.md) | remote-access design (S12) — a proposal, no findings; partly superseded by 06 | — |
+| [`06-companion.md`](06-companion.md) | the Companion's security design pass (S12.a–f) — supersedes parts of 05, no findings | — |
 
 This file dedupes the 35 findings into ten root causes, ranks them, says for each
 whether it was reproduced, and names the To Do card that carries the fix. One root

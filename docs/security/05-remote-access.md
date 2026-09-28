@@ -1,5 +1,24 @@
 # 05 — Remote access: a mobile client reaching the daemon without widening the blast radius
 
+> **Partly superseded by [`06-companion.md`](06-companion.md) (2026-09-28). Read 06
+> first.** The Companion's design (ADRs 0001–0005 in `docs/adr/`, and
+> `docs/superpowers/specs/2026-09-27-companion-design.md`) changed this document's
+> premise: a Device drives the desktop app, not the daemon, and one Unlock gives full
+> control.
+>
+> - **Superseded:** §1's claim that card-run composition happens in the Tauri host (it
+>   happens in the desktop webview) and its "the remote role cannot spawn"; §6, the
+>   capability table (replaced by the command table); §8's key custody, its
+>   stolen-unlocked-phone paragraph and its typing-grant paragraph; §10, the phased plan
+>   (replaced by the spec's build order).
+> - **Still stands:** §3, the pairing ceremony and the trust store (with the six
+>   amendments in 06 §5.1); §5, the transport (amended in 06 §5.4); §7's phase 2
+>   additions, which are shipped wire; §8's relay, caps and rogue-daemon paragraphs; §9,
+>   except that the phone's column is now the command table.
+> - §11's open questions were answered by the spec; 06 §1 lists how.
+>
+> The text below is unedited apart from the one-line markers under those headings.
+
 Design pass over commit `944eae2`, `PROTOCOL_VERSION` 34, 2026-09-08. This pass makes
 no findings; it cites `00-threat-model.md` (A3, S1, S2, S5, S12, AD-1..AD-7) and
 `01-daemon-protocol.md` (DP-01..DP-06). It is the document an implementation card is
@@ -7,6 +26,11 @@ cut from. Nothing in it is a bump: every message shape below is illustrative, an
 version numbers are the implementer's to assign.
 
 ## 1. Context and the two facts
+
+> **Superseded in part by [06 §2](06-companion.md).** Card-run composition happens in
+> the desktop webview (`app/src/lib/cards/cardRun.ts`), not in the Tauri host, so the
+> "gift" argument in the first of the two closing bullets below does not hold. "The
+> remote role cannot spawn" is dropped by ADR 0004. Fact 1 stands.
 
 Gavin's daemon is a Unix socket at `~/Library/Application Support/gavin/daemon.sock`
 (`protocol::socket_path`, dir `0700`, socket `0600` set in `server.rs::bind_server`).
@@ -84,6 +108,11 @@ Non-goals:
   is not the compat window itself.
 
 ## 3. Pairing
+
+> **Still stands** — the ceremony and the trust store, including "as phase 2 built it".
+> [06 §5.1](06-companion.md) lists six amendments (a hardware public key, Android
+> attestation, five Devices, a QR that carries the Relay's address and admission token,
+> a per-pairing notification key, a key-kind column).
 
 Pairing is how a phone becomes a device the daemon knows. It happens once per device,
 on the desktop, with the human present at both screens.
@@ -396,6 +425,11 @@ operator sees is in §8.
 
 ## 6. The capability table
 
+> **Superseded by [06 §5.3](06-companion.md), the command table** (ADR 0003, ADR 0004).
+> A Device no longer sends daemon `Request` variants at all; it sends forwarded
+> desktop commands gated by a table of command names. Nothing below describes the
+> Remote role any more, and the `remote` column's "deny" entries are not policy.
+
 This is the load-bearing section. Columns: the desktop app (`app`), a `gavin-mcp`
 holding a session token (`agent`), a paired phone (`remote`). `local` equals `app` in
 phase 1 and is omitted. Values: **allow**; **deny**; **scoped** (allowed inside the
@@ -496,6 +530,8 @@ app. A compromised proxy that forwards a `CreateSession` sees `Forbidden`; so do
 phone whose owner is not the human.
 
 ## 7. Protocol sketch
+
+> **"Phase 2 additions" below is shipped wire and still stands.**
 
 Illustrative shapes; not a bump. Field names are suggestions for the implementer —
 except in "Phase 2 additions" below, which has shipped and is quoted from the wire.
@@ -657,6 +693,12 @@ appears on the JSON socket at all is the six-digit `sas` in `DevicePairingReques
 
 ## 8. The proxy's threat model
 
+> **Split by [06](06-companion.md).** "A compromised relay", "The remote channel gets
+> its own caps" and "The rogue-daemon case" still stand (06 CT-3 adds to the first).
+> **Superseded:** "A stolen unlocked phone" and "Should `WriteInput` need a desktop
+> grant?" by ADR 0004 (06 CT-1), and "A stolen key with no device", the key-custody
+> paragraph, by ADR 0001 (06 CT-2, §5.1).
+
 **A compromised relay** (or a network observer, which is the same set of bytes minus
 the relay's TLS) learns:
 
@@ -770,6 +812,9 @@ is a degraded connection, not an error, which the compat spec already designed f
 
 ## 10. Phased plan
 
+> **Superseded by [06 §6](06-companion.md), the spec's build order.** Phases 1 and 2
+> have landed (v35, v42). Phases 3 to 5 are replaced.
+
 Each phase names what lands, what it proves, and what it must not do yet. Phase 1 is
 worth having with no mobile app in sight: it is what 01's closing section asks for
 first, and it is what makes AD-2's carve-out enforceable.
@@ -857,6 +902,8 @@ of its own (an app-side push the desktop confirms, since composition lives in th
 it is not part of this design.
 
 ## 11. Open questions for the human
+
+> **Answered by the spec; [06 §1](06-companion.md) lists how.**
 
 1. Should an untokened same-uid connection keep full reach (`local` = `app`) after
    phase 1, or be narrowed to the `agent` role? — Default: keep full reach in phase 1;

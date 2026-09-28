@@ -207,7 +207,7 @@ The earlier remote-access design stopped at phase 2. Pairing and the trust store
 - **The Companion never starts the rail scheduler.** The desktop window stays the only place rails tick.
 - **A session a Device starts is placed as a tab** in its workspace's page on the desktop, labelled with the Device's name. The desktop learns it from a push that names the originating Device.
 
-### Workspace state split
+### Workspace state split (ADR 0006)
 
 - **The desktop's saved workspace state is split into two:**
   - **Workstation data:** which workspaces exist, and their settings.

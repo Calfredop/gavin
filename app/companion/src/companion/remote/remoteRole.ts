@@ -20,15 +20,18 @@ export const LAYOUT_SAVING_COMMANDS = [
 ] as const;
 
 /// The rest of what the Remote role is refused, as far as the spec names
-/// it: Trust, window management, the updater, and opening things
-/// externally ON THE DESK. The bundle has no reason to send these and
-/// the shim does not police them; the Demo Workstation refuses them, as
-/// the daemon will, so a surface that tries one finds out in the demo.
+/// it: Trust, window management, the updater, opening things externally
+/// ON THE DESK, and what means nothing away from it. The bundle has no
+/// reason to send these and the shim does not police them; the Demo
+/// Workstation refuses them, as the daemon will, so a surface that tries
+/// one finds out in the demo.
 export const DESK_ONLY_COMMANDS = [
-  // Trust: pairing, revoking, the remote-access settings.
+  // Trust: pairing, revoking, the remote-access settings -- and reading
+  // them, which is how the desktop's bootstrap learns the switch.
   "begin_pairing",
   "confirm_pairing",
   "reject_pairing",
+  "list_devices",
   "revoke_device",
   "revoke_all_devices",
   "set_remote_access",
@@ -39,6 +42,10 @@ export const DESK_ONLY_COMMANDS = [
   "close_workspace_window",
   "close_all_workspace_windows",
   "focus_workspace_window",
+  "hide_to_menu_bar",
+  // The desk's own Mac: keep-running mode holds it awake for a phone,
+  // and no phone decides that.
+  "set_sleep_hold",
   // The updater.
   "check_for_update",
   "install_update",

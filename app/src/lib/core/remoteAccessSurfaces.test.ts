@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import { source } from "$lib/sources";
 import { FEATURE_MIN_VERSION } from "$lib/core/daemonCompat";
-import { NO_DEVICES, RELAY_NOTE, STALE_NOTE, TRANSPORT_NOTE } from "$lib/core/remoteAccess";
+import { KEEP_RUNNING_NOTE, NO_DEVICES, RELAY_NOTE, STALE_NOTE, TRANSPORT_NOTE } from "$lib/core/remoteAccess";
 
 // The Remote access section is drawn by a component no unit suite can
 // mount -- it needs a window, a daemon and a Tauri host -- so what a
@@ -174,10 +174,12 @@ describe("the Settings section", () => {
 
   it("puts the section's own copy on screen rather than restating it", () => {
     expect(VIEW).toContain("{TRANSPORT_NOTE}");
+    expect(VIEW).toContain("{KEEP_RUNNING_NOTE}");
     expect(VIEW).toContain("{RELAY_NOTE}");
     expect(VIEW).toContain("{NO_DEVICES}");
     // The strings themselves live in the module, not the markup.
     expect(VIEW).not.toContain(TRANSPORT_NOTE);
+    expect(VIEW).not.toContain(KEEP_RUNNING_NOTE);
     expect(VIEW).not.toContain(RELAY_NOTE);
     expect(VIEW).not.toContain(NO_DEVICES);
   });

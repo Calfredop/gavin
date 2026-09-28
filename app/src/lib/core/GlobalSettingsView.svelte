@@ -83,6 +83,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { askConfirm } from "$lib/core/dialog";
   import {
+    KEEP_RUNNING_NOTE,
     NO_DEVICES,
     PAIRING_IDLE,
     RELAY_NOTE,
@@ -1402,6 +1403,7 @@
           Remote access
         </label>
       </span>
+      <p class="hint">{KEEP_RUNNING_NOTE}</p>
 
       <div class="row endpoint-row">
         <span>Relay URL</span>

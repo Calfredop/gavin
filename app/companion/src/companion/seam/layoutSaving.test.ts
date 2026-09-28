@@ -85,10 +85,13 @@ describe("the Workstation's own gate", () => {
     ...LAYOUT_SAVING_COMMANDS,
     "begin_pairing",
     "confirm_pairing",
+    "list_devices",
     "revoke_device",
     "revoke_all_devices",
     "set_remote_access",
     "open_workspace_window",
+    "hide_to_menu_bar",
+    "set_sleep_hold",
     "install_update",
     "open_path_externally",
   ])("refuses %s to a bundle that sends it anyway", async (cmd) => {

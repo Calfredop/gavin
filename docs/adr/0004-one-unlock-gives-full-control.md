@@ -5,7 +5,7 @@
 A Device that holds an Unlock may do everything the Workstation's desktop app can do: read, type into any session, run cards, start rails, configure and destroy. The one exception is Trust (pairing, revoking Devices, remote-access settings), which stays on the Workstation. The model is a laptop's: authenticate once, then work, until the lid closes.
 
 - **The Unlock is one biometric or the phone's passcode.**
-- **It lasts until the Companion goes to the background or the phone locks.** Brief interruptions, such as Control Center or a call banner, do not end it.
+- **It lasts until the Companion goes to the background or the phone locks.** Brief interruptions, such as Control Center or a call banner, do not end it. One exception, on Android: the hardware key's authorisation also lapses once its auth window closes (one hour after the Unlock is recommended; see `docs/research/2026-09-28-companion-device-keys.md`). A *new* connection opened after that asks again. Connections already open are unaffected.
 - **It is enforced per connection.** The Device's hardware key signs only after user presence (ADR 0001), the daemon verifies that signature, and the Companion drops its connections when the Unlock ends.
 
 ## Considered options
