@@ -28,6 +28,7 @@ was rejected.
 ```
 cargo test --workspace
 cd app && npm test && npm run check && npm run build
+cd app && npm run companion:test && npm run companion:check && npm run companion:build
 ```
 
 The daemon's `gavin::tests` are flaky under full-suite cargo parallelism

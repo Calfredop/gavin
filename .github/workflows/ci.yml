@@ -112,6 +112,24 @@ jobs:
         working-directory: app
         run: npm run build
 
+      # The Companion web bundle (app/companion). It imports the desktop's
+      # library as it is, so a desktop change can break it without touching
+      # a file of its own: a new Tauri import with no shim, a bootstrap
+      # read the Demo Workstation cannot answer, a wire shape the sample
+      # data no longer matches. After the desktop's three, which sync the
+      # tsconfig its sources are compiled under.
+      - name: npm run companion:test
+        working-directory: app
+        run: npm run companion:test
+
+      - name: npm run companion:check
+        working-directory: app
+        run: npm run companion:check
+
+      - name: npm run companion:build
+        working-directory: app
+        run: npm run companion:build
+
   windows:
     name: Windows (compiles)
     runs-on: windows-latest
