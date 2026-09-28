@@ -18,6 +18,12 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v44 adds Companion notification sends: `PushCompanionNotify` (the desk
+/// decides; the daemon seals and posts), `SetPushGatewayUrl`, and
+/// `SetDeviceSendPermission` (the shell hands over a gateway permission).
+/// Ciphertext never crosses this socket -- only the plaintext the desk
+/// already knew, and the permission string the Device minted.
+///
 /// v43 takes the launch command OUT of the board read, and adds
 /// `GetCardSession` to read one binding with its command put back
 /// (`perf-get-board-payload-and-refresh-storm.md`). The command is an
@@ -470,7 +476,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 43;
+pub const PROTOCOL_VERSION: u32 = 44;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -1289,6 +1295,27 @@ pub enum Request {
         relay_url: Option<String>,
     },
 
+    /// Where this daemon posts Companion notification ciphertext.
+    /// `None` / empty clears it; with no URL the daemon will not push.
+    SetPushGatewayUrl {
+        url: Option<String>,
+    },
+
+    /// The Device's send permission for this Workstation, minted at the
+    /// Push gateway and handed over the encrypted channel. Empty clears
+    /// it (the Device cancelled that Workstation).
+    SetDeviceSendPermission {
+        device_id: String,
+        permission: String,
+    },
+
+    /// The desk decided what to notify (or resolve). The daemon seals
+    /// each event with that Device's notification key and posts to the
+    /// Push gateway. Plaintext only crosses the local socket.
+    PushCompanionNotify {
+        events: Vec<CompanionNotifyEvent>,
+    },
+
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
     /// a daemon it owns without `pkill`, which cannot distinguish this
@@ -1513,6 +1540,13 @@ pub fn min_version_for(req: &Request) -> u32 {
         | Request::RevokeDevice { .. }
         | Request::RevokeAllDevices
         | Request::SetRemoteAccess { .. } => 42,
+
+        // Companion encrypted notifications (ticket 25). Three new TYPES:
+        // the desk's notify/resolve batch, the Push gateway URL, and the
+        // Device's send permission for this Workstation.
+        Request::PushCompanionNotify { .. }
+        | Request::SetPushGatewayUrl { .. }
+        | Request::SetDeviceSendPermission { .. } => 44,
 
         Request::Shutdown => 12,
 
@@ -2151,6 +2185,30 @@ pub struct DeviceInfo {
     /// Unseen for ninety days: shown greyed with "re-pair to use", and
     /// refused until it is paired again (§3, "How many, for how long").
     pub stale: bool,
+}
+
+/// One Companion notification event the desk asks the daemon to seal and
+/// post. `Resolve` carries only `id`; the rest are for a fresh notify.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum CompanionNotifyEvent {
+    Notify {
+        id: String,
+        kind: String,
+        text: String,
+        workspace_id: String,
+        target: CompanionNotifyTarget,
+    },
+    Resolve {
+        id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum CompanionNotifyTarget {
+    Session { session_id: String },
+    Card { path: String },
 }
 
 /// What the pairing QR carries, and the whole of what it carries (§3,
@@ -5050,7 +5108,9 @@ mod tests {
         // v43: GetCardSession -- one binding with its launch command, which
         // the board read no longer carries. One new TYPE, plus the
         // CardSession reply.
-        assert_eq!(PROTOCOL_VERSION, 43);
+        // v44: Companion notifications -- PushCompanionNotify,
+        // SetPushGatewayUrl, SetDeviceSendPermission. Three new TYPES.
+        assert_eq!(PROTOCOL_VERSION, 44);
     }
 
     #[test]
@@ -5465,6 +5525,19 @@ mod tests {
             Request::RevokeDevice { device_id: "d1".into() },
             Request::RevokeAllDevices,
             Request::SetRemoteAccess { enabled: true, relay_url: None },
+            // v44's Companion notifications.
+            Request::SetPushGatewayUrl {
+                url: Some("https://push.example".into()),
+            },
+            Request::SetDeviceSendPermission {
+                device_id: "d1".into(),
+                permission: "v1.perm".into(),
+            },
+            Request::PushCompanionNotify {
+                events: vec![CompanionNotifyEvent::Resolve {
+                    id: "session:s1".into(),
+                }],
+            },
             Request::Unknown,
         ]
     }
@@ -5558,6 +5631,9 @@ mod tests {
         // GetCardSession -- one binding with its command, now the board
         // read leaves the command out.
         expected.insert(43, 1);
+        // Companion encrypted notifications: PushCompanionNotify,
+        // SetPushGatewayUrl, SetDeviceSendPermission.
+        expected.insert(44, 3);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

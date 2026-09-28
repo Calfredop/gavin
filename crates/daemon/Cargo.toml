@@ -23,6 +23,14 @@ toml = "0.8"
 toml_edit = "0.22"
 vt100 = "0.16"
 snow = "0.10.0"
+# Companion notification AEAD (ChaCha20-Poly1305). Same construction the
+# phone's Notification Service Extension / Android data-message handler
+# will open; the Push gateway never holds the key (security 06 §5.6).
+chacha20poly1305 = "0.10"
+getrandom = "0.2"
+# Outbound HTTPS to the Push gateway. Sync on purpose: the daemon is a
+# sync process, and a push is fire-and-forget from a request handler.
+ureq = { version = "2", default-features = false, features = ["tls"] }
 # The OS Trash, not `rm`, for `TrashWorkspacePath` (v42). The desktop's
 # promise is that nothing gavin removes on the human's behalf is
 # unrecoverable; a workspace reached over ssh does not get a weaker one,

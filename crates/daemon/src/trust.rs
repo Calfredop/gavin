@@ -85,6 +85,7 @@ const META_PUBLIC_KEY: &str = "static_public_key";
 /// one lock, and no way for the two halves of one payload to disagree.
 const META_REMOTE_ENABLED: &str = "remote_access_enabled";
 const META_RELAY_URL: &str = "remote_access_relay_url";
+const META_PUSH_GATEWAY_URL: &str = "push_gateway_url";
 
 /// The daemon's clock, in microseconds since the epoch -- the same unit
 /// and the same saturating read as `registry::now_us`, so timestamps from
@@ -153,6 +154,14 @@ pub struct Device {
     pub created_at_us: i64,
     pub last_seen_at_us: i64,
     pub revoked_at_us: Option<i64>,
+    /// Per-Device notification key agreed at pairing (ticket 11 / 06 §5.6).
+    /// `None` until pairing writes one, or after revoke clears it.
+    pub notification_key: Option<Vec<u8>>,
+    /// The Device's send permission for this Workstation, handed over the
+    /// encrypted channel after the shell mints it at the Push gateway.
+    pub send_permission: Option<String>,
+    /// Next AEAD counter to seal with for this Device.
+    pub notify_counter: u64,
 }
 
 impl Device {
@@ -304,7 +313,15 @@ impl TrustStore {
         //
         // Nullable with no default: `NULL` is exactly "not revoked", and
         // there is no timestamp that means it.
-        for stmt in ["ALTER TABLE devices ADD COLUMN revoked_at_us INTEGER"] {
+        for stmt in [
+            "ALTER TABLE devices ADD COLUMN revoked_at_us INTEGER",
+            // Companion notifications (ticket 25 / 06 §5.6). Nullable: a
+            // Device paired before ticket 11 has no key yet, and revoke
+            // clears both the key and the permission.
+            "ALTER TABLE devices ADD COLUMN notification_key BLOB",
+            "ALTER TABLE devices ADD COLUMN send_permission TEXT",
+            "ALTER TABLE devices ADD COLUMN notify_counter INTEGER NOT NULL DEFAULT 0",
+        ] {
             let _ = conn.execute(stmt, []);
         }
         let store = Self { conn, device_cap: DEFAULT_DEVICE_CAP };
@@ -432,6 +449,25 @@ impl TrustStore {
         Ok(())
     }
 
+    /// Base URL of the Push gateway this daemon posts ciphertext to.
+    pub fn push_gateway_url(&self) -> anyhow::Result<Option<String>> {
+        Ok(match self.meta(META_PUSH_GATEWAY_URL)? {
+            Some(bytes) => {
+                let s = String::from_utf8_lossy(&bytes).trim().to_string();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
+            }
+            None => None,
+        })
+    }
+
+    pub fn set_push_gateway_url(&self, url: Option<&str>) -> anyhow::Result<()> {
+        self.set_meta(META_PUSH_GATEWAY_URL, url.unwrap_or("").trim().as_bytes())
+    }
+
     // -- devices -------------------------------------------------------
 
     /// Every device, revoked ones included, oldest first.
@@ -555,7 +591,10 @@ impl TrustStore {
 
     pub fn revoke_at(&self, device_id: &str, now_us: i64) -> anyhow::Result<bool> {
         let changed = self.conn.execute(
-            "UPDATE devices SET revoked_at_us = ?2
+            "UPDATE devices SET revoked_at_us = ?2,
+                   notification_key = NULL,
+                   send_permission = NULL,
+                   notify_counter = 0
               WHERE device_id = ?1 AND revoked_at_us IS NULL",
             params![device_id, now_us],
         )?;
@@ -577,11 +616,55 @@ impl TrustStore {
 
     pub fn revoke_all_at(&self, now_us: i64) -> anyhow::Result<Vec<u8>> {
         self.conn.execute(
-            "UPDATE devices SET revoked_at_us = ?1 WHERE revoked_at_us IS NULL",
+            "UPDATE devices SET revoked_at_us = ?1,
+                   notification_key = NULL,
+                   send_permission = NULL,
+                   notify_counter = 0
+              WHERE revoked_at_us IS NULL",
             params![now_us],
         )?;
         self.write_fresh_keypair()?;
         self.static_public_key()
+    }
+
+    /// Store the per-Device notification key agreed at pairing.
+    pub fn set_notification_key(&self, device_id: &str, key: &[u8]) -> anyhow::Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE devices SET notification_key = ?2, notify_counter = 0
+              WHERE device_id = ?1 AND revoked_at_us IS NULL",
+            params![device_id, key],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Store (or replace) the Device's send permission for this Workstation.
+    pub fn set_send_permission(&self, device_id: &str, permission: &str) -> anyhow::Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE devices SET send_permission = ?2
+              WHERE device_id = ?1 AND revoked_at_us IS NULL",
+            params![device_id, permission],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Clear a Device's send permission (the Device cancelled it, or the
+    /// gateway refused it as cancelled/expired/invalid).
+    pub fn clear_send_permission(&self, device_id: &str) -> anyhow::Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE devices SET send_permission = NULL
+              WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Persist the next AEAD counter after a successful post.
+    pub fn set_notify_counter(&self, device_id: &str, counter: u64) -> anyhow::Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE devices SET notify_counter = ?2 WHERE device_id = ?1",
+            params![device_id, counter as i64],
+        )?;
+        Ok(changed > 0)
     }
 
     /// Records that a device was seen just now -- what holds the ninety-day
@@ -626,8 +709,8 @@ impl TrustStore {
     }
 }
 
-const DEVICE_COLUMNS: &str =
-    "device_id, public_key, name, role, created_at_us, last_seen_at_us, revoked_at_us";
+const DEVICE_COLUMNS: &str = "device_id, public_key, name, role, created_at_us, last_seen_at_us, \
+     revoked_at_us, notification_key, send_permission, notify_counter";
 
 fn device_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
     Ok(Device {
@@ -638,6 +721,9 @@ fn device_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
         created_at_us: row.get(4)?,
         last_seen_at_us: row.get(5)?,
         revoked_at_us: row.get(6)?,
+        notification_key: row.get(7)?,
+        send_permission: row.get(8)?,
+        notify_counter: row.get::<_, i64>(9).unwrap_or(0) as u64,
     })
 }
 
@@ -1129,5 +1215,79 @@ mod tests {
 
         assert_ne!(before, after, "revoke_all must rotate the key");
         assert_eq!(store.remote_access().unwrap(), settings);
+    }
+
+    #[test]
+    fn notification_key_and_permission_round_trip_and_revoke_clears_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        let key = key(1);
+        let device = store
+            .confirm_device("dev-1", &key, "phone", DeviceRole::Remote)
+            .unwrap();
+        assert!(device.notification_key.is_none());
+        assert!(device.send_permission.is_none());
+        assert_eq!(device.notify_counter, 0);
+
+        let notif = vec![9u8; 32];
+        assert!(store.set_notification_key("dev-1", &notif).unwrap());
+        assert!(store.set_send_permission("dev-1", "v1.perm.tag").unwrap());
+        assert!(store.set_notify_counter("dev-1", 7).unwrap());
+
+        let read = store.device("dev-1").unwrap().unwrap();
+        assert_eq!(read.notification_key.as_deref(), Some(notif.as_slice()));
+        assert_eq!(read.send_permission.as_deref(), Some("v1.perm.tag"));
+        assert_eq!(read.notify_counter, 7);
+
+        assert!(store.revoke("dev-1").unwrap());
+        let revoked = store.device("dev-1").unwrap().unwrap();
+        assert!(revoked.notification_key.is_none());
+        assert!(revoked.send_permission.is_none());
+        assert_eq!(revoked.notify_counter, 0);
+    }
+
+    #[test]
+    fn a_devices_database_from_before_notifications_gains_the_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("devices.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE devices (
+                    device_id TEXT PRIMARY KEY,
+                    public_key BLOB NOT NULL,
+                    name TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'remote',
+                    created_at_us INTEGER NOT NULL,
+                    last_seen_at_us INTEGER NOT NULL,
+                    revoked_at_us INTEGER
+                );
+                CREATE TABLE trust_meta (key TEXT PRIMARY KEY, value BLOB NOT NULL);
+                INSERT INTO devices
+                    (device_id, public_key, name, role, created_at_us, last_seen_at_us, revoked_at_us)
+                 VALUES ('dev-1', X'01', 'old', 'remote', 1, 1, NULL);",
+            )
+            .unwrap();
+        }
+        let store = TrustStore::open(&path).unwrap();
+        let device = store.device("dev-1").unwrap().unwrap();
+        assert!(device.notification_key.is_none());
+        assert!(device.send_permission.is_none());
+        assert_eq!(device.notify_counter, 0);
+        assert!(store.set_notification_key("dev-1", &[3u8; 32]).unwrap());
+    }
+
+    #[test]
+    fn push_gateway_url_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        assert_eq!(store.push_gateway_url().unwrap(), None);
+        store.set_push_gateway_url(Some("https://push.example")).unwrap();
+        assert_eq!(
+            store.push_gateway_url().unwrap().as_deref(),
+            Some("https://push.example")
+        );
+        store.set_push_gateway_url(Some("  ")).unwrap();
+        assert_eq!(store.push_gateway_url().unwrap(), None);
     }
 }
