@@ -36,6 +36,25 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v45 is the first slice of the Device wire (`companion-10`): the daemon
+/// dials a Relay while remote access is on, and the Relay admits only
+/// peers that hold its admission token, so the token has to reach the
+/// daemon and the pairing QR. `SetRemoteAccess` gains `relay_admission`,
+/// `Devices` gains `relay_admission_set`, and `PairingQr` gains
+/// `relayAdmission`.
+///
+/// No new Request variant, so `min_version_for` has no new arm and cannot
+/// see any of it. What an older daemon does with `relay_admission` is
+/// drop it -- and that daemon dials nothing, so the token it lost was one
+/// it had no use for. The app still owes the human the truth about it:
+/// `FEATURE_MIN_VERSION.relayAdmission` greys the Settings field against
+/// a daemon that would discard what is typed into it.
+///
+/// An older APP matters more, because the two builds share one
+/// `devices.sqlite`: a v44 app that toggles the switch sends no
+/// `relay_admission` at all. Absent therefore means UNCHANGED, never
+/// "cleared" -- see `Request::SetRemoteAccess`.
+///
 /// v44 widens `Hello` with `connection`: which of the app's two
 /// connections this is, push or command (`ConnectionKind`). The daemon
 /// used to send the device pushes to every `app` connection, and the
@@ -509,7 +528,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 44;
+pub const PROTOCOL_VERSION: u32 = 45;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -1325,13 +1344,30 @@ pub enum Request {
     /// Store whether remote access is on and which relay to reach this
     /// daemon through.
     ///
-    /// Stored and inert in this phase: nothing dials and nothing listens
-    /// until phase 3's `remote.rs`. `relay_url` is `None` for "no relay,
-    /// LAN only" and is kept RAW -- the daemon has no opinion about which
-    /// relay the human self-hosts (§11 Q2).
+    /// Since v45 the daemon ACTS on it: while `enabled` is set and there
+    /// is a Relay URL, it dials that Relay and holds the connection
+    /// (`daemon/src/remote.rs`); turning it off lets go. `relay_url` is
+    /// `None` for "no Relay" and is stored as typed -- the daemon has no
+    /// opinion about which Relay the human self-hosts (§11 Q2), only
+    /// about whether the URL may be dialled (`relay::RelayUrl`).
+    ///
+    /// `relay_admission` is the Relay's admission token (v45), and its
+    /// absence means UNCHANGED: `None` leaves the stored token alone, an
+    /// empty string clears it, anything else replaces it. Unlike
+    /// `relay_url`, where `None` clears -- because an app older than v45
+    /// sends no `relay_admission` at all, the two builds share one trust
+    /// store, and a switch toggled from the older one must not wipe a
+    /// token it has never heard of.
+    ///
+    /// Unchanged for the SAME Relay. A request that changes `relay_url`
+    /// and names no token forgets the stored one: a token belongs to the
+    /// Relay that issued it, and the daemon presents what is stored to
+    /// whatever it dials.
     SetRemoteAccess {
         enabled: bool,
         relay_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_admission: Option<String>,
     },
 
     GetProtocolVersion,
@@ -2226,7 +2262,21 @@ pub enum Response {
     /// round trip for one screen. Widening a response variant introduced
     /// in the SAME version costs nothing -- no peer older than 42 ever
     /// receives one.
-    Devices { devices: Vec<DeviceInfo>, remote_access_enabled: bool, relay_url: Option<String> },
+    ///
+    /// `relay_admission_set` (v45) says WHETHER an admission token is
+    /// stored and never what it is. The token is a credential the human
+    /// was handed by whoever runs the Relay; the panel has to show that
+    /// one is there, and nothing on the desk needs to read it back. The
+    /// one place the daemon gives it out is inside the pairing QR, which
+    /// is what it is for. Absent from an older daemon's reply, which
+    /// reads as "none" -- and that daemon holds none.
+    Devices {
+        devices: Vec<DeviceInfo>,
+        remote_access_enabled: bool,
+        relay_url: Option<String>,
+        #[serde(default)]
+        relay_admission_set: bool,
+    },
     /// Push to every live `app` connection: a phone has completed the
     /// pairing handshake and is waiting on the human (§3).
     ///
@@ -2315,6 +2365,20 @@ pub struct PairingQr {
     /// The daemon's protocol version, so a phone can say "this gavin is
     /// too old for me" before it starts a handshake rather than after.
     pub protocol_version: u32,
+    /// The Relay's admission token (v45), which the Device presents to
+    /// the Relay in `rendezvous` to be carried at all. Omitted when the
+    /// human has set none.
+    ///
+    /// §3's "what it must not carry" lists "the relay's own credentials",
+    /// and this is not one: it is not what lets anyone BE the Relay or
+    /// run it, it is what the Relay asks of every peer it carries, and it
+    /// is already shared by every Workstation and Device on that Relay.
+    /// It reaches nothing on this machine. A photograph of the QR that
+    /// kept it would hold the right to open a connection to the Relay,
+    /// and a Noise handshake it cannot complete once the secret beside it
+    /// has lapsed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_admission: Option<String>,
 }
 
 impl PairingQr {
@@ -4107,6 +4171,7 @@ mod tests {
             secret: "bb".repeat(32),
             rendezvous: vec!["wss://relay.example/gavin".into()],
             protocol_version: PROTOCOL_VERSION,
+            relay_admission: None,
         };
         let v = serde_json::to_value(&qr).unwrap();
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
@@ -4134,6 +4199,80 @@ mod tests {
         // A round trip through the exact string a camera hands a parser.
         assert_eq!(PairingQr::parse(&qr.to_qr_string()).unwrap(), qr);
         assert!(!qr.to_qr_string().contains(' '), "the QR string is compact JSON");
+    }
+
+    /// The one field the QR has gained since §3 was written, and the
+    /// spec that added it (`2026-09-27-companion-design.md`, "Pairing and
+    /// the trust store"): the Relay's admission token, so that pairing
+    /// sets up everything a Device needs to reach this Workstation. One
+    /// field, under one name, and only when there is a token to carry.
+    #[test]
+    fn the_qr_carries_the_admission_token_when_there_is_one() {
+        let qr = PairingQr {
+            daemon_public_key: "aa".repeat(32),
+            secret: "bb".repeat(32),
+            rendezvous: vec!["wss://relay.example/gavin".into()],
+            protocol_version: PROTOCOL_VERSION,
+            relay_admission: Some("let-me-in".into()),
+        };
+        let v = serde_json::to_value(&qr).unwrap();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["daemonPublicKey", "protocolVersion", "relayAdmission", "rendezvous", "secret"]
+        );
+        assert_eq!(v["relayAdmission"], "let-me-in");
+        assert_eq!(PairingQr::parse(&qr.to_qr_string()).unwrap(), qr);
+
+        // A QR drawn by a daemon older than v45 has no such field, and
+        // still parses: the Device then has no token to present.
+        let old = r#"{"daemonPublicKey":"aa","secret":"bb","rendezvous":[],"protocolVersion":44}"#;
+        assert_eq!(PairingQr::parse(old).unwrap().relay_admission, None);
+    }
+
+    /// An app older than v45 sends no `relay_admission`, and the daemon
+    /// must read that as "leave the token alone" -- so the absence has to
+    /// survive the parse as `None`, and a request that names none has to
+    /// write the bytes an older daemon has always seen.
+    #[test]
+    fn a_set_remote_access_with_no_token_is_what_an_older_app_sends() {
+        let old = r#"{"type":"SetRemoteAccess","enabled":true,"relay_url":"wss://relay.example"}"#;
+        match serde_json::from_str::<Request>(old).unwrap() {
+            Request::SetRemoteAccess { enabled, relay_url, relay_admission } => {
+                assert!(enabled);
+                assert_eq!(relay_url.as_deref(), Some("wss://relay.example"));
+                assert_eq!(relay_admission, None);
+            }
+            other => panic!("expected SetRemoteAccess, got {other:?}"),
+        }
+
+        let unchanged =
+            Request::SetRemoteAccess { enabled: true, relay_url: None, relay_admission: None };
+        let v = serde_json::to_value(&unchanged).unwrap();
+        assert!(v.get("relay_admission").is_none(), "an unnamed token must not be written: {v}");
+
+        // Clearing is said out loud, with an empty string.
+        let cleared = Request::SetRemoteAccess {
+            enabled: true,
+            relay_url: None,
+            relay_admission: Some(String::new()),
+        };
+        assert_eq!(serde_json::to_value(&cleared).unwrap()["relay_admission"], "");
+    }
+
+    /// The reply an older daemon writes has no `relay_admission_set`; a
+    /// newer app must parse it, as "no token".
+    #[test]
+    fn a_devices_reply_with_no_token_flag_is_what_an_older_daemon_sends() {
+        let old = r#"{"type":"Devices","devices":[],"remote_access_enabled":true,"relay_url":null}"#;
+        match serde_json::from_str::<Response>(old).unwrap() {
+            Response::Devices { relay_admission_set, remote_access_enabled, .. } => {
+                assert!(remote_access_enabled);
+                assert!(!relay_admission_set);
+            }
+            other => panic!("expected Devices, got {other:?}"),
+        }
     }
 
     #[test]
@@ -5270,7 +5409,10 @@ mod tests {
         // v44: `Hello.connection` -- which of the app's connections this
         // is. A widened payload and no new TYPE, so no band count moves
         // in the table below and `min_version_for` has no new arm.
-        assert_eq!(PROTOCOL_VERSION, 44);
+        // v45: the Relay's admission token -- `SetRemoteAccess.
+        // relay_admission`, `Devices.relay_admission_set` and the QR's
+        // `relayAdmission`. Widened payloads again and no new TYPE.
+        assert_eq!(PROTOCOL_VERSION, 45);
     }
 
     #[test]
@@ -5685,7 +5827,7 @@ mod tests {
             Request::ListDevices,
             Request::RevokeDevice { device_id: "d1".into() },
             Request::RevokeAllDevices,
-            Request::SetRemoteAccess { enabled: true, relay_url: None },
+            Request::SetRemoteAccess { enabled: true, relay_url: None, relay_admission: None },
             Request::Unknown,
         ]
     }

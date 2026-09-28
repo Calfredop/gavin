@@ -3096,7 +3096,7 @@ pub struct PairingOffer {
     pub expires_at: i64,
 }
 
-/// `ListDevices`'s answer: the trust store's rows plus the two
+/// `ListDevices`'s answer: the trust store's rows plus the
 /// remote-access settings that ride along with them (see
 /// `protocol::Response::Devices` for why they share one round trip).
 #[derive(Debug, Clone, Serialize)]
@@ -3105,6 +3105,9 @@ pub struct DeviceList {
     pub devices: Vec<protocol::DeviceInfo>,
     pub remote_access_enabled: bool,
     pub relay_url: Option<String>,
+    /// Whether the daemon holds an admission token for the Relay, never
+    /// the token. `false` from a daemon older than v45, which holds none.
+    pub relay_admission_set: bool,
 }
 
 /// Mint a one-time pairing secret and hand back the QR payload (§3, "The
@@ -3175,8 +3178,8 @@ pub async fn list_devices(
         .await
         .map_err(|e| e.to_string())?;
     match resp {
-        Response::Devices { devices, remote_access_enabled, relay_url } => {
-            Ok(DeviceList { devices, remote_access_enabled, relay_url })
+        Response::Devices { devices, remote_access_enabled, relay_url, relay_admission_set } => {
+            Ok(DeviceList { devices, remote_access_enabled, relay_url, relay_admission_set })
         }
         Response::Error { message } => Err(message),
         other => Err(format!("expected Devices, got {other:?}")),
@@ -3216,20 +3219,25 @@ pub async fn revoke_all_devices(
     expect_ok(resp)
 }
 
-/// Store whether remote access is on and which relay to reach this daemon
-/// through. Stored and INERT in this phase: nothing dials and nothing
-/// listens until phase 3's `remote.rs`, which is what the section's own
-/// copy says in so many words.
+/// Store whether remote access is on, which Relay to reach this daemon
+/// through, and the Relay's admission token. The daemon acts on it: on,
+/// with a Relay, it dials (`daemon/src/remote.rs`).
+///
+/// `relay_admission` is `None` to leave the stored token alone and empty
+/// to clear it -- see `protocol::Request::SetRemoteAccess`. A daemon
+/// older than v45 drops it unread, which is what
+/// `FEATURE_MIN_VERSION.relayAdmission` greys the field for.
 #[tauri::command]
 pub async fn set_remote_access(
     enabled: bool,
     relay_url: Option<String>,
+    relay_admission: Option<String>,
     state: State<'_, CommandConnection>,
     compat: State<'_, DaemonCompatState>,
 ) -> Result<(), String> {
     let resp = state
         .lanes(current_compat(&compat))
-        .request(Request::SetRemoteAccess { enabled, relay_url })
+        .request(Request::SetRemoteAccess { enabled, relay_url, relay_admission })
         .await
         .map_err(|e| e.to_string())?;
     expect_ok(resp)

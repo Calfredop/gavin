@@ -43,7 +43,11 @@ use rusqlite::{params, Connection};
 /// pairing secret into the last one means a scanner that photographed
 /// the QR still has to complete the full mutual exchange before the
 /// secret does anything for it.
-pub const NOISE_PARAMS: &str = "Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s";
+///
+/// The string itself is the protocol crate's, because since the Companion
+/// core there are two programs that build a handshake from it, and the
+/// other one cannot read this file.
+pub const NOISE_PARAMS: &str = protocol::PAIRING_NOISE_PARAMS;
 
 /// How many paired, unrevoked devices the store will hold (§3: "Three
 /// devices by default (Settings can raise it)").
@@ -85,6 +89,10 @@ const META_PUBLIC_KEY: &str = "static_public_key";
 /// one lock, and no way for the two halves of one payload to disagree.
 const META_REMOTE_ENABLED: &str = "remote_access_enabled";
 const META_RELAY_URL: &str = "remote_access_relay_url";
+/// The Relay's admission token. A row like the two above it, so a store
+/// written before the token existed needs no migration to gain it: the
+/// row is simply not there, and not there reads as "none".
+const META_RELAY_ADMISSION: &str = "remote_access_relay_admission";
 
 /// The daemon's clock, in microseconds since the epoch -- the same unit
 /// and the same saturating read as `registry::now_us`, so timestamps from
@@ -230,6 +238,16 @@ pub struct RemoteAccess {
     /// has nothing to validate a self-hosted relay's URL against (§11
     /// Q2), and a rule it invented would refuse an address that works.
     pub relay_url: Option<String>,
+    /// The Relay's admission token: what the daemon presents to the
+    /// Relay to be carried, and what the pairing QR hands a Device so it
+    /// can present the same. `None` for a Relay the human has been given
+    /// no token for yet -- which a Relay refuses, by name.
+    ///
+    /// Beside the URL and not in the app's `config.json`, for the URL's
+    /// own reason: the daemon is what dials, at 02:00 with the app
+    /// closed. And in a `0600` file beside a private key, which is the
+    /// company a credential should keep.
+    pub relay_admission: Option<String>,
 }
 
 impl RemoteAccess {
@@ -396,38 +414,50 @@ impl TrustStore {
     /// Whether remote access is switched on, and which relay to be
     /// reachable through.
     ///
-    /// **Stored and inert in phase 2.** Nothing in this build reads
-    /// `enabled` to decide to dial or listen -- §10's "must not" for this
-    /// phase is that no listener opens and no relay is dialled, and the
-    /// way to be sure of that is for there to be no code that could.
-    /// "Remote access on" today means rows in a file and a panel that
-    /// says so in its own words.
+    /// **Read by the transport.** `remote.rs` dials the Relay while
+    /// `enabled` is set and there is a URL to dial, and lets go when
+    /// either stops being true. This store only holds the answer: there
+    /// is still nothing in it that opens a socket.
     pub fn remote_access(&self) -> anyhow::Result<RemoteAccess> {
         // Absent means off. A daemon that had never been told is not a
         // daemon that was told yes.
         let enabled = self.meta(META_REMOTE_ENABLED)?.map(|v| v == b"1").unwrap_or(false);
-        let relay_url = match self.meta(META_RELAY_URL)? {
-            // An empty stored value is "no relay", not an empty URL: the
-            // human clearing the field must not leave something that
-            // parses as an address.
-            Some(bytes) => {
-                let s = String::from_utf8_lossy(&bytes).trim().to_string();
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s)
-                }
-            }
-            None => None,
-        };
-        Ok(RemoteAccess { enabled, relay_url })
+        Ok(RemoteAccess {
+            enabled,
+            relay_url: self.meta_text(META_RELAY_URL)?,
+            relay_admission: self.meta_text(META_RELAY_ADMISSION)?,
+        })
     }
 
+    /// A stored setting as text, or `None` when it is absent or blank.
+    ///
+    /// An empty stored value is "none", not an empty string: the human
+    /// clearing a field must not leave something that parses as an
+    /// address, or is presented as a token.
+    fn meta_text(&self, key: &str) -> anyhow::Result<Option<String>> {
+        Ok(self.meta(key)?.and_then(|bytes| {
+            let s = String::from_utf8_lossy(&bytes).trim().to_string();
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }))
+    }
+
+    /// Writes all three settings, as given. What an ABSENT token in a
+    /// request means -- "leave the stored one alone" -- is decided by the
+    /// caller that read the request (`SessionManager::set_remote_access`);
+    /// by the time a value reaches here it is the value to store.
     pub fn set_remote_access(&self, settings: &RemoteAccess) -> anyhow::Result<()> {
         self.set_meta(META_REMOTE_ENABLED, if settings.enabled { b"1" } else { b"0" })?;
         self.set_meta(
             META_RELAY_URL,
             settings.relay_url.as_deref().unwrap_or("").trim().as_bytes(),
+        )?;
+        self.set_meta(
+            META_RELAY_ADMISSION,
+            settings.relay_admission.as_deref().unwrap_or("").trim().as_bytes(),
         )?;
         Ok(())
     }
@@ -1062,8 +1092,8 @@ mod tests {
         let store = open_store(&dir);
         let url = Some("wss://relay.example/gavin".to_string());
 
-        store.set_remote_access(&RemoteAccess { enabled: true, relay_url: url.clone() }).unwrap();
-        store.set_remote_access(&RemoteAccess { enabled: false, relay_url: url.clone() }).unwrap();
+        store.set_remote_access(&RemoteAccess { enabled: true, relay_url: url.clone(), relay_admission: None }).unwrap();
+        store.set_remote_access(&RemoteAccess { enabled: false, relay_url: url.clone(), relay_admission: None }).unwrap();
 
         let read = store.remote_access().unwrap();
         assert!(!read.enabled);
@@ -1085,6 +1115,7 @@ mod tests {
                 .set_remote_access(&RemoteAccess {
                     enabled: true,
                     relay_url: Some(blank.to_string()),
+                    relay_admission: None,
                 })
                 .unwrap();
             let read = store.remote_access().unwrap();
@@ -1104,6 +1135,7 @@ mod tests {
             .set_remote_access(&RemoteAccess {
                 enabled: true,
                 relay_url: Some("wss://relay.example/gavin".into()),
+                relay_admission: None,
             })
             .unwrap();
         assert_eq!(
@@ -1120,8 +1152,11 @@ mod tests {
     fn revoke_all_rotates_the_key_and_leaves_the_settings_alone() {
         let dir = tempfile::tempdir().unwrap();
         let store = open_store(&dir);
-        let settings =
-            RemoteAccess { enabled: true, relay_url: Some("wss://relay.example/gavin".into()) };
+        let settings = RemoteAccess {
+            enabled: true,
+            relay_url: Some("wss://relay.example/gavin".into()),
+            relay_admission: Some("let-me-in".into()),
+        };
         store.set_remote_access(&settings).unwrap();
         let before = store.static_public_key().unwrap();
 
@@ -1129,5 +1164,133 @@ mod tests {
 
         assert_ne!(before, after, "revoke_all must rotate the key");
         assert_eq!(store.remote_access().unwrap(), settings);
+    }
+
+    /// The Relay's admission token is the third remote-access setting,
+    /// and absent means none -- the state every store written before the
+    /// token existed is in.
+    #[test]
+    fn a_store_that_was_never_told_has_no_relay_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        assert_eq!(store.remote_access().unwrap().relay_admission, None);
+    }
+
+    /// Kept across the switch for the reason the URL is: a token the
+    /// human has to find and paste again is one they can paste wrongly.
+    #[test]
+    fn the_relay_admission_survives_a_reopen_and_the_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        let url = Some("wss://relay.example/gavin".to_string());
+        let token = Some("let-me-in".to_string());
+
+        store
+            .set_remote_access(&RemoteAccess {
+                enabled: true,
+                relay_url: url.clone(),
+                relay_admission: token.clone(),
+            })
+            .unwrap();
+        store
+            .set_remote_access(&RemoteAccess {
+                enabled: false,
+                relay_url: url.clone(),
+                relay_admission: token.clone(),
+            })
+            .unwrap();
+
+        let read = store.remote_access().unwrap();
+        assert!(!read.enabled);
+        assert_eq!(read.relay_admission, token);
+        assert_eq!(open_store(&dir).remote_access().unwrap(), read);
+    }
+
+    /// A cleared field is "no token", never an empty one: the daemon
+    /// presents what it reads, and an empty token is one the Relay
+    /// refuses by a name that would send the human looking for a typo.
+    #[test]
+    fn a_blank_relay_admission_reads_back_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        for blank in ["", "   "] {
+            store
+                .set_remote_access(&RemoteAccess {
+                    enabled: true,
+                    relay_url: None,
+                    relay_admission: Some(blank.to_string()),
+                })
+                .unwrap();
+            assert_eq!(store.remote_access().unwrap().relay_admission, None, "{blank:?}");
+        }
+        // And what is kept is trimmed: a token pasted with the newline
+        // that followed it in a terminal is still that token.
+        store
+            .set_remote_access(&RemoteAccess {
+                enabled: true,
+                relay_url: None,
+                relay_admission: Some("  let-me-in\n".to_string()),
+            })
+            .unwrap();
+        assert_eq!(
+            store.remote_access().unwrap().relay_admission.as_deref(),
+            Some("let-me-in")
+        );
+    }
+
+    /// The store this daemon finds on a machine that paired in phase 2:
+    /// the two settings that existed then, written as they were written
+    /// then, and no token. No column was added -- `trust_meta` is
+    /// key/value precisely so a new setting is a row -- so what has to
+    /// hold is that the missing row reads as "none" and the rows that
+    /// are there are left as they were.
+    #[test]
+    fn a_store_from_before_the_token_reads_it_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("devices.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE devices (
+                    device_id TEXT PRIMARY KEY,
+                    public_key BLOB NOT NULL,
+                    name TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'remote',
+                    created_at_us INTEGER NOT NULL,
+                    last_seen_at_us INTEGER NOT NULL,
+                    revoked_at_us INTEGER
+                );
+                CREATE TABLE trust_meta (key TEXT PRIMARY KEY, value BLOB NOT NULL);
+                INSERT INTO trust_meta (key, value) VALUES
+                    ('remote_access_enabled', X'31'),
+                    ('remote_access_relay_url', CAST('wss://relay.example/gavin' AS BLOB))",
+            )
+            .unwrap();
+        }
+
+        let store = TrustStore::open(&path).unwrap();
+        let read = store.remote_access().unwrap();
+        assert!(read.enabled);
+        assert_eq!(read.relay_url.as_deref(), Some("wss://relay.example/gavin"));
+        assert_eq!(read.relay_admission, None);
+
+        // And the token is writable on the old file.
+        store
+            .set_remote_access(&RemoteAccess {
+                relay_admission: Some("let-me-in".into()),
+                ..read
+            })
+            .unwrap();
+        let read = open_store(&dir).remote_access().unwrap();
+        assert_eq!(read.relay_admission.as_deref(), Some("let-me-in"));
+        assert_eq!(read.relay_url.as_deref(), Some("wss://relay.example/gavin"));
+    }
+
+    /// One string for both ends of the handshake: the daemon's responder
+    /// builds from this, and the Companion core's initiator from the
+    /// protocol crate's.
+    #[test]
+    fn the_noise_parameters_are_the_protocol_crates() {
+        assert_eq!(NOISE_PARAMS, protocol::PAIRING_NOISE_PARAMS);
     }
 }

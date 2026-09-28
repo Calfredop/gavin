@@ -1,0 +1,31 @@
+[package]
+name = "companion-core"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# The native test Device that seam 1 drives: this same core, plus a
+# blocking transport to a Relay and randomness read from the OS. Off by
+# default, because neither exists where the core's other build runs --
+# `wasm32-unknown-unknown`, inside the Companion shell, where the
+# transport is the webview's and the randomness is handed in by the host.
+test-device = ["dep:gavin-relay", "protocol/os"]
+
+[dependencies]
+# Without its `os` feature: the wire types, the pairing SAS and the two
+# Device-wire contracts, and nothing that reads an environment, a
+# filesystem or an OS random source.
+protocol = { path = "../protocol", default-features = false }
+
+# The same crate and version the daemon's responder runs on, so the two
+# ends of every handshake are one implementation of Noise. Built from its
+# pure-Rust primitives and WITHOUT `use-getrandom`: with that feature off
+# snow links no random source of its own, and the only randomness a
+# handshake can draw is the `Entropy` its caller supplied.
+snow = { version = "0.10.0", default-features = false, features = [
+  "use-chacha20poly1305",
+  "use-blake2",
+  "use-curve25519",
+] }
+
+gavin-relay = { path = "../gavin-relay", default-features = false, features = ["client"], optional = true }

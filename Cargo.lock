@@ -723,6 +723,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "companion-core"
+version = "0.1.0"
+dependencies = [
+ "gavin-relay",
+ "protocol",
+ "snow",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1532,12 +1541,15 @@ name = "gavin-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "companion-core",
+ "gavin-relay",
  "ignore",
  "libc",
  "notify",
  "notify-debouncer-mini",
  "portable-pty",
  "protocol",
+ "rcgen",
  "rusqlite",
  "serde",
  "serde_json",

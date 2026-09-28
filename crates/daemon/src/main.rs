@@ -11,6 +11,7 @@ mod proc;
 mod program;
 mod pty;
 mod registry;
+mod remote;
 mod screen;
 mod server;
 mod shell;
@@ -120,6 +121,11 @@ fn serve() -> anyhow::Result<()> {
     // key.
     manager.set_trust_store(trust::TrustStore::open(&devices_db_path()?)?);
     manager.recover()?;
+    // After the trust store, which is what it reads. It dials the Relay
+    // only while that store says remote access is on, and sleeps
+    // otherwise -- so on a machine that never turned it on, this starts a
+    // thread that opens no socket.
+    remote::spawn(&manager);
 
     let socket = protocol::socket_path()?;
     println!("gavin-daemon listening on {}", socket.display());

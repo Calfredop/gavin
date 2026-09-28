@@ -15,9 +15,10 @@
 //! `run_responder` takes whatever byte stream its caller has and runs the
 //! three messages over it. That is what lets the whole ceremony be tested
 //! in-process today, against a `snow` initiator on the other end of a
-//! `Stream::pair()`, and it is the seam phase 3's `remote.rs` feeds once
-//! there is a relay connection to feed it with -- see `PairingHandshake`
-//! for what phase 3 picks up where this leaves off.
+//! `Stream::pair()`, and it is the seam `remote.rs` feeds with the stream
+//! a Relay handed it -- see `PairingHandshake` for what it picks up where
+//! the handshake leaves off, and `send_verdict` for the one message it
+//! then sends.
 //!
 //! **Why `psk3`.** `NOISE_PARAMS` lives in `trust.rs` (the daemon's
 //! static key is generated from its DH function, so one string has to
@@ -162,13 +163,11 @@ pub struct PairingHandshake {
     pub sas: String,
     /// The encrypted channel the handshake left behind.
     ///
-    /// Unread in phase 2, and deliberately returned anyway: this is the
-    /// seam. Phase 3's `remote.rs` answers the phone over exactly this --
-    /// `HelloAck { role: "remote" }` once the human confirms, a refusal
-    /// otherwise -- and then hands the same channel to
-    /// `handle_connection_as` with a `ClientIdentity::remote(device_id)`.
-    /// Dropping it here would mean phase 3 re-running the handshake to
-    /// get it back.
+    /// `remote.rs` answers the Device over exactly this, once: the desk's
+    /// verdict (`send_verdict`). The channel then ends. It does not
+    /// become the Device's connection -- a connection is a Noise `IK`
+    /// handshake of its own, signed by the Device's hardware key (ADR
+    /// 0001), and a pairing stream proves neither.
     pub transport: snow::TransportState,
 }
 
@@ -341,6 +340,24 @@ pub fn run_responder_with_keys<S: Read + Write>(
     Ok(HandshakeOutcome { name, public_key, sas, transport })
 }
 
+/// Tells the Device what the desk ruled: one transport message, padded
+/// to the Device wire's bucket, in one frame.
+///
+/// The only thing a pairing stream carries after the handshake. It is
+/// sealed with the channel the handshake left behind, so it can only have
+/// come from the Workstation the Device pinned, and a Relay that altered
+/// it would have produced a frame that does not open.
+pub fn send_verdict<S: Write>(
+    stream: &mut S,
+    transport: &mut snow::TransportState,
+    verdict: &protocol::device_wire::PairingVerdict,
+) -> anyhow::Result<()> {
+    let plaintext = protocol::device_wire::pad(&verdict.to_bytes())?;
+    let mut message = vec![0u8; MAX_NOISE_MESSAGE];
+    let n = transport.write_message(&plaintext, &mut message)?;
+    write_frame(stream, &message[..n])
+}
+
 /// What a device name is allowed to be by the time it reaches a screen.
 ///
 /// The bytes arrive inside an authenticated message, so this is not about
@@ -442,6 +459,8 @@ pub(crate) fn hex_decode(s: &str) -> anyhow::Result<Vec<u8>> {
 pub(crate) struct InitiatorResult {
     pub public_key: Vec<u8>,
     pub sas: String,
+    /// The Device's end of the channel, for reading the verdict.
+    pub transport: snow::TransportState,
 }
 
 /// The phone's half of §3's ceremony, as a test double.
@@ -488,7 +507,11 @@ pub(crate) fn run_initiator<S: Read + Write>(
     let n = handshake.write_message(device_name.as_bytes(), &mut message)?;
     write_frame(stream, &message[..n])?;
 
-    Ok(InitiatorResult { public_key: keypair.public, sas })
+    Ok(InitiatorResult {
+        public_key: keypair.public,
+        sas,
+        transport: handshake.into_transport_mode()?,
+    })
 }
 
 #[cfg(test)]
@@ -698,6 +721,50 @@ mod tests {
         // the name is not a credential, and failing the whole ceremony
         // over a mis-encoded label would be the tail wagging the dog.
         assert!(!clean_device_name(&[0xff, 0xfe, b'a']).is_empty());
+    }
+
+    /// What the Device reads once the desk has ruled: one frame, a whole
+    /// number of buckets long, that opens with the Device's end of the
+    /// channel and with nothing else.
+    #[test]
+    fn a_verdict_reaches_the_initiator_in_one_padded_frame() {
+        use protocol::device_wire::{self, PairingVerdict};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let offer = PairingOffer::mint(NOW).unwrap();
+        let (daemon, phone) = pair_in_process(&store, &offer, offer.secret_hex(), "iPhone", NOW);
+        let mut daemon = daemon.unwrap();
+        let mut phone = phone.unwrap();
+
+        for verdict in [
+            PairingVerdict::Paired { device_id: daemon.device_id.clone() },
+            PairingVerdict::Rejected,
+            PairingVerdict::Expired,
+        ] {
+            let mut wire = Vec::new();
+            send_verdict(&mut wire, &mut daemon.transport, &verdict).unwrap();
+            assert_eq!(
+                wire.len() % device_wire::FRAME_BUCKET,
+                0,
+                "{verdict:?} made a frame of {} bytes",
+                wire.len()
+            );
+            assert_eq!(
+                u16::from_be_bytes([wire[0], wire[1]]) as usize,
+                wire.len() - 2,
+                "one frame, and nothing after it"
+            );
+
+            // Sealed: the verdict's words are not on the wire.
+            let text = String::from_utf8_lossy(&wire);
+            assert!(!text.contains("paired") && !text.contains("rejected"), "{text}");
+
+            let mut plaintext = vec![0u8; MAX_NOISE_MESSAGE];
+            let n = phone.transport.read_message(&wire[2..], &mut plaintext).unwrap();
+            let read = PairingVerdict::from_bytes(device_wire::unpad(&plaintext[..n]).unwrap());
+            assert_eq!(read.unwrap(), verdict);
+        }
     }
 
     /// The QR is written by one of these and read by the other, so the
