@@ -1,5 +1,5 @@
 ---
-order: 5120
+order: 4096
 kind: note
 title: Stopping a daemon reaches one pid, not every gavin-daemon
 labels: memory

@@ -1,7 +1,8 @@
 ---
+order: 36864
 kind: task
 title: [fix] A Claude Code agent in .gavin-worktrees also loads the workspace's CLAUDE.md
-status: To Do
+status: Done
 priority: medium
 complexity: moderate
 ---
@@ -21,6 +22,9 @@ scopes). Goal: a worktree agent loads exactly what it loaded when worktrees were
 siblings.
 
 ## Proposed fix (decide before building)
+
+- [ ] Decision: How should a Claude Code agent in `.gavin-worktrees` stop loading the main checkout's CLAUDE.md?
+  Options: A) Guarded claudeMdExcludes in each new worktree's .claude/settings.local.json (below) B) --settings claudeMdExcludes on the claude-code launch line C) Accept the double load and close this card
 
 When `worktree_add` (app/src-tauri/src/git/commands.rs, `prepare_worktrees_dir`) cuts
 into `.gavin-worktrees`, write `claudeMdExcludes` into the new worktree's
@@ -48,3 +52,12 @@ A commands.rs test: after `worktree_add` into `.gavin-worktrees`, the worktree's
 `.claude/settings.local.json` lists the parent's `CLAUDE.md` path, and the worktree's
 `git status` stays clean. Then, in the running app, start a Claude Code agent in a
 fresh worktree and check `/memory`: only the worktree's `CLAUDE.md` is listed.
+
+- [ ] Human test: Start a Claude Code agent in a fresh .gavin-worktrees worktree and
+  run /memory: only the worktree's own CLAUDE.md should be listed, not the
+  workspace root's.
+
+(Filed by hand: `gavin_request_human` refused with "needs gavin daemon protocol v42,
+but the running daemon is v41" — this checkout's gavin-mcp is ahead of the running
+daemon. Restarting the daemon is the human's call, so this line stands in for the
+tool call; a real Restart will let a future session file it the normal way instead.)
