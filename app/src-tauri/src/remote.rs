@@ -18,7 +18,9 @@
 //! window; every request to it is gated on its own verdict, never on the
 //! local daemon's.
 
+use crate::command_lane::{Asked, CommandLane, DaemonLanes};
 use crate::config::{SshConfig, Workspace};
+use crate::stream_writer::StreamWriter;
 use crate::session::{
     attach_and_relay, list_valid_session_ids, non_session_tab_ids, resolve_sessions, send_request,
     BoardTabs, CardTabs, DaemonCompat, FileTabs, RelayOwner, WorkspacesState,
@@ -293,10 +295,13 @@ pub struct RemoteLink {
     pub id: u64,
     pub host: String,
     pub compat: DaemonCompat,
-    /// Request/reply, serialised by the mutex like `CommandConnection`.
-    pub command: Mutex<Stream>,
+    /// Request/reply, one at a time in enqueue order, on the host's one
+    /// command connection (`command_lane.rs`). A second connection per
+    /// host would be a second ssh process; the local daemon's slow-reads
+    /// lane is not worth that here.
+    pub command: CommandLane,
     /// The streaming connection's writer, like `DaemonConnection`.
-    pub writer: Arc<Mutex<Stream>>,
+    pub writer: StreamWriter,
     /// The user's home on the host: the cwd fallback for sessions there.
     pub home: String,
     pub host_os: String,
@@ -308,17 +313,30 @@ pub struct RemoteLink {
 }
 
 impl RemoteLink {
-    /// One request/reply on the command connection, gated on THIS daemon's
-    /// version like every command the app sends it.
-    fn ask(&self, req: &Request) -> anyhow::Result<Response> {
-        crate::session::send_command_reconnecting(&self.command, &self.compat, req)
+    /// This host's daemon as a command sends it requests, gated on THIS
+    /// daemon's version like every request the app sends it.
+    pub fn lanes(&self) -> DaemonLanes {
+        DaemonLanes::single(self.command.clone(), self.compat)
+    }
+
+    /// One request/reply on the command connection, waited for on this
+    /// thread: every caller is the blocking pool or a thread of its own,
+    /// never the main thread.
+    fn ask(&self, req: Request) -> anyhow::Result<Response> {
+        self.command.ask(&self.compat, req)
+    }
+
+    /// `ask`, waiting `deadline` for the answer instead of the lane's own
+    /// figure for the request.
+    fn ask_within(&self, req: Request, deadline: std::time::Duration) -> anyhow::Result<Response> {
+        self.command.submit_within(&self.compat, req, Some(deadline))?.wait()
     }
 
     /// `ReadWorkspaceFile` (v39): the file's text under `root` on the
     /// host, or `None` when there is none, and whether it was cut at the
     /// cap.
     pub fn read_file(&self, root: &str, path: &str) -> anyhow::Result<(Option<String>, bool)> {
-        match self.ask(&Request::ReadWorkspaceFile { root_path: root.to_string(), path: path.to_string() })? {
+        match self.ask(Request::ReadWorkspaceFile { root_path: root.to_string(), path: path.to_string() })? {
             Response::WorkspaceFile { content, truncated } => Ok((content, truncated)),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("expected WorkspaceFile, got {other:?}"),
@@ -327,7 +345,7 @@ impl RemoteLink {
 
     /// `WriteWorkspaceFile` (v39).
     pub fn write_file(&self, root: &str, path: &str, content: &str) -> anyhow::Result<()> {
-        match self.ask(&Request::WriteWorkspaceFile {
+        match self.ask(Request::WriteWorkspaceFile {
             root_path: root.to_string(),
             path: path.to_string(),
             content: content.to_string(),
@@ -340,7 +358,7 @@ impl RemoteLink {
 
     /// `StatWorkspacePaths` (v39): where each path resolves on the host.
     pub fn stat_paths(&self, root: &str, paths: &[String]) -> anyhow::Result<Vec<protocol::WorkspacePathStat>> {
-        match self.ask(&Request::StatWorkspacePaths { root_path: root.to_string(), paths: paths.to_vec() })? {
+        match self.ask(Request::StatWorkspacePaths { root_path: root.to_string(), paths: paths.to_vec() })? {
             Response::WorkspacePathStats { stats } => Ok(stats),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("expected WorkspacePathStats, got {other:?}"),
@@ -350,19 +368,26 @@ impl RemoteLink {
     /// `RunGit` (v40): a git subcommand in `cwd` on the host, its stdout,
     /// stderr and exit code -- the three the desktop's local `run_git`
     /// returns, so the Git tab's parsing is unchanged.
+    ///
+    /// `deadline` is the caller's, because the request's type cannot say
+    /// which git this is: a `status` and a commit running a pre-commit
+    /// suite are both a `RunGit`. The host kills neither, so this is the
+    /// only bound either has.
     pub fn run_git(
         &self,
         root: &str,
         cwd: &str,
         args: &[String],
         stdin: Option<&str>,
+        deadline: std::time::Duration,
     ) -> anyhow::Result<(Vec<u8>, String, i32)> {
-        match self.ask(&Request::RunGit {
+        let req = Request::RunGit {
             root_path: root.to_string(),
             cwd: cwd.to_string(),
             args: args.to_vec(),
             stdin: stdin.map(str::to_string),
-        })? {
+        };
+        match self.ask_within(req, deadline)? {
             Response::GitRun { stdout, stderr, code } => Ok((stdout, stderr, code)),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("expected GitRun, got {other:?}"),
@@ -371,7 +396,7 @@ impl RemoteLink {
 
     /// `ListWorkspaceDir` (v40): a directory's children on the host.
     pub fn list_dir(&self, root: &str, path: &str) -> anyhow::Result<Vec<protocol::WorkspaceDirEntry>> {
-        match self.ask(&Request::ListWorkspaceDir { root_path: root.to_string(), path: path.to_string() })? {
+        match self.ask(Request::ListWorkspaceDir { root_path: root.to_string(), path: path.to_string() })? {
             Response::WorkspaceDir { entries } => Ok(entries),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("expected WorkspaceDir, got {other:?}"),
@@ -387,13 +412,15 @@ impl RemoteLink {
         cwd: &str,
         args: &[String],
         env: &[(String, String)],
+        deadline: std::time::Duration,
     ) -> anyhow::Result<(Vec<u8>, String, i32)> {
-        match self.ask(&Request::RunGitEnv {
+        let req = Request::RunGitEnv {
             root_path: root.to_string(),
             cwd: cwd.to_string(),
             args: args.to_vec(),
             env: env.to_vec(),
-        })? {
+        };
+        match self.ask_within(req, deadline)? {
             Response::GitRun { stdout, stderr, code } => Ok((stdout, stderr, code)),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("expected GitRun, got {other:?}"),
@@ -404,7 +431,7 @@ impl RemoteLink {
     /// behind the op it is cancelling never arrives, which is the whole
     /// reason the op itself goes the other way.
     pub fn cancel_git_op(&self, op_id: &str) -> anyhow::Result<bool> {
-        match self.ask(&Request::CancelGitOp { op_id: op_id.to_string() })? {
+        match self.ask(Request::CancelGitOp { op_id: op_id.to_string() })? {
             Response::GitOpCancelled { cancelled } => Ok(cancelled),
             Response::Error { message } => anyhow::bail!("{message}"),
             other => anyhow::bail!("expected GitOpCancelled, got {other:?}"),
@@ -444,7 +471,7 @@ impl RemoteLink {
 
     /// `CreateWorkspacePath` (v42): an empty file, or one directory.
     pub fn create_path(&self, root: &str, path: &str, directory: bool) -> anyhow::Result<()> {
-        match self.ask(&Request::CreateWorkspacePath {
+        match self.ask(Request::CreateWorkspacePath {
             root_path: root.to_string(),
             path: path.to_string(),
             directory,
@@ -457,7 +484,7 @@ impl RemoteLink {
 
     /// `RenameWorkspacePath` (v42).
     pub fn rename_path(&self, root: &str, from: &str, to: &str) -> anyhow::Result<()> {
-        match self.ask(&Request::RenameWorkspacePath {
+        match self.ask(Request::RenameWorkspacePath {
             root_path: root.to_string(),
             from: from.to_string(),
             to: to.to_string(),
@@ -472,7 +499,7 @@ impl RemoteLink {
     /// request's own note. The confirmation was answered on this side
     /// before the request went out.
     pub fn trash_path(&self, root: &str, path: &str) -> anyhow::Result<()> {
-        match self.ask(&Request::TrashWorkspacePath {
+        match self.ask(Request::TrashWorkspacePath {
             root_path: root.to_string(),
             path: path.to_string(),
         })? {
@@ -556,10 +583,14 @@ pub fn git_link_for_cwd(cwd: &str) -> Option<(Arc<RemoteLink>, String)> {
 /// site -- exactly the "change only where the process runs" the card asks
 /// for. The network ops it keeps to itself go through `run_git_streaming`,
 /// which does not call this.
+///
+/// `deadline` is how long the answer is waited for: the ceiling the local
+/// runner would have given the same git (`git::run`).
 pub fn run_git_over_link(
     cwd: &str,
     args: &[&str],
     stdin: Option<&[u8]>,
+    deadline: std::time::Duration,
 ) -> Option<Result<(Vec<u8>, String, i32), String>> {
     let (link, root) = git_link_for_cwd(cwd)?;
     let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
@@ -567,23 +598,25 @@ pub fn run_git_over_link(
     // patch is a case gavin does not produce.
     let stdin = stdin.map(|b| String::from_utf8_lossy(b).into_owned());
     Some(
-        link.run_git(&root, &protocol::wire_path_str(cwd), &argv, stdin.as_deref())
+        link.run_git(&root, &protocol::wire_path_str(cwd), &argv, stdin.as_deref(), deadline)
             .map_err(|e| e.to_string()),
     )
 }
 
-/// `run_git_env`'s router arm (v42) -- the same shape as
-/// `run_git_over_link`, for the two callers that need `GIT_EDITOR`.
+/// The router arm (v42) for a `run_git_action` with an environment -- the
+/// same shape as `run_git_over_link`, for the two callers that need
+/// `GIT_EDITOR`: cherry-pick and `--continue`.
 pub fn run_git_env_over_link(
     cwd: &str,
     args: &[&str],
     env: &[(&str, &str)],
+    deadline: std::time::Duration,
 ) -> Option<Result<(Vec<u8>, String, i32), String>> {
     let (link, root) = git_link_for_cwd(cwd)?;
     let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let env: Vec<(String, String)> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     Some(
-        link.run_git_env(&root, &protocol::wire_path_str(cwd), &argv, &env)
+        link.run_git_env(&root, &protocol::wire_path_str(cwd), &argv, &env, deadline)
             .map_err(|e| e.to_string()),
     )
 }
@@ -860,7 +893,7 @@ pub fn open_link(cfg: &SshConfig) -> anyhow::Result<(Arc<RemoteLink>, Stream)> {
             return Err(anyhow::anyhow!("{}: {e}", cfg.host));
         }
     };
-    let writer = Arc::new(Mutex::new(stream_conn.try_clone()?));
+    let writer = StreamWriter::spawn(stream_conn.try_clone()?);
     let host_os = banner.host_os.clone();
     let home = banner.home.clone().unwrap_or_else(|| {
         // A host with no home named is a host misconfigured, but a
@@ -871,7 +904,14 @@ pub fn open_link(cfg: &SshConfig) -> anyhow::Result<(Arc<RemoteLink>, Stream)> {
         id: NEXT_LINK_ID.fetch_add(1, Ordering::Relaxed),
         host: cfg.host.clone(),
         compat,
-        command: command_conn,
+        // No redial: the connection is an ssh bridge, and a lost link is
+        // `link_lost`'s to report and Reconnect's to rebuild.
+        command: CommandLane::spawn(
+            cfg.host.clone(),
+            command_conn.into_inner().expect("command connection mutex poisoned"),
+            compat.daemon_version,
+            None,
+        ),
         writer,
         home,
         host_os,
@@ -955,18 +995,11 @@ pub fn link_workspace(app: &AppHandle, workspace_id: &str) -> anyhow::Result<()>
         &app.state::<BoardTabs>().0.lock().unwrap(),
         &app.state::<CardTabs>().0.lock().unwrap(),
     );
-    let all = list_valid_session_ids(&link.command, &link.compat)?;
+    let lanes = link.lanes();
+    let all = list_valid_session_ids(&lanes)?;
     let mut ws = ws;
     for page in ws.pages.iter_mut() {
-        resolve_sessions(
-            &mut page.layout,
-            &link.command,
-            &all,
-            &non_session,
-            &link.compat,
-            Some(&root),
-            &link.home,
-        )?;
+        resolve_sessions(&mut page.layout, &lanes, &all, &non_session, Some(&root), &link.home)?;
     }
     if let Some(id) = ws.main_session_id.clone() {
         if !all.get(&id).is_some_and(|s| s.status != "exited") {
@@ -1216,6 +1249,30 @@ pub fn every_link(app: &AppHandle) -> Vec<Arc<RemoteLink>> {
     app.state::<RemoteLinks>().0.lock().unwrap().values().cloned().collect()
 }
 
+/// How long a read that spans every daemon waits for any one host.
+///
+/// Those reads are polled -- the memory poll every 5 s, the hub every 4 s,
+/// the Sessions manager every 2 s -- and each used to wait on every host
+/// in turn: one host that stopped answering held the local daemon's
+/// sessions back for its lane's whole deadline, and a dropped network for
+/// as long as ssh took to notice (~45 s). A host's sessions and process
+/// sample take a round trip and a moment on the host; this is room for a
+/// slow link, not for a stuck one.
+const SPAN_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Starts `ask` on every live link at once, each bounded by
+/// `SPAN_BUDGET`: the ssh half of a read that spans every daemon. Called
+/// before the caller awaits its local answer, so the two run side by
+/// side. A host that fails or runs out of budget is left out of the
+/// answers, as a host that failed always was.
+pub fn ask_every_link<T, Fut>(app: &AppHandle, ask: impl Fn(Arc<RemoteLink>) -> Fut) -> Asked<T>
+where
+    Fut: std::future::Future<Output = Result<T, String>> + Send + 'static,
+    T: Send + 'static,
+{
+    crate::command_lane::ask_each(every_link(app), SPAN_BUDGET, ask)
+}
+
 /// Records that a session the app just created on a link is the link's.
 pub fn remember_session(app: &AppHandle, session_id: &str, host: &str) {
     app.state::<SessionHosts>().0.lock().unwrap().insert(session_id.to_string(), host.to_string());
@@ -1314,8 +1371,8 @@ mod tests {
                 app_version: protocol::PROTOCOL_VERSION,
                 degraded: version < protocol::PROTOCOL_VERSION,
             },
-            command: Mutex::new(command_side),
-            writer: Arc::new(Mutex::new(app_side)),
+            command: CommandLane::spawn(host.to_string(), command_side, version, None),
+            writer: StreamWriter::spawn(app_side),
             home: "/home/me".to_string(),
             host_os: "linux".to_string(),
             mcp_path: None,

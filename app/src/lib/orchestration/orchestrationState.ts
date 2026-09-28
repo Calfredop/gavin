@@ -7,6 +7,8 @@
 
 import { writable, derived, get, type Readable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { appDuty, listenToOtherWindows, runsRailsFor, tellOtherWindows } from "$lib/shell/appDuty";
+import { workspaceWindows } from "$lib/shell/appWindowState";
 import * as backend from "$lib/core/backend";
 import {
   nextActions,
@@ -377,9 +379,20 @@ function setDecoyEdits(workspaceId: string, ids: ReadonlySet<string>): void {
 export function startDecoyWatch(): () => void {
   stopDecoyWatch();
   const sweep = () => {
-    for (const workspaceId of Object.keys(get(orchestrations))) {
-      void refreshDecoyEdits(workspaceId);
-    }
+    // The workspaces whose rails this window runs, and no others: the
+    // window running a rail is the one that should notice it wedging,
+    // and a second window asking git the same question is the cost this
+    // sweep is careful about.
+    const mine = Object.keys(get(orchestrations)).filter(runsRailsFor);
+    // One message per sweep rather than one per workspace, and every
+    // swept workspace rather than what changed: a window opened since the
+    // last sweep has nothing to apply a difference to.
+    void Promise.all(mine.map((workspaceId) => refreshDecoyEdits(workspaceId))).then(() => {
+      const all = get(decoyEditsByWorkspace);
+      const found: DecoyReading = {};
+      for (const workspaceId of mine) found[workspaceId] = [...(all[workspaceId] ?? EMPTY_DECOYS)];
+      tellOtherWindows<DecoyReading>(DECOY_EDITS, found);
+    });
   };
   decoyTimer = setInterval(sweep, DECOY_POLL_MS);
   sweep();
@@ -391,12 +404,95 @@ export function stopDecoyWatch(): void {
   decoyTimer = null;
 }
 
+/// A sweep's findings as one window tells the others: step ids per
+/// workspace, since a Set does not survive the trip.
+type DecoyReading = Record<string, string[]>;
+
+const DECOY_EDITS = "decoy-edits";
+
+/// Takes the sweep another window ran. Each workspace is swept by the
+/// window running its rails (runsRailsFor) -- it is a git call per
+/// running step, every thirty seconds -- and every window draws the
+/// marks.
+function takeDecoyReading(found: DecoyReading): void {
+  for (const [workspaceId, ids] of Object.entries(found ?? {})) {
+    setDecoyEdits(workspaceId, new Set(ids));
+  }
+}
+
+// ---- Writes the other windows have to hear about ----------------------------
+//
+// The daemon pushes a plan when an agent writes one over MCP, and says
+// nothing when the app writes it: the writer already holds what it wrote.
+// With one window that was the whole story. With two it never was --
+// each held its own copy and a rail started in one stayed idle in the
+// other -- but both ran a scheduler over every workspace, so each at
+// least saw its own rails move. Only one window runs a workspace's rails
+// now (runsRailsFor), so a rail started anywhere else -- the app hub
+// reaches every workspace -- has to REACH it, and the run state it
+// writes has to reach everybody else's screen.
+//
+// So every successful save says so, and the other windows re-read the
+// workspace from the daemon rather than trusting a payload: the daemon's
+// copy is the one every window agrees on, and re-reading is what the
+// push handler already does when a push disagrees with it.
+
+const ORCHESTRATION_WRITTEN = "orchestration-written";
+
+/// Long enough to fold a pass's burst of writes -- a step done, the next
+/// launched, the rail advanced -- into one re-read per window.
+const REREAD_DELAY_MS = 250;
+
+const rereads = new Map<string, ReturnType<typeof setTimeout>>();
+
+function rereadAfterOtherWindowWrote(workspaceId: string): void {
+  // A workspace this window never loaded has nothing stale to correct;
+  // the first fetch will read the daemon anyway.
+  if (!workspaceId || !(workspaceId in get(orchestrations))) return;
+  const pending = rereads.get(workspaceId);
+  if (pending) clearTimeout(pending);
+  rereads.set(
+    workspaceId,
+    setTimeout(() => {
+      rereads.delete(workspaceId);
+      // A save of this window's own is still in flight, and the re-read
+      // would be skipped for it -- so wait for it rather than drop the
+      // other window's write on the floor.
+      if ((pendingSaves.get(workspaceId) ?? 0) > 0) {
+        rereadAfterOtherWindowWrote(workspaceId);
+        return;
+      }
+      void refreshOrchestration(workspaceId);
+    }, REREAD_DELAY_MS)
+  );
+}
+
 const pendingSaves = new Map<string, number>();
+
+/// Which read a workspace's plan is waiting for. Every push, fetch,
+/// refresh and save takes the next number, and a read applies its answer
+/// only if its number is still the latest. `pendingSaves` alone no longer
+/// covers it: the plan is read off the main thread now, so answers race
+/// back -- an earlier refresh can land after a later one or after a push
+/// newer than it, and a refresh taken before a save can land after that
+/// save has resolved and cleared `pendingSaves`, putting the pre-save
+/// plan back.
+const planEpochs = new Map<string, number>();
+
+function nextPlanEpoch(workspaceId: string): number {
+  const epoch = (planEpochs.get(workspaceId) ?? 0) + 1;
+  planEpochs.set(workspaceId, epoch);
+  return epoch;
+}
 
 export async function fetchOrchestration(workspaceId: string): Promise<void> {
   if (workspaceId in get(orchestrations)) return;
+  const epoch = nextPlanEpoch(workspaceId);
   try {
     const orch = dropImpossibleSteps(await backend.getOrchestration(workspaceId));
+    // A push (which ticks for itself) or a refresh may have brought a
+    // newer plan while this first read waited.
+    if (planEpochs.get(workspaceId) !== epoch && workspaceId in get(orchestrations)) return;
     orchestrations.update((s) => ({ ...s, [workspaceId]: orch }));
   } catch {
     // Leave it unset; the tab renders its loading state and the next
@@ -411,13 +507,16 @@ export async function fetchOrchestration(workspaceId: string): Promise<void> {
   await tick(workspaceId);
 }
 
-/// Re-reads from SQLite. Skipped while a save is in flight, and checked
-/// again afterwards for saves that started meanwhile.
+/// Re-reads from SQLite. Skipped while a save is in flight, and dropped
+/// afterwards if a save, a push or a newer read started meanwhile
+/// (planEpochs).
 export async function refreshOrchestration(workspaceId: string): Promise<void> {
   if ((pendingSaves.get(workspaceId) ?? 0) > 0) return;
+  const epoch = nextPlanEpoch(workspaceId);
   try {
     const orch = dropImpossibleSteps(await backend.getOrchestration(workspaceId));
     if ((pendingSaves.get(workspaceId) ?? 0) > 0) return;
+    if (planEpochs.get(workspaceId) !== epoch) return;
     orchestrations.update((s) => ({ ...s, [workspaceId]: orch }));
   } catch {
     // Keep showing what we have.
@@ -442,10 +541,12 @@ export async function mutatePlan(
   if (!current) return null;
   const updated = mutate(current);
   orchestrations.update((s) => ({ ...s, [workspaceId]: updated }));
+  nextPlanEpoch(workspaceId);
   pendingSaves.set(workspaceId, (pendingSaves.get(workspaceId) ?? 0) + 1);
   try {
     await backend.setOrchestration(workspaceId, updated.rails, updated.conflictNotes);
     dismissSaveError(workspaceId);
+    tellOtherWindows<string>(ORCHESTRATION_WRITTEN, workspaceId);
     return null;
   } catch (e) {
     orchestrations.update((s) => (s[workspaceId] === updated ? { ...s, [workspaceId]: current } : s));
@@ -466,10 +567,12 @@ async function mutateRunState(
   if (!current) return;
   const updated = apply(current);
   orchestrations.update((s) => ({ ...s, [workspaceId]: updated }));
+  nextPlanEpoch(workspaceId);
   pendingSaves.set(workspaceId, (pendingSaves.get(workspaceId) ?? 0) + 1);
   try {
     await persist();
     dismissSaveError(workspaceId);
+    tellOtherWindows<string>(ORCHESTRATION_WRITTEN, workspaceId);
   } catch (e) {
     orchestrations.update((s) => (s[workspaceId] === updated ? { ...s, [workspaceId]: current } : s));
     saveErrors.update((err) => ({
@@ -1946,6 +2049,17 @@ const ticking = new Set<string>();
 const tickAgain = new Set<string>();
 
 export async function tick(workspaceId: string): Promise<void> {
+  // One scheduler per workspace, however many windows. Every window
+  // holds every workspace, and the sidebar loads every workspace's plan,
+  // so a second window ticking would be a second scheduler over the same
+  // rails -- and nothing between two of them stops both launching the
+  // same step. So a workspace's rails run in the window showing it (see
+  // railWindowFor for why that window and not one for the whole app).
+  // Gated here rather than in startScheduler because a plan arriving (a
+  // fetch, a refresh, a push) and every rail action a human takes tick
+  // by hand. An action taken in another window reaches this one as that
+  // action's write (ORCHESTRATION_WRITTEN).
+  if (!runsRailsFor(workspaceId)) return;
   if (ticking.has(workspaceId)) {
     tickAgain.add(workspaceId);
     return;
@@ -2107,6 +2221,12 @@ function tickInputStores(): Readable<unknown>[] {
     // hold -- once when starts stop, once when they may resume.
     launchHolding,
     prReports,
+    // Which window runs which workspace's rails (runsRailsFor). A
+    // workspace handed to this window, or left here when its own window
+    // closed, is a rail this window has never ticked; without these it
+    // would wait for some unrelated emission to find out.
+    workspaceWindows,
+    appDuty,
     // How a turn VERDICT arrives, and for the same reason `sessionExits`
     // and `prReports` are here: it lands a second or so after the status
     // change that provoked it, so a rail whose step is held pending
@@ -2138,7 +2258,9 @@ let stopScheduler: (() => void) | null = null;
 ///
 /// `orchestrations` is the set, the same one `startDecoyWatch` sweeps: a
 /// workspace whose plan has not arrived has no rails to run, and `tick`
-/// would bail on it anyway. It is deliberately NOT a tick input (see
+/// would bail on it anyway. So does every workspace another window runs
+/// the rails of (runsRailsFor): each window starts this, and each ticks
+/// its own share. It is deliberately NOT a tick input (see
 /// tickInputStores), so reading it here subscribes to nothing -- a plan
 /// ARRIVING ticks by hand from each of the three places it can arrive.
 export function startScheduler(): () => void {
@@ -2235,6 +2357,7 @@ function cardTitleFor(workspaceId: string, step: Step): string | null {
 export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   const unlisten = await listen<[string, Orchestration]>("orchestration-changed", (event) => {
     const [workspaceId, incoming] = event.payload;
+    nextPlanEpoch(workspaceId);
     let runStateMoved = false;
     orchestrations.update((m) => {
       const current = m[workspaceId];
@@ -2268,15 +2391,30 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
     // ticked at all.
     void tick(workspaceId);
   });
+  // In every window: each ticks only the workspaces whose rails it runs
+  // (see tick()).
   const stop = startScheduler();
+  const unlistenWrites = await listenToOtherWindows<string>(
+    ORCHESTRATION_WRITTEN,
+    rereadAfterOtherWindowWrote
+  );
   // Started beside the scheduler and owned by the same teardown: the
   // poll behind a `pr` step has to keep running whatever view is
   // mounted, exactly as the tick does.
+  //
+  // Not partitioned the way the tick is, and it needs no partition: the
+  // poll is demand-driven, and a window's demand is the waiting steps of
+  // the rails it runs plus the rail headers on its own screen. A window
+  // with neither asks for nothing, and the host's freshness floor
+  // answers a second window's ask for the same branch from its cache.
   const stopPolling = startPrPolling();
   // And beside it for the same reason: a rail whose agent edited the
   // worktree's copy of its card is wedged whatever tab is on screen, and
-  // it is the tab NOT on screen where nobody would ever find out.
+  // it is the tab NOT on screen where nobody would ever find out. Each
+  // window sweeps the workspaces whose rails it runs, like the tick, and
+  // every window draws what the others found.
   const stopDecoys = startDecoyWatch();
+  const unlistenDecoys = await listenToOtherWindows<DecoyReading>(DECOY_EDITS, takeDecoyReading);
   // Started here for the reason the scheduler is: it belongs to the app,
   // not to a tab. An Organize that finishes while the human is reading the
   // board still has to release the button, and the record it clears was
@@ -2305,8 +2443,10 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   const stopTurnVerdict = startTurnVerdict();
   return () => {
     stop();
+    unlistenWrites();
     stopPolling();
     stopDecoys();
+    unlistenDecoys();
     stopAgents();
     stopAutoResume();
     stopTurnVerdict();
@@ -2324,6 +2464,9 @@ export function __resetForTesting(): void {
   decoyEditsByWorkspace.set({});
   decoyInFlight.clear();
   pendingSaves.clear();
+  planEpochs.clear();
+  for (const pending of rereads.values()) clearTimeout(pending);
+  rereads.clear();
   ticking.clear();
   tickAgain.clear();
   // A scheduler left running would tick the next test's stores.

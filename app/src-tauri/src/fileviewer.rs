@@ -2,6 +2,7 @@ use crate::session::{WorkspacesData, WorkspacesState};
 use notify_debouncer_mini::Debouncer;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -9,8 +10,18 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Files larger than this are truncated rather than rendered whole --
 /// generous for source/markdown, small enough to never freeze the
-/// renderer on a multi-GB log.
+/// renderer on a multi-GB log. It bounds the READ too, not just what is
+/// rendered: see `read_prefix`.
 pub const MAX_VIEWER_FILE_BYTES: usize = 1024 * 1024;
+
+/// A folder with more entries than this lists only the first this many,
+/// in the tree's own order, and says how many it left out. The Files
+/// tree draws every row it is given and re-lists each remembered open
+/// folder on every visit to the tab; `target/debug/deps` in this repo
+/// alone held 60,052 entries, 0.6-1.1 s of stat per listing before a
+/// single row was drawn. Two thousand keeps whole every folder a human
+/// browses by eye -- `target/debug/.fingerprint` here is 1,972.
+pub const MAX_LISTED_ENTRIES: usize = 2000;
 
 /// Matches the daemon's own GIT_STATUS_DEBOUNCE -- long enough to collapse
 /// the burst of events a single save produces, short enough to feel live.
@@ -162,22 +173,31 @@ pub fn viewable_extensions() -> Vec<String> {
 /// host's daemon (`ReadWorkspaceFile`, v39) and answers in the same
 /// shape, so every reader of this command -- the card modal, a card run's
 /// composition, the editor -- works there unchanged.
+///
+/// `async` + `spawn_blocking`: it re-runs without anyone asking -- on
+/// every `file-changed` for an open editor tab or card modal, on Home
+/// visits, rail steps and card launches -- and as a plain `fn` each of
+/// those was a disk read (or an ssh round trip) on the main thread. The
+/// readers that re-read on a watch event carry a ticket, since answers
+/// can now arrive out of order.
 #[tauri::command]
-pub fn read_file_for_viewer(
-    path: String,
-    app_handle: AppHandle,
-    workspaces: State<WorkspacesState>,
-) -> Result<FileContent, String> {
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_path(&app_handle, &path)? {
-        let root = remote_root_for(&app_handle, &path)?;
-        let (content, truncated) = link.read_file(&root, &path).map_err(|e| e.to_string())?;
+pub async fn read_file_for_viewer(path: String, app_handle: AppHandle) -> Result<FileContent, String> {
+    tauri::async_runtime::spawn_blocking(move || read_file_for_viewer_blocking(&path, &app_handle))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn read_file_for_viewer_blocking(path: &str, app_handle: &AppHandle) -> Result<FileContent, String> {
+    if let crate::remote::Route::Remote(link) = crate::remote::route_for_path(app_handle, path)? {
+        let root = remote_root_for(app_handle, path)?;
+        let (content, truncated) = link.read_file(&root, path).map_err(|e| e.to_string())?;
         return Ok(match content {
             Some(content) => FileContent { content, truncated, exists: true },
             None => FileContent { content: String::new(), truncated: false, exists: false },
         });
     }
-    let roots = allowed_roots(&workspaces.0.lock().unwrap());
-    read_file_for_viewer_impl(&path, &roots)
+    let roots = allowed_roots(&app_handle.state::<WorkspacesState>().0.lock().unwrap());
+    read_file_for_viewer_impl(path, &roots)
 }
 
 /// The ssh workspace root a path belongs to, for the request's
@@ -197,18 +217,46 @@ fn remote_root_for(app_handle: &AppHandle, path: &str) -> Result<String, String>
 
 fn read_file_for_viewer_impl(path: &str, roots: &[PathBuf]) -> Result<FileContent, String> {
     let resolved = ensure_within_open_workspaces(path, roots)?;
-    let bytes = match std::fs::read(&resolved) {
-        Ok(bytes) => bytes,
+    let (bytes, truncated) = match std::fs::File::open(&resolved)
+        .and_then(|file| read_prefix(file, MAX_VIEWER_FILE_BYTES))
+    {
+        Ok(read) => read,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(FileContent { content: String::new(), truncated: false, exists: false })
         }
         Err(e) => return Err(e.to_string()),
     };
-    let truncated = bytes.len() > MAX_VIEWER_FILE_BYTES;
-    let slice = if truncated { &bytes[..MAX_VIEWER_FILE_BYTES] } else { &bytes[..] };
-    let content =
-        String::from_utf8(slice.to_vec()).map_err(|_| "file is not valid UTF-8 text".to_string())?;
+    const NOT_TEXT: &str = "file is not valid UTF-8 text";
+    let content = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        // The cap can cut a multi-byte character in two. An incomplete
+        // one at the very end of a truncated read is the cut's doing,
+        // not the file's, so the text before it stands -- the rule the
+        // daemon's `read_workspace_file` already keeps. Before this a
+        // big log in any non-ASCII script failed to open whenever the
+        // cut fell mid-character. Anywhere else it is still not text.
+        Err(e) if truncated && e.utf8_error().error_len().is_none() => {
+            let valid = e.utf8_error().valid_up_to();
+            let mut bytes = e.into_bytes();
+            bytes.truncate(valid);
+            String::from_utf8(bytes).map_err(|_| NOT_TEXT.to_string())?
+        }
+        Err(_) => return Err(NOT_TEXT.to_string()),
+    };
     Ok(FileContent { content, truncated, exists: true })
+}
+
+/// At most `cap` bytes of `reader`, and whether there was more. Reads
+/// `cap + 1` and no further: one past the cap is all it takes to know
+/// the file is over it. A whole-file read truncated afterwards bounded
+/// only what was rendered, so an editor tab left open on a growing log
+/// re-read the entire log on every append.
+fn read_prefix(reader: impl std::io::Read, cap: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut bytes = Vec::new();
+    reader.take(cap as u64 + 1).read_to_end(&mut bytes)?;
+    let truncated = bytes.len() > cap;
+    bytes.truncate(cap);
+    Ok((bytes, truncated))
 }
 
 /// Writes an editor buffer back to disk, creating the file when absent.
@@ -227,19 +275,24 @@ fn read_file_for_viewer_impl(path: &str, roots: &[PathBuf]) -> Result<FileConten
 /// when `truncated` is true.
 ///
 /// Refuses a path outside every open workspace (AS-04) before writing.
+///
+/// Off the main thread: on an ssh workspace this is a round trip to the
+/// host, on every autosave. Two writes to one path used to be ordered by
+/// the main thread running them one after the other; they are ordered
+/// now by the frontend, which issues a path's next write only once its
+/// last one has answered (`backend.writeFileForEditor`).
 #[tauri::command]
-pub fn write_file_for_editor(
-    path: String,
-    content: String,
-    app_handle: AppHandle,
-    workspaces: State<WorkspacesState>,
-) -> Result<(), String> {
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_path(&app_handle, &path)? {
-        let root = remote_root_for(&app_handle, &path)?;
-        return link.write_file(&root, &path, &content).map_err(|e| e.to_string());
-    }
-    let roots = allowed_roots(&workspaces.0.lock().unwrap());
-    write_file_for_editor_impl(&path, content, &roots)
+pub async fn write_file_for_editor(path: String, content: String, app_handle: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let crate::remote::Route::Remote(link) = crate::remote::route_for_path(&app_handle, &path)? {
+            let root = remote_root_for(&app_handle, &path)?;
+            return link.write_file(&root, &path, &content).map_err(|e| e.to_string());
+        }
+        let roots = allowed_roots(&app_handle.state::<WorkspacesState>().0.lock().unwrap());
+        write_file_for_editor_impl(&path, content, &roots)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn write_file_for_editor_impl(path: &str, content: String, roots: &[PathBuf]) -> Result<(), String> {
@@ -551,29 +604,40 @@ fn sensitive_home_roots() -> Vec<(&'static str, PathBuf)> {
 /// that cannot be asked answers every entry as refused, naming why, so
 /// the run gate blocks rather than handing the agent paths nobody
 /// checked.
+///
+/// Off the main thread for that round trip, and for the local stats: a
+/// card's attachments can sit on a network mount.
 #[tauri::command]
-pub fn attachment_status(root: String, paths: Vec<String>, app_handle: AppHandle) -> Vec<AttachmentStatus> {
-    if let Ok(crate::remote::Route::Remote(link)) = crate::remote::route_for_root(&app_handle, Some(&root)) {
-        return match link.stat_paths(&root, &paths) {
-            Ok(stats) => stats.into_iter().map(attachment_status_from_stat).collect(),
-            Err(e) => paths
-                .into_iter()
-                .map(|path| AttachmentStatus {
-                    path,
-                    absolute_path: None,
-                    exists: false,
-                    location: AttachmentLocation::Refused,
-                    refused_reason: Some(format!("the host could not be asked: {e}")),
-                    size_bytes: None,
-                })
-                .collect(),
-        };
-    }
-    let root = PathBuf::from(root);
-    let root_canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
-    let extra_roots = extra_context_roots(&root_canonical);
-    let sensitive_roots = sensitive_home_roots();
-    attachment_status_impl(&root_canonical, paths, &extra_roots, &sensitive_roots)
+pub async fn attachment_status(
+    root: String,
+    paths: Vec<String>,
+    app_handle: AppHandle,
+) -> Result<Vec<AttachmentStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Ok(crate::remote::Route::Remote(link)) = crate::remote::route_for_root(&app_handle, Some(&root)) {
+            return match link.stat_paths(&root, &paths) {
+                Ok(stats) => stats.into_iter().map(attachment_status_from_stat).collect(),
+                Err(e) => paths
+                    .into_iter()
+                    .map(|path| AttachmentStatus {
+                        path,
+                        absolute_path: None,
+                        exists: false,
+                        location: AttachmentLocation::Refused,
+                        refused_reason: Some(format!("the host could not be asked: {e}")),
+                        size_bytes: None,
+                    })
+                    .collect(),
+            };
+        }
+        let root = PathBuf::from(root);
+        let root_canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+        let extra_roots = extra_context_roots(&root_canonical);
+        let sensitive_roots = sensitive_home_roots();
+        attachment_status_impl(&root_canonical, paths, &extra_roots, &sensitive_roots)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// One host-side stat in this command's own shape. The vocabulary is
@@ -698,6 +762,17 @@ pub struct DirEntryInfo {
     pub symlink: bool,
 }
 
+/// What `list_directory` answers: the entries it listed, and how many
+/// it left out past `MAX_LISTED_ENTRIES`. `omitted` is what lets the
+/// tree say a folder is only partly shown, instead of drawing the first
+/// two thousand of sixty thousand as if they were all there were.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirListing {
+    pub entries: Vec<DirEntryInfo>,
+    pub omitted: usize,
+}
+
 /// The workspace root as an absolute, symlink-free path. Canonicalized
 /// because every containment check below compares against it, and on
 /// macOS the same folder is reachable as both `/tmp/x` and
@@ -780,34 +855,60 @@ fn resolve_new(root: &Path, path: &str) -> Result<PathBuf, String> {
 ///
 /// Everything on disk is listed, dotfiles and `target/` and
 /// `node_modules/` included: filtering by `.gitignore` would hide files
-/// the human came here to find, and the cost of listing a large folder
-/// is only paid when they open it.
+/// the human came here to find. What a large folder costs is bounded
+/// instead: past `MAX_LISTED_ENTRIES` only the first entries in the
+/// tree's order are listed, and `omitted` says how many were not.
 ///
 /// Refuses a symlinked directory rather than listing through it, so the
 /// tree can never leave the root by following a link.
 ///
 /// For an ssh workspace's root the listing is the host daemon's
 /// (`ListWorkspaceDir`, v40): the same fields, from the machine the files
-/// are on, so the Files tree renders there unchanged.
+/// are on, so the Files tree renders there unchanged. The host lists the
+/// folder whole -- its answer has no field to say what it left out --
+/// so the cap is applied here, on what reaches the tree.
+///
+/// `async` + `spawn_blocking`: the Files tab re-lists every folder it
+/// remembers open on every visit, and one folder of 60,052 entries was
+/// 0.6-1.1 s of stat on the main thread before the cap existed.
 #[tauri::command]
-pub fn list_directory(root: String, path: String, app_handle: AppHandle) -> Result<Vec<DirEntryInfo>, String> {
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
-        return link
-            .list_dir(&root, &path)
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .map(|e| DirEntryInfo { name: e.name, is_dir: e.is_dir, size: e.size, symlink: e.symlink })
-                    .collect()
-            })
-            .map_err(|e| e.to_string());
-    }
-    list_directory_impl(root, path)
+pub async fn list_directory(root: String, path: String, app_handle: AppHandle) -> Result<DirListing, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+            let entries = link.list_dir(&root, &path).map_err(|e| e.to_string())?;
+            let mut entries: Vec<DirEntryInfo> = entries
+                .into_iter()
+                .map(|e| DirEntryInfo { name: e.name, is_dir: e.is_dir, size: e.size, symlink: e.symlink })
+                .collect();
+            entries.sort_by_cached_key(|e| tree_order(&e.name, e.is_dir));
+            let omitted = entries.len().saturating_sub(MAX_LISTED_ENTRIES);
+            entries.truncate(MAX_LISTED_ENTRIES);
+            return Ok(DirListing { entries, omitted });
+        }
+        list_directory_impl(root, path, MAX_LISTED_ENTRIES)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The sort key for the tree's own order -- fileTree.ts's
+/// `compareNodes`: directories first, then by name ignoring case, then
+/// case-sensitively so two names differing only in case still have one
+/// order. Which entries a capped listing keeps depends on it, so it has
+/// to be the tree's order and not plain name order, or a folder of
+/// sixty thousand files and three subfolders would list files and leave
+/// the subfolders out. The tree re-sorts what it is given, so the one
+/// place this and `localeCompare` can disagree -- punctuation and
+/// non-ASCII names -- decides only which entry falls either side of the
+/// cap, never the order anything is drawn in.
+fn tree_order(name: &str, is_dir: bool) -> (bool, String, String) {
+    (!is_dir, name.to_lowercase(), name.to_string())
 }
 
 /// The local listing, split out so the tests exercise the confinement
-/// without an `AppHandle` -- the command adds only the ssh route above.
-fn list_directory_impl(root: String, path: String) -> Result<Vec<DirEntryInfo>, String> {
+/// and the cap without an `AppHandle` -- the command adds only the ssh
+/// route above.
+fn list_directory_impl(root: String, path: String, cap: usize) -> Result<DirListing, String> {
     let root = canonical_root(&root)?;
     let meta = std::fs::symlink_metadata(&path).map_err(|e| format!("{path}: {e}"))?;
     if meta.file_type().is_symlink() {
@@ -818,13 +919,31 @@ fn list_directory_impl(root: String, path: String) -> Result<Vec<DirEntryInfo>, 
         return Err(format!("{path} is not a directory"));
     }
 
-    let mut entries = Vec::new();
+    // Every name first, with the entry's kind from the directory read
+    // itself: `DirEntry::file_type` comes from readdir's d_type on macOS
+    // and Linux, so ordering sixty thousand entries costs no stat each.
+    // It does not follow links, the same as the symlink_metadata below.
+    let mut found = Vec::new();
     for entry in std::fs::read_dir(&dir).map_err(|e| format!("{path}: {e}"))? {
         let entry = entry.map_err(|e| format!("{path}: {e}"))?;
-        let name = entry.file_name().to_string_lossy().to_string();
+        let Ok(file_type) = entry.file_type() else { continue };
+        let file_name = entry.file_name();
+        found.push((file_name.to_string_lossy().to_string(), file_type.is_dir(), file_name));
+    }
+    found.sort_by_cached_key(|(name, is_dir, _)| tree_order(name, *is_dir));
+    let omitted = found.len().saturating_sub(cap);
+    found.truncate(cap);
+
+    // Then a stat for only the entries kept -- the size a file row
+    // shows, and the kind again from the same metadata that decides it
+    // everywhere else here.
+    let mut entries = Vec::new();
+    for (name, _, file_name) in found {
         // symlink_metadata, not metadata: a link to a directory must not
         // read as one, and a link whose target is gone must still list.
-        let meta = match entry.path().symlink_metadata() {
+        // By the name as read, not the lossy one: a name that is not
+        // UTF-8 still lists, under its lossy spelling, as it always did.
+        let meta = match dir.join(&file_name).symlink_metadata() {
             Ok(meta) => meta,
             // A file that vanished between the read_dir and the stat is
             // not an error for the whole listing -- an agent writing in
@@ -840,12 +959,7 @@ fn list_directory_impl(root: String, path: String) -> Result<Vec<DirEntryInfo>, 
             symlink: file_type.is_symlink(),
         });
     }
-    // Name order only. Directories-before-files is the tree's rule and
-    // lives in fileTree.ts with the rest of the presentation; sorting
-    // here is just so the same folder does not come back in a different
-    // order each time read_dir is asked.
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(entries)
+    Ok(DirListing { entries, omitted })
 }
 
 /// Creates an empty file. `create_new` rather than a write, so an
@@ -854,13 +968,18 @@ fn list_directory_impl(root: String, path: String) -> Result<Vec<DirEntryInfo>, 
 ///
 /// On an ssh workspace the file is made where the tree is, through
 /// `CreateWorkspacePath` (v42), which makes the same two choices on the
-/// host — `create_new`, and never `create_dir_all`.
+/// host — `create_new`, and never `create_dir_all`. Off the main thread
+/// for that round trip; every entry action below is, for the same reason.
 #[tauri::command]
-pub fn create_file(root: String, path: String, app_handle: AppHandle) -> Result<(), String> {
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
-        return link.create_path(&root, &path, false).map_err(|e| e.to_string());
-    }
-    create_file_impl(root, path)
+pub async fn create_file(root: String, path: String, app_handle: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+            return link.create_path(&root, &path, false).map_err(|e| e.to_string());
+        }
+        create_file_impl(root, path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// The local half, split out like `list_directory_impl` so the tests
@@ -880,11 +999,15 @@ fn create_file_impl(root: String, path: String) -> Result<(), String> {
 /// parent is a typo worth reporting, and an existing target must be
 /// refused rather than silently accepted.
 #[tauri::command]
-pub fn create_directory(root: String, path: String, app_handle: AppHandle) -> Result<(), String> {
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
-        return link.create_path(&root, &path, true).map_err(|e| e.to_string());
-    }
-    create_directory_impl(root, path)
+pub async fn create_directory(root: String, path: String, app_handle: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+            return link.create_path(&root, &path, true).map_err(|e| e.to_string());
+        }
+        create_directory_impl(root, path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn create_directory_impl(root: String, path: String) -> Result<(), String> {
@@ -900,11 +1023,15 @@ fn create_directory_impl(root: String, path: String) -> Result<(), String> {
 /// mistyped rename into a deleted file with no trip through the Trash.
 /// `resolve_new` is what refuses it.
 #[tauri::command]
-pub fn rename_path(root: String, from: String, to: String, app_handle: AppHandle) -> Result<(), String> {
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
-        return link.rename_path(&root, &from, &to).map_err(|e| e.to_string());
-    }
-    rename_path_impl(root, from, to)
+pub async fn rename_path(root: String, from: String, to: String, app_handle: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+            return link.rename_path(&root, &from, &to).map_err(|e| e.to_string());
+        }
+        rename_path_impl(root, from, to)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn rename_path_impl(root: String, from: String, to: String) -> Result<(), String> {
@@ -932,24 +1059,28 @@ fn rename_path_impl(root: String, from: String, to: String) -> Result<(), String
 /// confirmation is the product's promise here, and a direct `invoke`
 /// used to walk straight past it (AS-05/R5).
 #[tauri::command]
-pub fn trash_entry(
+pub async fn trash_entry(
     root: String,
     path: String,
     token: String,
-    gate: State<crate::confirm_gate::ConfirmGate>,
+    gate: State<'_, crate::confirm_gate::ConfirmGate>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
     crate::confirm_gate::spend(&gate, &token, "trash_entry", &path)?;
-    // The grant is spent FIRST, on both routes: the confirmation is the
-    // product's promise here and the human answered it on this machine,
-    // whichever machine the file is on. What the host then does is the
-    // host's own Trash -- never `rm` -- so "nothing gavin removes is
-    // unrecoverable" holds on a Linux or Windows host the same way it
-    // holds here (`TrashWorkspacePath`, v42).
-    if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
-        return link.trash_path(&root, &path).map_err(|e| e.to_string());
-    }
-    trash_entry_impl(&root, &path)
+    // The grant is spent FIRST, on both routes, and before anything waits:
+    // the confirmation is the product's promise here and the human
+    // answered it on this machine, whichever machine the file is on. What
+    // the host then does is the host's own Trash -- never `rm` -- so
+    // "nothing gavin removes is unrecoverable" holds on a Linux or Windows
+    // host the same way it holds here (`TrashWorkspacePath`, v42).
+    tauri::async_runtime::spawn_blocking(move || {
+        if let crate::remote::Route::Remote(link) = crate::remote::route_for_root(&app_handle, Some(&root))? {
+            return link.trash_path(&root, &path).map_err(|e| e.to_string());
+        }
+        trash_entry_impl(&root, &path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// The containment half, without the `State` a unit test cannot build.
@@ -1280,6 +1411,72 @@ mod tests {
         assert_eq!(result.content.len(), MAX_VIEWER_FILE_BYTES);
     }
 
+    /// A 50 MB file: the read stops one byte past the cap, where the old
+    /// whole-file read took all fifty. The file's own cursor is the
+    /// witness -- it sits exactly as far in as bytes were read.
+    #[test]
+    fn a_50_mb_file_reads_no_more_than_one_byte_past_the_cap() {
+        use std::io::Seek;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.log");
+        // Sparse, so the test writes nothing: fifty megabytes of NUL,
+        // which is valid UTF-8.
+        std::fs::File::create(&path).unwrap().set_len(50 * 1024 * 1024).unwrap();
+
+        let mut file = std::fs::File::open(&path).unwrap();
+        let (bytes, truncated) = read_prefix(&mut file, MAX_VIEWER_FILE_BYTES).unwrap();
+        let consumed = file.stream_position().unwrap();
+
+        assert!(truncated);
+        assert_eq!(bytes.len(), MAX_VIEWER_FILE_BYTES);
+        assert!(consumed <= MAX_VIEWER_FILE_BYTES as u64 + 1, "read {consumed} bytes");
+
+        // And the command's own path answers the same shape.
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir)).unwrap();
+        assert!(result.truncated);
+        assert_eq!(result.content.len(), MAX_VIEWER_FILE_BYTES);
+    }
+
+    #[test]
+    fn a_cut_that_splits_a_character_keeps_the_text_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accents.log");
+        // `é` is two bytes, and the cap lands between them.
+        let mut text = "a".repeat(MAX_VIEWER_FILE_BYTES - 1);
+        text.push_str("éé");
+        std::fs::write(&path, &text).unwrap();
+
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir)).unwrap();
+
+        assert!(result.truncated);
+        assert_eq!(result.content, "a".repeat(MAX_VIEWER_FILE_BYTES - 1));
+    }
+
+    #[test]
+    fn a_truncated_file_with_a_bad_byte_before_the_cut_is_still_not_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("binary.log");
+        let mut bytes = vec![b'a'; MAX_VIEWER_FILE_BYTES + 10];
+        bytes[100] = 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_file_exactly_at_the_cap_is_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exact.txt");
+        std::fs::write(&path, vec![b'a'; MAX_VIEWER_FILE_BYTES]).unwrap();
+
+        let result = read_file_for_viewer_impl(&path.to_string_lossy(), &roots_of(&dir)).unwrap();
+
+        assert!(!result.truncated);
+        assert_eq!(result.content.len(), MAX_VIEWER_FILE_BYTES);
+    }
+
     #[test]
     fn rejects_a_non_utf8_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -1606,6 +1803,12 @@ mod tests {
         dir.path().join(rel).to_string_lossy().to_string()
     }
 
+    /// A listing under the real cap, for the tests about what a folder
+    /// lists rather than how much of it.
+    fn listed(root: String, path: String) -> Result<Vec<DirEntryInfo>, String> {
+        list_directory_impl(root, path, MAX_LISTED_ENTRIES).map(|listing| listing.entries)
+    }
+
     #[test]
     fn list_directory_reports_kind_size_and_link_for_every_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -1620,13 +1823,16 @@ mod tests {
         std::os::unix::fs::symlink(dir.path().join("Cargo.toml"), dir.path().join("link.toml"))
             .unwrap();
 
-        let entries = list_directory_impl(root_of(&dir), root_of(&dir)).unwrap();
+        let entries = listed(root_of(&dir), root_of(&dir)).unwrap();
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        // Sorted by name, so the same folder never comes back shuffled.
+        // In the tree's order -- folders first, then names ignoring case
+        // -- so the same folder never comes back shuffled, and a capped
+        // one keeps what the tree would have drawn first. The link is a
+        // leaf, so it sorts among the files whatever it points at.
         #[cfg(unix)]
-        assert_eq!(names, vec![".gitignore", "Cargo.toml", "link.toml", "src", "target"]);
+        assert_eq!(names, vec!["src", "target", ".gitignore", "Cargo.toml", "link.toml"]);
         #[cfg(not(unix))]
-        assert_eq!(names, vec![".gitignore", "Cargo.toml", "src", "target"]);
+        assert_eq!(names, vec!["src", "target", ".gitignore", "Cargo.toml"]);
 
         let toml = entries.iter().find(|e| e.name == "Cargo.toml").unwrap();
         assert!(!toml.is_dir);
@@ -1647,6 +1853,34 @@ mod tests {
     }
 
     #[test]
+    fn list_directory_past_the_cap_keeps_the_trees_first_entries_and_counts_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        // Names that sort differently by case than by byte, and folders
+        // that sort last by name: a cap over plain name order would keep
+        // `B.txt` over `a.txt` and drop both folders.
+        for name in ["B.txt", "a.txt", "c.txt", "d.txt"] {
+            std::fs::write(dir.path().join(name), name).unwrap();
+        }
+        std::fs::create_dir(dir.path().join("zz-folder")).unwrap();
+        std::fs::create_dir(dir.path().join("yy-folder")).unwrap();
+
+        let listing = list_directory_impl(root_of(&dir), root_of(&dir), 4).unwrap();
+
+        let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["yy-folder", "zz-folder", "a.txt", "B.txt"]);
+        assert_eq!(listing.omitted, 2);
+        // The kept ones are whole entries, stat and all.
+        let b = listing.entries.iter().find(|e| e.name == "B.txt").unwrap();
+        assert_eq!(b.size, "B.txt".len() as u64);
+        assert!(listing.entries[0].is_dir);
+
+        // Under the cap nothing is left out.
+        let whole = list_directory_impl(root_of(&dir), root_of(&dir), 6).unwrap();
+        assert_eq!(whole.entries.len(), 6);
+        assert_eq!(whole.omitted, 0);
+    }
+
+    #[test]
     fn list_directory_refuses_a_path_outside_the_root() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("ws");
@@ -1655,7 +1889,7 @@ mod tests {
         // "there was nothing there".
         std::fs::write(dir.path().join("secret.txt"), "s").unwrap();
 
-        let outside = list_directory_impl(
+        let outside = listed(
             root.to_string_lossy().to_string(),
             dir.path().to_string_lossy().to_string(),
         );
@@ -1663,7 +1897,7 @@ mod tests {
 
         // The classic traversal spelling, which canonicalize collapses
         // before the containment check ever runs.
-        let traversal = list_directory_impl(
+        let traversal = listed(
             root.to_string_lossy().to_string(),
             root.join("..").to_string_lossy().to_string(),
         );
@@ -1687,7 +1921,7 @@ mod tests {
         std::os::unix::fs::symlink(root.join("real"), root.join("inward")).unwrap();
 
         for link in ["escape", "inward"] {
-            let err = list_directory_impl(
+            let err = listed(
                 root.to_string_lossy().to_string(),
                 root.join(link).to_string_lossy().to_string(),
             )
@@ -1697,7 +1931,7 @@ mod tests {
 
         // The link is still LISTED in its parent -- as a leaf, so the
         // tree shows it without offering to open it.
-        let entries = list_directory_impl(
+        let entries = listed(
             root.to_string_lossy().to_string(),
             root.to_string_lossy().to_string(),
         )
@@ -1712,10 +1946,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "a").unwrap();
 
-        assert!(list_directory_impl(root_of(&dir), under(&dir, "a.txt"))
+        assert!(listed(root_of(&dir), under(&dir, "a.txt"))
             .unwrap_err()
             .contains("not a directory"));
-        assert!(list_directory_impl(root_of(&dir), under(&dir, "nope")).is_err());
+        assert!(listed(root_of(&dir), under(&dir, "nope")).is_err());
     }
 
     #[test]

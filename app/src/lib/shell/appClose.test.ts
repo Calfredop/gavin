@@ -244,6 +244,25 @@ describe("endEverySession", () => {
     expect(order).toEqual(["orphan", "session"]);
   });
 
+  // An orphan that refuses SIGTERM holds its request for the daemon's
+  // whole grace, 2 s, with the window on its way out. One after another,
+  // N of them were N graces.
+  it("ends every orphan at once, not one after another", async () => {
+    vi.mocked(backend.listManagedSessions).mockResolvedValue(
+      sample([session({ id: "a", orphan: ORPHAN }), session({ id: "b", orphan: ORPHAN })])
+    );
+    const pending: (() => void)[] = [];
+    vi.mocked(backend.endOrphan).mockImplementation(
+      () => new Promise((resolve) => pending.push(() => resolve({ ended: true, stillRunning: false })))
+    );
+    const sweep = endEverySession();
+    await vi.waitFor(() => expect(backend.endOrphan).toHaveBeenCalledTimes(2));
+    expect(backend.killSession).not.toHaveBeenCalled();
+    for (const settle of pending) settle();
+    expect(await sweep).toEqual([]);
+    expect(vi.mocked(backend.killSession).mock.calls.map((c) => c[0])).toEqual(["a", "b"]);
+  });
+
   // One wedged session must not keep the other twenty alive: the window
   // is on its way out, and a throw here would abandon the sweep.
   it("carries on past a refusal and reports it", async () => {

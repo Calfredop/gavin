@@ -225,10 +225,15 @@ impl KanbanStore {
             }
         }
 
+        // Every binding WITHOUT its command (v43). The command is an
+        // agent's whole prompt -- most of this reply's bytes, growing with
+        // every run, and re-read on every tree push -- while exactly one
+        // action reads it, one card at a time (`card_session` below). Not
+        // selected at all, so it is never even copied out of SQLite.
         let mut card_sessions = Vec::new();
         {
             let mut stmt = self.conn.prepare(
-                "SELECT path, session_id, cwd, command, conversation_id, launch_cwd, resume_attempts, base_sha \
+                "SELECT path, session_id, cwd, conversation_id, launch_cwd, resume_attempts, base_sha \
                  FROM card_sessions WHERE workspace_id = ?1",
             )?;
             let rows = stmt.query_map(params![workspace_id], |row| {
@@ -236,11 +241,11 @@ impl KanbanStore {
                     path: row.get(0)?,
                     session_id: row.get(1)?,
                     cwd: row.get(2)?,
-                    command: row.get(3)?,
-                    conversation_id: row.get(4)?,
-                    launch_cwd: row.get(5)?,
-                    resume_attempts: row.get::<_, Option<i64>>(6)?.map(|v| v.max(0) as u32),
-                    base_sha: row.get(7)?,
+                    command: None,
+                    conversation_id: row.get(3)?,
+                    launch_cwd: row.get(4)?,
+                    resume_attempts: row.get::<_, Option<i64>>(5)?.map(|v| v.max(0) as u32),
+                    base_sha: row.get(6)?,
                 })
             })?;
             for row in rows {
@@ -286,11 +291,13 @@ impl KanbanStore {
         Ok(())
     }
 
-    /// The session currently bound to one card, if any. Read on its own
-    /// rather than off `get_board` because a claim (`ClaimCardForSession`)
-    /// only has to know whether somebody else already owns this one card,
-    /// and building the whole board to answer that reads every column,
-    /// label and binding the workspace has.
+    /// The session currently bound to one card, if any, command
+    /// included -- the one read that carries it (`GetCardSession`).
+    /// Also read on its own rather than off `get_board` by a claim
+    /// (`ClaimCardForSession`), which only has to know whether somebody
+    /// else already owns this one card: building the whole board to
+    /// answer that reads every column, label and binding the workspace
+    /// has.
     pub fn card_session(
         &self,
         workspace_id: &str,
@@ -309,7 +316,7 @@ impl KanbanStore {
                 conversation_id: row.get(4)?,
                 launch_cwd: row.get(5)?,
                 resume_attempts: row.get::<_, Option<i64>>(6)?.map(|v| v.max(0) as u32),
-                    base_sha: row.get(7)?,
+                base_sha: row.get(7)?,
             })
         })?;
         Ok(rows.next().transpose()?)
@@ -937,6 +944,75 @@ mod tests {
         store.unlink_card_session("ws-1", "/p/absent.md").unwrap(); // no-op
         assert!(store.get_board("ws-1").unwrap().card_sessions.is_empty());
         assert_eq!(store.get_board("ws-2").unwrap().card_sessions.len(), 1);
+    }
+
+    /// The board read's size cliff (v43). A protocol line is capped at
+    /// `MAX_LINE_BYTES`, and a board that carried every binding's launch
+    /// prompt crossed it at a few hundred runs -- after which the board,
+    /// `gavin_get_board` and `gavin_get_orchestration` all stopped
+    /// loading. Here the commands alone are well past the cap, and the
+    /// board must still be one small line whose size does not depend on
+    /// them at all.
+    #[test]
+    fn a_board_of_bindings_with_huge_commands_serialises_without_them() {
+        const BINDINGS: usize = 400;
+        let prompt = "p".repeat(4 * 1024);
+        assert!((BINDINGS * prompt.len()) as u64 > protocol::MAX_LINE_BYTES, "the commands alone must be past the cap");
+
+        let board_line = |command: Option<&str>| {
+            let (_dir, mut store) = store();
+            for i in 0..BINDINGS {
+                let path = format!("/work/repo/.gavin-root/plans/card-{i:03}.md");
+                store
+                    .link_card_session(
+                        "ws-1",
+                        &path,
+                        &format!("00000000-0000-0000-0000-{i:012}"),
+                        "/work/repo",
+                        command,
+                        Some(&format!("11111111-1111-1111-1111-{i:012}")),
+                        Some("/work/repo"),
+                        Some(0),
+                        Some("f75db30f75db30f75db30f75db30f75db30f75db"),
+                    )
+                    .unwrap();
+            }
+            let board = store.get_board("ws-1").unwrap();
+            assert_eq!(board.card_sessions.len(), BINDINGS);
+            let mut line = Vec::new();
+            protocol::write_message(
+                &mut line,
+                &protocol::Response::Board {
+                    columns: board.columns,
+                    labels: board.labels,
+                    card_sessions: board.card_sessions,
+                },
+            )
+            .unwrap();
+            line.len()
+        };
+
+        let with_prompts = board_line(Some(&prompt));
+        assert_eq!(with_prompts, board_line(None), "the board's size depends on its commands");
+        // ~330 bytes a binding with realistic paths and ids: 400 of them is
+        // an eighth of the cap, where the commands alone were 1.6 MiB.
+        assert!(with_prompts < 400 * BINDINGS, "{with_prompts} bytes for {BINDINGS} bindings");
+    }
+
+    /// The one read that still carries the command: Re-launch replays it.
+    #[test]
+    fn a_single_binding_read_keeps_its_command() {
+        let (_dir, mut store) = store();
+        store
+            .link_card_session("ws-1", "/p/t.md", "s-1", "/p", Some("claude 'x'"), Some("conv-1"), Some("/p"), Some(1), None)
+            .unwrap();
+
+        assert_eq!(store.get_board("ws-1").unwrap().card_sessions[0].command, None);
+        let bound = store.card_session("ws-1", "/p/t.md").unwrap().unwrap();
+        assert_eq!(bound.command.as_deref(), Some("claude 'x'"));
+        assert_eq!(bound.conversation_id.as_deref(), Some("conv-1"));
+        assert_eq!(store.card_session("ws-1", "/p/unbound.md").unwrap(), None);
+        assert_eq!(store.card_session("ws-2", "/p/t.md").unwrap(), None);
     }
 
     #[test]

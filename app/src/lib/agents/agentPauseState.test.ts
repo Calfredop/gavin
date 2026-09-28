@@ -32,6 +32,30 @@ vi.mock("$lib/core/layoutState", async () => {
   };
 });
 
+// The other windows, as the host would carry them: `emit` is recorded,
+// and `fire` plays a message another window sent.
+const eventMock = vi.hoisted(() => {
+  const handlers = new Map<string, Array<(event: { payload: unknown }) => void>>();
+  return {
+    handlers,
+    listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+      handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+      return () => {
+        handlers.set(
+          name,
+          (handlers.get(name) ?? []).filter((h) => h !== handler)
+        );
+      };
+    }),
+    emit: vi.fn(async (_name: string, _message: unknown) => {}),
+    fire(name: string, payload: unknown): void {
+      for (const handler of handlers.get(name) ?? []) handler({ payload });
+    },
+  };
+});
+
+vi.mock("@tauri-apps/api/event", () => ({ listen: eventMock.listen, emit: eventMock.emit }));
+
 import { DEFAULT_CYCLE, type PauseCycle } from "$lib/agents/agentPause";
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
 import { USAGE_CACHE_KEY, saveUsageCache } from "$lib/agents/agentUsage";
@@ -53,10 +77,14 @@ import {
   launchDecision,
   launchPauseHold,
   startBlockedReason,
+  initUsageSharing,
+  startPauseClock,
+  startUsagePoll,
   stopPauseClock,
   usageRefreshingStore,
 } from "$lib/agents/agentPauseState";
 import { layoutState, agentDefaultsStore } from "$lib/core/layoutState";
+import { appDuty } from "$lib/shell/appDuty";
 
 const ANCHOR = 1_700_000_000_000;
 const MIN = 60_000;
@@ -67,6 +95,8 @@ function cycle(over: Partial<PauseCycle> = {}): PauseCycle {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  eventMock.handlers.clear();
+  appDuty.set({ holder: "main", windows: ["main"] });
   resolvedAgentForMock.mockReturnValue({ profileId: "claude-code" });
   agentPauseStore.set(null);
   agentUsageStore.set({});
@@ -202,6 +232,99 @@ describe("refreshUsage", () => {
     backendMock.agentUsage.mockRejectedValueOnce(new Error("ipc down"));
     await refreshUsage("claude-code");
     expect(get(agentUsageStore)["claude-code"].state).toBe("unavailable");
+  });
+
+  describe("overlapping calls", () => {
+    const older: AgentUsageReport = { ...readyReport, observedAt: 100 };
+    const newer: AgentUsageReport = {
+      ...readyReport,
+      windows: [{ id: "five_hour", label: "5-hour", usedPercent: 40, resetsAt: null }],
+      observedAt: 200,
+    };
+
+    /// The poll's call, held open until the test answers it.
+    function pendingPoll(): { answer: (r: AgentUsageReport) => void; fail: () => void } {
+      const held = { answer: (_: AgentUsageReport) => {}, fail: () => {} };
+      backendMock.agentUsage.mockImplementationOnce(
+        () =>
+          new Promise<AgentUsageReport>((resolve, reject) => {
+            held.answer = resolve;
+            held.fail = () => reject(new Error("curl timed out"));
+          })
+      );
+      return held;
+    }
+
+    /// The host answers concurrently now, so a poll stuck on a slow curl
+    /// can answer after a forced refresh that started later. Its reading
+    /// is the older one and must not replace the refresh on screen.
+    it("drops an older call's answer once a newer one has landed", async () => {
+      const poll = pendingPoll();
+      const polling = refreshUsage("claude-code");
+      backendMock.agentUsage.mockResolvedValueOnce(newer);
+      await refreshUsage("claude-code", true);
+      expect(get(agentUsageStore)["claude-code"]).toEqual(newer);
+
+      poll.answer(older);
+      await polling;
+      expect(get(agentUsageStore)["claude-code"]).toEqual(newer);
+    });
+
+    /// A failure replaces a reading with nothing still open in it. When
+    /// the reading is a newer call's, the stale timer is what retires it,
+    /// not an older curl's timeout.
+    it("drops an older call's failure once a newer answer has landed", async () => {
+      const sinceReset: AgentUsageReport = {
+        ...newer,
+        windows: [{ id: "five_hour", label: "5-hour", usedPercent: 40, resetsAt: 1 }],
+      };
+      const poll = pendingPoll();
+      const polling = refreshUsage("claude-code");
+      backendMock.agentUsage.mockResolvedValueOnce(sinceReset);
+      await refreshUsage("claude-code", true);
+
+      poll.fail();
+      await polling;
+      expect(get(agentUsageStore)["claude-code"]).toEqual(sinceReset);
+    });
+
+    /// A failure is not a reading, so it supersedes nothing: the poll
+    /// that started first is still the newest answer there is.
+    it("still takes an older call's answer when the newer call failed", async () => {
+      const poll = pendingPoll();
+      const polling = refreshUsage("claude-code");
+      backendMock.agentUsage.mockRejectedValueOnce(new Error("ipc down"));
+      await refreshUsage("claude-code", true);
+
+      poll.answer(older);
+      await polling;
+      expect(get(agentUsageStore)["claude-code"]).toEqual(older);
+    });
+
+    it("keeps the refreshing badge up until the newest call answers", async () => {
+      backendMock.agentUsage.mockResolvedValueOnce(older);
+      const refresh = pendingPoll();
+      const first = refreshUsage("claude-code");
+      const second = refreshUsage("claude-code", true);
+      await first;
+      expect(get(usageRefreshingStore)["claude-code"]).toBe(true);
+
+      refresh.answer(newer);
+      await second;
+      expect(get(usageRefreshingStore)["claude-code"]).toBeUndefined();
+      expect(get(agentUsageStore)["claude-code"]).toEqual(newer);
+    });
+
+    it("keeps one profile's calls out of another's ordering", async () => {
+      const poll = pendingPoll();
+      const polling = refreshUsage("codex");
+      backendMock.agentUsage.mockResolvedValueOnce(newer);
+      await refreshUsage("claude-code", true);
+
+      poll.answer(older);
+      await polling;
+      expect(get(agentUsageStore)["codex"]).toEqual(older);
+    });
   });
 });
 
@@ -584,5 +707,109 @@ describe("pausedWorkspaces", () => {
       expect(seen.at(0)).toBe("w1 w2");
       expect(seen.at(-1)).toBe("w2");
     });
+  });
+});
+
+describe("usage across windows", () => {
+  const readyReport: AgentUsageReport = {
+    state: "ready",
+    windows: [{ id: "five_hour", label: "5-hour", usedPercent: 12, resetsAt: null }],
+    plan: "max",
+    observedAt: 1,
+    cached: false,
+  };
+
+  function readingsSent(): unknown[] {
+    return eventMock.emit.mock.calls
+      .filter(([name]) => name === "agent-usage-reading")
+      .map(([, message]) => (message as { payload: unknown }).payload);
+  }
+
+  /// The pause clock is every window's; the probe is the app's. A window
+  /// that is not the poller keeps its countdowns moving and asks nothing.
+  it("starts the clock without probing anything", () => {
+    layoutState.set({ workspaces: [{ id: "w1" }], activeWorkspaceId: "w1" } as never);
+    startPauseClock();
+    expect(backendMock.agentUsage).not.toHaveBeenCalled();
+  });
+
+  it("probes every profile in use when the poll starts", () => {
+    backendMock.agentUsage.mockResolvedValue(readyReport);
+    layoutState.set({ workspaces: [{ id: "w1" }], activeWorkspaceId: "w1" } as never);
+    startUsagePoll();
+    expect(backendMock.agentUsage).toHaveBeenCalledWith("claude-code", false);
+  });
+
+  it("tells the other windows every reading it lands", async () => {
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    backendMock.agentUsage.mockResolvedValueOnce(readyReport);
+    await refreshUsage("claude-code");
+    expect(readingsSent()).toEqual([
+      { profileId: "claude-code", report: readyReport, sampled: true },
+    ]);
+  });
+
+  it("tells them when a failure leaves the profile unavailable", async () => {
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    backendMock.agentUsage.mockRejectedValueOnce(new Error("ipc down"));
+    await refreshUsage("claude-code");
+    expect(readingsSent()).toEqual([
+      {
+        profileId: "claude-code",
+        report: expect.objectContaining({ state: "unavailable" }),
+        sampled: false,
+      },
+    ]);
+  });
+
+  /// A kept reading changed nothing, so there is nothing to tell.
+  it("tells them nothing when a failure kept the last reading", async () => {
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    agentUsageStore.set({ "claude-code": readyReport });
+    backendMock.agentUsage.mockRejectedValueOnce(new Error("ipc down"));
+    await refreshUsage("claude-code");
+    expect(readingsSent()).toEqual([]);
+  });
+
+  it("takes a reading another window landed without probing", async () => {
+    await initUsageSharing();
+    eventMock.fire("agent-usage-reading", {
+      origin: "ws-2",
+      payload: { profileId: "codex", report: readyReport, sampled: true },
+    });
+    expect(get(agentUsageStore)["codex"]).toEqual(readyReport);
+    expect(backendMock.agentUsage).not.toHaveBeenCalled();
+  });
+
+  it("asks the poller for its readings when this window is not the poller", async () => {
+    appDuty.set({ holder: "ws-2", windows: ["main", "ws-2"] });
+    await initUsageSharing();
+    expect(eventMock.emit).toHaveBeenCalledWith("agent-usage-wanted", {
+      origin: "main",
+      payload: null,
+    });
+  });
+
+  it("answers a window that has just opened with every reading it holds", async () => {
+    appDuty.set({ holder: "main", windows: ["main", "ws-2"] });
+    const unsupported: AgentUsageReport = { state: "unsupported" };
+    agentUsageStore.set({ "claude-code": readyReport, opencode: unsupported });
+    await initUsageSharing();
+    expect(eventMock.emit).not.toHaveBeenCalled();
+
+    eventMock.fire("agent-usage-wanted", { origin: "ws-2", payload: null });
+    expect(readingsSent()).toEqual([
+      { profileId: "claude-code", report: readyReport, sampled: false },
+      { profileId: "opencode", report: unsupported, sampled: false },
+    ]);
+  });
+
+  it("leaves answering to the poller", async () => {
+    appDuty.set({ holder: "ws-3", windows: ["main", "ws-2", "ws-3"] });
+    agentUsageStore.set({ "claude-code": readyReport });
+    await initUsageSharing();
+    eventMock.emit.mockClear();
+    eventMock.fire("agent-usage-wanted", { origin: "ws-2", payload: null });
+    expect(readingsSent()).toEqual([]);
   });
 });

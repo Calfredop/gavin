@@ -19,7 +19,7 @@
 //! and `.git/info/exclude` is then refused there while `.gitignore` at
 //! the toplevel is not.
 
-use crate::git::run::{ok, read_repo_file, run_git_ro, write_repo_file};
+use crate::git::run::{off_main_thread, ok, read_repo_file, run_git_ro, write_repo_file};
 use std::path::PathBuf;
 
 fn toplevel(cwd: &str) -> Result<PathBuf, String> {
@@ -81,19 +81,42 @@ pub fn add_ignore_pattern(cwd: &str, kind: &str, pattern: &str) -> Result<(), St
     write_ignore_file(cwd, kind, &out)
 }
 
+/// Held across every command that rewrites an ignore file: an append is a
+/// read, then a write of the whole file, and two of them interleaved lose
+/// one pattern. The main thread used to be that lock, running each
+/// command whole before the next; off it, this is. `set_gavin_git_tracking`
+/// edits `.gitignore` too and takes it as well.
+pub(crate) static IGNORE_EDITS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn one_edit_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    IGNORE_EDITS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+// Off the main thread, all three: each is a `git rev-parse` to find the
+// file and then the file itself -- on an ssh workspace, round trips to
+// the host.
+
 #[tauri::command]
-pub fn git_read_ignore_file(cwd: String, kind: String) -> Result<String, String> {
-    read_ignore_file(&cwd, &kind)
+pub async fn git_read_ignore_file(cwd: String, kind: String) -> Result<String, String> {
+    off_main_thread(move || read_ignore_file(&cwd, &kind)).await
 }
 
 #[tauri::command]
-pub fn git_write_ignore_file(cwd: String, kind: String, content: String) -> Result<(), String> {
-    write_ignore_file(&cwd, &kind, &content)
+pub async fn git_write_ignore_file(cwd: String, kind: String, content: String) -> Result<(), String> {
+    off_main_thread(move || {
+        let _edit = one_edit_at_a_time();
+        write_ignore_file(&cwd, &kind, &content)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn git_add_ignore_pattern(cwd: String, kind: String, pattern: String) -> Result<(), String> {
-    add_ignore_pattern(&cwd, &kind, &pattern)
+pub async fn git_add_ignore_pattern(cwd: String, kind: String, pattern: String) -> Result<(), String> {
+    off_main_thread(move || {
+        let _edit = one_edit_at_a_time();
+        add_ignore_pattern(&cwd, &kind, &pattern)
+    })
+    .await
 }
 
 #[cfg(test)]

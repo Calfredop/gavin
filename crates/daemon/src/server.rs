@@ -1165,8 +1165,10 @@ fn trigger_recheck_for_session(manager: &Arc<SessionManager>, id: &str) {
 /// before reporting that it refused.
 ///
 /// Long enough for a node-based agent to run its exit handlers, short
-/// enough to stay inside a button press: this blocks the connection
-/// thread serving the app's single command socket.
+/// enough to stay inside a button press: this holds the thread serving
+/// the connection the request came in on. The app gives every EndOrphan
+/// a connection of its own for that reason, so the close sweep's N
+/// orphans wait this out side by side, not one after another.
 const ORPHAN_EXIT_GRACE: Duration = Duration::from_secs(2);
 
 /// The one place a registry row becomes the wire's view of a session.
@@ -2427,6 +2429,10 @@ impl SessionManager {
         self.kanban.lock().unwrap().get_board(workspace_id)
     }
 
+    pub fn card_session(&self, workspace_id: &str, path: &str) -> anyhow::Result<Option<protocol::CardSession>> {
+        self.kanban.lock().unwrap().card_session(workspace_id, path)
+    }
+
     pub fn set_board(&self, workspace_id: &str, columns: Vec<Column>, labels: Vec<Label>) -> anyhow::Result<()> {
         self.kanban.lock().unwrap().replace_board(workspace_id, &columns, &labels)
     }
@@ -2984,7 +2990,13 @@ impl SessionManager {
     /// re-keying happens here, beside the write, exactly as
     /// `delete_card_file` keeps its unlinking beside the delete.
     pub fn set_plan_field(&self, path: &str, key: &str, value: &str) -> anyhow::Result<String> {
-        let moved = crate::gavin::set_plan_field(std::path::Path::new(path), key, value)?;
+        let index = self.card_index_for(path);
+        let moved = crate::gavin::set_plan_field(
+            std::path::Path::new(path),
+            key,
+            value,
+            index.as_deref(),
+        )?;
         Ok(self.follow_card_move(path, moved))
     }
 
@@ -2994,14 +3006,27 @@ impl SessionManager {
     /// kanban and the orchestration databases, so a move that skipped
     /// this would silently orphan a bound session or a rail step.
     pub fn archive_card(&self, path: &str) -> anyhow::Result<String> {
-        let moved = crate::gavin::archive_card(std::path::Path::new(path))?;
+        let index = self.card_index_for(path);
+        let moved = crate::gavin::archive_card(std::path::Path::new(path), index.as_deref())?;
         Ok(self.follow_card_move(path, moved))
     }
 
     /// The inverse; see `archive_card`.
     pub fn unarchive_card(&self, path: &str) -> anyhow::Result<String> {
-        let moved = crate::gavin::unarchive_card(std::path::Path::new(path))?;
+        let index = self.card_index_for(path);
+        let moved = crate::gavin::unarchive_card(std::path::Path::new(path), index.as_deref())?;
         Ok(self.follow_card_move(path, moved))
+    }
+
+    /// The card index of the watcher whose last scan listed this card,
+    /// which a plan's move reads its nested children from instead of
+    /// parsing every card in the root. None for a card no scan has seen
+    /// yet -- created since, or spelled differently from the scan -- and
+    /// the move then reads every card, as it always did.
+    fn card_index_for(&self, path: &str) -> Option<Arc<crate::gavin::CardIndex>> {
+        let path = std::path::Path::new(path);
+        let watchers: Vec<_> = self.gavin_watchers.lock().unwrap().values().cloned().collect();
+        watchers.iter().filter_map(|w| w.card_index()).find(|index| index.knows(path))
     }
 
     /// Re-keys a card's session binding and rail steps onto the path it
@@ -3043,13 +3068,22 @@ impl SessionManager {
         self.kanban.lock().unwrap().delete_board(workspace_id)
     }
 
+    /// Hands `data` to this session's program and returns without waiting
+    /// for it to be read.
+    ///
+    /// Every caller is a thread something else is waiting on -- a
+    /// connection's one request loop, the command connection answering
+    /// "send anyway", the status path delivering a queued follow-up -- so
+    /// the write itself happens on the session's own input thread
+    /// (`crate::input`). A program that has stopped reading holds up its
+    /// own input and nobody else's.
     pub fn write_input(&self, id: &str, data: &[u8]) -> anyhow::Result<()> {
-        let writer = {
+        let input = {
             let sessions = self.sessions.lock().unwrap();
             let session = sessions
                 .get(id)
                 .ok_or_else(|| anyhow::anyhow!("unknown session: {id}"))?;
-            session.writer_handle()
+            session.input()
         };
         // A focus report is the terminal describing ITSELF, and every
         // rule below this point is about the human typing -- so it takes
@@ -3068,7 +3102,7 @@ impl SessionManager {
         // question, and the Decisions tab dropped it under the cursor.
         if is_focus_report(data) || is_mouse_report(data) {
             self.provoke_repaint(id);
-            writer.lock().unwrap().write_all(data)?;
+            input.send(data)?;
             return Ok(());
         }
         // BEFORE the bytes reach the PTY, and that ordering is the whole
@@ -3108,7 +3142,7 @@ impl SessionManager {
                 None => acked.remove(id),
             };
         }
-        writer.lock().unwrap().write_all(data)?;
+        input.send(data)?;
         if let Err(e) = self.registry.lock().unwrap().clear_restored(id) {
             eprintln!("failed to clear restored flag for session {id}: {e}");
         }
@@ -4416,6 +4450,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::UnlinkCardSession { workspace_id, path } => manager
             .unlink_card_session(&workspace_id, &path)
             .map(|_| Response::Ok),
+        Request::GetCardSession { workspace_id, path } => manager
+            .card_session(&workspace_id, &path)
+            .map(|card_session| Response::CardSession { card_session }),
         Request::CardRuns { workspace_id, path } => {
             manager.card_runs(&workspace_id, &path).map(|runs| Response::CardRuns { runs })
         }
@@ -4873,6 +4910,7 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::UnarchiveCard { .. }
         | Request::LinkCardSession { .. }
         | Request::UnlinkCardSession { .. }
+        | Request::GetCardSession { .. }
         | Request::CardRuns { .. }
         | Request::StartToolRun { .. }
         | Request::SetToolRunOutcome { .. }
@@ -6537,6 +6575,7 @@ mod tests {
             Request::GitDirtyPaths { cwd: "/x".into(), limit: 10 },
             Request::NameSession { session_id: "s".into(), name: "n".into(), agent_conversation_id: None },
             Request::CardRuns { workspace_id: "w".into(), path: "/x/a.md".into() },
+            Request::GetCardSession { workspace_id: "w".into(), path: "/x/a.md".into() },
             Request::ToolRuns { workspace_id: "w".into() },
             Request::GetProtocolVersion,
             Request::Shutdown,
@@ -8034,6 +8073,131 @@ mod tests {
             },
         );
         assert!(matches!(resp, Response::Error { .. }));
+    }
+
+    /// A program busy with something other than its input: raw mode, as
+    /// an agent's TUI runs, painting and never reading. Raw because that
+    /// is the mode that blocks early -- a raw macOS pty took 1022 bytes
+    /// from a program that was not reading, where canonical mode took a
+    /// megabyte -- and busy rather than silent so a session running it
+    /// stays `working`, which is when a follow-up waits in its queue.
+    #[cfg(unix)]
+    const STOPS_READING: &str = "stty raw -echo; while :; do printf gavin_busy; sleep 0.2; done";
+
+    /// More than a pty holds for a program that is not reading it: 1022
+    /// bytes on macOS, and Linux's tty buffer is some hundreds of KB. In
+    /// chunks, because one request line has to fit under
+    /// `MAX_LINE_BYTES`.
+    #[cfg(unix)]
+    fn more_than_a_pty_holds() -> Vec<String> {
+        (0..8).map(|_| "x".repeat(256 * 1024)).collect()
+    }
+
+    /// Reads `stream` to its end on a thread of its own, the way the app's
+    /// relay thread always reads its connection. An attached connection
+    /// nobody reads fills, and the daemon's pushes to it block -- which
+    /// is a stall of the test's own making, not the one under test.
+    #[cfg(unix)]
+    fn drain(stream: &Stream) {
+        let mut reader = line_reader(stream.try_clone().unwrap());
+        std::thread::spawn(move || while let Ok(Some(_)) = read_message::<_, Response>(&mut reader) {});
+    }
+
+    /// Asks every session in `ids` to end, so a program that never reads
+    /// does not outlive the test that started it.
+    #[cfg(unix)]
+    fn kill_all(socket_path: &std::path::Path, ids: &[&str]) {
+        let mut commands = Stream::connect(socket_path).unwrap();
+        for id in ids {
+            request(&mut commands, &Request::KillSession { id: id.to_string() });
+        }
+    }
+
+    /// The bug: a connection's input was written into each session's pty
+    /// on that connection's one thread, and a write into a program that
+    /// is not reading does not return. One paste into a wedged agent
+    /// parked the app's streaming connection, and every other terminal's
+    /// keystrokes, resizes and repaints queued behind it.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_that_stops_reading_does_not_hold_up_another_sessions_input() {
+        let (socket_path, _dir) = start_test_server();
+        let stuck = create_session_with(&socket_path, STOPS_READING);
+        let live = create_session_with(
+            &socket_path,
+            "stty raw -echo; printf gavin_ready; head -c 1 >/dev/null; printf gavin_took_it; sleep 600",
+        );
+        // Both in raw mode before a byte is sent: canonical mode takes a
+        // megabyte, and the test would prove nothing.
+        let mut stuck_out = Stream::connect(&socket_path).unwrap();
+        write_message(&mut stuck_out, &Request::Attach { id: stuck.clone() }).unwrap();
+        await_output(&stuck_out, "gavin_busy");
+        drain(&stuck_out);
+        let mut live_out = Stream::connect(&socket_path).unwrap();
+        write_message(&mut live_out, &Request::Attach { id: live.clone() }).unwrap();
+        await_output(&live_out, "gavin_ready");
+
+        // ONE connection carrying both sessions' input, as the app's
+        // streaming connection does. From a thread of its own: against
+        // the bug the socket fills and these writes never return, and it
+        // is the wait below that has to report it.
+        let mut typing = Stream::connect(&socket_path).unwrap();
+        let (to_stuck, to_live) = (stuck.clone(), live.clone());
+        std::thread::spawn(move || {
+            for chunk in more_than_a_pty_holds() {
+                let req = Request::WriteInput { id: to_stuck.clone(), data: chunk };
+                write_message(&mut typing, &req).unwrap();
+            }
+            write_message(&mut typing, &Request::WriteInput { id: to_live, data: "y".into() }).unwrap();
+            std::thread::sleep(PROCESS_BUDGET);
+        });
+
+        await_output(&live_out, "gavin_took_it");
+        kill_all(&socket_path, &[&stuck, &live]);
+    }
+
+    /// "Send anyway" is the override for exactly an agent that looks
+    /// stuck, and it wrote into the pty on the COMMAND connection's
+    /// thread -- so the reply the app waits on could not come back until
+    /// the program read, and nothing queued behind it on that connection
+    /// could either.
+    #[cfg(unix)]
+    #[test]
+    fn sending_a_follow_up_anyway_does_not_wait_for_a_program_that_is_not_reading() {
+        let (socket_path, _dir) = start_test_server();
+        let stuck = create_session_with(&socket_path, STOPS_READING);
+        let mut out = Stream::connect(&socket_path).unwrap();
+        write_message(&mut out, &Request::Attach { id: stuck.clone() }).unwrap();
+        await_output(&out, "gavin_busy");
+        drain(&out);
+
+        let (answered, answers) = std::sync::mpsc::channel();
+        let id = stuck.clone();
+        let commands_at = socket_path.clone();
+        std::thread::spawn(move || {
+            let mut commands = Stream::connect(&commands_at).unwrap();
+            // Still under one line's cap, and far over what the pty holds.
+            let text = "x".repeat(900 * 1024);
+            let queued_id = match request(&mut commands, &Request::QueueInput { id: id.clone(), text }) {
+                Response::QueuedInputs { queued } if queued.len() == 1 => queued[0].id.clone(),
+                other => panic!("expected the follow-up to wait in the queue, got {other:?}"),
+            };
+            let sent = request(&mut commands, &Request::SendQueuedInput { id: id.clone(), queued_id });
+            // The connection itself, not only the one reply: whatever the
+            // app asks next on that lane must not be stuck behind it.
+            let next = request(&mut commands, &Request::ListSessions);
+            let _ = answered.send((sent, next));
+        });
+
+        let (sent, next) = answers
+            .recv_timeout(PROCESS_BUDGET)
+            .expect("SendQueuedInput never answered while its program was not reading");
+        assert!(
+            matches!(&sent, Response::QueuedInputs { queued } if queued.is_empty()),
+            "the follow-up should have left the queue: {sent:?}"
+        );
+        assert!(matches!(next, Response::SessionList { .. }), "got {next:?}");
+        kill_all(&socket_path, &[&stuck]);
     }
 
     /// Drives a session until its output contains `marker`, returning every
@@ -9670,7 +9834,8 @@ mod tests {
 
         assert!(manager.claim_card_for_session(&root, &card, &session).unwrap());
 
-        let bound = &manager.get_board("ws-1").unwrap().card_sessions[0];
+        // The single-binding read: the board no longer carries the command.
+        let bound = manager.card_session("ws-1", &card).unwrap().unwrap();
         assert_eq!(bound.path, card);
         assert_eq!(bound.session_id, session);
         // Off the session record, not the caller: the agent knows
@@ -9753,7 +9918,8 @@ mod tests {
 
         assert!(manager.claim_card_for_session(&root, &card, &session).unwrap());
 
-        let bound = &manager.get_board("ws-1").unwrap().card_sessions[0];
+        // The single-binding read: the board no longer carries the command.
+        let bound = manager.card_session("ws-1", &card).unwrap().unwrap();
         assert_eq!(bound.conversation_id.as_deref(), Some("conv-1"));
         assert_eq!(bound.launch_cwd.as_deref(), Some("/p/wt"));
         assert_eq!(bound.resume_attempts, Some(1));
@@ -9965,6 +10131,53 @@ mod tests {
         }
     }
 
+    /// A plan's move finds its nested children through the index of the
+    /// watcher that scanned it, and a card no watcher has scanned gets
+    /// none -- its move reads every card, as every move used to.
+    #[test]
+    fn a_card_move_reads_the_watching_workspaces_card_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        let ws = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(ws.path(), "WS").unwrap();
+        let root = ws.path().canonicalize().unwrap();
+        let plans = root.join(".gavin-root").join("plans");
+        let plan = plans.join("big.md");
+        std::fs::write(&plan, "---\ntitle: Big\nstatus: To Do\n---\n").unwrap();
+        let child = "---\nkind: task\ntitle: S\nparent: big.md\n---\n";
+        std::fs::write(plans.join("step.md"), child).unwrap();
+        let plan = plan.to_string_lossy().to_string();
+
+        let elsewhere = tempfile::tempdir().unwrap();
+        crate::gavin::init_gavin_root(elsewhere.path(), "Other").unwrap();
+        let unwatched =
+            elsewhere.path().canonicalize().unwrap().join(".gavin-root").join("plans").join("x.md");
+        std::fs::write(&unwatched, "---\ntitle: X\n---\n").unwrap();
+        assert!(manager.card_index_for(&unwatched.to_string_lossy()).is_none());
+
+        let (ours, theirs) = Stream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        SessionManager::watch_gavin_root(
+            &manager,
+            "ws-1",
+            &root.to_string_lossy(),
+            Arc::new(Mutex::new(theirs)),
+        );
+        let mut reader = line_reader(ours);
+        assert!(matches!(
+            read_message::<_, Response>(&mut reader).unwrap().unwrap(),
+            Response::GavinTreeChanged { .. }
+        ));
+
+        let index = manager.card_index_for(&plan).expect("the watcher's scan listed the plan");
+        assert!(index.knows(std::path::Path::new(&plan)));
+        assert!(manager.card_index_for(&unwatched.to_string_lossy()).is_none());
+        let filed = manager.set_plan_field(&plan, "status", "Done").unwrap();
+        assert_eq!(filed, plans.join("done").join("big.md").to_string_lossy());
+        assert!(plans.join("done").join("step.md").is_file());
+    }
+
     /// The archive's bulk delete is the one action that ends a card for
     /// good, so the rows keyed to it have to end with it -- the binding,
     /// the run history, and the rail step, which would otherwise sit
@@ -10110,6 +10323,54 @@ mod tests {
                 assert!(labels.is_empty());
             }
             other => panic!("expected Board, got {other:?}"),
+        }
+    }
+
+    /// v43: the board leaves the launch command out, and `GetCardSession`
+    /// is where Re-launch gets it back -- for the card asked about, and
+    /// None (an answer, not an error) for a card bound to nothing.
+    #[test]
+    fn get_card_session_carries_the_command_the_board_leaves_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        let kanban = KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap();
+        let manager = SessionManager::new(registry, kanban, test_orchestration_store());
+        let link = Request::LinkCardSession {
+            workspace_id: "ws-1".into(),
+            path: "/p/t.md".into(),
+            session_id: "s-1".into(),
+            cwd: "/p".into(),
+            command: Some("claude 'the whole prompt'".into()),
+            conversation_id: None,
+            launch_cwd: Some("/p".into()),
+            resume_attempts: None,
+            base_sha: None,
+        };
+        assert!(matches!(handle_request(&manager, link), Response::Ok));
+
+        match handle_request(&manager, Request::GetBoard { workspace_id: "ws-1".into() }) {
+            Response::Board { card_sessions, .. } => {
+                assert_eq!(card_sessions.len(), 1);
+                assert_eq!(card_sessions[0].command, None);
+            }
+            other => panic!("expected Board, got {other:?}"),
+        }
+        match handle_request(
+            &manager,
+            Request::GetCardSession { workspace_id: "ws-1".into(), path: "/p/t.md".into() },
+        ) {
+            Response::CardSession { card_session: Some(bound) } => {
+                assert_eq!(bound.session_id, "s-1");
+                assert_eq!(bound.command.as_deref(), Some("claude 'the whole prompt'"));
+            }
+            other => panic!("expected the bound CardSession, got {other:?}"),
+        }
+        match handle_request(
+            &manager,
+            Request::GetCardSession { workspace_id: "ws-1".into(), path: "/p/never.md".into() },
+        ) {
+            Response::CardSession { card_session: None } => {}
+            other => panic!("expected no binding, got {other:?}"),
         }
     }
 
@@ -12677,6 +12938,113 @@ mod tests {
                 assert!(!still_running, "nothing recorded is not the same as something refusing");
             }
             other => panic!("expected OrphanEnded, got {other:?}"),
+        }
+    }
+
+    /// `spawn_survivor`'s process, minus the one thing that ever ended
+    /// it: this one ignores SIGTERM too, the orphan `end_orphan` has to
+    /// report as refusing. `sleep` inherits the ignored disposition across
+    /// exec, so neither the shell nor its child goes. Unix only: Windows'
+    /// `terminate` cannot be refused.
+    #[cfg(unix)]
+    fn spawn_stubborn_survivor() -> (std::process::Child, crate::proc::ProcessHandle) {
+        let child = std::process::Command::new("/bin/sh")
+            .args(["-c", "trap '' HUP TERM; sleep 30"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let handle = crate::proc::identify(child.id()).expect("the survivor must be visible");
+        (child, handle)
+    }
+
+    /// The close sweep ends every orphan at once, each on a connection of
+    /// its own (the app's `command_lane::runs_apart`). That only pays if
+    /// the daemon waits them out side by side -- each connection has its
+    /// own thread, and `end_orphan` holds no lock across the grace -- so
+    /// N orphans that refuse SIGTERM cost one grace, not N, and a request
+    /// on another connection is answered while they wait.
+    #[cfg(unix)]
+    #[test]
+    fn stubborn_orphans_on_their_own_connections_wait_out_one_grace_together() {
+        const N: usize = 4;
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("registry.sqlite");
+        let survivors: Vec<std::process::Child> = (0..N)
+            .map(|i| {
+                let (child, handle) = spawn_stubborn_survivor();
+                let id = format!("stubborn-{i}");
+                leftover_row_running(&db, &id, "/tmp", Some("claude"), SessionStatus::Working, Some(handle));
+                child
+            })
+            .collect();
+        let manager = Arc::new(recovered_manager(&dir));
+        manager.set_daemon_token("test-daemon-token".to_string());
+        let sock_dir = tempfile::tempdir().unwrap();
+        let sock = sock_dir.path().join("daemon.sock");
+        let listener = bind_server(&sock).unwrap();
+        std::thread::spawn(move || {
+            let _ = serve(listener, manager);
+        });
+
+        let start = std::time::Instant::now();
+        let (written, all_written) = std::sync::mpsc::channel();
+        let ends: Vec<_> = (0..N)
+            .map(|i| {
+                let sock = sock.clone();
+                let written = written.clone();
+                std::thread::spawn(move || {
+                    // Presented the way the app presents it: EndOrphan is
+                    // privileged, and `local` loses it under
+                    // require_local_token.
+                    let mut conn = Stream::connect(&sock).unwrap();
+                    let hello = request(
+                        &mut conn,
+                        &Request::Hello {
+                            client: "app".into(),
+                            protocol_version: protocol::PROTOCOL_VERSION,
+                            auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
+                            nonce: format!("n-{i}"),
+                        },
+                    );
+                    assert!(matches!(&hello, Response::HelloAck { role, .. } if role == "app"), "{hello:?}");
+                    write_message(&mut conn, &Request::EndOrphan { id: format!("stubborn-{i}") }).unwrap();
+                    written.send(()).unwrap();
+                    read_message::<_, Response>(&mut line_reader(conn)).unwrap().unwrap()
+                })
+            })
+            .collect();
+        for _ in 0..N {
+            all_written.recv().unwrap();
+        }
+
+        // Every one of them is inside its grace now, and none can leave
+        // it before a whole grace from `start` has passed.
+        let mut other = Stream::connect(&sock).unwrap();
+        let listed = request(&mut other, &Request::ListSessions);
+        assert!(matches!(listed, Response::SessionList { .. }), "{listed:?}");
+        assert!(
+            start.elapsed() < ORPHAN_EXIT_GRACE,
+            "a request on another connection waited behind the orphans"
+        );
+
+        for end in ends {
+            match end.join().unwrap() {
+                Response::OrphanEnded { ended, still_running, .. } => {
+                    assert!(!ended);
+                    assert!(still_running, "the orphan ignored SIGTERM, so it must be reported as refusing");
+                }
+                other => panic!("expected OrphanEnded, got {other:?}"),
+            }
+        }
+        let took = start.elapsed();
+        assert!(took >= ORPHAN_EXIT_GRACE, "the daemon did not wait out the grace: {took:?}");
+        assert!(
+            took < ORPHAN_EXIT_GRACE * 2,
+            "{N} stubborn orphans took {took:?}: they waited one after another, not together"
+        );
+        for child in survivors {
+            kill_and_reap(child);
         }
     }
 

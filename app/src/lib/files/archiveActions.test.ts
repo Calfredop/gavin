@@ -200,7 +200,7 @@ describe("executeArchive — closing what the card was using", () => {
       ws: {
         columns: [],
         labels: [],
-        cardSessions: [{ path, sessionId, cwd: "/ws", command: "claude" }],
+        cardSessions: [{ path, sessionId, cwd: "/ws" }],
       },
     });
   }
@@ -285,8 +285,8 @@ describe("executeArchive — closing what the card was using", () => {
         columns: [],
         labels: [],
         cardSessions: [
-          { path: `${PLANS}/a.md`, sessionId: "s-live", cwd: "/ws", command: null },
-          { path: `${PLANS}/b.md`, sessionId: "s-live-2", cwd: "/ws", command: null },
+          { path: `${PLANS}/a.md`, sessionId: "s-live", cwd: "/ws" },
+          { path: `${PLANS}/b.md`, sessionId: "s-live-2", cwd: "/ws" },
         ],
       },
     });

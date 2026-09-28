@@ -97,6 +97,7 @@ import {
   initWorkspaceWindows,
   isMainWindow,
 } from "$lib/shell/appWindowState";
+import { initAppDuty, whileHoldingAppDuties } from "$lib/shell/appDuty";
 
 export type { SessionStatus };
 
@@ -1056,7 +1057,10 @@ async function seedSessionBaselines(): Promise<void> {
   // Same wait loadTabMaps satisfies: once those maps have come back, the
   // Rust side has managed CommandConnection too.
   await tabMapsLoaded;
-  const baselines = await backend.getSessionBaselines().catch(() => null);
+  const baselines = await backend.getSessionBaselines().then(
+    (read) => read.sessions,
+    () => null
+  );
   if (!baselines) return;
   const known = get(layoutState);
   const fresh = baselines.filter((b) => known.cwdBySessionId[b.id] === undefined);
@@ -1164,9 +1168,10 @@ export async function reconcileLayoutSessions(): Promise<void> {
   const before = get(layoutState);
   const baselines = await backend.getSessionBaselines().catch(() => null);
   if (!baselines) return;
+  const answered = new Set(baselines.hosts);
   const stale = workspace.staleLayoutTabIds(
     before,
-    new Set(baselines.map((b) => b.id)),
+    new Set(baselines.sessions.map((b) => b.id)),
     new Set([
       ...Object.keys(before.fileTabsById),
       ...Object.keys(before.boardTabsById),
@@ -1174,8 +1179,10 @@ export async function reconcileLayoutSessions(): Promise<void> {
     ]),
     // The baselines name a linked host's sessions and nothing of a host
     // still connecting or lost; an ssh workspace is swept only once its
-    // host is up.
-    readyHosts(get(sshLinks))
+    // host is up -- and only when that host answered this read. One that
+    // was up but slow past its budget said nothing about its sessions,
+    // and reading its silence as "none left" closed every tab it had.
+    new Set([...readyHosts(get(sshLinks))].filter((host) => answered.has(host)))
   );
   // handleSessionExited searches the CURRENT trees and is a no-op for an
   // id no longer in one, so a tab closed in the meantime needs no guard.
@@ -1206,6 +1213,10 @@ export async function bootstrap(): Promise<void> {
   // window for a frame -- with its terminals, which is exactly the
   // two-windows-one-PTY state the map exists to prevent.
   unlisteners.push(await initWorkspaceWindows());
+  // Awaited for the same kind of reason, and ahead of every poller it
+  // gates: a workspace window must know it does not hold the app's
+  // duties before the first poll would start, not a round trip after.
+  unlisteners.push(await initAppDuty());
   unlisteners.push(
     await listen<WorkspacesData>("workspaces-ready", async (event) => {
       // Awaited BEFORE the tree lands in the store: a file or board tab
@@ -1383,8 +1394,17 @@ export async function bootstrap(): Promise<void> {
   // resolvedAgentFor from this module. Started here rather than from a
   // component, because a pause whose clock only advances while one tab is
   // mounted is the bug that made rails tick only on their own tab.
-  const { startPauseClock } = await import("$lib/agents/agentPauseState");
+  //
+  // The clock in every window; the probe only in the one holding the
+  // app's duties (appDuty.ts), which tells the others what it read. The
+  // clock first: it hydrates the cached readings the first probe's
+  // answer continues.
+  const { startPauseClock, startUsagePoll, initUsageSharing } = await import(
+    "$lib/agents/agentPauseState"
+  );
   unlisteners.push(startPauseClock());
+  unlisteners.push(await initUsageSharing());
+  unlisteners.push(whileHoldingAppDuties(startUsagePoll));
   const { startArmOnFocus } = await import("$lib/agents/agentFallbackState");
   unlisteners.push(startArmOnFocus());
   // The memory probe, on the same terms and for a sharper version of the
@@ -1393,8 +1413,14 @@ export async function bootstrap(): Promise<void> {
   // different workspace -- and a queue whose poll has stalled is work
   // that silently never starts. Dynamically imported for the cycle
   // reason above (memoryState reads resolvedAgentFor from this module).
-  const { startMemoryPoll } = await import("$lib/agents/memoryState");
-  unlisteners.push(startMemoryPoll());
+  //
+  // Polled by the window holding the app's duties, like the usage
+  // probe: the machine, watchman and the daemon's session list are one
+  // answer however many windows ask, and every other window's gate takes
+  // that window's reading.
+  const { startMemoryPoll, initMemorySharing } = await import("$lib/agents/memoryState");
+  unlisteners.push(await initMemorySharing());
+  unlisteners.push(whileHoldingAppDuties(startMemoryPoll));
   // ...and the queue that drains behind the gate the probe feeds. After
   // the poller, so its first drain reads a sample rather than a null,
   // and module-level for the same reason both of those are.
@@ -1579,6 +1605,12 @@ export async function retryConnect(): Promise<void> {
 // nor re-runs startup. The Rust side rewires the live connections in
 // place and re-arms the gavin root watches, so all that is left is to
 // refresh what a fresh daemon can no longer be asked about mid-flight.
+//
+// The restart no longer holds the main thread, so terminals stay live
+// through it -- and "connecting" is still not how they are kept from
+// typing into the daemon being killed: it swaps the whole window for the
+// Connecting… overlay, Settings and its outcome note with it. The host
+// refuses `write_input` for the whole reconnect instead.
 //
 // Throws on failure so the caller can render it beside the button --
 // silently swallowing it would leave the human with a dead daemon and no

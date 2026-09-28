@@ -1947,44 +1947,58 @@ pub struct IntegrationResult {
 /// `gavin-mcp` the config must name: both come through the link
 /// (`remote::RemoteFiles`, the banner's `mcpPath`). A host with no
 /// `gavin-mcp` beside its daemon is reported, not written around.
-pub fn setup_agent_integration(
+///
+/// Off the main thread: on an ssh workspace a run is a dozen round trips
+/// to the host, one after another. One run at a time, still: the main
+/// thread used to be what kept two runs from interleaving their
+/// read-modify-writes of the same config files, and `INTEGRATION_RUNS`
+/// is that now.
+pub async fn setup_agent_integration(
     root_path: String,
     instructions_file: Option<String>,
     mcp_foreign_choice: Option<String>,
     profile_id: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<IntegrationResult, String> {
-    let choice = McpForeignChoice::from_str(mcp_foreign_choice.as_deref());
-    if let crate::remote::Route::Remote(link) =
-        crate::remote::route_for_root(&app_handle, Some(&root_path))?
-    {
-        let host = link.host.clone();
-        let mcp = link.mcp_path.clone();
-        let files = crate::remote::RemoteFiles { link, root: root_path.clone() };
-        return run_integration(
-            &files,
+    tauri::async_runtime::spawn_blocking(move || {
+        let _one_at_a_time = INTEGRATION_RUNS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let choice = McpForeignChoice::from_str(mcp_foreign_choice.as_deref());
+        if let crate::remote::Route::Remote(link) =
+            crate::remote::route_for_root(&app_handle, Some(&root_path))?
+        {
+            let host = link.host.clone();
+            let mcp = link.mcp_path.clone();
+            let files = crate::remote::RemoteFiles { link, root: root_path.clone() };
+            return run_integration(
+                &files,
+                Path::new(&root_path),
+                move || {
+                    mcp.clone().map(PathBuf::from).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "gavin-mcp is not beside gavin-daemon on {host} — install it there and reconnect"
+                        )
+                    })
+                },
+                instructions_file.as_deref(),
+                choice,
+                profile_id.as_deref(),
+            );
+        }
+        run_integration(
+            &LocalFiles,
             Path::new(&root_path),
-            move || {
-                mcp.clone().map(PathBuf::from).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "gavin-mcp is not beside gavin-daemon on {host} — install it there and reconnect"
-                    )
-                })
-            },
+            resolve_mcp_binary_path,
             instructions_file.as_deref(),
             choice,
             profile_id.as_deref(),
-        );
-    }
-    run_integration(
-        &LocalFiles,
-        Path::new(&root_path),
-        resolve_mcp_binary_path,
-        instructions_file.as_deref(),
-        choice,
-        profile_id.as_deref(),
-    )
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
+
+/// Held for the whole of an integration run (`setup_agent_integration`).
+static INTEGRATION_RUNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The command's body, with the binary lookup injected. Injected because
 /// resolve_mcp_binary_path wants gavin-mcp beside the running executable,

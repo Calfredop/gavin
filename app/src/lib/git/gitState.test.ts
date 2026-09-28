@@ -130,8 +130,9 @@ import {
   commitButtonLabel, amendRewritesPushed,
   ensureGitView, refresh, select, run, runWithReason, runBlocker, forkWorktree,
   stageFiles, stageAll, commit, setCommitDraft, setLineSelection,
-  effectiveRemote, pushLabel, canSync, setActiveRemote, startOp, fetch, selectStash, selectChanges,
-  switchWorktree, mergeBack, rootPathOf, removeWorktree, sweepFacts, sweepWorktrees,
+  effectiveRemote, pushLabel, canSync, setActiveRemote, startOp, cancelOp, fetch, selectStash, selectChanges,
+  checkout, createBranch, cherryPick,
+  switchWorktree, mergeBack, rootPathOf, removeWorktree, sweepFacts, sweepWorktrees, discardWorktrees,
   selectCommits, loadMore, selectCommit, selectDetailFile, setGraphAll,
   markResolved, saveConflict, openMergeTool,
   addIgnorePattern, loadIgnoreFile, saveIgnoreFile,
@@ -262,17 +263,77 @@ describe("refresh", () => {
     expect(backend.gitDiff).toHaveBeenLastCalledWith("/r", "a.ts", null, true, false);
   });
 
-  it("drops a superseded result", async () => {
-    ensureGitView("ws", "/r");
-    let resolveFirst!: (v: StatusResult) => void;
-    vi.mocked(backend.gitStatus)
-      .mockImplementationOnce(() => new Promise((res) => (resolveFirst = res)))
-      .mockResolvedValueOnce({ unstaged: [], staged: [] });
-    const first = refresh("ws");
-    await refresh("ws");
-    resolveFirst(status);
-    await first;
-    expect(get(gitStore)["ws"].status).toEqual({ unstaged: [], staged: [] });
+  describe("one pass at a time", () => {
+    // The commands behind a pass run off the main thread now, so nothing
+    // serialises them any more: an npm install's burst of `git-changed`
+    // used to become a dozen passes of 14 git processes each, all at once.
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    };
+
+    it("a burst during a pass costs ONE more pass, which every caller waits for", async () => {
+      ensureGitView("ws", "/r");
+      let finishFirst!: (v: StatusResult) => void;
+      vi.mocked(backend.gitStatus)
+        .mockImplementationOnce(() => new Promise((res) => (finishFirst = res)))
+        .mockResolvedValueOnce({ unstaged: [], staged: [] });
+      const first = refresh("ws");
+      await flush();
+      let settled = 0;
+      const burst = Array.from({ length: 12 }, () => refresh("ws").then(() => settled++));
+      await flush();
+      expect(backend.gitRepoInfo).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(0);
+
+      finishFirst(status);
+      await first;
+      await Promise.all(burst);
+      // Waited for the pass that started AFTER them: a caller that
+      // refreshes after a mutation must read the tree the mutation left.
+      expect(settled).toBe(12);
+      expect(backend.gitRepoInfo).toHaveBeenCalledTimes(2);
+      expect(get(gitStore)["ws"].status).toEqual({ unstaged: [], staged: [] });
+    });
+
+    it("a pass that fails still runs the one queued behind it", async () => {
+      ensureGitView("ws", "/r");
+      let failFirst!: (e: unknown) => void;
+      vi.mocked(backend.gitRepoInfo).mockImplementationOnce(() => new Promise((_, rej) => (failFirst = rej)));
+      const first = refresh("ws");
+      const second = refresh("ws");
+      failFirst("fatal: index file corrupt");
+      await first;
+      await second;
+      expect(backend.gitRepoInfo).toHaveBeenCalledTimes(2);
+      expect(get(gitStore)["ws"].repo).toEqual(repo);
+    });
+
+    it("once idle, the next refresh starts at once", async () => {
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      await refresh("ws");
+      expect(backend.gitRepoInfo).toHaveBeenCalledTimes(2);
+    });
+
+    it("a worktree switch does not wait behind the old checkout's pass, whose answer never lands", async () => {
+      ensureGitView("ws", "/r");
+      let finishOld!: (v: StatusResult) => void;
+      vi.mocked(backend.gitStatus)
+        .mockImplementationOnce(() => new Promise((res) => (finishOld = res)))
+        .mockResolvedValueOnce({ unstaged: [], staged: [] });
+      const old = refresh("ws");
+      await flush();
+      await switchWorktree("ws", "/r-feature");
+      expect(backend.gitRepoInfo).toHaveBeenLastCalledWith("/r-feature");
+      expect(get(gitStore)["ws"].status).toEqual({ unstaged: [], staged: [] });
+
+      // Both views start their token count at 1, so the token alone
+      // would have let the old checkout's answer through.
+      finishOld(status);
+      await old;
+      expect(get(gitStore)["ws"].cwd).toBe("/r-feature");
+      expect(get(gitStore)["ws"].status).toEqual({ unstaged: [], staged: [] });
+    });
   });
 
   it("flags a missing git binary instead of erroring", async () => {
@@ -318,7 +379,7 @@ describe("run / mutations", () => {
     await refresh("ws");
     setCommitDraft("ws", { summary: "feat: x", description: "body" });
     expect(await commit("ws")).toBe(true);
-    expect(backend.gitCommit).toHaveBeenCalledWith("/r", "feat: x\n\nbody", false);
+    expect(backend.gitCommit).toHaveBeenCalledWith("/r", "feat: x\n\nbody", false, expect.any(String));
     expect(get(gitStore)["ws"].commit).toEqual({ summary: "", description: "", amend: false });
   });
 
@@ -366,7 +427,7 @@ describe("run / mutations", () => {
     const view = get(gitStore)["ws"];
     expect(runBlocker(view)).toBeNull();
     expect(runBlocker({ ...view, busy: "Stage" })).toBe("Another git operation is still running (Stage)");
-    expect(runBlocker({ ...view, op: { id: "1", label: "Fetch", line: null } })).toBe(
+    expect(runBlocker({ ...view, op: { id: "1", label: "Fetch", line: null, cancellable: true } })).toBe(
       "Another git operation is still running (Fetch)"
     );
   });
@@ -478,6 +539,88 @@ describe("long ops", () => {
     expect(backend.gitStatus).toHaveBeenCalled();
   });
 
+  // The actions that run hooks, sign, or check out through a filter can
+  // take as long as those do -- a pre-commit suite, a Touch ID prompt, an
+  // LFS download -- so they run as ops: shown in the op bar with the
+  // hook's output and a Cancel, and still holding `busy` like any other
+  // mutation, so everything that disables on `busy` stays disabled.
+  describe("actions that run hooks", () => {
+    it("run as an op: the bar shows them, their id reaches the command, progress lands, and both marks clear", async () => {
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      let handler!: (e: { payload: { opId: string; line: string } }) => void;
+      vi.mocked(listen).mockImplementationOnce(async (_n, h) => {
+        handler = h as never;
+        return () => {};
+      });
+      let finish!: () => void;
+      vi.mocked(backend.gitCommit).mockImplementationOnce(() => new Promise<void>((res) => (finish = res)));
+      setCommitDraft("ws", { summary: "feat: x" });
+      const done = commit("ws");
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+
+      const view = get(gitStore)["ws"];
+      expect(view.busy).toBe("Commit");
+      expect(view.op).toMatchObject({ label: "Commit", line: null });
+      expect(backend.gitCommit).toHaveBeenCalledWith("/r", "feat: x", false, view.op!.id);
+      handler({ payload: { opId: "someone-else", line: "nope" } });
+      handler({ payload: { opId: view.op!.id, line: "eslint...Passed" } });
+      expect(get(gitStore)["ws"].op?.line).toBe("eslint...Passed");
+      expect(await startOp("ws", "Fetch", async () => {})).toBe(false);
+
+      finish();
+      expect(await done).toBe(true);
+      expect(get(gitStore)["ws"].op).toBeNull();
+      expect(get(gitStore)["ws"].busy).toBeNull();
+    });
+
+    it("Cancel reaches a running action by its id", async () => {
+      ensureGitView("ws", "/r");
+      let finish!: (e: unknown) => void;
+      vi.mocked(backend.gitCheckout).mockImplementationOnce(() => new Promise<void>((_, rej) => (finish = rej)));
+      const done = checkout("ws", "main", null);
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      const id = get(gitStore)["ws"].op!.id;
+      expect(backend.gitCheckout).toHaveBeenCalledWith("/r", "main", null, id);
+
+      await cancelOp("ws");
+      expect(backend.gitCancelOp).toHaveBeenCalledWith(id);
+      finish("cancelled");
+      expect(await done).toBe(false);
+      expect(get(gitStore)["ws"].error).toBe("Checkout main cancelled");
+      expect(get(gitStore)["ws"].op).toBeNull();
+    });
+
+    it("a cancelled commit keeps its draft, and a failure is still a failure", async () => {
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      setCommitDraft("ws", { summary: "feat: keep me" });
+      vi.mocked(backend.gitCommit).mockRejectedValueOnce("cancelled");
+      expect(await commit("ws")).toBe(false);
+      expect(get(gitStore)["ws"].error).toBe("Commit cancelled");
+      expect(get(gitStore)["ws"].commit.summary).toBe("feat: keep me");
+
+      vi.mocked(backend.gitCherryPick).mockRejectedValueOnce("error: could not apply abc123");
+      expect(await cherryPick("ws", "abc123")).toBe(false);
+      expect(get(gitStore)["ws"].error).toBe("Cherry-pick failed: error: could not apply abc123");
+    });
+
+    it("say why when refused, like any other mutation", async () => {
+      ensureGitView("ws", "/r");
+      let finish!: () => void;
+      vi.mocked(backend.gitCheckout).mockImplementationOnce(() => new Promise<void>((res) => (finish = res)));
+      const first = checkout("ws", "main", null);
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(await createBranch("ws", "topic", null, true)).toEqual({
+        ok: false,
+        error: "Another git operation is still running (Checkout main)",
+      });
+      expect(backend.gitCreateBranch).not.toHaveBeenCalled();
+      finish();
+      await first;
+    });
+  });
+
   it("a cancelled op reports 'cancelled' in the banner", async () => {
     ensureGitView("ws", "/r");
     await refresh("ws");
@@ -529,7 +672,7 @@ describe("worktrees", () => {
   it("mergeBack merges in the root checkout and classifies conflicts", async () => {
     ensureGitView("ws", "/r-feature");
     expect(await mergeBack("ws", "/r", "feature")).toBe("merged");
-    expect(backend.gitMerge).toHaveBeenCalledWith("/r", "feature");
+    expect(backend.gitMerge).toHaveBeenCalledWith("/r", "feature", expect.any(String));
     vi.mocked(backend.gitMerge).mockRejectedValueOnce("CONFLICT (content)");
     vi.mocked(backend.gitRepoInfo).mockResolvedValue({ ...repo, inProgress: "merge" });
     expect(await mergeBack("ws", "/r", "feature")).toBe("conflict");
@@ -615,6 +758,80 @@ describe("worktrees", () => {
     await removeWorktree("ws", "/r-feature", false, "feature");
     expect(backend.gitWorktreeRemove).toHaveBeenCalledWith("/r", "/r-feature", false);
     expect(backend.gitDeleteBranch).toHaveBeenCalledWith("/r", "feature", false);
+  });
+
+  // A fork checks the whole tree out, through the post-checkout hook and
+  // any LFS smudge: an op with a Cancel, like a checkout. A stop mid-
+  // checkout is a TERM, and git deletes the half-made worktree itself.
+  it("forkWorktree runs as an op whose id reaches the command", async () => {
+    ensureGitView("ws", "/r");
+    let finish!: () => void;
+    vi.mocked(backend.gitWorktreeAdd).mockImplementationOnce(() => new Promise<void>((res) => (finish = res)));
+    const done = forkWorktree("ws", { path: "/r-x", branch: "x", from: "main", newBranch: true });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const op = get(gitStore)["ws"].op;
+    expect(op).toMatchObject({ label: "New worktree", cancellable: true });
+    expect(backend.gitWorktreeAdd).toHaveBeenCalledWith("/r", "/r-x", "x", "main", true, op!.id);
+    finish();
+    expect(await done).toEqual({ ok: true, error: null });
+    expect(get(gitStore)["ws"].op).toBeNull();
+  });
+
+  // Removing deletes the build output too, seconds a worktree, and a
+  // sweep or a discard removes several in a row. Off the main thread the
+  // window stays live through that, so the op bar has to say what the
+  // locked Git tab is waiting on.
+  it("a sweep shows in the op bar with the folder it has reached", async () => {
+    ensureGitView("ws", "/r");
+    vi.mocked(backend.gitStatus).mockResolvedValue({ staged: [], unstaged: [] } as never);
+    const seen: unknown[] = [];
+    const note = async () => void seen.push(get(gitStore)["ws"].op);
+    vi.mocked(backend.gitWorktreeRemove).mockImplementationOnce(note).mockImplementationOnce(note);
+
+    await sweepWorktrees("ws", [{ path: "/r-a", branch: null }, { path: "/r-b/", branch: null }], false);
+
+    expect(seen).toEqual([
+      expect.objectContaining({ label: "Sweep worktrees", line: "1 of 2: r-a", cancellable: false }),
+      expect.objectContaining({ label: "Sweep worktrees", line: "2 of 2: r-b", cancellable: false }),
+    ]);
+    expect(get(gitStore)["ws"].op).toBeNull();
+  });
+
+  it("a discard shows its progress too, and keeps going past a failure", async () => {
+    ensureGitView("ws", "/r");
+    const seen: unknown[] = [];
+    vi.mocked(backend.gitWorktreeRemove)
+      .mockImplementationOnce(async () => {
+        seen.push(get(gitStore)["ws"].op);
+        throw "fatal: nope";
+      })
+      .mockImplementationOnce(async () => void seen.push(get(gitStore)["ws"].op));
+
+    expect(await discardWorktrees("ws", [{ path: "/r-a", branch: null }, { path: "/r-b", branch: null }], false)).toBe(false);
+
+    expect(seen).toEqual([
+      expect.objectContaining({ label: "Discard worktrees", line: "1 of 2: r-a", cancellable: false }),
+      expect.objectContaining({ label: "Discard worktrees", line: "2 of 2: r-b", cancellable: false }),
+    ]);
+    expect(get(gitStore)["ws"].error).toBe("Discard worktrees failed: fatal: nope");
+  });
+
+  // git has no cleanup for a remove stopped part-way: the folder is left
+  // half deleted and still registered. So a removal offers no Cancel, and
+  // one pressed anyway reaches nothing.
+  it("a single removal names its folder, and Cancel does not reach it", async () => {
+    ensureGitView("ws", "/r");
+    let finish!: () => void;
+    vi.mocked(backend.gitWorktreeRemove).mockImplementationOnce(() => new Promise<void>((res) => (finish = res)));
+    const done = removeWorktree("ws", "/r-feature", false, null);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(get(gitStore)["ws"].op).toMatchObject({ label: "Remove worktree", line: "r-feature", cancellable: false });
+
+    await cancelOp("ws");
+    expect(backend.gitCancelOp).not.toHaveBeenCalled();
+    finish();
+    expect(await done).toBe(true);
+    expect(get(gitStore)["ws"].op).toBeNull();
   });
 });
 
@@ -711,6 +928,98 @@ describe("conflicts", () => {
     expect(backend.writeFileForEditor).toHaveBeenCalledWith("/r/a.ts", "resolved\n");
     await openMergeTool("ws");
     expect(createSessionForCard).toHaveBeenCalledWith("ws", "/r", "git mergetool --no-prompt -- 'a.ts'");
+  });
+
+  describe("answers that arrive after the selection moved on", () => {
+    // `git_conflict` and `git_diff` run off the main thread, so a click
+    // lands while one is still reading -- the frozen window used to make
+    // that impossible. An answer for a file no longer selected must not
+    // land, and the view must never show one file's conflict under
+    // another's selection: its buttons act on the selected path.
+    const deferred = <T,>() => {
+      let resolve!: (v: T) => void;
+      const promise = new Promise<T>((res) => (resolve = res));
+      return { promise, resolve };
+    };
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    };
+
+    it("a conflict still loading when a plain file is selected never lands", async () => {
+      vi.mocked(backend.gitStatus).mockResolvedValue(conflicted);
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      const slow = deferred<typeof info>();
+      vi.mocked(backend.gitConflict).mockReturnValueOnce(slow.promise);
+      const loading = select("ws", { path: "a.ts", area: "unstaged" });
+      await flush();
+      await select("ws", { path: "c.ts", area: "unstaged" });
+      slow.resolve(info);
+      await loading;
+      expect(get(gitStore)["ws"].conflict).toBeNull();
+    });
+
+    it("a conflict still loading when the selection is cleared never lands", async () => {
+      vi.mocked(backend.gitStatus).mockResolvedValue(conflicted);
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      const slow = deferred<typeof info>();
+      vi.mocked(backend.gitConflict).mockReturnValueOnce(slow.promise);
+      const loading = select("ws", { path: "a.ts", area: "unstaged" });
+      await flush();
+      await select("ws", null);
+      slow.resolve(info);
+      await loading;
+      expect(get(gitStore)["ws"].conflict).toBeNull();
+    });
+
+    it("a diff still loading when a conflicted file is selected never lands", async () => {
+      vi.mocked(backend.gitStatus).mockResolvedValue(conflicted);
+      vi.mocked(backend.gitConflict).mockResolvedValue(info);
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      const slow = deferred<Awaited<ReturnType<typeof backend.gitDiff>>>();
+      vi.mocked(backend.gitDiff).mockReturnValueOnce(slow.promise);
+      const loading = select("ws", { path: "c.ts", area: "unstaged" });
+      await flush();
+      await select("ws", { path: "a.ts", area: "unstaged" });
+      slow.resolve({ path: "c.ts", binary: false, tooLarge: false, hunks: [] });
+      await loading;
+      expect(get(gitStore)["ws"].diff).toBeNull();
+      expect(get(gitStore)["ws"].conflict?.path).toBe("a.ts");
+    });
+
+    it("moving to another conflicted file drops the previous one's conflict while the new one loads", async () => {
+      vi.mocked(backend.gitStatus).mockResolvedValue(conflicted);
+      vi.mocked(backend.gitConflict).mockResolvedValue(info);
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      await select("ws", { path: "a.ts", area: "unstaged" });
+      const slow = deferred<typeof info>();
+      vi.mocked(backend.gitConflict).mockReturnValueOnce(slow.promise);
+      const loading = select("ws", { path: "b.ts", area: "unstaged" });
+      await flush();
+      expect(get(gitStore)["ws"].conflict).toBeNull();
+      slow.resolve({ ...info, path: "b.ts" });
+      await loading;
+      expect(get(gitStore)["ws"].conflict?.path).toBe("b.ts");
+    });
+
+    it("a refresh of the same conflicted file keeps its conflict up while it reloads", async () => {
+      vi.mocked(backend.gitStatus).mockResolvedValue(conflicted);
+      vi.mocked(backend.gitConflict).mockResolvedValue(info);
+      ensureGitView("ws", "/r");
+      await refresh("ws");
+      await select("ws", { path: "a.ts", area: "unstaged" });
+      const slow = deferred<typeof info>();
+      vi.mocked(backend.gitConflict).mockReturnValueOnce(slow.promise);
+      const reloading = refresh("ws");
+      await flush();
+      expect(get(gitStore)["ws"].conflict?.path).toBe("a.ts");
+      slow.resolve(info);
+      await reloading;
+      expect(get(gitStore)["ws"].conflict?.path).toBe("a.ts");
+    });
   });
 });
 

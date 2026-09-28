@@ -223,6 +223,37 @@ describe("endAllSessions", () => {
     await endAllSessions([row({ id: "a" }), row({ id: "b" })]);
     expect(asked().danger).toBe(true);
   });
+
+  // An orphan that refuses SIGTERM holds its request for the daemon's
+  // whole grace, 2 s. One after another, a batch of N of them was N
+  // graces of a list the human is watching.
+  it("ends every orphan at once, not one after another", async () => {
+    const pending: (() => void)[] = [];
+    vi.mocked(backend.endOrphan).mockImplementation(
+      () => new Promise((resolve) => pending.push(() => resolve({ ended: true, stillRunning: false })))
+    );
+    const orphan = { pid: 4471, command: "claude" };
+    const batch = endAllSessions([row({ id: "a", orphan }), row({ id: "b", orphan })]);
+    await vi.waitFor(() => expect(backend.endOrphan).toHaveBeenCalledTimes(2));
+    expect(backend.killSession).not.toHaveBeenCalled();
+    for (const settle of pending) settle();
+    expect(await batch).toBe(2);
+    expect(vi.mocked(backend.killSession).mock.calls.map((c) => c[0])).toEqual(["a", "b"]);
+  });
+
+  it("still names the survivors in the list's order", async () => {
+    vi.mocked(backend.endOrphan).mockResolvedValue({ ended: false, stillRunning: true });
+    vi.mocked(backend.killSession).mockImplementation(async (id: string) => {
+      if (id === "c") throw new Error("nope");
+    });
+    const orphan = { pid: 4471, command: "claude" };
+    await endAllSessions([
+      row({ id: "a", label: "first", orphan }),
+      row({ id: "b" }),
+      row({ id: "c", label: "third" }),
+    ]);
+    expect(alerted().lines.join(" ")).toMatch(/first.*third/);
+  });
 });
 
 describe("endStaleSessions", () => {

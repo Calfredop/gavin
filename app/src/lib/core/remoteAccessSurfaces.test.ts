@@ -55,14 +55,14 @@ describe("the host side", () => {
   it("routes each one through the gated request path", () => {
     const session = rust("session.rs");
     for (const [command, , request] of COMMANDS) {
-      const body = session.match(new RegExp(`pub fn ${command}\\(([\\s\\S]*?)\\n\\}`));
+      const body = session.match(new RegExp(`pub (?:async )?fn ${command}\\(([\\s\\S]*?)\\n\\}`));
       expect(body, `${command} has no body in session.rs`).not.toBeNull();
       const text = (body as RegExpMatchArray)[0];
-      // `send_command_reconnecting` is what calls `gate`, which refuses
+      // The command lane's `submit` is what calls `gate`, which refuses
       // to put a request an older daemon cannot PARSE on the wire -- a
       // parse error there closes the connection and takes every push
       // with it.
-      expect(text).toContain("send_command_reconnecting");
+      expect(text).toContain(".request(");
       expect(text).toContain(`Request::${request}`);
     }
   });
@@ -73,7 +73,7 @@ describe("the host side", () => {
   it("aims every one at the local daemon", () => {
     const session = rust("session.rs");
     for (const [command] of COMMANDS) {
-      const body = session.match(new RegExp(`pub fn ${command}\\(([\\s\\S]*?)\\n\\}`));
+      const body = session.match(new RegExp(`pub (?:async )?fn ${command}\\(([\\s\\S]*?)\\n\\}`));
       const text = (body as RegExpMatchArray)[0];
       expect(text).toContain("current_compat(&compat)");
       expect(text).not.toContain("route_for_");

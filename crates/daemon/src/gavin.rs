@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use protocol::transport::Stream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 pub const GAVIN_ROOT_DIR: &str = ".gavin-root";
 pub const GAVIN_DIR: &str = ".gavin";
@@ -1120,12 +1120,21 @@ fn in_archive(path: &Path, plans_root: &Path) -> bool {
 }
 
 /// Every md file under a `plans/` root, in walk order.
+///
+/// The entry's own type decides what to descend into, which the
+/// directory listing already carries -- asking the path would stat every
+/// card. A symlink is still resolved, so one to a folder is walked as it
+/// always was.
 fn plans_tree_files(plans_root: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            let is_dir = match entry.file_type() {
+                Ok(kind) if !kind.is_symlink() => kind.is_dir(),
+                _ => path.is_dir(),
+            };
+            if is_dir {
                 walk(&path, out);
             } else if path.extension().is_some_and(|e| e == "md") {
                 out.push(path);
@@ -1154,6 +1163,98 @@ fn find_in_plans_tree(plans_root: &Path, file_name: &str) -> Option<PathBuf> {
 /// root, it is only the filing rules that leave it alone.
 fn owning_plans_root(path: &Path) -> Option<PathBuf> {
     path.ancestors().skip(1).find(|d| is_plans_dir(d)).map(Path::to_path_buf)
+}
+
+/// The plan this card is nested in: a task with a `parent:` and no
+/// `status:` of its own. Such a card has no place of its own either --
+/// it lives, and moves, wherever that plan does.
+fn nested_under(info: &PlanFileInfo) -> Option<&str> {
+    if info.kind == CardKind::Task && info.status.is_none() {
+        info.parent.as_deref()
+    } else {
+        None
+    }
+}
+
+/// How long before a scan began a card must have last changed for the
+/// scan's reading of it to be trusted. Covers the coarsest stamps a card
+/// is likely to carry (FAT's two-second mtime, HFS+'s one-second one)
+/// and the tick a kernel's coarse clock trails the wall clock by: a
+/// write landing just after the scan started can be stamped just before
+/// it, and this margin reads that card as changed.
+const CARD_INDEX_SLACK: Duration = Duration::from_secs(2);
+
+/// When a file last changed: the later of its mtime and, on unix, its
+/// ctime. The mtime alone can be set back -- `cp -p`, or a sync client
+/// restoring the source's -- but the kernel stamps the ctime on every
+/// such write and on a rename, and nothing can set it by hand.
+fn changed_at(path: &Path) -> Option<SystemTime> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let ctime = u64::try_from(meta.ctime()).ok().map(|secs| {
+            let nanos = meta.ctime_nsec().clamp(0, 999_999_999) as u32;
+            SystemTime::UNIX_EPOCH + Duration::new(secs, nanos)
+        });
+        modified.max(ctime)
+    }
+    #[cfg(not(unix))]
+    {
+        modified
+    }
+}
+
+/// Which plan each card is nested in, as of one scan, and how far that
+/// can be taken on the scan's word.
+///
+/// Filing a plan drags its nested children with it, and finding them
+/// meant reading and parsing every card under the plans root: 15-30 ms
+/// on this repo's own ~470 cards with the files cached and up to 300 ms
+/// cold, paid on the daemon's request thread for every plan filed. The
+/// watcher has just parsed every one of those cards, so it keeps the one
+/// fact the move needs from each.
+///
+/// A card is taken on the scan's word only when the scan listed it AND
+/// it has not changed since (`trusted_before`); any other card is read,
+/// as every card used to be. So a stale index costs reads, never a wrong
+/// answer: a card written after the scan is either missing from it or
+/// newer than it.
+pub struct CardIndex {
+    /// Wire path of every card the scan listed -> the plan it is nested
+    /// in, if any.
+    nesting: HashMap<String, Option<String>>,
+    trusted_before: SystemTime,
+}
+
+impl CardIndex {
+    /// `trusted_before` is the moment the cards' files had to be settled
+    /// by: the scan's START (a card written while the scan ran may have
+    /// been read before the write), less `CARD_INDEX_SLACK`.
+    pub fn from_tree(tree: &GavinTree, trusted_before: SystemTime) -> Self {
+        let nesting = tree
+            .contexts
+            .iter()
+            .flat_map(|c| &c.plans)
+            .map(|plan| (plan.path.clone(), nested_under(plan).map(str::to_string)))
+            .collect();
+        CardIndex { nesting, trusted_before }
+    }
+
+    /// Whether the scan listed this card -- which is how the daemon picks
+    /// the watcher whose index answers for it.
+    pub fn knows(&self, path: &Path) -> bool {
+        self.nesting.contains_key(&protocol::wire_path(path))
+    }
+
+    /// The plan this card is nested in, when the scan's reading of it
+    /// still holds: `Some(None)` for a card nested in nothing, `None`
+    /// when only reading the card can say.
+    fn nested_under(&self, path: &Path) -> Option<Option<&str>> {
+        let parent = self.nesting.get(&protocol::wire_path(path))?;
+        (changed_at(path)? < self.trusted_before).then_some(parent.as_deref())
+    }
 }
 
 /// Re-points card paths whose file has moved out from under them, as
@@ -1213,12 +1314,10 @@ pub fn recover_moved_card_paths(tree: &GavinTree, paths: &[String]) -> Vec<(Stri
 /// applies. Everything else is `plans/done/` when Done, `plans/`
 /// otherwise. None when the answer is "leave it exactly where it is".
 fn home_dir_for(plans_root: &Path, info: &PlanFileInfo) -> Option<PathBuf> {
-    if info.kind == CardKind::Task && info.status.is_none() {
-        if let Some(parent) = info.parent.as_deref() {
-            // An unresolvable parent is a broken link, not a licence to
-            // move the card: leave it and let the board flag it.
-            return find_in_plans_tree(plans_root, parent).and_then(|p| p.parent().map(Path::to_path_buf));
-        }
+    if let Some(parent) = nested_under(info) {
+        // An unresolvable parent is a broken link, not a licence to
+        // move the card: leave it and let the board flag it.
+        return find_in_plans_tree(plans_root, parent).and_then(|p| p.parent().map(Path::to_path_buf));
     }
     Some(match info.status.as_deref() {
         Some(s) if is_done_status(s) => plans_root.join(DONE_DIR),
@@ -1254,11 +1353,15 @@ fn move_card(path: &Path, dest_dir: &Path) -> anyhow::Result<PathBuf> {
 /// Returns the card's path afterwards -- unchanged when it was already
 /// there or the destination name was taken (in which case the children
 /// stay put too, since their home is wherever the parent actually is).
+///
+/// `index` answers "is this card nested in the one moving" for every
+/// card it can vouch for, so only the cards it cannot are read.
 fn move_card_with_children(
     path: &Path,
     plans_root: &Path,
     dest_dir: &Path,
     info: &PlanFileInfo,
+    index: Option<&CardIndex>,
 ) -> anyhow::Result<PathBuf> {
     let moved = move_card(path, dest_dir)?;
     if moved == path {
@@ -1269,15 +1372,18 @@ fn move_card_with_children(
     // special case -- and it is the rule for BOTH kinds of move, the
     // status one into done/ and the explicit one into archive/.
     if info.kind == CardKind::Plan {
+        let plan = Some(info.file_name.as_str());
         for child in plans_tree_files(plans_root) {
             if child == moved || governed_plans_root(&child).is_none() {
                 continue;
             }
-            let Ok(child_content) = std::fs::read_to_string(&child) else { continue };
-            let child_info = plan_file_info(&child, &child_content);
-            let follows = child_info.kind == CardKind::Task
-                && child_info.status.is_none()
-                && child_info.parent.as_deref() == Some(info.file_name.as_str());
+            let follows = match index.and_then(|index| index.nested_under(&child)) {
+                Some(parent) => parent == plan,
+                None => {
+                    let Ok(child_content) = std::fs::read_to_string(&child) else { continue };
+                    nested_under(&plan_file_info(&child, &child_content)) == plan
+                }
+            };
             if follows {
                 if let Some(dest) = moved.parent() {
                     move_card(&child, dest)?;
@@ -1292,7 +1398,7 @@ fn move_card_with_children(
 /// children with it. Returns the card's path afterwards -- unchanged when
 /// no move was called for, when the card lives outside the governed
 /// locations, or when the destination name was taken.
-pub fn relocate_for_status(path: &Path) -> anyhow::Result<PathBuf> {
+fn relocate_for_status(path: &Path, index: Option<&CardIndex>) -> anyhow::Result<PathBuf> {
     let Some(plans_root) = governed_plans_root(path) else { return Ok(path.to_path_buf()) };
     // An archived card stays archived. Archiving is a filing decision a
     // human made explicitly, and a later status edit -- theirs or an
@@ -1304,13 +1410,16 @@ pub fn relocate_for_status(path: &Path) -> anyhow::Result<PathBuf> {
     let content = std::fs::read_to_string(path)?;
     let info = plan_file_info(path, &content);
     let Some(home) = home_dir_for(&plans_root, &info) else { return Ok(path.to_path_buf()) };
-    move_card_with_children(path, &plans_root, &home, &info)
+    move_card_with_children(path, &plans_root, &home, &info, index)
 }
 
 /// Moves a card into its context's `plans/archive/`, children included.
 /// Already-archived cards are a no-op rather than an error: the end state
 /// the caller asked for already holds.
-pub fn archive_card(path: &Path) -> anyhow::Result<PathBuf> {
+///
+/// `index` is the daemon's watcher's, which finds the children without
+/// reading every card; see `CardIndex`.
+pub fn archive_card(path: &Path, index: Option<&CardIndex>) -> anyhow::Result<PathBuf> {
     let plans_root = governed_plans_root(path)
         .ok_or_else(|| anyhow::anyhow!("not an archivable plans/ card: {}", path.display()))?;
     if in_archive(path, &plans_root) {
@@ -1318,7 +1427,7 @@ pub fn archive_card(path: &Path) -> anyhow::Result<PathBuf> {
     }
     let content = std::fs::read_to_string(path)?;
     let info = plan_file_info(path, &content);
-    move_card_with_children(path, &plans_root, &plans_root.join(ARCHIVE_DIR), &info)
+    move_card_with_children(path, &plans_root, &plans_root.join(ARCHIVE_DIR), &info, index)
 }
 
 /// Takes a card back out of `plans/archive/` and files it where its
@@ -1330,8 +1439,8 @@ pub fn archive_card(path: &Path) -> anyhow::Result<PathBuf> {
 /// which for a still-archived parent means it does not move at all.
 /// That is the "children live where their parent lives" rule holding,
 /// not a failure: the way to bring the child back is to bring the plan
-/// back, and it comes with it.
-pub fn unarchive_card(path: &Path) -> anyhow::Result<PathBuf> {
+/// back, and it comes with it. `index` as in `archive_card`.
+pub fn unarchive_card(path: &Path, index: Option<&CardIndex>) -> anyhow::Result<PathBuf> {
     let plans_root = governed_plans_root(path)
         .ok_or_else(|| anyhow::anyhow!("not a plans/ card: {}", path.display()))?;
     if !in_archive(path, &plans_root) {
@@ -1340,7 +1449,7 @@ pub fn unarchive_card(path: &Path) -> anyhow::Result<PathBuf> {
     let content = std::fs::read_to_string(path)?;
     let info = plan_file_info(path, &content);
     let Some(home) = home_dir_for(&plans_root, &info) else { return Ok(path.to_path_buf()) };
-    move_card_with_children(path, &plans_root, &home, &info)
+    move_card_with_children(path, &plans_root, &home, &info, index)
 }
 
 /// The public, validated entry point (and the future MCP tool body). The
@@ -1352,7 +1461,13 @@ pub fn unarchive_card(path: &Path) -> anyhow::Result<PathBuf> {
 /// Returns the file's path AFTER the write: a status write can move the
 /// card between `plans/` and `plans/done/` (see `relocate_for_status`),
 /// and every caller that holds the path as an identity needs the new one.
-pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<PathBuf> {
+/// `index` is for that move, as in `archive_card`.
+pub fn set_plan_field(
+    path: &Path,
+    key: &str,
+    value: &str,
+    index: Option<&CardIndex>,
+) -> anyhow::Result<PathBuf> {
     let confined = confine_card_path(path)?;
     let path = confined.as_path();
     // Empty value removes the line -- permitted only where the card model
@@ -1368,7 +1483,7 @@ pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<Pat
             "status" | "parent" | "labels" | "attachments" | "complexity" | "agent"
             | "model" => {
                 write_plan_field(path, key, value)?;
-                return relocate_for_status(path);
+                return relocate_for_status(path, index);
             }
             other => anyhow::bail!("empty value not allowed for: {other}"),
         }
@@ -1428,7 +1543,7 @@ pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<Pat
             let level = Complexity::parse(value)
                 .ok_or_else(|| anyhow::anyhow!("invalid complexity value: {value}"))?;
             write_plan_field(path, key, level.as_str())?;
-            return relocate_for_status(path);
+            return relocate_for_status(path, index);
         }
         // Single-line and otherwise unvalidated, the `attachments`
         // posture rather than `complexity`'s: the profile table lives in
@@ -1447,7 +1562,7 @@ pub fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<Pat
     write_plan_field(path, key, value)?;
     // Run on every field, not just status: it costs one read, and it
     // heals a card someone dragged into the wrong folder in Finder.
-    relocate_for_status(path)
+    relocate_for_status(path, index)
 }
 
 /// Splits a checkbox line into (prefix "  - [", mark ' '|'x', rest after
@@ -2515,6 +2630,19 @@ fn floor_wait(since_last: Option<Duration>, position: u32) -> Duration {
     MIN_RESCAN_INTERVAL.saturating_sub(elapsed)
 }
 
+/// Whether a snapshot has to scan, rather than answer with the last
+/// tree. Not while that tree is younger than the floor, so GetGavinTree
+/// can't defeat MIN_RESCAN_INTERVAL; and not while a rescan is sleeping
+/// out the floor (`floored`), because that rescan scans the moment it
+/// wakes and pushes whatever changed -- scanning beside it would only
+/// keep the app's command waiting for a tree already on its way.
+fn snapshot_must_scan(since_last: Option<Duration>, floored: u32) -> bool {
+    if floored > 0 {
+        return false;
+    }
+    since_last.is_none_or(|elapsed| elapsed >= MIN_RESCAN_INTERVAL)
+}
+
 /// Called with every fresh scan, before the tree goes out, and given a
 /// chance to answer with something the app must be told FIRST. gavin.rs
 /// owns no databases, so the daemon hands that work in as a closure
@@ -2527,6 +2655,10 @@ struct WatcherInner {
     /// How deep into the current burst the last rescan was; see
     /// `burst_position`.
     burst: u32,
+    /// Rescans sleeping out the floor right now. They sleep with the lock
+    /// released, and a snapshot reads this to answer without scanning;
+    /// see `snapshot_must_scan`.
+    floored: u32,
     /// The watch set currently registered, so re-arming after a rescan
     /// can diff instead of tearing every watch down and rebuilding it.
     watched: HashMap<PathBuf, notify::RecursiveMode>,
@@ -2550,6 +2682,10 @@ pub struct GavinWatcher {
     pub root_path: PathBuf,
     writer: Arc<Mutex<Stream>>,
     inner: Mutex<WatcherInner>,
+    /// The last scan's `CardIndex`. Beside `inner` rather than in it:
+    /// `inner` is held for the whole of a scan, and the card move that
+    /// reads this must not wait one out.
+    card_index: Mutex<Option<Arc<CardIndex>>>,
     debouncer: Mutex<Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>>,
     on_scan: Option<ScanHook>,
 }
@@ -2580,9 +2716,11 @@ impl GavinWatcher {
                 last_tree: None,
                 last_scan: None,
                 burst: 0,
+                floored: 0,
                 watched: HashMap::new(),
                 watch_limit_reported: false,
             }),
+            card_index: Mutex::new(None),
             debouncer: Mutex::new(None),
             on_scan,
         });
@@ -2604,9 +2742,9 @@ impl GavinWatcher {
                 let Some(watcher) = weak.upgrade() else { return };
                 let Ok(events) = res else { return };
                 // The guard is released before rescan_and_push, which
-                // takes the same lock (and may sleep out the floor under
-                // it). The debouncer calls this handler serially, so no
-                // second flush is ever waiting on that sleep.
+                // takes the same lock. The debouncer calls this handler
+                // serially, so no second flush is ever waiting on the
+                // floor that rescan may sleep out.
                 let relevant = {
                     let inner = watcher.inner.lock().unwrap();
                     events.iter().any(|e| {
@@ -2710,21 +2848,42 @@ impl GavinWatcher {
         Some(watch_limit_message(&self.root_path, wanted, refused_for_limit))
     }
 
-    /// The entire floor-check + scan + compare + emit sequence runs under
-    /// one lock (the HeuristicState lesson): two debouncer flushes, or a
-    /// flush racing the initial scan, can never interleave into an
-    /// out-of-order emission.
+    /// The scan + compare + emit sequence runs under one lock (the
+    /// HeuristicState lesson): two debouncer flushes, or a flush racing
+    /// the initial scan, can never interleave into an out-of-order
+    /// emission, because whichever takes the lock second also scans
+    /// second.
+    ///
+    /// The floor is slept out BEFORE that, with the lock released. It
+    /// used to be slept under it, and GetGavinTree -- a snapshot, which
+    /// needs the same lock -- held the app's command connection for up to
+    /// MIN_RESCAN_INTERVAL and the scan after it. The floor only paces
+    /// this rescan; nothing else has a reason to wait for it.
     pub fn rescan_and_push(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        let since_last = inner.last_scan.map(|t| t.elapsed());
-        let position = burst_position(since_last, inner.burst);
-        inner.burst = position;
-        let wait = floor_wait(since_last, position);
+        let wait = {
+            let mut inner = self.inner.lock().unwrap();
+            let since_last = inner.last_scan.map(|t| t.elapsed());
+            let position = burst_position(since_last, inner.burst);
+            inner.burst = position;
+            let wait = floor_wait(since_last, position);
+            if !wait.is_zero() {
+                inner.floored += 1;
+            }
+            wait
+        };
         if !wait.is_zero() {
             std::thread::sleep(wait);
         }
+        let mut inner = self.inner.lock().unwrap();
+        if !wait.is_zero() {
+            inner.floored -= 1;
+        }
+        let started = SystemTime::now();
         let tree = scan_root(&self.root_path);
         inner.last_scan = Some(Instant::now());
+        // Before the change gate: an unchanged tree still vouches for
+        // every card up to this scan, not the one that last differed.
+        self.index_cards(&tree, started);
         // Re-arm against the tree we just scanned, whether or not it
         // changed shape -- an unchanged tree diffs to zero watch calls.
         let watch_limit = self.sync_watches(&mut inner);
@@ -2768,18 +2927,34 @@ impl GavinWatcher {
         let _ = protocol::write_message(&mut *writer, resp);
     }
 
+    /// Replaces the card index with one from the scan that began at
+    /// `started`. Called with `inner` held, so indexes land in scan order.
+    fn index_cards(&self, tree: &GavinTree, started: SystemTime) {
+        let trusted_before = started.checked_sub(CARD_INDEX_SLACK).unwrap_or(SystemTime::UNIX_EPOCH);
+        *self.card_index.lock().unwrap() = Some(Arc::new(CardIndex::from_tree(tree, trusted_before)));
+    }
+
+    /// The last scan's `CardIndex`, or None before the first scan.
+    pub fn card_index(&self) -> Option<Arc<CardIndex>> {
+        self.card_index.lock().unwrap().clone()
+    }
+
     /// Fresh scan for GetGavinTree -- shares the floor/dedup state so a
     /// snapshot request can't defeat MIN_RESCAN_INTERVAL, but always
-    /// returns a tree (even when unchanged).
+    /// returns a tree (even when unchanged). Never waits on a rescan's
+    /// floor, which is slept out with the lock released; it can wait on
+    /// a scan already running, and then answers with that scan's tree.
     pub fn snapshot(&self) -> GavinTree {
         let mut inner = self.inner.lock().unwrap();
-        if let (Some(last), Some(tree)) = (inner.last_scan, &inner.last_tree) {
-            if last.elapsed() < MIN_RESCAN_INTERVAL {
+        if let Some(tree) = &inner.last_tree {
+            if !snapshot_must_scan(inner.last_scan.map(|t| t.elapsed()), inner.floored) {
                 return tree.clone();
             }
         }
+        let started = SystemTime::now();
         let tree = scan_root(&self.root_path);
         inner.last_scan = Some(Instant::now());
+        self.index_cards(&tree, started);
         inner.last_tree = Some(tree.clone());
         let watch_limit = self.sync_watches(&mut inner);
         drop(inner);
@@ -2876,13 +3051,21 @@ fn confined(root: &Path, path: &str) -> anyhow::Result<PathBuf> {
 /// that lands inside a multi-byte character backs off to the last whole
 /// one; a file that is not UTF-8 at all is an error, as it is for the
 /// viewer.
+///
+/// Reads one byte past the cap and no further, like the desktop's own
+/// `read_prefix`: the viewer re-reads on every change to a watched file,
+/// and a whole-file read of a growing log bounded only what was sent.
 pub fn read_workspace_file(root: &Path, path: &str) -> anyhow::Result<(Option<String>, bool)> {
+    use std::io::Read;
     let resolved = confined(root, path)?;
-    let bytes = match std::fs::read(&resolved) {
-        Ok(bytes) => bytes,
+    let mut bytes = Vec::new();
+    match std::fs::File::open(&resolved).and_then(|file| {
+        file.take(protocol::MAX_WORKSPACE_FILE_BYTES as u64 + 1).read_to_end(&mut bytes)
+    }) {
+        Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((None, false)),
         Err(e) => return Err(e.into()),
-    };
+    }
     let truncated = bytes.len() > protocol::MAX_WORKSPACE_FILE_BYTES;
     let slice = if truncated { &bytes[..protocol::MAX_WORKSPACE_FILE_BYTES] } else { &bytes[..] };
     let text = match std::str::from_utf8(slice) {
@@ -3348,6 +3531,19 @@ pub fn trash_workspace_path(root: &Path, path: &str) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::testing::{wire_separators, wire_spelling};
+
+    // The card-moving entry points with no `CardIndex`, which shadow the
+    // glob import above: every card is read from disk, as for a card no
+    // watcher has scanned. The index's own tests pass one explicitly.
+    fn set_plan_field(path: &Path, key: &str, value: &str) -> anyhow::Result<PathBuf> {
+        super::set_plan_field(path, key, value, None)
+    }
+    fn archive_card(path: &Path) -> anyhow::Result<PathBuf> {
+        super::archive_card(path, None)
+    }
+    fn unarchive_card(path: &Path) -> anyhow::Result<PathBuf> {
+        super::unarchive_card(path, None)
+    }
 
     /// A fresh tempdir's path in the spelling a scan reports, for tests
     /// that build paths from it and compare them against scan output.
@@ -5658,6 +5854,112 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_scans_only_when_no_scan_is_recent_or_on_its_way() {
+        // Nothing scanned yet.
+        assert!(snapshot_must_scan(None, 0));
+        // Inside the floor the last scan answers, so GetGavinTree can't
+        // defeat MIN_RESCAN_INTERVAL...
+        assert!(!snapshot_must_scan(Some(Duration::from_millis(300)), 0));
+        // ...and past it, it scans.
+        assert!(snapshot_must_scan(Some(MIN_RESCAN_INTERVAL), 0));
+        // Unless a rescan is sleeping out the floor: it scans the moment
+        // it wakes and pushes whatever changed, so a second scan beside
+        // it is a wait for a tree already on its way.
+        assert!(!snapshot_must_scan(Some(MIN_RESCAN_INTERVAL + Duration::from_millis(5)), 1));
+    }
+
+    #[test]
+    fn a_snapshot_never_waits_on_a_rescan_sleeping_out_its_floor() {
+        // GetGavinTree answers the app's command connection, so a
+        // snapshot queued behind a floored rescan held that connection
+        // for the rest of MIN_RESCAN_INTERVAL and the scan after it.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+
+        let (_ours, theirs) = Stream::pair().unwrap();
+        let watcher =
+            GavinWatcher::start("ws-1".to_string(), root, Arc::new(Mutex::new(theirs)), None);
+        // The initial scan opened a burst and this is its free rescan,
+        // so the next one is floored.
+        watcher.rescan_and_push();
+        let floored = {
+            let watcher = Arc::clone(&watcher);
+            std::thread::spawn(move || watcher.rescan_and_push())
+        };
+        // Long enough for it to be asleep, well short of the floor.
+        std::thread::sleep(Duration::from_millis(250));
+
+        let asked = Instant::now();
+        let tree = watcher.snapshot();
+        let waited = asked.elapsed();
+
+        assert!(!floored.is_finished(), "the snapshot waited for the floored rescan to finish");
+        assert!(waited < MIN_RESCAN_INTERVAL / 4, "a snapshot took {waited:?} beside a floored rescan");
+        assert_eq!(tree.contexts.len(), 1);
+        floored.join().unwrap();
+    }
+
+    #[test]
+    fn a_rescan_that_wakes_while_another_is_emitting_scans_after_it() {
+        use std::io::BufReader;
+
+        // The floor is slept out with the lock released, but the scan
+        // after it still waits for the lock. A rescan that scanned the
+        // moment it woke, while another flush held the lock mid-emission,
+        // would take its tree from BEFORE that flush finished -- pushing
+        // an older tree after a newer one, or, as here, missing a change
+        // made while it waited and pushing nothing.
+        //
+        // The card lands in an OUTSIDE context, which nothing watches:
+        // the only rescans are this test's.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_gavin_root(&root, "WS").unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside = outside_dir.path().canonicalize().unwrap();
+        add_external_context(&root, &outside).unwrap();
+
+        let (ours, theirs) = Stream::pair().unwrap();
+        ours.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let watcher =
+            GavinWatcher::start("ws-1".to_string(), root, Arc::new(Mutex::new(theirs)), None);
+        let mut reader = BufReader::new(ours);
+        let _initial: Option<Response> = protocol::read_message(&mut reader).unwrap();
+
+        watcher.rescan_and_push(); // the burst's free rescan
+        let floored = {
+            let watcher = Arc::clone(&watcher);
+            std::thread::spawn(move || watcher.rescan_and_push())
+        };
+        while watcher.inner.lock().unwrap().floored == 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // Stand in for the other flush: hold the lock until well after
+        // the floored rescan has woken, and change the tree just before
+        // letting go.
+        let emitting = watcher.inner.lock().unwrap();
+        std::thread::sleep(MIN_RESCAN_INTERVAL + Duration::from_millis(400));
+        let plans = outside.join(GAVIN_DIR).join("plans");
+        std::fs::create_dir_all(&plans).unwrap();
+        std::fs::write(plans.join("late.md"), "---\nstatus: To Do\n---\n").unwrap();
+        drop(emitting);
+
+        floored.join().unwrap();
+        let pushed: Option<Response> = protocol::read_message(&mut reader)
+            .expect("no push: the rescan scanned before the lock was released and missed the card");
+        match pushed {
+            Some(Response::GavinTreeChanged { tree, .. }) => assert!(
+                tree.contexts.iter().flat_map(|c| &c.plans).any(|p| p.file_name == "late.md"),
+                "the rescan pushed a tree scanned before the lock was released: {:?}",
+                tree.contexts
+            ),
+            other => panic!("expected a tree push, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn renaming_a_context_folder_pushes_a_tree_with_the_new_name() {
         use std::io::BufReader;
 
@@ -5921,6 +6223,80 @@ mod tests {
         assert!(!plans.join("done").join("step.md").exists());
     }
 
+    /// Filing a plan among N cards opens none of the cards a scan
+    /// vouches for -- O(children) work, where it used to parse all N.
+    ///
+    /// Shown by making the disk disagree with the index: after the scan,
+    /// every other card is rewritten to claim the plan as its parent. A
+    /// move that took the index's word leaves them all in place; one that
+    /// opened any of them takes it along. `trusted_before` an hour ahead
+    /// stands for a scan run long after all of these were written, which
+    /// is what a real workspace's settled cards look like to one.
+    #[test]
+    fn a_plan_move_takes_every_card_the_index_vouches_for_on_its_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = wire_root(&dir);
+        init_gavin_root(&root, "WS").unwrap();
+        let plans = root.join(GAVIN_ROOT_DIR).join("plans");
+        let plan = write_card(&plans, "big.md", "---\ntitle: Big\nstatus: To Do\n---\n");
+        write_card(&plans, "step.md", "---\nkind: task\ntitle: Step\nparent: big.md\n---\n");
+        let others: Vec<PathBuf> = (0..40)
+            .map(|i| write_card(&plans, &format!("c{i}.md"), "---\ntitle: C\nstatus: To Do\n---\n"))
+            .collect();
+        let long_after = SystemTime::now() + Duration::from_secs(3600);
+        let index = CardIndex::from_tree(&scan_root(&root), long_after);
+
+        for card in &others {
+            std::fs::write(card, "---\nkind: task\ntitle: C\nparent: big.md\n---\n").unwrap();
+        }
+        let filed = super::set_plan_field(&plan, "status", "Done", Some(&index)).unwrap();
+        assert_eq!(filed, plans.join(DONE_DIR).join("big.md"));
+        assert!(plans.join(DONE_DIR).join("step.md").is_file(), "the nested child follows");
+        for card in &others {
+            assert!(card.is_file(), "{} was read", card.display());
+        }
+
+        // The same move made by reading sees the rewrites: all of them go.
+        let back = super::set_plan_field(&filed, "status", "To Do", None).unwrap();
+        super::set_plan_field(&back, "status", "Done", None).unwrap();
+        assert!(others.iter().all(|card| !card.exists()));
+    }
+
+    /// The other half of the index's contract: a card it cannot vouch
+    /// for is read, so a scan that has gone stale costs reads and never
+    /// a wrong move.
+    #[test]
+    fn a_plan_move_reads_every_card_changed_or_created_since_the_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = wire_root(&dir);
+        init_gavin_root(&root, "WS").unwrap();
+        let plans = root.join(GAVIN_ROOT_DIR).join("plans");
+        let plan = write_card(&plans, "big.md", "---\ntitle: Big\nstatus: To Do\n---\n");
+        write_card(&plans, "step.md", "---\nkind: task\ntitle: Step\nparent: big.md\n---\n");
+        let joins = write_card(&plans, "joins.md", "---\ntitle: Joins\nstatus: To Do\n---\n");
+        let leaves =
+            write_card(&plans, "leaves.md", "---\nkind: task\ntitle: Leaves\nparent: big.md\n---\n");
+        // Clear of the writes on either side: a kernel's coarse clock can
+        // stamp a file a tick behind the wall clock.
+        std::thread::sleep(Duration::from_millis(50));
+        let index = CardIndex::from_tree(&scan_root(&root), SystemTime::now());
+        std::thread::sleep(Duration::from_millis(50));
+
+        // After the scan: one card joins the plan, one leaves it by
+        // taking a status, and one is written fresh into it.
+        std::fs::write(&joins, "---\nkind: task\ntitle: Joins\nparent: big.md\n---\n").unwrap();
+        std::fs::write(&leaves, "---\nkind: task\ntitle: Leaves\nparent: big.md\nstatus: To Do\n---\n")
+            .unwrap();
+        write_card(&plans, "fresh.md", "---\nkind: task\ntitle: Fresh\nparent: big.md\n---\n");
+
+        super::set_plan_field(&plan, "status", "Done", Some(&index)).unwrap();
+        let done = plans.join(DONE_DIR);
+        assert!(done.join("step.md").is_file(), "untouched since the scan: the index's word");
+        assert!(done.join("joins.md").is_file());
+        assert!(done.join("fresh.md").is_file());
+        assert!(leaves.is_file(), "a card with its own status stays on the board");
+    }
+
     #[test]
     fn a_nested_child_stays_with_its_archived_parent_on_its_own_writes() {
         let dir = tempfile::tempdir().unwrap();
@@ -6182,6 +6558,73 @@ mod tests {
 
         delete_card_file(&archived).unwrap();
         assert!(!archived.exists());
+    }
+
+    /// Times filing a plan with three nested children into `done/` and
+    /// back, among a real workspace's cards, by reading every card and
+    /// then through a `CardIndex` built the way the watcher builds one:
+    /// `GAVIN_BENCH_PLANS` names a `plans/` folder to copy (done/ and
+    /// archive/ included), and without it 460 synthetic ~5 KB cards stand
+    /// in.
+    #[test]
+    #[ignore = "copies a workspace's cards and times moves; run with --ignored --nocapture"]
+    fn measure_plan_relocation_among_many_cards() {
+        fn copy_tree(from: &Path, to: &Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    copy_tree(&path, &to.join(entry.file_name()));
+                } else {
+                    std::fs::copy(&path, to.join(entry.file_name())).unwrap();
+                }
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = wire_root(&dir);
+        init_gavin_root(&root, "WS").unwrap();
+        let plans = root.join(GAVIN_ROOT_DIR).join("plans");
+        match std::env::var_os("GAVIN_BENCH_PLANS") {
+            Some(source) => copy_tree(Path::new(&source), &plans),
+            None => {
+                let filler = "- [ ] a step worth doing, described at some length\n".repeat(100);
+                for i in 0..460 {
+                    let body = format!("---\ntitle: C{i}\nstatus: To Do\n---\n{filler}");
+                    write_card(&plans, &format!("card-{i}.md"), &body);
+                }
+            }
+        }
+        let plan = write_card(&plans, "bench-plan.md", "---\ntitle: Bench\nstatus: To Do\n---\n");
+        for i in 0..3 {
+            let body = "---\nkind: task\ntitle: S\nparent: bench-plan.md\n---\n";
+            write_card(&plans, &format!("bench-step-{i}.md"), body);
+        }
+        let cards = plans_tree_files(&plans).len();
+        // Settled, as a real workspace's cards are: the copies are all
+        // younger than CARD_INDEX_SLACK, and an index distrusts those.
+        std::thread::sleep(CARD_INDEX_SLACK + Duration::from_millis(100));
+        let started = SystemTime::now();
+        let index = CardIndex::from_tree(&scan_root(&root), started - CARD_INDEX_SLACK);
+
+        let filed = plans.join(DONE_DIR).join("bench-plan.md");
+        for (label, index) in [("reading every card", None), ("through the index", Some(&index))] {
+            let mut samples = Vec::new();
+            for _ in 0..20 {
+                let t = Instant::now();
+                assert_eq!(super::set_plan_field(&plan, "status", "Done", index).unwrap(), filed);
+                samples.push(t.elapsed());
+                let t = Instant::now();
+                assert_eq!(super::set_plan_field(&filed, "status", "To Do", index).unwrap(), plan);
+                samples.push(t.elapsed());
+            }
+            assert!(plans.join("bench-step-2.md").is_file());
+            samples.sort();
+            eprintln!(
+                "{cards} cards, {label}: plan move median {:?}, max {:?}",
+                samples[samples.len() / 2],
+                samples[samples.len() - 1]
+            );
+        }
     }
 
     #[test]

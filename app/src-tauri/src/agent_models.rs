@@ -60,7 +60,8 @@ const OPENCODE_FALLBACKS: &[&str] = &[".opencode/bin/opencode", ".local/bin/open
 /// A `Mutex<Option<..>>` rather than a `OnceLock` of the map itself
 /// because filling it runs subprocesses: two frontend bootstraps racing
 /// (a reload during startup) must produce one run and one answer, not
-/// two interleaved ones.
+/// two interleaved ones. The main thread used to serialize them anyway;
+/// on the blocking pool this lock is the only thing that does.
 static CACHE: OnceLock<Mutex<Option<HashMap<String, Vec<String>>>>> = OnceLock::new();
 
 /// Every profile's runtime model list, keyed by profile id. Profiles
@@ -68,8 +69,21 @@ static CACHE: OnceLock<Mutex<Option<HashMap<String, Vec<String>>>>> = OnceLock::
 /// than present-and-empty: the frontend merges what it is given and an
 /// absent key is the same statement as an empty one, so there is no
 /// reason to make it say it twice.
+///
+/// `async` + `spawn_blocking`: filling the memo runs `opencode models`,
+/// whose start alone measured 0.41-0.85 s, under a 15 s deadline -- and
+/// bootstrap asks in the same first seconds as the first usage poll and
+/// watchman read. As a plain `fn` that ran on the main thread, frozen
+/// window at launch. The frontend already publishes the catalogue as a
+/// late second set over the static table, so answering later changes
+/// nothing it relies on. A pool that could not run the read answers the
+/// empty map, the same "nothing" as every other failure here.
 #[tauri::command]
-pub fn agent_model_catalog() -> HashMap<String, Vec<String>> {
+pub async fn agent_model_catalog() -> HashMap<String, Vec<String>> {
+    tauri::async_runtime::spawn_blocking(cached_catalog).await.unwrap_or_default()
+}
+
+fn cached_catalog() -> HashMap<String, Vec<String>> {
     let cell = CACHE.get_or_init(|| Mutex::new(None));
     let mut slot = cell.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(cached) = slot.as_ref() {

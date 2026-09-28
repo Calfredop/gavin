@@ -292,7 +292,7 @@ describe("buildCardMenuEntries", () => {
 
   it("no Develop entry once a session is bound — live or exited", () => {
     kanbanState.set({
-      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p", command: null }]),
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p" }]),
     });
     vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg" });
     expect(labels(buildCardMenuEntries(card("task", "To Do"), hooks())).join()).not.toContain(
@@ -325,7 +325,7 @@ describe("buildCardMenuEntries", () => {
   // has to survive the states that replace the run entries with a jump.
   it("offers Review with agent whatever the binding state", () => {
     kanbanState.set({
-      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p", command: null }]),
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p" }]),
     });
     vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg" });
     const live = labels(buildCardMenuEntries(card("task", "In Progress"), hooks()));
@@ -390,7 +390,7 @@ describe("buildCardMenuEntries", () => {
 
   it("a live binding offers Jump; a dead one offers Re-launch", () => {
     kanbanState.set({
-      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p", command: null }]),
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p" }]),
     });
     vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg" });
     expect(labels(buildCardMenuEntries(card("plan", null), hooks()))).toContain("Jump to session");
@@ -404,7 +404,7 @@ describe("buildCardMenuEntries", () => {
   // "Re-launch" would replay the original command from scratch.
   it("an interrupted binding offers Resume instead of Jump or Re-launch", () => {
     kanbanState.set({
-      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p", command: null }]),
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p" }]),
     });
     vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg" });
     layoutState.update((s) => ({ ...s, interruptedSessionIds: new Set(["s-1"]) }));
@@ -422,7 +422,7 @@ describe("buildCardMenuEntries", () => {
   // disk to reopen.
   it("a failed binding offers Resume instead of Jump or Re-launch", () => {
     kanbanState.set({
-      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p", command: null }]),
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-1", cwd: "/p" }]),
     });
     vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg" });
     layoutState.update((s) => ({

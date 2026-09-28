@@ -9,7 +9,7 @@ import type { ConversationLog } from "$lib/cards/cardRun";
 import { invoke } from "@tauri-apps/api/core";
 import { isTerminalReport } from "$lib/terminal/terminalReport";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$lib/core/workspace";
-import type { Board, Column, Label } from "$lib/board/kanban";
+import type { Board, CardSessionRecord, Column, Label } from "$lib/board/kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
 import type { GavinTracking } from "$lib/git/gitTracking";
 import type { IgnoreKind } from "$lib/git/gitIgnore";
@@ -34,6 +34,7 @@ import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspace
 import type { AttachmentStatus } from "$lib/cards/attachments";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
 import type { DeviceList, PairingOffer } from "$lib/core/remoteAccess";
+import { keyedQueue } from "$lib/core/keyedQueue";
 
 /// `workspaceRoot` is the workspace the session BELONGS to, as distinct
 /// from `cwd`, where it runs. The two differ whenever gavin launches into
@@ -130,8 +131,14 @@ export function readFileForViewer(
   return invoke("read_file_for_viewer", { path });
 }
 
+// One path's writes, in the order they were made. The command runs off
+// the main thread -- on an ssh workspace every save is a round trip to
+// the host -- so without this an autosave could overtake the one before
+// it and leave the older text on disk (see keyedQueue.ts).
+const editorWrites = keyedQueue();
+
 export function writeFileForEditor(path: string, content: string): Promise<void> {
-  return invoke("write_file_for_editor", { path, content });
+  return editorWrites(path, () => invoke("write_file_for_editor", { path, content }));
 }
 
 export function resolvePathUnderCursor(candidate: string, cwd: string): Promise<string | null> {
@@ -146,11 +153,16 @@ export function tempDir(): Promise<string> {
 /// workspace ROOT alongside its target and the host refuses anything
 /// that resolves outside it -- see fileviewer.rs. One `list_directory`
 /// per opened folder, never a recursive walk and never a watcher: the
-/// tree refreshes on demand and after its own mutations.
+/// tree refreshes on demand and after its own mutations. A folder past
+/// the host's cap (2,000) answers its first entries in the tree's order
+/// and `omitted` counts the rest.
 export function listDirectory(
   root: string,
   path: string
-): Promise<{ name: string; isDir: boolean; size: number; symlink: boolean }[]> {
+): Promise<{
+  entries: { name: string; isDir: boolean; size: number; symlink: boolean }[];
+  omitted: number;
+}> {
   return invoke("list_directory", { root, path });
 }
 
@@ -242,6 +254,12 @@ export function setWorkspacesState(
 /// ephemeral, so this is a fact about right now, never about the config.
 export function workspaceWindows(): Promise<Record<string, string>> {
   return invoke("workspace_windows");
+}
+
+/// Which window runs the app's pollers, and which windows are open. See
+/// workspace_window.rs's `DutyWindow`.
+export function appDuty(): Promise<{ holder: string; windows: string[] }> {
+  return invoke("app_duty");
 }
 
 /// Opens a window for a workspace, answering with the label that now
@@ -670,8 +688,10 @@ export function getBootstrapError(): Promise<string | null> {
   return invoke("get_bootstrap_error");
 }
 
-// Resolves true when the app is fully reconnected, false when the daemon
-// was restarted but this app process needs a relaunch to rewire.
+/// Resolves once the app is back on the restarted daemon. Off the main
+/// thread, so the window stays live meanwhile: the host refuses daemon
+/// requests and terminal input ("restarting") until it is, and refuses a
+/// second restart outright.
 export function restartDaemon(token: string): Promise<void> {
   return invoke("restart_daemon", { token });
 }
@@ -804,11 +824,20 @@ export interface SessionBaseline {
   failureReason: string | null;
 }
 
+/// Every live session on every daemon, and which linked ssh hosts those
+/// include. A linked host missing from `hosts` did not answer -- it was
+/// down, or slow past its budget -- which says nothing about whether its
+/// sessions are still there.
+export interface SessionBaselines {
+  sessions: SessionBaseline[];
+  hosts: string[];
+}
+
 // The frontend learns cwd/status/restored/interrupted from pushes whose
 // baseline the daemon only sends in reply to Attach -- and Attach happens once per app
 // PROCESS, not per frontend load. This is how a reloaded frontend gets
 // them back; see the Rust command's own doc comment.
-export function getSessionBaselines(): Promise<SessionBaseline[]> {
+export function getSessionBaselines(): Promise<SessionBaselines> {
   return invoke("get_session_baselines");
 }
 
@@ -1081,6 +1110,14 @@ export function unlinkCardSession(workspaceId: string, path: string): Promise<vo
   return invoke("unlink_card_session", { workspaceId, path });
 }
 
+/// One card's binding WITH the command it launched, which the board no
+/// longer carries (v43); null when nothing is bound to it. No gate to
+/// check first: against an older daemon the host reads that daemon's
+/// board instead, which still carries the command.
+export function cardSession(workspaceId: string, path: string): Promise<CardSessionRecord | null> {
+  return invoke("card_session", { workspaceId, path });
+}
+
 /// Every run this card has had, newest first (v27). Empty for a card
 /// nobody has launched -- never an error. Gate on
 /// FEATURE_MIN_VERSION.runHistory before calling: an older daemon
@@ -1308,8 +1345,13 @@ export function gitDiscardFiles(cwd: string, tracked: string[], untracked: strin
   return invoke("git_discard_files", { cwd, tracked, untracked });
 }
 
-export function gitCommit(cwd: string, message: string, amend: boolean): Promise<void> {
-  return invoke("git_commit", { cwd, message, amend });
+/// `opId` runs it as an op: `gitCancelOp(opId)` stops it, and its stderr
+/// -- where git sends a hook's output -- arrives as `git-op-progress`
+/// lines. Commit, merge, revert, cherry-pick, `--continue` and the
+/// checkouts all take one, since all of them run hooks or sign. Without
+/// one it runs silent and uncancellable, as the rail's branch switch does.
+export function gitCommit(cwd: string, message: string, amend: boolean, opId: string | null = null): Promise<void> {
+  return invoke("git_commit", { cwd, message, amend, opId });
 }
 
 export function gitInit(cwd: string): Promise<void> {
@@ -1365,12 +1407,19 @@ export function gitCancelOp(opId: string): Promise<boolean> {
   return invoke("git_cancel_op", { opId });
 }
 
-export function gitCheckout(cwd: string, name: string, trackRemote: string | null): Promise<void> {
-  return invoke("git_checkout", { cwd, name, trackRemote });
+/// `opId`: see `gitCommit`.
+export function gitCheckout(cwd: string, name: string, trackRemote: string | null, opId: string | null = null): Promise<void> {
+  return invoke("git_checkout", { cwd, name, trackRemote, opId });
 }
 
-export function gitCreateBranch(cwd: string, name: string, from: string | null, checkout: boolean): Promise<void> {
-  return invoke("git_create_branch", { cwd, name, from, checkout });
+export function gitCreateBranch(
+  cwd: string,
+  name: string,
+  from: string | null,
+  checkout: boolean,
+  opId: string | null = null
+): Promise<void> {
+  return invoke("git_create_branch", { cwd, name, from, checkout, opId });
 }
 
 export function gitDeleteBranch(cwd: string, name: string, force: boolean): Promise<void> {
@@ -1384,16 +1433,16 @@ export function gitMergedBranches(cwd: string, base: string): Promise<string[]> 
   return invoke("git_merged_branches", { cwd, base });
 }
 
-export function gitMerge(cwd: string, branch: string): Promise<void> {
-  return invoke("git_merge", { cwd, branch });
+export function gitMerge(cwd: string, branch: string, opId: string | null = null): Promise<void> {
+  return invoke("git_merge", { cwd, branch, opId });
 }
 
 export function gitAbortInProgress(cwd: string, kind: InProgressKind): Promise<void> {
   return invoke("git_abort_in_progress", { cwd, kind });
 }
 
-export function gitContinueRebase(cwd: string): Promise<void> {
-  return invoke("git_continue_rebase", { cwd });
+export function gitContinueRebase(cwd: string, opId: string | null = null): Promise<void> {
+  return invoke("git_continue_rebase", { cwd, opId });
 }
 
 export function gitAddRemote(cwd: string, name: string, url: string): Promise<void> {
@@ -1426,8 +1475,15 @@ export function gitStashFiles(cwd: string, index: number): Promise<FileEntry[]> 
 
 // --- Git tab SP3: worktrees -------------------------------------------------
 
-export function gitWorktreeAdd(cwd: string, path: string, branch: string, from: string | null, newBranch: boolean): Promise<void> {
-  return invoke("git_worktree_add", { cwd, path, branch, from, newBranch });
+export function gitWorktreeAdd(
+  cwd: string,
+  path: string,
+  branch: string,
+  from: string | null,
+  newBranch: boolean,
+  opId: string | null = null
+): Promise<void> {
+  return invoke("git_worktree_add", { cwd, path, branch, from, newBranch, opId });
 }
 
 export function gitWorktreeRemove(cwd: string, path: string, force: boolean): Promise<void> {
@@ -1456,24 +1512,24 @@ export function gitCommitDetail(cwd: string, sha: string): Promise<CommitDetail>
   return invoke("git_commit_detail", { cwd, sha });
 }
 
-export function gitCheckoutCommit(cwd: string, sha: string): Promise<void> {
-  return invoke("git_checkout_commit", { cwd, sha });
+export function gitCheckoutCommit(cwd: string, sha: string, opId: string | null = null): Promise<void> {
+  return invoke("git_checkout_commit", { cwd, sha, opId });
 }
 
-export function gitCherryPick(cwd: string, sha: string): Promise<void> {
-  return invoke("git_cherry_pick", { cwd, sha });
+export function gitCherryPick(cwd: string, sha: string, opId: string | null = null): Promise<void> {
+  return invoke("git_cherry_pick", { cwd, sha, opId });
 }
 
-export function gitRevert(cwd: string, sha: string): Promise<void> {
-  return invoke("git_revert", { cwd, sha });
+export function gitRevert(cwd: string, sha: string, opId: string | null = null): Promise<void> {
+  return invoke("git_revert", { cwd, sha, opId });
 }
 
 export function gitReset(cwd: string, sha: string, mode: ResetMode): Promise<void> {
   return invoke("git_reset", { cwd, sha, mode });
 }
 
-export function gitContinueInProgress(cwd: string, kind: InProgressKind): Promise<void> {
-  return invoke("git_continue_in_progress", { cwd, kind });
+export function gitContinueInProgress(cwd: string, kind: InProgressKind, opId: string | null = null): Promise<void> {
+  return invoke("git_continue_in_progress", { cwd, kind, opId });
 }
 
 // --- Git tab: conflict resolution -------------------------------------------

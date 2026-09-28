@@ -4,8 +4,8 @@
 //! conflicted path, plus writes that never mark a file resolved while
 //! conflict markers remain.
 
-use crate::git::commands::repo_info;
-use crate::git::run::{ok, read_repo_file, run_git, run_git_ro};
+use crate::git::commands::in_progress_at;
+use crate::git::run::{off_main_thread, ok, read_repo_file, run_git, run_git_ro};
 use crate::git::types::{ConflictInfo, ConflictLabels};
 use std::path::Path;
 
@@ -74,16 +74,19 @@ fn head_subject(cwd: &str, rev: &str) -> String {
     run_git_ro(cwd, &["log", "-1", "--format=%h %s", rev]).map(|o| o.stdout_str().trim().to_string()).unwrap_or_else(|_| rev.to_string())
 }
 
+/// The two sides' names. Only the git dir and HEAD's branch are read up
+/// front: this runs on every conflict load, and it used to take the whole
+/// `repo_info` for its `in_progress` -- five processes, two of them the
+/// same reads as the two here.
 fn labels(cwd: &str) -> Result<ConflictLabels, String> {
-    let info = repo_info(cwd)?;
+    let git_dir = ok(run_git_ro(cwd, &["rev-parse", "--absolute-git-dir"])?)?.stdout_str().trim().to_string();
+    let git_dir = Path::new(&git_dir);
     let head_branch = match run_git_ro(cwd, &["symbolic-ref", "--short", "-q", "HEAD"])? {
         o if o.code == 0 => o.stdout_str().trim().to_string(),
         _ => "HEAD".to_string(),
     };
-    let git_dir = ok(run_git_ro(cwd, &["rev-parse", "--absolute-git-dir"])?)?.stdout_str().trim().to_string();
-    let git_dir = Path::new(&git_dir);
-    let op = info.in_progress.as_deref().unwrap_or("");
-    Ok(match op {
+    let op = in_progress_at(git_dir);
+    Ok(match op.as_deref().unwrap_or("") {
         "merge" => ConflictLabels { ours: head_branch, theirs: short_name(cwd, "MERGE_HEAD"), operation: "merge".into() },
         "rebase" => {
             // During a rebase git's "ours" is the upstream being rebased onto
@@ -230,34 +233,40 @@ pub fn merge_tool_name(cwd: &str) -> Result<Option<String>, String> {
     Ok(if out.code == 0 { Some(out.stdout_str().trim().to_string()).filter(|s| !s.is_empty()) } else { None })
 }
 
+// The conflict family is `async` and runs on the blocking pool: the read
+// re-runs on every refresh while a `U` path is selected, and each resolve
+// is its own git plus that refresh and the reload -- 1.5-2.5 s a click on
+// the main thread. Ordering is the caller's: `loadConflict` checks its
+// `conflictToken`, and the resolves run under `run()`'s `busy`.
 #[tauri::command]
-pub fn git_conflict(cwd: String, path: String) -> Result<ConflictInfo, String> {
-    conflict_info(&cwd, &path)
+pub async fn git_conflict(cwd: String, path: String) -> Result<ConflictInfo, String> {
+    off_main_thread(move || conflict_info(&cwd, &path)).await
 }
 
 #[tauri::command]
-pub fn git_mark_resolved(cwd: String, path: String) -> Result<(), String> {
-    mark_resolved(&cwd, &path)
+pub async fn git_mark_resolved(cwd: String, path: String) -> Result<(), String> {
+    off_main_thread(move || mark_resolved(&cwd, &path)).await
 }
 
 #[tauri::command]
-pub fn git_resolve_whole(cwd: String, path: String, side: String) -> Result<(), String> {
-    resolve_whole(&cwd, &path, &side)
+pub async fn git_resolve_whole(cwd: String, path: String, side: String) -> Result<(), String> {
+    off_main_thread(move || resolve_whole(&cwd, &path, &side)).await
 }
 
 #[tauri::command]
-pub fn git_resolve_deleted(cwd: String, path: String, keep: bool) -> Result<(), String> {
-    resolve_deleted(&cwd, &path, keep)
+pub async fn git_resolve_deleted(cwd: String, path: String, keep: bool) -> Result<(), String> {
+    off_main_thread(move || resolve_deleted(&cwd, &path, keep)).await
 }
 
 #[tauri::command]
-pub fn git_restore_conflict(cwd: String, path: String) -> Result<(), String> {
-    restore_conflict(&cwd, &path)
+pub async fn git_restore_conflict(cwd: String, path: String) -> Result<(), String> {
+    off_main_thread(move || restore_conflict(&cwd, &path)).await
 }
 
+/// `async`, off the main thread: every Git-view refresh asks for it.
 #[tauri::command]
-pub fn git_merge_tool_name(cwd: String) -> Result<Option<String>, String> {
-    merge_tool_name(&cwd)
+pub async fn git_merge_tool_name(cwd: String) -> Result<Option<String>, String> {
+    off_main_thread(move || merge_tool_name(&cwd)).await
 }
 
 #[cfg(test)]
@@ -265,6 +274,7 @@ mod tests {
     use super::*;
     use crate::git::commands::testutil::*;
     use crate::git::commands::{checkout, create_branch, status};
+    use crate::git::run::{git_calls_of, OpControl};
 
     fn commit_all(dir: &tempfile::TempDir, msg: &str) {
         git(cwd(dir), &["add", "-A"]);
@@ -274,10 +284,10 @@ mod tests {
     /// main and `feature` both edit line 2 of f.txt; merging conflicts.
     fn text_conflict() -> tempfile::TempDir {
         let dir = temp_repo();
-        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        create_branch(cwd(&dir), "feature", None, true, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nFEATURE\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "feature edit");
-        checkout(cwd(&dir), "main", None).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nMAIN\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "main edit");
         let _ = run_git(cwd(&dir), &["merge", "feature"], None).unwrap();
@@ -314,6 +324,27 @@ mod tests {
         assert_eq!((c.eol.as_str(), c.final_newline), ("lf", true));
     }
 
+    /// The labels used to be `repo_info` over again -- five processes, two
+    /// of which they then ran a second time themselves -- on every conflict
+    /// load, which is every refresh while a `U` path is selected. What a
+    /// merge's labels need is the git dir, HEAD's branch and MERGE_HEAD's
+    /// name, one process each.
+    #[test]
+    fn labels_run_no_second_repo_info() {
+        let dir = text_conflict();
+        let (labels, calls) = git_calls_of(|| labels(cwd(&dir)));
+        assert_eq!(labels.unwrap().operation, "merge");
+        let calls: Vec<&str> = calls.iter().map(|c| c.trim_start_matches("--no-optional-locks ")).collect();
+        assert_eq!(
+            calls,
+            [
+                "rev-parse --absolute-git-dir",
+                "symbolic-ref --short -q HEAD",
+                "name-rev --name-only --refs=refs/heads/* --refs=refs/remotes/* MERGE_HEAD",
+            ]
+        );
+    }
+
     #[test]
     fn mark_resolved_refuses_markers_then_accepts_a_clean_file_and_restore_brings_them_back() {
         let dir = text_conflict();
@@ -339,13 +370,13 @@ mod tests {
     #[test]
     fn rebase_labels_are_swapped_and_explicit() {
         let dir = temp_repo();
-        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        create_branch(cwd(&dir), "feature", None, true, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nFEATURE\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "feature edit");
-        checkout(cwd(&dir), "main", None).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nMAIN\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "main edit");
-        checkout(cwd(&dir), "feature", None).unwrap();
+        checkout(cwd(&dir), "feature", None, &OpControl::default()).unwrap();
         let _ = run_git(cwd(&dir), &["rebase", "main"], None).unwrap();
         let c = conflict_info(cwd(&dir), "f.txt").unwrap();
         assert_eq!(c.labels.operation, "rebase");
@@ -358,11 +389,11 @@ mod tests {
     #[test]
     fn cherry_pick_label_names_the_commit() {
         let dir = temp_repo();
-        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        create_branch(cwd(&dir), "feature", None, true, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nFEATURE\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "feature edit");
         let sha = git(cwd(&dir), &["rev-parse", "--short", "HEAD"]).trim().to_string();
-        checkout(cwd(&dir), "main", None).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nMAIN\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "main edit");
         let _ = run_git(cwd(&dir), &["cherry-pick", &sha], None).unwrap();
@@ -375,10 +406,10 @@ mod tests {
     fn delete_modify_in_both_directions_and_keep_or_delete() {
         // They deleted, we modified.
         let dir = temp_repo();
-        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        create_branch(cwd(&dir), "feature", None, true, &OpControl::default()).unwrap();
         git(cwd(&dir), &["rm", "-q", "f.txt"]);
         commit_all(&dir, "feature deletes");
-        checkout(cwd(&dir), "main", None).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nMAIN\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "main edits");
         let _ = run_git(cwd(&dir), &["merge", "feature"], None).unwrap();
@@ -391,10 +422,10 @@ mod tests {
 
         // We deleted, they modified → delete it.
         let dir = temp_repo();
-        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        create_branch(cwd(&dir), "feature", None, true, &OpControl::default()).unwrap();
         write(&dir, "f.txt", "alpha\nFEATURE\ngamma\ndelta\nepsilon\n");
         commit_all(&dir, "feature edits");
-        checkout(cwd(&dir), "main", None).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         git(cwd(&dir), &["rm", "-q", "f.txt"]);
         commit_all(&dir, "main deletes");
         let _ = run_git(cwd(&dir), &["merge", "feature"], None).unwrap();
@@ -408,11 +439,11 @@ mod tests {
     #[test]
     fn added_by_both_binary_and_crlf_kinds() {
         let dir = temp_repo();
-        create_branch(cwd(&dir), "feature", None, true).unwrap();
+        create_branch(cwd(&dir), "feature", None, true, &OpControl::default()).unwrap();
         write(&dir, "new.txt", "theirs\r\nline\r\n");
         std::fs::write(dir.path().join("img.bin"), b"\x00\x01THEIRS").unwrap();
         commit_all(&dir, "feature adds");
-        checkout(cwd(&dir), "main", None).unwrap();
+        checkout(cwd(&dir), "main", None, &OpControl::default()).unwrap();
         write(&dir, "new.txt", "ours\r\nline\r\n");
         std::fs::write(dir.path().join("img.bin"), b"\x00\x01OURS").unwrap();
         commit_all(&dir, "main adds");

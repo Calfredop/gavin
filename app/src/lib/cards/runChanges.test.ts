@@ -32,7 +32,7 @@ function changes(over: Partial<RunChanges> = {}): RunChanges {
 }
 
 function binding(over: Partial<CardSession> = {}): CardSession {
-  return { path: "/p/t.md", sessionId: "s-1", cwd: "/p", command: null, ...over };
+  return { path: "/p/t.md", sessionId: "s-1", cwd: "/p", ...over };
 }
 
 describe("runBaseline", () => {

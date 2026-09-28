@@ -14,6 +14,9 @@ vi.mock("$lib/core/backend", () => ({
   unlinkCardSession: vi.fn(),
   writeInput: vi.fn(),
   getBoard: vi.fn(),
+  // Where Re-launch reads a binding's command, which the board no longer
+  // carries. Nothing bound by default; `remembered` below binds one.
+  cardSession: vi.fn().mockResolvedValue(null),
   attachmentStatus: vi.fn(),
   // "unknown" by default: gavin cannot tell whether the transcript is
   // there, which is today's behaviour -- build the resume command and
@@ -153,7 +156,7 @@ import {
   sendToMainAgent,
 } from "$lib/cards/cardRunActions";
 import type { CardView } from "$lib/core/planBoard";
-import type { Board } from "$lib/board/kanban";
+import type { Board, CardSessionRecord } from "$lib/board/kanban";
 
 function card(kind: "note" | "task" | "plan", status: string | null): CardView {
   return {
@@ -179,6 +182,15 @@ function card(kind: "note" | "task" | "plan", status: string | null): CardView {
 
 function board(cardSessions: Board["cardSessions"] = []): Board {
   return { columns: [{ id: "c1", name: "To Do", position: 0 }], labels: [], cardSessions };
+}
+
+/// A remembered run as it lives now (v43): on the board WITHOUT its
+/// launch command, and whole behind `backend.cardSession`, which is the
+/// one place Re-launch reads it.
+function remembered(record: CardSessionRecord): void {
+  const { command: _command, ...onBoard } = record;
+  kanbanState.set({ "ws-1": board([onBoard]) });
+  vi.mocked(backend.cardSession).mockResolvedValue(record);
 }
 
 /// The default profile: verified failure patterns, and NO conversation
@@ -316,7 +328,6 @@ describe("the first-Run review", () => {
           path: "/ws/.gavin-root/plans/t.md",
           sessionId: "s-dead",
           cwd: "/ws",
-          command: "x",
           conversationId: "conv-1",
           launchCwd: "/ws",
         },
@@ -467,7 +478,7 @@ describe("runCard", () => {
 
   it("jumps instead of spawning when a live binding exists", async () => {
     kanbanState.set({
-      "ws-1": board([{ path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws", command: "x" }]),
+      "ws-1": board([{ path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws" }]),
     });
     vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
 
@@ -525,7 +536,7 @@ describe("resumeCard", () => {
   it("spawns over an EXITED binding — that is what resuming is — and re-links", async () => {
     kanbanState.set({
       "ws-1": board([
-        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-dead", cwd: "/ws", command: "x" },
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-dead", cwd: "/ws" },
       ]),
     });
     vi.mocked(findSessionLocation).mockReturnValue(null);
@@ -546,7 +557,7 @@ describe("resumeCard", () => {
   it("jumps to a LIVE session instead of spawning a second agent", async () => {
     kanbanState.set({
       "ws-1": board([
-        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws", command: "x" },
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws" },
       ]),
     });
     vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
@@ -616,7 +627,6 @@ describe("reviewCardSession", () => {
           path: "/ws/.gavin-root/plans/t.md",
           sessionId: "s-dead",
           cwd: "/wt/drifted",
-          command: "x",
           launchCwd: "/wt/feature",
           baseSha: "a".repeat(40),
         },
@@ -643,7 +653,6 @@ describe("reviewCardSession", () => {
           path: "/ws/.gavin-root/plans/t.md",
           sessionId: "s-dead",
           cwd: "/wt/drifted",
-          command: "x",
           launchCwd: "/wt/feature",
           baseSha: "a".repeat(40),
         },
@@ -680,7 +689,6 @@ describe("reviewCardSession", () => {
           path: "/ws/.gavin-root/plans/t.md",
           sessionId: "s-dead",
           cwd: "/ws",
-          command: "x",
           conversationId: "conv-1",
           launchCwd: "/ws",
           baseSha: "a".repeat(40),
@@ -703,7 +711,7 @@ describe("reviewCardSession", () => {
   it("jumps to a LIVE session rather than starting a second agent on the card", async () => {
     kanbanState.set({
       "ws-1": board([
-        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws", command: "x" },
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws" },
       ]),
     });
     vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
@@ -828,7 +836,7 @@ describe("developCard", () => {
   it("refuses while a live agent holds the card, rather than editing under it", async () => {
     kanbanState.set({
       "ws-1": board([
-        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws", command: "x" },
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws" },
       ]),
     });
     vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
@@ -842,7 +850,7 @@ describe("developCard", () => {
   it("develops over an EXITED binding and leaves that binding alone", async () => {
     kanbanState.set({
       "ws-1": board([
-        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-dead", cwd: "/ws", command: "x" },
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-dead", cwd: "/ws" },
       ]),
     });
     vi.mocked(findSessionLocation).mockReturnValue(null);
@@ -1009,7 +1017,7 @@ describe("a card being developed", () => {
   // not the least.
   it("refuses a Re-launch of the card's remembered command", async () => {
     kanbanState.set({
-      "ws-1": board([{ path: PATH, sessionId: "s-dead", cwd: "/ws", command: "claude -p x" }]),
+      "ws-1": board([{ path: PATH, sessionId: "s-dead", cwd: "/ws" }]),
     });
     developing([{ path: PATH, sessionId: "s-dev" }]);
 
@@ -1078,7 +1086,6 @@ describe("the run's baseline", () => {
           path: "/ws/.gavin-root/plans/t.md",
           sessionId: "s-dead",
           cwd: "/ws",
-          command: "x",
           baseSha: BASE,
         },
       ]),
@@ -1097,17 +1104,13 @@ describe("the run's baseline", () => {
   });
 
   it("a re-launch resolves a new one, in the directory the run was launched in", async () => {
-    kanbanState.set({
-      "ws-1": board([
-        {
-          path: "/p/t.md",
-          sessionId: "s-dead",
-          cwd: "/p/drifted",
-          command: "claude 'x'",
-          launchCwd: "/p/wt",
-          baseSha: BASE,
-        },
-      ]),
+    remembered({
+      path: "/p/t.md",
+      sessionId: "s-dead",
+      cwd: "/p/drifted",
+      command: "claude 'x'",
+      launchCwd: "/p/wt",
+      baseSha: BASE,
     });
     vi.mocked(baseShaForLaunch).mockResolvedValue("3333333333333333333333333333333333333333");
     vi.mocked(backend.createSession).mockResolvedValue("s-new");
@@ -1126,18 +1129,38 @@ describe("the run's baseline", () => {
 
 describe("relaunchCard", () => {
   it("recreates from the stored binding and re-links", async () => {
-    kanbanState.set({
-      "ws-1": board([{ path: "/p/t.md", sessionId: "s-dead", cwd: "/p", command: "claude 'x'" }]),
-    });
+    remembered({ path: "/p/t.md", sessionId: "s-dead", cwd: "/p", command: "claude 'x'" });
     vi.mocked(backend.createSession).mockResolvedValue("s-new");
     vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
 
     const err = await relaunchCard("ws-1", "/p/t.md");
 
     expect(err).toBeNull();
+    // The command came from the one-card read: the board never had it.
+    expect(backend.cardSession).toHaveBeenCalledWith("ws-1", "/p/t.md");
     expect(backend.createSession).toHaveBeenCalledWith("/p", "claude 'x'", "/ws");
     expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws-1", "s-new");
     expect(get(kanbanState)["ws-1"].cardSessions[0].sessionId).toBe("s-new");
+  });
+
+  // A binding the daemon no longer has -- unlinked by another window, or
+  // replaced -- is nothing to replay. Launching with no command would
+  // start a bare shell and bind the card to it.
+  it("a binding the daemon no longer has is nothing to re-launch", async () => {
+    kanbanState.set({ "ws-1": board([{ path: "/p/t.md", sessionId: "s-dead", cwd: "/p" }]) });
+    vi.mocked(backend.cardSession).mockResolvedValue(null);
+
+    expect(await relaunchCard("ws-1", "/p/t.md")).toContain("No session");
+    expect(backend.createSession).not.toHaveBeenCalled();
+    expect(backend.linkCardSession).not.toHaveBeenCalled();
+  });
+
+  it("a failed read of the binding is a failed re-launch, not a bare shell", async () => {
+    kanbanState.set({ "ws-1": board([{ path: "/p/t.md", sessionId: "s-dead", cwd: "/p" }]) });
+    vi.mocked(backend.cardSession).mockRejectedValue(new Error("the gavin daemon is restarting"));
+
+    expect(await relaunchCard("ws-1", "/p/t.md")).toBe("Couldn't re-launch: the gavin daemon is restarting");
+    expect(backend.createSession).not.toHaveBeenCalled();
   });
 
   // Measured against the real binary: `claude --session-id <uuid>` on an
@@ -1159,17 +1182,13 @@ describe("relaunchCard", () => {
       sessionIdArgs: "--session-id",
       resumeArgs: "--resume",
     } as never);
-    kanbanState.set({
-      "ws-1": board([
-        {
-          path: "/p/t.md",
-          sessionId: "s-dead",
-          cwd: "/p",
-          command: "claude --session-id 11111111-1111-1111-1111-111111111111 'x'",
-          conversationId: "11111111-1111-1111-1111-111111111111",
-          launchCwd: "/p",
-        },
-      ]),
+    remembered({
+      path: "/p/t.md",
+      sessionId: "s-dead",
+      cwd: "/p",
+      command: "claude --session-id 11111111-1111-1111-1111-111111111111 'x'",
+      conversationId: "11111111-1111-1111-1111-111111111111",
+      launchCwd: "/p",
     });
     vi.mocked(backend.createSession).mockResolvedValue("s-new");
     vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
@@ -1181,7 +1200,9 @@ describe("relaunchCard", () => {
     expect(command).toMatch(/^claude --session-id [0-9a-f-]{36} 'x'$/);
     const bound = get(kanbanState)["ws-1"].cardSessions[0];
     expect(bound.conversationId).not.toBe("11111111-1111-1111-1111-111111111111");
-    expect(bound.command).toBe(command);
+    // Stored with the run, not on the board: the fifth argument is the
+    // command the daemon keeps for the NEXT re-launch.
+    expect(vi.mocked(backend.linkCardSession).mock.calls[0][4]).toBe(command);
   });
 
   it("errors when nothing is remembered", async () => {
@@ -1192,7 +1213,7 @@ describe("relaunchCard", () => {
 describe("jumpToBoundSession", () => {
   it("jumps when the binding's session is alive", async () => {
     kanbanState.set({
-      "ws-1": board([{ path: "/p/t.md", sessionId: "s-live", cwd: "/p", command: null }]),
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-live", cwd: "/p" }]),
     });
     vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
 
@@ -1202,7 +1223,7 @@ describe("jumpToBoundSession", () => {
 
   it("reports exited and none without navigating", async () => {
     kanbanState.set({
-      "ws-1": board([{ path: "/p/t.md", sessionId: "s-dead", cwd: "/p", command: null }]),
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-dead", cwd: "/p" }]),
     });
     vi.mocked(findSessionLocation).mockReturnValue(null);
     expect(await jumpToBoundSession("ws-1", "/p/t.md")).toBe("exited");
@@ -1223,7 +1244,7 @@ describe("an interrupted binding", () => {
 
   it("reports interrupted from jumpToBoundSession, and navigates nowhere", async () => {
     kanbanState.set({
-      "ws-1": board([{ path: "/p/t.md", sessionId: "s-live", cwd: "/p", command: null }]),
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-live", cwd: "/p" }]),
     });
     interrupt("s-live");
 
@@ -1234,7 +1255,7 @@ describe("an interrupted binding", () => {
   it("lets resumeCard spawn over it and re-link, instead of jumping into the shell", async () => {
     kanbanState.set({
       "ws-1": board([
-        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws", command: "x" },
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws" },
       ]),
     });
     interrupt("s-live");
@@ -1257,7 +1278,7 @@ describe("an interrupted binding", () => {
 
   it("lets developCard proceed — there is no live agent to edit under", async () => {
     kanbanState.set({
-      "ws-1": board([{ path: "/p/t.md", sessionId: "s-live", cwd: "/p", command: null }]),
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-live", cwd: "/p" }]),
     });
     interrupt("s-live");
     vi.mocked(backend.createSession).mockResolvedValue("s-dev");
@@ -1291,7 +1312,7 @@ describe("a failed binding", () => {
 
   it("reports failed from jumpToBoundSession, and navigates nowhere", async () => {
     kanbanState.set({
-      "ws-1": board([{ path: "/p/t.md", sessionId: "s-live", cwd: "/p", command: null }]),
+      "ws-1": board([{ path: "/p/t.md", sessionId: "s-live", cwd: "/p" }]),
     });
     broke("s-live");
 
@@ -1309,7 +1330,6 @@ describe("a failed binding", () => {
           path: "/ws/.gavin-root/plans/t.md",
           sessionId: "s-live",
           cwd: "/ws/drifted",
-          command: "claude --session-id u-1 'go'",
           conversationId: "u-1",
           launchCwd: "/ws/worktree",
         },
@@ -1346,7 +1366,7 @@ describe("a failed binding", () => {
     vi.mocked(resolvedAgentFor).mockReturnValue(claudeAgent as never);
     kanbanState.set({
       "ws-1": board([
-        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws", command: "x" },
+        { path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws" },
       ]),
     });
     broke("s-live");
@@ -1372,7 +1392,6 @@ describe("a failed binding", () => {
           path: "/ws/.gavin-root/plans/t.md",
           sessionId: "s-live",
           cwd: "/ws",
-          command: "claude --session-id u-1 'go'",
           conversationId: "u-1",
           launchCwd: "/ws",
           resumeAttempts: 0,
@@ -1401,15 +1420,15 @@ describe("a failed binding", () => {
     expect(backend.conversationLog).toHaveBeenCalledWith("claude-code", "u-1");
     expect(backend.createSession).not.toHaveBeenCalled();
     // Refused BEFORE anything is written or shown: no status, no review
-    // sheet, no file read -- and the binding still carries the LAUNCH
-    // command, which is what makes Re-launch replay the run that never
-    // happened rather than the resume that cannot.
+    // sheet, no file read -- and no re-link, so the daemon still holds the
+    // LAUNCH command, which is what makes Re-launch replay the run that
+    // never happened rather than the resume that cannot.
     expect(backend.readFileForViewer).not.toHaveBeenCalled();
     expect(backend.setPlanFrontmatterField).not.toHaveBeenCalled();
     expect(ensureCardReviewed).not.toHaveBeenCalled();
+    expect(backend.linkCardSession).not.toHaveBeenCalled();
     expect(get(kanbanState)["ws-1"].cardSessions[0]).toMatchObject({
       sessionId: "s-live",
-      command: "claude --session-id u-1 'go'",
       conversationId: "u-1",
     });
   });

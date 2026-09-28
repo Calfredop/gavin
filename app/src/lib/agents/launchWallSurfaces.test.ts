@@ -346,7 +346,10 @@ describe("the probe", () => {
   it("polls app-wide from bootstrap, not from a mounted component", () => {
     const layout = source("layoutState.ts");
     expect(layout).toContain('await import("$lib/agents/memoryState")');
-    expect(layout).toContain("unlisteners.push(startMemoryPoll());");
+    // Through the app's duty, so a second window takes the first one's
+    // reading instead of polling the same machine again (appDuty.ts).
+    expect(layout).toContain("unlisteners.push(whileHoldingAppDuties(startMemoryPoll));");
+    expect(layout).toContain("unlisteners.push(await initMemorySharing());");
     expect(layout).toContain('await import("$lib/agents/launchQueue")');
     expect(layout).toContain("unlisteners.push(startLaunchQueue());");
   });

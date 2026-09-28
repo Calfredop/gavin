@@ -61,8 +61,9 @@
     ready = true;
     // Awaited, not fired and forgotten: the daemon renders a snapshot at the
     // size it believes the PTY is, so the resize has to reach it first. Both
-    // requests ride the streaming connection and the daemon reads it in
-    // order, so awaiting the resize's own write is enough to sequence them.
+    // requests ride the streaming connection, which the app writes from one
+    // FIFO (stream_writer.rs) and the daemon reads in order, so asking for
+    // the snapshot once the resize is queued is enough to sequence them.
     void fit().then(() => restoreScreen(sessionId));
     if (focused) term.focus();
   });

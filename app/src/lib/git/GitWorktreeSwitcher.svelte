@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { get } from "svelte/store";
   import { BrushCleaning, ChevronDown, FolderGit2, Play, GitMerge, Trash2, Plus, Eraser } from "@lucide/svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
@@ -31,6 +32,7 @@
     classifyWorktrees,
     nothingToSweepLines,
     sweepConfirm,
+    worktreeFactsKey,
     type SweepVerdict,
   } from "$lib/git/worktreeSweep";
   import { splitPath, type WorktreeInfo } from "$lib/git/git";
@@ -93,6 +95,9 @@
   // (see the app's Svelte 5 notes). A counter is what actually says
   // whether a slower answer belongs to an older question.
   let factsToken = 0;
+  // A string, so a refresh that rebuilds the refs object around the same
+  // worktrees derives an equal value and wakes nothing downstream.
+  const factsKey = $derived(worktreeFactsKey(worktrees));
   const verdicts = $derived<SweepVerdict[]>(
     facts === null
       ? []
@@ -240,14 +245,16 @@
   }
 
   // Opening the menu is what asks git, so the badges are there to be read
-  // rather than only after pressing Sweep. Keyed on the worktree list too:
+  // rather than only after pressing Sweep. Keyed on the worktree SET too:
   // a sweep, a fork or a prune changes the rows under an open menu, and
   // stale verdicts about worktrees that no longer exist are worse than
-  // none.
+  // none. But on the set, not the list -- every refresh rebuilds the list,
+  // and asking costs a `git status` per worktree. `loadFacts` reads
+  // `worktrees` before its first await, hence untrack: called tracked, it
+  // would make the list a dependency again.
   $effect(() => {
-    const signature = worktrees.map((w) => w.path).join("\n");
-    if (!open || signature === "") return;
-    void loadFacts();
+    if (!open || factsKey === "") return;
+    untrack(() => void loadFacts());
   });
 
   // A selected worktree that vanished on disk: fall back to the root.

@@ -36,7 +36,7 @@
 
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How long the watchman CLI may take before the probe gives up. It is
@@ -354,21 +354,37 @@ fn watchman_binary() -> Option<String> {
 ///
 /// `--no-spawn --no-local` is belt and braces on top of that: it tells
 /// the client to fail rather than start a server if the one this module
-/// found has gone away between the probe and the call. There is no
-/// `timeout(1)` on macOS, so the deadline is enforced here -- and stdout
-/// is drained on a thread, the same deadlock avoidance
-/// `agent_models::run` documents: a child that fills the pipe buffer
-/// blocks forever if the parent waits before reading.
+/// found has gone away between the probe and the call.
 fn watchman_command(args: &[&str]) -> Option<String> {
     let bin = watchman_binary()?;
-    let mut child = crate::program::command(bin)
+    let mut command = crate::program::command(bin);
+    command
         .arg("--no-spawn")
         .arg("--no-local")
         .args(args)
         // A GUI app's cwd is whatever it was launched with, and
         // watchman resolves a relative root against it. Everything this
         // module passes is absolute; the temp dir makes that explicit.
-        .current_dir(std::env::temp_dir())
+        .current_dir(std::env::temp_dir());
+    stdout_by_deadline(command, Duration::from_secs(WATCHMAN_TIMEOUT_SECS as u64))
+}
+
+/// A command's stdout once it exits successfully; `None` when it cannot
+/// start, exits non-zero, or is still running at `timeout`, and is then
+/// killed.
+///
+/// There is no `timeout(1)` on macOS, so the deadline is enforced here.
+/// stdout is drained on a thread, the same deadlock avoidance
+/// `agent_models::run` documents: a child that fills the pipe buffer
+/// blocks forever if the parent waits before reading. And the drain IS
+/// the wait. The pipe reaches end-of-file when the child exits, so the
+/// answer arrives the moment it does, where a `try_wait` loop learned of
+/// it on its next 50 ms turn: `watch-list` measured 217 ms median that
+/// way and 186 ms this one, against the same server.
+/// The `wait` after it only reaps: the watchman CLI holds its stdout until
+/// it exits, and under `--no-spawn` starts nothing that could inherit it.
+fn stdout_by_deadline(mut command: Command, timeout: Duration) -> Option<String> {
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -379,29 +395,18 @@ fn watchman_command(args: &[&str]) -> Option<String> {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = pipe.read_to_end(&mut buf);
-        let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
+        let _ = tx.send(buf);
     });
-    let deadline = std::time::Instant::now() + Duration::from_secs(WATCHMAN_TIMEOUT_SECS as u64);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return None;
-                }
-                break;
-            }
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(_) => return None,
-        }
-    }
-    rx.recv_timeout(Duration::from_secs(2)).ok()
+    let Ok(stdout) = rx.recv_timeout(timeout) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    child
+        .wait()
+        .ok()?
+        .success()
+        .then(|| String::from_utf8_lossy(&stdout).into_owned())
 }
 
 /// The live watchman server, or `None` when there is not one.
@@ -409,8 +414,18 @@ fn watchman_command(args: &[&str]) -> Option<String> {
 /// Called on the same timer as `system_memory`. The pid probe is two
 /// syscalls; the CLI call only happens once that probe has said there is
 /// something to ask.
+///
+/// `async` + `spawn_blocking`: that CLI call is 170-200 ms, and the
+/// whole deadline when watchman is wedged. As a plain `fn` it ran on the
+/// main thread every 30 s per window -- 0.2-1.2 s of frozen window a
+/// minute, measured. A pool that could not run the read has nothing to
+/// report, the same `None` as every other failure here.
 #[tauri::command]
-pub fn watchman_status() -> Option<WatchmanStatus> {
+pub async fn watchman_status() -> Option<WatchmanStatus> {
+    tauri::async_runtime::spawn_blocking(read_watchman).await.ok().flatten()
+}
+
+fn read_watchman() -> Option<WatchmanStatus> {
     let pid = watchman_pid()?;
     #[cfg(target_os = "macos")]
     let rss_bytes = watchman_rss(pid);
@@ -433,13 +448,15 @@ pub fn watchman_status() -> Option<WatchmanStatus> {
 ///
 /// A machine with no server is a silent success: there is nothing
 /// holding the root, which is the state the caller wanted.
+///
+/// `async` + `spawn_blocking` for the same reason as `watchman_status`:
+/// Drop roots calls it once per root, one after another, and each is a
+/// CLI round trip the main thread used to sit through.
 #[tauri::command]
-pub fn watchman_forget(root: String) -> Result<(), String> {
-    if watchman_pid().is_none() {
-        return Ok(());
-    }
-    forget_root(&root);
-    Ok(())
+pub async fn watchman_forget(root: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || forget_root(&root))
+        .await
+        .map_err(|e| format!("the watchman drop did not run: {e}"))
 }
 
 /// The same drop, for callers inside Rust that must not fail because of
@@ -489,9 +506,8 @@ pub struct GavinMemory {
 
 /// Gavin's own memory, or `None` off macOS.
 ///
-/// `async` + `spawn_blocking`: the helper lookup walks the process table
-/// and the daemon pid waits on the command connection's lock, and a plain
-/// command would do both on the thread that draws the window.
+/// `async` + `spawn_blocking`: the helper lookup walks the process table,
+/// and a plain command would do that on the thread that draws the window.
 #[tauri::command]
 pub async fn gavin_memory(app: tauri::AppHandle) -> Option<GavinMemory> {
     tauri::async_runtime::spawn_blocking(move || measure_gavin(std::process::id(), daemon_pid(&app)))
@@ -501,14 +517,14 @@ pub async fn gavin_memory(app: tauri::AppHandle) -> Option<GavinMemory> {
 }
 
 /// The pid serving the app's command connection, read off the
-/// connection itself -- the same `server_pid` Restart daemon aims its
-/// fallback with, so this names the daemon THIS app is talking to (the
-/// dev and release daemons run side by side) without dialling it again.
+/// connection itself -- the kernel's `server_pid`, the same answer
+/// Restart daemon aims its fallback with, so this names the daemon THIS
+/// app is talking to (the dev and release daemons run side by side)
+/// without dialling it again. The lane records it whenever it is put on
+/// a connection, since its worker thread owns the stream.
 fn daemon_pid(app: &tauri::AppHandle) -> Option<u32> {
     use tauri::Manager;
-    let conn = app.try_state::<crate::session::CommandConnection>()?;
-    let stream = conn.0.lock().ok()?;
-    stream.server_pid()
+    app.try_state::<crate::session::CommandConnection>()?.server_pid()
 }
 
 /// A WebKit helper process, by the name macOS gives every one of them:
@@ -739,6 +755,40 @@ mod tests {
         let text = path.to_string_lossy();
         assert!(text.ends_with("-state/pid"), "unexpected pidfile path: {text}");
         assert!(text.contains("/watchman/"), "unexpected pidfile path: {text}");
+    }
+
+    /// The drain is the wait, so it must still bring back all of a
+    /// child's stdout -- past a pipe buffer too, where waiting on the
+    /// exit before reading would deadlock.
+    #[cfg(unix)]
+    #[test]
+    fn stdout_by_deadline_returns_everything_the_child_wrote() {
+        let mut sh = crate::program::command("/bin/sh");
+        sh.args(["-c", "head -c 200000 /dev/zero | tr '\\0' x"]);
+        let out = stdout_by_deadline(sh, Duration::from_secs(10)).expect("sh exits 0");
+        assert_eq!(out.len(), 200_000);
+    }
+
+    /// A non-zero exit is no answer, whatever the child printed first.
+    #[cfg(unix)]
+    #[test]
+    fn stdout_by_deadline_refuses_a_failed_exit() {
+        let mut sh = crate::program::command("/bin/sh");
+        sh.args(["-c", "echo partial; exit 3"]);
+        assert_eq!(stdout_by_deadline(sh, Duration::from_secs(10)), None);
+    }
+
+    /// A child still running at the deadline answers `None` AT the
+    /// deadline, not when it would have finished: a wedged watchman is
+    /// the case where the poll must not wedge with it.
+    #[cfg(unix)]
+    #[test]
+    fn stdout_by_deadline_kills_a_child_that_overruns() {
+        let started = std::time::Instant::now();
+        let mut sleep = crate::program::command("/bin/sleep");
+        sleep.arg("30");
+        assert_eq!(stdout_by_deadline(sleep, Duration::from_millis(200)), None);
+        assert!(started.elapsed() < Duration::from_secs(5), "waited {:?}", started.elapsed());
     }
 
     /// The unsupported answer must be recognisable AS unsupported rather

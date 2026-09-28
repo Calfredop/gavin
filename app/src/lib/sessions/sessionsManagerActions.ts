@@ -176,26 +176,23 @@ export async function restartDaemon(
 /// click through prompts, which is worse than the single honest one that
 /// names the count.
 ///
-/// Sequential rather than concurrent. Each kill is a daemon round trip
-/// that deletes a registry row, and an orphan that refuses SIGTERM holds
-/// its session for up to the daemon's grace period -- doing these in
-/// parallel would interleave those waits with unrelated deletions for no
-/// gain on a list this size.
+/// All at once rather than one after another. An orphan that refuses
+/// SIGTERM holds its request for the daemon's whole grace, 2 s, and each
+/// rides a daemon connection of its own (`command_lane::runs_apart`) --
+/// so in sequence a batch of N of them was N graces, and at once it is
+/// one. Each row still ends its orphan before its session: `runKill`
+/// awaits the one before sending the other.
 async function endBatch(rows: SessionRow[], scope: KillScope): Promise<number> {
   const prompt = killBatchConfirm(rows, scope);
   if (!prompt) return 0;
   if (!(await askConfirm(prompt))) return 0;
 
-  let ended = 0;
-  const survived: string[] = [];
-  for (const row of rows) {
-    // Failures are collected, never thrown: one refusing orphan must not
-    // leave the other twenty sessions running.
-    if (await runKill(row, false)) ended += 1;
-    else survived.push(row.label);
-  }
+  // Failures are collected, never thrown: one refusing orphan must not
+  // leave the other twenty sessions running.
+  const ended = await Promise.all(rows.map((row) => runKill(row, false)));
+  const survived = rows.filter((_, i) => !ended[i]).map((row) => row.label);
   if (survived.length > 0) await showAlert(survivorsAlert(survived, rows.length));
-  return ended;
+  return rows.length - survived.length;
 }
 
 /// The kill itself, with no confirmation of its own.

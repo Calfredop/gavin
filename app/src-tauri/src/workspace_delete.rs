@@ -159,6 +159,19 @@ fn count_archived(archive: &Path) -> usize {
     total
 }
 
+/// Whether a walked entry is a directory, the way `Path::is_dir` answers
+/// it -- a symlink counts as what it points at -- without its stat. The
+/// type readdir already returned settles everything but a symlink, and
+/// only a symlink is stat'ed to follow it. On a 152k-entry root the
+/// stats were two thirds of a warm walk: 0.76 s against 0.25 s without.
+fn entry_is_dir(entry: &std::fs::DirEntry) -> bool {
+    match entry.file_type() {
+        Ok(t) if t.is_symlink() => entry.path().is_dir(),
+        Ok(t) => t.is_dir(),
+        Err(_) => entry.path().is_dir(),
+    }
+}
+
 /// Every `.gavin/` under the root. The walk matches the daemon's:
 /// `.gavin*` directories are never descended into, and the same excluded
 /// and dot-prefixed directories are skipped.
@@ -168,10 +181,10 @@ fn walk_contexts(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
     }
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+        if !entry_is_dir(&entry) {
             continue;
         }
+        let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         if name == GAVIN_DIR {
             found.push(path);
@@ -391,9 +404,14 @@ pub fn remove(root: &Path, plan: &RemovalPlan) -> Result<RemovalReport, String> 
     Ok(report)
 }
 
+/// `async` + `spawn_blocking`: the scan walks the whole root twelve deep,
+/// 150k entries and 2-7 s on a large repo's first walk, and as a plain
+/// `fn` all of it was main-thread time with the window frozen.
 #[tauri::command]
-pub fn scan_gavin_footprint(root_path: String) -> Result<GavinFootprint, String> {
-    scan(Path::new(&root_path))
+pub async fn scan_gavin_footprint(root_path: String) -> Result<GavinFootprint, String> {
+    tauri::async_runtime::spawn_blocking(move || scan(Path::new(&root_path)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// `token` is the grant `confirm_gate` minted when the human reached the
@@ -404,15 +422,22 @@ pub fn scan_gavin_footprint(root_path: String) -> Result<GavinFootprint, String>
 /// The subject is the root, not the plan: which workspace is being
 /// deleted is the question the human answered, and every switch in the
 /// plan is a choice made inside that answer.
+///
+/// `async` like the scan: the remover re-walks the root before it
+/// trashes anything, so the last button paid the walk a second time on
+/// the main thread. The token is spent first, before the work leaves
+/// for the blocking pool, so a refused grant still refuses at once.
 #[tauri::command]
-pub fn remove_gavin_footprint(
+pub async fn remove_gavin_footprint(
     root_path: String,
     plan: RemovalPlan,
     token: String,
-    gate: tauri::State<crate::confirm_gate::ConfirmGate>,
+    gate: tauri::State<'_, crate::confirm_gate::ConfirmGate>,
 ) -> Result<RemovalReport, String> {
     crate::confirm_gate::spend(&gate, &token, "remove_gavin_footprint", &root_path)?;
-    remove(Path::new(&root_path), &plan)
+    tauri::async_runtime::spawn_blocking(move || remove(Path::new(&root_path), &plan))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
@@ -701,6 +726,25 @@ mod tests {
         let f = scan(dir.path()).unwrap();
 
         assert!(f.worktrees.is_empty(), "{:?}", f.worktrees);
+    }
+
+    /// The walk reads each entry's type from readdir instead of stat'ing
+    /// it, and readdir calls a symlink a symlink. A `.gavin` linked to a
+    /// folder inside the root is still one the daemon shows, so it has to
+    /// stay one this wizard finds.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_gavin_folder_is_still_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(GAVIN_ROOT_DIR)).unwrap();
+        std::fs::create_dir_all(dir.path().join("store").join("ctx")).unwrap();
+        std::fs::create_dir_all(dir.path().join("api")).unwrap();
+        std::os::unix::fs::symlink("../store/ctx", dir.path().join("api").join(GAVIN_DIR)).unwrap();
+
+        let f = scan(dir.path()).unwrap();
+
+        assert_eq!(f.contexts.len(), 1, "{:?}", f.contexts);
+        assert!(f.contexts[0].path.ends_with("api/.gavin"));
     }
 
     #[test]

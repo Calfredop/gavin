@@ -20,8 +20,10 @@
 //! **The token never leaves this file.** It is read on demand, handed to
 //! curl through a config on STDIN rather than argv -- `ps` shows the
 //! command line of every process on the machine -- and never logged,
-//! never cached, never returned to the frontend. The only thing that
-//! crosses back is percentages and reset instants.
+//! never returned to the frontend, and never cached save for one case:
+//! an access token gavin refreshed for Gemini is kept in memory until it
+//! expires (`GEMINI_REFRESHED`). The only thing that crosses back is
+//! percentages and reset instants.
 //!
 //! curl rather than an HTTP crate is deliberate: the workspace has no TLS
 //! stack at all, and one authenticated GET does not justify pulling
@@ -31,8 +33,10 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use tauri::Manager;
 
 use crate::agent_setup::{profile_by_id, UsageProbe};
 
@@ -134,14 +138,106 @@ struct Entry {
     fetched_at: i64,
     /// Set by a 429: no real call before this instant.
     parked_until: Option<i64>,
+    /// How many real probes this profile has stored, this one included.
+    /// A caller notes it on arrival; finding it higher once the probe
+    /// lock is theirs means a probe landed while they waited, and that
+    /// probe's answer is theirs too.
+    generation: u64,
 }
 
 #[derive(Default)]
-pub struct UsageCache(Mutex<HashMap<String, Entry>>);
+pub struct UsageCache {
+    entries: Mutex<HashMap<String, Entry>>,
+    /// One lock per profile, held across a real probe.
+    ///
+    /// While the command ran on the main thread, the main thread was the
+    /// lock: two windows polling, or a poll and a forced refresh, reached
+    /// the cache one after the other and the second found the first's
+    /// answer. Off it they arrive together, both miss, and both call an
+    /// endpoint that answers eagerness with hours of 429s. Per profile,
+    /// not one for the cache, so a curl waiting out its timeout on one
+    /// agent does not hold every other agent's panel behind it.
+    probing: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+}
 
 impl UsageCache {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// One profile's report: the cache's when it may answer, else a real
+    /// probe, run by at most one caller per profile at a time.
+    fn read(
+        &self,
+        profile_id: &str,
+        force: bool,
+        probe: impl FnOnce(i64) -> (UsageReport, Option<i64>),
+    ) -> UsageReport {
+        let asked_at = self.generation(profile_id);
+        self.read_since(profile_id, force, asked_at, probe)
+    }
+
+    fn generation(&self, profile_id: &str) -> u64 {
+        self.entries.lock().unwrap().get(profile_id).map_or(0, |e| e.generation)
+    }
+
+    /// `read`, for a caller that arrived when the profile's generation
+    /// was `asked_at`. Split out so a test can pin the arrival while
+    /// another probe is provably in flight.
+    fn read_since(
+        &self,
+        profile_id: &str,
+        force: bool,
+        asked_at: u64,
+        probe: impl FnOnce(i64) -> (UsageReport, Option<i64>),
+    ) -> UsageReport {
+        if let Some(report) = self.answer(profile_id, force, asked_at, now_secs()) {
+            return report;
+        }
+        let slot = self.probing.lock().unwrap().entry(profile_id.to_string()).or_default().clone();
+        // Nothing lives inside the lock, so a probe that panicked while
+        // holding it left nothing torn behind.
+        let _probing = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Asked again: whoever held the lock may have answered this
+        // caller, or parked the endpoint, while it waited.
+        let now = now_secs();
+        if let Some(report) = self.answer(profile_id, force, asked_at, now) {
+            return report;
+        }
+
+        let (report, park) = probe(now);
+        let mut map = self.entries.lock().unwrap();
+        let generation = map.get(profile_id).map_or(0, |e| e.generation) + 1;
+        map.insert(
+            profile_id.to_string(),
+            Entry { report: report.clone(), fetched_at: now, parked_until: park, generation },
+        );
+        report
+    }
+
+    /// What the cache may say without a real call, if anything.
+    ///
+    /// A probe that landed after this caller arrived answers it even when
+    /// it is forcing: the forced refresh wanted a real call made now, and
+    /// one just was. A second would be two calls in the same second to
+    /// the endpoint least willing to take them.
+    fn answer(&self, profile_id: &str, force: bool, asked_at: u64, now: i64) -> Option<UsageReport> {
+        let map = self.entries.lock().unwrap();
+        let entry = map.get(profile_id)?;
+        if let Some(until) = entry.parked_until {
+            if now < until {
+                return Some(UsageReport::Unavailable {
+                    reason: "the usage endpoint rate-limited gavin".to_string(),
+                    retry_after: Some(until),
+                });
+            }
+        }
+        let landed_since_asked = entry.generation != asked_at;
+        let fresh = now - entry.fetched_at < MIN_INTERVAL_SECS;
+        if landed_since_asked || (fresh && !force) {
+            return Some(entry.report.clone().as_cached());
+        }
+        None
     }
 }
 
@@ -152,37 +248,33 @@ impl UsageCache {
 /// `force` is the panel's explicit refresh. It skips the freshness floor
 /// but NOT the 429 park: a human pressing refresh cannot un-anger the
 /// endpoint, and letting them try is how a park becomes permanent.
+///
+/// `async` + `spawn_blocking`: a probe is a Keychain read and up to
+/// three curls at `TIMEOUT_SECS` each, and the poller asks for every
+/// profile in use at once. As a plain `fn` those ran one after another
+/// on the main thread -- 1.1-1.6 s of frozen window a minute measured,
+/// and a network that swallows connections would have held it for a
+/// timeout per curl. The cache is fetched inside the closure because the
+/// probe lock is held across the probe, which a borrowed `State` cannot
+/// follow onto the blocking pool.
 #[tauri::command]
-pub fn agent_usage(
-    cache: tauri::State<'_, UsageCache>,
+pub async fn agent_usage(
+    app: tauri::AppHandle,
     profile_id: String,
     force: bool,
-) -> UsageReport {
-    let probe = match profile_by_id(&profile_id).usage_probe {
-        Some(p) => p,
-        None => return UsageReport::Unsupported,
+) -> Result<UsageReport, String> {
+    let Some(probe) = profile_by_id(&profile_id).usage_probe else {
+        return Ok(UsageReport::Unsupported);
     };
-    let now = now_secs();
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<UsageCache>().read(&profile_id, force, |now| run_probe(probe, now))
+    })
+    .await
+    .map_err(|e| format!("the usage probe did not run: {e}"))
+}
 
-    {
-        let map = cache.0.lock().unwrap();
-        if let Some(entry) = map.get(&profile_id) {
-            if let Some(until) = entry.parked_until {
-                if now < until {
-                    return UsageReport::Unavailable {
-                        reason: "the usage endpoint rate-limited gavin".to_string(),
-                        retry_after: Some(until),
-                    };
-                }
-            }
-            let fresh = now - entry.fetched_at < MIN_INTERVAL_SECS;
-            if fresh && !force {
-                return entry.report.clone().as_cached();
-            }
-        }
-    }
-
-    let (report, park) = match probe {
+fn run_probe(probe: UsageProbe, now: i64) -> (UsageReport, Option<i64>) {
+    match probe {
         UsageProbe::AnthropicOauth => anthropic_usage(now),
         // No home means no rollout files to read, which is the same
         // "nothing measured yet" the missing-directory arm reports.
@@ -192,14 +284,7 @@ pub fn agent_usage(
         UsageProbe::CursorSession => cursor_usage(now),
         UsageProbe::GeminiCodeAssist => gemini_usage(now),
         UsageProbe::OpencodeGo => opencode_go_usage(now),
-    };
-
-    let mut map = cache.0.lock().unwrap();
-    map.insert(
-        profile_id,
-        Entry { report: report.clone(), fetched_at: now, parked_until: park },
-    );
-    report
+    }
 }
 
 impl UsageReport {
@@ -218,24 +303,33 @@ impl UsageReport {
 /// The CLI's own version, for the user-agent the endpoint wants. Best
 /// effort: a plausible fallback beats no header at all, since it is the
 /// SHAPE of the user-agent that selects the generous bucket.
-fn claude_version() -> String {
-    // Resolved rather than named: on Windows `claude` is an npm shim and
-    // `CreateProcess` will not start it without the extension (see
-    // `program`). A miss leaves the fallback version below, which is the
-    // same answer this already gave for a machine with no CLI.
-    crate::program::command(crate::program::resolve_or_name("claude"))
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .split_whitespace()
-                .next()
-                .filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()))
-                .map(|v| v.to_string())
-        })
-        .unwrap_or_else(|| "2.0.0".to_string())
+///
+/// Asked once per process. It was a `claude --version` launch -- a Node
+/// start -- on every probe, for a string whose only job is its shape; a
+/// CLI that updates itself mid-run leaves the old number here, which is
+/// still that shape.
+fn claude_version() -> &'static str {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION.get_or_init(|| {
+        // Resolved rather than named: on Windows `claude` is an npm shim
+        // and `CreateProcess` will not start it without the extension
+        // (see `program`). A miss leaves the fallback version below,
+        // which is the same answer this already gave for a machine with
+        // no CLI.
+        crate::program::command(crate::program::resolve_or_name("claude"))
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .split_whitespace()
+                    .next()
+                    .filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                    .map(|v| v.to_string())
+            })
+            .unwrap_or_else(|| "2.0.0".to_string())
+    })
 }
 
 /// The OAuth token, from the Keychain first and the file second -- the
@@ -1120,9 +1214,21 @@ fn gemini_usage(now: i64) -> (UsageReport, Option<i64>) {
         }
     };
     let expired = creds.expiry_ms.is_some_and(|ms| ms <= now * 1000);
-    let access = if expired {
-        match gemini_refresh(creds.refresh.as_deref()) {
-            Some(t) => t,
+    let remembered = if expired {
+        let slot = GEMINI_REFRESHED.lock().unwrap();
+        creds.refresh.as_deref().and_then(|r| remembered_gemini_token(slot.as_ref(), r, now))
+    } else {
+        None
+    };
+    // Whether THIS probe minted the token. One that did and is still
+    // refused is a login problem; one read from the file or remembered
+    // from an earlier probe merely looked current, and earns the single
+    // refresh-and-retry below.
+    let (access, just_refreshed) = match (expired, remembered) {
+        (false, _) => (creds.access.clone(), false),
+        (true, Some(token)) => (token, false),
+        (true, None) => match gemini_refresh(creds.refresh.as_deref(), now) {
+            Some(t) => (t, true),
             None => {
                 return (
                     UsageReport::Unavailable {
@@ -1133,9 +1239,7 @@ fn gemini_usage(now: i64) -> (UsageReport, Option<i64>) {
                     None,
                 )
             }
-        }
-    } else {
-        creds.access.clone()
+        },
     };
 
     let (body, status, park) = match gemini_post(GEMINI_QUOTA_URL, &access, "{}") {
@@ -1154,11 +1258,11 @@ fn gemini_usage(now: i64) -> (UsageReport, Option<i64>) {
                 None,
             ),
         },
-        401 if !expired => {
+        401 if !just_refreshed => {
             // Access token looked current and was rejected; one refresh
             // then retry, rather than telling the user to sign in for a
             // clock skew.
-            let Some(token) = gemini_refresh(creds.refresh.as_deref()) else {
+            let Some(token) = gemini_refresh(creds.refresh.as_deref(), now) else {
                 return (
                     UsageReport::Unavailable {
                         reason: "Gemini CLI's login is not valid any more — run `gemini` and sign in"
@@ -1245,8 +1349,65 @@ fn gemini_denied_reason(access: &str, quota_body: &str) -> String {
     }
 }
 
-fn gemini_refresh(refresh: Option<&str>) -> Option<String> {
-    let refresh = refresh?;
+/// An access token gavin refreshed itself, kept until it expires.
+///
+/// Gemini CLI writes a refreshed token back to its own file; gavin does
+/// not, because that file is Gemini CLI's to write -- a gemini session
+/// refreshing at the same moment would race it. Remembering nothing,
+/// though, made every probe after the file's hour ran out refresh again:
+/// a curl to Google's token endpoint on every poll, before the one that
+/// reads the quota. So the token lives here, in memory only and for its
+/// own lifetime, tied to the refresh token it was minted from so a
+/// different login never gets it.
+struct GeminiRefreshed {
+    refresh: String,
+    access: String,
+    expires_at: i64,
+}
+
+static GEMINI_REFRESHED: Mutex<Option<GeminiRefreshed>> = Mutex::new(None);
+
+/// A remembered token is dropped this long before Google says it
+/// expires, so a probe never sends one that dies on the way.
+const GEMINI_EXPIRY_MARGIN_SECS: i64 = 60;
+
+fn remembered_gemini_token(slot: Option<&GeminiRefreshed>, refresh: &str, now: i64) -> Option<String> {
+    let kept = slot?;
+    if kept.refresh != refresh || now >= kept.expires_at - GEMINI_EXPIRY_MARGIN_SECS {
+        return None;
+    }
+    Some(kept.access.clone())
+}
+
+/// A fresh access token for `refresh`, remembered for its lifetime. A
+/// refresh that fails forgets any earlier one: the login it came from is
+/// what just stopped working.
+fn gemini_refresh(refresh: Option<&str>, now: i64) -> Option<String> {
+    let minted = refresh.and_then(|r| gemini_refresh_call(r).map(|t| (r, t)));
+    let mut slot = GEMINI_REFRESHED.lock().unwrap();
+    let Some((refresh, (access, expires_in))) = minted else {
+        *slot = None;
+        return None;
+    };
+    // No lifetime in the answer means none to trust: use it this once.
+    *slot = expires_in.map(|secs| GeminiRefreshed {
+        refresh: refresh.to_string(),
+        access: access.clone(),
+        expires_at: now + secs,
+    });
+    Some(access)
+}
+
+/// The token endpoint's answer: the access token and, when it says, how
+/// many seconds it lives.
+fn gemini_token_answer(body: &str) -> Option<(String, Option<i64>)> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let access = nonempty(parsed.get("access_token")?.as_str()?)?;
+    let expires_in = parsed.get("expires_in").and_then(|v| v.as_i64()).filter(|s| *s > 0);
+    Some((access, expires_in))
+}
+
+fn gemini_refresh_call(refresh: &str) -> Option<(String, Option<i64>)> {
     let form = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("client_id", GEMINI_OAUTH_CLIENT_ID)
         .append_pair("client_secret", GEMINI_OAUTH_CLIENT_SECRET)
@@ -1268,8 +1429,7 @@ fn gemini_refresh(refresh: Option<&str>) -> Option<String> {
     if status != 200 {
         return None;
     }
-    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
-    nonempty(parsed.get("access_token")?.as_str()?)
+    gemini_token_answer(body)
 }
 
 fn gemini_post(url: &str, access: &str, json: &str) -> Result<(String, u16, Option<i64>), String> {
@@ -1513,6 +1673,165 @@ mod tests {
         let json = serde_json::to_value(&parked).expect("serialises");
         assert_eq!(json["retryAfter"], 1_789_101_000);
         assert!(json.get("retry_after").is_none());
+    }
+
+    fn ready_at(now: i64) -> (UsageReport, Option<i64>) {
+        let report = UsageReport::Ready {
+            windows: vec![window("five_hour", "5-hour", 10.0, None)],
+            plan: None,
+            observed_at: now,
+            cached: false,
+        };
+        (report, None)
+    }
+
+    fn is_cached(report: &UsageReport) -> bool {
+        matches!(report, UsageReport::Ready { cached: true, .. })
+    }
+
+    /// A poll and a forced refresh that overlap make ONE call. Off the
+    /// main thread nothing serialises them any more, and the endpoint
+    /// answers a second call in the same second with hours of 429s.
+    ///
+    /// The refresh's arrival is pinned while the poll's probe is
+    /// provably in flight, so this holds however the threads are
+    /// scheduled: whether the refresh reaches the probe lock before the
+    /// poll's answer lands or after, that answer is its answer.
+    #[test]
+    fn a_forced_refresh_that_arrives_mid_probe_takes_that_probes_answer() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        use std::sync::mpsc;
+
+        let cache = Arc::new(UsageCache::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+
+        let poll = {
+            let (cache, calls) = (cache.clone(), calls.clone());
+            std::thread::spawn(move || {
+                cache.read("claude-code", false, |now| {
+                    calls.fetch_add(1, SeqCst);
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    ready_at(now)
+                })
+            })
+        };
+        entered_rx.recv().unwrap();
+        let asked_at = cache.generation("claude-code");
+        let refresh = {
+            let (cache, calls) = (cache.clone(), calls.clone());
+            std::thread::spawn(move || {
+                cache.read_since("claude-code", true, asked_at, |now| {
+                    calls.fetch_add(1, SeqCst);
+                    ready_at(now)
+                })
+            })
+        };
+        release_tx.send(()).unwrap();
+
+        assert!(!is_cached(&poll.join().unwrap()));
+        assert!(is_cached(&refresh.join().unwrap()));
+        assert_eq!(calls.load(SeqCst), 1);
+    }
+
+    /// The dedupe must not swallow what `force` is for: with nothing in
+    /// flight, a refresh inside the freshness floor still makes a real
+    /// call, where a poll there is answered from the cache.
+    #[test]
+    fn a_forced_refresh_with_nothing_in_flight_makes_a_real_call() {
+        let cache = UsageCache::new();
+        let calls = std::cell::Cell::new(0);
+        let probe = |now| {
+            calls.set(calls.get() + 1);
+            ready_at(now)
+        };
+        cache.read("codex", false, probe);
+        assert!(is_cached(&cache.read("codex", false, probe)));
+        assert_eq!(calls.get(), 1);
+        assert!(!is_cached(&cache.read("codex", true, probe)));
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn a_429_park_holds_a_forced_refresh() {
+        let cache = UsageCache::new();
+        let calls = std::cell::Cell::new(0);
+        cache.read("claude-code", false, |now| {
+            calls.set(calls.get() + 1);
+            let until = now + BACKOFF_SECS;
+            let report = UsageReport::Unavailable {
+                reason: "the usage endpoint rate-limited gavin".to_string(),
+                retry_after: Some(until),
+            };
+            (report, Some(until))
+        });
+        let again = cache.read("claude-code", true, |now| {
+            calls.set(calls.get() + 1);
+            ready_at(now)
+        });
+        assert!(matches!(again, UsageReport::Unavailable { retry_after: Some(_), .. }));
+        assert_eq!(calls.get(), 1);
+    }
+
+    /// The probe lock is per profile. One lock for the cache would put
+    /// every agent's panel behind whichever curl is waiting out its
+    /// timeout -- the main-thread queue again, on another thread.
+    #[test]
+    fn a_slow_probe_does_not_hold_up_another_profile() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let cache = Arc::new(UsageCache::new());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let slow = {
+            let cache = cache.clone();
+            std::thread::spawn(move || {
+                cache.read("gemini", false, |now| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    ready_at(now)
+                })
+            })
+        };
+        entered_rx.recv().unwrap();
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let other = {
+            let cache = cache.clone();
+            std::thread::spawn(move || done_tx.send(cache.read("codex", false, ready_at)).unwrap())
+        };
+        let answered = done_rx.recv_timeout(Duration::from_secs(5));
+        release_tx.send(()).unwrap();
+        slow.join().unwrap();
+        other.join().unwrap();
+        assert!(answered.is_ok(), "codex waited on gemini's probe");
+    }
+
+    /// Reused while it lives and only for the login it came from, so an
+    /// expired file costs one refresh an hour rather than one a poll.
+    #[test]
+    fn a_refreshed_gemini_token_is_reused_until_it_expires_and_only_for_its_login() {
+        let kept = GeminiRefreshed {
+            refresh: "1//r".to_string(),
+            access: "ya29.new".to_string(),
+            expires_at: 10_000,
+        };
+        assert_eq!(remembered_gemini_token(Some(&kept), "1//r", 5_000).as_deref(), Some("ya29.new"));
+        let edge = 10_000 - GEMINI_EXPIRY_MARGIN_SECS;
+        assert_eq!(remembered_gemini_token(Some(&kept), "1//r", edge), None);
+        assert_eq!(remembered_gemini_token(Some(&kept), "1//another-login", 5_000), None);
+        assert_eq!(remembered_gemini_token(None, "1//r", 5_000), None);
+    }
+
+    #[test]
+    fn the_token_endpoint_answer_yields_the_token_and_its_lifetime() {
+        let body = r#"{"access_token":"ya29.b","expires_in":3599,"token_type":"Bearer"}"#;
+        assert_eq!(gemini_token_answer(body), Some(("ya29.b".to_string(), Some(3599))));
+        assert_eq!(gemini_token_answer(r#"{"access_token":"ya29.b"}"#), Some(("ya29.b".to_string(), None)));
+        assert_eq!(gemini_token_answer(r#"{"error":"invalid_grant"}"#), None);
     }
 
     #[test]

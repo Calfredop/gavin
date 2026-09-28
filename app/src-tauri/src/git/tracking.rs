@@ -22,7 +22,7 @@
 //! -- the working tree keeps every byte, and the human reviews the change
 //! in the Git tab like any other.
 
-use crate::git::run::{run_git, run_git_ro};
+use crate::git::run::{off_main_thread, run_git, run_git_ro};
 use serde::Serialize;
 
 /// The fence gavin writes around its rules. Comments, so git reads them as
@@ -281,18 +281,25 @@ pub fn set(root: &str, tracked: bool, untrack_indexed: bool) -> Result<GavinTrac
     status(root)
 }
 
+// Off the main thread, both: `git check-ignore` and friends, which on an
+// ssh workspace run on the host.
+
 #[tauri::command]
-pub fn gavin_git_tracking(root: String) -> Result<GavinTracking, String> {
-    status(&root)
+pub async fn gavin_git_tracking(root: String) -> Result<GavinTracking, String> {
+    off_main_thread(move || status(&root)).await
 }
 
 #[tauri::command]
-pub fn set_gavin_git_tracking(
+pub async fn set_gavin_git_tracking(
     root: String,
     tracked: bool,
     untrack: bool,
 ) -> Result<GavinTracking, String> {
-    set(&root, tracked, untrack)
+    off_main_thread(move || {
+        let _edit = crate::git::ignore::one_edit_at_a_time();
+        set(&root, tracked, untrack)
+    })
+    .await
 }
 
 #[cfg(test)]

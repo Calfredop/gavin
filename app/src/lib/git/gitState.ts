@@ -85,8 +85,11 @@ export interface GitViewState {
   navSelection: NavSelection;
   /// Files of the selected stash (nav selection), read-only.
   stashFiles: FileEntry[] | null;
-  /// A running long op (fetch/pull/push) with its latest progress line.
-  op: { id: string; label: string; line: string | null } | null;
+  /// A running long op with its latest progress line: fetch/pull/push, an
+  /// action that runs hooks (`runAction`), or a worktree removal
+  /// (`runRemovals`). The last two hold `busy` as well. A removal cannot
+  /// be cancelled, so its bar offers no Cancel.
+  op: { id: string; label: string; line: string | null; cancellable: boolean } | null;
   // ---- SP4 ----
   log: { commits: CommitInfo[]; hasMore: boolean; all: boolean } | null;
   logLoading: boolean;
@@ -296,18 +299,26 @@ async function loadDiff(workspaceId: string): Promise<void> {
   const s = current(workspaceId);
   if (!s) return;
   const entry = findEntry(s.status, s.selected);
+  // Clearing a pane also bumps its token: `git_diff` and `git_conflict`
+  // run off the main thread, so one started for the previous selection
+  // can still answer after this, and nothing else would stop it landing.
   if (!s.selected || !entry) {
-    update(workspaceId, (st) => ({ ...st, diff: null, conflict: null }));
+    update(workspaceId, (st) => ({
+      ...st,
+      diff: null,
+      diffToken: st.diffToken + 1,
+      conflict: null,
+      conflictToken: st.conflictToken + 1,
+    }));
     return;
   }
   if (entry.status === "U") {
-    update(workspaceId, (st) => ({ ...st, diff: null }));
+    update(workspaceId, (st) => ({ ...st, diff: null, diffToken: st.diffToken + 1 }));
     await loadConflict(workspaceId);
     return;
   }
-  update(workspaceId, (st) => (st.conflict ? { ...st, conflict: null } : st));
   const token = s.diffToken + 1;
-  update(workspaceId, (st) => ({ ...st, diffToken: token }));
+  update(workspaceId, (st) => ({ ...st, diffToken: token, conflict: null, conflictToken: st.conflictToken + 1 }));
   const sel = s.selected;
   try {
     const diff = await backend.gitDiff(s.cwd, sel.path, entry.oldPath ?? null, sel.area === "staged", entry.status === "?");
@@ -317,34 +328,77 @@ async function loadDiff(workspaceId: string): Promise<void> {
   }
 }
 
-export async function refresh(workspaceId: string): Promise<void> {
-  const s = current(workspaceId);
-  if (!s) return;
-  const token = s.refreshToken + 1;
-  update(workspaceId, (st) => ({ ...st, refreshToken: token }));
+/// A view's refresh pass in flight, and the one queued behind it.
+interface RefreshFlight {
+  running: Promise<void>;
+  again: Promise<void> | null;
+}
+
+/// Keyed by workspace AND cwd: a worktree switch gets its own pass at
+/// once instead of waiting on one for a checkout the view has left.
+const refreshFlights = new Map<string, RefreshFlight>();
+
+/// Re-reads the view, one pass at a time. A call while a pass runs queues
+/// ONE more, shared by every caller that arrives before it starts, and
+/// resolves when that pass ends -- so a caller refreshing after a mutation
+/// still reads the tree the mutation left. The commands a pass awaits run
+/// off the main thread, so without this a burst of `git-changed` would
+/// run all its passes at once, a dozen git processes each.
+export function refresh(workspaceId: string): Promise<void> {
+  const cwd = current(workspaceId)?.cwd;
+  if (cwd === undefined) return Promise.resolve();
+  const key = `${workspaceId}\u0000${cwd}`;
+  const flight = refreshFlights.get(key);
+  if (flight) {
+    // Re-asked when its turn comes, for whatever cwd the view has by then.
+    const next = () => refresh(workspaceId);
+    return (flight.again ??= flight.running.then(next, next));
+  }
+  const started: RefreshFlight = { running: Promise.resolve(), again: null };
+  refreshFlights.set(key, started);
+  // Released by the pass itself rather than a `.finally` on it, which
+  // would add promise hops to every caller's wait.
+  started.running = refreshPass(workspaceId, () => {
+    if (refreshFlights.get(key) === started) refreshFlights.delete(key);
+  });
+  return started.running;
+}
+
+async function refreshPass(workspaceId: string, release: () => void): Promise<void> {
   try {
-    const repo = await backend.gitRepoInfo(s.cwd);
-    const status = repo.notARepo ? { unstaged: [], staged: [] } : await backend.gitStatus(s.cwd);
-    const refs = repo.notARepo ? null : await backend.gitRefs(s.cwd);
-    const mergeTool = repo.notARepo ? null : await backend.gitMergeToolName(s.cwd).catch(() => null);
-    let stale = false;
-    update(workspaceId, (st) => {
-      if (st.refreshToken !== token) {
-        stale = true;
-        return st;
+    const s = current(workspaceId);
+    if (!s) return;
+    const token = s.refreshToken + 1;
+    update(workspaceId, (st) => ({ ...st, refreshToken: token }));
+    // A worktree switch starts the replacing view's count from 0 as well,
+    // so the token alone can match an answer about the checkout it left.
+    const superseded = (st: GitViewState) => st.refreshToken !== token || st.cwd !== s.cwd;
+    try {
+      const repo = await backend.gitRepoInfo(s.cwd);
+      const status = repo.notARepo ? { unstaged: [], staged: [] } : await backend.gitStatus(s.cwd);
+      const refs = repo.notARepo ? null : await backend.gitRefs(s.cwd);
+      const mergeTool = repo.notARepo ? null : await backend.gitMergeToolName(s.cwd).catch(() => null);
+      let stale = false;
+      update(workspaceId, (st) => {
+        if (superseded(st)) {
+          stale = true;
+          return st;
+        }
+        return { ...applyStatus(st, status), repo, refs, mergeTool, gitMissing: false };
+      });
+      if (!stale) {
+        await loadDiff(workspaceId);
+        if (current(workspaceId)?.navSelection === "commits") await loadLog(workspaceId, true);
       }
-      return { ...applyStatus(st, status), repo, refs, mergeTool, gitMissing: false };
-    });
-    if (!stale) {
-      await loadDiff(workspaceId);
-      if (current(workspaceId)?.navSelection === "commits") await loadLog(workspaceId, true);
+    } catch (e) {
+      const text = errorText(e);
+      update(workspaceId, (st) => {
+        if (superseded(st)) return st;
+        return text === GIT_NOT_FOUND ? { ...st, gitMissing: true } : { ...st, error: `Refresh failed: ${text}` };
+      });
     }
-  } catch (e) {
-    const text = errorText(e);
-    update(workspaceId, (st) => {
-      if (st.refreshToken !== token) return st;
-      return text === GIT_NOT_FOUND ? { ...st, gitMissing: true } : { ...st, error: `Refresh failed: ${text}` };
-    });
+  } finally {
+    release();
   }
 }
 
@@ -415,10 +469,57 @@ export async function run(workspaceId: string, label: string, op: (cwd: string) 
 /// dialog opened from the orchestration hub or from a card is not
 /// looking at the Git tab's error banner, so a bare `false` told it --
 /// and its human -- nothing at all: the button simply did nothing.
-export async function runWithReason(
+export function runWithReason(
   workspaceId: string,
   label: string,
   op: (cwd: string) => Promise<void>
+): Promise<RunResult> {
+  return mutate(workspaceId, label, op, null);
+}
+
+/// A mutation that runs the repository's hooks, signs, or checks files
+/// out through a filter: commit, merge, revert, cherry-pick, `--continue`
+/// and the checkouts. It takes as long as those do -- a pre-commit suite,
+/// a pinentry or Touch ID prompt, an LFS download -- so it is an op as
+/// well as `busy`: the op bar shows it, with the hook's output as its
+/// line and a Cancel that reaches the command through `opId`.
+export function runAction(
+  workspaceId: string,
+  label: string,
+  op: (cwd: string, opId: string) => Promise<void>
+): Promise<RunResult> {
+  const opId = crypto.randomUUID();
+  return mutate(workspaceId, label, (cwd) => op(cwd, opId), { id: opId, cancellable: true });
+}
+
+/// A mutation that removes worktrees, one `git worktree remove` after
+/// another. Each deletes the build output too, which takes seconds, and a
+/// sweep or a discard removes several. Off the main thread the window
+/// stays live through that, so the removal is an op, and its line names
+/// the folder it has reached: a Git tab locked with nothing saying why
+/// reads as hung. `reached(i, n, path)` sets that line.
+///
+/// No Cancel. Git has no cleanup for a remove stopped part-way, and one
+/// leaves the folder half deleted and still registered. Nothing on the
+/// host is registered under this id, so a stray cancel reaches nothing.
+function runRemovals(
+  workspaceId: string,
+  label: string,
+  op: (cwd: string, reached: (i: number, n: number, path: string) => void) => Promise<void>
+): Promise<RunResult> {
+  const id = crypto.randomUUID();
+  const reached = (i: number, n: number, path: string) =>
+    setOpLine(workspaceId, id, n === 1 ? folderName(path) : `${i + 1} of ${n}: ${folderName(path)}`);
+  return mutate(workspaceId, label, (cwd) => op(cwd, reached), { id, cancellable: false });
+}
+
+/// `runWithReason`, `runAction` and `runRemovals`: `asOp` makes the
+/// mutation an op too, for the length of the command.
+async function mutate(
+  workspaceId: string,
+  label: string,
+  op: (cwd: string) => Promise<void>,
+  asOp: { id: string; cancellable: boolean } | null
 ): Promise<RunResult> {
   const s = current(workspaceId);
   const blocked = runBlocker(s);
@@ -432,18 +533,28 @@ export async function runWithReason(
     noteError(workspaceId, reason);
     return { ok: false, error: reason };
   }
-  update(workspaceId, (st) => ({ ...st, busy: label, error: null }));
+  // Busy either way: every surface that disables on `busy` alone must
+  // stay disabled through an action too.
+  update(workspaceId, (st) => ({ ...st, busy: label, error: null, op: asOp ? { ...asOp, label, line: null } : st.op }));
+  const unlisten = asOp?.cancellable ? await followProgress(workspaceId, asOp.id) : null;
   let failure: string | null = null;
   try {
     await op(s.cwd);
   } catch (e) {
-    failure = `${label} failed: ${errorText(e)}`;
+    const text = errorText(e);
+    failure = asOp?.cancellable && text === "cancelled" ? `${label} cancelled` : `${label} failed: ${text}`;
     update(workspaceId, (st) => ({ ...st, error: failure }));
   }
+  unlisten?.();
   // A successful mutation invalidates any line selection (spec §3: the diff
   // is refetched and the selection cleared); a failed one keeps it so the
   // user can retry.
-  update(workspaceId, (st) => ({ ...st, busy: null, lineSelection: failure ? st.lineSelection : new Set() }));
+  update(workspaceId, (st) => ({
+    ...st,
+    busy: null,
+    op: asOp && st.op?.id === asOp.id ? null : st.op,
+    lineSelection: failure ? st.lineSelection : new Set(),
+  }));
   await refresh(workspaceId);
   return failure === null ? { ok: true, error: null } : { ok: false, error: failure };
 }
@@ -496,7 +607,7 @@ export async function commit(workspaceId: string): Promise<boolean> {
   if (!s || !canCommit(s)) return false;
   const message = joinMessage(s.commit);
   const amend = s.commit.amend;
-  const done = await run(workspaceId, "Commit", (cwd) => backend.gitCommit(cwd, message, amend));
+  const { ok: done } = await runAction(workspaceId, "Commit", (cwd, opId) => backend.gitCommit(cwd, message, amend, opId));
   if (done) {
     update(workspaceId, (st) => ({ ...st, commit: { summary: "", description: "", amend: false }, preAmend: null }));
   }
@@ -1010,11 +1121,8 @@ export async function startOp(
   const s = current(workspaceId);
   if (!s || s.busy || s.op) return false;
   const id = crypto.randomUUID();
-  update(workspaceId, (st) => ({ ...st, op: { id, label, line: null }, error: null }));
-  const unlisten = await listen<{ opId: string; line: string }>("git-op-progress", (event) => {
-    if (event.payload.opId !== id) return;
-    update(workspaceId, (st) => (st.op?.id === id ? { ...st, op: { ...st.op, line: event.payload.line } } : st));
-  });
+  update(workspaceId, (st) => ({ ...st, op: { id, label, line: null, cancellable: true }, error: null }));
+  const unlisten = await followProgress(workspaceId, id);
   let okResult = true;
   try {
     await invoke(s.cwd, id);
@@ -1029,9 +1137,23 @@ export async function startOp(
   return okResult;
 }
 
+/// Lands op `id`'s `git-op-progress` lines in the view's `op.line`.
+function followProgress(workspaceId: string, id: string): Promise<() => void> {
+  return listen<{ opId: string; line: string }>("git-op-progress", (event) => {
+    if (event.payload.opId === id) setOpLine(workspaceId, id, event.payload.line);
+  });
+}
+
+/// Op `id`'s latest line, if it is still the running op.
+function setOpLine(workspaceId: string, id: string, line: string): void {
+  update(workspaceId, (st) => (st.op?.id === id ? { ...st, op: { ...st.op, line } } : st));
+}
+
+/// Stops the running op: fetch, pull, push, or an action (`runAction`).
+/// A worktree removal is an op with no cancel (`runRemovals`).
 export async function cancelOp(workspaceId: string): Promise<void> {
-  const id = current(workspaceId)?.op?.id;
-  if (id) await backend.gitCancelOp(id).catch(() => false);
+  const op = current(workspaceId)?.op;
+  if (op?.cancellable) await backend.gitCancelOp(op.id).catch(() => false);
 }
 
 function remoteOrOrigin(workspaceId: string): string {
@@ -1055,31 +1177,31 @@ export function push(workspaceId: string): Promise<boolean> {
   return startOp(workspaceId, label, (cwd, id) => backend.gitPush(cwd, remote, id));
 }
 
-export function checkout(workspaceId: string, name: string, trackRemote: string | null): Promise<boolean> {
-  return run(workspaceId, `Checkout ${name}`, (cwd) => backend.gitCheckout(cwd, name, trackRemote));
+export async function checkout(workspaceId: string, name: string, trackRemote: string | null): Promise<boolean> {
+  return (await runAction(workspaceId, `Checkout ${name}`, (cwd, opId) => backend.gitCheckout(cwd, name, trackRemote, opId))).ok;
 }
 
 /// Reports its reason for the same read: the rail bind dialog offers
 /// "New branch…" from the orchestration hub, where nothing else would
 /// carry git's refusal.
 export function createBranch(workspaceId: string, name: string, from: string | null, checkoutAfter: boolean): Promise<RunResult> {
-  return runWithReason(workspaceId, "New branch", (cwd) => backend.gitCreateBranch(cwd, name, from, checkoutAfter));
+  return runAction(workspaceId, "New branch", (cwd, opId) => backend.gitCreateBranch(cwd, name, from, checkoutAfter, opId));
 }
 
 export function deleteBranch(workspaceId: string, name: string, force: boolean): Promise<boolean> {
   return run(workspaceId, "Delete branch", (cwd) => backend.gitDeleteBranch(cwd, name, force));
 }
 
-export function mergeBranch(workspaceId: string, branch: string): Promise<boolean> {
-  return run(workspaceId, `Merge ${branch}`, (cwd) => backend.gitMerge(cwd, branch));
+export async function mergeBranch(workspaceId: string, branch: string): Promise<boolean> {
+  return (await runAction(workspaceId, `Merge ${branch}`, (cwd, opId) => backend.gitMerge(cwd, branch, opId))).ok;
 }
 
 export function abortInProgress(workspaceId: string, kind: InProgressKind): Promise<boolean> {
   return run(workspaceId, `Abort ${kind}`, (cwd) => backend.gitAbortInProgress(cwd, kind));
 }
 
-export function continueRebase(workspaceId: string): Promise<boolean> {
-  return run(workspaceId, "Continue rebase", (cwd) => backend.gitContinueRebase(cwd));
+export async function continueRebase(workspaceId: string): Promise<boolean> {
+  return (await runAction(workspaceId, "Continue rebase", (cwd, opId) => backend.gitContinueRebase(cwd, opId))).ok;
 }
 
 export function addRemote(workspaceId: string, name: string, url: string): Promise<boolean> {
@@ -1223,24 +1345,24 @@ export async function selectDetailFile(workspaceId: string, path: string): Promi
   await loadDetailDiff(workspaceId, s.selectedCommit, file, token);
 }
 
-export function checkoutCommit(workspaceId: string, sha: string): Promise<boolean> {
-  return run(workspaceId, "Checkout commit", (cwd) => backend.gitCheckoutCommit(cwd, sha));
+export async function checkoutCommit(workspaceId: string, sha: string): Promise<boolean> {
+  return (await runAction(workspaceId, "Checkout commit", (cwd, opId) => backend.gitCheckoutCommit(cwd, sha, opId))).ok;
 }
 
-export function cherryPick(workspaceId: string, sha: string): Promise<boolean> {
-  return run(workspaceId, "Cherry-pick", (cwd) => backend.gitCherryPick(cwd, sha));
+export async function cherryPick(workspaceId: string, sha: string): Promise<boolean> {
+  return (await runAction(workspaceId, "Cherry-pick", (cwd, opId) => backend.gitCherryPick(cwd, sha, opId))).ok;
 }
 
-export function revertCommit(workspaceId: string, sha: string): Promise<boolean> {
-  return run(workspaceId, "Revert", (cwd) => backend.gitRevert(cwd, sha));
+export async function revertCommit(workspaceId: string, sha: string): Promise<boolean> {
+  return (await runAction(workspaceId, "Revert", (cwd, opId) => backend.gitRevert(cwd, sha, opId))).ok;
 }
 
 export function resetTo(workspaceId: string, sha: string, mode: ResetMode): Promise<boolean> {
   return run(workspaceId, `Reset (${mode})`, (cwd) => backend.gitReset(cwd, sha, mode));
 }
 
-export function continueInProgress(workspaceId: string, kind: InProgressKind): Promise<boolean> {
-  return run(workspaceId, `Continue ${kind}`, (cwd) => backend.gitContinueInProgress(cwd, kind));
+export async function continueInProgress(workspaceId: string, kind: InProgressKind): Promise<boolean> {
+  return (await runAction(workspaceId, `Continue ${kind}`, (cwd, opId) => backend.gitContinueInProgress(cwd, kind, opId))).ok;
 }
 
 // ---- SP3: worktrees --------------------------------------------------------
@@ -1263,18 +1385,27 @@ export async function switchWorktree(workspaceId: string, path: string): Promise
 /// Reports its reason rather than a bare boolean: both of its callers --
 /// the fork dialog and a best-of-N launch -- are surfaces the Git tab's
 /// error banner is not on.
+///
+/// An action: it checks the whole tree out, through the post-checkout
+/// hook and any LFS smudge, so it has the op bar's Cancel, as a checkout
+/// does. A checkout stopped part-way leaves nothing behind: git deletes
+/// the half-made worktree itself.
 export function forkWorktree(
   workspaceId: string,
   opts: { path: string; branch: string; from: string | null; newBranch: boolean }
 ): Promise<RunResult> {
-  return runWithReason(workspaceId, "New worktree", (cwd) => backend.gitWorktreeAdd(cwd, opts.path, opts.branch, opts.from, opts.newBranch));
+  return runAction(workspaceId, "New worktree", (cwd, opId) =>
+    backend.gitWorktreeAdd(cwd, opts.path, opts.branch, opts.from, opts.newBranch, opId)
+  );
 }
 
-export function removeWorktree(workspaceId: string, path: string, force: boolean, deleteBranchName: string | null): Promise<boolean> {
-  return run(workspaceId, "Remove worktree", async (cwd) => {
+export async function removeWorktree(workspaceId: string, path: string, force: boolean, deleteBranchName: string | null): Promise<boolean> {
+  const result = await runRemovals(workspaceId, "Remove worktree", async (cwd, reached) => {
+    reached(0, 1, path);
     await backend.gitWorktreeRemove(cwd, path, force);
     if (deleteBranchName) await backend.gitDeleteBranch(cwd, deleteBranchName, false);
   });
+  return result.ok;
 }
 
 export function pruneWorktrees(workspaceId: string): Promise<boolean> {
@@ -1347,13 +1478,14 @@ export async function sweepFacts(
 /// checkout in far less: forcing on a minute-old answer is precisely the
 /// window git's blanket refusal used to cover. A read that fails forces
 /// nothing, so the unforced call goes out and git refuses it.
-export function sweepWorktrees(
+export async function sweepWorktrees(
   workspaceId: string,
   entries: readonly { path: string; branch: string | null }[],
   deleteBranches: boolean
 ): Promise<boolean> {
-  return run(workspaceId, "Sweep worktrees", async (cwd) => {
-    for (const entry of entries) {
+  const result = await runRemovals(workspaceId, "Sweep worktrees", async (cwd, reached) => {
+    for (const [i, entry] of entries.entries()) {
+      reached(i, entries.length, entry.path);
       const status = await backend.gitStatus(entry.path).catch(() => null);
       await backend.gitWorktreeRemove(cwd, entry.path, mayForceRemoval(status));
       // Never forced either: `branch -d` refuses anything unmerged, and
@@ -1362,6 +1494,7 @@ export function sweepWorktrees(
       if (deleteBranches && entry.branch) await backend.gitDeleteBranch(cwd, entry.branch, false);
     }
   });
+  return result.ok;
 }
 
 /// Remove the worktrees a best-of-N run is throwing away, FORCED --
@@ -1401,9 +1534,10 @@ export async function discardWorktrees(
   if (view && doomed.has(view.cwd.replace(/\/+$/, ""))) {
     await switchWorktree(workspaceId, rootPathOf(view));
   }
-  return run(workspaceId, "Discard worktrees", async (cwd) => {
+  const result = await runRemovals(workspaceId, "Discard worktrees", async (cwd, reached) => {
     let failure: unknown = null;
-    for (const entry of entries) {
+    for (const [i, entry] of entries.entries()) {
+      reached(i, entries.length, entry.path);
       try {
         await backend.gitWorktreeRemove(cwd, entry.path, true);
         if (deleteBranches && entry.branch) await backend.gitDeleteBranch(cwd, entry.branch, true);
@@ -1413,12 +1547,13 @@ export async function discardWorktrees(
     }
     if (failure) throw failure;
   });
+  return result.ok;
 }
 
 /// Merge a fork's branch into the ROOT checkout (G12). "conflict" means the
 /// root now has MERGE_HEAD and the banner's Abort is the way out.
 export async function mergeBack(workspaceId: string, rootPath: string, branch: string): Promise<"merged" | "conflict" | "failed"> {
-  const done = await run(workspaceId, `Merge ${branch}`, () => backend.gitMerge(rootPath, branch));
+  const { ok: done } = await runAction(workspaceId, `Merge ${branch}`, (_cwd, opId) => backend.gitMerge(rootPath, branch, opId));
   if (done) return "merged";
   const info = await backend.gitRepoInfo(rootPath).catch(() => null);
   return info?.inProgress === "merge" ? "conflict" : "failed";
@@ -1431,7 +1566,10 @@ export async function loadConflict(workspaceId: string): Promise<void> {
   const sel = s?.selected;
   if (!s || !sel) return;
   const token = s.conflictToken + 1;
-  update(workspaceId, (st) => ({ ...st, conflictToken: token }));
+  // Another file's conflict goes while this one loads: the view's buttons
+  // act on the selected path, so it must never show a different one's.
+  // The same file's stays up, so a refresh does not flash "Loading".
+  update(workspaceId, (st) => ({ ...st, conflictToken: token, conflict: st.conflict?.path === sel.path ? st.conflict : null }));
   try {
     const conflict = await backend.gitConflict(s.cwd, sel.path);
     update(workspaceId, (st) => (st.conflictToken === token ? { ...st, conflict } : st));

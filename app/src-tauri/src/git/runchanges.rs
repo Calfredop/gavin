@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::commands::{MAX_DIFF_BYTES, WORKTREES_DIR};
 use crate::git::parse::{parse_diff, parse_name_status};
-use crate::git::run::{ok, run_git, run_git_ro};
+use crate::git::run::{off_main_thread, ok, run_git, run_git_ro, run_git_ro_capped};
 use crate::git::types::{FileDiff, FileEntry};
 use crate::trash::trash_path;
 
@@ -314,7 +314,8 @@ pub fn diff_since(
         }
         args.push(path);
     }
-    let out = run_git_ro(&root, &args)?;
+    // Capped like `diff_at`: past MAX_DIFF_BYTES it is "too large" anyway.
+    let out = run_git_ro_capped(&root, &args, MAX_DIFF_BYTES)?;
     // `--no-index` exits 1 for "differences found"; both codes are fine.
     if out.code != 0 && out.code != 1 {
         return Err(out.stderr.trim().to_string());
@@ -412,9 +413,10 @@ fn discard_with(
     Ok(report)
 }
 
+/// A `git rev-parse`: on an ssh workspace, a round trip to the host.
 #[tauri::command]
-pub fn git_head_sha(cwd: String) -> Result<Option<String>, String> {
-    head_sha(&cwd)
+pub async fn git_head_sha(cwd: String) -> Result<Option<String>, String> {
+    off_main_thread(move || head_sha(&cwd)).await
 }
 
 /// `async` + `spawn_blocking`, like `get_git_baselines`: one call runs
@@ -434,8 +436,11 @@ pub async fn git_run_changes(
     .map_err(|e| e.to_string())?
 }
 
+/// `async` like `git_run_changes`: the changes view and the review ask
+/// for one file at a time, each a `git diff` that can run long on a big
+/// file. Both already drop a stale answer by `diffToken`.
 #[tauri::command]
-pub fn git_diff_since(
+pub async fn git_diff_since(
     cwd: String,
     base_sha: String,
     path: String,
@@ -443,16 +448,21 @@ pub fn git_diff_since(
     untracked: bool,
     until_sha: Option<String>,
 ) -> Result<FileDiff, String> {
-    diff_since(&cwd, &base_sha, &path, old_path.as_deref(), untracked, until_sha.as_deref())
+    off_main_thread(move || {
+        diff_since(&cwd, &base_sha, &path, old_path.as_deref(), untracked, until_sha.as_deref())
+    })
+    .await
 }
 
+/// `async` like the Git tab's own actions: a `reset --hard` of the run's
+/// whole checkout, then a Trash move per untracked file.
 #[tauri::command]
-pub fn git_discard_run(
+pub async fn git_discard_run(
     cwd: String,
     base_sha: String,
     untracked: Vec<String>,
 ) -> Result<DiscardReport, String> {
-    discard_run(&cwd, &base_sha, &untracked)
+    off_main_thread(move || discard_run(&cwd, &base_sha, &untracked)).await
 }
 
 #[cfg(test)]

@@ -180,6 +180,86 @@ describe("refreshBoard", () => {
     await pending;
   });
 
+  // The board is read off the main thread now: a read taken before a
+  // save can land after that save has resolved.
+  it("drops an answer taken before a save that resolved while it waited", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+    await fetchBoard("ws-1");
+    vi.mocked(backend.getBoard).mockClear();
+    let answer!: (b: Board) => void;
+    vi.mocked(backend.getBoard).mockImplementationOnce(() => new Promise((r) => (answer = r)));
+    const refreshing = refreshBoard("ws-1");
+    await vi.waitFor(() => expect(backend.getBoard).toHaveBeenCalledTimes(1));
+
+    vi.mocked(backend.setBoard).mockResolvedValue(undefined);
+    await addColumnAction("ws-1", newColumn);
+    answer(emptyBoard());
+    await refreshing;
+
+    expect(get(kanbanState)["ws-1"].columns).toHaveLength(2);
+  });
+
+  // The storm this exists for: every card write by any agent is a tree
+  // push, and every push asks for the board.
+  it("any number of refreshes asked in one task are one read", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+    await fetchBoard("ws-1");
+    vi.mocked(backend.getBoard).mockClear();
+
+    await Promise.all(Array.from({ length: 20 }, () => refreshBoard("ws-1")));
+
+    expect(backend.getBoard).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes asked while a read is out cost one more read, not one each", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+    await fetchBoard("ws-1");
+    vi.mocked(backend.getBoard).mockClear();
+    const newer: Board = { ...emptyBoard(), labels: [{ id: "l", name: "L", color: "#fff" }] };
+    let first!: (b: Board) => void;
+    vi.mocked(backend.getBoard).mockImplementationOnce(() => new Promise((r) => (first = r)));
+    vi.mocked(backend.getBoard).mockResolvedValueOnce(newer);
+
+    const asked = refreshBoard("ws-1");
+    await vi.waitFor(() => expect(backend.getBoard).toHaveBeenCalledTimes(1));
+    // The board changed after that read left: these must see it...
+    const later = [refreshBoard("ws-1"), refreshBoard("ws-1"), refreshBoard("ws-1")];
+    // ...without a second read racing the first.
+    expect(backend.getBoard).toHaveBeenCalledTimes(1);
+
+    first(emptyBoard());
+    await Promise.all([asked, ...later]);
+
+    expect(backend.getBoard).toHaveBeenCalledTimes(2);
+    expect(get(kanbanState)["ws-1"]).toEqual(newer);
+
+    // And once it has settled, the next refresh is a read of its own.
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+    await refreshBoard("ws-1");
+    expect(backend.getBoard).toHaveBeenCalledTimes(3);
+  });
+
+  it("coalesces per workspace, never across them", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+
+    await Promise.all([refreshBoard("ws-1"), refreshBoard("ws-2"), refreshBoard("ws-1"), refreshBoard("ws-2")]);
+
+    expect(backend.getBoard).toHaveBeenCalledTimes(2);
+    expect(backend.getBoard).toHaveBeenCalledWith("ws-1");
+    expect(backend.getBoard).toHaveBeenCalledWith("ws-2");
+  });
+
+  // A surface mounting asks for both at once: fetchBoard for a board it
+  // has never seen, refreshBoard for one it may have seen stale.
+  it("a first load and a refresh asked together are one read", async () => {
+    vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
+
+    await Promise.all([fetchBoard("ws-1"), refreshBoard("ws-1")]);
+
+    expect(backend.getBoard).toHaveBeenCalledTimes(1);
+    expect(get(kanbanState)["ws-1"]).toEqual(emptyBoard());
+  });
+
   it("a failed refresh keeps the board we have", async () => {
     vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
     await fetchBoard("ws-1");
@@ -194,6 +274,9 @@ describe("refreshBoard", () => {
 
 describe("card session bindings", () => {
   const binding = { path: "/p/t.md", sessionId: "s-1", cwd: "/p", command: "claude 'x'" };
+  // What the board keeps of it: everything but the launch command, the
+  // same shape the next read brings back (v43).
+  const onBoard = { path: "/p/t.md", sessionId: "s-1", cwd: "/p" };
 
   it("link upserts optimistically and persists", async () => {
     vi.mocked(backend.getBoard).mockResolvedValue(emptyBoard());
@@ -202,7 +285,7 @@ describe("card session bindings", () => {
 
     await linkCardSessionAction("ws-1", binding);
 
-    expect(get(kanbanState)["ws-1"].cardSessions).toEqual([binding]);
+    expect(get(kanbanState)["ws-1"].cardSessions).toEqual([onBoard]);
     // The last four are the conversation this run IS, where it was
     // launched, how many times gavin has resumed it by itself, and the
     // commit it started on -- null on a binding that predates them, and
@@ -219,7 +302,7 @@ describe("card session bindings", () => {
       null,
       null
     );
-    expect(cardSessionFor(get(kanbanState)["ws-1"], "/p/t.md")).toEqual(binding);
+    expect(cardSessionFor(get(kanbanState)["ws-1"], "/p/t.md")).toEqual(onBoard);
 
     // Upsert replaces:
     await linkCardSessionAction("ws-1", { ...binding, sessionId: "s-2" });
@@ -228,7 +311,7 @@ describe("card session bindings", () => {
   });
 
   it("unlink removes optimistically and persists", async () => {
-    vi.mocked(backend.getBoard).mockResolvedValue({ ...emptyBoard(), cardSessions: [binding] });
+    vi.mocked(backend.getBoard).mockResolvedValue({ ...emptyBoard(), cardSessions: [onBoard] });
     await fetchBoard("ws-1");
     vi.mocked(backend.unlinkCardSession).mockResolvedValue(undefined);
 

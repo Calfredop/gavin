@@ -19,8 +19,10 @@ import {
   loadedDirs,
   loadedNodeCount,
   forgetChildren,
+  noMatchMessage,
   nodeAt,
   nodesFrom,
+  omittedNote,
   parentPath,
   resolveTreeShare,
   restoreTargets,
@@ -288,6 +290,70 @@ describe("reconciling a mutation", () => {
   it("still patches the destination when the source was never listed", () => {
     const state = afterRename(sampleTree(), "/repo/target/x.log", "/repo/x.log");
     expect(state.children["/repo"].map((n) => n.name)).toEqual(["app", "Cargo.toml", "x.log"]);
+  });
+});
+
+// The host lists at most 2,000 entries of a folder and counts the rest
+// (fileviewer.rs's MAX_LISTED_ENTRIES). The tree has to carry that
+// count wherever it carries the listing, or a folder of sixty thousand
+// draws its first two thousand as if they were all there were.
+describe("a folder too big to list whole", () => {
+  /// sampleTree with /repo/app/src cut short by the host: one entry
+  /// listed, 58,052 left out.
+  function cutTree(): FileTreeState {
+    let state = sampleTree();
+    state = expandDir(state, "/repo/app/src");
+    return withChildren(state, "/repo/app/src", [entry("main.ts", { size: 100 })], 58052);
+  }
+
+  function row(state: FileTreeState, path: string) {
+    const found = visibleRows(state).rows.find((r) => r.node.path === path);
+    if (!found) throw new Error(`${path} is not on screen`);
+    return found;
+  }
+
+  it("says how many entries it left out, on the folder's row only", () => {
+    const state = cutTree();
+    expect(row(state, "/repo/app/src").omitted).toBe(58052);
+    expect(row(state, "/repo/app").omitted).toBe(0);
+    expect(row(state, "/repo/app/src/main.ts").omitted).toBe(0);
+    expect(omittedNote(row(state, "/repo/app/src"))).toBe(
+      "58,052 more entries not listed: this folder is too big to show whole. Reveal in Finder lists them all."
+    );
+    expect(omittedNote(row(state, "/repo/app"))).toBeNull();
+  });
+
+  it("counts one left-out entry in the singular", () => {
+    const state = withChildren(cutTree(), "/repo/app/src", [entry("main.ts")], 1);
+    expect(omittedNote(row(state, "/repo/app/src"))).toMatch(/^1 more entry not listed/);
+  });
+
+  it("drops the count when a re-read lists the folder whole, and on Refresh", () => {
+    const relisted = withChildren(cutTree(), "/repo/app/src", [entry("main.ts")]);
+    expect(row(relisted, "/repo/app/src").omitted).toBe(0);
+    expect(relisted.omitted).toEqual({});
+
+    const refreshed = forgetChildren(cutTree(), ["/repo/app/src"]);
+    expect(refreshed.omitted).toEqual({});
+  });
+
+  it("forgets the count with the folder, and carries it through a rename", () => {
+    expect(afterDelete(cutTree(), "/repo/app").omitted).toEqual({});
+
+    const renamed = afterRename(cutTree(), "/repo/app", "/repo/web");
+    expect(renamed.omitted).toEqual({ "/repo/web/src": 58052 });
+    expect(row(renamed, "/repo/web/src").omitted).toBe(58052);
+  });
+
+  it("owns up to a miss that may be in the part left out", () => {
+    const whole = visibleRows(sampleTree(), "nothing-like-this");
+    expect(whole.partial).toBe(false);
+    expect(noMatchMessage(whole)).toBe(NO_MATCH_MESSAGE);
+
+    const cut = visibleRows(cutTree(), "nothing-like-this");
+    expect(cut.partial).toBe(true);
+    expect(noMatchMessage(cut)).toContain(NO_MATCH_MESSAGE);
+    expect(noMatchMessage(cut)).toContain("searched only as far as they are listed");
   });
 });
 

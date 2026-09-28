@@ -59,6 +59,21 @@ beforeEach(() => {
   dropHold.set(null);
 });
 
+// The daemon's side of a write that files the card elsewhere: that one
+// write answers with the new path, and any later write to the path the
+// card left fails, as confine_card_path fails on a missing file.
+function fileOn(write: [string, string, string], filedAt: string): void {
+  const left = new Set<string>();
+  vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (path, key, value) => {
+    if (left.has(path)) throw new Error(`couldn't resolve ${path}: No such file or directory`);
+    if (path === write[0] && key === write[1] && value === write[2]) {
+      left.add(path);
+      return filedAt;
+    }
+    return path;
+  });
+}
+
 describe("applyPlanDrop", () => {
   it("cross-column: writes status first, then order writes, patching each on success", async () => {
     vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
@@ -76,6 +91,25 @@ describe("applyPlanDrop", () => {
       ["/p/d.md", "order", "2048"],
     ]);
     expect(planByPath("/p/d.md")?.status).toBe("In Progress");
+    expect(planByPath("/p/d.md")?.order).toBe(2048);
+  });
+
+  it("a drop into Done orders the card where its status write filed it", async () => {
+    fileOn(["/p/d.md", "status", "Done"], "/p/done/d.md");
+    seed([planInfo("/p/done/a.md", "Done", 1024), planInfo("/p/d.md", "To Do", null)]);
+    const err = await applyPlanDrop({
+      workspaceId: "ws",
+      path: "/p/d.md",
+      statusTarget: "Done",
+      targetColumn: [{ path: "/p/done/a.md", order: 1024 }],
+      targetIndex: 1,
+    });
+    expect(err).toBeNull();
+    expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([
+      ["/p/d.md", "status", "Done"],
+      ["/p/done/d.md", "order", "2048"],
+    ]);
+    // Patched on the path the store still holds until the watcher's push.
     expect(planByPath("/p/d.md")?.order).toBe(2048);
   });
 
@@ -438,6 +472,26 @@ describe("nest drops", () => {
       ["/p/t.md", "parent", "plan.md"],
       ["/p/t.md", "status", ""],
       ["/p/t.md", "order", "2048"],
+    ]);
+  });
+
+  it("nest: into a Done plan, orders the task where the status write filed it", async () => {
+    fileOn(["/p/t.md", "status", ""], "/p/done/t.md");
+    seed([planInfo("/p/t.md", "To Do", null)]);
+    const child = view("/p/done/c1.md", "task", null, 1024, { parent: "plan.md" });
+    const plan = view("/p/done/plan.md", "plan", "Done", null, { nestedChildren: [child] });
+    const task = view("/p/t.md", "task", "To Do", null);
+    const err = await planCommitFromMerged(
+      "ws",
+      { id: "/p/t.md", sourceColumnId: "col1", target: { columnId: "col1", index: 1, nest: "/p/done/plan.md" } },
+      [{ id: "col1", name: "To Do", position: 0 }],
+      mergedWith([plan, task])
+    );
+    expect(err).toBeNull();
+    expect(vi.mocked(backend.setPlanFrontmatterField).mock.calls).toEqual([
+      ["/p/t.md", "parent", "plan.md"],
+      ["/p/t.md", "status", ""],
+      ["/p/done/t.md", "order", "2048"],
     ]);
   });
 

@@ -42,6 +42,7 @@ import {
 } from "$lib/agents/memory";
 import { layoutState, resolvedAgentFor } from "$lib/core/layoutState";
 import { findSessionLocation } from "$lib/core/workspace";
+import { listenToOtherWindows, tellOtherWindows } from "$lib/shell/appDuty";
 import type { ManagedSession } from "$lib/sessions/sessionsManager";
 
 /// The newest machine reading, or null before the first poll lands.
@@ -183,13 +184,56 @@ async function poll(force = false): Promise<void> {
         };
       }
       agentSessions.set(next);
-      rememberMeans(get(fleetMemory).meanByProfile);
+      rememberMeans(get(fleetMemory).meanByProfile, true);
     } catch {
       // Same reasoning: a lost daemon must not read as an empty fleet.
     }
+    // All three as they now stand, whichever calls failed: a window that
+    // takes this reading has to end up holding what this one holds.
+    tellOtherWindows<MemoryReading>(MEMORY_READING, {
+      system: get(systemMemory),
+      watchman: get(watchmanStore),
+      agents: get(agentSessions),
+    });
   } finally {
     polling = false;
   }
+}
+
+// ---- The other windows ----------------------------------------------------
+//
+// Only the window holding the app's duties runs the poll. Every other
+// window still needs the readings -- its launch gate, its pressure banner
+// and its reclaim watcher all read these stores, and `systemMemory` is
+// the clock the gate's hysteresis runs on -- so each pass is told to them
+// whole, and they take it as if they had polled.
+
+interface MemoryReading {
+  system: SystemMemorySample | null;
+  watchman: WatchmanSample | null;
+  agents: Record<string, AgentSample & { command: string }>;
+}
+
+const MEMORY_READING = "memory-reading";
+
+/// Takes the readings the polling window tells, and loads the remembered
+/// means every window's estimate falls back on. Returns its teardown,
+/// for bootstrap's list.
+///
+/// No asking for a first reading, unlike the usage poll: the next pass
+/// is at most five seconds away, and until it lands the stores are null,
+/// which every reader already takes as "no reason to hold".
+export async function initMemorySharing(): Promise<() => void> {
+  storedMeans.set(loadStoredMeans());
+  return listenToOtherWindows<MemoryReading>(MEMORY_READING, (reading) => {
+    if (!reading) return;
+    systemMemory.set(reading.system);
+    watchmanStore.set(reading.watchman);
+    agentSessions.set(reading.agents ?? {});
+    // Kept, not written: the polling window has already written the same
+    // means to the localStorage every window shares.
+    rememberMeans(get(fleetMemory).meanByProfile, false);
+  });
 }
 
 /// Folds a fresh set of means into what is remembered, and persists only
@@ -199,7 +243,7 @@ async function poll(force = false): Promise<void> {
 /// keeps the figure it last measured, which is the whole reason this is
 /// stored. The comparison is what stops a localStorage write every five
 /// seconds for a fleet whose means have not changed.
-function rememberMeans(fresh: Record<string, number>): void {
+function rememberMeans(fresh: Record<string, number>, persist: boolean): void {
   if (Object.keys(fresh).length === 0) return;
   const before = get(storedMeans);
   const after = { ...before, ...fresh };
@@ -208,7 +252,7 @@ function rememberMeans(fresh: Record<string, number>): void {
     return;
   }
   storedMeans.set(after);
-  saveStoredMeans(after);
+  if (persist) saveStoredMeans(after);
 }
 
 /// Arms the next poll at the cadence the CURRENT pressure asks for.
@@ -225,9 +269,11 @@ function arm(): void {
   }, wait);
 }
 
-/// Starts the memory poller. Module-level, like `startPauseClock` and
-/// `startScheduler`, and for the reason the header gives. Returns its
-/// own teardown.
+/// Starts the memory poller. Module-level, like `startUsagePoll` and
+/// `startScheduler`, and for the reason the header gives -- and, like
+/// them, the app's rather than the window's: bootstrap starts it through
+/// `whileHoldingAppDuties`, and `initMemorySharing` carries each pass to
+/// the other windows. Returns its own teardown.
 export function startMemoryPoll(): () => void {
   stopMemoryPoll();
   // Before the first poll, so the first sample has yesterday's means to

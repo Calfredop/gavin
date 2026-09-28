@@ -74,6 +74,14 @@
   } | null>(null);
   let unlisten: UnlistenFn | null = null;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  // Every read of `path` takes a ticket, and only the newest one's
+  // answer lands. The read runs off the main thread, so two watch events
+  // in a row can answer out of order -- and an older copy landing last
+  // would roll the buffer back to it. A retarget takes a ticket too, so
+  // a read of the path just renamed away cannot report it deleted. A
+  // counter, never an identity check (`$state` proxies objects). Plain
+  // `let`: nothing renders from it.
+  let readTicket = 0;
 
   const editable = $derived(canEdit({ truncated, error }));
   const availableModes = $derived(modesFor(path));
@@ -102,8 +110,10 @@
   }
 
   async function load(): Promise<void> {
+    const mine = ++readTicket;
     try {
       const result = await backend.readFileForViewer(path);
+      if (mine !== readTicket) return;
       buffer = result.content;
       onDisk = result.content;
       truncated = result.truncated;
@@ -113,9 +123,13 @@
       setDirty(false);
       editor?.setDoc(result.content);
     } catch (e) {
+      if (mine !== readTicket) return;
       error = String(e instanceof Error ? e.message : e);
     } finally {
-      loaded = true;
+      // A superseded load leaves the gate to the read that replaced it:
+      // opening it now would mount the editor over a buffer that was
+      // never filled.
+      if (mine === readTicket) loaded = true;
     }
   }
 
@@ -214,6 +228,7 @@
   }
 
   async function handleExternalChange(): Promise<void> {
+    const mine = ++readTicket;
     let result: Awaited<ReturnType<typeof backend.readFileForViewer>>;
     try {
       result = await backend.readFileForViewer(path);
@@ -222,6 +237,7 @@
       // next event re-reads.
       return;
     }
+    if (mine !== readTicket) return;
     if (classifyExternalRead({ existsNow: result.exists, existedBefore: exists }) === "deleted") {
       // NEVER reload this as "the file is now empty": the buffer on
       // screen is the only copy left. Autosave stops too (handleChange),
@@ -287,6 +303,12 @@
     setPathDirty(next, dirty);
     void backend.unwatchFileForViewer(previous).catch(() => {});
     void backend.watchFileForViewer(next).catch(() => {});
+    // Whatever read of the old path is still in flight is about a file
+    // that has moved: drop it. The first load is the one exception
+    // worth re-asking -- there is no buffer yet to lose, and without an
+    // answer the editor never opens.
+    readTicket += 1;
+    if (!loaded) void load();
     // A rename moves the file whole, so what sits at the new path is
     // what `onDisk` already holds -- there is nothing to re-read, and
     // re-reading would throw away a dirty buffer.

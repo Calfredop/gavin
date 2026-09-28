@@ -89,12 +89,18 @@ fn cascade_from(app: &AppHandle, opener: &str) -> Option<(f64, f64)> {
 /// this safe to wire behind "Open in New Window" on a row whose state the
 /// menu may have read a moment ago -- the worst a stale click can do is
 /// raise a window.
+///
+/// `async` although it awaits nothing. A plain `fn` command runs on the
+/// main thread, and building a webview window there DEADLOCKS on Windows
+/// (a WebView2 limitation Tauri documents on every window builder, with
+/// `async` as the remedy) -- the first workspace window would hang the
+/// app. macOS builds it either way, in 100-300 ms, so no Mac shows this.
 #[tauri::command]
-pub fn open_workspace_window(
+pub async fn open_workspace_window(
     workspace_id: String,
     app_handle: AppHandle,
     window: tauri::Window,
-    state: tauri::State<WorkspaceWindows>,
+    state: tauri::State<'_, WorkspaceWindows>,
 ) -> Result<String, String> {
     let label = format!("{WORKSPACE_WINDOW_PREFIX}{workspace_id}");
     // Its own window already, or a window it merely shares? The label is
@@ -131,7 +137,7 @@ pub fn open_workspace_window(
     // a different app, not a second window of this one.
     //
     // Hopped onto the main thread, unlike lib.rs's copy, which is already
-    // on it inside `setup`. A tauri command runs on a worker thread, and
+    // on it inside `setup`. An async command runs on a runtime worker, and
     // both of these are AppKit: `setWantsLayer`/`layer()` off the main
     // thread tears the webview's layer backing out from under it and the
     // window comes up BLANK -- correctly sized, correctly positioned, and
@@ -165,6 +171,10 @@ pub fn open_workspace_window(
     });
 
     broadcast(&app_handle, &state);
+    // The duty does not move, but its holder now has somebody to share
+    // its readings with. The new window itself is not listening yet; it
+    // reads the duty when it loads.
+    broadcast_duty(&app_handle, None);
     Ok(label)
 }
 
@@ -291,6 +301,98 @@ pub fn close_workspace_window(
     Ok(())
 }
 
+// ---- The app's duties -------------------------------------------------------
+//
+// Every window runs the whole frontend, and the frontend starts the app's
+// pollers at load. Those belong to the app, not to a window: two windows
+// polled usage, memory and watchman twice. So exactly one window holds
+// the duty, and the others take its readings (the frontend's appDuty.ts).
+// Rails are split differently -- each workspace's run in the window
+// showing it -- and the holder only runs those of a workspace no open
+// window is showing.
+//
+// The main window holds it from launch. It cannot simply keep it: the
+// close prompt's first rung destroys the main window and leaves the
+// others running, and a rail must not stop because the window that
+// happened to be scheduling it went away. So the duty passes to a
+// survivor, and stays there -- a window opened later never takes it,
+// because a handover stops every poller in one window and starts it in
+// another, which is churn nothing asked for.
+
+/// The label of the window running the app's pollers.
+pub struct DutyWindow(pub Mutex<String>);
+
+impl Default for DutyWindow {
+    fn default() -> Self {
+        Self(Mutex::new(MAIN_WINDOW_LABEL.to_string()))
+    }
+}
+
+/// Who holds the duty, and which windows are open. The list is what lets
+/// a lone window skip announcing readings nobody would receive, and what
+/// tells the holder a workspace's own window is gone.
+#[derive(Clone, serde::Serialize)]
+pub struct AppDuty {
+    holder: String,
+    windows: Vec<String>,
+}
+
+fn app_duty_now(app: &AppHandle, holder: String, gone: Option<&str>) -> AppDuty {
+    // Filtered by hand: during its own Destroyed event a window may still
+    // be in the manager's list.
+    let mut windows: Vec<String> = app
+        .webview_windows()
+        .into_keys()
+        .filter(|label| Some(label.as_str()) != gone)
+        .collect();
+    windows.sort();
+    AppDuty { holder, windows }
+}
+
+/// Whoever takes the duty when its holder is destroyed: the main window
+/// if it still stands, else the lowest label, so the choice does not
+/// depend on a HashMap's order.
+fn duty_successor(survivors: &[String]) -> Option<String> {
+    if survivors.iter().any(|label| label == MAIN_WINDOW_LABEL) {
+        return Some(MAIN_WINDOW_LABEL.to_string());
+    }
+    survivors.iter().min().cloned()
+}
+
+/// Tells every window who holds the duty and which windows are open.
+pub fn broadcast_duty(app: &AppHandle, gone: Option<&str>) {
+    let holder = app.state::<DutyWindow>().0.lock().unwrap().clone();
+    let _ = app.emit("app-duty-changed", app_duty_now(app, holder, gone));
+}
+
+/// Registered for EVERY window in lib.rs, the main one included: the
+/// handler open_workspace_window installs only ever sees the windows it
+/// built, and the main window's destroy is the handover that matters.
+pub fn on_window_destroyed(app: &AppHandle, label: &str) {
+    {
+        let state = app.state::<DutyWindow>();
+        let mut holder = state.0.lock().unwrap();
+        if holder.as_str() == label {
+            let survivors: Vec<String> = app
+                .webview_windows()
+                .into_keys()
+                .filter(|l| l != label)
+                .collect();
+            if let Some(next) = duty_successor(&survivors) {
+                *holder = next;
+            }
+        }
+    }
+    broadcast_duty(app, Some(label));
+}
+
+/// The duty as it stands, for a window that has just loaded.
+#[tauri::command]
+pub fn app_duty(app_handle: AppHandle, state: tauri::State<DutyWindow>) -> AppDuty {
+    let holder = state.0.lock().unwrap().clone();
+    app_duty_now(&app_handle, holder, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,5 +425,33 @@ mod tests {
     #[test]
     fn nothing_to_sweep_when_every_workspace_is_in_the_main_window() {
         assert!(labels_to_close(&map(&[("w1", MAIN_WINDOW_LABEL)])).is_empty());
+    }
+
+    fn labels(names: &[&str]) -> Vec<String> {
+        names.iter().map(|l| l.to_string()).collect()
+    }
+
+    /// A workspace window closing hands nothing over while the main
+    /// window is still standing -- it is where the duty started.
+    #[test]
+    fn the_main_window_takes_the_duty_whenever_it_survives() {
+        assert_eq!(
+            duty_successor(&labels(&["ws-b", MAIN_WINDOW_LABEL, "ws-a"])),
+            Some(MAIN_WINDOW_LABEL.to_string())
+        );
+    }
+
+    /// The "close this window" rung destroys the main window and leaves
+    /// the others running. One of them has to pick the pollers and the
+    /// rail scheduler up, and the choice must not depend on a HashMap's
+    /// order.
+    #[test]
+    fn without_the_main_window_the_lowest_label_takes_the_duty() {
+        assert_eq!(duty_successor(&labels(&["ws-c", "ws-a", "ws-b"])), Some("ws-a".to_string()));
+    }
+
+    #[test]
+    fn no_survivor_means_no_successor() {
+        assert_eq!(duty_successor(&[]), None);
     }
 }

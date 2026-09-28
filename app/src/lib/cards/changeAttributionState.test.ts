@@ -68,7 +68,7 @@ function tree(plans: PlanFileInfo[]): GavinTree {
 }
 
 function binding(path: string, over: Partial<CardSession> = {}): CardSession {
-  return { path, sessionId: `s-${path}`, cwd: "/repo", command: null, launchCwd: "/repo", baseSha: BASE, ...over };
+  return { path, sessionId: `s-${path}`, cwd: "/repo", launchCwd: "/repo", baseSha: BASE, ...over };
 }
 
 function board(cardSessions: CardSession[]): Board {

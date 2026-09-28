@@ -161,6 +161,25 @@
 
   // --- file content (body preview + checklist) -------------------------
   let content = $state<string | null>(null);
+  // Every read of the card's file takes a ticket, and only the newest
+  // one's answer lands. The read runs off the main thread, so a watch
+  // event's read and a checklist click's re-read can answer out of order,
+  // and the older copy landing last would put back a tick the file no
+  // longer has. A write this modal just made takes one too, so no read
+  // started before it can overwrite what it wrote. A counter, never an
+  // identity check (`$state` proxies objects). Plain `let`: nothing
+  // renders from it.
+  let contentTicket = 0;
+  async function readContent(path: string): Promise<void> {
+    const mine = ++contentTicket;
+    const r = await backend.readFileForViewer(path);
+    if (mine === contentTicket) content = r.exists ? r.content : null;
+  }
+  /// Lands text this modal itself just wrote to the card's file.
+  function landContent(next: string): void {
+    contentTicket += 1;
+    content = next;
+  }
   // Read once, then kept live: the card's file changes under this modal
   // whenever an agent ticks a checklist item or the human edits the plan
   // in another editor, and a stale body preview is worse than no modal.
@@ -179,10 +198,9 @@
     autoCommitError = null;
     let unlisten: UnlistenFn | null = null;
     let closed = false;
-    const read = () =>
-      void backend.readFileForViewer(path).then((r) => {
-        if (!closed) content = r.exists ? r.content : null;
-      });
+    // Repointing at another card starts a new read, whose ticket drops
+    // any still in flight for the old one.
+    const read = () => void readContent(path);
     read();
     void backend.watchFileForViewer(path).catch(() => {});
     void listen<string>("file-changed", (event) => {
@@ -203,8 +221,7 @@
   let checklistError = $state<string | null>(null);
 
   async function reloadContent(): Promise<void> {
-    const r = await backend.readFileForViewer(card.id);
-    content = r.exists ? r.content : null;
+    await readContent(card.id);
   }
 
   async function toggleItem(item: ChecklistItem): Promise<void> {
@@ -430,7 +447,14 @@
       // behind a 500ms debounce, so an agent's edit can be seconds old by
       // the time the box is clicked -- and this write replaces the whole
       // file, so splicing the stale copy would silently undo that edit.
-      const current = await backend.readFileForViewer(card.id);
+      //
+      // The path is taken once: the Tasks list can repoint this modal
+      // while the read is out, and splicing one card's text into the
+      // next card's file would replace that card whole.
+      const path = card.id;
+      const mine = ++contentTicket;
+      const current = await backend.readFileForViewer(path);
+      if (card.id !== path) return;
       if (!current.exists) {
         autoCommitError = "The card's file is gone.";
         await reloadContent();
@@ -440,18 +464,18 @@
       // Unchanged means the frontmatter never closes, so there is no body
       // to splice -- setAutoCommitInFile refuses rather than guessing.
       if (next === current.content) {
-        content = current.content;
+        if (mine === contentTicket) content = current.content;
         if (hasAutoCommit(next) !== on) {
           autoCommitError =
             "This card's frontmatter block is never closed, so gavin can't tell where the body starts. Fix the --- lines and try again.";
         }
         return;
       }
-      await backend.writeFileForEditor(card.id, next);
+      await backend.writeFileForEditor(path, next);
       // Set now rather than waiting for the watcher: the box would
       // otherwise sit in its old position for the debounce and read as a
       // click that did nothing.
-      content = next;
+      if (card.id === path) landContent(next);
     } catch (e) {
       autoCommitError = String(e instanceof Error ? e.message : e);
       await reloadContent();

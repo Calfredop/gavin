@@ -17,6 +17,8 @@ portable-pty = "0.8"
 protocol = { path = "../protocol" }
 notify = "8"
 notify-debouncer-mini = "0.7"
+# git_watch.rs's gitignore matcher, the same one app/src-tauri's watcher uses.
+ignore = "0.4"
 toml = "0.8"
 toml_edit = "0.22"
 vt100 = "0.16"

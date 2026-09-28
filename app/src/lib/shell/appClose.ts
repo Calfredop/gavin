@@ -140,11 +140,16 @@ export function survivingSessionsAlert(survived: string[]): (AlertOptions & { li
 }
 
 /// Ends every session the daemon is holding, and reports the ones that
-/// refused. Sequential, and no exception escapes: this runs with the
-/// window on its way out, so one wedged session must not keep the other
-/// twenty alive or leave the close half-done.
+/// refused, in the list's order. No exception escapes: this runs with
+/// the window on its way out, so one wedged session must not keep the
+/// other twenty alive or leave the close half-done.
 ///
-/// The orphan goes first where there is one, for the reason
+/// All at once rather than one after another. An orphan that refuses
+/// SIGTERM holds its request for the daemon's whole grace, 2 s, and each
+/// rides a daemon connection of its own (`command_lane::runs_apart`), so
+/// the sweep waits one grace however many there are.
+///
+/// Within a session the orphan still goes first, for the reason
 /// sessionsManagerActions gives: the surviving process is recorded ON
 /// the session's registry row, and killing the session deletes that row,
 /// so the other order leaves a live process with nothing left that knows
@@ -158,28 +163,29 @@ export async function endEverySession(): Promise<string[]> {
     // already unreachable, so there is no sweep to have failed.
     return [];
   }
-  const survived: string[] = [];
-  for (const session of sessionsToEnd(sample)) {
-    const label = session.command ?? session.cwd ?? session.id;
-    if (session.orphan) {
-      try {
-        const result = await backend.endOrphan(session.id);
-        if (result.stillRunning) {
-          survived.push(label);
-          continue;
-        }
-      } catch {
-        survived.push(label);
-        continue;
-      }
-    }
+  const sessions = sessionsToEnd(sample);
+  const ended = await Promise.all(sessions.map(endOne));
+  return sessions
+    .filter((_, i) => !ended[i])
+    .map((session) => session.command ?? session.cwd ?? session.id);
+}
+
+/// One session of the sweep: its orphan, then the session. False when
+/// either refused.
+async function endOne(session: ManagedSession): Promise<boolean> {
+  if (session.orphan) {
     try {
-      await backend.killSession(session.id);
+      if ((await backend.endOrphan(session.id)).stillRunning) return false;
     } catch {
-      survived.push(label);
+      return false;
     }
   }
-  return survived;
+  try {
+    await backend.killSession(session.id);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /// Stops the daemon, and says so when it would not go.

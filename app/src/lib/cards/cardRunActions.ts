@@ -12,6 +12,7 @@ import { findSessionLocation } from "$lib/core/workspace";
 import type { AttentionRow } from "$lib/agents/attentionInbox";
 import { cardSessionState } from "$lib/board/columnRunAction";
 import { kanbanState, cardSessionFor, linkCardSessionAction } from "$lib/board/kanbanState";
+import type { CardSessionRecord } from "$lib/board/kanban";
 import { patchPlanField, patchPlanPath } from "$lib/core/gavinState";
 import {
   composeTaskPrompt,
@@ -1004,8 +1005,7 @@ export async function relaunchCard(
   path: string,
   options: { queued?: boolean } = {}
 ): Promise<string | null> {
-  const binding = cardSessionFor(get(kanbanState)[workspaceId], path);
-  if (!binding) return "No session remembered for this card";
+  if (!cardSessionFor(get(kanbanState)[workspaceId], path)) return "No session remembered for this card";
   // Re-launch replays the ORIGINAL prompt, which for a card being
   // developed is the very text the develop agent is replacing -- so it is
   // the launch with the most to lose from ignoring this gate, not the
@@ -1042,6 +1042,16 @@ export async function relaunchCard(
   // workspace's agent here would hand codex's replay claude's
   // `--session-id`, which is garbage in its argv.
   const agent = agentForCard(workspaceId, cardViewForPath(get(gavinTrees)[workspaceId], path));
+  // The binding WHOLE, read by card: the board carries no launch command
+  // (v43), and this is the one action that replays it. Read after the
+  // gates, so a re-launch that queued reads it when it finally runs.
+  let binding: CardSessionRecord | null;
+  try {
+    binding = await backend.cardSession(workspaceId, path);
+  } catch (e) {
+    return `Couldn't re-launch: ${e instanceof Error ? e.message : e}`;
+  }
+  if (!binding) return "No session remembered for this card";
   // The remembered command carries the conversation id gavin fixed at
   // launch, and running it again as-is DOES NOT WORK: `claude
   // --session-id <uuid>` refuses outright with "Session ID <uuid> is

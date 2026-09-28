@@ -47,8 +47,17 @@ getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+# The command lanes' replies (command_lane.rs): a oneshot a Tauri command
+# awaits and a plain thread can block on. Already in the graph through
+# tauri, which runs the multi-threaded runtime `block_in_place` needs.
+# `time` bounds each ssh host's part of a read that spans them all
+# (`command_lane::ask_each`); tauri's runtime enables every driver built in.
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "time"] }
 notify = "8"
 notify-debouncer-mini = "0.7"
+# The Git watcher's gitignore matcher (git/watch.rs): an ignored path is a
+# change `git status` never shows, so it must not cost a refresh.
+ignore = "0.4"
 protocol = { path = "../../crates/protocol" }
 # The OS Trash, not `rm`: the delete wizard removes somebody's cards, and
 # a card in plans/done/ that git never tracked is otherwise gone for good.
