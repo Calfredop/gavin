@@ -6,14 +6,17 @@
 //! the **same** invoke handler the webview's `invoke` reaches, and writes
 //! `ForwardResult` back. Events the host emits to its webview are offered
 //! on the same connection as `OfferDesktopEvent`, so subscribed Devices
-//! hear them.
+//! hear them. Attention asks (`ForwardAttention`, v48) are answered from
+//! the snapshot the webview keeps filled via `set_companion_attention`.
 //!
 //! One thread owns the connection: offers and results both travel through
 //! it, so an Ok reply is never mistaken for a ForwardCommand. Concurrent
 //! Device invokes queue in the socket; they are answered in order.
 
 use protocol::transport::Stream;
-use protocol::{read_message, write_message, ConnectionKind, Request, Response};
+use protocol::{
+    read_message, write_message, AttentionItem, ConnectionKind, Request, Response,
+};
 use serde::Serialize;
 use std::io::BufReader;
 use std::path::Path;
@@ -38,14 +41,39 @@ const DISPATCH_BUDGET: Duration = Duration::from_secs(60);
 /// previous daemon cannot register itself over the live one.
 static FORWARDING_EPOCH: AtomicU64 = AtomicU64::new(0);
 
-/// Managed state: the live forwarding writer and the channel that offers
-/// events to its owning thread.
+/// Managed state: the live forwarding writer, the channel that offers
+/// events to its owning thread, and the attention snapshot a Device's
+/// GetAttention reads (ADR 0005).
 #[derive(Default)]
 pub struct Forwarding {
     /// Sender into the forwarding thread's offer queue. `None` until the
     /// first connection comes up, and again while a reconnect is between
     /// daemons.
     offer: Mutex<Option<Sender<(String, serde_json::Value)>>>,
+    /// Last attention answer the webview published. Empty until the
+    /// first `set_companion_attention`, which is also the honest answer
+    /// when nothing is waiting.
+    attention: Mutex<Vec<AttentionItem>>,
+}
+
+/// Replace the attention snapshot the Forward connection answers with.
+#[tauri::command]
+pub fn set_companion_attention(
+    state: tauri::State<'_, Forwarding>,
+    items: Vec<AttentionItem>,
+) -> Result<(), String> {
+    *state.attention.lock().unwrap() = items;
+    Ok(())
+}
+
+/// The items currently published for GetAttention. Public so tests can
+/// read what the webview wrote without opening a forwarding socket.
+pub fn attention_items<R: Runtime>(app: &AppHandle<R>) -> Vec<AttentionItem> {
+    let Some(state) = app.try_state::<Forwarding>() else {
+        return Vec::new();
+    };
+    let items = state.attention.lock().unwrap().clone();
+    items
 }
 
 /// Opens (or re-opens) the forwarding connection against the local
@@ -220,6 +248,14 @@ fn run_loop<R: Runtime>(
                     &writer,
                     &mut reader,
                     &Request::ForwardResult { call_id, value, error },
+                )?;
+            }
+            Ok(Some(Response::ForwardAttention { call_id, version: _ })) => {
+                let items = attention_items(&app);
+                write_and_ack(
+                    &writer,
+                    &mut reader,
+                    &Request::AttentionResult { call_id, items },
                 )?;
             }
             Ok(Some(Response::Ok)) => {

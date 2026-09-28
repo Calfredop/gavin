@@ -695,6 +695,14 @@ export function signalFrontendReady(): Promise<void> {
   return invoke("signal_frontend_ready");
 }
 
+/// Publish the Companion attention snapshot the Forward connection
+/// answers GetAttention with (ADR 0005). Desk-only.
+export function setCompanionAttention(
+  items: import("$lib/companion/attentionAnswer").AttentionItem[]
+): Promise<void> {
+  return invoke("set_companion_attention", { items });
+}
+
 export function getBootstrapError(): Promise<string | null> {
   return invoke("get_bootstrap_error");
 }

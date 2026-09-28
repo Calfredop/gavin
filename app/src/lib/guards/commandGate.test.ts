@@ -202,6 +202,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   open_path_externally: ["ordinary"],
   reveal_path_externally: ["ordinary"],
   signal_frontend_ready: ["ordinary"],
+  set_companion_attention: ["ordinary"],
   title_bar_double_click_action: ["ordinary"],
   get_bootstrap_error: ["ordinary"],
   daemon_compat: ["ordinary"],

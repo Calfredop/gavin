@@ -52,6 +52,7 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "open_path_externally",
     "reveal_path_externally",
     "signal_frontend_ready",
+    "set_companion_attention",
     "title_bar_double_click_action",
     "get_bootstrap_error",
     "restart_daemon",

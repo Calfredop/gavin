@@ -82,6 +82,7 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("open_path_externally", RemoteAllowance::Refused), // open externally on the desk
     ("reveal_path_externally", RemoteAllowance::Refused), // open externally on the desk
     ("signal_frontend_ready", RemoteAllowance::Refused), // meaningless away from the desk
+    ("set_companion_attention", RemoteAllowance::Refused), // desk publishes; Device asks GetAttention
     ("title_bar_double_click_action", RemoteAllowance::Refused), // window management
     ("get_bootstrap_error", RemoteAllowance::Refused), // meaningless away from the desk
     ("restart_daemon", RemoteAllowance::Refused), // meaningless away from the desk

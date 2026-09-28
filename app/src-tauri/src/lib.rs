@@ -157,6 +157,7 @@ pub fn run() {
             fileviewer::open_path_externally,
             fileviewer::reveal_path_externally,
             session::signal_frontend_ready,
+            forwarding::set_companion_attention,
             mac_window::title_bar_double_click_action,
             session::get_bootstrap_error,
             session::restart_daemon,
