@@ -32,6 +32,7 @@ import type { QueuedInput } from "$lib/agents/queuedInput";
 import type { ManagedSessions } from "$lib/sessions/sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspace/workspaceDelete";
 import type { AttachmentStatus } from "$lib/cards/attachments";
+import type { WorkspaceSettingsPatch, WorkspaceSettingsRecord } from "$lib/workspace/workspaceSettings";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
 import type { DeviceList, PairingOffer } from "$lib/core/remoteAccess";
 import { keyedQueue } from "$lib/core/keyedQueue";
@@ -241,12 +242,30 @@ export function getWorkspacesState(): Promise<WorkspacesData> {
   return invoke("get_workspaces_state");
 }
 
+/// The desk's LAYOUT save. For a workspace the host already holds it keeps
+/// only the layout -- pages, tabs, what is showing -- and the host's own
+/// settings; a setting goes through `setWorkspaceSettings` instead
+/// (`workspaceSettings.ts`, docs/adr/0006).
 export function setWorkspacesState(
   workspaces: Workspace[],
   activeWorkspaceId: string | null,
   removedWorkspaces: RemovedWorkspace[]
 ): Promise<void> {
   return invoke("set_workspaces_state", { workspaces, activeWorkspaceId, removedWorkspaces });
+}
+
+/// Every workspace's Workstation data -- its id and settings, no layout --
+/// in the desk's order.
+export function getWorkspaceSettings(): Promise<WorkspaceSettingsRecord[]> {
+  return invoke("get_workspace_settings");
+}
+
+/// Changes some of one workspace's settings. `null` clears a key back to
+/// inherit; a key naming layout is refused. Build the patch with
+/// `normalizeSettingsPatch`, or a clear written as `undefined` never
+/// leaves this window.
+export function setWorkspaceSettings(workspaceId: string, patch: WorkspaceSettingsPatch): Promise<void> {
+  return invoke("set_workspace_settings", { workspaceId, patch });
 }
 
 /// Where every workspace currently is: workspace id -> window label, with
@@ -293,6 +312,19 @@ export function closeAllWorkspaceWindows(): Promise<void> {
 
 export function closeWorkspaceWindow(workspaceId: string): Promise<void> {
   return invoke("close_workspace_window", { workspaceId });
+}
+
+/// Closes THIS window to the menu bar: the host puts up an icon that
+/// reopens it or quits, then hides the window. The webview keeps running
+/// behind it (keep_running.rs).
+export function hideToMenuBar(): Promise<void> {
+  return invoke("hide_to_menu_bar");
+}
+
+/// Holds off the Mac's idle sleep, or lets it go. A level, not a
+/// counter: saying it twice holds once.
+export function setSleepHold(hold: boolean): Promise<void> {
+  return invoke("set_sleep_hold", { hold });
 }
 
 /// The app-global light/dark preference. null means System -- the Rust

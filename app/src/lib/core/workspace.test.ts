@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import type { LayoutNode } from "$lib/panes/layout";
 import {
   createWorkspace,
-  renameWorkspace,
   switchWorkspace,
   removeWorkspace,
   reorderWorkspace,
@@ -60,14 +59,6 @@ describe("createWorkspace", () => {
     const state = createWorkspace(empty, "ws-1", "My Project");
     expect(state.workspaces).toEqual([{ id: "ws-1", name: "My Project", pages: [], activePageId: null }]);
     expect(state.activeWorkspaceId).toBe("ws-1");
-  });
-});
-
-describe("renameWorkspace", () => {
-  it("updates only the matching workspace's name", () => {
-    const state = createWorkspace(createWorkspace(empty, "ws-1", "A"), "ws-2", "B");
-    const renamed = renameWorkspace(state, "ws-1", "A renamed");
-    expect(renamed.workspaces.map((w) => w.name)).toEqual(["A renamed", "B"]);
   });
 });
 

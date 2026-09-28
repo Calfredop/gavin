@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import { closeWindowPrompt } from "$lib/shell/appClose";
+import { closeDecision } from "$lib/shell/keepRunning";
 import { svelteSources } from "$lib/sources";
 
 // "A workspace is on screen in exactly one window" is a rule spread over
@@ -109,12 +110,31 @@ describe("closing a workspace window", () => {
   // in appClose.ts now (closeWindowPrompt, and appClose.test.ts reads
   // it). What is still a question about WINDOWS, and still only visible
   // here, is that the guard returns before anything raises it.
+  //
+  // Which window gets which answer is closeDecision's, tested in
+  // keepRunning.test.ts; the page has to ask it about THIS window and act
+  // on the answer before the prompt.
   it("asks nothing, unlike the main window", () => {
-    expect(PAGE).toContain("if (!isMainWindow()) return;");
-    const guard = PAGE.indexOf("if (!isMainWindow()) return;");
+    expect(closeDecision({ mainWindow: false, remoteAccess: false })).toBe("close");
+    expect(PAGE).toContain("closeDecision({ mainWindow: isMainWindow(),");
+    const guard = PAGE.indexOf('if (decision === "close") return;');
     const prompt = PAGE.indexOf("confirmWindowClose()");
     expect(guard).toBeGreaterThan(-1);
     expect(prompt).toBeGreaterThan(guard);
     expect(closeWindowPrompt().title).toBe("Close gavin?");
+  });
+});
+
+describe("closing the main window with remote access on", () => {
+  // Keep-running mode (keepRunning.ts): the window goes to the menu bar
+  // and the webview behind it keeps the rails running, so the ladder --
+  // which ends in destroying the window -- must not be reached.
+  it("hides it before the prompt could be raised", () => {
+    expect(closeDecision({ mainWindow: true, remoteAccess: true })).toBe("hide");
+    const hide = PAGE.indexOf("await hideToMenuBar();");
+    const prompt = PAGE.indexOf("confirmWindowClose()");
+    expect(hide).toBeGreaterThan(-1);
+    expect(prompt).toBeGreaterThan(hide);
+    expect(PAGE.slice(hide, prompt)).toContain("return;");
   });
 });

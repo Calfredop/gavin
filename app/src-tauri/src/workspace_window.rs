@@ -151,6 +151,10 @@ pub async fn open_workspace_window(
         });
     }
 
+    // Its rails run in its own webview, so it keeps time hidden, minimized
+    // or on another Space exactly as the main window does.
+    crate::keep_running::keep_timers_on_time(&created);
+
     state.0.lock().unwrap().insert(workspace_id.clone(), label.clone());
 
     // Registered on the built window rather than through the builder: the

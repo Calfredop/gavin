@@ -98,6 +98,13 @@ import {
   isMainWindow,
 } from "$lib/shell/appWindowState";
 import { initAppDuty, whileHoldingAppDuties } from "$lib/shell/appDuty";
+import {
+  adoptSettingsRecord,
+  normalizeSettingsPatch,
+  patchWorkspaceSettings,
+  type WorkspaceSettingsPatch,
+  type WorkspaceSettingsRecord,
+} from "$lib/workspace/workspaceSettings";
 
 export type { SessionStatus };
 
@@ -428,6 +435,11 @@ function setError(message: string): void {
 // tree, then persist the whole workspaces array" -- extracted so that
 // pattern exists exactly once instead of once per action.
 //
+// This is the desk's LAYOUT save: pages, tabs, what is showing, and the
+// adding, closing and reordering of workspaces. The host keeps only the
+// layout of a workspace it already holds, so a SETTING never goes through
+// here -- that is `saveWorkspaceSettings`, below.
+//
 // The tombstone list is read off the store rather than taken as a third
 // argument. Thirty-odd call sites pass whatever workspaces they just
 // computed; making each of them also remember an unrelated list is how a
@@ -442,6 +454,27 @@ async function persistWorkspaces(workspaces: Workspace[], activeWorkspaceId: str
       activeWorkspaceId,
       get(layoutState).removedWorkspaces ?? []
     );
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
+/// Every workspace SETTING is written through here, never through
+/// `persistWorkspaces` (`workspaceSettings.ts`, docs/adr/0006). That one is
+/// the desk's layout save, and the host keeps only the layout of a
+/// workspace it already holds -- a setting written there would show in
+/// this window and be gone after a restart.
+///
+/// Applied to the store first, as every save here is, then sent as a patch
+/// of just the keys it names: a change another window or a Companion made
+/// to a DIFFERENT key of the same workspace is not undone by this one. A
+/// workspace this window does not hold is a no-op.
+async function saveWorkspaceSettings(workspaceId: string, patch: WorkspaceSettingsPatch): Promise<void> {
+  if (!get(layoutState).workspaces.some((w) => w.id === workspaceId)) return;
+  const wire = normalizeSettingsPatch(patch);
+  layoutState.update((s) => ({ ...s, workspaces: patchWorkspaceSettings(s.workspaces, workspaceId, wire) }));
+  try {
+    await backend.setWorkspaceSettings(workspaceId, wire);
   } catch (e) {
     setError(String(e));
   }
@@ -506,6 +539,25 @@ function adoptWorkspaces(data: WorkspacesData): void {
   // link state for yet; connecting is the honest default until its host
   // reports in (the events reach every window).
   seedSshLinks(data.workspaces);
+}
+
+/// Takes on another writer's settings for one workspace -- another window,
+/// or a Companion -- and keeps this window's layout of it. The record is
+/// that workspace's whole settings as the host now holds them, so this
+/// converges on the host's copy; nothing about pages, tabs or focus moves.
+function adoptWorkspaceSettings(record: WorkspaceSettingsRecord): void {
+  let adopted: Workspace[] | null = null;
+  layoutState.update((s) => {
+    if (s.status !== "ready") return s;
+    const workspaces = adoptSettingsRecord(s.workspaces, record);
+    if (workspaces === s.workspaces) return s;
+    adopted = workspaces;
+    return { ...s, workspaces };
+  });
+  if (!adopted) return;
+  // The same follow-ups adoptWorkspaces owes a root or host set elsewhere.
+  watchRootedWorkspaces(adopted);
+  seedSshLinks(adopted);
 }
 
 /// Makes a workspace the active one: stamps it as last used, and takes
@@ -1270,6 +1322,15 @@ export async function bootstrap(): Promise<void> {
       adoptWorkspaces(event.payload.data);
     })
   );
+  // Another writer's change to one workspace's settings. Only those
+  // settings are taken -- a settings write never carries layout, so it
+  // cannot clobber a tab this window has open. Own echo ignored as above.
+  unlisteners.push(
+    await listen<{ origin: string; record: WorkspaceSettingsRecord }>("workspace-settings-synced", (event) => {
+      if (event.payload.origin === currentWindowLabel()) return;
+      adoptWorkspaceSettings(event.payload.record);
+    })
+  );
   unlisteners.push(
     await listen<[string, number]>("session-exited", (event) => {
       // Recorded BEFORE the layout change, so the orchestration tick
@@ -1421,6 +1482,14 @@ export async function bootstrap(): Promise<void> {
   const { startMemoryPoll, initMemorySharing } = await import("$lib/agents/memoryState");
   unlisteners.push(await initMemorySharing());
   unlisteners.push(whileHoldingAppDuties(startMemoryPoll));
+  // Keep-running mode: every window reads the remote-access switch (what
+  // closing the main window does hangs on it), and the window holding the
+  // duties holds the Mac awake while it is on and an agent runs. After
+  // the memory poll, whose agent list the hold reads. Dynamically
+  // imported for the cycle reason above (it reads this module's store).
+  const { initRemoteAccess, startSleepHold } = await import("$lib/shell/keepRunningState");
+  unlisteners.push(await initRemoteAccess());
+  unlisteners.push(whileHoldingAppDuties(startSleepHold));
   // ...and the queue that drains behind the gate the probe feeds. After
   // the poller, so its first drain reads a sample rather than a null,
   // and module-level for the same reason both of those are.
@@ -1779,6 +1848,9 @@ export async function setWorkspaceRoot(workspaceId: string, rootPath: string): P
     }
     const dropped = workspace.forgetTombstone(state, tombstone.id);
     layoutState.update((s) => ({ ...s, removedWorkspaces: dropped.removedWorkspaces ?? [] }));
+    // The tombstone list rides the layout save, with the closes that
+    // write it; the root below is a setting and goes the other way.
+    await persistWorkspaces(state.workspaces, state.activeWorkspaceId);
   }
   const before = state.workspaces.find((w) => w.id === workspaceId);
   const previous = before?.rootPath;
@@ -1789,11 +1861,7 @@ export async function setWorkspaceRoot(workspaceId: string, rootPath: string): P
   if (isSshWorkspace(before)) {
     await backend.unwatchGavinRoot(workspaceId).catch(() => {});
   }
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, rootPath, ssh: undefined } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { rootPath, ssh: null });
   if (previous && previous !== rootPath && !isSshWorkspace(before)) {
     await backend.unwatchGavinRoot(workspaceId).catch(() => {});
   }
@@ -1824,9 +1892,7 @@ export async function setWorkspaceSsh(
   if (before?.rootPath) {
     await backend.unwatchGavinRoot(workspaceId).catch(() => {});
   }
-  const workspaces = state.workspaces.map((w) => (w.id === workspaceId ? { ...w, rootPath, ssh } : w));
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { rootPath, ssh });
 }
 
 /// The Rust profile table, fetched once at bootstrap. Empty until then;
@@ -2117,11 +2183,7 @@ async function stampConfigTrust(workspaceId: string, hash: string | undefined): 
   const state = get(layoutState);
   const current = state.workspaces.find((w) => w.id === workspaceId);
   if (!current || current.trustedConfigHash === hash) return;
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, trustedConfigHash: hash } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { trustedConfigHash: hash ?? null });
 }
 
 /// Whether this human has already read exactly this card's content
@@ -2163,11 +2225,9 @@ export async function stampCardReview(
   const state = get(layoutState);
   const current = state.workspaces.find((w) => w.id === workspaceId);
   if (!current || current.reviewedCards?.[path] === digest) return;
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, reviewedCards: { ...(w.reviewedCards ?? {}), [path]: digest } } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, {
+    reviewedCards: { ...(current.reviewedCards ?? {}), [path]: digest },
+  });
 }
 
 /// Records the human's answer to a distinct set of foreign MCP servers
@@ -2179,11 +2239,7 @@ export async function recordMcpForeignChoice(workspaceId: string, choice: McpFor
   const state = get(layoutState);
   const current = state.workspaces.find((w) => w.id === workspaceId);
   if (!current) return;
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, mcpForeignServersChoice: choice } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { mcpForeignServersChoice: choice });
 }
 
 
@@ -2567,13 +2623,8 @@ export async function setWorkspaceFontSize(
   workspaceId: string,
   size: number | null
 ): Promise<void> {
-  const state = get(layoutState);
-  const normalized = size === null ? undefined : (normalizeTerminalFontSize(size) ?? undefined);
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, terminalFontSize: normalized } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  const normalized = size === null ? null : normalizeTerminalFontSize(size);
+  await saveWorkspaceSettings(workspaceId, { terminalFontSize: normalized });
 }
 
 /// The app-wide `custom` resume flag. Null clears it back to "no resume
@@ -2595,14 +2646,8 @@ export async function setWorkspaceCustomResumeArgs(
   workspaceId: string,
   args: string | null
 ): Promise<void> {
-  const state = get(layoutState);
   const trimmed = args?.trim();
-  const normalized = trimmed ? trimmed : undefined;
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, customResumeArgs: normalized } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { customResumeArgs: trimmed ? trimmed : null });
 }
 
 /// The `custom` profile's resume flag, resolved for one workspace: its
@@ -2708,13 +2753,9 @@ export async function setWorkspaceComplexityTable(
   workspaceId: string,
   table: ComplexityTable
 ): Promise<void> {
-  const state = get(layoutState);
-  const complexityAgents = Object.keys(table).length > 0 ? table : undefined;
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, complexityAgents } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, {
+    complexityAgents: Object.keys(table).length > 0 ? table : null,
+  });
 }
 
 /// One workspace's own auto-commit default, or null to inherit the
@@ -2725,12 +2766,7 @@ export async function setWorkspaceAutoCommit(
   workspaceId: string,
   enabled: boolean | null
 ): Promise<void> {
-  const state = get(layoutState);
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, autoCommit: enabled ?? undefined } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { autoCommit: enabled });
 }
 
 /// This workspace's action-prompt overrides. Empty map clears every
@@ -2739,20 +2775,12 @@ export async function setWorkspaceActionPromptOverrides(
   workspaceId: string,
   overrides: Record<string, string>
 ): Promise<void> {
-  const state = get(layoutState);
   const cleaned = Object.fromEntries(
     Object.entries(overrides).filter(([, body]) => typeof body === "string" && body.trim())
   );
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId
-      ? {
-          ...w,
-          actionPromptOverrides: Object.keys(cleaned).length > 0 ? cleaned : undefined,
-        }
-      : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, {
+    actionPromptOverrides: Object.keys(cleaned).length > 0 ? cleaned : null,
+  });
 }
 
 /// One workspace's own require-review setting, or null to inherit the
@@ -2763,12 +2791,7 @@ export async function setWorkspaceRequireReview(
   workspaceId: string,
   enabled: boolean | null
 ): Promise<void> {
-  const state = get(layoutState);
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, requireReview: enabled ?? undefined } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { requireReview: enabled });
 }
 
 /// Records that this workspace's human has answered the git question --
@@ -2786,11 +2809,7 @@ export async function setWorkspaceRequireReview(
 export async function markGitTrackingAsked(workspaceId: string): Promise<void> {
   const state = get(layoutState);
   if (state.workspaces.find((w) => w.id === workspaceId)?.gitTrackingAsked) return;
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, gitTrackingAsked: true } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { gitTrackingAsked: true });
 }
 
 /// Records that this workspace's human has answered the require-review
@@ -2801,21 +2820,11 @@ export async function markGitTrackingAsked(workspaceId: string): Promise<void> {
 export async function markRequireReviewAsked(workspaceId: string): Promise<void> {
   const state = get(layoutState);
   if (state.workspaces.find((w) => w.id === workspaceId)?.requireReviewAsked) return;
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, requireReviewAsked: true } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { requireReviewAsked: true });
 }
 
 export async function setWorkspaceColor(workspaceId: string, color: string): Promise<void> {
-  const state = get(layoutState);
-  const normalized = normalizeColor(color);
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, color: normalized } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { color: normalizeColor(color) });
 }
 
 /// Pins or unpins a workspace's sidebar row. The stamp is taken here
@@ -2858,12 +2867,7 @@ export async function setWorkspaceFlag(
   key: "notifyNeedsInput" | "notifyFinished" | "confirmTabClose" | "autoResumeRuns",
   value: boolean
 ): Promise<void> {
-  const state = get(layoutState);
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, [key]: value } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { [key]: value });
 }
 
 /// Where the Home tab's divider sits for this workspace, as the agent
@@ -2891,17 +2895,7 @@ export async function setWorkspacePause(
   workspaceId: string,
   cycle: PauseCycle | null
 ): Promise<void> {
-  const state = get(layoutState);
-  const workspaces = state.workspaces.map((w) => {
-    if (w.id !== workspaceId) return w;
-    if (cycle === null) {
-      const { agentPause: _dropped, ...rest } = w;
-      return rest;
-    }
-    return { ...w, agentPause: cycle };
-  });
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { agentPause: cycle });
 }
 
 /// This workspace's own fallback chain. `null` REMOVES the override
@@ -2912,17 +2906,7 @@ export async function setWorkspaceFallback(
   workspaceId: string,
   chain: string[] | null
 ): Promise<void> {
-  const state = get(layoutState);
-  const workspaces = state.workspaces.map((w) => {
-    if (w.id !== workspaceId) return w;
-    if (chain === null) {
-      const { agentFallback: _dropped, ...rest } = w;
-      return rest;
-    }
-    return { ...w, agentFallback: chain };
-  });
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { agentFallback: chain });
 }
 
 /// Record that this profile's setup-only arming finished in this
@@ -2931,16 +2915,15 @@ export async function setWorkspaceFallback(
 export async function markAgentArmed(workspaceId: string, profileId: string): Promise<void> {
   const id = profileId.trim();
   if (!id) return;
-  const state = get(layoutState);
-  const workspaces = state.workspaces.map((w) => {
-    if (w.id !== workspaceId) return w;
-    const have = new Set(w.armedAgents ?? []);
-    const declined = w.declinedAgents ?? [];
-    if (have.has(id) && !declined.includes(id)) return w;
-    return withDeclined({ ...w, armedAgents: [...have, id] }, declined.filter((d) => d !== id));
+  const current = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!current) return;
+  const have = new Set(current.armedAgents ?? []);
+  const declined = current.declinedAgents ?? [];
+  if (have.has(id) && !declined.includes(id)) return;
+  await saveWorkspaceSettings(workspaceId, {
+    armedAgents: [...have, id],
+    declinedAgents: storedDeclined(declined.filter((d) => d !== id)),
   });
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
 }
 
 /// Record (or withdraw) the human's "Don't ask again" for arming this
@@ -2953,23 +2936,17 @@ export async function setAgentArmDeclined(
 ): Promise<void> {
   const id = profileId.trim();
   if (!id) return;
-  const state = get(layoutState);
-  const workspaces = state.workspaces.map((w) => {
-    if (w.id !== workspaceId) return w;
-    const have = w.declinedAgents ?? [];
-    if (have.includes(id) === declined) return w;
-    const rest = have.filter((d) => d !== id);
-    return withDeclined(w, declined ? [...rest, id] : rest);
-  });
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  const current = get(layoutState).workspaces.find((w) => w.id === workspaceId);
+  if (!current) return;
+  const have = current.declinedAgents ?? [];
+  if (have.includes(id) === declined) return;
+  const rest = have.filter((d) => d !== id);
+  await saveWorkspaceSettings(workspaceId, { declinedAgents: storedDeclined(declined ? [...rest, id] : rest) });
 }
 
 /// An empty declined list is stored as ABSENT, the ordinary case.
-function withDeclined(w: Workspace, declined: string[]): Workspace {
-  if (declined.length > 0) return { ...w, declinedAgents: declined };
-  const { declinedAgents: _dropped, ...rest } = w;
-  return rest;
+function storedDeclined(declined: string[]): string[] | null {
+  return declined.length > 0 ? declined : null;
 }
 
 // Git tab preferences (splitter widths, diff layout, discard-confirm
@@ -2998,12 +2975,7 @@ export async function setOrchestrationAgent(
   workspaceId: string,
   record: OrchestrationAgentRecord | null
 ): Promise<void> {
-  const state = get(layoutState);
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, orchestrationAgent: record ?? undefined } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { orchestrationAgent: record });
 }
 
 /// Writes the workspace's in-flight "Develop into a plan…" runs into
@@ -3020,12 +2992,7 @@ export async function setDevelopingCards(
   workspaceId: string,
   records: DevelopingCardRecord[]
 ): Promise<void> {
-  const state = get(layoutState);
-  const workspaces = state.workspaces.map((w) =>
-    w.id === workspaceId ? { ...w, developingCards: records.length > 0 ? records : undefined } : w
-  );
-  layoutState.update((s) => ({ ...s, workspaces }));
-  await persistWorkspaces(workspaces, state.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { developingCards: records.length > 0 ? records : null });
 }
 
 function clearMainSession(workspaceId: string): void {
@@ -3957,11 +3924,9 @@ export async function createWorkspace(name: string): Promise<void> {
   await persistWorkspaces(resolved.state.workspaces, resolved.state.activeWorkspaceId);
 }
 
+/// A workspace's name is Workstation data, not layout: a setting.
 export async function renameWorkspace(workspaceId: string, name: string): Promise<void> {
-  const state = get(layoutState);
-  const data = workspace.renameWorkspace(state, workspaceId, name);
-  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
-  await persistWorkspaces(data.workspaces, data.activeWorkspaceId);
+  await saveWorkspaceSettings(workspaceId, { name });
 }
 
 export async function switchWorkspace(workspaceId: string): Promise<void> {
