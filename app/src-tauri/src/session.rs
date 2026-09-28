@@ -2959,16 +2959,27 @@ pub(crate) fn verify_app_ack(ack: Response, token: &str, nonce: &str) -> anyhow:
 /// and both real clients probe the version before it.
 fn app_handshake_command(conn: &Mutex<Stream>, token: &str) -> anyhow::Result<()> {
     let nonce = protocol::random_hex(16)?;
-    let ack = send_command(
-        conn,
-        &Request::Hello {
-            client: "app".to_string(),
-            protocol_version: protocol::PROTOCOL_VERSION,
-            auth: protocol::HelloAuth::DaemonToken { token: token.to_string() },
-            nonce: nonce.clone(),
-        },
-    )?;
+    let ack = send_command(conn, &app_hello(token, &nonce, protocol::ConnectionKind::Command))?;
     verify_app_ack(ack, token, &nonce)
+}
+
+/// The `Hello` that presents this app to its daemon on one of its two
+/// connections. Says WHICH one, because the daemon sends the device pushes
+/// only to the connection that reads them: a command connection reads the
+/// next message as the reply to its request, and a push arriving mid-request
+/// would take that reply's place (`protocol::ConnectionKind`).
+///
+/// Every connection the app presents goes through here -- the two
+/// handshakes below and a command lane's redial -- so a connection that
+/// forgot to say what it is cannot be added without going around it.
+pub(crate) fn app_hello(token: &str, nonce: &str, connection: protocol::ConnectionKind) -> Request {
+    Request::Hello {
+        client: "app".to_string(),
+        protocol_version: protocol::PROTOCOL_VERSION,
+        auth: protocol::HelloAuth::DaemonToken { token: token.to_string() },
+        nonce: nonce.to_string(),
+        connection: Some(connection),
+    }
 }
 
 /// Send a `Hello` with the daemon token directly on the streaming
@@ -2977,15 +2988,7 @@ fn app_handshake_command(conn: &Mutex<Stream>, token: &str) -> anyhow::Result<()
 /// `line_reader` guards, though at bootstrap nothing is attached yet.
 fn app_handshake_stream(stream: &mut Stream, token: &str) -> anyhow::Result<()> {
     let nonce = protocol::random_hex(16)?;
-    write_message(
-        stream,
-        &Request::Hello {
-            client: "app".to_string(),
-            protocol_version: protocol::PROTOCOL_VERSION,
-            auth: protocol::HelloAuth::DaemonToken { token: token.to_string() },
-            nonce: nonce.clone(),
-        },
-    )?;
+    write_message(stream, &app_hello(token, &nonce, protocol::ConnectionKind::Push))?;
     let mut reader = BufReader::with_capacity(1, &mut *stream);
     let ack = read_message(&mut reader)?
         .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during the app handshake"))?;
@@ -3855,6 +3858,80 @@ mod command_connection_tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+}
+
+/// The daemon sends the device pushes only to the connection whose `Hello`
+/// says it reads them, so each of the app's two connections has to say
+/// which it is -- and say it truthfully: the command connection saying
+/// "push" would bring back the desync `ConnectionKind` exists to end.
+#[cfg(test)]
+mod app_hello_tests {
+    use super::*;
+
+    /// Plays the daemon for one `Hello`: reads it, answers with the proof
+    /// the app expects, and hands the `Hello` back.
+    fn take_hello(daemon: Stream, token: &'static str) -> std::thread::JoinHandle<Request> {
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(daemon.try_clone().unwrap());
+            let hello: Request = read_message(&mut reader).unwrap().unwrap();
+            let Request::Hello { nonce, .. } = &hello else { panic!("expected Hello, got {hello:?}") };
+            write_message(
+                &mut &daemon,
+                &Response::HelloAck {
+                    role: "app".to_string(),
+                    daemon_version: protocol::PROTOCOL_VERSION,
+                    session_id: None,
+                    server_proof: Some(protocol::server_proof(token, nonce)),
+                    workspace_root: None,
+                },
+            )
+            .unwrap();
+            hello
+        })
+    }
+
+    fn connection_of(hello: Request) -> Option<protocol::ConnectionKind> {
+        match hello {
+            Request::Hello { connection, .. } => connection,
+            other => panic!("expected Hello, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_command_connection_says_it_is_the_command_connection() {
+        let (client, daemon) = Stream::pair().unwrap();
+        let daemon = take_hello(daemon, "t0k3n");
+        app_handshake_command(&Mutex::new(client), "t0k3n").unwrap();
+        assert_eq!(connection_of(daemon.join().unwrap()), Some(protocol::ConnectionKind::Command));
+    }
+
+    #[test]
+    fn the_streaming_connection_says_it_is_the_push_connection() {
+        let (mut client, daemon) = Stream::pair().unwrap();
+        let daemon = take_hello(daemon, "t0k3n");
+        app_handshake_stream(&mut client, "t0k3n").unwrap();
+        assert_eq!(connection_of(daemon.join().unwrap()), Some(protocol::ConnectionKind::Push));
+    }
+
+    /// Both together, through the entry point a link to another host uses
+    /// as well as the local bootstrap: one of each, never two of a kind.
+    #[test]
+    fn a_handshake_presents_one_command_connection_and_one_push_connection() {
+        let (command, command_daemon) = Stream::pair().unwrap();
+        let (mut stream, stream_daemon) = Stream::pair().unwrap();
+        let command_daemon = take_hello(command_daemon, "t0k3n");
+        let stream_daemon = take_hello(stream_daemon, "t0k3n");
+        let compat = DaemonCompat {
+            daemon_version: protocol::PROTOCOL_VERSION,
+            app_version: protocol::PROTOCOL_VERSION,
+            degraded: false,
+        };
+
+        app_handshake_with_token(&compat, &Mutex::new(command), &mut stream, "t0k3n").unwrap();
+
+        assert_eq!(connection_of(command_daemon.join().unwrap()), Some(protocol::ConnectionKind::Command));
+        assert_eq!(connection_of(stream_daemon.join().unwrap()), Some(protocol::ConnectionKind::Push));
     }
 }
 

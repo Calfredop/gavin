@@ -134,12 +134,14 @@ pub(crate) fn runs_apart(req: &Request) -> bool {
     matches!(req, Request::EndOrphan { .. })
 }
 
-/// Pushes the daemon writes to every `app` connection whether it asked
-/// or not (`SessionManager::push_to_apps`). A command connection is an
-/// `app` connection once its `Hello` lands, so one of these can arrive
-/// where a reply is expected -- and read as the reply, it would desync
-/// every request after it. The streaming connection is `app` too and
-/// relays each of them, so dropping them here loses nothing.
+/// Pushes the daemon writes to `app` connections whether they asked or not
+/// (`SessionManager::push_to_apps`). A daemon from v44 on sends them only
+/// to a connection whose `Hello` says it reads pushes, and every lane's
+/// says it is a command connection -- but the app may run against an older
+/// daemon, which sends them to both, and there one can arrive where a reply
+/// is expected: read as the reply, it would desync every request after it.
+/// The streaming connection is `app` too and relays each of them, so
+/// dropping them here loses nothing.
 fn is_unsolicited(resp: &Response) -> bool {
     matches!(
         resp,
@@ -683,12 +685,7 @@ impl Worker {
         if version >= crate::session::HELLO_MIN_VERSION {
             if let Some(token) = (redial.token)() {
                 let nonce = protocol::random_hex(16)?;
-                let hello = Request::Hello {
-                    client: "app".to_string(),
-                    protocol_version: protocol::PROTOCOL_VERSION,
-                    auth: protocol::HelloAuth::DaemonToken { token: token.clone() },
-                    nonce: nonce.clone(),
-                };
+                let hello = crate::session::app_hello(&token, &nonce, protocol::ConnectionKind::Command);
                 write_message(conn.reader.get_mut(), &hello)?;
                 let ack = read_reply(&mut conn, HANDSHAKE_DEADLINE, peer, &hello)?;
                 crate::session::verify_app_ack(ack, &token, &nonce)?;
@@ -1223,8 +1220,11 @@ mod tests {
         );
         assert_eq!(message(lane.ask(&parity(), kill(7)).unwrap()), "s-7");
         match daemon.join().unwrap() {
-            Some(Request::Hello { client, auth, .. }) => {
+            Some(Request::Hello { client, auth, connection, .. }) => {
                 assert_eq!(client, "app");
+                // A lane is a command connection, and says so: the daemon
+                // sends the device pushes only to one that reads them.
+                assert_eq!(connection, Some(protocol::ConnectionKind::Command));
                 assert!(
                     matches!(&auth, protocol::HelloAuth::DaemonToken { token } if token == "t0k3n"),
                     "{auth:?}"

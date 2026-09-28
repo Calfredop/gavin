@@ -1361,6 +1361,15 @@ pub struct SessionManager {
     /// same-uid process that introduced itself as nobody in particular
     /// (§4) -- a hand-started agent in a terminal is not a screen a human
     /// is looking at.
+    ///
+    /// And only the `app` connections that READ pushes (v44,
+    /// `ConnectionKind`): the desktop's push connection, or an older app's
+    /// connection of either kind, which sends no kind. Its command
+    /// connection is never in here -- it reads the next message as the
+    /// reply to its request, so a push written to it mid-request would
+    /// take that reply's place. That also settles what "an app is live"
+    /// means: someone who can be shown a dialog, and a command connection
+    /// alone cannot be.
     app_connections: Mutex<HashMap<u64, Arc<Mutex<Stream>>>>,
     next_app_connection: AtomicU64,
     /// The one live pairing offer, or none.
@@ -1639,8 +1648,8 @@ impl SessionManager {
         token
     }
 
-    /// Registers a connection that took the `app` role, returning the
-    /// token that removes it again. See `app_connections`.
+    /// Registers a connection that took the `app` role and reads pushes,
+    /// returning the token that removes it again. See `app_connections`.
     fn register_app_connection(&self, writer: Arc<Mutex<Stream>>) -> u64 {
         let token = self.next_app_connection.fetch_add(1, Ordering::SeqCst);
         self.app_connections.lock().unwrap().insert(token, writer);
@@ -1657,7 +1666,7 @@ impl SessionManager {
         !self.app_connections.lock().unwrap().is_empty()
     }
 
-    /// Writes a push to every live `app` connection.
+    /// Writes a push to every live `app` connection that reads pushes.
     ///
     /// Every one, not "the" one: the human may have gavin open twice
     /// (the release build and a dev build both run here -- see CLAUDE.md
@@ -5287,7 +5296,8 @@ fn handle_connection_as(
     // Only `app`, never `local`: see `app_connections`. The registration
     // is what the device pushes are written to and what §7's "is anybody
     // at the desktop?" is answered from, and a hand-started agent in a
-    // terminal is not a screen a human is looking at.
+    // terminal is not a screen a human is looking at. And only an `app`
+    // connection that reads pushes -- not the app's command connection.
     let mut _app_slot: Option<AppConnectionSlot> = None;
     // This connection's git worktree watchers (v42), refcounted per cwd
     // like the desktop's own. Deliberately a LOCAL, not `SessionManager`
@@ -5326,7 +5336,7 @@ fn handle_connection_as(
         // never authorized (it is what SETS the role) and never dispatched
         // to handle_request. A second one is refused -- identity is fixed
         // once set.
-        if let Request::Hello { auth, nonce, .. } = &req {
+        if let Request::Hello { auth, nonce, connection, .. } = &req {
             if hello_seen {
                 write_message(
                     &mut *writer.lock().unwrap(),
@@ -5339,7 +5349,11 @@ fn handle_connection_as(
             hello_seen = true;
             let (id, ack) = manager.resolve_hello(auth, nonce);
             identity = id;
-            if identity.role == Role::App {
+            // Only a connection that can READ a push is registered for
+            // them: a command connection takes the next message as the
+            // reply to its request, so a push written to it mid-request
+            // is read as that reply. See `ConnectionKind`.
+            if identity.role == Role::App && protocol::ConnectionKind::takes_device_pushes(*connection) {
                 let token = manager.register_app_connection(Arc::clone(&writer));
                 _app_slot = Some(AppConnectionSlot { manager: &manager, token });
             }
@@ -6654,6 +6668,7 @@ mod tests {
                 protocol_version: protocol::PROTOCOL_VERSION,
                 auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
                 nonce: "nonce-123".into(),
+                connection: None,
             },
         );
         match resp {
@@ -6683,6 +6698,7 @@ mod tests {
                 protocol_version: protocol::PROTOCOL_VERSION,
                 auth: protocol::HelloAuth::None,
                 nonce: "n".into(),
+                connection: None,
             },
         ) {
             Response::HelloAck { role, server_proof, .. } => {
@@ -6700,6 +6716,7 @@ mod tests {
                 protocol_version: protocol::PROTOCOL_VERSION,
                 auth: protocol::HelloAuth::DaemonToken { token: "wrong".into() },
                 nonce: "n".into(),
+                connection: None,
             },
         ) {
             Response::HelloAck { role, .. } => assert_eq!(role, "local"),
@@ -6716,6 +6733,7 @@ mod tests {
             protocol_version: protocol::PROTOCOL_VERSION,
             auth: protocol::HelloAuth::None,
             nonce: "n".into(),
+            connection: None,
         };
         assert!(matches!(request(&mut conn, &hello), Response::HelloAck { .. }));
         match request(&mut conn, &hello) {
@@ -6743,6 +6761,7 @@ mod tests {
                 protocol_version: protocol::PROTOCOL_VERSION,
                 auth: protocol::HelloAuth::SessionToken { token: "not-a-real-token".into() },
                 nonce: "n".into(),
+                connection: None,
             },
         ) {
             Response::HelloAck { role, session_id, .. } => {
@@ -8954,6 +8973,15 @@ mod tests {
     /// above, so the test owns both ends and can read a push off the same
     /// connection that sent the request.
     fn connect_as_app(manager: &Arc<SessionManager>) -> AppConn {
+        connect_as_app_kind(manager, None)
+    }
+
+    /// `connect_as_app`, saying which of the app's connections this is --
+    /// or, with `None`, saying nothing, as an app older than v44 does.
+    fn connect_as_app_kind(
+        manager: &Arc<SessionManager>,
+        connection: Option<protocol::ConnectionKind>,
+    ) -> AppConn {
         let (client, server) = Stream::pair().unwrap();
         let manager = Arc::clone(manager);
         std::thread::spawn(move || {
@@ -8970,6 +8998,7 @@ mod tests {
             protocol_version: protocol::PROTOCOL_VERSION,
             auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
             nonce: "n".into(),
+            connection,
         });
         match resp {
             Response::HelloAck { ref role, .. } => assert_eq!(role, "app", "{resp:?}"),
@@ -9298,6 +9327,96 @@ mod tests {
             "the refusal has to name what to do about it: {err}"
         );
         assert!(manager.trust().unwrap().list().unwrap().is_empty());
+    }
+
+    /// The desktop opens two connections and reads them differently: the
+    /// push connection for whatever arrives, the command connection for
+    /// the next message as the reply to the request it just wrote. A device
+    /// push written to the command connection while a request is in flight
+    /// is read as that request's answer, and the answer it displaced is
+    /// then read as the answer to the request after -- one message out of
+    /// step for good.
+    ///
+    /// The request is held in flight by the trust store's own lock, which
+    /// `ListDevices` needs: the push goes out while the handler is parked
+    /// on it, so it is on the wire BEFORE the reply can be. Deterministic
+    /// both ways -- with the fix absent the command connection reads the
+    /// push first, every time.
+    #[test]
+    fn a_device_push_during_a_command_never_displaces_its_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut push = connect_as_app_kind(&manager, Some(protocol::ConnectionKind::Push));
+        let mut command = connect_as_app_kind(&manager, Some(protocol::ConnectionKind::Command));
+
+        let in_flight = manager.trust().unwrap();
+        command.send(&Request::ListDevices);
+        manager.push_to_apps(&Response::DeviceConnected { device_id: "phone-1".into() });
+        drop(in_flight);
+
+        match command.next() {
+            Response::Devices { .. } => {}
+            other => panic!("the command's reply was displaced by {other:?}"),
+        }
+        // Nor did it leave the connection out of step for the request
+        // after, which is how the fault showed: the answer it displaced
+        // arrived one request late.
+        match command.request(&Request::GetProtocolVersion) {
+            Response::ProtocolVersion { .. } => {}
+            other => panic!("the next request read a stale message: {other:?}"),
+        }
+
+        // The push was not lost -- it went where it can be read.
+        match push.next() {
+            Response::DeviceConnected { device_id } => assert_eq!(device_id, "phone-1"),
+            other => panic!("expected DeviceConnected on the push connection, got {other:?}"),
+        }
+    }
+
+    /// An app older than v44 sends no kind, and keeps what it always had:
+    /// the pushes on every connection it holds. Its command lane skips
+    /// them (`is_unsolicited` in the app), which is what made that
+    /// survivable; the daemon does not take it away.
+    #[test]
+    fn an_app_that_names_no_connection_kind_is_still_sent_the_pushes() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut older = connect_as_app_kind(&manager, None);
+
+        manager.push_to_apps(&Response::DeviceConnected { device_id: "phone-1".into() });
+        match older.next() {
+            Response::DeviceConnected { device_id } => assert_eq!(device_id, "phone-1"),
+            other => panic!("expected DeviceConnected, got {other:?}"),
+        }
+        assert!(manager.an_app_is_live());
+    }
+
+    /// §7's "is anybody at the desktop?" is asked so that a confirmation
+    /// has somewhere to appear, and a confirmation appears as a push. A
+    /// desktop whose only connection is a command connection cannot show
+    /// one, so it does not count -- and neither does a connection that
+    /// named a kind this daemon has never heard of, which is not asking
+    /// for pushes either.
+    #[test]
+    fn only_a_connection_that_reads_pushes_counts_as_a_live_desktop() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+
+        let _command = connect_as_app_kind(&manager, Some(protocol::ConnectionKind::Command));
+        let _newer = connect_as_app_kind(&manager, Some(protocol::ConnectionKind::Unknown));
+        assert!(!manager.an_app_is_live(), "a command connection cannot show a pairing dialog");
+        manager.push_to_apps(&Response::DeviceConnected { device_id: "phone-1".into() });
+
+        let mut push = connect_as_app_kind(&manager, Some(protocol::ConnectionKind::Push));
+        assert!(manager.an_app_is_live());
+        // The push connection's first message is the one sent after it
+        // connected, so nothing addressed to the other two was queued for
+        // it, and nothing was sent to them.
+        manager.push_to_apps(&Response::DeviceConnected { device_id: "phone-2".into() });
+        match push.next() {
+            Response::DeviceConnected { device_id } => assert_eq!(device_id, "phone-2"),
+            other => panic!("expected DeviceConnected, got {other:?}"),
+        }
     }
 
     /// One QR on screen, one live secret. A second `BeginPairing`
@@ -13005,6 +13124,7 @@ mod tests {
                             protocol_version: protocol::PROTOCOL_VERSION,
                             auth: protocol::HelloAuth::DaemonToken { token: "test-daemon-token".into() },
                             nonce: format!("n-{i}"),
+                            connection: None,
                         },
                     );
                     assert!(matches!(&hello, Response::HelloAck { role, .. } if role == "app"), "{hello:?}");

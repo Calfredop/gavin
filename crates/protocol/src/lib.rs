@@ -30,6 +30,27 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v44 widens `Hello` with `connection`: which of the app's two
+/// connections this is, push or command (`ConnectionKind`). The daemon
+/// used to send the device pushes to every `app` connection, and the
+/// command connection takes the first message it reads as the reply to
+/// its request -- so a push arriving mid-request displaced the reply and
+/// left the connection one message out of step from then on
+/// (`device-pushes-reach-the-command-connection.md`). Now they go only to
+/// a connection that can read them.
+///
+/// No new Request variant, so `min_version_for` has no new arm: `Hello`
+/// keeps the one it took at v35, and that gate is by TYPE and cannot see
+/// a field. No `FEATURE_MIN_VERSION` entry or `featureBlockedReason`
+/// consumer is owed either, and not for want of a surface to put one on:
+/// nothing a person does produces this field, the app sets it on every
+/// handshake, and what an older daemon does with it is ignore it -- the
+/// connection then behaves as it always did, both of them sent the
+/// pushes, which the app's command lane already tolerates by skipping
+/// them (`is_unsolicited`). An older client sends no field, which the
+/// daemon reads as today's behaviour, so nothing is dropped in either
+/// direction.
+///
 /// v43 takes the launch command OUT of the board read, and adds
 /// `GetCardSession` to read one binding with its command put back
 /// (`perf-get-board-payload-and-refresh-storm.md`). The command is an
@@ -482,7 +503,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 43;
+pub const PROTOCOL_VERSION: u32 = 44;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -1244,6 +1265,12 @@ pub enum Request {
         protocol_version: u32,
         auth: HelloAuth,
         nonce: String,
+        /// Which of the app's connections this is (v44). `None` -- the
+        /// only thing a client older than v44 can say -- is today's
+        /// behaviour: the connection is sent every device push. See
+        /// `ConnectionKind`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connection: Option<ConnectionKind>,
     },
 
     // -- Remote access, phase 2 (v42) ---------------------------------
@@ -1334,6 +1361,52 @@ pub enum HelloAuth {
     /// A session token minted at `CreateSession`; the connection becomes
     /// `agent`, scoped to the session the token was minted for.
     SessionToken { token: String },
+}
+
+/// Which of the desktop app's connections a `Hello` is introducing (v44).
+///
+/// The app opens two connections to its daemon and both prove the daemon
+/// token, so both become `app`. They are not alike: the push connection is
+/// read continuously for whatever the daemon sends it, and the command
+/// connection is read only as the answer to the request just written, the
+/// next message taken to be that answer. A push written to the command
+/// connection while a request is in flight is read as the answer, and the
+/// answer it displaced is then read as the reply to the request after --
+/// one message out of step until something fails.
+///
+/// So the daemon sends the device pushes (`DevicePairingRequested`,
+/// `DeviceConnected`, `DeviceDisconnected`) only to a connection that can
+/// read them: `Push`, or one that sent no kind at all. Sending none is what
+/// a client older than v44 does and is kept as it was, so an older app
+/// keeps the pushes on both of its connections, and the command lane's own
+/// skip of them (`is_unsolicited` in the app) stays for exactly that case.
+///
+/// `Unknown` is a kind a newer client sent that this daemon has never
+/// heard of. It has to be a value and not a parse error, for the reason
+/// `Request::Unknown` is: `read_message` turns a parse error into a closed
+/// connection, and a `Hello` that fails to parse leaves the client with no
+/// identity at all. A connection that is neither a push nor a command
+/// connection is not asking for the pushes, so it gets none.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConnectionKind {
+    /// Read for whatever the daemon pushes; never used to send a request.
+    Push,
+    /// Written a request and read for its answer, and nothing else.
+    Command,
+    /// A kind a newer client sent. Deserialize-only: never constructed or
+    /// sent by us.
+    #[serde(other)]
+    Unknown,
+}
+
+impl ConnectionKind {
+    /// Whether a connection that introduced itself as `kind` is sent the
+    /// device pushes. `None` is a `Hello` with no kind, which is every
+    /// client older than v44 and keeps today's answer: yes.
+    pub fn takes_device_pushes(kind: Option<ConnectionKind>) -> bool {
+        matches!(kind, None | Some(ConnectionKind::Push))
+    }
 }
 
 /// The protocol version that introduced `req`'s variant.
@@ -1534,10 +1607,14 @@ pub fn min_version_for(req: &Request) -> u32 {
         // from the `#[serde(other)]` arm and every client reads that as
         // "this daemon has no identity yet" -- the app continues as
         // `local`, gavin-mcp continues untokened, and nothing is silently
-        // dropped because `Hello` carries no field an older daemon would
+        // dropped because `Hello` carried no field an older daemon would
         // parse-and-discard. The app still mirrors it as
         // FEATURE_MIN_VERSION.clientIdentity so the Settings surface can
         // say WHY it is greyed, per CLAUDE.md.
+        //
+        // v44 gave it `connection`, which this arm cannot see -- and does
+        // not need to: see `PROTOCOL_VERSION`'s v44 note for why a daemon
+        // that ignores it costs nothing.
         Request::Hello { .. } => 35,
 
         // The archive (`plans/archive/`). v13 also widened PlanFileInfo
@@ -4267,6 +4344,77 @@ mod tests {
         assert_eq!(n, serde_json::json!({"kind": "none"}));
     }
 
+    /// A client older than v44 sends no `connection`, and the daemon must
+    /// read that as what it always meant: the connection is sent the
+    /// device pushes. Both directions matter -- an old `Hello` parses, and
+    /// a new one that names no kind writes the bytes an old daemon has
+    /// always seen.
+    #[test]
+    fn a_hello_with_no_connection_kind_is_what_an_older_client_sends() {
+        let old = r#"{"type":"Hello","client":"app","protocol_version":43,"auth":{"kind":"none"},"nonce":"n"}"#;
+        match serde_json::from_str::<Request>(old).unwrap() {
+            Request::Hello { connection, .. } => {
+                assert_eq!(connection, None);
+                assert!(ConnectionKind::takes_device_pushes(connection));
+            }
+            other => panic!("expected Hello, got {other:?}"),
+        }
+
+        let unnamed = Request::Hello {
+            client: "app".into(),
+            protocol_version: PROTOCOL_VERSION,
+            auth: HelloAuth::None,
+            nonce: "n".into(),
+            connection: None,
+        };
+        let v = serde_json::to_value(&unnamed).unwrap();
+        assert!(v.get("connection").is_none(), "an unnamed kind must not be written: {v}");
+    }
+
+    #[test]
+    fn a_hello_names_its_connection_in_kebab_case() {
+        for (kind, wire) in [(ConnectionKind::Push, "push"), (ConnectionKind::Command, "command")] {
+            let hello = Request::Hello {
+                client: "app".into(),
+                protocol_version: PROTOCOL_VERSION,
+                auth: HelloAuth::None,
+                nonce: "n".into(),
+                connection: Some(kind),
+            };
+            let v = serde_json::to_value(&hello).unwrap();
+            assert_eq!(v["connection"], wire);
+            match serde_json::from_value::<Request>(v).unwrap() {
+                Request::Hello { connection, .. } => assert_eq!(connection, Some(kind)),
+                other => panic!("expected Hello, got {other:?}"),
+            }
+        }
+    }
+
+    /// A kind a newer client invents must not stop the `Hello` parsing:
+    /// `read_message` turns a parse error into a closed connection, and
+    /// then the client has no identity at all.
+    #[test]
+    fn a_connection_kind_from_a_newer_client_is_a_value_not_a_parse_error() {
+        let line = r#"{"type":"Hello","client":"app","protocol_version":99,"auth":{"kind":"none"},"nonce":"n","connection":"forward"}"#;
+        match serde_json::from_str::<Request>(line).unwrap() {
+            Request::Hello { connection, .. } => {
+                assert_eq!(connection, Some(ConnectionKind::Unknown));
+                assert!(!ConnectionKind::takes_device_pushes(connection));
+            }
+            other => panic!("expected Hello, got {other:?}"),
+        }
+    }
+
+    /// Who is sent the device pushes. The command connection is the one
+    /// that must not be: it reads the next message as its reply.
+    #[test]
+    fn only_a_push_connection_or_an_unnamed_one_takes_device_pushes() {
+        assert!(ConnectionKind::takes_device_pushes(Some(ConnectionKind::Push)));
+        assert!(ConnectionKind::takes_device_pushes(None));
+        assert!(!ConnectionKind::takes_device_pushes(Some(ConnectionKind::Command)));
+        assert!(!ConnectionKind::takes_device_pushes(Some(ConnectionKind::Unknown)));
+    }
+
     /// An older daemon's HelloAck has no `workspace_root`; a newer client
     /// must still parse it and treat the absence as "fall back to the
     /// cwd walk". The field must never become one a tool requires.
@@ -5075,7 +5223,10 @@ mod tests {
         // v43: GetCardSession -- one binding with its launch command, which
         // the board read no longer carries. One new TYPE, plus the
         // CardSession reply.
-        assert_eq!(PROTOCOL_VERSION, 43);
+        // v44: `Hello.connection` -- which of the app's connections this
+        // is. A widened payload and no new TYPE, so no band count moves
+        // in the table below and `min_version_for` has no new arm.
+        assert_eq!(PROTOCOL_VERSION, 44);
     }
 
     #[test]
@@ -5481,6 +5632,7 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
                 auth: HelloAuth::None,
                 nonce: "n".into(),
+                connection: None,
             },
             // v42's remote access: pairing, the device list, revocation.
             Request::BeginPairing,
