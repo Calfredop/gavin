@@ -4,6 +4,24 @@ A desktop workspace where a human runs and steers coding agents in terminals, le
 
 ## Language
 
+### Agents
+
+**Integration**:
+What Gavin writes into an agent's own configuration so the agent can use Gavin: its MCP server and its instructions file.
+_Avoid_: setup (that is the whole wizard), install
+
+**Agent tooling**:
+A third-party tool Gavin sets up to run alongside the agents, such as Superpowers or Headroom. Gavin can check whether it is there, and when it cannot, it takes the human's word.
+_Avoid_: integration (that is Gavin wiring itself into an agent), plugin, add-on, extension
+
+**Headroom**:
+The agent tooling that compresses what an agent sends to its model, so the same work spends fewer tokens of a subscription's limits.
+_Avoid_: proxy (on its own), the compressor, token saver
+
+**Compressed session**:
+A session whose agent sends its model traffic through Headroom. Whether a session is compressed is settled when its agent launches.
+_Avoid_: routed session, proxied session, headroom session
+
 ### Remote access
 
 **Workstation**:
