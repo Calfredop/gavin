@@ -1,7 +1,8 @@
 ---
+order: 37888
 kind: task
 title: [perf] On Linux the main checkout's git watch registers every directory of .gavin-worktrees
-status: To Do
+status: Done
 priority: low
 complexity: moderate
 ---

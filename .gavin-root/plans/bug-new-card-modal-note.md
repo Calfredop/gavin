@@ -1,5 +1,5 @@
 ---
-order: 27648
+order: 10240
 kind: task
 title: [bug] new card modal note
 status: To Do

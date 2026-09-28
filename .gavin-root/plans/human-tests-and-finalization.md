@@ -1,5 +1,5 @@
 ---
-order: 18432
+order: 5120
 title: "Human tests and finalization: what is left that only you can do"
 status: To Do
 priority: high

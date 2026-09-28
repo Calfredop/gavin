@@ -1,5 +1,5 @@
 ---
-order: 24576
+order: 7168
 kind: task
 title: [feat] memories tab
 status: To Do

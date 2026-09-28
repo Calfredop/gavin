@@ -1,5 +1,5 @@
 ---
-order: 3072
+order: 2048
 kind: note
 title: codesign's plist parser is stricter than plutil
 labels: memory
