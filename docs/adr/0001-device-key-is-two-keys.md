@@ -7,7 +7,12 @@ The remote-access design (`docs/security/05-remote-access.md` §8) requires that
 
 A copied Noise key therefore gets an attacker nothing.
 
-The hardware key signs only after the phone confirms the user is present, with a biometric or the phone's passcode. That makes it the enforcement of the Unlock (ADR 0004): no connection exists without an authentication since the Companion last came to the foreground. The phone's hardware enforces that, and the daemon verifies it.
+The hardware key signs only after the phone confirms the user is present, with a biometric or the phone's passcode, and never while the phone is locked. That makes it the enforcement of the Unlock (ADR 0004), in two halves:
+
+- **The hardware half.** The phone's hardware guarantees that every connection follows a recent authentication. On iOS that is the authentication held in the context the shell keeps from its Unlock. On Android it is any authentication on the phone within the key's auth window, and unlocking the lock screen also opens that window.
+- **The shell's half.** "Since the Companion last came to the foreground" is not something either platform's hardware can know. The shell supplies it by dropping that context, or forgetting that window, when it goes to the background.
+
+The daemon verifies the signature. Code running inside the Companion on an unlocked phone could skip the shell's half, but not the hardware's. The exact key parameters are in `docs/research/2026-09-28-companion-device-keys.md`.
 
 One install holds one pair of keys for every Workstation it pairs with, so "Device" means the same install on every Workstation. Revoking a Device on one Workstation, and "Revoke all" rotating that Workstation's own key, leave the other Workstations untouched. Android handles keys the same way, even though its TEE can hold X25519, so that there is one code path and one trust-store shape.
 
@@ -15,6 +20,7 @@ One install holds one pair of keys for every Workstation it pairs with, so "Devi
 
 - **The software Noise key alone.** §8 rejects it, because anyone with brief access to an unlocked phone can copy it.
 - **Noise over P-256.** The Noise specification does not define it and `snow` does not implement it.
+- **One hardware signature per Unlock, certifying an in-memory session key that signs each connection.** Rejected: code in the app could copy that key and connect from anywhere until it expired, whereas a hardware signature is only ever made on the phone.
 
 ## Consequences
 
@@ -22,3 +28,6 @@ One install holds one pair of keys for every Workstation it pairs with, so "Devi
 - `devices.sqlite` gains a column for it. This needs an `ALTER TABLE ... ADD COLUMN` migration; changing `CREATE TABLE IF NOT EXISTS` alone would never reach an existing database.
 - Phase 3 adds one message after the `IK` handshake: the signature over the handshake hash.
 - The pairing format can change for free now, because no Device has ever paired over a real transport.
+- **On Android, pairing also sends the hardware key's attestation chain.** A release daemon refuses a key unless it attests TEE or StrongBox under Google's hardware roots. iOS offers no attestation for such a key, so there the daemon relies on the shell's claim.
+- **iOS keeps keychain items across an uninstall.** The shell therefore deletes its keys on its first launch; otherwise a reinstall would silently be the old Device.
+- **No Simulator or emulator can hold a presence-gated hardware key.** Debug builds use a software key marked as such, and only a debug daemon accepts it.
