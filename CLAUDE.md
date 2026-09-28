@@ -23,8 +23,9 @@ Gavin itself — the app the PRD describes. A Rust workspace plus a Tauri/Svelte
   async crate) and the blocking dial the daemon and the test Device share
   (feature `client`). What they say to each other before bytes are copied
   is `protocol::relay`
-- `crates/companion-core` — the Device's half of the wire, with no I/O and
-  no randomness of its own, so it checks for `wasm32-unknown-unknown` — CI
+- `crates/companion-core` — the Device's half of the wire, with no I/O, no
+  randomness of its own and no signing (a phone's hardware signs; the core
+  is handed the signature), so it checks for `wasm32-unknown-unknown` — CI
   runs that. Its `test-device` feature is the native test Device that
   `crates/daemon/tests/device_wire.rs` drives a real daemon with
 
@@ -96,7 +97,9 @@ build that widens `config.json` writes a shape the other then reads. They share
 means that with remote access on BOTH daemons dial the Relay and register
 under the same rendezvous id. The Relay announces a Device's stream to both,
 and the one whose desk is showing the pairing QR is the one that picks it up
-(`SessionManager::has_pairing_offer`). Neither daemon can tell the other what
+(`SessionManager::has_pairing_offer`). A paired Device's CONNECTION either can
+serve: the one with a desktop app connected picks it up at once, and one with
+nobody at the desk waits a moment first (`remote::deference`). Neither daemon can tell the other what
 it wrote there, so `remote.rs` re-reads the settings every two seconds rather
 than trusting its own wake-ups; anything else one daemon caches from that file
 has the same problem. A protocol
@@ -119,6 +122,13 @@ the whole budget (`GAVIN_MCP_REEXEC=1` marks the successor), so if you still see
 session", the handover already happened and did not help — the binary at that
 path is still stale. That is the expected state, not a fault in your work: file
 cards by hand and carry on.
+
+**A connection's identity may be the transport's, and then it is final.** A
+Device's connection reaches the same loop the local socket's do
+(`server::serve_connection`), with `ClientIdentity::remote` handed in. `Hello`
+must never replace an identity that was handed in: it resolves a connection
+that presents nothing to `local`, which may do anything. Anything added to that
+loop that sets `identity` has to leave a `fixed_by_transport` one alone.
 
 **The compat gate is per request TYPE.** `min_version_for` gates request
 variants, not fields, so widening an existing request's payload is invisible to

@@ -202,7 +202,8 @@ escape sequence at the desktop nor push the six-digit code off the dialog the hu
 supposed to be reading. A name that survives none of that becomes "unnamed device"
 rather than an empty string, because "confirm ''" tells the human nothing.
 
-**How many, for how long.** Three devices by default (Settings can raise it). A device's
+**How many, for how long.** Five devices (three when this was written; the Companion
+spec raised it, and `trust::DEFAULT_DEVICE_CAP` is where it is). A device's
 trust has no scheduled expiry: a certificate that lapses on a laptop that sleeps for a
 week is a re-pair the human did not ask for. Instead `last_seen_at` drives a nag: a
 device unseen for ninety days is shown greyed with "re-pair to use", and is refused
@@ -883,9 +884,101 @@ were settled by building it:
   either app lets go of the Relay in both -- including a Device half-way
   through pairing, which is told the pairing lapsed.
 
-Still owed by this phase: `IK`, the hardware signature (ADR 0001), the
-Remote role over the wire, and the proofs listed below. The direct
-listener is out of the Companion spec's scope.
+**SECOND SLICE LANDED, `PROTOCOL_VERSION = 46`: a paired Device connects.**
+`IK`, the hardware signature (ADR 0001) and the Remote role over the wire,
+proved at the same seam. What was settled by building it:
+
+- **The Device's proof is the first message on the channel EVERY handshake
+  leaves**, pairing's as well as a connection's (`protocol::device_wire`,
+  `UnlockProof`). It is the hardware key's signature over
+  `"gavin-device-unlock-v1" || handshake hash` — ECDSA P-256 over SHA-256,
+  ASN.1 DER, which is what both platforms' hardware emits. At pairing the
+  proof also carries the hardware public key, which is how the key is
+  registered, and the daemon verifies the signature before it asks the desk
+  anything: a Device that cannot sign with the key it registers is one that
+  could never connect. At connection the proof names no key. What a
+  connection is judged against is the trust store's row, never something the
+  connection brought with it (`daemon/src/unlock.rs`).
+- **The notification key is minted by the daemon when the desk confirms**,
+  stored on the Device's row, and told to the Device in the `paired` verdict
+  — inside the channel the pairing handshake left, which is the one moment
+  both ends are sure of each other and neither the Relay nor the Push gateway
+  is a party. Pairing again mints another.
+- **A refusal is said, by name, inside the channel.** A first message that
+  does not open ends the stream without a word — it was not sealed to this
+  Workstation's key, so there is no channel to say anything in — and that is
+  what a Device that pinned a rotated key meets. Every refusal after that
+  (`not-paired`, `revoked`, `stale`, `pair-again`, `unlock`, `busy`) reaches
+  the Device as what it is, because each is a different thing for the
+  Companion to tell the human holding it. It is told to a peer that has by
+  then proved it holds the Device's Noise key.
+- **The plaintext is this protocol, unchanged, as §5 said** — and the
+  connection loop is the local socket's own. `remote.rs` hands a verified
+  Device to `SessionManager::adopt_device`, which serves one end of an
+  in-process socket pair as `remote`; what `remote.rs` does from then on is
+  copy. So revocation drops a Device the way phase 2 built and tested it, by
+  shutting that socket.
+- **The transport's identity is final.** The loop used to take whatever a
+  `Hello` resolved to as the connection's identity, and a `Hello` that
+  presents nothing resolves to `local` — every request there is. On a
+  Device's connection a `Hello` is now answered `HelloAck { role: "remote" }`
+  with no `server_proof`, and changes nothing, whatever it presents.
+- **A connection is judged for as long as it is carried.** Once by the key
+  that completed its handshake; again by its id once it is registered —
+  after the entry exists that a revocation would find, because a revocation
+  marks the row and then shuts the connections it finds, and one that landed
+  between the two would otherwise be found by nobody; and then every second,
+  on the poll that re-reads the settings, because the daemon that pressed
+  Revoke may be the OTHER one sharing the store, which shuts the connections
+  IT holds.
+- **A handshake has one deadline**, ten seconds for the handshake and the
+  proof together, not a timeout on each read of them: a peer that sends a
+  byte inside every timeout would never run out. And connections being let
+  in have places of their own (eight), apart from the four a pairing can
+  take, because a connection can be asked for at any time by anything the
+  Relay admits and must not be what keeps the owner from pairing.
+- **Nothing that carries a connection waits on the connection loop.** Its
+  replies are read by one thread and what it is handed is written by
+  another, so the thread between them is always free to see that the Device
+  has gone or the switch has been turned off. A Device that sends without
+  reading is held to the pace it reads at, and given up on after thirty
+  seconds.
+- **A revoked Device that pairs again asks for a slot like any other**, and
+  pairing again shuts the connections made under the keys it replaces.
+- **A frame that does not open ends the connection.** Altered, repeated,
+  dropped or moved, it is read against the wrong count, and so is every frame
+  after it: there is nothing to skip to. §8's "a dropped frame" is that frame
+  and the connection with it, which is the Companion spec's user story 71 —
+  a failed connection, never a wrong answer.
+- **Two daemons, one key, one Device.** The dev build's daemon and the
+  release build's both hold the Device's row and are both announced its
+  stream. The one with a desktop app connected picks it up at once; one with
+  nobody at the desk waits 400 ms first, and picks it up all the same if
+  nobody else has.
+- **The Remote role may do one thing**: `RemoveThisDevice`, which names no
+  Device — the connection it arrives on is one — deletes that row and drops
+  every connection the Device holds. Everything else is `Forbidden` until
+  the daemon forwards commands (companion-12).
+- **The `IK` half of the proof phase 2 left owing is discharged**
+  (`after_revoke_all_an_old_devices_ik_is_refused`): after "Revoke all" a
+  Device that pinned the old key finds nobody at the old rendezvous; shown
+  the new one, its first message does not open; and told the new key too, it
+  is refused by its row.
+
+Still owed by this phase, and not by this slice: the per-connection request
+rate and the hourly rekey (§5, §8), neither of which the Companion spec
+asks of this ticket, and Android's attestation chain at pairing (ADR 0001),
+which arrives with the shell that produces one. The direct listener is out
+of the Companion spec's scope.
+
+**Known, and filed.** The six-digit code is derived from the two Noise keys
+alone (§3), so it cannot tell a pairing made with a copied Noise key and
+another hardware key from the one the owner's phone made: both show the
+same digits. The preconditions are a copied key, sight of the QR and the
+owner pairing at that moment, and the confirmation is still a human's — but
+what it would defeat is the second key's whole purpose.
+`companion-33-pairing-code-covers-the-handshake.md` is the card, and it has
+to land before the Remote role is given any reach.
 
 Lands: `remote.rs` (dial, reconnect on wake, Noise `IK`, framing, padding, caps) feeding
 `handle_connection` with role `remote`; `crates/gavin-relay`; the direct loopback/LAN
@@ -926,7 +1019,8 @@ it is not part of this design.
 2. Should gavin run a public relay, or ship `gavin-relay` self-host-only? — Default:
    ship it self-hostable first and run one public instance; the QR carries the URL, so
    the human can point at their own.
-3. Maximum paired devices? — Default: three, raisable in Settings.
+3. Maximum paired devices? — Default: three, raisable in Settings. *Answered by the
+   Companion spec: five.*
 4. Should device trust ever expire on its own? — Default: no scheduled expiry; a
    device unseen for ninety days must re-pair.
 5. Should `KillSession` be in the remote role at all? — Default: yes in phase 5, for
