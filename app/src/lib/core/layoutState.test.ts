@@ -37,6 +37,9 @@ vi.mock("$lib/core/backend", () => ({
   killSession: vi.fn().mockResolvedValue(undefined),
   getWorkspacesState: vi.fn(),
   setWorkspacesState: vi.fn(),
+  // Every workspace setting's own command (workspaceSettings.ts). Resolved
+  // by default: the setters await it inside a try that reports a refusal.
+  setWorkspaceSettings: vi.fn().mockResolvedValue(undefined),
   getBootstrapError: vi.fn(),
   restartDaemon: vi.fn(),
   // Resolved by default: every path that re-syncs against a (re)connected
@@ -270,6 +273,19 @@ import {
   requireReviewDefault,
   markRequireReviewAsked,
   setStatusNoticeHold,
+  setWorkspacePause,
+  setWorkspaceFallback,
+  markAgentArmed,
+  setAgentArmDeclined,
+  setOrchestrationAgent,
+  setDevelopingCards,
+  setWorkspaceSsh,
+  recordMcpForeignChoice,
+  setWorkspaceComplexityTable,
+  setWorkspaceActionPromptOverrides,
+  markGitTrackingAsked,
+  setWorkspacePinned,
+  setHomeAgentShare,
   type LayoutState,
 } from "$lib/core/layoutState";
 import { confirmDestructive } from "$lib/core/confirmGate";
@@ -387,9 +403,10 @@ describe("setWorkspaceRoot", () => {
     await setWorkspaceRoot("ws-1", "/tmp/root");
 
     expect(get(layoutState).workspaces[0].rootPath).toBe("/tmp/root");
-    expect(backend.setWorkspacesState).toHaveBeenCalled();
-    const persisted = vi.mocked(backend.setWorkspacesState).mock.calls.at(-1)![0];
-    expect(persisted.find((w: Workspace) => w.id === "ws-1")?.rootPath).toBe("/tmp/root");
+    // The root is a setting: its own command, and never the layout save,
+    // which the host would keep only the layout of.
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledWith("ws-1", { rootPath: "/tmp/root", ssh: null });
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
     expect(backend.watchGavinRoot).toHaveBeenCalledWith("ws-1", "/tmp/root");
     expect(backend.unwatchGavinRoot).not.toHaveBeenCalled();
   });
@@ -3270,6 +3287,65 @@ describe("daemon errors: refused request vs lost connection", () => {
   });
 });
 
+// Another writer's settings change -- another window now, a Companion
+// later -- reaches this window as one workspace's settings record. It must
+// land without moving anything this window has laid out.
+describe("adopting another writer's workspace settings", () => {
+  afterEach(() => {
+    teardown();
+    vi.mocked(listen).mockResolvedValue(() => {});
+  });
+
+  async function bootstrapWith(workspaces: Workspace[]): Promise<Map<string, (e: { payload: unknown }) => void>> {
+    const handlers = new Map<string, (e: { payload: unknown }) => void>();
+    vi.mocked(listen).mockImplementation(async (event: string, handler: unknown) => {
+      handlers.set(event, handler as (e: { payload: unknown }) => void);
+      return () => {};
+    });
+    vi.mocked(backend.getWorkspacesState).mockResolvedValue({ workspaces, activeWorkspaceId: workspaces[0].id });
+    vi.mocked(backend.getBootstrapError).mockResolvedValue(null);
+    vi.mocked(backend.getSessionNames).mockResolvedValue({});
+    vi.mocked(backend.getFileTabs).mockResolvedValue({});
+    vi.mocked(backend.getBoardTabs).mockResolvedValue({});
+    await bootstrap();
+    await vi.waitFor(() => expect(get(layoutState).status).toBe("ready"));
+    return handlers;
+  }
+
+  it("takes the record's settings and keeps this window's pages", async () => {
+    const pages = [page("p-1", leaf(["s-1"]))];
+    const handlers = await bootstrapWith([{ ...ws("ws-1", pages), autoCommit: true, color: "#111111" }]);
+    const before = get(layoutState).workspaces[0];
+
+    handlers.get("workspace-settings-synced")!({
+      payload: { origin: "phone", record: { id: "ws-1", name: "Renamed", color: "#222222" } },
+    });
+
+    const adopted = get(layoutState).workspaces[0];
+    expect(adopted.name).toBe("Renamed");
+    expect(adopted.color).toBe("#222222");
+    // Absent from the record is cleared: the record is the whole of the
+    // workspace's settings, so that is how a clear made elsewhere arrives.
+    expect(adopted.autoCommit).toBeUndefined();
+    expect(adopted.pages).toBe(before.pages);
+    expect(adopted.activePageId).toBe("p-1");
+    // Adopting is not saving: echoing it back would be a second write of
+    // what the host already holds.
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+    expect(backend.setWorkspaceSettings).not.toHaveBeenCalled();
+  });
+
+  it("ignores its own echo", async () => {
+    const handlers = await bootstrapWith([{ ...ws("ws-1", []), autoCommit: true }]);
+
+    handlers.get("workspace-settings-synced")!({
+      payload: { origin: "main", record: { id: "ws-1", name: "ws-1" } },
+    });
+
+    expect(get(layoutState).workspaces[0].autoCommit).toBe(true);
+  });
+});
+
 // cwd/status/restored reach the frontend only as pushes, and their
 // baseline only in reply to Attach -- which runs once per app PROCESS. A
 // reloaded frontend therefore has to ask for them, or every terminal tab
@@ -3678,7 +3754,8 @@ describe("workspace settings", () => {
     setState([ws("ws-1", [])], "ws-1", null);
     await setWorkspaceColor("ws-1", "#A78BFA");
     expect(get(layoutState).workspaces[0].color).toBe("#a78bfa");
-    expect(backend.setWorkspacesState).toHaveBeenCalled();
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledWith("ws-1", { color: "#a78bfa" });
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 
   it("setWorkspaceColor rejects junk by storing the default", async () => {
@@ -3699,10 +3776,14 @@ describe("workspace settings", () => {
     setState([ws("ws-1", [])], "ws-1", null);
     await setWorkspaceFontSize("ws-1", 16);
     expect(get(layoutState).workspaces[0].terminalFontSize).toBe(16);
-    expect(backend.setWorkspacesState).toHaveBeenCalled();
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledWith("ws-1", { terminalFontSize: 16 });
 
+    // The clear crosses the wire as null: an undefined value would be
+    // dropped by JSON and reach the host as a patch that changes nothing.
     await setWorkspaceFontSize("ws-1", null);
     expect(get(layoutState).workspaces[0].terminalFontSize).toBeUndefined();
+    expect(backend.setWorkspaceSettings).toHaveBeenLastCalledWith("ws-1", { terminalFontSize: null });
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 
   it("setWorkspaceFontSize refuses a size xterm could not render", async () => {
@@ -3731,10 +3812,12 @@ describe("workspace settings", () => {
     setState([ws("ws-1", [])], "ws-1", null);
     await setWorkspaceCustomResumeArgs("ws-1", "  --resume  ");
     expect(get(layoutState).workspaces[0].customResumeArgs).toBe("--resume");
-    expect(backend.setWorkspacesState).toHaveBeenCalled();
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledWith("ws-1", { customResumeArgs: "--resume" });
 
     await setWorkspaceCustomResumeArgs("ws-1", null);
     expect(get(layoutState).workspaces[0].customResumeArgs).toBeUndefined();
+    expect(backend.setWorkspaceSettings).toHaveBeenLastCalledWith("ws-1", { customResumeArgs: null });
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 
   it("setCustomResumeArgsDefault goes to config.json, never to the daemon", async () => {
@@ -3763,7 +3846,8 @@ describe("workspace settings", () => {
     setState([ws("ws-1", [])], "ws-1", null);
     await setWorkspaceAutoCommit("ws-1", true);
     expect(get(layoutState).workspaces[0].autoCommit).toBe(true);
-    expect(backend.setWorkspacesState).toHaveBeenCalled();
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledWith("ws-1", { autoCommit: true });
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
 
     // False is a CHOICE, not an absence: a workspace that has said "off"
     // must stay off when the app-wide default is turned on.
@@ -3814,6 +3898,7 @@ describe("workspace settings", () => {
   it("setAgentField writes config.toml through the daemon, not config.json", async () => {
     setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
     vi.mocked(backend.setWorkspacesState).mockClear();
+    vi.mocked(backend.setWorkspaceSettings).mockClear();
 
     // `mcp_file` rather than `command`: the two execution keys DO touch
     // config.json, to carry the trust marker (below). The other five
@@ -3822,6 +3907,7 @@ describe("workspace settings", () => {
 
     expect(backend.setRootConfigField).toHaveBeenCalledWith("/tmp/ws", "mcp_file", ".mcp.json");
     expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+    expect(backend.setWorkspaceSettings).not.toHaveBeenCalled();
   });
 
   it("setAgentField approves the value it just wrote, so gavin's own edits never trip the gate", async () => {
@@ -3832,10 +3918,9 @@ describe("workspace settings", () => {
     // The marker for the value that was written, not for the one the
     // tree still holds: the watcher push carrying it is ~170ms away, and
     // hashing the old command would approve something nobody asked for.
-    expect(get(layoutState).workspaces[0].trustedConfigHash).toBe(
-      executionKeysHash(executionKeys({ profile: null, file: null, command: "claude --model opus" }, []))
-    );
-    expect(backend.setWorkspacesState).toHaveBeenCalled();
+    const hash = executionKeysHash(executionKeys({ profile: null, file: null, command: "claude --model opus" }, []));
+    expect(get(layoutState).workspaces[0].trustedConfigHash).toBe(hash);
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledWith("ws-1", { trustedConfigHash: hash });
   });
 
   it("setAgentField stamps nothing when the daemon refused the write", async () => {
@@ -3861,7 +3946,10 @@ describe("workspace settings", () => {
     await stampCardReview("ws-1", "/ws/a.md", content);
 
     expect(cardReviewed("ws-1", "/ws/a.md", content)).toBe(true);
-    expect(backend.setWorkspacesState).toHaveBeenCalled();
+    const [workspaceId, patch] = vi.mocked(backend.setWorkspaceSettings).mock.calls.at(-1)!;
+    expect(workspaceId).toBe("ws-1");
+    expect(Object.keys(patch)).toEqual(["reviewedCards"]);
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 
   it("an edited body stops matching, so the card is asked about again", async () => {
@@ -3880,9 +3968,9 @@ describe("workspace settings", () => {
 
   it("stamps nothing for a workspace that is not there", async () => {
     setState([ws("ws-1", [])], "ws-1", null);
-    vi.mocked(backend.setWorkspacesState).mockClear();
+    vi.mocked(backend.setWorkspaceSettings).mockClear();
     await stampCardReview("ws-2", "/ws/a.md", { title: "t", body: "b", attachments: [] });
-    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+    expect(backend.setWorkspaceSettings).not.toHaveBeenCalled();
   });
 
   // The configurable half of the gate (feat-optional-review): every
@@ -3923,10 +4011,12 @@ describe("workspace settings", () => {
 
     await setWorkspaceRequireReview("ws-1", false);
     expect(get(layoutState).workspaces[0].requireReview).toBe(false);
-    expect(backend.setWorkspacesState).toHaveBeenCalled();
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledWith("ws-1", { requireReview: false });
 
     await setWorkspaceRequireReview("ws-1", null);
     expect(get(layoutState).workspaces[0].requireReview).toBeUndefined();
+    expect(backend.setWorkspaceSettings).toHaveBeenLastCalledWith("ws-1", { requireReview: null });
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
   });
 
   it("setRequireReviewDefault persists to config.json and updates the store", async () => {
@@ -3945,10 +4035,11 @@ describe("workspace settings", () => {
 
     await markRequireReviewAsked("ws-1");
     expect(get(layoutState).workspaces[0].requireReviewAsked).toBe(true);
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledWith("ws-1", { requireReviewAsked: true });
 
-    vi.mocked(backend.setWorkspacesState).mockClear();
+    vi.mocked(backend.setWorkspaceSettings).mockClear();
     await markRequireReviewAsked("ws-1");
-    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+    expect(backend.setWorkspaceSettings).not.toHaveBeenCalled();
   });
 
   it("setAgentField does nothing without a root", async () => {
@@ -3956,6 +4047,124 @@ describe("workspace settings", () => {
     vi.mocked(backend.setRootConfigField).mockClear();
     await setAgentField("ws-1", "command", "x");
     expect(backend.setRootConfigField).not.toHaveBeenCalled();
+  });
+});
+
+// The workspace state split (workspaceSettings.ts, docs/adr/0006). The host
+// keeps only the LAYOUT of a layout save for a workspace it already holds,
+// so a setting written through setWorkspacesState would show here and be
+// gone after a restart. Every setter therefore has to reach the settings
+// command, with a patch naming only what it changed.
+describe("workspace settings go through their own command", () => {
+  const pause = {
+    enabled: true,
+    periodMinutes: 300,
+    pauseMinutes: 10,
+    anchorMs: 1,
+    limitPercent: 95,
+    limitEnabled: true,
+  };
+  const cases: [string, () => Promise<void>, Record<string, unknown>][] = [
+    ["setWorkspaceFlag", () => setWorkspaceFlag("ws-1", "notifyFinished", false), { notifyFinished: false }],
+    ["setWorkspacePause", () => setWorkspacePause("ws-1", pause), { agentPause: pause }],
+    ["setWorkspacePause(null)", () => setWorkspacePause("ws-1", null), { agentPause: null }],
+    ["setWorkspaceFallback", () => setWorkspaceFallback("ws-1", ["codex"]), { agentFallback: ["codex"] }],
+    ["setWorkspaceFallback(null)", () => setWorkspaceFallback("ws-1", null), { agentFallback: null }],
+    [
+      "markAgentArmed",
+      () => markAgentArmed("ws-1", "codex"),
+      { armedAgents: ["codex"], declinedAgents: null },
+    ],
+    ["setAgentArmDeclined", () => setAgentArmDeclined("ws-1", "codex", true), { declinedAgents: ["codex"] }],
+    [
+      "setOrchestrationAgent",
+      () => setOrchestrationAgent("ws-1", { sessionId: "s-9", label: "Generate" }),
+      { orchestrationAgent: { sessionId: "s-9", label: "Generate" } },
+    ],
+    ["setOrchestrationAgent(null)", () => setOrchestrationAgent("ws-1", null), { orchestrationAgent: null }],
+    [
+      "setDevelopingCards",
+      () => setDevelopingCards("ws-1", [{ path: "/c.md", sessionId: "s-9" }]),
+      { developingCards: [{ path: "/c.md", sessionId: "s-9" }] },
+    ],
+    ["setDevelopingCards([])", () => setDevelopingCards("ws-1", []), { developingCards: null }],
+    ["renameWorkspace", () => renameWorkspace("ws-1", "Renamed"), { name: "Renamed" }],
+    [
+      "setWorkspaceSsh",
+      () => setWorkspaceSsh("ws-1", { host: "box" }, "/home/me/repo"),
+      { rootPath: "/home/me/repo", ssh: { host: "box" } },
+    ],
+    [
+      "recordMcpForeignChoice",
+      () => recordMcpForeignChoice("ws-1", { hash: "h", action: "keep" }),
+      { mcpForeignServersChoice: { hash: "h", action: "keep" } },
+    ],
+    [
+      "setWorkspaceComplexityTable",
+      () => setWorkspaceComplexityTable("ws-1", { complex: { profile: "", model: "opus" } }),
+      { complexityAgents: { complex: { profile: "", model: "opus" } } },
+    ],
+    ["setWorkspaceComplexityTable({})", () => setWorkspaceComplexityTable("ws-1", {}), { complexityAgents: null }],
+    [
+      "setWorkspaceActionPromptOverrides",
+      () => setWorkspaceActionPromptOverrides("ws-1", { "action:run-task": "Do it.", "builtin:commit": "  " }),
+      { actionPromptOverrides: { "action:run-task": "Do it." } },
+    ],
+    ["markGitTrackingAsked", () => markGitTrackingAsked("ws-1"), { gitTrackingAsked: true }],
+  ];
+
+  it.each(cases)("%s sends only its own keys to the settings command", async (_name, run, patch) => {
+    setState([ws("ws-1", [], null, "/tmp/ws")], "ws-1", null);
+
+    await run();
+
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledTimes(1);
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledWith("ws-1", patch);
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+    // And this window shows what it sent: a set key holds its value, a
+    // cleared one is gone.
+    const stored = get(layoutState).workspaces[0] as unknown as Record<string, unknown>;
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null) expect(key in stored).toBe(false);
+      else expect(stored[key]).toEqual(value);
+    }
+  });
+
+  it("a setting on a workspace this window does not hold sends nothing", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    await setWorkspaceAutoCommit("ws-2", true);
+    expect(backend.setWorkspaceSettings).not.toHaveBeenCalled();
+  });
+
+  it("a refused settings write reports, as a refused layout save does", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    vi.mocked(backend.setWorkspaceSettings).mockRejectedValueOnce(new Error("disk full"));
+    await setWorkspaceAutoCommit("ws-1", true);
+    expect(get(layoutState).status).toBe("error");
+    expect(get(layoutState).errorMessage).toContain("disk full");
+  });
+
+  it("layout -- sidebar pins and the Home divider -- stays on the layout save", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+    await setWorkspacePinned("ws-1", true);
+    await setHomeAgentShare("ws-1", 0.4);
+    expect(backend.setWorkspacesState).toHaveBeenCalledTimes(2);
+    expect(backend.setWorkspaceSettings).not.toHaveBeenCalled();
+  });
+
+  it("Start fresh drops the tombstone on the layout save and binds the root as a setting", async () => {
+    const tombstone = { id: "old-ws", name: "Gavin", rootPath: "/repo/gavin", removedAt: 100 };
+    setState([ws("ws-1", [])], "ws-1", null);
+    layoutState.update((s) => ({ ...s, removedWorkspaces: [tombstone] }));
+    vi.mocked(askConfirm).mockResolvedValueOnce(false);
+
+    await setWorkspaceRoot("ws-1", "/repo/gavin");
+
+    // The tombstone list travels with the layout save, as the closes that
+    // write it do; without this save "Start fresh" would ask again on the
+    // next launch.
+    expect(vi.mocked(backend.setWorkspacesState).mock.calls.at(-1)?.[2]).toEqual([]);
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledWith("ws-1", { rootPath: "/repo/gavin", ssh: null });
   });
 });
 

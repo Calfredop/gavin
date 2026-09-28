@@ -1368,8 +1368,16 @@ pub fn get_workspaces_state(state: State<WorkspacesState>) -> WorkspacesData {
     state.0.lock().unwrap().clone()
 }
 
-/// Writes the whole workspaces state, and tells the OTHER windows what
-/// it now says.
+/// Writes the workspaces state -- the desk's LAYOUT save -- and tells the
+/// OTHER windows what it now says.
+///
+/// Layout only, for every workspace the host already holds: pages, tabs
+/// and the rest of `workspace_settings::LAYOUT_KEYS`. The payload still
+/// carries whole workspaces, because this is also how the desk adds,
+/// closes and reorders them, and a new one arrives with its settings; but
+/// a known workspace keeps the settings the host has, and a setting
+/// changes only through `set_workspace_settings`. A Companion may call
+/// that one and never this one (docs/adr/0006).
 ///
 /// config.json is one file behind however many windows are open, and
 /// every window holds its own copy of the array it writes back whole. So
@@ -1410,8 +1418,28 @@ pub fn set_workspaces_state(
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
-    let data = WorkspacesData { workspaces, active_workspace_id, removed_workspaces };
-    *state.0.lock().unwrap() = data.clone();
+    // The LAYOUT save (workspace_settings.rs): for a workspace the host
+    // already holds, only the payload's layout is taken and the settings
+    // stay the host's. Settings have their own command, so a window saving
+    // a copy taken before another writer's settings change cannot undo it.
+    let data = {
+        let mut guard = state.0.lock().unwrap();
+        #[cfg(debug_assertions)]
+        for incoming in &workspaces {
+            if let Some(stored) = guard.workspaces.iter().find(|w| w.id == incoming.id) {
+                let dropped = crate::workspace_settings::dropped_settings(stored, incoming);
+                if !dropped.is_empty() {
+                    eprintln!(
+                        "set_workspaces_state: ignored settings {dropped:?} of {} -- a setting goes through set_workspace_settings",
+                        incoming.id
+                    );
+                }
+            }
+        }
+        let workspaces = crate::workspace_settings::merge_layout_save(&guard.workspaces, workspaces);
+        *guard = WorkspacesData { workspaces, active_workspace_id, removed_workspaces };
+        guard.clone()
+    };
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
     let board_tabs = board_tabs_state.0.lock().unwrap().clone();

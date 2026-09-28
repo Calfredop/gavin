@@ -156,6 +156,8 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   set_failure_patterns: ["ordinary"],
   get_workspaces_state: ["ordinary"],
   set_workspaces_state: ["ordinary"],
+  get_workspace_settings: ["ordinary"],
+  set_workspace_settings: ["ordinary"],
   get_theme_pref: ["ordinary"],
   set_theme_pref: ["ordinary"],
   get_terminal_font_size: ["ordinary"],

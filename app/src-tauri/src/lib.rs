@@ -23,6 +23,7 @@ mod trash;
 mod typesafe;
 mod updater;
 mod workspace_delete;
+mod workspace_settings;
 mod workspace_window;
 mod worktree_setup;
 
@@ -125,6 +126,8 @@ pub fn run() {
             session::set_failure_patterns,
             session::get_workspaces_state,
             session::set_workspaces_state,
+            workspace_settings::get_workspace_settings,
+            workspace_settings::set_workspace_settings,
             session::get_theme_pref,
             session::set_theme_pref,
             session::get_terminal_font_size,
