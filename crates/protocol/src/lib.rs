@@ -3,6 +3,18 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 
+// A wasm build that forgot `default-features = false` would otherwise fail
+// deep inside `transport` with a wall of unresolved names; say what is
+// wrong here instead.
+#[cfg(all(feature = "os", target_family = "wasm"))]
+compile_error!(
+    "protocol's `os` feature cannot build for wasm: depend on it with `default-features = false`"
+);
+
+// Gated with the rest of the operating-system-specific parts (Cargo feature
+// `os`, on by default): it has a Unix and a Windows implementation and
+// nothing for any other target, `wasm32-unknown-unknown` among them.
+#[cfg(all(feature = "os", not(target_family = "wasm")))]
 pub mod transport;
 
 /// Cap on a single protocol line, so a client that never sends a newline
@@ -1711,7 +1723,11 @@ pub fn gate_request(req: &Request, daemon_version: u32) -> Result<(), GatedReque
 /// opening it is where a daemon on that OS died: `mint_daemon_token` is
 /// the first thing `run_server` does, so the whole daemon failed to
 /// start with `os error 3` before it ever reached the pipe.
-#[cfg(not(windows))]
+///
+/// Behind the `os` feature: a build for `wasm32-unknown-unknown` has no OS
+/// random source to read, and a Device that needs randomness there takes it
+/// from its own host rather than from a fallback in this crate.
+#[cfg(all(feature = "os", not(windows)))]
 pub fn random_hex(n_bytes: usize) -> std::io::Result<String> {
     let mut buf = vec![0u8; n_bytes];
     let mut f = std::fs::File::open("/dev/urandom")?;
@@ -1724,7 +1740,7 @@ pub fn random_hex(n_bytes: usize) -> std::io::Result<String> {
 /// an algorithm handle nor the open/close dance around one. It is
 /// documented to always return TRUE; the check is here regardless,
 /// because the failure it would hide is a token of zeroes.
-#[cfg(windows)]
+#[cfg(all(feature = "os", windows))]
 pub fn random_hex(n_bytes: usize) -> std::io::Result<String> {
     use windows::Win32::Security::Cryptography::ProcessPrng;
     let mut buf = vec![0u8; n_bytes];
@@ -1843,6 +1859,7 @@ pub fn pairing_sas(key_a: &[u8], key_b: &[u8]) -> String {
 }
 
 /// Where the daemon writes its per-start token, `0600`, beside the socket.
+#[cfg(feature = "os")]
 pub fn daemon_token_path() -> anyhow::Result<PathBuf> {
     Ok(app_support_dir()?.join(profile_file_name("daemon", "token", BuildProfile::current())))
 }
@@ -1853,6 +1870,7 @@ pub fn daemon_token_path() -> anyhow::Result<PathBuf> {
 /// connection is refused the privileged, process-starting requests
 /// (remote-access design §11 Q1). A file rather than a protocol field so
 /// the daemon can honour a live toggle with no restart and no new request.
+#[cfg(feature = "os")]
 pub fn require_local_token_path() -> anyhow::Result<PathBuf> {
     Ok(app_support_dir()?.join("require_local_token"))
 }
@@ -3471,6 +3489,11 @@ pub fn profile_file_name(stem: &str, extension: &str, profile: BuildProfile) -> 
 /// prints anything and an app whose only symptom is "daemon did not
 /// become reachable". An Err travels up through `bootstrap` instead and
 /// reaches the human as the connection banner, naming the variable.
+///
+/// Behind the `os` feature, as is every function here that reads the
+/// environment or the filesystem. `resolve_app_support_dir` below is the
+/// pure rule and is always available.
+#[cfg(feature = "os")]
 pub fn app_support_dir() -> anyhow::Result<PathBuf> {
     resolve_app_support_dir(
         std::env::var_os("HOME"),
@@ -3605,6 +3628,7 @@ pub fn normalize_separators(path: &str, windows: bool) -> String {
 /// plain one and the file viewer refuses every file in the workspace.
 /// So it is stripped here, once, rather than guarded against at each of
 /// the eight call sites.
+#[cfg(feature = "os")]
 pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
     let canonical = std::fs::canonicalize(path)?;
     if !cfg!(windows) {
@@ -3634,6 +3658,7 @@ pub fn strip_verbatim_prefix(path: &str) -> String {
     normalize_separators(path, true)
 }
 
+#[cfg(feature = "os")]
 pub fn socket_path() -> anyhow::Result<PathBuf> {
     let path =
         app_support_dir()?.join(profile_file_name("daemon", "sock", BuildProfile::current()));
@@ -3649,7 +3674,7 @@ pub fn socket_path() -> anyhow::Result<PathBuf> {
 
 /// Rejects a socket path the kernel would refuse, while there is still
 /// something useful to say about it.
-#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg_attr(not(all(unix, feature = "os")), allow(dead_code))]
 fn check_sun_path(path: &Path) -> anyhow::Result<()> {
     let len = path.as_os_str().as_encoded_bytes().len();
     if len > SUN_PATH_MAX {
@@ -6312,6 +6337,7 @@ mod tests {
     /// is compiled everywhere for exactly this reason -- the rule has to
     /// be provable in the suite that runs on a mac and on the Windows
     /// machine that uses it.
+    #[cfg(feature = "os")]
     #[test]
     fn the_two_builds_hash_to_different_pipes() {
         let dir = Path::new("/x/gavin");
@@ -6440,6 +6466,7 @@ mod tests {
         assert!(err.contains("USERPROFILE"), "{err}");
     }
 
+    #[cfg(feature = "os")]
     #[test]
     fn a_windows_data_directory_is_not_measured_against_sun_path() {
         // The Windows endpoint is a pipe name hashed from this path, so

@@ -3,6 +3,18 @@ name = "protocol"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# The operating-system-specific parts: the local transport, random ids
+# read from the OS CSPRNG, and the platform data paths that read the
+# environment or canonicalise through the filesystem. On by default, so
+# the daemon, the app host and gavin-mcp see exactly the crate they always
+# did. The Companion core turns it off (`default-features = false`) to
+# depend on the rest -- the wire types, the version gate, the pairing SAS,
+# the HMAC proof -- from `wasm32-unknown-unknown`, where none of these can
+# exist. CI checks that build (`.github/workflows/ci.yml`).
+default = ["os"]
+os = ["dep:libc", "dep:windows"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -15,13 +27,13 @@ sha2 = "0.10"
 # here. The Windows arm asks `GetNamedPipeServerProcessId` instead and
 # needs nothing new.
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = { version = "0.2", optional = true }
 
 # Only the Windows arms of `transport` and `random_hex` reach for this,
 # and only for the named-pipe, security-descriptor and CSPRNG calls they
 # make; a mac or Linux build never sees it.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = [
+windows = { version = "0.61", optional = true, features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Security_Authorization",

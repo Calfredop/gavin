@@ -10,7 +10,11 @@ development. Follow the gavin workflow skill in `.claude/skills/gavin/SKILL.md`
 Gavin itself — the app the PRD describes. A Rust workspace plus a Tauri/Svelte app:
 
 - `crates/protocol` — wire types, `PROTOCOL_VERSION`, `MIN_COMPATIBLE_VERSION`,
-  `min_version_for`
+  `min_version_for`. Its OS-specific parts (local transport, OS randomness,
+  the env/filesystem data paths) sit behind the `os` feature, on by default,
+  so the crate also checks for `wasm32-unknown-unknown` with it off — CI runs
+  that. New code that reads the environment, the filesystem or the OS random
+  source belongs behind the feature too.
 - `crates/daemon` — `gavin-daemon`: PTYs, SQLite, the `.gavin*` watcher,
   orchestration state
 - `crates/gavin-mcp` — the `gavin_*` MCP server
