@@ -1,7 +1,7 @@
 ---
 kind: task
 title: [fix] The removal wizard and the Files tab don't know about .gavin-worktrees
-status: To Do
+status: Done
 priority: low
 complexity: simple
 ---
