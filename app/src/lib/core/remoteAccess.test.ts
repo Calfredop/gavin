@@ -7,6 +7,7 @@ import {
   REVOKED_NOTE,
   STALE_NOTE,
   TRANSPORT_NOTE,
+  KEEP_RUNNING_NOTE,
   countdownLabel,
   deviceRows,
   formatSas,
@@ -304,6 +305,14 @@ describe("the section's copy", () => {
     expect(TRANSPORT_NOTE).toContain("does not exist yet");
     // And says what IS real, so the switch does not read as decorative.
     expect(TRANSPORT_NOTE).toContain("trust store");
+  });
+
+  // Keep-running mode: the switch now changes what the red button does,
+  // and the section is the only place that can say so before it happens.
+  it("says closing keeps gavin in the menu bar and the Mac awake for a running agent", () => {
+    expect(KEEP_RUNNING_NOTE).toContain("menu bar");
+    expect(KEEP_RUNNING_NOTE).toContain("Quit");
+    expect(KEEP_RUNNING_NOTE).toContain("idle-sleep while an agent is running");
   });
 
   it("says the relay URL is stored as typed and rides in the QR", () => {

@@ -314,6 +314,19 @@ export function closeWorkspaceWindow(workspaceId: string): Promise<void> {
   return invoke("close_workspace_window", { workspaceId });
 }
 
+/// Closes THIS window to the menu bar: the host puts up an icon that
+/// reopens it or quits, then hides the window. The webview keeps running
+/// behind it (keep_running.rs).
+export function hideToMenuBar(): Promise<void> {
+  return invoke("hide_to_menu_bar");
+}
+
+/// Holds off the Mac's idle sleep, or lets it go. A level, not a
+/// counter: saying it twice holds once.
+export function setSleepHold(hold: boolean): Promise<void> {
+  return invoke("set_sleep_hold", { hold });
+}
+
 /// The app-global light/dark preference. null means System -- the Rust
 /// side stores absence rather than the literal string.
 export function getThemePref(): Promise<string | null> {

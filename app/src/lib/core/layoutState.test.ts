@@ -106,6 +106,8 @@ vi.mock("$lib/core/backend", () => ({
   agentUsage: vi.fn().mockResolvedValue({ state: "unsupported" }),
   getAgentPause: vi.fn().mockResolvedValue(null),
   systemMemory: vi.fn().mockResolvedValue(null),
+  listDevices: vi.fn().mockResolvedValue({ devices: [], remoteAccessEnabled: false, relayUrl: null }),
+  setSleepHold: vi.fn().mockResolvedValue(undefined),
   watchmanStatus: vi.fn().mockResolvedValue(null),
   listManagedSessions: vi.fn().mockResolvedValue({ sessions: [], metrics: true }),
   // Resolved by default: setWorkspaceRoot and watchRootedWorkspaces call
@@ -3132,6 +3134,11 @@ describe("bootstrap in a window that does not hold the app's duties", () => {
     expect(backend.systemMemory).not.toHaveBeenCalled();
     expect(backend.watchmanStatus).not.toHaveBeenCalled();
     expect(backend.listManagedSessions).not.toHaveBeenCalled();
+    // The idle-sleep hold is the holder's, like the agent list it reads;
+    // the remote-access switch is every window's, because what closing
+    // the main window does hangs on it.
+    expect(backend.setSleepHold).not.toHaveBeenCalled();
+    expect(backend.listDevices).toHaveBeenCalled();
   });
 
   // The control: the same bootstrap, holding the duty, does poll -- so
@@ -3143,6 +3150,7 @@ describe("bootstrap in a window that does not hold the app's duties", () => {
       expect(backend.systemMemory).toHaveBeenCalled();
       expect(backend.watchmanStatus).toHaveBeenCalled();
       expect(backend.listManagedSessions).toHaveBeenCalled();
+      expect(backend.setSleepHold).toHaveBeenCalledWith(false);
     });
   });
 });

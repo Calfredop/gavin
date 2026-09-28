@@ -11,7 +11,7 @@
     appHubOpen,
     appSettingsOpen,
   } from "$lib/core/layoutState";
-  import { signalFrontendReady } from "$lib/core/backend";
+  import { hideToMenuBar, signalFrontendReady } from "$lib/core/backend";
   import { installKeyboardShortcuts } from "$lib/core/keyboard";
   import { installLineClipboard } from "$lib/git/lineClipboard";
   import { installHintTracking, hintMode } from "$lib/core/shortcutHints";
@@ -24,6 +24,8 @@
   import AppDialog from "$lib/core/AppDialog.svelte";
   import ReviewDialog from "$lib/review/ReviewDialog.svelte";
   import { confirmWindowClose } from "$lib/shell/appClose";
+  import { closeDecision } from "$lib/shell/keepRunning";
+  import { remoteAccessNow } from "$lib/shell/keepRunningState";
   import { getActiveWorkspace, getActiveView, getActiveTree, hubLabel } from "$lib/core/workspace";
   import { gavinTrees } from "$lib/core/gavinState";
   import {
@@ -297,8 +299,22 @@
       // closing a workspace window puts nothing away -- its workspaces go
       // straight back to the window they came from, and not one session
       // is touched.
-      if (!isMainWindow()) return;
+      //
+      // And with remote access on, closing the main window puts nothing
+      // away either: it goes to the menu bar, and the webview behind it
+      // keeps the rails running for the phone (keepRunning.ts).
+      const decision = closeDecision({ mainWindow: isMainWindow(), remoteAccess: remoteAccessNow() });
+      if (decision === "close") return;
       event.preventDefault();
+      if (decision === "hide") {
+        try {
+          await hideToMenuBar();
+          return;
+        } catch {
+          // A close that did nothing at all strands the human; the
+          // ladder below is what closing did before, and still works.
+        }
+      }
       if (closePromptOpen) return;
       closePromptOpen = true;
       let shouldClose = false;

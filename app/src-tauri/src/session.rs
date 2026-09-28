@@ -3245,10 +3245,17 @@ pub async fn revoke_all_devices(
 /// through. Stored and INERT in this phase: nothing dials and nothing
 /// listens until phase 3's `remote.rs`, which is what the section's own
 /// copy says in so many words.
+///
+/// Every window hears the switch move (`remote-access-changed`), not only
+/// the one whose Settings flipped it: what closing the main window does
+/// and whether the Mac is held awake both read it (keepRunningState.ts),
+/// and the window holding the app's duties is often not the one showing
+/// Settings.
 #[tauri::command]
 pub async fn set_remote_access(
     enabled: bool,
     relay_url: Option<String>,
+    app_handle: AppHandle,
     state: State<'_, CommandConnection>,
     compat: State<'_, DaemonCompatState>,
 ) -> Result<(), String> {
@@ -3257,7 +3264,9 @@ pub async fn set_remote_access(
         .request(Request::SetRemoteAccess { enabled, relay_url })
         .await
         .map_err(|e| e.to_string())?;
-    expect_ok(resp)
+    expect_ok(resp)?;
+    let _ = app_handle.emit("remote-access-changed", enabled);
+    Ok(())
 }
 
 /// Walks the tree, replacing any session id not present in `valid_ids`

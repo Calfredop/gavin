@@ -1482,6 +1482,14 @@ export async function bootstrap(): Promise<void> {
   const { startMemoryPoll, initMemorySharing } = await import("$lib/agents/memoryState");
   unlisteners.push(await initMemorySharing());
   unlisteners.push(whileHoldingAppDuties(startMemoryPoll));
+  // Keep-running mode: every window reads the remote-access switch (what
+  // closing the main window does hangs on it), and the window holding the
+  // duties holds the Mac awake while it is on and an agent runs. After
+  // the memory poll, whose agent list the hold reads. Dynamically
+  // imported for the cycle reason above (it reads this module's store).
+  const { initRemoteAccess, startSleepHold } = await import("$lib/shell/keepRunningState");
+  unlisteners.push(await initRemoteAccess());
+  unlisteners.push(whileHoldingAppDuties(startSleepHold));
   // ...and the queue that drains behind the gate the probe feeds. After
   // the poller, so its first drain reads a sample rather than a null,
   // and module-level for the same reason both of those are.

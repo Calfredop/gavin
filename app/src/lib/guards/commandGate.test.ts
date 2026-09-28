@@ -313,6 +313,8 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   close_workspace_window: ["ordinary"],
   close_all_workspace_windows: ["ordinary"],
   app_duty: ["ordinary"],
+  hide_to_menu_bar: ["ordinary"],
+  set_sleep_hold: ["ordinary"],
   scan_gavin_footprint: ["ordinary"],
   git_repo_info: ["ordinary"],
   gavin_git_tracking: ["ordinary"],
