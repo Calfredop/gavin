@@ -17,6 +17,12 @@ compile_error!(
 #[cfg(all(feature = "os", not(target_family = "wasm")))]
 pub mod transport;
 
+// The Device wire's two contracts. Neither has an operating-system part,
+// so both are here whether or not the `os` feature is: the Companion core
+// depends on them from `wasm32-unknown-unknown`.
+pub mod device_wire;
+pub mod relay;
+
 /// Cap on a single protocol line, so a client that never sends a newline
 /// can't grow the daemon's read buffer unbounded. `pub` so gavin-mcp's
 /// stdin reader (SC-10) can enforce the exact same cap instead of
@@ -1829,13 +1835,39 @@ pub fn random_hex(n_bytes: usize) -> std::io::Result<String> {
     Ok(hex_encode(&buf))
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+/// Lowercase hex: the encoding every key, secret and id on this wire
+/// crosses a screen or a JSON string in.
+pub fn hex_encode(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
         s.push_str(&format!("{b:02x}"));
     }
     s
 }
+
+/// The bytes `hex_encode` wrote. Either case is read; anything that is
+/// not a whole number of hex pairs is an error rather than a guess.
+pub fn hex_decode(s: &str) -> anyhow::Result<Vec<u8>> {
+    if !s.is_ascii() || s.len() % 2 != 0 {
+        anyhow::bail!("a hex string is an even number of hex digits");
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|e| anyhow::anyhow!("bad hex: {e}"))
+        })
+        .collect()
+}
+
+/// The Noise pattern the pairing handshake runs, for both ends of it.
+///
+/// One string, here, because two programs build a handshake from it --
+/// the daemon's responder and the Companion core's initiator -- and the
+/// daemon's static key is generated from its DH function as well
+/// (`daemon/src/trust.rs`, which re-exports this as `NOISE_PARAMS` and
+/// says why the PSK slot is 3).
+pub const PAIRING_NOISE_PARAMS: &str = "Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s";
 
 /// SHA-256 of a token, hex-encoded. The registry stores this, never the
 /// session token itself, so a copy of `registry.sqlite` yields no token
@@ -4102,6 +4134,18 @@ mod tests {
         // A round trip through the exact string a camera hands a parser.
         assert_eq!(PairingQr::parse(&qr.to_qr_string()).unwrap(), qr);
         assert!(!qr.to_qr_string().contains(' '), "the QR string is compact JSON");
+    }
+
+    #[test]
+    fn hex_round_trips_and_refuses_what_is_not_hex() {
+        let bytes: Vec<u8> = (0u8..=255).collect();
+        assert_eq!(hex_decode(&hex_encode(&bytes)).unwrap(), bytes);
+        assert_eq!(hex_encode(&[0x00, 0x0f, 0xff]), "000fff");
+        assert_eq!(hex_decode("000FFF").unwrap(), vec![0x00, 0x0f, 0xff]);
+        assert!(hex_decode("abc").is_err(), "an odd-length hex string is not bytes");
+        assert!(hex_decode("zz").is_err());
+        // Two bytes of one character must not be sliced down the middle.
+        assert!(hex_decode("é").is_err());
     }
 
     /// The SAS derivation, pinned against a hand-computed vector so the
