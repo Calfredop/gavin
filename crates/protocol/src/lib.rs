@@ -45,9 +45,9 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// `OfferDesktopEvent` -- five new TYPES, gated by `min_version_for` --
 /// and widens `Hello`'s `connection` with `Forward` for the desktop's
 /// forwarding connection. The Remote role command table lives in
-/// `remote_commands`. Nothing in the desktop app sends the new requests
-/// yet (companion-13 opens the connection and the dispatcher), so no
-/// `FEATURE_MIN_VERSION` entry is owed on this bump.
+/// `remote_commands`. The desktop's webview sends none of the new
+/// requests: companion-13 opens the forwarding connection and answers
+/// there, so no `FEATURE_MIN_VERSION` entry is owed on this bump.
 ///
 /// v46 is the second slice of the Device wire (`companion-11`): a paired
 /// Device connects. It adds `RemoveThisDevice`, by which a Device deletes

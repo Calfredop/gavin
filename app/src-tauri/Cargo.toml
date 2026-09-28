@@ -111,4 +111,8 @@ objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
 
 [dev-dependencies]
 tempfile = "3"
+# `tauri::test` (mock runtime, get_ipc_response) for the forwarding
+# dispatch suite (companion-13). Features merge into the dependency above
+# for `cargo test`.
+tauri = { version = "2", features = ["test"] }
 

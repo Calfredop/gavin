@@ -15,7 +15,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
 pub const GIT_WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 
@@ -591,7 +591,7 @@ pub fn git_watch(cwd: String, app_handle: AppHandle, state: State<GitWatchers>) 
     let emitter = app_handle.clone();
     let payload = GitChanged { cwd: cwd.clone() };
     let watch = spawn_worktree_watcher(&cwd, move || {
-        let _ = emitter.emit("git-changed", payload.clone());
+        let _ = crate::forwarding::emit(&emitter, "git-changed", payload.clone());
     })
     .map_err(|e| e.to_string())?;
     watchers.insert(cwd, (watch, 1));

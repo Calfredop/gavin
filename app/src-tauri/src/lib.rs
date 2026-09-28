@@ -9,6 +9,7 @@ mod confirm_gate;
 mod daemon;
 mod edge_expand;
 mod fileviewer;
+mod forwarding;
 mod git;
 mod home;
 mod layout;
@@ -27,7 +28,7 @@ mod workspace_delete;
 mod workspace_window;
 mod worktree_setup;
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 /// The frontend's read of the compat verdict Rust negotiated with the
 /// daemon (session::verify_daemon_protocol, at both bootstrap and
@@ -84,6 +85,7 @@ pub fn run() {
         .manage(workspace_window::DutyWindow::default())
         .manage(remote::RemoteLinks::default())
         .manage(remote::SessionHosts::default())
+        .manage(forwarding::Forwarding::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
@@ -96,7 +98,7 @@ pub fn run() {
                 if let Err(e) = session::bootstrap(handle.clone()) {
                     let message = e.to_string();
                     *handle.state::<session::BootstrapError>().0.lock().unwrap() = Some(message.clone());
-                    let _ = handle.emit("daemon-error", message);
+                    let _ = crate::forwarding::emit(&handle, "daemon-error", message);
                 }
             });
             Ok(())

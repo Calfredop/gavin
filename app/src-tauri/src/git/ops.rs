@@ -7,7 +7,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
 /// Running ops' cancel flags, keyed by the frontend-generated op id.
 #[derive(Clone, Default)]
@@ -67,7 +67,7 @@ struct Progress {
 /// thread that carries a host's `GitOpProgress` (`session.rs`) cannot
 /// drift into two slightly different events for the same row.
 pub fn emit_progress(app: &AppHandle, op_id: String, line: String) {
-    let _ = app.emit("git-op-progress", Progress { op_id, line });
+    let _ = crate::forwarding::emit(&app, "git-op-progress", Progress { op_id, line });
 }
 
 /// Flags the op to stop if it is still registered. Its runner, polling
