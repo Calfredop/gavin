@@ -7,6 +7,8 @@ import {
   railTriggerVerdict,
   setRailTrigger,
   RAIL_TRIGGER_CHOICES,
+  datetimeLocalToEpochSeconds,
+  epochSecondsToDatetimeLocal,
 } from "$lib/orchestration/orchestration";
 import type { Orchestration, Rail, RailState, StepState } from "$lib/orchestration/orchestration";
 import type { Board } from "$lib/board/kanban";
@@ -93,8 +95,8 @@ function stepRun(stepId: string, state: StepState) {
   return { stepId, state, sessionId: null, reason: null };
 }
 
-function withTrigger(r: Rail, kind: string, name?: string): Rail {
-  return { ...r, trigger: { kind, rail: name ?? null } };
+function withTrigger(r: Rail, kind: string, name?: string, at?: number | null): Rail {
+  return { ...r, trigger: { kind, rail: name ?? null, at: at ?? null } };
 }
 
 describe("whether a rail has anything left to do", () => {
@@ -272,18 +274,66 @@ describe("a condition this build does not know", () => {
   });
 });
 
+describe("“at a date and time”", () => {
+  const AT = 1_800_000_000;
+
+  it("waits until the instant, then fires", () => {
+    const r = withTrigger(rail("r1", "nightly", ["t1"]), "at-time", undefined, AT);
+    const o = orchOf([r]);
+    expect(railTriggerVerdict(o, r, AT - 1).kind).toBe("wait");
+    expect(railTriggerVerdict(o, r, AT)).toEqual({ kind: "fire" });
+    expect(railTriggerVerdict(o, r, AT + 60)).toEqual({ kind: "fire" });
+  });
+
+  it("is broken when no instant is set", () => {
+    const r = withTrigger(rail("r1", "nightly", ["t1"]), "at-time");
+    const v = railTriggerVerdict(orchOf([r]), r, AT);
+    expect(v.kind).toBe("broken");
+    expect(v.kind === "broken" && v.reason).toContain("no time");
+  });
+
+  it("names the instant on the chip", () => {
+    expect(railTriggerLabel({ kind: "at-time", at: AT })).toMatch(/^at /);
+    expect(railTriggerLabel({ kind: "at-time" })).toBe("at a time");
+  });
+
+  it("round-trips the datetime-local value on this machine", () => {
+    const local = epochSecondsToDatetimeLocal(AT);
+    expect(local).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+    expect(datetimeLocalToEpochSeconds(local)).toBe(AT - (AT % 60));
+  });
+});
+
 describe("the picker's choices", () => {
   it("are the kinds the verdict actually evaluates", () => {
     // One list, so a choice offered is a choice the scheduler can act on.
-    expect(RAIL_TRIGGER_CHOICES.map((c) => c.kind)).toEqual(["all-rails-done", "rail-done"]);
-    expect(RAIL_TRIGGER_CHOICES.map((c) => c.needsRail)).toEqual([false, true]);
+    expect(RAIL_TRIGGER_CHOICES.map((c) => c.kind)).toEqual([
+      "all-rails-done",
+      "rail-done",
+      "at-time",
+    ]);
+    expect(RAIL_TRIGGER_CHOICES.map((c) => c.needsRail)).toEqual([false, true, false]);
+    expect(RAIL_TRIGGER_CHOICES.map((c) => c.needsAt)).toEqual([false, false, true]);
   });
 });
 
 // ---- What the scheduler does with it ---------------------------------------
 
-function actionsFor(o: Orchestration, steps: string[] = ["t1", "t2", "t3"]) {
-  return nextActions(o, BOARD, tree(steps.map((s) => `${s}.md`)), [], new Set());
+function actionsFor(o: Orchestration, steps: string[] = ["t1", "t2", "t3"], now?: number) {
+  return nextActions(
+    o,
+    BOARD,
+    tree(steps.map((s) => `${s}.md`)),
+    [],
+    new Set(),
+    null,
+    new Map(),
+    new Map(),
+    new Set(),
+    new Map(),
+    {},
+    now ?? Math.floor(Date.now() / 1000)
+  );
 }
 
 describe("the scheduler's trigger rule", () => {
@@ -358,6 +408,17 @@ describe("the scheduler's trigger rule", () => {
     });
     expect(actionsFor(o).some((a) => a.kind === "arm")).toBe(false);
   });
+
+  it("arms a scheduled rail once the clock reaches its instant", () => {
+    const at = 1_800_000_000;
+    const o = orchOf([withTrigger(rail("r1", "nightly", ["t1"]), "at-time", undefined, at)]);
+    expect(actionsFor(o, ["t1"], at - 1).some((a) => a.kind === "arm")).toBe(false);
+    expect(actionsFor(o, ["t1"], at)).toContainEqual({
+      kind: "arm",
+      railId: "r1",
+      stageId: "r1-s0",
+    });
+  });
 });
 
 describe("writing the condition", () => {
@@ -369,6 +430,12 @@ describe("writing the condition", () => {
 
     const cleared = setRailTrigger(set, "r2", null);
     expect(cleared.rails[1].trigger).toBeNull();
+  });
+
+  it("stores an at-time schedule with its instant", () => {
+    const o = orchOf([rail("r1", "nightly", ["t1"])]);
+    const set = setRailTrigger(o, "r1", { kind: "at-time", at: 1_800_000_000 });
+    expect(set.rails[0].trigger).toEqual({ kind: "at-time", at: 1_800_000_000 });
   });
 });
 
@@ -403,6 +470,21 @@ describe("executing an arm", () => {
     expect(STATE.slice(from, to)).toContain("again = true;");
   });
 
+  it("clears an at-time schedule after arming, so a past time does not re-arm forever", () => {
+    const from = STATE.indexOf('} else if (action.kind === "arm") {');
+    const to = STATE.indexOf('} else if (action.kind === "complete") {', from);
+    const arm = STATE.slice(from, to);
+    expect(arm).toContain('kind === "at-time"');
+    expect(arm).toContain("setRailTrigger(o, action.railId, null)");
+  });
+
+  it("ticks on a schedule clock while any rail waits on a datetime", () => {
+    // Without it a rail waiting on 3pm would sit until some unrelated
+    // store emission woke the scheduler.
+    expect(STATE).toContain("scheduleClock");
+    expect(STATE).toContain('r.trigger?.kind === "at-time"');
+  });
+
   it("re-looks after a rail finishes, since that is what a trigger waits for", () => {
     // `orchestrations` is deliberately not a tick input, so nothing else
     // would say a rail has completed -- and both routes to "this rail is
@@ -427,6 +509,12 @@ describe("the dialog's Trigger panel", () => {
     expect(DIALOG).toContain('featureBlockedReason($daemonCompat, "railTrigger")');
     expect(DIALOG).toContain("disabled={Boolean(triggerBlocked)}");
     expect(DIALOG).toContain("{triggerBlocked}");
+  });
+
+  it("gates the datetime choice on railSchedule, not the whole panel", () => {
+    // A v36–v44 daemon still offers standing triggers; only `at` is new.
+    expect(DIALOG).toContain('featureBlockedReason($daemonCompat, "railSchedule")');
+    expect(DIALOG).toContain('type="datetime-local"');
   });
 
   it("offers the choices from the shared list, never its own copy", () => {

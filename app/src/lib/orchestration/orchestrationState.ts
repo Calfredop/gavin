@@ -2002,7 +2002,16 @@ export async function executeActions(workspaceId: string, actions: Action[]): Pr
       // Exactly what `startRail` writes, minus the human. No page is
       // spawned here either: the rail's page is made by its first
       // LAUNCH, around that session (spec O16).
+      const armed = orch.rails.find((r) => r.id === action.railId);
       await setRailRunAction(workspaceId, action.railId, "running", action.stageId);
+      // An `at-time` schedule is one-shot: leave it standing and every
+      // later tick past the time would re-arm the rail the moment it
+      // went idle again. Clear via mutatePlan (not setRailTriggerAction)
+      // so this pass does not nest another tick inside itself; `again`
+      // below re-runs once the clear has landed.
+      if (armed?.trigger?.kind === "at-time") {
+        await mutatePlan(workspaceId, (o) => setRailTrigger(o, action.railId, null));
+      }
       // The pass that decided this read the rail as idle and scheduled
       // nothing else of it, so without another pass the rail would sit
       // armed and empty until some unrelated event ticked.
@@ -2233,8 +2242,21 @@ function tickInputStores(): Readable<unknown>[] {
     // would sit until something unrelated ticked -- which is exactly the
     // bug this module-level scheduler exists to fix, in a new place.
     turnVerdictById,
+    // Wall-clock for `at-time` schedules. Without it a rail waiting on
+    // a datetime would sit until some unrelated store emission ticked
+    // -- which is the freeze this whole module-level scheduler exists
+    // to fix, again. The store only emits when a scheduled rail exists
+    // (see startScheduler), so an idle workspace does not pay for it.
+    scheduleClock,
   ];
 }
+
+/// Epoch seconds, bumped by `startScheduler` while any loaded rail waits
+/// on `at-time`. A tick input so the scheduler sees the clock move
+/// without some other event having to fire first.
+export const scheduleClock = writable(Math.floor(Date.now() / 1000));
+
+const SCHEDULE_CLOCK_MS = 30_000;
 
 let stopScheduler: (() => void) | null = null;
 
@@ -2273,7 +2295,19 @@ export function startScheduler(): () => void {
       for (const workspaceId of Object.keys(get(orchestrations))) void tick(workspaceId);
     })
   );
+  // A wall-clock for schedules only: bump `scheduleClock` when some
+  // loaded rail is waiting on a datetime, otherwise leave it alone so
+  // an idle app does not tick forever. Thirty seconds is coarse enough
+  // not to thrash and fine enough that "starts at 3:00" is not late by
+  // a minute of wall time the human can see.
+  const clockTimer = setInterval(() => {
+    const needsClock = Object.values(get(orchestrations)).some((orch) =>
+      orch.rails.some((r) => r.trigger?.kind === "at-time")
+    );
+    if (needsClock) scheduleClock.set(Math.floor(Date.now() / 1000));
+  }, SCHEDULE_CLOCK_MS);
   const stop = () => {
+    clearInterval(clockTimer);
     for (const unsubscribe of unsubscribes) unsubscribe();
     // Guarded: a later start owns the field, and this teardown arriving
     // afterwards must not clear the live scheduler out of it.

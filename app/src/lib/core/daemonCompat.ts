@@ -438,6 +438,20 @@ export const FEATURE_MIN_VERSION = {
   // posts the desk's waiting-set diff; against an older daemon it stays
   // quiet rather than throwing on every inbox change.
   companionNotifications: 44,
+  // A rail trigger's `at` -- the epoch-seconds instant an `at-time`
+  // schedule waits for (v45). Widens SetOrchestration the same way
+  // `trigger` itself did at v36, so `min_version_for` is structurally
+  // blind to it. A v44 daemon takes the write, drops the field and
+  // hands the rail back with kind `at-time` and no time -- a condition
+  // that never fires, and that the chip then draws as broken.
+  //
+  // The bind dialog's Trigger panel already gates the WHOLE panel on
+  // `railTrigger` (36); this entry gates only the datetime choice and
+  // its picker, so a v36–v44 daemon still offers the standing triggers
+  // and refuses the one payload it cannot store. See FEATURE_MIN_VERSION
+  // discipline in CLAUDE.md: the entry alone is a dead gate without a
+  // featureBlockedReason consumer on every surface that can produce it.
+  railSchedule: 45,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

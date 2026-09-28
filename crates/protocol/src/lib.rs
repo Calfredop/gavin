@@ -18,6 +18,15 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v45 widens `RailTrigger` with `at`: epoch seconds for an `at-time`
+/// schedule that arms a rail at a machine-local datetime. `serde(default)`
+/// on an EXISTING request (`SetOrchestration`), which `min_version_for`
+/// gates by TYPE and therefore cannot see -- so
+/// FEATURE_MIN_VERSION.railSchedule is the gate that matters, and the
+/// bind dialog's Trigger panel (the datetime choice) is its consumer. A
+/// v44 daemon takes the write, drops the field and hands the rail back
+/// with an `at-time` kind and no time -- a condition that never fires.
+///
 /// v44 adds Companion notification sends: `PushCompanionNotify` (the desk
 /// decides; the daemon seals and posts), `SetPushGatewayUrl`, and
 /// `SetDeviceSendPermission` (the shell hands over a gateway permission).
@@ -476,7 +485,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 44;
+pub const PROTOCOL_VERSION: u32 = 45;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -2684,12 +2693,19 @@ pub struct Rail {
 /// `gavin_get_orchestration` shows an agent -- the same choice
 /// `builtin:start-rail`'s `rail` parameter makes, and resolved by the
 /// same case- and space-insensitive match.
+///
+/// `at` is the epoch-seconds instant an `at-time` trigger waits for
+/// (v45). Machine-local wall clock: the app writes what the human's
+/// datetime picker said, and the scheduler compares it to
+/// `Date.now()/1000` on that same machine. Absent for every other kind.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RailTrigger {
     pub kind: String,
     #[serde(default)]
     pub rail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<i64>,
 }
 
 /// How a stage's steps run: "sequence" (one at a time, in position
@@ -5110,7 +5126,7 @@ mod tests {
         // CardSession reply.
         // v44: Companion notifications -- PushCompanionNotify,
         // SetPushGatewayUrl, SetDeviceSendPermission. Three new TYPES.
-        assert_eq!(PROTOCOL_VERSION, 44);
+        assert_eq!(PROTOCOL_VERSION, 45);
     }
 
     #[test]
@@ -6105,7 +6121,11 @@ mod tests {
             worktree_path: Some("/x/gavin-backend".into()),
             branch: Some("feature/api".into()),
             auto_resume: Some(true),
-            trigger: Some(RailTrigger { kind: "rail-done".into(), rail: Some("frontend".into()) }),
+            trigger: Some(RailTrigger {
+                kind: "rail-done".into(),
+                rail: Some("frontend".into()),
+                at: None,
+            }),
             page_id: None,
             stages: vec![Stage {
                 id: "s1".into(),
@@ -6187,8 +6207,36 @@ mod tests {
         .unwrap();
         assert_eq!(
             rail.trigger,
-            Some(RailTrigger { kind: "all-rails-done".into(), rail: None })
+            Some(RailTrigger { kind: "all-rails-done".into(), rail: None, at: None })
         );
+    }
+
+    /// An `at-time` trigger carries its instant; every other kind omits
+    /// the field, and a rail written before v45 has none.
+    #[test]
+    fn a_trigger_with_an_at_parses_and_one_without_has_none() {
+        let timed: Rail = serde_json::from_value(serde_json::json!({
+            "id": "r1", "name": "nightly", "position": 0,
+            "worktreePath": null, "pageId": null, "stages": [],
+            "trigger": { "kind": "at-time", "at": 1_800_000_000 }
+        }))
+        .unwrap();
+        assert_eq!(
+            timed.trigger,
+            Some(RailTrigger {
+                kind: "at-time".into(),
+                rail: None,
+                at: Some(1_800_000_000),
+            })
+        );
+
+        let old: Rail = serde_json::from_value(serde_json::json!({
+            "id": "r1", "name": "release", "position": 0,
+            "worktreePath": null, "pageId": null, "stages": [],
+            "trigger": { "kind": "all-rails-done" }
+        }))
+        .unwrap();
+        assert_eq!(old.trigger.as_ref().and_then(|t| t.at), None);
     }
 
     /// The old shape must still parse: an agent that has never heard of
