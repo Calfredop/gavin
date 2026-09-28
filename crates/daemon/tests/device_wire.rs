@@ -364,9 +364,10 @@ impl Workstation {
 }
 
 /// A scripted desktop stand-in on the forwarding connection: answers
-/// every `ForwardCommand` with a fixed value, and can offer events.
+/// every `ForwardCommand` with a fixed value, every `ForwardAttention`
+/// with fixed items, and can offer events.
 struct StandIn {
-    /// What reached it, in order.
+    /// What reached it, in order (command name, or `"__attention__"`).
     received: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
     /// Stop the loop.
     stop: Arc<std::sync::atomic::AtomicBool>,
@@ -377,7 +378,17 @@ struct StandIn {
 
 impl StandIn {
     /// Answers every forwarded command with `value`.
-    fn answering(mut desk: Desk, value: serde_json::Value) -> Self {
+    fn answering(desk: Desk, value: serde_json::Value) -> Self {
+        Self::answering_with_attention(desk, value, vec![])
+    }
+
+    /// Answers forwarded commands with `value` and attention asks with
+    /// `items`.
+    fn answering_with_attention(
+        mut desk: Desk,
+        value: serde_json::Value,
+        items: Vec<protocol::AttentionItem>,
+    ) -> Self {
         let received = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (offer_tx, offer_rx) = std::sync::mpsc::channel::<(String, serde_json::Value)>();
@@ -397,6 +408,17 @@ impl StandIn {
                             call_id,
                             value: Some(value.clone()),
                             error: None,
+                        });
+                        assert!(matches!(resp, Response::Ok), "{resp:?}");
+                    }
+                    Ok(Some(Response::ForwardAttention { call_id, version })) => {
+                        received_thread.lock().unwrap().push((
+                            "__attention__".into(),
+                            serde_json::json!({ "version": version }),
+                        ));
+                        let resp = desk.request(&Request::AttentionResult {
+                            call_id,
+                            items: items.clone(),
                         });
                         assert!(matches!(resp, Response::Ok), "{resp:?}");
                     }
@@ -639,6 +661,97 @@ fn desktop_app_not_running_is_answered_when_the_stand_in_is_absent() {
             );
         }
         other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+
+// -- attention request (companion-14) -----------------------------------
+
+/// The test Device gets the items the stand-in reports.
+#[test]
+fn the_attention_request_returns_the_items_the_stand_in_reports() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    let mut connection = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+
+    let items = vec![protocol::AttentionItem {
+        id: "waiting:s1".into(),
+        workspace: "ws-1".into(),
+        kind: protocol::AttentionKind::Waiting,
+        text: "agent is asking".into(),
+        target: protocol::AttentionTarget::Session { id: "s1".into() },
+    }];
+    let stand_in = StandIn::answering_with_attention(
+        workstation.open_forwarding(),
+        serde_json::json!(null),
+        items.clone(),
+    );
+
+    match connection
+        .request(
+            &Request::GetAttention {
+                version: protocol::ATTENTION_API_VERSION,
+            },
+            SOON,
+        )
+        .unwrap()
+    {
+        Response::Attention {
+            state,
+            items: got,
+            version,
+        } => {
+            assert_eq!(state, protocol::WorkstationState::Ready);
+            assert_eq!(version, protocol::ATTENTION_API_VERSION);
+            assert_eq!(got, items);
+        }
+        other => panic!("expected Attention, got {other:?}"),
+    }
+
+    eventually("the stand-in saw the attention ask", || {
+        stand_in
+            .received()
+            .iter()
+            .any(|(name, _)| name == "__attention__")
+    });
+}
+
+/// "desktop app not running" is a state on the attention answer when the
+/// stand-in is absent — not an Error, so the hub can draw it.
+#[test]
+fn the_attention_request_reports_desktop_app_not_running_when_the_stand_in_is_absent() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    let mut connection = device.connect(&paired).unwrap();
+    let _ = workstation.connected();
+
+    // Push and command are live; the forwarding connection is not.
+    match connection
+        .request(
+            &Request::GetAttention {
+                version: protocol::ATTENTION_API_VERSION,
+            },
+            SOON,
+        )
+        .unwrap()
+    {
+        Response::Attention {
+            state,
+            items,
+            version,
+        } => {
+            assert_eq!(state, protocol::WorkstationState::DesktopAppNotRunning);
+            assert!(items.is_empty());
+            assert_eq!(version, protocol::ATTENTION_API_VERSION);
+        }
+        other => panic!("expected Attention, got {other:?}"),
     }
 }
 

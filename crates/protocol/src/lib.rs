@@ -20,10 +20,14 @@ pub mod transport;
 // The Device wire's two contracts. Neither has an operating-system part,
 // so both are here whether or not the `os` feature is: the Companion core
 // depends on them from `wasm32-unknown-unknown`.
+pub mod attention;
 pub mod device_wire;
 pub mod relay;
 pub mod remote_commands;
 
+pub use attention::{
+    AttentionItem, AttentionKind, AttentionTarget, WorkstationState, ATTENTION_API_VERSION,
+};
 pub use remote_commands::{allowance_for, remote_command_table, RemoteAllowance};
 
 /// Cap on a single protocol line, so a client that never sends a newline
@@ -38,6 +42,15 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
+///
+/// v48 is the attention request (`companion-14`, ADR 0005): the one
+/// deliberately stable API between the Companion shell and a Workstation.
+/// It adds `GetAttention` (a Device asks) and `AttentionResult` (the
+/// desktop answers a `ForwardAttention` push) -- two new TYPES, gated by
+/// `min_version_for`. The answer itself carries an explicit
+/// `ATTENTION_API_VERSION` and only ever grows by optional fields, so a
+/// `FEATURE_MIN_VERSION` entry is not owed: nothing in the desktop UI
+/// sends `GetAttention`, and the shell versions the payload itself.
 ///
 /// v47 is the third slice of the Device wire (`companion-12`): the daemon
 /// forwards gated desktop commands. It adds `InvokeDesktop`,
@@ -557,7 +570,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 47;
+pub const PROTOCOL_VERSION: u32 = 48;
 
 /// The oldest daemon a Device can pair with: the first whose pairing
 /// reads the Device's proof and answers with a notification key. Read by
@@ -1462,6 +1475,30 @@ pub enum Request {
         payload: serde_json::Value,
     },
 
+    /// A Device asks what is waiting on the human on this Workstation
+    /// (v48, ADR 0005).
+    ///
+    /// `version` is the attention API version the Device understands
+    /// (`ATTENTION_API_VERSION`). The daemon asks the desktop over the
+    /// forwarding connection (`ForwardAttention`) and answers with
+    /// `Response::Attention`. With no desktop connected the answer is
+    /// still `Attention`, carrying `WorkstationState::DesktopAppNotRunning`
+    /// — a state, not an error, so the hub can draw it.
+    GetAttention {
+        version: u32,
+    },
+
+    /// The desktop's answer to a `ForwardAttention` (v48).
+    ///
+    /// Arrives on the forwarding connection. `items` is what the
+    /// desktop built from the attention inbox, turn verdicts and rails;
+    /// the daemon wraps them as `Response::Attention` with state
+    /// `Ready` for the Device that asked.
+    AttentionResult {
+        call_id: u64,
+        items: Vec<AttentionItem>,
+    },
+
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
     /// a daemon it owns without `pkill`, which cannot distinguish this
@@ -1760,6 +1797,12 @@ pub fn min_version_for(req: &Request) -> u32 {
         | Request::UnlistenDesktop { .. }
         | Request::ForwardResult { .. }
         | Request::OfferDesktopEvent { .. } => 47,
+
+        // The attention request (v48 / companion-14). A Device asks; the
+        // desktop's forwarding connection answers. Two new TYPES. The
+        // payload's own `ATTENTION_API_VERSION` is the compat gate for
+        // fields, so no FEATURE_MIN_VERSION entry is owed.
+        Request::GetAttention { .. } | Request::AttentionResult { .. } => 48,
 
         Request::Shutdown => 12,
 
@@ -2443,6 +2486,25 @@ pub enum Response {
     DesktopEvent {
         event: String,
         payload: serde_json::Value,
+    },
+
+    /// The answer to `GetAttention` (v48, ADR 0005): the Workstation's
+    /// state and the waiting items.
+    ///
+    /// `version` is the attention API version of this answer. New optional
+    /// fields may be added later; an older reader ignores ones it has
+    /// never heard of.
+    Attention {
+        state: WorkstationState,
+        items: Vec<AttentionItem>,
+        version: u32,
+    },
+
+    /// Push to the desktop's forwarding connection (v48): build the
+    /// attention answer and reply with `AttentionResult { call_id, … }`.
+    ForwardAttention {
+        call_id: u64,
+        version: u32,
     },
 }
 
@@ -4434,6 +4496,53 @@ mod tests {
         assert_eq!(v["call_id"], 7);
     }
 
+    /// The attention request is gated at 48; an older reader ignores an
+    /// unknown optional field on the answer.
+    #[test]
+    fn get_attention_is_gated_at_48_and_grows_by_optional_fields() {
+        let req = Request::GetAttention {
+            version: ATTENTION_API_VERSION,
+        };
+        assert_eq!(min_version_for(&req), 48);
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["type"], "GetAttention");
+        assert_eq!(v["version"], ATTENTION_API_VERSION);
+
+        assert_eq!(
+            min_version_for(&Request::AttentionResult {
+                call_id: 1,
+                items: vec![],
+            }),
+            48
+        );
+
+        // A newer answer carried `priority`. An older reader that has
+        // never heard of it still parses — growth is by optional fields.
+        let json = serde_json::json!({
+            "type": "Attention",
+            "state": "ready",
+            "items": [],
+            "version": 1,
+            "priority": "high",
+        });
+        match serde_json::from_value::<Response>(json).unwrap() {
+            Response::Attention { state, items, version } => {
+                assert_eq!(state, WorkstationState::Ready);
+                assert!(items.is_empty());
+                assert_eq!(version, 1);
+            }
+            other => panic!("expected Attention, got {other:?}"),
+        }
+
+        let forward = Response::ForwardAttention {
+            call_id: 3,
+            version: ATTENTION_API_VERSION,
+        };
+        let v = serde_json::to_value(&forward).unwrap();
+        assert_eq!(v["type"], "ForwardAttention");
+        assert_eq!(v["call_id"], 3);
+    }
+
     /// A pairing is the proof after the handshake and the notification
     /// key in the verdict, and a daemon older than 46 does neither. The
     /// QR says which daemon drew it, so a Device can decline before it
@@ -5639,7 +5748,9 @@ mod tests {
         // desktop's forwarding connection answers. Five new TYPES. The
         // `Hello.connection` value `Forward` is a widened payload and
         // invisible here.
-        assert_eq!(PROTOCOL_VERSION, 47);
+        // v48: GetAttention + AttentionResult -- the one stable API
+        // between the shell and a Workstation (ADR 0005). Two new TYPES.
+        assert_eq!(PROTOCOL_VERSION, 48);
     }
 
     #[test]
@@ -6073,6 +6184,14 @@ mod tests {
                 event: "status-changed".into(),
                 payload: serde_json::json!({}),
             },
+            // v48: the attention request.
+            Request::GetAttention {
+                version: ATTENTION_API_VERSION,
+            },
+            Request::AttentionResult {
+                call_id: 1,
+                items: vec![],
+            },
             Request::Unknown,
         ]
     }
@@ -6171,6 +6290,8 @@ mod tests {
         // InvokeDesktop + Listen/UnlistenDesktop + ForwardResult +
         // OfferDesktopEvent -- forwarding gated desktop commands.
         expected.insert(47, 5);
+        // GetAttention + AttentionResult -- the attention request.
+        expected.insert(48, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

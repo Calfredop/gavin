@@ -1433,6 +1433,8 @@ pub struct SessionManager {
 /// away before answering.
 enum ForwardOutcome {
     Done { value: Option<serde_json::Value>, error: Option<String> },
+    /// The desktop's answer to a `ForwardAttention`.
+    Attention { items: Vec<protocol::AttentionItem> },
     DesktopGone,
 }
 
@@ -1929,7 +1931,9 @@ impl SessionManager {
                     Ok(ForwardOutcome::Done { value, error }) => {
                         Response::DesktopResult { value, error }
                     }
-                    Ok(ForwardOutcome::DesktopGone) | Err(_) => {
+                    Ok(ForwardOutcome::Attention { .. })
+                    | Ok(ForwardOutcome::DesktopGone)
+                    | Err(_) => {
                         self.pending_forwards.lock().unwrap().remove(&call_id);
                         Response::Error {
                             message: "gavin-daemon: desktop app not running".into(),
@@ -1944,6 +1948,60 @@ impl SessionManager {
     fn complete_forward(&self, call_id: u64, value: Option<serde_json::Value>, error: Option<String>) {
         if let Some(tx) = self.pending_forwards.lock().unwrap().remove(&call_id) {
             let _ = tx.send(ForwardOutcome::Done { value, error });
+        }
+    }
+
+    /// Deliver an `AttentionResult` to the waiter that owns `call_id`.
+    fn complete_attention(&self, call_id: u64, items: Vec<protocol::AttentionItem>) {
+        if let Some(tx) = self.pending_forwards.lock().unwrap().remove(&call_id) {
+            let _ = tx.send(ForwardOutcome::Attention { items });
+        }
+    }
+
+    /// Ask the desktop what is waiting; with no forwarding connection,
+    /// answer the "desktop app not running" state yourself (ADR 0005).
+    fn get_attention(&self, version: u32) -> Response {
+        let writer = {
+            let slot = self.forwarding.lock().unwrap();
+            match slot.as_ref() {
+                Some((_, w)) => Arc::clone(w),
+                None => {
+                    return Response::Attention {
+                        state: protocol::WorkstationState::DesktopAppNotRunning,
+                        items: vec![],
+                        version,
+                    };
+                }
+            }
+        };
+        let call_id = self.next_forward_call.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        self.pending_forwards.lock().unwrap().insert(call_id, tx);
+        let push = Response::ForwardAttention { call_id, version };
+        if write_message(&mut *writer.lock().unwrap(), &push).is_err() {
+            self.pending_forwards.lock().unwrap().remove(&call_id);
+            return Response::Attention {
+                state: protocol::WorkstationState::DesktopAppNotRunning,
+                items: vec![],
+                version,
+            };
+        }
+        match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+            Ok(ForwardOutcome::Attention { items }) => Response::Attention {
+                state: protocol::WorkstationState::Ready,
+                items,
+                version,
+            },
+            Ok(ForwardOutcome::Done { .. })
+            | Ok(ForwardOutcome::DesktopGone)
+            | Err(_) => {
+                self.pending_forwards.lock().unwrap().remove(&call_id);
+                Response::Attention {
+                    state: protocol::WorkstationState::DesktopAppNotRunning,
+                    items: vec![],
+                    version,
+                }
+            }
         }
     }
 
@@ -5113,7 +5171,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         | Request::ListenDesktop { .. }
         | Request::UnlistenDesktop { .. }
         | Request::ForwardResult { .. }
-        | Request::OfferDesktopEvent { .. } => {
+        | Request::OfferDesktopEvent { .. }
+        | Request::GetAttention { .. }
+        | Request::AttentionResult { .. } => {
             Err(anyhow::anyhow!("gavin-daemon: forwarding request reached handle_request"))
         }
         // A client newer than this daemon sent a request type we don't
@@ -5149,9 +5209,10 @@ pub enum Role {
     /// whose hardware signature over that handshake verified
     /// (`remote.rs`, ADR 0001).
     ///
-    /// It may remove its own Device, and it may ask the daemon to forward
-    /// a gated desktop command or to listen for a desktop event (ADR
-    /// 0003, companion-12). Everything else is refused.
+    /// It may remove its own Device, ask the daemon to forward a gated
+    /// desktop command or to listen for a desktop event (ADR 0003,
+    /// companion-12), and ask the attention request (ADR 0005,
+    /// companion-14). Everything else is refused.
     Remote,
 }
 
@@ -5516,19 +5577,24 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::UnlistenDesktop { .. }
         | Request::ForwardResult { .. }
         | Request::OfferDesktopEvent { .. }
+        // Attention (v48): a Device's ask, or the desktop's answer.
+        | Request::GetAttention { .. }
+        | Request::AttentionResult { .. }
         | Request::Unknown => false,
     }
 }
 
-/// What a `remote` connection may do: remove itself, and ask the daemon
-/// to forward a gated desktop command or listen for a desktop event.
+/// What a `remote` connection may do: remove itself, ask the daemon to
+/// forward a gated desktop command or listen for a desktop event, and ask
+/// the attention request (ADR 0005).
 ///
 /// ADR 0004 gives an unlocked Device everything the desktop app can do
 /// except manage Devices, and all of that is the desktop app's to do --
 /// the Device asks, the daemon checks the command against a table and
 /// hands it to the app. None of it is a request of this protocol that a
 /// Device sends the daemon's own handlers for, so none of those open
-/// here.
+/// here. The attention request is the exception that is not a Tauri
+/// command: it is the one stable API (ADR 0005).
 fn remote_allows(req: &Request) -> bool {
     matches!(
         req,
@@ -5536,6 +5602,7 @@ fn remote_allows(req: &Request) -> bool {
             | Request::InvokeDesktop { .. }
             | Request::ListenDesktop { .. }
             | Request::UnlistenDesktop { .. }
+            | Request::GetAttention { .. }
     )
 }
 
@@ -6096,6 +6163,20 @@ fn serve_connection(
 
         if let Request::OfferDesktopEvent { event, payload } = req {
             manager.relay_desktop_event(&event, payload);
+            write_message(&mut *writer.lock().unwrap(), &Response::Ok)?;
+            continue;
+        }
+
+        // Attention (v48): a Device asks what is waiting; the desktop
+        // answers on the forwarding connection with AttentionResult.
+        if let Request::GetAttention { version } = req {
+            let resp = manager.get_attention(version);
+            write_message(&mut *writer.lock().unwrap(), &resp)?;
+            continue;
+        }
+
+        if let Request::AttentionResult { call_id, items } = req {
+            manager.complete_attention(call_id, items);
             write_message(&mut *writer.lock().unwrap(), &Response::Ok)?;
             continue;
         }
@@ -7229,6 +7310,8 @@ mod tests {
         assert_eq!(
             allowed,
             vec![
+                "GetAttention",
+                "GetAttention",
                 "InvokeDesktop",
                 "InvokeDesktop",
                 "ListenDesktop",
@@ -7366,6 +7449,13 @@ mod tests {
             Request::OfferDesktopEvent {
                 event: "e".into(),
                 payload: serde_json::json!({}),
+            },
+            Request::GetAttention {
+                version: protocol::ATTENTION_API_VERSION,
+            },
+            Request::AttentionResult {
+                call_id: 1,
+                items: vec![],
             },
         ]
     }
