@@ -431,6 +431,13 @@ export const FEATURE_MIN_VERSION = {
   // through the v40 file requests, so they work on a v41 host and sit
   // behind `sshGitFiles` with the rest of the tab.
   sshGitSync: 42,
+  // Companion encrypted notifications (v44): the desk's notify/resolve
+  // batch, the Push gateway URL, and the Device's send permission.
+  // Three new TYPES, so `min_version_for` already refuses them against
+  // an older daemon. The consumer is the companion-notify driver that
+  // posts the desk's waiting-set diff; against an older daemon it stays
+  // quiet rather than throwing on every inbox change.
+  companionNotifications: 44,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;
