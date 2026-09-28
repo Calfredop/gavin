@@ -237,3 +237,26 @@ describe("the modal it sits in", () => {
     expect(rule.slice(0, rule.indexOf("}"))).toContain("overflow: hidden");
   });
 });
+
+describe("the Gavin line", () => {
+  // The rows are the work run inside Gavin; this line is Gavin. Nothing a
+  // type-checker sees links the poll, the line and the hover, and a line
+  // polled but never drawn -- or drawn but never stopped -- renders fine.
+  it("polls what Gavin holds beside the session list, and stops with it", () => {
+    const text = source(PANEL);
+    expect(text).toContain("await backend.gavinMemory()");
+    expect(text).toContain("void pollGavin();");
+    expect(text).toContain("gavinEpoch += 1;");
+  });
+
+  it("draws the line with its hover, and only once there is a reading", () => {
+    const text = source(PANEL);
+    expect(text).toContain("{#if gavin}");
+    expect(text).toContain("use:tooltip={gavinNote(gavin)}>{gavinLine(gavin)}</span>");
+  });
+
+  it("puts it above the watchman line, so Gavin comes before what is related to it", () => {
+    const text = source(PANEL);
+    expect(text.indexOf("{gavinLine(gavin)}")).toBeLessThan(text.indexOf("{watchmanLine(watchman)}"));
+  });
+});

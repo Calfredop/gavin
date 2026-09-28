@@ -31,6 +31,8 @@
     totalsNote,
     droppableRoots,
     dropRootsConfirm,
+    gavinLine,
+    gavinNote,
     watchmanLine,
     type ManagedSessions,
     type Selection,
@@ -52,6 +54,7 @@
   import { askConfirm } from "$lib/core/dialog";
   import { takeSessionSortRequest } from "$lib/panes/appPanels";
   import { watchmanRoots, watchmanStore, refreshMemory } from "$lib/agents/memoryState";
+  import type { GavinMemorySample } from "$lib/agents/memory";
   import { orchestrations } from "$lib/orchestration/orchestrationState";
 
   interface Props {
@@ -128,6 +131,13 @@
   /// against one landing after the panel closed. Identity comparison is
   /// no use under Svelte 5's $state proxies, so this is a counter.
   let epoch = 0;
+  /// What Gavin itself holds. Null until the first reading, and for good
+  /// off macOS, where nothing can measure it -- the line is then not
+  /// drawn rather than drawn as zero.
+  let gavin = $state<GavinMemorySample | null>(null);
+  /// Its own counter: the session poll's epoch is bumped by kills and
+  /// restarts that have nothing to do with this reading.
+  let gavinEpoch = 0;
 
   const rows = $derived(
     sample
@@ -181,15 +191,37 @@
     error = null;
   }
 
+  /// Beside the session poll, not inside it: a failed session list must
+  /// not blank what Gavin itself is holding, nor the reverse. Skipped
+  /// while the daemon is being replaced, when the connection it reads the
+  /// daemon's pid from names a process on its way out. A failed read
+  /// keeps the last one -- the host command cannot fail short of the IPC
+  /// itself, and blinking the line out for one tick says nothing.
+  async function pollGavin(): Promise<void> {
+    if (restarting) return;
+    const mine = ++gavinEpoch;
+    try {
+      const next = await backend.gavinMemory();
+      if (mine === gavinEpoch) gavin = next;
+    } catch {
+      // Kept: see above.
+    }
+  }
+
   onMount(() => {
     void poll();
-    timer = setInterval(() => void poll(), POLL_MS);
+    void pollGavin();
+    timer = setInterval(() => {
+      void poll();
+      void pollGavin();
+    }, POLL_MS);
   });
 
   onDestroy(() => {
     // The panel is the only reason the daemon is walking the process
     // table, so closing it has to actually stop.
     epoch += 1;
+    gavinEpoch += 1;
     if (timer !== null) clearInterval(timer);
   });
 
@@ -487,20 +519,34 @@
       </div>
     {/if}
 
-    <!-- The half of the machine gavin did not start. One line and one
-         action, not a section: watchman is not gavin's process and gavin
-         must not pretend to manage it -- the line says what it costs and
-         the button tells it to forget the roots no open workspace has a
-         checkout under any more. -->
-    {#if watchmanLine(watchman)}
-      <div class="outside">
-        <span class="outside-line">{watchmanLine(watchman)}</span>
-        {#if droppable.length > 0}
-          <button
-            type="button"
-            use:tooltip={"Watchman keeps a removed root in memory for five days. These are roots no open workspace has a checkout under."}
-            onclick={() => void dropRoots()}>Drop {droppable.length} roots</button
-          >
+    {#if gavin || watchmanLine(watchman)}
+      <div class="machine">
+        <!-- What Gavin itself holds, apart from the sessions above it: the
+             rows are the work run INSIDE Gavin, and on a busy machine they
+             are nearly all of it. A line, not a row -- nothing here can be
+             jumped to or ended, and it is a different measure (footprint,
+             not resident size) that must not be added to their total. -->
+        {#if gavin}
+          <div class="machine-line">
+            <span class="machine-text" use:tooltip={gavinNote(gavin)}>{gavinLine(gavin)}</span>
+          </div>
+        {/if}
+        <!-- The half of the machine gavin did not start. One line and one
+             action, not a section: watchman is not gavin's process and
+             gavin must not pretend to manage it -- the line says what it
+             costs and the button tells it to forget the roots no open
+             workspace has a checkout under any more. -->
+        {#if watchmanLine(watchman)}
+          <div class="machine-line">
+            <span class="machine-text">{watchmanLine(watchman)}</span>
+            {#if droppable.length > 0}
+              <button
+                type="button"
+                use:tooltip={"Watchman keeps a removed root in memory for five days. These are roots no open workspace has a checkout under."}
+                onclick={() => void dropRoots()}>Drop {droppable.length} roots</button
+              >
+            {/if}
+          </div>
         {/if}
       </div>
     {/if}
@@ -748,18 +794,23 @@
     color: var(--text-subtle);
     margin: 0;
   }
-  /* A quiet line above the foot: it is a fact about the machine, not a
-     row of the table, so it sits outside the grid rather than
-     pretending to be a session. */
-  .outside {
+  /* Quiet lines above the foot: facts about the machine, not rows of
+     the table, so they sit outside the grid rather than pretending to
+     be sessions. */
+  .machine {
     display: flex;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    gap: 4px;
     margin-top: 8px;
     color: var(--text-subtle);
     font-size: 0.8em;
   }
-  .outside-line {
+  .machine-line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .machine-text {
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;

@@ -1,7 +1,7 @@
 import type { AgentDefaults } from "$lib/cards/complexity";
 import type { PauseCycle } from "$lib/agents/agentPause";
 import type { AgentUsageReport } from "$lib/agents/agentUsage";
-import type { SystemMemorySample, WatchmanSample } from "$lib/agents/memory";
+import type { GavinMemorySample, SystemMemorySample, WatchmanSample } from "$lib/agents/memory";
 import type { LaunchConfig } from "$lib/agents/launchGate";
 import type { PrReport } from "$lib/git/pullRequest";
 import type { CardRun, TokenReport } from "$lib/cards/runHistory";
@@ -392,6 +392,13 @@ export function systemMemory(): Promise<SystemMemorySample> {
 /// server when none is running.
 export function watchmanStatus(): Promise<WatchmanSample | null> {
   return invoke("watchman_status");
+}
+
+/// What Gavin itself is holding -- the app, the WebKit processes drawing
+/// its windows, and the local daemon without its sessions. Null off
+/// macOS, where none of it can be measured.
+export function gavinMemory(): Promise<GavinMemorySample | null> {
+  return invoke("gavin_memory");
 }
 
 /// Tells a live watchman to stop watching a root. A machine with no

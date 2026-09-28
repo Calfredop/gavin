@@ -279,13 +279,15 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // is lost or run by setting it.
   get_custom_resume_args: ["ordinary"],
   set_custom_resume_args: ["ordinary"],
-  // Two reads -- a memory sample from the OS, and whether a watchman is
-  // running. `watchman_forget` is the odd one and still ordinary: it is
-  // `watch-del` on one root, and watchman re-establishes the watch the
-  // next time something asks. Nothing of the human's is lost, which is
-  // the line this table draws for `destructive`.
+  // Three reads -- a memory sample from the OS, whether a watchman is
+  // running, and what Gavin's own processes hold. `watchman_forget` is
+  // the odd one and still ordinary: it is `watch-del` on one root, and
+  // watchman re-establishes the watch the next time something asks.
+  // Nothing of the human's is lost, which is the line this table draws
+  // for `destructive`.
   system_memory: ["ordinary"],
   watchman_status: ["ordinary"],
+  gavin_memory: ["ordinary"],
   watchman_forget: ["ordinary"],
   mcp_formats: ["ordinary"],
   move_agent_file: ["ordinary"],

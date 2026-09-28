@@ -455,6 +455,243 @@ pub fn forget_root(root: &str) {
     let _ = watchman_command(&["watch-del", "--", root]);
 }
 
+// ---- Gavin itself -----------------------------------------------------------
+
+/// What Gavin is holding on its own, before anything runs in a session.
+///
+/// The task manager's rows are the daemon's sessions, and on a busy
+/// machine they are nearly all of it -- which is exactly why this has to
+/// be stated separately: "Gavin is using 20 GB" was 17 GB of session
+/// trees, and nothing on screen could say how much of the rest was the
+/// app.
+///
+/// Physical footprint, not resident size: the figure Activity Monitor's
+/// Memory column shows, and the one that counts compressed pages. The
+/// difference is not a rounding error here -- the webview measured
+/// 181 MB resident against a 1000 MB footprint -- so resident size would
+/// understate the one part of Gavin that is big.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GavinMemory {
+    /// This process: the Tauri host.
+    pub app_bytes: u64,
+    /// The WebKit helpers drawing this app's windows -- web content, GPU,
+    /// networking. `None` when this macOS will not say which helpers are
+    /// whose, which is "not measured", never "none running".
+    pub interface_bytes: Option<u64>,
+    pub interface_processes: u32,
+    /// The local daemon's own process, without the sessions it hosts --
+    /// those are the rows. `None` when no connection names a live
+    /// gavin-daemon.
+    pub daemon_bytes: Option<u64>,
+    pub sampled_at_ms: i64,
+}
+
+/// Gavin's own memory, or `None` off macOS.
+///
+/// `async` + `spawn_blocking`: the helper lookup walks the process table
+/// and the daemon pid waits on the command connection's lock, and a plain
+/// command would do both on the thread that draws the window.
+#[tauri::command]
+pub async fn gavin_memory(app: tauri::AppHandle) -> Option<GavinMemory> {
+    tauri::async_runtime::spawn_blocking(move || measure_gavin(std::process::id(), daemon_pid(&app)))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// The pid serving the app's command connection, read off the
+/// connection itself -- the same `server_pid` Restart daemon aims its
+/// fallback with, so this names the daemon THIS app is talking to (the
+/// dev and release daemons run side by side) without dialling it again.
+fn daemon_pid(app: &tauri::AppHandle) -> Option<u32> {
+    use tauri::Manager;
+    let conn = app.try_state::<crate::session::CommandConnection>()?;
+    let stream = conn.0.lock().ok()?;
+    stream.server_pid()
+}
+
+/// A WebKit helper process, by the name macOS gives every one of them:
+/// `com.apple.WebKit.WebContent`, `.GPU`, `.Networking`.
+fn is_webkit_helper(name: &str) -> bool {
+    name.starts_with("com.apple.WebKit.")
+}
+
+/// A pid the connection named is only measured as the daemon while it
+/// still IS one: a pid read at connect time can outlive the process it
+/// named, and a figure for whatever inherited it would be the wrong
+/// process under the daemon's name.
+fn is_daemon_name(name: &str) -> bool {
+    name == "gavin-daemon"
+}
+
+#[cfg(target_os = "macos")]
+fn measure_gavin(own: u32, daemon: Option<u32>) -> Option<GavinMemory> {
+    let app_bytes = footprint(own)?;
+    let helpers = interface_pids(own);
+    let (interface_bytes, interface_processes) = match &helpers {
+        Some(pids) => {
+            let sizes: Vec<u64> = pids.iter().filter_map(|&pid| footprint(pid)).collect();
+            (Some(sizes.iter().sum()), sizes.len() as u32)
+        }
+        None => (None, 0),
+    };
+    let daemon_bytes = daemon
+        .filter(|&pid| pid != own && process_name(pid).is_some_and(|n| is_daemon_name(&n)))
+        .and_then(footprint);
+    Some(GavinMemory {
+        app_bytes,
+        interface_bytes,
+        interface_processes,
+        daemon_bytes,
+        sampled_at_ms: now_ms(),
+    })
+}
+
+/// Off macOS there is no footprint to read and no helper to find; the
+/// line is simply not drawn, the same answer `system_memory` gives.
+#[cfg(not(target_os = "macos"))]
+fn measure_gavin(_own: u32, _daemon: Option<u32>) -> Option<GavinMemory> {
+    None
+}
+
+/// One process's physical footprint -- `ri_phys_footprint`, what
+/// `footprint(1)` and Activity Monitor report.
+#[cfg(target_os = "macos")]
+fn footprint(pid: u32) -> Option<u64> {
+    let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a live, correctly-aligned `rusage_info_v2`, and
+    // RUSAGE_INFO_V2 is the flavour that tells the kernel to write
+    // exactly that struct.
+    let rc = unsafe {
+        libc::proc_pid_rusage(
+            pid as i32,
+            libc::RUSAGE_INFO_V2,
+            &mut info as *mut libc::rusage_info_v2 as *mut libc::rusage_info_t,
+        )
+    };
+    (rc == 0).then_some(info.ri_phys_footprint)
+}
+
+/// A process's name as `proc_name` gives it -- the long form, so
+/// `com.apple.WebKit.WebContent` arrives whole rather than cut at
+/// sixteen characters.
+#[cfg(target_os = "macos")]
+fn process_name(pid: u32) -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is 256 live bytes and the size argument is its
+    // length, so the kernel cannot write past it.
+    let len = unsafe { libc::proc_name(pid as i32, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32) };
+    if len <= 0 {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&buf[..(len as usize).min(buf.len())]).into_owned())
+}
+
+/// When a process started, to the microsecond.
+#[cfg(target_os = "macos")]
+fn start_time(pid: u32) -> Option<(u64, u64)> {
+    const SIZE: i32 = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a live, correctly-sized `proc_bsdinfo` and SIZE
+    // is its own size.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid as i32,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut libc::proc_bsdinfo as *mut libc::c_void,
+            SIZE,
+        )
+    };
+    (written == SIZE).then_some((info.pbi_start_tvsec, info.pbi_start_tvusec))
+}
+
+/// Every pid on the machine. `proc_listallpids` answers a COUNT, and the
+/// table can grow between sizing the buffer and filling it, so the
+/// buffer carries headroom and the answer is trusted only up to its
+/// length.
+#[cfg(target_os = "macos")]
+fn all_pids() -> Vec<u32> {
+    // SAFETY: a null buffer of size zero asks only for the count.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if count <= 0 {
+        return Vec::new();
+    }
+    let mut buf = vec![0i32; count as usize + 64];
+    // SAFETY: the buffer is `buf.len()` live i32s and the size argument
+    // is its length in bytes.
+    let filled = unsafe {
+        libc::proc_listallpids(
+            buf.as_mut_ptr() as *mut libc::c_void,
+            (buf.len() * std::mem::size_of::<i32>()) as libc::c_int,
+        )
+    };
+    if filled <= 0 {
+        return Vec::new();
+    }
+    buf.truncate((filled as usize).min(buf.len()));
+    buf.into_iter().filter(|p| *p > 0).map(|p| p as u32).collect()
+}
+
+/// The process macOS holds responsible for `pid`, or `None` when the
+/// lookup is not there.
+///
+/// `responsibility_get_pid_responsible_for_pid` is libSystem's, and
+/// private -- Activity Monitor uses it to put an app's helpers under the
+/// app. Resolved with `dlsym` rather than linked: a macOS that drops it
+/// then costs the interface figure, where a linked symbol would cost the
+/// app its launch.
+#[cfg(target_os = "macos")]
+fn responsible_pid(pid: u32) -> Option<u32> {
+    use std::sync::OnceLock;
+    type Lookup = unsafe extern "C" fn(libc::pid_t) -> libc::pid_t;
+    static LOOKUP: OnceLock<Option<Lookup>> = OnceLock::new();
+    let lookup = (*LOOKUP.get_or_init(|| {
+        // SAFETY: RTLD_DEFAULT searches the images already loaded, and the
+        // name is a NUL-terminated literal.
+        let sym = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"responsibility_get_pid_responsible_for_pid".as_ptr()) };
+        // SAFETY: the symbol is libSystem's `pid_t f(pid_t)`, the only
+        // shape it has ever had.
+        (!sym.is_null()).then(|| unsafe { std::mem::transmute::<*mut libc::c_void, Lookup>(sym) })
+    }))?;
+    // SAFETY: a plain call on a pid; an unknown pid answers -1.
+    let responsible = unsafe { lookup(pid as libc::pid_t) };
+    (responsible > 0).then_some(responsible as u32)
+}
+
+/// The WebKit helpers drawing this app's windows.
+///
+/// They are not our children: launchd starts them as XPC services, so
+/// the tree walk the rows use can never reach them. What ties them to
+/// the app is RESPONSIBILITY -- they answer to the same process the app
+/// does (itself, when launched from the Dock; the terminal, for a dev
+/// build started from one). Another app's helpers answer to that app,
+/// which is what keeps Fork's or Safari's out.
+///
+/// Started no earlier than the app, for the one case responsibility
+/// cannot split: a dev build shares its terminal with anything else
+/// launched from there, and a helper older than this process cannot be
+/// one of its own. A second WebKit app started later from the same
+/// terminal would still be counted -- a dev-build-only overcount.
+///
+/// `None` when the responsibility lookup is unavailable, so the line can
+/// say "not measured" instead of an interface of zero.
+#[cfg(target_os = "macos")]
+fn interface_pids(own: u32) -> Option<Vec<u32>> {
+    let answers_to = responsible_pid(own)?;
+    let born = start_time(own)?;
+    Some(
+        all_pids()
+            .into_iter()
+            .filter(|&pid| pid != own)
+            .filter(|&pid| process_name(pid).is_some_and(|n| is_webkit_helper(&n)))
+            .filter(|&pid| responsible_pid(pid) == Some(answers_to))
+            .filter(|&pid| start_time(pid).is_some_and(|t| t >= born))
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,5 +782,55 @@ mod tests {
             sysctl::<XswUsage>("vm.swapusage").is_some(),
             "vm.swapusage refused the read -- XswUsage's size no longer matches"
         );
+    }
+
+    #[test]
+    fn recognises_the_webkit_helpers_by_name() {
+        assert!(is_webkit_helper("com.apple.WebKit.WebContent"));
+        assert!(is_webkit_helper("com.apple.WebKit.GPU"));
+        assert!(is_webkit_helper("com.apple.WebKit.Networking"));
+        assert!(!is_webkit_helper("Gavin"));
+        assert!(!is_webkit_helper("com.apple.WebKitten"));
+    }
+
+    #[test]
+    fn only_a_gavin_daemon_is_measured_as_the_daemon() {
+        assert!(is_daemon_name("gavin-daemon"));
+        assert!(!is_daemon_name("gavin-mcp"));
+        assert!(!is_daemon_name("zsh"));
+    }
+
+    /// The live read: this process has a footprint, and the kernel hands
+    /// it over without privileges -- which a probe that silently answered
+    /// `None` on its own platform would never show.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn measures_its_own_footprint() {
+        let m = measure_gavin(std::process::id(), None).expect("a Mac measures its own process");
+        assert!(m.app_bytes > 0);
+        assert_eq!(m.daemon_bytes, None);
+        assert!(m.sampled_at_ms > 0);
+    }
+
+    /// A pid the connection named is measured as the daemon only while
+    /// it still is one. This test binary is not, so it is refused.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn refuses_a_pid_that_is_not_a_daemon() {
+        let own = std::process::id();
+        let parent = std::os::unix::process::parent_id();
+        assert_eq!(measure_gavin(own, Some(parent)).and_then(|m| m.daemon_bytes), None);
+        assert_eq!(measure_gavin(own, Some(own)).and_then(|m| m.daemon_bytes), None);
+    }
+
+    /// A test binary draws nothing, so it owns no WebKit helper. The
+    /// responsibility lookup must still be THERE -- `None` would mean the
+    /// interface figure is unmeasurable on this macOS -- and any WebKit
+    /// app launched from the same terminal before this test is kept out
+    /// by the start-time rule.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_process_without_a_window_owns_no_webkit_helper() {
+        assert_eq!(interface_pids(std::process::id()), Some(Vec::new()));
     }
 }

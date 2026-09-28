@@ -45,6 +45,20 @@ export interface WatchmanSample {
   rootsJson: string;
 }
 
+/// What Gavin itself is holding, as `memory.rs` hands it over: physical
+/// footprint, the figure Activity Monitor shows, not resident size. Null
+/// off macOS. A null part is "not measured", never zero.
+export interface GavinMemorySample {
+  /// The Gavin process.
+  appBytes: number;
+  /// The WebKit helpers drawing Gavin's windows.
+  interfaceBytes: number | null;
+  interfaceProcesses: number;
+  /// The daemon's own process, without the sessions it hosts.
+  daemonBytes: number | null;
+  sampledAtMs: number;
+}
+
 /// The kernel's pressure level, in words.
 ///
 /// Anything that is not one of the three documented values reads as

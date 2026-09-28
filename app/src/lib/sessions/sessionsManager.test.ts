@@ -28,8 +28,12 @@ import {
   type SessionRow,
   droppableRoots,
   dropRootsConfirm,
+  gavinLine,
+  gavinNote,
+  gavinTotal,
   watchmanLine,
 } from "$lib/sessions/sessionsManager";
+import type { GavinMemorySample } from "$lib/agents/memory";
 import { restartOutcome, restartStopsAgentsLine } from "$lib/core/daemonCompat";
 import type { Workspace } from "$lib/core/workspace";
 
@@ -890,6 +894,66 @@ describe("what a batch kill says it is freeing", () => {
   });
 });
 
+// The part of the machine that IS Gavin. "Gavin is using 20 GB" was
+// 17 GB of session trees beside about a gigabyte of app; the rows could
+// not say which part was which.
+describe("gavinLine", () => {
+  const MB = 1024 ** 2;
+  function gavin(over: Partial<GavinMemorySample> = {}): GavinMemorySample {
+    return {
+      appBytes: 40 * MB,
+      interfaceBytes: 1100 * MB,
+      interfaceProcesses: 3,
+      daemonBytes: 75 * MB,
+      sampledAtMs: 1,
+      ...over,
+    };
+  }
+
+  it("states the total, then each part in a fixed order", () => {
+    expect(gavinLine(gavin())).toBe(
+      "Gavin: 1.2 GB — app 40 MB · interface 1.1 GB · daemon 75 MB"
+    );
+  });
+
+  // Unmeasured is an em dash, as in the grid: an interface of 0 MB would
+  // read as a window that costs nothing.
+  it("marks a part it could not measure instead of zeroing it", () => {
+    expect(gavinLine(gavin({ interfaceBytes: null, interfaceProcesses: 0 }))).toBe(
+      "Gavin: 115 MB — app 40 MB · interface — · daemon 75 MB"
+    );
+    expect(gavinLine(gavin({ daemonBytes: null }))).toBe(
+      "Gavin: 1.1 GB — app 40 MB · interface 1.1 GB · daemon —"
+    );
+  });
+
+  it("adds only what was measured", () => {
+    expect(gavinTotal(gavin())).toBe(1215 * MB);
+    expect(gavinTotal(gavin({ interfaceBytes: null, daemonBytes: null }))).toBe(40 * MB);
+  });
+
+  it("names each part, and says the figure is not the rows' kind", () => {
+    const note = gavinNote(gavin());
+    expect(note).toContain("app — the Gavin process.");
+    expect(note).toContain("the 3 WebKit processes drawing Gavin’s windows");
+    expect(note).toContain("What runs in its sessions is in the rows above.");
+    expect(note).toContain("Physical footprint, as Activity Monitor’s Memory column counts it.");
+    expect(note).toContain("The rows are resident size");
+    expect(note).not.toContain("at least");
+  });
+
+  it("singularizes a lone WebKit process", () => {
+    expect(gavinNote(gavin({ interfaceProcesses: 1 }))).toContain("the 1 WebKit process drawing");
+  });
+
+  it("says what was not measured, and that the total is then a floor", () => {
+    const note = gavinNote(gavin({ interfaceBytes: null, interfaceProcesses: 0, daemonBytes: null }));
+    expect(note).toContain("interface — not measured");
+    expect(note).toContain("daemon — not measured");
+    expect(note).toContain("Gavin is holding at least this much.");
+  });
+});
+
 // The half of the machine gavin did not start. Watchman keeps a removed
 // root's whole tree in memory for five days, so a workspace that cuts a
 // worktree per rail leaves one behind on every merge -- memory nothing
@@ -897,13 +961,13 @@ describe("what a batch kill says it is freeing", () => {
 describe("watchmanLine", () => {
   it("says what the server costs and how much it is holding", () => {
     expect(watchmanLine({ rssBytes: 644245094, roots: ["/a", "/b"] })).toBe(
-      "outside gavin: watchman 614 MB, 2 roots"
+      "Related to Gavin: watchman 614 MB, 2 roots"
     );
   });
 
   it("singularizes a lone root", () => {
     expect(watchmanLine({ rssBytes: 2 * 1024 ** 3, roots: ["/a"] })).toBe(
-      "outside gavin: watchman 2.0 GB, 1 root"
+      "Related to Gavin: watchman 2.0 GB, 1 root"
     );
   });
 

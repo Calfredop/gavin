@@ -221,6 +221,7 @@ pub fn run() {
             memory::system_memory,
             memory::watchman_status,
             memory::watchman_forget,
+            memory::gavin_memory,
             pull_request::pr_status,
             agent_tokens::card_run_tokens,
             agent_tokens::conversation_log,

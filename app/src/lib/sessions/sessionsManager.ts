@@ -16,6 +16,7 @@
 import type { AlertOptions, ConfirmOptions } from "$lib/core/dialog";
 import { restartStopsAgentsLine, type DaemonCompat } from "$lib/core/daemonCompat";
 import { describeOrphan, type OrphanProcess } from "$lib/sessions/orphan";
+import type { GavinMemorySample } from "$lib/agents/memory";
 
 /// dialog.ts lets a prompt omit its lines; every prompt here has some,
 /// and saying so in the type is what lets a test read them.
@@ -827,6 +828,63 @@ export function totalsNote(total: Totals): string {
   return lines.join("\n");
 }
 
+// ---- What Gavin itself is holding -------------------------------------------
+//
+// The rows are the daemon's sessions, and on a busy machine they are
+// nearly everything: "Gavin is using 20 GB" turned out to be 17 GB of
+// session trees -- a dev stack, seventeen agents, an e2e run -- beside
+// about a gigabyte of Gavin. Without a line for the app itself, the
+// panel could not say which part of any figure was Gavin and which was
+// the work run inside it.
+//
+// Its own line rather than a row: nothing in it can be jumped to or
+// ended, and it is measured differently (physical footprint, the figure
+// Activity Monitor shows, where the rows are resident size), so a row
+// would invite adding it to a total it does not belong in.
+
+/// The measured parts, added. A part that was not measured adds nothing,
+/// which makes this a floor -- `gavinNote` says so when it is one.
+export function gavinTotal(m: GavinMemorySample): number {
+  return m.appBytes + (m.interfaceBytes ?? 0) + (m.daemonBytes ?? 0);
+}
+
+/// The line under the grid: the total, then what it is made of, in a
+/// fixed order so the eye finds the same part in the same place on every
+/// poll. An unmeasured part is an em dash, as in the grid -- never a
+/// zero.
+export function gavinLine(m: GavinMemorySample): string {
+  const parts = [
+    `app ${formatMemory(m.appBytes)}`,
+    `interface ${formatMemory(m.interfaceBytes)}`,
+    `daemon ${formatMemory(m.daemonBytes)}`,
+  ];
+  return `Gavin: ${formatMemory(gavinTotal(m))} — ${parts.join(" · ")}`;
+}
+
+/// The hover: what each part is, and why the figure does not add to the
+/// rows'.
+export function gavinNote(m: GavinMemorySample): string {
+  const iface =
+    m.interfaceBytes === null
+      ? "interface — not measured: this macOS does not say which WebKit processes are Gavin’s."
+      : `interface — the ${plural(m.interfaceProcesses, "WebKit process", "WebKit processes")} drawing Gavin’s windows (com.apple.WebKit.* in Activity Monitor).`;
+  const daemon =
+    m.daemonBytes === null
+      ? "daemon — not measured: no live gavin-daemon answers on this app’s connection."
+      : "daemon — gavin-daemon on its own. What runs in its sessions is in the rows above.";
+  const lines = [
+    "What Gavin holds before anything runs in a session:",
+    "app — the Gavin process.",
+    iface,
+    daemon,
+    "Physical footprint, as Activity Monitor’s Memory column counts it. The rows are resident size, which leaves out compressed memory, so the two are not one sum.",
+  ];
+  if (m.interfaceBytes === null || m.daemonBytes === null) {
+    lines.push("The total leaves out what was not measured, so Gavin is holding at least this much.");
+  }
+  return lines.join("\n");
+}
+
 // ---- What is holding memory OUTSIDE gavin -----------------------------------
 //
 // The panel's totals cover every session the daemon holds, which is the
@@ -855,7 +913,7 @@ export interface WatchmanTotals {
 export function watchmanLine(totals: WatchmanTotals | null): string | null {
   if (!totals) return null;
   const roots = plural(totals.roots.length, "root");
-  return `outside gavin: watchman ${formatMemory(totals.rssBytes)}, ${roots}`;
+  return `Related to Gavin: watchman ${formatMemory(totals.rssBytes)}, ${roots}`;
 }
 
 /// The roots no live worktree of any open workspace owns.
