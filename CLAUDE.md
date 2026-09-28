@@ -16,6 +16,8 @@ Gavin itself — the app the PRD describes. A Rust workspace plus a Tauri/Svelte
 - `crates/gavin-mcp` — the `gavin_*` MCP server
 - `app/` — SvelteKit + Svelte 5 + xterm.js; `app/src-tauri` — the Tauri host
   (git, file viewer, agent profiles)
+- `app/companion/` — the Companion web bundle: the desktop's own components
+  behind a remote shim, tested against the Demo Workstation. See its README.
 
 Design history lives in `docs/superpowers/{brainstorms,specs,plans}/`. Read the
 spec before re-deriving a decision — most of them record why the obvious option

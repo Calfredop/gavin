@@ -1,0 +1,25 @@
+/* The page a phone draws the bundle on. Everything about COLOUR and TYPE
+   is the desktop's (`$lib/ui/theme.css`, imported beside this); what is
+   here is only what a phone's screen needs that a window never did. */
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--surface-base);
+  color: var(--text);
+}
+
+body {
+  /* 16px and no smaller: below it iOS zooms the page when a field takes
+     focus, and the surfaces that follow this one have fields. The
+     desktop's components size themselves in `em`, so this is also the
+     one number that scales them all for a thumb. */
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+  /* The page never scrolls; its surfaces do. Without this a pull at the
+     top of a list rubber-bands the whole bundle inside the shell. */
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
