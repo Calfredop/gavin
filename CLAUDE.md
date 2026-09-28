@@ -16,8 +16,23 @@ Gavin itself — the app the PRD describes. A Rust workspace plus a Tauri/Svelte
   that. New code that reads the environment, the filesystem or the OS random
   source belongs behind the feature too.
 - `crates/daemon` — `gavin-daemon`: PTYs, SQLite, the `.gavin*` watcher,
-  orchestration state
+  orchestration state, and the dial to the Relay (`remote.rs`), which runs
+  only while the trust store says remote access is on
 - `crates/gavin-mcp` — the `gavin_*` MCP server
+- `crates/gavin-relay` — the Relay (feature `server`, the workspace's one
+  async crate) and the blocking dial the daemon and the test Device share
+  (feature `client`). What they say to each other before bytes are copied
+  is `protocol::relay`
+- `crates/companion-core` — the Device's half of the wire, with no I/O and
+  no randomness of its own, so it checks for `wasm32-unknown-unknown` — CI
+  runs that. Its `test-device` feature is the native test Device that
+  `crates/daemon/tests/device_wire.rs` drives a real daemon with
+
+A rule written twice is held to one table. Which Relay URLs may be dialled is
+`protocol::relay::RelayUrl::parse`, and `app/src/lib/core/remoteAccess.ts`
+mirrors it for the Settings hint; both suites read
+`test-fixtures/relay-urls/cases.json`, so a case added there is asserted on
+both sides. Add the case before changing either.
 - `app/` — SvelteKit + Svelte 5 + xterm.js; `app/src-tauri` — the Tauri host
   (git, file viewer, agent profiles)
 
@@ -76,10 +91,20 @@ unsuffixed names; Restart daemon in either app kills only the pid owning the
 endpoint it connected to. What they still SHARE, deliberately, is the work: one
 `kanban.sqlite`, one `orchestration.sqlite`, one `config.json`, so the board,
 the rails, the workspace list and the settings are the same in both — and a
-build that widens `config.json` writes a shape the other then reads. A protocol
+build that widens `config.json` writes a shape the other then reads. They share
+`devices.sqlite` as well — one trust store, so one Workstation key — which
+means that with remote access on BOTH daemons dial the Relay and register
+under the same rendezvous id. The Relay announces a Device's stream to both,
+and the one whose desk is showing the pairing QR is the one that picks it up
+(`SessionManager::has_pairing_offer`). Neither daemon can tell the other what
+it wrote there, so `remote.rs` re-reads the settings every two seconds rather
+than trusting its own wake-ups; anything else one daemon caches from that file
+has the same problem. A protocol
 bump only takes effect after a rebuild and restart, which is the human's call.
 To verify daemon or MCP behaviour meanwhile, run an isolated daemon under a temp
-`$HOME` — it gets its own socket and databases.
+`$HOME` — it gets its own socket and databases. `crates/daemon/tests/device_wire.rs`
+is that pattern with a local Relay and the test Device added; a daemon started
+that way trusts a Relay's test certificate through `SSL_CERT_FILE`.
 
 **`gavin-mcp` re-execs itself when the daemon moves ahead.** A bump used to cost
 every session on the machine its `gavin_*` tools until someone restarted it.

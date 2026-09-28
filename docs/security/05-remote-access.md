@@ -590,6 +590,18 @@ rather than a comment (`the_qr_payload_carries_only_what_section_3_allows`):
  "rendezvous":["wss://…"],"protocolVersion":42}
 ```
 
+**Since v45 the QR carries one thing more**, and only when there is one to
+carry: `"relayAdmission":"…"`, the Relay's admission token
+(`docs/superpowers/specs/2026-09-27-companion-design.md`, "Pairing and the
+trust store"). §3's "what it must not carry" lists "the relay's own
+credentials", and the token is not one of those: it is not what lets anyone
+be the Relay or run it, it is what the Relay asks of every peer it carries,
+already held by every Workstation and Device on that Relay. It reaches
+nothing on this machine, and the secret beside it still lapses in two
+minutes. `the_qr_carries_the_admission_token_when_there_is_one` pins the
+field; the test above it still pins the four that a QR without a token
+holds.
+
 `DeviceInfo` — one row of the trust store, as the device list reads it:
 
 ```json
@@ -825,7 +837,56 @@ relay URL stored, `netstat -ano` shows the daemon owning no TCP or UDP endpoint 
 before, during and after. There is nothing to find, because there is nothing that
 listens or dials — `SetRemoteAccess` writes two values into the trust store and stops.
 
-**Phase 3 — transport and relay.**
+**Phase 3 — transport and relay. — FIRST SLICE LANDED, `PROTOCOL_VERSION = 45`.**
+What landed is pairing through a Relay, and it is the Companion spec's first
+ticket rather than this list: `crates/gavin-relay`, the daemon's dial
+(`remote.rs`: dial only while the store says enabled, reconnect on wake,
+the pairing responder over a stream the Relay hands it, the desk's verdict
+sent back in one padded frame), and `crates/companion-core`, whose native
+build is the test Device. Proved at the spec's seam 1
+(`crates/daemon/tests/device_wire.rs`): a real daemon under a temporary
+`$HOME`, a real local Relay over TLS, the test Device. Three things that
+were settled by building it:
+
+- **Admission rides in the first WebSocket frame**, not in a header or the
+  URL (`protocol::relay`). A webview's `WebSocket` cannot set a header, and
+  a token in a URL is a token in every proxy's log. The Relay URL is
+  therefore opaque and is dialled as typed.
+- **One stream, one connection.** The daemon holds a registration that
+  carries announcements and nothing else, and picks each Device's stream
+  up on a connection of its own, so the Relay's whole job stays "copy one
+  socket to another". A stream is announced to every registration under
+  the rendezvous id and picked up by one -- two daemons can share a key,
+  and the one that holds the pairing offer is the one that takes it.
+- **`ws://` is dialled only to this machine or this network.** Inside the
+  pipe everything is end to end regardless, but the admission token and
+  the rendezvous id are in the first frame. A host two URL parsers could
+  read two ways (`010.0.0.1`, a backslash, a zone id) is refused outright:
+  the Companion's webview has a parser of its own. The rule is
+  `protocol::relay::RelayUrl::parse`; the Settings field's hint is a
+  mirror of it, and `test-fixtures/relay-urls/` holds both to one table.
+- **The secret is spent by the handshake that completes, under a lock.**
+  §3's "a completed handshake spends it" was true of handshakes one after
+  another and not of two in flight at once, which a transport makes
+  possible: the offer is read before three round trips and used after
+  them. It is now checked again at completion -- still this offer, still
+  inside its two minutes -- and taken in the same step, so one secret asks
+  the desk about one Device, and a late handshake on a replaced offer
+  cannot take the new one with it.
+- **The token goes with its Relay.** Saving another Relay URL without a
+  token forgets the stored one, because the daemon presents what it holds
+  to whatever it dials.
+- **The daemon follows the store, not only its own requests.** The dev
+  build's daemon and the release build's share `devices.sqlite`, and
+  neither can tell the other what it wrote, so each re-reads the
+  remote-access settings every two seconds. Turning the switch off in
+  either app lets go of the Relay in both -- including a Device half-way
+  through pairing, which is told the pairing lapsed.
+
+Still owed by this phase: `IK`, the hardware signature (ADR 0001), the
+Remote role over the wire, and the proofs listed below. The direct
+listener is out of the Companion spec's scope.
+
 Lands: `remote.rs` (dial, reconnect on wake, Noise `IK`, framing, padding, caps) feeding
 `handle_connection` with role `remote`; `crates/gavin-relay`; the direct loopback/LAN
 listener for the Tailscale case; the daemon dials only when the store says enabled.
