@@ -3,6 +3,7 @@ mod agent_setup;
 mod agent_tokens;
 mod agent_usage;
 mod command_lane;
+mod commands;
 mod config;
 mod confirm_gate;
 mod daemon;
