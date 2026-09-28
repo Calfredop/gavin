@@ -1,0 +1,16 @@
+{
+  "name": "gavin-companion-shell",
+  "private": true,
+  "version": "0.1.0",
+  "description": "The Companion shell: the store app that hosts the Workstations hub and runs each Workstation's UI bundle in a webview with no native bridge.",
+  "type": "module",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "dependencies": {
+    "@capacitor/android": "8.5.2",
+    "@capacitor/core": "8.5.2",
+    "@capacitor/ios": "8.5.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.2"
+  }
+}

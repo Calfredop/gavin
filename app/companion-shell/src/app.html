@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- The shell's own page shows only what ships in the binary, and never
+         a frame: Capacitor's iOS bridge answers EVERY frame of this webview,
+         so a frame of anything here could call every plugin
+         (docs/research/2026-09-28-companion-device-keys.md, section 4).
+         A Workstation's bundle runs in a webview of its own. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <link rel="icon" href="%sveltekit.assets%/favicon.png" />
+    <!-- viewport-fit=cover: the hub draws under the notch and the home
+         indicator itself, as the bundle does, so moving between the two
+         does not shift the page. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Gavin</title>
+    <script>
+      // The hub follows the phone's appearance; this sets it before the
+      // first frame so a light phone never flashes the dark theme.
+      try {
+        document.documentElement.dataset.theme =
+          window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      } catch (_) {
+        document.documentElement.dataset.theme = "dark";
+      }
+    </script>
+    %sveltekit.head%
+  </head>
+  <body>
+    <div style="display: contents">%sveltekit.body%</div>
+  </body>
+</html>

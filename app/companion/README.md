@@ -61,12 +61,29 @@ beyond the core set (`invoke`, `result`, `listen`, `event`, `unlisten`), and an
 end that cannot answer the question is taken to carry exactly that set — so a
 shell older than its bundle costs a button, never the page.
 
-**The shell's side of the contract** (companion-19): put an object at
-`window.gavinChannel` with `postMessage(string)` and an `onmessage` the page
-will set, called with `{ data: string }`. That is the shape Android's
-`addWebMessageListener` injects, origin gate included. With no such object the
-page hosts a Demo Workstation of its own, which is how the bundle runs in a
-desktop browser.
+**The shell's side of the contract** (companion-19, `app/companion-shell/`):
+put an object at `window.gavinChannel` with `postMessage(string)` and an
+`onmessage` the page will set, called with `{ data: string }`. That is the
+shape Android's `addWebMessageListener` injects, origin gate included; the iOS
+shell declares the same object over its script-message handler. With no such
+object the page hosts a Demo Workstation of its own, which is how the bundle
+runs in a desktop browser. The shell answers `capabilities`, `open-external`
+and `return-to-hub` itself and carries the rest to the one Workstation the
+visit reaches.
+
+The shell hosts the bundle to three findings of the device-keys spike
+(`docs/research/2026-09-28-companion-device-keys.md`, on branch
+`spike/companion-device-keys` (38b6f289) until it merges), all three measured,
+and its `scripts/probe.sh` checks them on a Simulator and an emulator:
+
+- The bundle is never loaded inside the shell's own Capacitor webview, **not
+  even in an iframe**: Capacitor iOS's `bridge` handler answers every frame.
+- On iOS the channel's handler is visible to frames inside the bundle, so the
+  shell has to refuse anything that is not the main frame.
+- On Android the bundle's webview needs a process of its own
+  (`android:process`, with `WebView.setDataDirectorySuffix` before the first
+  webview), or it shares a renderer with the shell. The channel then crosses
+  processes.
 
 ## The remote shim
 
