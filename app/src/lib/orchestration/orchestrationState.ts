@@ -108,6 +108,7 @@ import {
   conversationIdForLaunch,
   createSessionOnPage,
   createSessionOnNewPage,
+  profileIdForLaunch,
   handleAgentSessionSpawned,
   retainTabOnExit,
   sessionExits,
@@ -706,11 +707,17 @@ const spawningPages = new Map<string, Promise<unknown>>();
 /// Not a stall when the page cannot be made: the binding stays null and
 /// the session takes the Agents-page fallback (spec §4.3 step 4). A page
 /// is where agents land, not a precondition for running them.
+///
+/// `profileId` is the profile of the AGENT being launched
+/// (`profileIdForLaunch`), and absent for everything a rail runs that is
+/// not one: a command, script or until step, and a worktree's setup. It
+/// rides down to `createSession` by whichever route the session takes.
 async function createSessionOnRailPage(
   workspaceId: string,
   railId: string,
   cwd: string,
-  command: string | null
+  command: string | null,
+  profileId?: string
 ): Promise<string | null> {
   // One page per rail even under a double Start: making it is an await
   // long enough for a second launch to arrive while the rail is still
@@ -723,12 +730,16 @@ async function createSessionOnRailPage(
   const pending = spawningPages.get(railId);
   if (pending) await pending;
   else {
-    const sessionId = await spawnRailPageFor(workspaceId, railId, cwd, command);
+    const sessionId = await spawnRailPageFor(workspaceId, railId, cwd, command, profileId);
     if (sessionId) return sessionId;
   }
   const pageId =
     get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId)?.pageId ?? null;
-  return createSessionOnPage(workspaceId, pageId, cwd, command);
+  // A shell's launch is the call it has always been: no profile is not
+  // an argument left empty, it is an argument not made.
+  return profileId === undefined
+    ? createSessionOnPage(workspaceId, pageId, cwd, command)
+    : createSessionOnPage(workspaceId, pageId, cwd, command, profileId);
 }
 
 /// The rail's page and its first tab in one act, or null when the rail
@@ -746,14 +757,15 @@ async function spawnRailPageFor(
   workspaceId: string,
   railId: string,
   cwd: string,
-  command: string | null
+  command: string | null,
+  profileId?: string
 ): Promise<string | null> {
   const rail = get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId);
   if (!rail) return null;
   const pages = get(layoutState).workspaces.find((w) => w.id === workspaceId)?.pages ?? [];
   const name = pageToSpawnForRail(rail, pages);
   if (name === null) return null;
-  const spawning = spawnRailPage(workspaceId, railId, name, cwd, command);
+  const spawning = spawnRailPage(workspaceId, railId, name, cwd, command, profileId);
   spawningPages.set(railId, spawning.catch(() => null));
   try {
     return (await spawning)?.sessionId ?? null;
@@ -771,7 +783,8 @@ async function spawnRailPage(
   railId: string,
   name: string,
   cwd: string,
-  command: string | null
+  command: string | null,
+  profileId?: string
 ): Promise<{ pageId: string; sessionId: string } | null> {
   const made = await createSessionOnNewPage(workspaceId, name, cwd, command, {
     // The human is on the Orchestration tab -- they pressed Start there.
@@ -779,6 +792,7 @@ async function spawnRailPage(
     // taking the screen as well would be a jump they did not ask for,
     // and unbearable when arming several rails in a row.
     activate: false,
+    ...(profileId === undefined ? {} : { profileId }),
   });
   if (made) await mutatePlan(workspaceId, (orch) => bindRail(orch, railId, { pageId: made.pageId }));
   return made;
@@ -948,7 +962,15 @@ export async function resumeStep(
 
   let sessionId: string | null;
   try {
-    sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command);
+    // A resume is a fresh session: whether it is compressed is decided
+    // again as it spawns, against Headroom as it is now.
+    sessionId = await createSessionOnRailPage(
+      workspaceId,
+      rail.id,
+      cwd,
+      command,
+      profileIdForLaunch(agent)
+    );
   } catch (e) {
     return `Couldn't reopen the conversation: ${e instanceof Error ? e.message : e}`;
   }
@@ -1430,7 +1452,11 @@ async function executeToolLaunch(
     return false;
   }
 
-  const sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command);
+  // Only an agent tool names a profile, for the reason only one gets a
+  // conversation: every other kind is a shell, and a shell is never
+  // compressed.
+  const profileId = tool.kind === "agent" ? profileIdForLaunch(agent) : undefined;
+  const sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command, profileId);
   if (!sessionId) {
     await stallLaunch(workspaceId, step.id, `could not start ${tool.name}`);
     return false;
@@ -1646,7 +1672,15 @@ async function executeLaunch(workspaceId: string, stepId: string): Promise<boole
     return false;
   }
   const baseSha = await baseShaForLaunch(cwd);
-  const sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command);
+  // The agent actually launching, which is the fallback's when the
+  // chain walked: its profile is the one whose recipe would apply.
+  const sessionId = await createSessionOnRailPage(
+    workspaceId,
+    rail.id,
+    cwd,
+    command,
+    profileIdForLaunch(launchAgent)
+  );
   if (!sessionId) {
     await stallLaunch(workspaceId, stepId, "could not start the agent");
     return false;
@@ -3037,9 +3071,7 @@ async function launchOrchestrationAgent(
     // Twice, and not because they drift: `root` is the workspace root by
     // the guard above, and saying so explicitly is what keeps this launch
     // scoped if that ever stops being true.
-    sessionId = await backend.createSession(root, command, root);
-
-
+    sessionId = await backend.createSession(root, command, root, profileIdForLaunch(agent));
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }

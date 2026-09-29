@@ -58,6 +58,9 @@ const layoutStore = vi.hoisted(() => {
 });
 vi.mock("$lib/core/layoutState", () => ({
   layoutState: layoutStore,
+  // The launching profile, as the real one names it against a daemon
+  // new enough to read it (`compressedLaunch`).
+  profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   resolvedAgentFor: vi.fn(() => ({
     command: "claude",
     launchCommand: "claude",
@@ -172,7 +175,28 @@ function slot(): Record<string, unknown> | undefined {
 }
 
 describe("requestOrganize", () => {
+  // The orchestration agent is an agent's launch like a card's, so it is
+  // a candidate for compression on the same terms.
+  it("names the profile it launches", async () => {
+    vi.mocked(layoutStateModule.profileIdForLaunch).mockImplementation((agent) => agent.profileId);
+
+    expect(await requestOrganize("ws-1", [], [])).toBeNull();
+
+    const launch = vi.mocked(backend.createSession).mock.calls[0];
+    expect(launch).toEqual(["/ws", expect.stringContaining("claude "), "/ws", "claude-code"]);
+  });
+
+  it("launches with no profile against a daemon too old to read one", async () => {
+    vi.mocked(layoutStateModule.profileIdForLaunch).mockImplementation(() => undefined);
+
+    expect(await requestOrganize("ws-1", [], [])).toBeNull();
+
+    expect(backend.createSession).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(backend.createSession).mock.calls[0][3]).toBeUndefined();
+  });
+
   it("spawns its own agent in the workspace root and lands the human in it", async () => {
+    vi.mocked(layoutStateModule.profileIdForLaunch).mockImplementation((agent) => agent.profileId);
     expect(await requestOrganize("ws-1", [], [])).toBeNull();
 
     const [cwd, command] = vi.mocked(backend.createSession).mock.calls[0];

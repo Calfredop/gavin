@@ -191,6 +191,15 @@ pub struct Daemon {
 }
 
 impl Daemon {
+    /// A connection of the caller's own, for what `ask` cannot do: stay
+    /// open. A watched root lives exactly as long as the connection
+    /// that asked for it.
+    pub fn connect(&self) -> Stream {
+        let stream = Stream::connect(&self.socket).expect("connect to the daemon");
+        stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        stream
+    }
+
     pub fn ask(&self, request: Request) -> Response {
         let mut stream = Stream::connect(&self.socket).expect("connect to the daemon");
         stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();

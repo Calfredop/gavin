@@ -119,6 +119,11 @@ pub(crate) fn persist_workspaces(
     // `Option<bool>` here would sit beside `auto_commit` with exactly the
     // same shape, and the two are unrelated settings.
     require_review: crate::config::RequireReviewDefault,
+    // Thirteenth to arrive, and beside its sibling rather than last: it
+    // is the same kind of setting as `require_review`, and wrapped for
+    // the same reason -- `HeadroomDefault` is a type nothing else here
+    // has, so a transposition is a compile error.
+    headroom: crate::config::HeadroomDefault,
     // Eleventh. `Option<LaunchConfig>` shares a shape with nothing else in
     // this list, so a transposition is a type error rather than a
     // silently swapped value -- the same guarantee `agent_pause` above
@@ -162,6 +167,7 @@ pub(crate) fn persist_workspaces(
             agent_defaults,
             git_tracking,
             require_review,
+            headroom,
             launch,
             custom_resume_args,
         },
@@ -219,6 +225,7 @@ pub fn set_agent_pause(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -234,6 +241,7 @@ pub fn set_agent_pause(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
     let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
@@ -255,6 +263,7 @@ pub fn set_agent_pause(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -299,6 +308,7 @@ pub fn set_launch_config(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -315,6 +325,7 @@ pub fn set_launch_config(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
@@ -335,6 +346,7 @@ pub fn set_launch_config(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -379,6 +391,7 @@ pub fn set_custom_resume_args(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -394,6 +407,7 @@ pub fn set_custom_resume_args(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let agent_pause = agent_pause_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
     let auto_commit = *auto_commit_state.0.lock().unwrap();
@@ -416,6 +430,7 @@ pub fn set_custom_resume_args(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -454,6 +469,16 @@ pub struct GitTrackingDefaults(pub Mutex<crate::config::GitTrackingDefault>);
 /// of the check (`cardReview.ts`'s gate), not a value copied in at init.
 pub struct RequireReviewDefaults(pub Mutex<crate::config::RequireReviewDefault>);
 
+/// The app-wide default for whether agents are compressed through
+/// Headroom. Tauri-managed and persisted into the same `AppConfig` as
+/// the rest, and carried through `persist_workspaces` like them.
+///
+/// Live, like `RequireReviewDefaults` above: a workspace with no
+/// override of its own resolves against whatever this holds at the
+/// moment it is resolved (`headroom/compression.ts`), and what the
+/// daemon is told follows from that.
+pub struct HeadroomDefaults(pub Mutex<crate::config::HeadroomDefault>);
+
 #[tauri::command]
 pub fn get_agent_defaults(state: State<AgentDefaults>) -> crate::config::AgentDefaultsConfig {
     state.0.lock().unwrap().clone()
@@ -482,12 +507,14 @@ pub fn set_agent_defaults(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
     *agent_defaults_state.0.lock().unwrap() = agent_defaults.clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
     let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
     let data = state.0.lock().unwrap().clone();
@@ -518,6 +545,7 @@ pub fn set_agent_defaults(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -567,6 +595,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -611,6 +640,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -642,6 +672,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -671,6 +702,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             Some("--resume".to_string()),
         )
@@ -706,6 +738,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -737,6 +770,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -777,6 +811,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -810,6 +845,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -861,6 +897,7 @@ mod workspaces_data_tests {
             defaults.clone(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -897,6 +934,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             Some(launch),
             None,
         )
@@ -933,6 +971,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             Some(launch),
             None,
         )
@@ -978,6 +1017,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault(Some(false)),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -1011,6 +1051,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault(Some(false)),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -1022,6 +1063,68 @@ mod workspaces_data_tests {
             crate::config::load(dir.path()).unwrap().require_review,
             crate::config::RequireReviewDefault(Some(false))
         );
+    }
+
+    fn persist_with_headroom(dir: &std::path::Path, headroom: crate::config::HeadroomDefault) {
+        let data = WorkspacesData { workspaces: vec![], active_workspace_id: None, removed_workspaces: vec![] };
+        persist_workspaces(
+            dir,
+            &data,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            None,
+            None,
+            None,
+            HashMap::new(),
+            crate::config::AgentDefaultsConfig::default(),
+            crate::config::GitTrackingDefault::default(),
+            crate::config::RequireReviewDefault::default(),
+            headroom,
+            None,
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn persist_workspaces_carries_the_headroom_default_through() {
+        let dir = tempfile::tempdir().unwrap();
+
+        persist_with_headroom(dir.path(), crate::config::HeadroomDefault(Some(true)));
+        assert_eq!(
+            crate::config::load(dir.path()).unwrap().headroom,
+            crate::config::HeadroomDefault(Some(true))
+        );
+
+        // An explicit "off" survives as false, not as absence: absence
+        // is "nobody chose", and would follow gavin's default if that
+        // ever moved.
+        persist_with_headroom(dir.path(), crate::config::HeadroomDefault(Some(false)));
+        assert_eq!(
+            crate::config::load(dir.path()).unwrap().headroom,
+            crate::config::HeadroomDefault(Some(false))
+        );
+    }
+
+    /// The default starts Off, and it starts UNWRITTEN: a config.json
+    /// nobody has set this in gains no key, so the release build that
+    /// shares the file reads back exactly what it wrote.
+    #[test]
+    fn a_headroom_default_nobody_chose_is_absent_from_the_file_and_reads_as_unset() {
+        let dir = tempfile::tempdir().unwrap();
+
+        persist_with_headroom(dir.path(), crate::config::HeadroomDefault::default());
+
+        let written: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(crate::config::config_path(dir.path())).unwrap(),
+        )
+        .unwrap();
+        assert!(written.get("headroom").is_none(), "{written}");
+        assert_eq!(crate::config::load(dir.path()).unwrap().headroom.0, None);
     }
 
     /// A workspace's own overrides ride on the workspace record, so they
@@ -1063,6 +1166,7 @@ mod workspaces_data_tests {
             mcp_foreign_servers_choice: None,
             reviewed_cards: None,
             require_review: None,
+            headroom: None,
             require_review_asked: false,
             custom_resume_args: None,
             agent_fallback: None,
@@ -1099,6 +1203,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -1135,6 +1240,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -1203,6 +1309,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -1244,6 +1351,7 @@ mod workspaces_data_tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -1305,6 +1413,7 @@ mod workspace_migration_tests {
             mcp_foreign_servers_choice: None,
             reviewed_cards: None,
             require_review: None,
+            headroom: None,
             require_review_asked: false,
             custom_resume_args: None,
             agent_fallback: None,
@@ -1415,6 +1524,7 @@ pub fn set_workspaces_state(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -1454,6 +1564,7 @@ pub fn set_workspaces_state(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
     let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
     persist_workspaces(
@@ -1472,6 +1583,7 @@ pub fn set_workspaces_state(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -1523,6 +1635,7 @@ pub(crate) fn persist_current(app_handle: &AppHandle, data: &WorkspacesData) -> 
         app_handle.state::<AgentDefaults>().0.lock().unwrap().clone(),
         *app_handle.state::<GitTrackingDefaults>().0.lock().unwrap(),
         *app_handle.state::<RequireReviewDefaults>().0.lock().unwrap(),
+        *app_handle.state::<HeadroomDefaults>().0.lock().unwrap(),
         *app_handle.state::<LaunchSettings>().0.lock().unwrap(),
         app_handle.state::<CustomResumeArgs>().0.lock().unwrap().clone(),
     )
@@ -1552,6 +1665,7 @@ pub fn set_agent_model_default(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -1581,6 +1695,7 @@ pub fn set_agent_model_default(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
     let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -1600,6 +1715,7 @@ pub fn set_agent_model_default(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -1640,6 +1756,7 @@ pub fn set_superpowers_mark(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -1666,6 +1783,7 @@ pub fn set_superpowers_mark(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
     let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
     let terminal_font_size = *font_size_state.0.lock().unwrap();
@@ -1687,6 +1805,7 @@ pub fn set_superpowers_mark(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -1716,6 +1835,7 @@ pub fn set_theme_pref(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -1741,6 +1861,7 @@ pub fn set_theme_pref(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
     let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
     persist_workspaces(
@@ -1759,6 +1880,7 @@ pub fn set_theme_pref(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -1796,6 +1918,7 @@ pub fn set_terminal_font_size(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -1820,6 +1943,7 @@ pub fn set_terminal_font_size(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
     let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -1839,6 +1963,7 @@ pub fn set_terminal_font_size(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -1873,6 +1998,7 @@ pub fn set_auto_commit(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -1894,6 +2020,7 @@ pub fn set_auto_commit(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
     let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -1913,6 +2040,7 @@ pub fn set_auto_commit(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -1947,6 +2075,7 @@ pub fn set_require_review(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -1955,6 +2084,7 @@ pub fn set_require_review(
         *current = crate::config::RequireReviewDefault(enabled);
         *current
     };
+    let headroom = *headroom_state.0.lock().unwrap();
     let data = state.0.lock().unwrap().clone();
     let session_names = names_state.0.lock().unwrap().clone();
     let file_tabs = file_tabs_state.0.lock().unwrap().clone();
@@ -1987,10 +2117,98 @@ pub fn set_require_review(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_headroom_default(state: State<HeadroomDefaults>) -> Option<bool> {
+    state.0.lock().unwrap().0
+}
+
+/// The app-wide default for whether agents are compressed through
+/// Headroom (`2026-09-28-headroom-design.md`, "The switch"). `None`
+/// clears the setting rather than writing `false`, which is what puts
+/// every inheriting workspace back on gavin's own default (Off) -- the
+/// same "there is no separate clear command" shape `set_require_review`
+/// takes.
+///
+/// It writes config.json and tells every window. Telling the DAEMON is
+/// the frontend's, which resolves every workspace against the new
+/// default and pushes the result (`set_headroom_workspaces`).
+#[tauri::command]
+pub fn set_headroom_default(
+    enabled: Option<bool>,
+    app_handle: AppHandle,
+    state: State<WorkspacesState>,
+    names_state: State<SessionNames>,
+    file_tabs_state: State<FileTabs>,
+    board_tabs_state: State<BoardTabs>,
+    card_tabs_state: State<CardTabs>,
+    theme_state: State<ThemePref>,
+    agent_models_state: State<AgentModels>,
+    font_size_state: State<TerminalFontSize>,
+    auto_commit_state: State<AutoCommit>,
+    agent_pause_state: State<AgentPause>,
+    superpowers_state: State<SuperpowersMarks>,
+    agent_defaults_state: State<AgentDefaults>,
+    git_tracking_state: State<GitTrackingDefaults>,
+    require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
+    launch_state: State<LaunchSettings>,
+    custom_resume_args_state: State<CustomResumeArgs>,
+) -> Result<(), String> {
+    let headroom = {
+        let mut current = headroom_state.0.lock().unwrap();
+        *current = crate::config::HeadroomDefault(enabled);
+        *current
+    };
+    let data = state.0.lock().unwrap().clone();
+    let session_names = names_state.0.lock().unwrap().clone();
+    let file_tabs = file_tabs_state.0.lock().unwrap().clone();
+    let board_tabs = board_tabs_state.0.lock().unwrap().clone();
+    let card_tabs = card_tabs_state.0.lock().unwrap().clone();
+    let theme = theme_state.0.lock().unwrap().clone();
+    let agent_models = agent_models_state.0.lock().unwrap().clone();
+    let terminal_font_size = *font_size_state.0.lock().unwrap();
+    let auto_commit = *auto_commit_state.0.lock().unwrap();
+    let agent_pause = agent_pause_state.0.lock().unwrap().clone();
+    let superpowers = superpowers_state.0.lock().unwrap().clone();
+    let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
+    let git_tracking = *git_tracking_state.0.lock().unwrap();
+    let require_review = *require_review_state.0.lock().unwrap();
+    let launch = *launch_state.0.lock().unwrap();
+    let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
+    let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
+    persist_workspaces(
+        &config_dir,
+        &data,
+        session_names,
+        file_tabs,
+        board_tabs,
+        card_tabs,
+        theme,
+        agent_models,
+        terminal_font_size,
+        auto_commit,
+        agent_pause,
+        superpowers,
+        agent_defaults,
+        git_tracking,
+        require_review,
+        headroom,
+        launch,
+        custom_resume_args,
+    )
+    .map_err(|e| e.to_string())?;
+    // Every window resolves its workspaces against this, and only one of
+    // them is showing Settings. The window holding the app's duties is
+    // the one that tells the daemon, and it is often not that one.
+    let _ = app_handle.emit("headroom-default-changed", enabled);
+    Ok(())
 }
 
 #[tauri::command]
@@ -2025,6 +2243,7 @@ pub fn set_git_tracking_default(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -2046,6 +2265,7 @@ pub fn set_git_tracking_default(
     let superpowers = superpowers_state.0.lock().unwrap().clone();
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
     let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
     let config_dir = app_handle.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -2065,6 +2285,7 @@ pub fn set_git_tracking_default(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -2095,6 +2316,7 @@ pub fn set_session_name(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -2125,6 +2347,7 @@ pub fn set_session_name(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
     let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
     persist_workspaces(
@@ -2143,6 +2366,7 @@ pub fn set_session_name(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -2177,6 +2401,7 @@ pub fn set_file_tabs(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -2195,6 +2420,7 @@ pub fn set_file_tabs(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
     let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
     persist_workspaces(
@@ -2213,6 +2439,7 @@ pub fn set_file_tabs(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -2276,6 +2503,7 @@ pub fn set_card_tabs(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -2294,6 +2522,7 @@ pub fn set_card_tabs(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
     let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
     persist_workspaces(
@@ -2312,6 +2541,7 @@ pub fn set_card_tabs(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -2344,6 +2574,7 @@ pub fn set_board_tabs(
     agent_defaults_state: State<AgentDefaults>,
     git_tracking_state: State<GitTrackingDefaults>,
     require_review_state: State<RequireReviewDefaults>,
+    headroom_state: State<HeadroomDefaults>,
     launch_state: State<LaunchSettings>,
     custom_resume_args_state: State<CustomResumeArgs>,
 ) -> Result<(), String> {
@@ -2362,6 +2593,7 @@ pub fn set_board_tabs(
     let agent_defaults = agent_defaults_state.0.lock().unwrap().clone();
     let git_tracking = *git_tracking_state.0.lock().unwrap();
     let require_review = *require_review_state.0.lock().unwrap();
+    let headroom = *headroom_state.0.lock().unwrap();
     let launch = *launch_state.0.lock().unwrap();
     let custom_resume_args = custom_resume_args_state.0.lock().unwrap().clone();
     persist_workspaces(
@@ -2380,6 +2612,7 @@ pub fn set_board_tabs(
         agent_defaults,
         git_tracking,
         require_review,
+        headroom,
         launch,
         custom_resume_args,
     )
@@ -3305,10 +3538,13 @@ pub(crate) fn resolve_sessions(
                     let last_known_cwd = all_sessions.get(id.as_str()).map(|s| s.cwd.as_str());
                     // Bootstrap and a link's setup run on their own
                     // threads, never the runtime's, so this may block.
+                    // A plain shell in the tab's place: no command, so
+                    // no profile, and nothing to compress.
                     let fresh = tauri::async_runtime::block_on(create_fresh_session(
                         lanes,
                         last_known_cwd,
                         workspace_root,
+                        None,
                         None,
                         home,
                     ))?;
@@ -3840,6 +4076,7 @@ mod command_connection_tests {
                 workspace_path: "/tmp".to_string(),
                 cwd: "/tmp".to_string(),
                 command: None,
+                profile_id: None,
             },
         )
         .unwrap();
@@ -3880,6 +4117,7 @@ mod command_connection_tests {
             workspace_path: "/tmp".to_string(),
             cwd: "/tmp".to_string(),
             command: None,
+            profile_id: None,
         };
 
         let first = send_command(&conn, &make_req()).unwrap();
@@ -3898,7 +4136,8 @@ mod command_connection_tests {
 #[cfg(test)]
 mod resolve_workspaces_tests {
     use super::test_support::{
-        block_on, fake_daemon_capturing_requests, fake_daemon_replying_with, lanes_over, parity_compat,
+        block_on, fake_daemon_capturing_requests, fake_daemon_replying_with, lanes_at, lanes_over,
+        parity_compat,
     };
     use super::*;
     use crate::config::Page;
@@ -3942,6 +4181,7 @@ mod resolve_workspaces_tests {
             mcp_foreign_servers_choice: None,
             reviewed_cards: None,
             require_review: None,
+            headroom: None,
             require_review_asked: false,
             custom_resume_args: None,
             agent_fallback: None,
@@ -4026,6 +4266,8 @@ mod resolve_workspaces_tests {
             interrupted: false,
             orphan: None,
             failure_reason: None,
+            compressed: false,
+            uncompressed_reason: None,
         }
     }
 
@@ -4039,6 +4281,8 @@ mod resolve_workspaces_tests {
             interrupted: false,
             orphan: None,
             failure_reason: None,
+            compressed: false,
+            uncompressed_reason: None,
         }
     }
 
@@ -4213,7 +4457,7 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = lanes_over(client);
 
-        block_on(create_fresh_session(&conn, Some("/tmp"), None, None, "/home/t")).unwrap();
+        block_on(create_fresh_session(&conn, Some("/tmp"), None, None, None, "/home/t")).unwrap();
 
 
         let requests = captured.lock().unwrap();
@@ -4229,7 +4473,7 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = lanes_over(client);
 
-        block_on(create_fresh_session(&conn, Some("/tmp"), None, Some("npm test"), "/home/t"))
+        block_on(create_fresh_session(&conn, Some("/tmp"), None, Some("npm test"), None, "/home/t"))
             .unwrap();
 
         let requests = captured.lock().unwrap();
@@ -4255,6 +4499,7 @@ mod resolve_workspaces_tests {
             Some("/Users/alice/project-rail"),
             Some("/Users/alice/project"),
             None,
+            None,
             "/Users/alice",
         ))
         .unwrap();
@@ -4277,7 +4522,7 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = lanes_over(client);
 
-        block_on(create_fresh_session(&conn, Some("/tmp/loose"), None, None, "/home/t")).unwrap();
+        block_on(create_fresh_session(&conn, Some("/tmp/loose"), None, None, None, "/home/t")).unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
@@ -4287,6 +4532,107 @@ mod resolve_workspaces_tests {
             }
             other => panic!("expected CreateSession, got {other:?}"),
         }
+    }
+
+    fn compat_at(daemon_version: u32) -> DaemonCompat {
+        DaemonCompat {
+            daemon_version,
+            app_version: protocol::PROTOCOL_VERSION,
+            degraded: daemon_version < protocol::PROTOCOL_VERSION,
+        }
+    }
+
+    fn the_profile_sent(captured: &Arc<Mutex<Vec<Request>>>, index: usize) -> Option<String> {
+        match &captured.lock().unwrap()[index] {
+            Request::CreateSession { profile_id, .. } => profile_id.clone(),
+            other => panic!("expected CreateSession, got {other:?}"),
+        }
+    }
+
+    /// What makes a session a candidate for compression: the daemon
+    /// decides at spawn, and the profile is the app's word for what it
+    /// launched.
+    #[test]
+    fn create_fresh_session_names_the_profile_doing_the_launching() {
+        let (client, captured, _dir) =
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+        let conn = lanes_over(client);
+
+        block_on(create_fresh_session(
+            &conn,
+            Some("/Users/alice/project-rail"),
+            Some("/Users/alice/project"),
+            Some("claude 'Read the card'"),
+            Some("claude-code"),
+            "/Users/alice",
+        ))
+        .unwrap();
+
+        assert_eq!(the_profile_sent(&captured, 0).as_deref(), Some("claude-code"));
+    }
+
+    /// The widening is invisible to `min_version_for`, so the lane's own
+    /// gate lets the request through to any daemon. A v46 one would
+    /// parse it, drop the profile and launch the agent uncompressed with
+    /// nothing to say why -- so it is never sent one, whoever asked.
+    #[test]
+    fn an_older_daemon_is_never_sent_the_launching_profile() {
+        let (client, captured, _dir) =
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+        let conn = lanes_at(client, compat_at(protocol::COMPRESSED_LAUNCH_MIN_VERSION - 1));
+
+        let id = block_on(create_fresh_session(
+            &conn,
+            Some("/tmp"),
+            Some("/tmp"),
+            Some("claude 'Read the card'"),
+            Some("claude-code"),
+            "/home/t",
+        ))
+        .unwrap();
+
+        // The launch itself goes ahead: compression never stops a run.
+        assert_eq!(id, "s1");
+        assert_eq!(the_profile_sent(&captured, 0), None);
+        // And what reached the wire is the request as it always was.
+        let sent = serde_json::to_value(&captured.lock().unwrap()[0]).unwrap();
+        assert!(sent.get("profile_id").is_none(), "{sent}");
+    }
+
+    #[test]
+    fn the_profile_is_sent_from_the_version_that_reads_it() {
+        let at = protocol::COMPRESSED_LAUNCH_MIN_VERSION;
+        assert_eq!(profile_for_daemon(at - 1, Some("claude-code")), None);
+        assert_eq!(profile_for_daemon(at, Some("claude-code")).as_deref(), Some("claude-code"));
+        assert_eq!(profile_for_daemon(at + 1, Some("codex")).as_deref(), Some("codex"));
+        // Nothing to name is nothing to send, at any version.
+        assert_eq!(profile_for_daemon(at, None), None);
+        assert_eq!(profile_for_daemon(at, Some("")), None);
+        assert_eq!(profile_for_daemon(at, Some("   ")), None);
+    }
+
+    /// The fallback is a plain shell in $HOME, not that workspace's
+    /// session: the workspace is dropped, and the profile with it.
+    #[test]
+    fn the_home_fallback_drops_the_profile_along_with_the_workspace() {
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![
+            Response::Error { message: "cwd does not exist or is not a directory".to_string() },
+            Response::SessionCreated { id: "s2".to_string() },
+        ]);
+        let conn = lanes_over(client);
+
+        block_on(create_fresh_session(
+            &conn,
+            Some("/definitely/does/not/exist/anywhere"),
+            Some("/Users/alice/project"),
+            Some("claude 'Read the card'"),
+            Some("claude-code"),
+            "/home/t",
+        ))
+        .unwrap();
+
+        assert_eq!(the_profile_sent(&captured, 0).as_deref(), Some("claude-code"));
+        assert_eq!(the_profile_sent(&captured, 1), None);
     }
 }
 
@@ -4735,6 +5081,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 mcp_foreign_servers_choice: None,
                 reviewed_cards: None,
                 require_review: None,
+                headroom: None,
                 require_review_asked: false,
                 custom_resume_args: None,
             agent_fallback: None,
@@ -4785,6 +5132,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
         config.agent_defaults.clone(),
         config.git_tracking,
         config.require_review,
+        config.headroom,
         config.launch,
         config.custom_resume_args.clone(),
     )?;
@@ -4807,6 +5155,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(AgentDefaults(Mutex::new(config.agent_defaults)));
     app_handle.manage(GitTrackingDefaults(Mutex::new(config.git_tracking)));
     app_handle.manage(RequireReviewDefaults(Mutex::new(config.require_review)));
+    app_handle.manage(HeadroomDefaults(Mutex::new(config.headroom)));
     app_handle.manage(LaunchSettings(Mutex::new(config.launch)));
     app_handle.manage(CustomResumeArgs(Mutex::new(config.custom_resume_args)));
     app_handle.emit("workspaces-ready", &workspaces_data)?;
@@ -4984,23 +5333,51 @@ pub(crate) fn local_home() -> String {
         .unwrap_or_else(|| "/".to_string())
 }
 
+/// The profile to name in a `CreateSession` for a daemon at
+/// `daemon_version`, which is none at all for one that would drop it.
+///
+/// The field widens a request that has been v1 since v1, so
+/// `min_version_for` -- and with it the gate every request passes on its
+/// way to a lane -- cannot see it. A daemon older than the widening
+/// parses the request, discards the profile and launches the agent
+/// uncompressed with nothing anywhere saying why. Withholding it here
+/// makes "an older daemon is never sent one" true of every caller,
+/// including one that forgot to ask `featureBlockedReason` first.
+pub(crate) fn profile_for_daemon(daemon_version: u32, profile_id: Option<&str>) -> Option<String> {
+    if daemon_version < protocol::COMPRESSED_LAUNCH_MIN_VERSION {
+        return None;
+    }
+    profile_id.map(str::trim).filter(|id| !id.is_empty()).map(str::to_string)
+}
+
 /// `home` is the fallback cwd, and it belongs to the machine the daemon
 /// is on: `local_home()` for the local daemon, the banner's `home` for a
 /// link (`remote.rs`).
+///
+/// `profile_id` is the agent profile doing the launching, and `None` for
+/// everything that is not an agent launch. It is what makes the session
+/// a candidate for compression, which the daemon decides.
 pub(crate) async fn create_fresh_session(
     lanes: &DaemonLanes,
     cwd: Option<&str>,
     workspace_root: Option<&str>,
     command: Option<&str>,
+    profile_id: Option<&str>,
     home: &str,
 ) -> anyhow::Result<String> {
     let home = home.to_string();
     let target = cwd.map(str::to_string).unwrap_or_else(|| home.clone());
     let workspace = workspace_root.map(str::to_string).unwrap_or_else(|| target.clone());
     let command = command.map(str::to_string);
+    let profile_id = profile_for_daemon(lanes.compat().daemon_version, profile_id);
 
     let resp = lanes
-        .request(Request::CreateSession { workspace_path: workspace, cwd: target.clone(), command: command.clone() })
+        .request(Request::CreateSession {
+            workspace_path: workspace,
+            cwd: target.clone(),
+            command: command.clone(),
+            profile_id,
+        })
         .await?;
     match resp {
         Response::SessionCreated { id } => return Ok(id),
@@ -5015,8 +5392,16 @@ pub(crate) async fn create_fresh_session(
     // honoured, so what comes back is a plain shell in $HOME rather than
     // that workspace's session -- and an agent scope the session's cwd no
     // longer sits inside is not one to hand it on an error path.
+    //
+    // The profile goes with them. Compression is a property of the
+    // workspace a session belongs to, and this one belongs to none.
     let resp = lanes
-        .request(Request::CreateSession { workspace_path: home.clone(), cwd: home.clone(), command })
+        .request(Request::CreateSession {
+            workspace_path: home.clone(),
+            cwd: home.clone(),
+            command,
+            profile_id: None,
+        })
         .await?;
     match resp {
         Response::SessionCreated { id } => Ok(id),
@@ -5028,11 +5413,19 @@ pub(crate) async fn create_fresh_session(
 /// creates the session on that host's daemon, in that host's home when
 /// the cwd is gone, and records the id as the link's so every later
 /// command on it (`write_input`, `kill_session`, …) finds the same link.
+///
+/// `profile_id` is the agent profile doing the launching, sent by every
+/// surface that launches an agent and by nothing else. On an ssh route
+/// it reaches the HOST's daemon, which holds no copy of the compression
+/// switch -- the desk pushes that to its own daemon only -- so a session
+/// there is never compressed, which is what v1 of Headroom promises for
+/// an ssh workspace.
 #[tauri::command]
 pub async fn create_session(
     cwd: Option<String>,
     workspace_root: Option<String>,
     command: Option<String>,
+    profile_id: Option<String>,
     app_handle: AppHandle,
     command_state: State<'_, CommandConnection>,
     daemon_state: State<'_, DaemonConnection>,
@@ -5046,6 +5439,7 @@ pub async fn create_session(
             cwd.as_deref(),
             workspace_root.as_deref(),
             command.as_deref(),
+            profile_id.as_deref(),
             &link.home,
         )
         .await
@@ -5061,6 +5455,7 @@ pub async fn create_session(
         cwd.as_deref(),
         workspace_root.as_deref(),
         command.as_deref(),
+        profile_id.as_deref(),
         &local_home(),
     )
     .await
@@ -5069,6 +5464,41 @@ pub async fn create_session(
     send_request(&daemon_state.writer, &Request::Attach { id: id.clone() }, &compat)
         .map_err(|e| e.to_string())?;
     Ok(id)
+}
+
+/// Hands the LOCAL daemon every workspace's effective compression
+/// setting, in place of whatever it held.
+///
+/// The daemon keeps a copy because it is the one deciding at spawn, and
+/// a session another agent spawns over MCP never passes through the
+/// app. The frontend resolves the list (a workspace's own choice, else
+/// the app-wide default) and sends it whenever it changes; the daemon
+/// persists it, and runs Headroom while any workspace is on.
+///
+/// Aimed at the local daemon and nothing else, like the remote-access
+/// commands: an ssh workspace's sessions are its host daemon's, and
+/// compression there would need a Headroom installed and supervised on
+/// the host.
+///
+/// A new request TYPE, so the lane's own gate refuses it against a
+/// daemon older than v47 and the error names both versions. The answer
+/// is Headroom's status AFTER the list was taken.
+#[tauri::command]
+pub async fn set_headroom_workspaces(
+    workspaces: Vec<protocol::HeadroomWorkspace>,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::HeadroomStatus, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::SetHeadroomWorkspaces { workspaces })
+        .await
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::Headroom { status } => Ok(status),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected Headroom's status, got {other:?}")),
+    }
 }
 
 /// Asks the daemon to repaint this session's terminal.
@@ -6203,6 +6633,8 @@ mod adopt_session_tests {
             interrupted: false,
             orphan: None,
             failure_reason: None,
+            compressed: false,
+            uncompressed_reason: None,
         }
     }
 
@@ -6216,6 +6648,8 @@ mod adopt_session_tests {
             interrupted: false,
             orphan: None,
             failure_reason: None,
+            compressed: false,
+            uncompressed_reason: None,
         }
     }
 
@@ -6353,6 +6787,7 @@ mod main_session_tests {
             mcp_foreign_servers_choice: None,
             reviewed_cards: None,
             require_review: None,
+            headroom: None,
             require_review_asked: false,
             custom_resume_args: None,
             agent_fallback: None,
@@ -6373,6 +6808,8 @@ mod main_session_tests {
             interrupted: false,
             orphan: None,
             failure_reason: None,
+            compressed: false,
+            uncompressed_reason: None,
         }
     }
 
@@ -6645,7 +7082,7 @@ mod gate_tests {
     /// changes.
     fn one_of_every_request_variant() -> Vec<Request> {
         vec![
-            Request::CreateSession { workspace_path: "w".into(), cwd: "c".into(), command: None },
+            Request::CreateSession { workspace_path: "w".into(), cwd: "c".into(), command: None, profile_id: None },
             Request::ListSessions,
             Request::WriteInput { id: "s".into(), data: "d".into() },
             Request::ResizeSession { id: "s".into(), cols: 80, rows: 24 },
@@ -7088,6 +7525,7 @@ mod attach_target_tests {
             mcp_foreign_servers_choice: None,
             reviewed_cards: None,
             require_review: None,
+            headroom: None,
             require_review_asked: false,
             custom_resume_args: None,
             agent_fallback: None,

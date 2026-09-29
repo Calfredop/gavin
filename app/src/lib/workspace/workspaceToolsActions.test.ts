@@ -12,6 +12,9 @@ vi.mock("$lib/core/layoutState", () => ({
   layoutState: writable({ workspaces: [], sessionStatusById: {} as Record<string, string> }),
   daemonCompat: writable({ daemonVersion: 30, appVersion: 30, degraded: false }),
   sessionExits: writable(new Map<string, number>()),
+  // The launching profile, as the real one names it against a daemon
+  // new enough to read it (`compressedLaunch`).
+  profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   resolvedAgentFor: vi.fn(),
   conversationIdForLaunch: vi.fn(() => "conv-1"),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
@@ -34,6 +37,7 @@ import {
   daemonCompat,
   handleAgentSessionSpawned,
   layoutState,
+  profileIdForLaunch,
   resolvedAgentFor,
   retainTabOnExit,
   setSessionName,
@@ -118,10 +122,13 @@ describe("requestToolRun", () => {
   it("launches a parameterless tool straight away", async () => {
     expect(await requestToolRun("ws-1", tool())).toBeNull();
     expect(get(toolRunRequest)).toBeNull();
+    // A command tool is a shell: it names no profile, so it is never a
+    // candidate for compression.
     expect(backend.createSession).toHaveBeenCalledWith(
       "/repo",
       expect.stringContaining("./deploy.sh"),
-      "/repo"
+      "/repo",
+      undefined
     );
   });
 
@@ -169,7 +176,12 @@ describe("the launch", () => {
     // Its own directory is where it RUNS; the workspace root is the scope
     // the daemon gives the agent, and a tool with a cwd of its own is
     // exactly where those two part company.
-    expect(backend.createSession).toHaveBeenCalledWith("/repo/apps/web", expect.any(String), "/repo");
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/repo/apps/web",
+      expect.any(String),
+      "/repo",
+      undefined
+    );
   });
 
   it("substitutes the values the dialog collected", async () => {
@@ -181,7 +193,8 @@ describe("the launch", () => {
     expect(backend.createSession).toHaveBeenCalledWith(
       "/repo",
       expect.stringContaining("./deploy.sh prod"),
-      "/repo"
+      "/repo",
+      undefined
     );
 
     expect(get(toolRunRequest)).toBeNull();
@@ -206,7 +219,8 @@ describe("the launch", () => {
     expect(backend.createSession).toHaveBeenCalledWith(
       "/repo",
       expect.stringContaining("bash -c"),
-      "/repo"
+      "/repo",
+      undefined
     );
   });
 
@@ -227,6 +241,33 @@ describe("the launch", () => {
     });
     // And locally, so the row says `running` before the next fetch.
     expect(get(toolRunsStore)["ws-1"].runs[0].outcome).toBe("running");
+  });
+
+  // What makes the session a candidate for compression, which the
+  // daemon decides as it spawns it. A shell is never one.
+  it("names the launching profile for an agent tool, and none for a shell", async () => {
+    await requestToolRun("ws-1", tool({ kind: "agent", body: "do the thing" }));
+    expect(profileIdForLaunch).toHaveBeenCalledWith(AGENT);
+    expect(vi.mocked(backend.createSession).mock.calls[0][3]).toBe(AGENT.profileId);
+
+    for (const kind of ["command", "script"] as const) {
+      vi.clearAllMocks();
+      vi.mocked(backend.createSession).mockResolvedValue("sess-2");
+      await requestToolRun("ws-1", tool({ id: `u-${kind}`, kind }));
+      expect(profileIdForLaunch, kind).not.toHaveBeenCalled();
+      expect(vi.mocked(backend.createSession).mock.calls[0][3], kind).toBeUndefined();
+    }
+  });
+
+  // Against a daemon too old to read the profile, none is named -- and
+  // the tool still runs. Compression is never a reason to refuse one.
+  it("launches an agent tool with no profile when there is none to name", async () => {
+    vi.mocked(profileIdForLaunch).mockReturnValueOnce(undefined);
+
+    expect(await requestToolRun("ws-1", tool({ kind: "agent", body: "do the thing" }))).toBeNull();
+
+    expect(backend.createSession).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(backend.createSession).mock.calls[0][3]).toBeUndefined();
   });
 
   // Only an agent tool gets a conversation and failure detection: a

@@ -95,6 +95,25 @@ impl PtySession {
         session_id: &str,
         session_token: Option<&str>,
     ) -> anyhow::Result<Self> {
+        Self::spawn_with_env(cwd, command, session_id, session_token, &[])
+    }
+
+    /// `spawn`, with variables of the caller's own on top.
+    ///
+    /// `env` is what routes a compressed session's agent through
+    /// Headroom (`headroom::compress`). It is set LAST, after every pin
+    /// and every removal below, so a recipe's value is the one the
+    /// process sees whatever the daemon inherited -- an agent pointed at
+    /// Headroom by everything except the one variable that lost to an
+    /// inherited `ANTHROPIC_BASE_URL` would be recorded as compressed
+    /// and would not be.
+    pub fn spawn_with_env(
+        cwd: &str,
+        command: Option<&str>,
+        session_id: &str,
+        session_token: Option<&str>,
+        env: &[(String, String)],
+    ) -> anyhow::Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows: 24,
@@ -332,6 +351,28 @@ impl PtySession {
             "GIT_EDITOR",
         ] {
             cmd.env_remove(key);
+        }
+
+        // And the newest relative of both: a launcher that was itself a
+        // COMPRESSED gavin session, whose routing to Headroom came down
+        // the same chain. Left in place, every tab this daemon opens
+        // talks to its model through Headroom under the launcher's tag
+        // -- the plain shell that was promised its own environment
+        // included. `inherited_routing` says exactly what is gavin's own
+        // recipe and what is the human's configuration; only the first
+        // is removed.
+        for (key, keep) in
+            crate::headroom::compress::inherited_routing(|key| std::env::var(key).ok())
+        {
+            match keep {
+                Some(value) => cmd.env(key, value),
+                None => cmd.env_remove(key),
+            }
+        }
+
+        // Last, so a recipe's value is the one the process sees.
+        for (key, value) in env {
+            cmd.env(key, value);
         }
 
         let child = pair.slave.spawn_command(cmd)?;

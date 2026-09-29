@@ -466,6 +466,7 @@ mod tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )
@@ -511,6 +512,7 @@ mod tests {
             crate::config::AgentDefaultsConfig::default(),
             crate::config::GitTrackingDefault::default(),
             crate::config::RequireReviewDefault::default(),
+            crate::config::HeadroomDefault::default(),
             None,
             None,
         )

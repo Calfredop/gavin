@@ -15,7 +15,7 @@ vi.mock("$lib/core/backend", () => ({
 }));
 
 const createTiledPage = vi.fn(
-  async (_ws: string, _name: string, specs: { cwd: string; command: string }[]) => ({
+  async (_ws: string, _name: string, specs: { cwd: string; command: string; profileId?: string }[]) => ({
     pageId: "page-1",
     sessionIds: specs.map((_, i) => `s${i + 1}`),
   })
@@ -32,6 +32,9 @@ vi.mock("$lib/core/layoutState", () => ({
     { id: "claude-code", label: "Claude Code", models: ["sonnet", "opus"], promptArgs: "" },
     { id: "codex", label: "Codex", models: ["gpt"], promptArgs: "" },
   ]),
+  // The launching profile, as the real one names it against a daemon
+  // new enough to read it (`compressedLaunch`).
+  profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   resolvedAgentFor: vi.fn(() => ({
     profileId: "claude-code",
     label: "Claude Code",
@@ -85,6 +88,7 @@ vi.mock("$lib/review/criticalReviewState", () => ({
 }));
 
 import * as backend from "$lib/core/backend";
+import { profileIdForLaunch } from "$lib/core/layoutState";
 import {
   cancelCriticalReview,
   confirmCriticalReview,
@@ -207,6 +211,45 @@ describe("confirmCriticalReview", () => {
         stepId: null,
       })
     );
+  });
+
+  // What makes each session a candidate for compression, which the
+  // daemon decides as it spawns it. Per reviewer: the whole point of a
+  // critical review is that they are different agents.
+  it("launches every reviewer under its own profile", async () => {
+    vi.mocked(profileIdForLaunch).mockImplementation((agent) => agent.profileId);
+    await requestCardCriticalReview("ws-1", card());
+
+    await confirmCriticalReview({
+      base: "main",
+      reviewers: [
+        { profileId: "claude-code", model: "sonnet" },
+        { profileId: "codex", model: "gpt" },
+      ],
+      alsoBuildFindingsRail: false,
+    });
+
+    const specs = createTiledPage.mock.calls[0][2];
+    expect(specs.map((s: { profileId?: string }) => s.profileId)).toEqual(["claude-code", "codex"]);
+  });
+
+  it("launches every reviewer with no profile when there is none to name", async () => {
+    vi.mocked(profileIdForLaunch).mockImplementation(() => undefined);
+    await requestCardCriticalReview("ws-1", card());
+
+    const err = await confirmCriticalReview({
+      base: "main",
+      reviewers: [
+        { profileId: "claude-code", model: "sonnet" },
+        { profileId: "codex", model: "gpt" },
+      ],
+      alsoBuildFindingsRail: false,
+    });
+
+    expect(err).toBeNull();
+    const specs = createTiledPage.mock.calls[0][2];
+    expect(specs).toHaveLength(2);
+    expect(specs.every((s: { profileId?: string }) => s.profileId === undefined)).toBe(true);
   });
 
   it("mentions the findings rail in the prompt when the toggle is on", async () => {

@@ -25,7 +25,11 @@
     /// chained onto the end — every caller has to provide it, including
     /// the ones that never offer to start an agent, or their worktree gets
     /// no setup.
-    onRunInWorktree: (path: string, command: string) => void;
+    ///
+    /// `launchesAgent` says whether the agent IS on the end of it. A line
+    /// that is setup and nothing else is a shell, and only an agent's
+    /// launch names its profile to the daemon.
+    onRunInWorktree: (path: string, command: string, launchesAgent: boolean) => void;
     onClose: () => void;
     /// Called with the created worktree's path. Set by callers that want
     /// the worktree for something other than starting an agent in it --
@@ -194,7 +198,7 @@
     }
     // Last, and after the binding above has landed: the session is the
     // one thing here that outlives this dialog.
-    if (run) onRunInWorktree(path, run.line);
+    if (run) onRunInWorktree(path, run.line, run.agentAfter);
   }
 
   /// A form handler can only `void` a promise, and what that did with a

@@ -1468,6 +1468,17 @@ export async function bootstrap(): Promise<void> {
   unlisteners.push(whileHoldingAppDuties(startUsagePoll));
   const { startArmOnFocus } = await import("$lib/agents/agentFallbackState");
   unlisteners.push(startArmOnFocus());
+  // The compression switch: every window reads the app-wide default (a
+  // workspace that inherits resolves against it), and the window holding
+  // the duties tells the daemon what each workspace comes to. One teller,
+  // because the list replaces the daemon's copy whole and two windows a
+  // round trip apart would each undo the other. Dynamically imported for
+  // the cycle reason above (it reads this module's stores).
+  const { initCompression, startCompressionSwitch } = await import(
+    "$lib/agents/compressionDriver"
+  );
+  unlisteners.push(await initCompression());
+  unlisteners.push(whileHoldingAppDuties(startCompressionSwitch));
   // The memory probe, on the same terms and for a sharper version of the
   // same reason: the launch gate reads its sample at the moment somebody
   // presses Run, with no panel open and possibly in a window showing a
@@ -1991,6 +2002,24 @@ export const gitTrackingDefault = writable<boolean | null>(null);
 /// deliberately not parked across an HMR remount.
 export const requireReviewDefault = writable<boolean | null>(null);
 
+/// The app-wide compression default from config.json, or null when
+/// nobody has chosen -- the same three-state as `requireReviewDefault`,
+/// except that what null falls through to is OFF (`compression.ts`).
+///
+/// Re-fetched on every bootstrap, and kept current between them by
+/// `headroom-default-changed`: the window that tells the daemon is the
+/// one holding the app's duties, which is often not the one whose
+/// Settings moved the switch.
+export const headroomDefault = writable<boolean | null>(null);
+
+/// Whether `headroomDefault` has been READ yet. Null in that store means
+/// "nobody chose", and before bootstrap's fetch lands it also means
+/// "nobody has looked" -- and the two must not be confused by the one
+/// reader that acts on it. A list resolved against a default that was
+/// never loaded says every inheriting workspace is off, and the daemon
+/// would stop the Headroom every running agent is talking through.
+export const headroomDefaultKnown = writable(false);
+
 export const newCardAutoCommit = derived(
   [layoutState, autoCommitDefault],
   ([$layout, $default]) =>
@@ -2063,6 +2092,44 @@ export async function baseShaForLaunch(cwd: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/// The profile to name in a launch, or undefined to name none.
+///
+/// The profile is what makes a session a candidate for compression: the
+/// daemon decides, as it spawns the process, from the workspace's
+/// setting, whether Headroom is ready, and this. Every surface that
+/// launches an AGENT sends it, whether or not the workspace has
+/// compression on -- the switch is the daemon's to read, and a launch
+/// that guessed at it would be deciding with a copy.
+///
+/// One gate, the daemon's version. `profileId` widens `CreateSession`, a
+/// request as old as the protocol, so `min_version_for` cannot see it: a
+/// v46 daemon parses the launch and drops the profile. Against one,
+/// gavin names none and the agent launches exactly as it did before
+/// there was anything to decide. It is never a reason to refuse the
+/// launch.
+///
+/// A shell names none either, and does not come here: a session is an
+/// agent's when its caller says so, not when its command looks like one.
+export function profileIdForLaunch(agent: { profileId: string }): string | undefined {
+  if (featureBlockedReason(get(daemonCompat), "compressedLaunch")) return undefined;
+  return agent.profileId || undefined;
+}
+
+/// `backend.createSession`, naming a profile only when there is one.
+///
+/// A shell's launch is the call it has always been, with no fourth
+/// argument at all -- which is what the request it becomes is, too.
+function createDaemonSession(
+  cwd: string | undefined,
+  command: string | undefined,
+  workspaceRoot: string | undefined,
+  profileId: string | undefined
+): Promise<string> {
+  return profileId === undefined
+    ? backend.createSession(cwd, command, workspaceRoot)
+    : backend.createSession(cwd, command, workspaceRoot, profileId);
 }
 
 /// The app-wide custom agent, in the shape `resolveAgentConfig` takes.
@@ -2415,7 +2482,12 @@ export async function startMainAgent(workspaceId: string): Promise<void> {
   const agent = resolvedAgentFor(workspaceId);
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(ws.rootPath, agent.launchCommand, ws.rootPath);
+    sessionId = await createDaemonSession(
+      ws.rootPath,
+      agent.launchCommand,
+      ws.rootPath,
+      profileIdForLaunch(agent)
+    );
   } catch (e) {
     setError(String(e));
     return;
@@ -2467,7 +2539,12 @@ export async function startMainAgentWithPrompt(
   }
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(ws.rootPath, command, ws.rootPath);
+    sessionId = await createDaemonSession(
+      ws.rootPath,
+      command,
+      ws.rootPath,
+      profileIdForLaunch(agent)
+    );
   } catch (e) {
     setError(String(e));
     return;
@@ -2700,6 +2777,24 @@ export async function setRequireReviewDefault(enabled: boolean | null): Promise<
   }
 }
 
+/// The app-wide compression default (`compression.ts`). Written to
+/// config.json like the require-review default above, and live like it:
+/// every workspace that inherits resolves against this value, so moving
+/// it changes what the daemon is told about each of them at once
+/// (`compressionDriver.ts`).
+///
+/// Null clears the setting rather than storing `false`, which is what
+/// puts every inheriting workspace back on gavin's own default (off).
+export async function setHeadroomDefault(enabled: boolean | null): Promise<void> {
+  try {
+    await backend.setHeadroomDefault(enabled);
+    headroomDefault.set(enabled);
+    headroomDefaultKnown.set(true);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
 /// The app-wide git-tracking default. Machine-local beside the theme and
 /// the auto-commit default, so it goes straight to config.json through
 /// Tauri and never touches the daemon.
@@ -2792,6 +2887,18 @@ export async function setWorkspaceRequireReview(
   enabled: boolean | null
 ): Promise<void> {
   await saveWorkspaceSettings(workspaceId, { requireReview: enabled });
+}
+
+/// One workspace's own compression switch, or null to inherit the
+/// app-wide one. A workspace SETTING, so it goes through
+/// `saveWorkspaceSettings` like every other (ADR 0006): written through
+/// the layout save it would show in this window and be gone after a
+/// restart.
+export async function setWorkspaceHeadroom(
+  workspaceId: string,
+  enabled: boolean | null
+): Promise<void> {
+  await saveWorkspaceSettings(workspaceId, { headroom: enabled });
 }
 
 /// Records that this workspace's human has answered the git question --
@@ -4147,7 +4254,12 @@ export async function createPage(
     freshIds = await Promise.all(
       Array.from({ length: sessionCount }, () =>
         agent
-          ? backend.createSession(sessionCwd, agent.launchCommand, workspaceRoot)
+          ? createDaemonSession(
+              sessionCwd,
+              agent.launchCommand,
+              workspaceRoot,
+              profileIdForLaunch(agent)
+            )
           : backend.createSession(sessionCwd, undefined, workspaceRoot)
       )
     );
@@ -4191,10 +4303,15 @@ export async function createPage(
 /// with a hole in it. The caller owns the worktrees those sessions were
 /// going to run in, and a half-built page would leave it guessing which
 /// of them are still needed.
+///
+/// A spec that launches an AGENT names its profile (`profileId`, from
+/// `profileIdForLaunch`); one that runs a command names none. Per spec
+/// and not per page, because a best-of-N page and a critical review are
+/// each several agents of several profiles.
 export async function createTiledPage(
   workspaceId: string,
   name: string,
-  specs: readonly { cwd: string; command: string | null }[],
+  specs: readonly { cwd: string; command: string | null; profileId?: string }[],
   opts: { activate?: boolean } = {}
 ): Promise<{ pageId: string; sessionIds: string[] } | null> {
   const state = get(layoutState);
@@ -4212,10 +4329,11 @@ export async function createTiledPage(
       // SessionLink -- a one-pane page is spawned by callers that carry
       // a rail's launch, not only by best-of-N's real worktree paths.
       sessionIds.push(
-        await backend.createSession(
+        await createDaemonSession(
           spec.cwd || undefined,
           spec.command ?? undefined,
-          workspaceRootPath(workspaceId) ?? undefined
+          workspaceRootPath(workspaceId) ?? undefined,
+          spec.profileId
         )
       );
 
@@ -4258,14 +4376,18 @@ export async function createTiledPage(
 ///
 /// `createPage` stays right for the human-facing "+": there the blank
 /// shell IS the ask.
+///
+/// `opts.profileId` is the profile of the agent being launched, and
+/// absent for a command.
 export async function createSessionOnNewPage(
   workspaceId: string,
   name: string,
   cwd: string,
   command: string | null,
-  opts: { activate?: boolean } = {}
+  opts: { activate?: boolean; profileId?: string } = {}
 ): Promise<{ pageId: string; sessionId: string } | null> {
-  const made = await createTiledPage(workspaceId, name, [{ cwd, command }], opts);
+  const { profileId, ...pageOpts } = opts;
+  const made = await createTiledPage(workspaceId, name, [{ cwd, command, profileId }], pageOpts);
   return made ? { pageId: made.pageId, sessionId: made.sessionIds[0] } : null;
 }
 
@@ -4285,23 +4407,32 @@ export async function createSessionOnNewPage(
 /// rail binds to a page (orchestration spec §4.3). A null or unknown
 /// pageId falls back to createSessionForCard's behavior, which is the
 /// Agents-page posture.
+///
+/// `profileId` is the profile of the agent being launched
+/// (`profileIdForLaunch`), and absent for a command.
 export async function createSessionOnPage(
   workspaceId: string,
   pageId: string | null,
   cwd: string,
-  command: string | null
+  command: string | null,
+  profileId?: string
 ): Promise<string | null> {
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   const page = pageId ? ws?.pages.find((p) => p.id === pageId) : undefined;
-  if (!ws || !page) return createSessionForCard(workspaceId, cwd, command);
+  if (!ws || !page) {
+    return profileId === undefined
+      ? createSessionForCard(workspaceId, cwd, command)
+      : createSessionForCard(workspaceId, cwd, command, profileId);
+  }
 
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(
+    sessionId = await createDaemonSession(
       cwd || undefined,
       command ?? undefined,
-      ws.rootPath ?? undefined
+      ws.rootPath ?? undefined,
+      profileId
     );
   } catch (e) {
     setError(String(e));
@@ -4321,7 +4452,8 @@ export async function createSessionOnPage(
 export async function createSessionForCard(
   workspaceId: string,
   cwd: string,
-  command: string | null
+  command: string | null,
+  profileId?: string
 ): Promise<string | null> {
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
@@ -4329,10 +4461,11 @@ export async function createSessionForCard(
 
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(
+    sessionId = await createDaemonSession(
       cwd || undefined,
       command ?? undefined,
-      ws.rootPath ?? undefined
+      ws.rootPath ?? undefined,
+      profileId
     );
 
   } catch (e) {

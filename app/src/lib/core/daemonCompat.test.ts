@@ -200,6 +200,32 @@ describe("the rail-branch gate", () => {
   });
 });
 
+describe("the compressed-launch gate", () => {
+  // `CreateSession` is as old as the protocol, and v47 widened it with
+  // the launching profile. A v46 daemon parses the launch, drops the
+  // field and starts the agent uncompressed with nothing to say why, so
+  // the app names no profile to it at all.
+  it("blocks naming a profile to a daemon that would drop it", () => {
+    const c = { daemonVersion: 46, appVersion: 47, degraded: true };
+    const reason = featureBlockedReason(c, "compressedLaunch");
+    expect(reason).toContain("v47");
+    expect(reason).toContain("v46");
+  });
+
+  it("allows it at exactly v47", () => {
+    const c = { daemonVersion: 47, appVersion: 47, degraded: false };
+    expect(featureBlockedReason(c, "compressedLaunch")).toBeNull();
+  });
+
+  // The rail schedule landed one version earlier and is independent:
+  // a v46 daemon has it, and blocking one must not read as blocking
+  // the other.
+  it("leaves the rail schedule alone on that daemon", () => {
+    const c = { daemonVersion: 46, appVersion: 47, degraded: true };
+    expect(featureBlockedReason(c, "railSchedule")).toBeNull();
+  });
+});
+
 // The one screen whose COPY asserts v20's recovery behaviour. A
 // confirmation that promises "stopped, not restarted" and then hands the
 // work to a daemon that re-runs every command from scratch is worse than

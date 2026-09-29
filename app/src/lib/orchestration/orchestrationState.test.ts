@@ -51,6 +51,13 @@ const agentMock = vi.hoisted(() =>
   }))
 );
 
+// The REAL module, with one function wrapped so a test can say the
+// fallback chain walked. Everything it does by default is what it does.
+vi.mock("$lib/agents/agentPauseState", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("$lib/agents/agentPauseState")>();
+  return { ...actual, launchDecision: vi.fn(actual.launchDecision) };
+});
+
 vi.mock("$lib/core/layoutState", () => ({
   // A REAL store: tick() derives the set of LIVE session ids from it, so
   // a test that needs a running step's session to still exist has to be
@@ -68,6 +75,9 @@ vi.mock("$lib/core/layoutState", () => ({
     complexity: {},
     agentFallback: [] as string[],
   }),
+  // The launching profile, as the real one names it against a daemon
+  // new enough to read it (`compressedLaunch`).
+  profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   resolvedAgentFor: agentMock,
   // The SAME mock function, deliberately: no card fixture here carries a
   // complexity, so `agentForCard` really does resolve to the workspace's
@@ -292,6 +302,7 @@ import * as backend from "$lib/core/backend";
 import * as gitStateModule from "$lib/git/gitState";
 import * as gavinState from "$lib/core/gavinState";
 import * as layoutStateModule from "$lib/core/layoutState";
+import * as agentPauseStateModule from "$lib/agents/agentPauseState";
 import * as kanbanStateModule from "$lib/board/kanbanState";
 import { toolRecords, __resetForTesting as toolsResetForTesting } from "$lib/orchestration/toolsState";
 import { prReports, __resetForTesting as prResetForTesting } from "$lib/git/prState";
@@ -1203,12 +1214,14 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
   // The page is made AROUND the launch's own session -- name, cwd,
   // command, and the posture that keeps the human on the Orchestration
   // tab -- so nothing blank is opened to have something to put on it.
-  const pageArgs = (command: unknown = expect.any(String)) => [
+  // ...and, for an agent, under the profile launching it. `null` is a
+  // launch that names none: a command tool is a shell.
+  const pageArgs = (command: unknown = expect.any(String), profileId: string | null = "claude-code") => [
     "ws-1",
     "backend",
     "/x/wt",
     command,
-    { activate: false },
+    profileId === null ? { activate: false } : { activate: false, profileId },
   ];
 
   beforeEach(async () => {
@@ -1291,7 +1304,8 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
       "ws-1",
       "pg-rail",
       "/x/wt",
-      expect.any(String)
+      expect.any(String),
+      "claude-code"
     );
   });
 
@@ -1330,7 +1344,8 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
       "ws-1",
       "pg-rail",
       "/x/wt",
-      expect.any(String)
+      expect.any(String),
+      "claude-code"
     );
   });
 
@@ -1344,7 +1359,8 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
       "ws-1",
       null,
       "/x/wt",
-      expect.any(String)
+      expect.any(String),
+      "claude-code"
     );
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0, "ws-1");
     expect(backend.setRailRun).not.toHaveBeenCalled();
@@ -1364,7 +1380,7 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
     toolRecords.set({ "ws-1": [] });
     await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
     expect(layoutStateModule.createSessionOnNewPage).toHaveBeenCalledWith(
-      ...pageArgs(expect.stringContaining("git push -u origin HEAD"))
+      ...pageArgs(expect.stringContaining("git push -u origin HEAD"), null)
     );
   });
 
@@ -1479,6 +1495,7 @@ describe("a rail gets its page at its first launch (spec O16)", () => {
 
   it("resuming a stalled step reopens it on the rail's page too", async () => {
     vi.mocked(layoutStateModule.resolvedAgentFor).mockReturnValueOnce({
+      profileId: "claude-code",
       launchCommand: "claude",
       promptArgs: "",
       resumeArgs: "--resume",
@@ -1818,6 +1835,65 @@ describe("executeActions", () => {
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0, "ws-1");
   });
 
+  // A daemon too old to read the profile is never sent one, and the
+  // step launches exactly as it did before there was anything to
+  // decide: compression must not be able to stop a rail.
+  it("a card step still launches, naming no profile, when there is none to name", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    vi.mocked(layoutStateModule.profileIdForLaunch).mockReturnValueOnce(undefined);
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "p1",
+      "/x/wt",
+      expect.stringContaining("claude ")
+    );
+    expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0, "ws-1");
+  });
+
+  // The fallback chain walked, so the binary about to run is the
+  // fallback's: its profile is the one whose recipe would apply.
+  it("a card step launched on a fallback names the fallback's profile", async () => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\ntitle: Wire the API\n---\ndo the thing",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+    vi.mocked(agentPauseStateModule.launchDecision).mockReturnValueOnce({
+      kind: "use",
+      profileId: "codex",
+      viaFallback: true,
+    } as never);
+    // One function stands in for all three resolvers here, so it is told
+    // apart by what it was asked: only `agentForProfile` names a profile.
+    const primary = agentMock();
+    const resolve = agentMock as unknown as ReturnType<typeof vi.fn>;
+    resolve.mockImplementation((...asked: unknown[]) =>
+      asked[1] === "codex"
+        ? { ...primary, profileId: "codex", launchCommand: "codex", label: "Codex CLI" }
+        : primary
+    );
+    try {
+      await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    } finally {
+      resolve.mockImplementation(() => primary);
+    }
+
+    const launch = vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0];
+    expect(launch[3]).toContain("codex ");
+    expect(launch[4]).toBe("codex");
+  });
+
   it("a launch binds the card session, records the session id, and writes In Progress", async () => {
     vi.mocked(backend.readFileForViewer).mockResolvedValue({
       content: "---\ntitle: Wire the API\n---\ndo the thing",
@@ -1832,7 +1908,8 @@ describe("executeActions", () => {
       "ws-1",
       "p1",
       "/x/wt",
-      expect.stringContaining("claude ")
+      expect.stringContaining("claude "),
+      "claude-code"
     );
     expect(kanbanStateModule.linkCardSessionAction).toHaveBeenCalledWith("ws-1", {
       path: "/x/a.md",
@@ -3025,6 +3102,69 @@ describe("launching a tool step", () => {
     expect(command.startsWith("claude '")).toBe(true);
     expect(command).toContain("Commit the uncommitted work in this checkout");
   });
+
+  /// A rail parked on one tool step of the given tool.
+  async function railOn(toolId: string): Promise<void> {
+    vi.mocked(backend.getOrchestration).mockResolvedValue({
+      ...toolRail(),
+      rails: [
+        {
+          ...toolRail().rails[0],
+          stages: [
+            {
+              id: "s1",
+              position: 0,
+              steps: [{ id: "t1", position: 0, cardPath: "", toolId, toolParams: {} }],
+            },
+          ],
+        },
+      ],
+    });
+    __resetForTesting();
+    await fetchOrchestration("ws-1");
+    toolRecords.set({ "ws-1": [] });
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-9");
+  }
+
+  // What makes the session a candidate for compression, which the
+  // daemon decides as it spawns it. An agent tool is an agent's launch
+  // like a card step's; every other kind is a shell, and a shell is
+  // never compressed.
+  it("names the launching profile for an agent tool, and none for a shell", async () => {
+    await railOn("builtin:commit");
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    expect(vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0][4]).toBe("claude-code");
+
+    vi.mocked(layoutStateModule.createSessionOnPage).mockClear();
+    vi.mocked(layoutStateModule.profileIdForLaunch).mockClear();
+    await railOn("builtin:push");
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+    // Four arguments, not five with one left empty: a shell's launch is
+    // the call it has always been.
+    expect(vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0]).toHaveLength(4);
+    expect(layoutStateModule.profileIdForLaunch).not.toHaveBeenCalled();
+  });
+
+  // A daemon too old to read the profile is never sent one, and the
+  // step still launches: compression must not be able to stop a rail.
+  it("launches an agent tool with no profile when there is none to name", async () => {
+    vi.mocked(layoutStateModule.profileIdForLaunch).mockReturnValueOnce(undefined);
+    await railOn("builtin:commit");
+
+    await executeActions("ws-1", [{ kind: "launch", stepId: "t1" }]);
+
+    expect(vi.mocked(layoutStateModule.createSessionOnPage).mock.calls[0]).toHaveLength(4);
+    expect(backend.setStepRun).toHaveBeenCalledWith(
+      "t1",
+      "running",
+      "sess-9",
+      null,
+      null,
+      "/x/wt",
+      0,
+      "ws-1",
+    );
+  });
 });
 
 describe("launching a tool step before the library has loaded", () => {
@@ -3163,7 +3303,8 @@ describe("dropping onto a running stage", () => {
       "ws-1",
       "p1",
       "/x/wt",
-      expect.stringContaining("claude ")
+      expect.stringContaining("claude "),
+      "claude-code"
     );
     const dropped = get(orchestrations)["ws-1"].rails[0].stages[0].steps[2];
     expect(get(orchestrations)["ws-1"].stepRuns).toContainEqual({
@@ -3912,7 +4053,8 @@ describe("a rail armed from outside the app (a push carrying run state)", () => 
         "ws-1",
         "p1",
         "/x/wt",
-        expect.stringContaining("claude")
+        expect.stringContaining("claude"),
+        "claude-code"
       )
     );
     expect(backend.setStepRun).toHaveBeenCalledWith("t1", "running", "sess-9", null, null, "/x/wt", 0, "ws-1");

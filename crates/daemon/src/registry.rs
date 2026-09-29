@@ -190,6 +190,18 @@ pub struct SessionRecord {
     /// Written and cleared together with the status by
     /// `update_status_with_reason`, so the two can never disagree.
     pub failure_reason: Option<String>,
+    /// This session's agent talks to its model through Headroom.
+    ///
+    /// Settled when the session is spawned (`headroom::compress`) and
+    /// written with the row, because it describes the PROCESS that was
+    /// launched: its routing is in its environment, and nothing changes
+    /// an environment after the fact. `recover` clears it for the same
+    /// reason -- what it puts in the session is a bare shell.
+    pub compressed: bool,
+    /// Why a session in a workspace with compression on is not
+    /// compressed: `compress::Reason::id`. `None` for a compressed
+    /// session and for one that was never a candidate.
+    pub uncompressed_reason: Option<String>,
 }
 
 pub struct Registry {
@@ -281,6 +293,12 @@ impl Registry {
             // only ever reaches an existing db through its own ALTER (the
             // trap the pre_v* tests guard).
             "ALTER TABLE sessions ADD COLUMN token_hash TEXT",
+            // v47: whether the session is compressed, and why not when
+            // it should have been. DEFAULT 0 and NULL are what every row
+            // written before them was: no daemon older than this one
+            // ever routed a session through Headroom.
+            "ALTER TABLE sessions ADD COLUMN compressed INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE sessions ADD COLUMN uncompressed_reason TEXT",
         ] {
             let _ = conn.execute(stmt, []);
         }
@@ -309,8 +327,8 @@ impl Registry {
 
     pub fn insert(&self, record: &SessionRecord) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, failure_reason)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO sessions (id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, failure_reason, compressed, uncompressed_reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 record.id,
                 record.workspace_path,
@@ -326,6 +344,8 @@ impl Registry {
                 record.process.map(|p| p.pid as i64),
                 record.process.map(|p| p.started_at_us),
                 record.failure_reason,
+                record.compressed as i64,
+                record.uncompressed_reason,
             ],
         )?;
         Ok(())
@@ -409,6 +429,21 @@ impl Registry {
         )?;
         tx.execute("DELETE FROM queued_inputs WHERE session_id = ?1", params![id])?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Forgets how this row's process was routed, because that process
+    /// is no longer what is in the session.
+    ///
+    /// `recover` calls it for every row it puts a bare shell in. The
+    /// agent that was compressed is gone or orphaned, a shell is never a
+    /// candidate, and a row still reading `compressed` would be the
+    /// lying light the decision is recorded to prevent.
+    pub fn clear_compression(&self, id: &str) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET compressed = 0, uncompressed_reason = NULL WHERE id = ?1",
+            params![id],
+        )?;
         Ok(())
     }
 
@@ -617,12 +652,13 @@ impl Registry {
 
     pub fn list(&self) -> anyhow::Result<Vec<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us, failure_reason FROM sessions",
+            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us, failure_reason, compressed, uncompressed_reason FROM sessions",
         )?;
         let rows = stmt.query_map([], |row| {
             let status_str: String = row.get(4)?;
             let restored: i64 = row.get(5)?;
             let interrupted: i64 = row.get(7)?;
+            let compressed: i64 = row.get(13)?;
             Ok(SessionRecord {
                 id: row.get(0)?,
                 workspace_path: row.get(1)?,
@@ -635,6 +671,8 @@ impl Registry {
                 process: handle_from(row.get(8)?, row.get(9)?),
                 orphan: handle_from(row.get(10)?, row.get(11)?),
                 failure_reason: row.get(12)?,
+                compressed: compressed != 0,
+                uncompressed_reason: row.get(14)?,
             })
         })?;
         let mut result = Vec::new();
@@ -654,12 +692,13 @@ impl Registry {
 
     pub fn get(&self, id: &str) -> anyhow::Result<Option<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us, failure_reason FROM sessions WHERE id = ?1",
+            "SELECT id, workspace_path, cwd, command, status, restored, generation, interrupted, pid, started_at_us, orphan_pid, orphan_started_at_us, failure_reason, compressed, uncompressed_reason FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
             let status_str: String = row.get(4)?;
             let restored: i64 = row.get(5)?;
             let interrupted: i64 = row.get(7)?;
+            let compressed: i64 = row.get(13)?;
             Ok(SessionRecord {
                 id: row.get(0)?,
                 workspace_path: row.get(1)?,
@@ -672,6 +711,8 @@ impl Registry {
                 process: handle_from(row.get(8)?, row.get(9)?),
                 orphan: handle_from(row.get(10)?, row.get(11)?),
                 failure_reason: row.get(12)?,
+                compressed: compressed != 0,
+                uncompressed_reason: row.get(14)?,
             })
         })?;
         match rows.next() {
@@ -700,6 +741,8 @@ mod tests {
             process: None,
             orphan: None,
             failure_reason: None,
+            compressed: false,
+            uncompressed_reason: None,
         }
     }
 
@@ -1379,6 +1422,118 @@ mod tests {
             registry.session_id_for_token_hash("deadbeef").unwrap().as_deref(),
             Some("old-1")
         );
+    }
+
+    #[test]
+    fn a_database_written_before_v47_gains_the_compression_columns() {
+        // The same trap, for the same reason: `list` and `get` name the
+        // two columns in their SELECT, so against a database that never
+        // got them EVERY read fails, not just the new ones -- the app
+        // would come up with no sessions at all. Built with the schema a
+        // v46 daemon left behind (the v35 columns and all), then opened.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    workspace_path TEXT NOT NULL,
+                    cwd TEXT NOT NULL,
+                    command TEXT,
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    restored INTEGER NOT NULL DEFAULT 0,
+                    generation INTEGER NOT NULL DEFAULT 0,
+                    interrupted INTEGER NOT NULL DEFAULT 0,
+                    pid INTEGER,
+                    started_at_us INTEGER,
+                    orphan_pid INTEGER,
+                    orphan_started_at_us INTEGER,
+                    failure_reason TEXT,
+                    token_hash TEXT
+                );
+                CREATE TABLE registry_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+                INSERT INTO sessions (id, workspace_path, cwd, command)
+                VALUES ('old-1', '/tmp/ws', '/tmp/ws', 'claude')",
+            )
+            .unwrap();
+        }
+
+        let registry = Registry::open(&db_path).unwrap();
+
+        // The row a v46 daemon wrote reads as what it was: a session
+        // nobody compressed, with nothing to explain.
+        let old = registry.get("old-1").unwrap().expect("the old row survives the migration");
+        assert!(!old.compressed);
+        assert_eq!(old.uncompressed_reason, None);
+        assert_eq!(registry.list().unwrap().len(), 1);
+        // And a new row beside it keeps its decision.
+        registry
+            .insert(&SessionRecord { compressed: true, ..test_record("new-1") })
+            .unwrap();
+        assert!(registry.get("new-1").unwrap().unwrap().compressed);
+    }
+
+    #[test]
+    fn a_session_keeps_the_decision_it_was_spawned_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("registry.sqlite");
+        {
+            let registry = Registry::open(&db_path).unwrap();
+            registry
+                .insert(&SessionRecord { compressed: true, ..test_record("compressed") })
+                .unwrap();
+            registry
+                .insert(&SessionRecord {
+                    uncompressed_reason: Some("not-ready".to_string()),
+                    ..test_record("not-ready")
+                })
+                .unwrap();
+            registry.insert(&test_record("never-a-candidate")).unwrap();
+        }
+
+        // Read by the next lifetime, which is who Attach asks.
+        let registry = Registry::open(&db_path).unwrap();
+
+        let compressed = registry.get("compressed").unwrap().unwrap();
+        assert!(compressed.compressed);
+        assert_eq!(compressed.uncompressed_reason, None);
+        let not_ready = registry.get("not-ready").unwrap().unwrap();
+        assert!(!not_ready.compressed);
+        assert_eq!(not_ready.uncompressed_reason.as_deref(), Some("not-ready"));
+        let plain = registry.get("never-a-candidate").unwrap().unwrap();
+        assert!(!plain.compressed);
+        assert_eq!(plain.uncompressed_reason, None);
+        let listed = registry.list().unwrap();
+        assert_eq!(listed.iter().filter(|r| r.compressed).count(), 1);
+    }
+
+    #[test]
+    fn clearing_the_compression_forgets_the_decision_and_its_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+        registry
+            .insert(&SessionRecord { compressed: true, ..test_record("was-compressed") })
+            .unwrap();
+        registry
+            .insert(&SessionRecord {
+                uncompressed_reason: Some("not-ready".to_string()),
+                ..test_record("was-not")
+            })
+            .unwrap();
+        registry
+            .insert(&SessionRecord { compressed: true, ..test_record("untouched") })
+            .unwrap();
+
+        registry.clear_compression("was-compressed").unwrap();
+        registry.clear_compression("was-not").unwrap();
+
+        for id in ["was-compressed", "was-not"] {
+            let record = registry.get(id).unwrap().unwrap();
+            assert!(!record.compressed, "{id}");
+            assert_eq!(record.uncompressed_reason, None, "{id}");
+        }
+        assert!(registry.get("untouched").unwrap().unwrap().compressed);
     }
 
     #[test]

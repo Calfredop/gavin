@@ -58,6 +58,9 @@ vi.mock("$lib/core/layoutState", () => ({
   switchToSessionInPage: vi.fn().mockResolvedValue(undefined),
   handleAgentSessionSpawned: vi.fn(),
   setSessionName: vi.fn().mockResolvedValue(undefined),
+  // The launching profile, as the real one names it against a daemon
+  // new enough to read it (`compressedLaunch`).
+  profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   resolvedAgentFor: agentMock,
   agentForProfile: agentMock,
   agentDefaultsStore: writable({

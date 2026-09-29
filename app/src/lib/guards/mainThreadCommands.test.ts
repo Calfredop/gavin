@@ -154,6 +154,9 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   ["session.rs", "end_orphan", "SIGTERM and a 2 s grace, on a connection of its own"],
   ["session.rs", "kill_session", "a daemon round trip"],
   ["session.rs", "create_session", "a PTY spawn in the daemon"],
+  // Turning the last workspace's compression off has the daemon stop
+  // Headroom and wait for it to be gone: SIGTERM, then up to 10 s.
+  ["session.rs", "set_headroom_workspaces", "a daemon round trip that waits on Headroom stopping"],
   ["session.rs", "session_screen", "a daemon round trip, per turn verdict"],
   ["session.rs", "gavin_root_exists", "a root scan on an ssh host"],
   // Explicit actions, but unbounded: the stop waits up to ~0.9 s, the

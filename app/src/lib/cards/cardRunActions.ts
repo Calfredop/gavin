@@ -6,7 +6,7 @@
 
 import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
-import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
+import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, profileIdForLaunch, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { findSessionLocation } from "$lib/core/workspace";
 import type { AttentionRow } from "$lib/agents/attentionInbox";
@@ -450,7 +450,8 @@ export async function developCard(
     sessionId = await backend.createSession(
       card.contextFolder,
       command,
-      workspaceRootPath(workspaceId) ?? undefined
+      workspaceRootPath(workspaceId) ?? undefined,
+      profileIdForLaunch(agent)
     );
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
@@ -726,10 +727,14 @@ async function launchCard(
     const resumeCwd = binding.launchCwd ?? binding.cwd;
     let resumed: string;
     try {
+      // A resume is a fresh session, and whether it is compressed is
+      // decided again as it spawns: the conversation is the same one,
+      // the Headroom it talks through is whatever is there now.
       resumed = await backend.createSession(
         resumeCwd,
         resumeCommand,
-        workspaceRootPath(workspaceId) ?? undefined
+        workspaceRootPath(workspaceId) ?? undefined,
+        profileIdForLaunch(agent)
       );
     } catch (e) {
       return `Couldn't resume the conversation: ${e instanceof Error ? e.message : e}`;
@@ -819,7 +824,12 @@ async function launchCard(
 
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(cwd, command, workspaceRootPath(workspaceId) ?? undefined);
+    sessionId = await backend.createSession(
+      cwd,
+      command,
+      workspaceRootPath(workspaceId) ?? undefined,
+      profileIdForLaunch(agent)
+    );
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
@@ -1071,9 +1081,11 @@ export async function relaunchCard(
     sessionId = await backend.createSession(
       binding.cwd,
       fresh.command ?? undefined,
-      workspaceRootPath(workspaceId) ?? undefined
+      workspaceRootPath(workspaceId) ?? undefined,
+      // The card's own agent, for the reason `agent` above is: it is
+      // what the remembered command is taken to have launched with.
+      profileIdForLaunch(agent)
     );
-
   } catch (e) {
     return `Couldn't re-launch: ${e instanceof Error ? e.message : e}`;
   }

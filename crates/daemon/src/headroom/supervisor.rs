@@ -262,6 +262,22 @@ impl Supervisor {
         self.inner.wake.notify_all();
     }
 
+    /// The port Headroom is answering on, or `None` while it is not
+    /// ready: what a session about to be spawned needs to know, and
+    /// nothing else.
+    ///
+    /// Apart from `snapshot` because that one asks Headroom for its
+    /// savings, which is an HTTP call, and this is read on the way to
+    /// every spawn in a compressed workspace. It reads what the
+    /// supervisor's last tick found. A proxy that died since then is
+    /// still reported ready for up to a tick, and the session launched
+    /// in that window is no worse off than one whose proxy died a tick
+    /// AFTER it launched: the restart is on the same port.
+    pub fn ready_port(&self) -> Option<u16> {
+        let shared = self.inner.lock();
+        if shared.ready { shared.port } else { None }
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let (port, ready, stale) = {
             let shared = self.inner.lock();

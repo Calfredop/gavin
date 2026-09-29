@@ -33,6 +33,7 @@ import type { ManagedSessions } from "$lib/sessions/sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspace/workspaceDelete";
 import type { AttachmentStatus } from "$lib/cards/attachments";
 import type { WorkspaceSettingsPatch, WorkspaceSettingsRecord } from "$lib/workspace/workspaceSettings";
+import type { HeadroomStatus, HeadroomWorkspace } from "$lib/agents/compression";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
 import type { DeviceList, PairingOffer } from "$lib/core/remoteAccess";
 import { keyedQueue } from "$lib/core/keyedQueue";
@@ -44,12 +45,20 @@ import { keyedQueue } from "$lib/core/keyedQueue";
 /// to its cwd alone is refused every write to the card it was launched
 /// for, which lives in the main checkout. Omit it only where there is no
 /// workspace to name.
+///
+/// `profileId` is the agent profile doing the launching, and it is sent
+/// by every surface that launches an AGENT and by nothing else: it is
+/// what makes the session a candidate for compression, which the daemon
+/// decides as it spawns the process. A shell tab, a command tool and a
+/// setup script name none. Callers get theirs from `profileIdForLaunch`,
+/// which names none against a daemon too old to read it.
 export function createSession(
   cwd?: string,
   command?: string,
-  workspaceRoot?: string
+  workspaceRoot?: string,
+  profileId?: string
 ): Promise<string> {
-  return invoke("create_session", { cwd, command, workspaceRoot });
+  return invoke("create_session", { cwd, command, workspaceRoot, profileId });
 }
 
 
@@ -390,6 +399,25 @@ export function getRequireReview(): Promise<boolean | null> {
 
 export function setRequireReview(enabled: boolean | null): Promise<void> {
   return invoke("set_require_review", { enabled });
+}
+
+/// The app-wide compression default from config.json, or null when
+/// nobody has chosen -- in which case gavin's own default applies, which
+/// is off. Live, like `getRequireReview`: a workspace with no setting of
+/// its own resolves against this at the moment it is resolved.
+export function getHeadroomDefault(): Promise<boolean | null> {
+  return invoke("get_headroom_default");
+}
+
+export function setHeadroomDefault(enabled: boolean | null): Promise<void> {
+  return invoke("set_headroom_default", { enabled });
+}
+
+/// Hands the local daemon every workspace's effective compression
+/// setting, in place of whatever it held. Answers with Headroom's status
+/// AFTER the list was taken. See `compressionDriver.ts`, its one caller.
+export function setHeadroomWorkspaces(workspaces: HeadroomWorkspace[]): Promise<HeadroomStatus> {
+  return invoke("set_headroom_workspaces", { workspaces });
 }
 
 /// The app-wide default a NEW workspace's init starts from. Same

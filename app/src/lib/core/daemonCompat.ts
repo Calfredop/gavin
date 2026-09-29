@@ -452,6 +452,33 @@ export const FEATURE_MIN_VERSION = {
   // discipline in CLAUDE.md: the entry alone is a dead gate without a
   // featureBlockedReason consumer on every surface that can produce it.
   railSchedule: 45,
+  // Compressed sessions (`2026-09-28-headroom-design.md`). v47 is two
+  // changes, and this entry is the only gate either of them has in the
+  // app.
+  //
+  // `CreateSession` was WIDENED with `profileId`, the agent profile
+  // doing the launching, which is what makes a session a candidate for
+  // compression. `min_version_for` gates request TYPES and this request
+  // has been v1 since v1, so it is structurally blind to the field: a
+  // v46 daemon parses the launch, drops the profile and starts the
+  // agent uncompressed, with nothing anywhere to say why.
+  //
+  // Its consumer is the LAUNCH, like `conversationResume` and
+  // `runChanges` and unlike a disabled control: against an older daemon
+  // gavin names no profile at all (`profileIdForLaunch` in
+  // layoutState.ts), and the agent launches exactly as it did before
+  // there was anything to decide. A launch is never refused over it --
+  // compression must not be able to stop a rail. Every surface that
+  // launches an agent goes through that one function
+  // (compressedLaunchSurfaces.test.ts holds the list), and the host
+  // withholds the field besides (`profile_for_daemon` in session.rs).
+  //
+  // `SetHeadroomWorkspaces`, the daemon's copy of the switch, is a new
+  // TYPE, so the wire gate stops it. It reads this entry for the reason
+  // `companionNotifications` is read: a driver that sent it to an older
+  // daemon would take a version error on every settings change
+  // (`compressionSwitchBlocked` in compressionDriver.ts).
+  compressedLaunch: 47,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

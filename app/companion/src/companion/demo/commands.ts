@@ -141,6 +141,7 @@ const TABLES: Record<string, DemoCommand> = {
   get_custom_resume_args: (): Answer<"getCustomResumeArgs"> => null,
   get_auto_commit: (): Answer<"getAutoCommit"> => null,
   get_require_review: (): Answer<"getRequireReview"> => null,
+  get_headroom_default: (): Answer<"getHeadroomDefault"> => null,
   get_git_tracking_default: (): Answer<"getGitTrackingDefault"> => null,
 
   typesafe_settings: (): Answer<"typesafeSettings"> => ({

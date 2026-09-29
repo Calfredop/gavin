@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { FEATURE_MIN_VERSION } from "$lib/core/daemonCompat";
 import { get } from "svelte/store";
 import { gavinTrees, worktreeSetups } from "$lib/core/gavinState";
 import { executionKeys, executionKeysHash } from "$lib/workspace/workspaceTrust";
@@ -80,6 +81,9 @@ vi.mock("$lib/core/backend", () => ({
   getAutoCommit: vi.fn().mockResolvedValue(null),
   getGitTrackingDefault: vi.fn().mockResolvedValue(null),
   getRequireReview: vi.fn().mockResolvedValue(null),
+  getHeadroomDefault: vi.fn().mockResolvedValue(null),
+  setHeadroomDefault: vi.fn().mockResolvedValue(undefined),
+  setHeadroomWorkspaces: vi.fn().mockResolvedValue(undefined),
   setAutoCommit: vi.fn().mockResolvedValue(undefined),
   setRequireReview: vi.fn().mockResolvedValue(undefined),
   setTerminalFontSize: vi.fn().mockResolvedValue(undefined),
@@ -273,6 +277,13 @@ import {
   setWorkspaceRequireReview,
   setRequireReviewDefault,
   requireReviewDefault,
+  setWorkspaceHeadroom,
+  setHeadroomDefault,
+  headroomDefault,
+  headroomDefaultKnown,
+  profileIdForLaunch,
+  createSessionOnPage,
+  createTiledPage,
   markRequireReviewAsked,
   setStatusNoticeHold,
   setWorkspacePause,
@@ -345,6 +356,9 @@ beforeEach(() => {
   // Module-level store, same reason: without this, a compat verdict set
   // by one test would leak into the next one's assertions.
   daemonCompat.set(null);
+  // Module-level stores, same reason.
+  headroomDefault.set(null);
+  headroomDefaultKnown.set(false);
   // Module-level store, same reason.
   daemonRequestError.set(null);
   // Module-level store, same reason: a queue seeded by one test would
@@ -2390,9 +2404,11 @@ describe("createPage", () => {
 
     await createPage("ws-1", ([x, y]) => ({ type: "split", direction: "row", children: [leaf([x]), leaf([y])], sizes: [0.5, 0.5] }), 2, "Page 1", { withAgent: true });
 
+    // Under the profile launching them: each is an agent's session, and
+    // a candidate for compression like any other.
     expect(vi.mocked(backend.createSession).mock.calls).toEqual([
-      ["/repos/gavin", "claude --model opus", "/repos/gavin"],
-      ["/repos/gavin", "claude --model opus", "/repos/gavin"],
+      ["/repos/gavin", "claude --model opus", "/repos/gavin", "claude-code"],
+      ["/repos/gavin", "claude --model opus", "/repos/gavin", "claude-code"],
     ]);
   });
 
@@ -2487,6 +2503,124 @@ describe("createSessionOnNewPage", () => {
 
     expect(await createSessionOnNewPage("missing", "backend", "/x", "claude")).toBeNull();
     expect(backend.createSession).not.toHaveBeenCalled();
+  });
+});
+
+/// `CreateSession`'s `profileId` is what makes a session a candidate for
+/// compression, and the daemon decides. This is the one gate the app has
+/// on sending it, and the rest of these are the ways it gets there.
+describe("the launching profile", () => {
+  const NEEDED = FEATURE_MIN_VERSION.compressedLaunch;
+  const claude = { profileId: "claude-code" };
+
+  it("is named against a daemon new enough to read it", () => {
+    daemonCompat.set({ daemonVersion: NEEDED, appVersion: NEEDED, degraded: false });
+    expect(profileIdForLaunch(claude)).toBe("claude-code");
+
+    daemonCompat.set({ daemonVersion: NEEDED + 1, appVersion: NEEDED + 1, degraded: false });
+    expect(profileIdForLaunch({ profileId: "codex" })).toBe("codex");
+  });
+
+  // `CreateSession` is as old as the protocol, so nothing on the wire
+  // can keep the field from a daemon that would parse it and drop it.
+  it("is withheld from a daemon too old to read it", () => {
+    daemonCompat.set({ daemonVersion: NEEDED - 1, appVersion: NEEDED, degraded: true });
+
+    expect(profileIdForLaunch(claude)).toBeUndefined();
+  });
+
+  // Not connected yet is not "too old": nothing is greyed out ahead of
+  // the verdict, and the host withholds the field itself if it has to.
+  it("is named before the daemon's version is known", () => {
+    daemonCompat.set(null);
+
+    expect(profileIdForLaunch(claude)).toBe("claude-code");
+  });
+
+  it("is none for an agent that has no profile to name", () => {
+    expect(profileIdForLaunch({ profileId: "" })).toBeUndefined();
+  });
+
+  it("rides a tiled page's specs, each under its own", async () => {
+    setState([ws("ws-1", [], null, "/repos/gavin")], "ws-1", null);
+    vi.mocked(backend.createSession)
+      .mockResolvedValueOnce("a")
+      .mockResolvedValueOnce("b")
+      .mockResolvedValueOnce("c");
+
+    await createTiledPage("ws-1", "review", [
+      { cwd: "/repos/wt-a", command: "claude 'x'", profileId: "claude-code" },
+      { cwd: "/repos/wt-b", command: "codex 'x'", profileId: "codex" },
+      { cwd: "/repos/wt-c", command: "npm test" },
+    ]);
+
+    expect(vi.mocked(backend.createSession).mock.calls).toEqual([
+      ["/repos/wt-a", "claude 'x'", "/repos/gavin", "claude-code"],
+      ["/repos/wt-b", "codex 'x'", "/repos/gavin", "codex"],
+      // A command names none, and its launch is the call it always was.
+      ["/repos/wt-c", "npm test", "/repos/gavin"],
+    ]);
+  });
+
+  it("rides a session made with a page of its own", async () => {
+    setState([ws("ws-1", [page("p1", leaf(["s1"]))], "p1", "/repos/gavin")], "ws-1", "s1");
+    vi.mocked(backend.createSession).mockResolvedValue("agent");
+
+    await createSessionOnNewPage("ws-1", "backend", "/repos/wt", "claude", {
+      activate: false,
+      profileId: "claude-code",
+    });
+
+    expect(backend.createSession).toHaveBeenCalledWith("/repos/wt", "claude", "/repos/gavin", "claude-code");
+    // The posture still holds: the option beside it is not lost.
+    expect(get(layoutState).workspaces[0].activePageId).toBe("p1");
+  });
+
+  it("rides a session landed on a named page, and on the active one", async () => {
+    setState([ws("ws-1", [page("p1", leaf(["s1"]))], "p1", "/repos/gavin")], "ws-1", "s1");
+    vi.mocked(backend.createSession).mockResolvedValue("agent");
+
+    await createSessionOnPage("ws-1", "p1", "/repos/wt", "claude", "claude-code");
+    await createSessionForCard("ws-1", "/repos/wt", "claude", "claude-code");
+    // A page that is gone falls back to the active one, profile and all.
+    await createSessionOnPage("ws-1", "closed", "/repos/wt", "claude", "claude-code");
+
+    expect(vi.mocked(backend.createSession).mock.calls).toEqual([
+      ["/repos/wt", "claude", "/repos/gavin", "claude-code"],
+      ["/repos/wt", "claude", "/repos/gavin", "claude-code"],
+      ["/repos/wt", "claude", "/repos/gavin", "claude-code"],
+    ]);
+  });
+
+  it("is not an argument at all for a shell", async () => {
+    setState([ws("ws-1", [page("p1", leaf(["s1"]))], "p1", "/repos/gavin")], "ws-1", "s1");
+    vi.mocked(backend.createSession).mockResolvedValue("shell");
+
+    await createSessionOnPage("ws-1", "p1", "/repos/gavin", "git mergetool");
+    await createSessionForCard("ws-1", "/repos/gavin", "git mergetool");
+    await createSessionOnNewPage("ws-1", "setup", "/repos/wt", "npm ci");
+
+    for (const call of vi.mocked(backend.createSession).mock.calls) {
+      expect(call).toHaveLength(3);
+    }
+  });
+
+  // The "New page" dropdown with its box ticked, and the main agent, both
+  // against a daemon that cannot read the profile: they launch exactly as
+  // they did before there was anything to decide.
+  it("is withheld from the launches this module makes itself", async () => {
+    daemonCompat.set({ daemonVersion: NEEDED - 1, appVersion: NEEDED, degraded: true });
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+    seedAgentConfig("ws-1", { profile: "claude-code", file: null, command: "claude" });
+    vi.mocked(backend.createSession).mockResolvedValue("agent-1");
+
+    await startMainAgent("ws-1");
+    await createPage("ws-1", ([x]) => leaf([x]), 1, "Page 1", { withAgent: true });
+
+    expect(vi.mocked(backend.createSession).mock.calls).toEqual([
+      ["/tmp/ws", "claude", "/tmp/ws"],
+      ["/tmp/ws", "claude", "/tmp/ws"],
+    ]);
   });
 });
 
@@ -4037,6 +4171,50 @@ describe("workspace settings", () => {
     expect(get(requireReviewDefault)).toBeNull();
   });
 
+  it("setWorkspaceHeadroom stores the choice, and null clears it back to inherit", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+
+    await setWorkspaceHeadroom("ws-1", true);
+    expect(get(layoutState).workspaces[0].headroom).toBe(true);
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledWith("ws-1", { headroom: true });
+
+    // Off is a choice of its own: a workspace can opt out of a default
+    // that is on.
+    await setWorkspaceHeadroom("ws-1", false);
+    expect(get(layoutState).workspaces[0].headroom).toBe(false);
+    expect(backend.setWorkspaceSettings).toHaveBeenLastCalledWith("ws-1", { headroom: false });
+
+    await setWorkspaceHeadroom("ws-1", null);
+    expect(get(layoutState).workspaces[0].headroom).toBeUndefined();
+    expect(backend.setWorkspaceSettings).toHaveBeenLastCalledWith("ws-1", { headroom: null });
+    // A setting, written as one (ADR 0006): through the layout save it
+    // would show in this window and be gone after a restart.
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+  });
+
+  it("setHeadroomDefault persists to config.json and updates the store", async () => {
+    expect(get(headroomDefaultKnown)).toBe(false);
+
+    await setHeadroomDefault(true);
+    expect(backend.setHeadroomDefault).toHaveBeenCalledWith(true);
+    expect(get(headroomDefault)).toBe(true);
+    // Written is known: what this window just set is what is on disk.
+    expect(get(headroomDefaultKnown)).toBe(true);
+
+    await setHeadroomDefault(null);
+    expect(backend.setHeadroomDefault).toHaveBeenCalledWith(null);
+    expect(get(headroomDefault)).toBeNull();
+  });
+
+  it("setHeadroomDefault leaves the store alone when the write is refused", async () => {
+    vi.mocked(backend.setHeadroomDefault).mockRejectedValueOnce(new Error("disk full"));
+
+    await setHeadroomDefault(true);
+
+    expect(get(headroomDefault)).toBeNull();
+    expect(get(headroomDefaultKnown)).toBe(false);
+  });
+
   it("markRequireReviewAsked records the question was put, once", async () => {
     setState([ws("ws-1", [])], "ws-1", null);
     expect(get(layoutState).workspaces[0].requireReviewAsked).toBeUndefined();
@@ -4187,7 +4365,12 @@ describe("main agent session", () => {
 
     await startMainAgent("ws-1");
 
-    expect(backend.createSession).toHaveBeenCalledWith("/tmp/ws", "claude --model opus", "/tmp/ws");
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/tmp/ws",
+      "claude --model opus",
+      "/tmp/ws",
+      "claude-code"
+    );
     expect(get(layoutState).workspaces[0].mainSessionId).toBe("agent-1");
     expect(backend.setWorkspacesState).toHaveBeenCalled();
   });
@@ -4196,7 +4379,7 @@ describe("main agent session", () => {
     setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
     vi.mocked(backend.createSession).mockResolvedValue("agent-1");
     await startMainAgent("ws-1");
-    expect(backend.createSession).toHaveBeenCalledWith("/tmp/ws", "claude", "/tmp/ws");
+    expect(backend.createSession).toHaveBeenCalledWith("/tmp/ws", "claude", "/tmp/ws", "claude-code");
 
     // Already running: no second spawn.
     await startMainAgent("ws-1");
@@ -4228,7 +4411,8 @@ describe("main agent session", () => {
     expect(backend.createSession).toHaveBeenCalledWith(
       "/tmp/ws",
       "claude 'Use the gavin-write-prd skill.'",
-      "/tmp/ws"
+      "/tmp/ws",
+      "claude-code"
     );
 
     expect(get(layoutState).workspaces[0].mainSessionId).toBe("agent-1");

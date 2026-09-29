@@ -9,17 +9,21 @@
 //! window: a Headroom that died with the app would take every compressed
 //! agent's model connection with it.
 //!
-//! This module is the daemon's half of that and nothing of the wiring:
+//! This module is the daemon's half of that, and the wiring:
 //!
 //! - `detect` finds Headroom and `version` decides what state it is in
 //! - `launch` is the fixed flags every start carries
 //! - `supervisor` keeps it alive, and takes it back after a crash
 //! - `install` installs the pinned version and fetches its model
 //! - `store` is what is remembered between lifetimes
+//! - `switch` is the daemon's copy of which workspaces want compression
+//! - `compress` decides whether a session is compressed, and how
 //!
-//! Whether any workspace WANTS compression is not decided here. This
-//! exposes start and stop; the per-workspace switch drives them.
+//! Whether a workspace WANTS compression is the app's to say. It pushes
+//! each workspace's effective setting (`set_workspaces`), and Headroom
+//! runs while any of them is on.
 
+pub mod compress;
 pub mod detect;
 pub mod http;
 pub mod install;
@@ -27,17 +31,20 @@ pub mod launch;
 pub mod run;
 pub mod store;
 pub mod supervisor;
+pub mod switch;
 pub mod version;
 
 #[cfg(test)]
 #[path = "../../tests/fixtures/fake.rs"]
 pub mod fake;
 
-use protocol::{BuildProfile, HeadroomInstall, HeadroomStatus};
+use compress::{Decision, Facts, Launch};
+use protocol::{BuildProfile, HeadroomInstall, HeadroomStatus, HeadroomWorkspace};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use store::InstallRecord;
 use supervisor::Supervisor;
+use switch::Switch;
 use version::{State, Version};
 
 /// What this lifetime found when it looked.
@@ -67,6 +74,12 @@ struct Inner {
     looking: Mutex<()>,
     install: Mutex<Option<HeadroomInstall>>,
     timeouts: install::Timeouts,
+    switch: Switch,
+    /// Held from taking a list to the start or stop it asks for. Two
+    /// windows can push at once, and a list that turned the last
+    /// workspace off must not have its stop overtaken by the start of
+    /// the list before it.
+    switching: Mutex<()>,
 }
 
 /// One daemon's Headroom: what is installed, and the process it runs.
@@ -104,6 +117,8 @@ impl Headroom {
                 looking: Mutex::new(()),
                 install: Mutex::new(None),
                 timeouts: install::Timeouts::default(),
+                switch: Switch::open(state_dir, profile),
+                switching: Mutex::new(()),
             }),
         }
     }
@@ -181,6 +196,42 @@ impl Headroom {
     pub fn stop(&self) -> HeadroomStatus {
         self.inner.supervisor.stop();
         self.status()
+    }
+
+    /// Takes each workspace's effective compression setting from the
+    /// app, and runs Headroom while any of them is on.
+    ///
+    /// Started here rather than on the first compressed launch, because
+    /// the compression model takes seconds to load: a Headroom started
+    /// by the launch that needs it would leave that launch uncompressed
+    /// every time.
+    pub fn set_workspaces(&self, workspaces: &[HeadroomWorkspace]) -> HeadroomStatus {
+        let _switching = self.inner.switching.lock().unwrap_or_else(PoisonError::into_inner);
+        self.inner.switch.replace(workspaces);
+        if self.inner.switch.any_on() {
+            self.start()
+        } else {
+            self.stop()
+        }
+    }
+
+    /// Whether a session about to be spawned in this workspace is
+    /// compressed, as things stand right now.
+    ///
+    /// Asked at every spawn and remembered by nobody: a resume is a
+    /// fresh session, and it is decided against the Headroom that is
+    /// there when it launches.
+    pub fn decide(&self, workspace_path: &str, launch: Launch, session_id: &str) -> Decision {
+        // Read per spawn, like everything else a session inherits: it
+        // is the daemon's environment the PTY is about to be handed.
+        let inherited_headers = std::env::var(compress::CLAUDE_HEADERS).ok();
+        compress::decide(Facts {
+            workspace_on: self.inner.switch.is_on(workspace_path),
+            ready_port: self.inner.supervisor.ready_port(),
+            launch,
+            session_id,
+            inherited_headers: inherited_headers.as_deref(),
+        })
     }
 
     /// Starts the install and returns. Its output and its outcome are

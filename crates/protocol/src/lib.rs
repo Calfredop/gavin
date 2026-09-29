@@ -18,6 +18,27 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v47 is compressed sessions (`2026-09-28-headroom-design.md`, "The
+/// switch" and "Compressed sessions"), and it is three changes of three
+/// different kinds:
+///
+/// - `SetHeadroomWorkspaces`, a new request TYPE: the app hands the
+///   daemon each workspace's effective compression setting, and the
+///   daemon keeps its own copy, because a session another agent spawns
+///   over MCP never passes through the app. `min_version_for` is its
+///   whole wire gate.
+/// - `CreateSession` WIDENED with `profile_id`, the agent profile doing
+///   the launching. `min_version_for` gates request TYPES and cannot see
+///   it: a v46 daemon parses the request, drops the field and launches
+///   the agent uncompressed with nothing to say why. So
+///   FEATURE_MIN_VERSION.compressedLaunch is the gate that matters, read
+///   by every surface that launches an agent, and the host strips the
+///   field for an older daemon besides.
+/// - `SessionSummary` widened with `compressed` and
+///   `uncompressed_reason`, both `serde(default)`. A REPLY, so an older
+///   client ignores them and an older daemon's absence reads as "not
+///   compressed", which is true of every session it ever started.
+///
 /// v46 lets the daemon run Headroom (ADR 0007,
 /// `2026-09-28-headroom-design.md`): `GetHeadroomStatus`,
 /// `DetectHeadroom`, `StartHeadroom`, `StopHeadroom` and
@@ -502,7 +523,17 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 46;
+pub const PROTOCOL_VERSION: u32 = 47;
+
+/// The version that widened `CreateSession` with `profile_id`.
+///
+/// `min_version_for` gates request TYPES, and `CreateSession` has been
+/// v1 since v1, so nothing there can keep the field from a daemon that
+/// would parse the request and drop it. A client that sends the field
+/// compares the daemon's version with this instead
+/// (`FEATURE_MIN_VERSION.compressedLaunch` in the app, and the host's
+/// own `create_fresh_session` behind it).
+pub const COMPRESSED_LAUNCH_MIN_VERSION: u32 = 47;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -520,6 +551,20 @@ pub enum Request {
         workspace_path: String,
         cwd: String,
         command: Option<String>,
+        /// The agent profile doing the launching (`claude-code`,
+        /// `codex`, …), or `None` for anything that is not an agent
+        /// launch: a shell tab, a command tool, a setup script (v47).
+        ///
+        /// It is what makes a session a candidate for compression. The
+        /// daemon decides at spawn, from this, the workspace's setting
+        /// and whether Headroom is ready (`headroom::compress`); a
+        /// session with no profile is never compressed, which is how a
+        /// plain shell tab keeps its own `ANTHROPIC_BASE_URL`.
+        ///
+        /// Skipped when `None`, so a launch that names no profile is
+        /// byte for byte the request every daemon since v1 has parsed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile_id: Option<String>,
     },
     ListSessions,
     /// What every live session is costing right now: one sample of the
@@ -1367,6 +1412,19 @@ pub enum Request {
     /// compression model. Answers at once with the install marked
     /// running; its output and outcome are read from the status.
     InstallHeadroom,
+    /// Every workspace's effective compression setting, as the app
+    /// resolved it (the workspace's own choice, else the app-wide
+    /// default), replacing whatever this daemon held (v47).
+    ///
+    /// The whole list rather than one workspace's change: a workspace
+    /// the app has closed has to stop counting, and a list that is
+    /// replaced cannot drift from the one it was copied from. The daemon
+    /// persists it -- a daemon that restarts before any app connects
+    /// still knows whether to start Headroom -- and runs Headroom while
+    /// any workspace is on, stopping it when none is.
+    SetHeadroomWorkspaces {
+        workspaces: Vec<HeadroomWorkspace>,
+    },
 
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
@@ -1610,6 +1668,13 @@ pub fn min_version_for(req: &Request) -> u32 {
         | Request::StartHeadroom
         | Request::StopHeadroom
         | Request::InstallHeadroom => 46,
+
+        // The daemon's copy of the compression switch. A new TYPE, so
+        // this match is its whole wire gate. `CreateSession`'s
+        // `profile_id` is the same version and is NOT here: it widens a
+        // request that has been v1 since v1, which this match cannot
+        // see (FEATURE_MIN_VERSION.compressedLaunch).
+        Request::SetHeadroomWorkspaces { .. } => 47,
 
         Request::Shutdown => 12,
 
@@ -2282,6 +2347,18 @@ pub struct HeadroomInstall {
     pub output: String,
 }
 
+/// One workspace's effective compression setting (v47).
+///
+/// `workspace_path` is the path `CreateSession` sends as
+/// `workspace_path` and `SpawnAgentSession` as `root_path`: the
+/// workspace a session BELONGS to, never the worktree it runs in.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadroomWorkspace {
+    pub workspace_path: String,
+    pub enabled: bool,
+}
+
 /// One row of the trust store, as the Settings device list reads it
 /// (`daemon/src/trust.rs`'s `Device`, minus the static public key).
 ///
@@ -2446,6 +2523,25 @@ pub struct SessionSummary {
     /// asserting something nobody measured.
     #[serde(default)]
     pub orphan: Option<OrphanProcess>,
+    /// This session's agent talks to its model through Headroom (v47).
+    /// Settled once, when the session was spawned, and never carried
+    /// over: a resume or a relaunch is a fresh session that is decided
+    /// again against Headroom as it is then.
+    ///
+    /// `serde(default)` because a v46 daemon does not send it, and false
+    /// is the honest reading there: it never compressed one.
+    #[serde(default)]
+    pub compressed: bool,
+    /// Why a session in a workspace with compression ON is not
+    /// compressed: `not-ready`, `no-recipe` or `unsupported-agent`.
+    /// A string for the reason `status` is one -- a word a newer daemon
+    /// writes reaches the app as written.
+    ///
+    /// `None` for a compressed session, and for every session that was
+    /// never a candidate: one in a workspace with compression off, and a
+    /// plain shell tab in any workspace.
+    #[serde(default)]
+    pub uncompressed_reason: Option<String>,
 }
 
 /// A surviving process, as much of it as the app needs to talk about it.
@@ -4458,6 +4554,7 @@ mod tests {
             workspace_path: "/tmp/ws".to_string(),
             cwd: "/tmp/ws".to_string(),
             command: None,
+            profile_id: None,
         };
         write_message(&mut buf, &req).unwrap();
 
@@ -4465,13 +4562,141 @@ mod tests {
         let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
 
         match decoded {
-            Request::CreateSession { workspace_path, cwd, command } => {
+            Request::CreateSession { workspace_path, cwd, command, profile_id } => {
                 assert_eq!(workspace_path, "/tmp/ws");
                 assert_eq!(cwd, "/tmp/ws");
                 assert_eq!(command, None);
+                assert_eq!(profile_id, None);
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    /// The widening is invisible to `min_version_for`, so what an older
+    /// daemon is sent is decided by what is WRITTEN: a launch that names
+    /// no profile must be the request every daemon since v1 has parsed,
+    /// with no new key in it at all.
+    #[test]
+    fn a_create_session_that_names_no_profile_is_the_request_it_always_was() {
+        let bare = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws/tree".into(),
+            command: Some("npm test".into()),
+            profile_id: None,
+        };
+
+        let written = serde_json::to_value(&bare).unwrap();
+
+        assert_eq!(
+            written,
+            serde_json::json!({
+                "type": "CreateSession",
+                "workspace_path": "/ws",
+                "cwd": "/ws/tree",
+                "command": "npm test",
+            })
+        );
+    }
+
+    #[test]
+    fn a_create_session_carries_the_launching_profile_and_reads_one_without_it() {
+        let launch = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws/tree".into(),
+            command: Some("claude 'do it'".into()),
+            profile_id: Some("claude-code".into()),
+        };
+        let written = serde_json::to_string(&launch).unwrap();
+        assert!(written.contains(r#""profile_id":"claude-code""#), "{written}");
+        match serde_json::from_str::<Request>(&written).unwrap() {
+            Request::CreateSession { profile_id, .. } => {
+                assert_eq!(profile_id.as_deref(), Some("claude-code"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // What a v46 client sends.
+        let older = r#"{"type":"CreateSession","workspace_path":"/ws","cwd":"/ws","command":null}"#;
+        match serde_json::from_str::<Request>(older).unwrap() {
+            Request::CreateSession { profile_id, .. } => assert_eq!(profile_id, None),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// A new TYPE, so `min_version_for` is its whole wire gate -- and the
+    /// same version's OTHER change is deliberately not behind it.
+    #[test]
+    fn the_compression_switch_is_v47_and_a_create_session_is_still_v1() {
+        let switch = Request::SetHeadroomWorkspaces {
+            workspaces: vec![HeadroomWorkspace { workspace_path: "/ws".into(), enabled: true }],
+        };
+        assert_eq!(min_version_for(&switch), 47);
+
+        let launch = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws".into(),
+            command: Some("claude".into()),
+            profile_id: Some("claude-code".into()),
+        };
+        assert_eq!(
+            min_version_for(&launch),
+            1,
+            "a widened payload is invisible here: FEATURE_MIN_VERSION.compressedLaunch is its gate"
+        );
+    }
+
+    /// The list crosses from the frontend, so its field names are part
+    /// of the wire: the struct carries the camelCase, and the request
+    /// keeps its one field a single word.
+    #[test]
+    fn the_compression_switch_reads_the_camel_case_shape_the_frontend_sends() {
+        let sent = r#"{"type":"SetHeadroomWorkspaces","workspaces":[{"workspacePath":"/ws","enabled":true},{"workspacePath":"/other","enabled":false}]}"#;
+
+        match serde_json::from_str::<Request>(sent).unwrap() {
+            Request::SetHeadroomWorkspaces { workspaces } => assert_eq!(
+                workspaces,
+                vec![
+                    HeadroomWorkspace { workspace_path: "/ws".into(), enabled: true },
+                    HeadroomWorkspace { workspace_path: "/other".into(), enabled: false },
+                ]
+            ),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// A v46 daemon sends neither field. Absent has to read as "not
+    /// compressed, and nothing to explain", which is true of every
+    /// session such a daemon ever started.
+    #[test]
+    fn a_session_summary_from_an_older_daemon_reads_as_not_compressed() {
+        let older = r#"{"id":"s1","workspace_path":"/ws","cwd":"/ws","status":"idle","restored":false}"#;
+
+        let summary: SessionSummary = serde_json::from_str(older).unwrap();
+
+        assert!(!summary.compressed);
+        assert_eq!(summary.uncompressed_reason, None);
+    }
+
+    #[test]
+    fn a_session_summary_carries_the_decision_and_its_reason() {
+        let summary = SessionSummary {
+            id: "s1".into(),
+            workspace_path: "/ws".into(),
+            cwd: "/ws".into(),
+            status: "idle".into(),
+            restored: false,
+            interrupted: false,
+            failure_reason: None,
+            orphan: None,
+            compressed: false,
+            uncompressed_reason: Some("not-ready".into()),
+        };
+
+        let written = serde_json::to_string(&summary).unwrap();
+        let read: SessionSummary = serde_json::from_str(&written).unwrap();
+
+        assert_eq!(read, summary);
+        assert!(written.contains(r#""uncompressed_reason":"not-ready""#), "{written}");
     }
 
     #[test]
@@ -5250,7 +5475,11 @@ mod tests {
         // v46: the daemon runs Headroom -- GetHeadroomStatus,
         // DetectHeadroom, StartHeadroom, StopHeadroom, InstallHeadroom,
         // and the Headroom reply. Five new TYPES and no widened payload.
-        assert_eq!(PROTOCOL_VERSION, 46);
+        // v47: compressed sessions -- SetHeadroomWorkspaces, one new
+        // TYPE; CreateSession widened with `profile_id`, gated by
+        // FEATURE_MIN_VERSION.compressedLaunch; and SessionSummary
+        // widened with `compressed` and `uncompressed_reason`.
+        assert_eq!(PROTOCOL_VERSION, 47);
     }
 
     #[test]
@@ -5539,7 +5768,12 @@ mod tests {
     /// below instead of failing loudly.
     fn one_of_every_request_variant() -> Vec<Request> {
         vec![
-            Request::CreateSession { workspace_path: "w".into(), cwd: "c".into(), command: None },
+            Request::CreateSession {
+                workspace_path: "w".into(),
+                cwd: "c".into(),
+                command: None,
+                profile_id: None,
+            },
             Request::ListSessions,
             Request::WriteInput { id: "s".into(), data: "d".into() },
             Request::ResizeSession { id: "s".into(), cols: 80, rows: 24 },
@@ -5763,6 +5997,8 @@ mod tests {
             Request::StartHeadroom,
             Request::StopHeadroom,
             Request::InstallHeadroom,
+            // v47's copy of the compression switch.
+            Request::SetHeadroomWorkspaces { workspaces: vec![] },
             Request::Unknown,
         ]
     }
@@ -5799,7 +6035,8 @@ mod tests {
     /// client identity), v37=2 (an agent authoring its own workspace's
     /// tools), v39=1 (SessionScreen), v40=3 (ssh workspace files), v41=2
     /// (ssh git/files), v42=2 (the Decisions tab's writes), v43=1
-    /// (GetCardSession), v46=5 (the daemon runs Headroom), plus Unknown.
+    /// (GetCardSession), v46=5 (the daemon runs Headroom), v47=1
+    /// (SetHeadroomWorkspaces), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -5862,6 +6099,9 @@ mod tests {
         // The daemon runs Headroom: GetHeadroomStatus, DetectHeadroom,
         // StartHeadroom, StopHeadroom, InstallHeadroom.
         expected.insert(46, 5);
+        // The daemon's copy of the compression switch:
+        // SetHeadroomWorkspaces.
+        expected.insert(47, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

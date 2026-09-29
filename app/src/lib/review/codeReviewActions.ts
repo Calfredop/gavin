@@ -23,6 +23,7 @@ import {
   resolvedAgentFor,
   armFailureDetection,
   handleAgentSessionSpawned,
+  profileIdForLaunch,
   setSessionName,
   workspaceRootPath,
 } from "$lib/core/layoutState";
@@ -283,10 +284,10 @@ async function launchReview(request: {
     sessionId = await backend.createSession(
       request.cwd,
       command,
-      workspaceRootPath(request.workspaceId) ?? undefined
+      workspaceRootPath(request.workspaceId) ?? undefined,
+      profileIdForLaunch(agent)
     );
   } catch (e) {
-
     return `Couldn't start the review: ${e instanceof Error ? e.message : e}`;
   }
   pending.set(null);

@@ -46,6 +46,12 @@ export const DESK_ONLY_COMMANDS = [
   // The desk's own Mac: keep-running mode holds it awake for a phone,
   // and no phone decides that.
   "set_sleep_hold",
+  // Telling the daemon which workspaces have compression on. A Device
+  // moves the switch itself like any other workspace setting
+  // (`set_workspace_settings`); it is the desk that resolves every
+  // workspace against the app-wide default and tells the daemon, from
+  // the window holding the app's duties -- which a Device never is.
+  "set_headroom_workspaces",
   // The updater.
   "check_for_update",
   "install_update",

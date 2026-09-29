@@ -13,6 +13,7 @@ import {
   armFailureDetection,
   createTiledPage,
   conversationIdForLaunch,
+  profileIdForLaunch,
   resolvedAgentFor,
   setSessionName,
   switchWorkspaceView,
@@ -329,7 +330,13 @@ export async function launchCriticalReviewSessions(
   const page = await createTiledPage(
     input.workspaceId,
     criticalReviewPageName(pageTitle),
-    launches.map((l) => ({ cwd: input.cwd, command: l.command as string }))
+    // Each reviewer under its OWN profile: a critical review is several
+    // agents, and which of them can be compressed differs per agent.
+    launches.map((l) => ({
+      cwd: input.cwd,
+      command: l.command as string,
+      profileId: profileIdForLaunch(l.agent),
+    }))
   );
   if (!page) return "Couldn't start the reviewers' sessions";
 

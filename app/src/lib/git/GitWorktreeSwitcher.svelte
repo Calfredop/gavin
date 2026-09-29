@@ -10,6 +10,7 @@
     createSessionForCard,
     agentModelDefaultsStore,
     layoutState,
+    profileIdForLaunch,
     trustedAgentConfigs,
   } from "$lib/core/layoutState";
   import { allSessionIdsInWorkspace } from "$lib/core/workspace";
@@ -53,13 +54,14 @@
   // Match on git's canonical toplevel, not on the cwd string we were given.
   const current = $derived(worktrees.find((w) => w.path === view?.repo?.root) ?? worktrees.find((w) => w.path === view?.cwd) ?? null);
   const anyPrunable = $derived(worktrees.some((w) => w.prunable));
-  const agentCommand = $derived(
+  const agent = $derived(
     resolveAgentConfig(
       $trustedAgentConfigs(workspaceId),
       $agentProfilesStore,
       $agentModelDefaultsStore
-    ).launchCommand
+    )
   );
+  const agentCommand = $derived(agent.launchCommand);
 
   // Every rail in the app, not only this workspace's: a rail is bound to
   // a PATH, and nothing stops a second workspace's rail pointing at a
@@ -126,8 +128,16 @@
     return `${name} · ${ref}`;
   }
 
-  function spawnAgent(path: string, command: string): void {
-    void createSessionForCard(workspaceId, path, command);
+  /// `launchesAgent` is false for a line that is a new worktree's setup
+  /// and nothing after it: a shell, which names no profile and is never
+  /// compressed. The play button's line is always the agent.
+  function spawnAgent(path: string, command: string, launchesAgent = true): void {
+    void createSessionForCard(
+      workspaceId,
+      path,
+      command,
+      launchesAgent ? profileIdForLaunch(agent) : undefined
+    );
   }
 
   async function choose(w: WorktreeInfo): Promise<void> {

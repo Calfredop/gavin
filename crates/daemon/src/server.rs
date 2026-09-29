@@ -1,4 +1,5 @@
 use protocol::{read_message, write_message, Board, Column, GitStatus, Label, Request, Response, SessionProcess, SessionSummary};
+use crate::headroom::compress::{Decision, Launch};
 use crate::kanban::KanbanStore;
 use crate::osc::OscCwdScanner;
 use crate::pty::PtySession;
@@ -1194,6 +1195,8 @@ fn session_summary(r: SessionRecord) -> SessionSummary {
         restored: r.restored,
         failure_reason: r.failure_reason,
         interrupted: r.interrupted,
+        compressed: r.compressed,
+        uncompressed_reason: r.uncompressed_reason,
     }
 }
 
@@ -2315,7 +2318,10 @@ impl SessionManager {
         let watcher = self
             .find_watcher_by_root(root_path)
             .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
-        let id = self.create_session(root_path, cwd, Some(command))?;
+        // Nobody's word for what this is, so the command line speaks for
+        // itself: compressed when its first token is an agent gavin has
+        // a recipe for, exactly like a launch from the app.
+        let id = self.create_session(root_path, cwd, Some(command), Launch::Command(command))?;
         watcher.push_response(&Response::AgentSessionSpawned {
             workspace_id: watcher.workspace_id.clone(),
             session_id: id.clone(),
@@ -2370,11 +2376,16 @@ impl SessionManager {
         Ok(())
     }
 
+    /// `launch` is what the session is, for the one decision that needs
+    /// to know: whether its agent talks to its model through Headroom
+    /// (`headroom::compress`). `Launch::Shell` for everything that is no
+    /// agent's launch, which is never compressed.
     pub fn create_session(
         &self,
         workspace_path: &str,
         cwd: &str,
         command: Option<&str>,
+        launch: Launch,
     ) -> anyhow::Result<String> {
         if !std::path::Path::new(cwd).is_dir() {
             anyhow::bail!("cwd does not exist or is not a directory: {cwd}");
@@ -2393,7 +2404,19 @@ impl SessionManager {
         // present it to take the `agent` role scoped to THIS session
         // (`sec-fix-client-identity.md`). Only the hash is persisted.
         let session_token = protocol::random_hex(32)?;
-        let pty = PtySession::spawn(cwd, command, &id, Some(&session_token))?;
+        // Decided here, between the id and the spawn, and nowhere else:
+        // the recipe carries the id, and the process keeps the
+        // environment it is born with. A resume or a relaunch arrives as
+        // another call to this function and is decided again, against
+        // Headroom as it is then.
+        let compression = self.decide_compression(workspace_path, launch, &id);
+        let pty = PtySession::spawn_with_env(
+            cwd,
+            command,
+            &id,
+            Some(&session_token),
+            compression.env(),
+        )?;
 
         self.registry.lock().unwrap().insert(&SessionRecord {
             id: id.clone(),
@@ -2416,6 +2439,8 @@ impl SessionManager {
             // created, not recovered.
             orphan: None,
             failure_reason: None,
+            compressed: compression.compressed(),
+            uncompressed_reason: compression.reason().map(|reason| reason.id().to_string()),
         })?;
 
         // After the row exists (the id is its key): store only the hash,
@@ -2427,6 +2452,19 @@ impl SessionManager {
 
         self.sessions.lock().unwrap().insert(id.clone(), pty);
         Ok(id)
+    }
+
+    /// Whether a session about to be spawned is compressed.
+    ///
+    /// A daemon with no Headroom supervisor -- every unit test's, and
+    /// nothing a human runs -- compresses nothing and owes no reason: it
+    /// holds no copy of the switch, so no workspace of its has
+    /// compression on.
+    fn decide_compression(&self, workspace_path: &str, launch: Launch, session_id: &str) -> Decision {
+        match self.headroom.get() {
+            Some(headroom) => headroom.decide(workspace_path, launch, session_id),
+            None => Decision::Uncompressed(None),
+        }
     }
 
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {
@@ -3668,6 +3706,13 @@ impl SessionManager {
                     if let Err(e) = registry.mark_restored(&record.id) {
                         eprintln!("failed to mark session {} restored: {e}", record.id);
                     }
+                    // What is in the session now is a bare shell, which
+                    // is never compressed. The agent that was is gone,
+                    // or orphaned and still talking through the Headroom
+                    // it was launched on -- either way it is not this.
+                    if let Err(e) = registry.clear_compression(&record.id) {
+                        eprintln!("failed to clear the compression of session {}: {e}", record.id);
+                    }
                     if interrupted {
                         if let Err(e) = registry.mark_interrupted(&record.id) {
                             eprintln!("failed to mark session {} interrupted: {e}", record.id);
@@ -4242,8 +4287,17 @@ impl SessionManager {
 
 pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
     let result = match req {
-        Request::CreateSession { workspace_path, cwd, command } => manager
-            .create_session(&workspace_path, &cwd, command.as_deref())
+        Request::CreateSession { workspace_path, cwd, command, profile_id } => manager
+            .create_session(
+                &workspace_path,
+                &cwd,
+                command.as_deref(),
+                // The app's word for what it launched. None is a shell
+                // tab, a command tool or a setup script -- and an agent
+                // launched by an app older than v47, which has no switch
+                // to have turned on.
+                profile_id.as_deref().map_or(Launch::Shell, Launch::Profile),
+            )
             .map(|id| Response::SessionCreated { id }),
         Request::ListSessions => manager
             .list_sessions()
@@ -4731,6 +4785,12 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::InstallHeadroom => {
             manager.headroom_or_err().map(|h| Response::Headroom { status: h.install() })
         }
+        // v47. Answered like the five above, with the status AFTER: the
+        // list that turned the first workspace on is the one whose
+        // reply says Headroom is now wanted.
+        Request::SetHeadroomWorkspaces { workspaces } => manager
+            .headroom_or_err()
+            .map(|h| Response::Headroom { status: h.set_workspaces(&workspaces) }),
         Request::GetBoardByRoot { root_path } => manager
             .board_by_root(&root_path)
             .map(|board| Response::Board { columns: board.columns, labels: board.labels, card_sessions: board.card_sessions }),
@@ -5140,6 +5200,12 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::StartHeadroom
         | Request::StopHeadroom
         | Request::InstallHeadroom
+        // The compression switch (v47), for the same reason: it is what
+        // starts and stops that proxy, and an agent that could turn its
+        // own workspace's compression on would be choosing what its
+        // successors' model traffic passes through. A remote changes the
+        // setting through the desk, which pushes the result.
+        | Request::SetHeadroomWorkspaces { .. }
         // What finishes them (v42): the streaming network ops and their
         // cancel, the worktree watch, the env-carrying run and the three
         // tree mutations. Same reasoning, and it does not weaken for the
@@ -5208,6 +5274,9 @@ fn is_privileged(req: &Request) -> bool {
             | Request::StartHeadroom
             | Request::StopHeadroom
             | Request::InstallHeadroom
+            // The compression switch (v47) starts and stops the same
+            // process, so it is behind the same narrowing.
+            | Request::SetHeadroomWorkspaces { .. }
             // The v42 half of the same reach: another way to run git,
             // git run long, and three ways to change the tree. Its
             // cancel and the two watch requests stay OUT -- they start
@@ -5970,7 +6039,7 @@ mod tests {
     /// what the guard refuses to delete. The PTY is real: liveness is read
     /// off the session table, not off the row.
     fn running_step_with_a_live_session(manager: &Arc<SessionManager>, step_id: &str) {
-        let session_id = manager.create_session("/tmp", "/tmp", Some("/bin/sh")).unwrap();
+        let session_id = manager.create_session("/tmp", "/tmp", Some("/bin/sh"), Launch::Shell).unwrap();
         handle_request(
             manager,
             Request::SetStepRun {
@@ -6183,7 +6252,7 @@ mod tests {
         assert!(authorize(&id, &Request::Shutdown, false).is_ok());
         assert!(authorize(
             &id,
-            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None },
+            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None },
             true, // even with the switch on
         )
         .is_ok());
@@ -6196,7 +6265,7 @@ mod tests {
         assert!(authorize(&id, &Request::Shutdown, false).is_ok());
         assert!(authorize(
             &id,
-            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None },
+            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None },
             false,
         )
         .is_ok());
@@ -6208,7 +6277,7 @@ mod tests {
         assert!(matches!(
             authorize(
                 &id,
-                &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None },
+                &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None },
                 true
             ),
             Err(Response::Forbidden { .. })
@@ -6547,7 +6616,7 @@ mod tests {
         let (_ws, root, _card) = workspace_with_card();
         let id = ClientIdentity::agent("sess-1", &root, &root);
         for req in [
-            Request::CreateSession { workspace_path: root.clone(), cwd: root.clone(), command: None },
+            Request::CreateSession { workspace_path: root.clone(), cwd: root.clone(), command: None, profile_id: None },
             Request::Shutdown,
             Request::EndOrphan { id: "x".into() },
             Request::WriteInput { id: "other".into(), data: "rm -rf /\n".into() },
@@ -6686,7 +6755,7 @@ mod tests {
     /// not depend on that helper's visibility.
     fn one_of_every_request_variant_for_authorize() -> Vec<Request> {
         vec![
-            Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None },
+            Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None },
             Request::ListSessions,
             Request::SessionProcesses,
             Request::EndOrphan { id: "s".into() },
@@ -6795,10 +6864,12 @@ mod tests {
             Request::StartHeadroom,
             Request::StopHeadroom,
             Request::InstallHeadroom,
+            Request::SetHeadroomWorkspaces { workspaces: vec![] },
         ]
     }
 
-    /// Every request v46 added, one of each, for the role tests below.
+    /// Every Headroom request, one of each, for the role tests below:
+    /// the five v46 added, and v47's copy of the compression switch.
     fn every_headroom_request() -> Vec<Request> {
         vec![
             Request::GetHeadroomStatus,
@@ -6806,6 +6877,12 @@ mod tests {
             Request::StartHeadroom,
             Request::StopHeadroom,
             Request::InstallHeadroom,
+            Request::SetHeadroomWorkspaces {
+                workspaces: vec![protocol::HeadroomWorkspace {
+                    workspace_path: "/tmp/ws".into(),
+                    enabled: true,
+                }],
+            },
         ]
     }
 
@@ -6814,7 +6891,12 @@ mod tests {
     /// file the daemon executes is the desktop's decision alone.
     /// `agent_allows` is an exhaustive match, which forces a decision
     /// per variant and cannot check that it was the right one -- this
-    /// walks the five and checks the answer.
+    /// walks them and checks the answer.
+    ///
+    /// The switch is refused an agent even for the workspace it is
+    /// standing in, which is the case the list's own entry names: an
+    /// agent that could turn compression on would be choosing what its
+    /// successors' model traffic passes through.
     #[test]
     fn agents_and_remotes_are_forbidden_every_headroom_request() {
         let agent = ClientIdentity::agent("sess-1", "/tmp/ws", "/tmp/ws");
@@ -6850,7 +6932,7 @@ mod tests {
     }
 
     /// With `require_local_token` on, an untokened local connection
-    /// loses the four that start or end a process and keeps the read.
+    /// loses the five that start or end a process and keeps the read.
     #[test]
     fn the_local_token_switch_narrows_every_headroom_request_but_the_read() {
         let local = ClientIdentity::local();
@@ -6903,6 +6985,8 @@ mod tests {
                 process: None,
                 orphan: None,
                 failure_reason: None,
+                compressed: false,
+                uncompressed_reason: None,
             })
             .unwrap();
         let hash = protocol::hash_token_hex("the-token");
@@ -7082,6 +7166,8 @@ mod tests {
                 process: None,
                 orphan: None,
                 failure_reason: None,
+                compressed: false,
+                uncompressed_reason: None,
             })
             .unwrap();
         let token = "agent-token-for-hello";
@@ -7799,6 +7885,7 @@ mod tests {
                 workspace_path: "/tmp".to_string(),
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
+                profile_id: None,
             },
         );
         let session_id = match resp {
@@ -7905,6 +7992,7 @@ mod tests {
                 workspace_path: "/tmp".to_string(),
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
+                profile_id: None,
             },
         );
         let session_id = match resp {
@@ -8252,6 +8340,7 @@ mod tests {
                 workspace_path: "/tmp/ws".to_string(),
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
+                profile_id: None,
             },
         );
         let id = match created {
@@ -8305,7 +8394,7 @@ mod tests {
         // the only place to clear it, by hand, one run at a time.
         let dir = tempfile::tempdir().unwrap();
         let manager = test_manager(&dir);
-        let id = manager.create_session("/tmp", "/tmp", Some("exit 3")).unwrap();
+        let id = manager.create_session("/tmp", "/tmp", Some("exit 3"), Launch::Shell).unwrap();
 
         // The pump is what witnesses an exit, and only an Attach starts
         // one. The client end stays bound: dropping it would close the
@@ -8543,6 +8632,7 @@ mod tests {
                 workspace_path: "/tmp/ws".to_string(),
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
+                profile_id: None,
             },
         ) {
             Response::SessionCreated { id } => id,
@@ -8588,6 +8678,7 @@ mod tests {
                 workspace_path: "/tmp/ws".to_string(),
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
+                profile_id: None,
             },
         ) {
             Response::SessionCreated { id } => id,
@@ -8685,6 +8776,8 @@ mod tests {
                 process: None,
                 orphan: None,
                 failure_reason: None,
+                compressed: false,
+                uncompressed_reason: None,
             })
             .unwrap();
         match handle_request(&manager, Request::SessionScreen { id: "sess-quiet".into() }) {
@@ -8720,6 +8813,8 @@ mod tests {
                 process: None,
                 orphan: None,
                 failure_reason: None,
+                compressed: false,
+                uncompressed_reason: None,
             })
             .unwrap();
         // Painted the way a TUI paints: the sentence is split around a
@@ -8785,6 +8880,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -8820,6 +8916,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -8864,6 +8961,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -8912,6 +9010,7 @@ mod tests {
                 workspace_path: "/tmp/ws".to_string(),
                 cwd: "/tmp/definitely-does-not-exist-xyz".to_string(),
                 command: Some("/bin/sh".to_string()),
+                profile_id: None,
             },
         );
         assert!(matches!(resp, Response::Error { .. }));
@@ -8929,16 +9028,16 @@ mod tests {
         manager.session_ceiling.store(2, Ordering::SeqCst);
         let cwd = dir.path().to_string_lossy().to_string();
 
-        let s1 = manager.create_session("/ws", &cwd, Some("/bin/sh")).unwrap();
-        manager.create_session("/ws", &cwd, Some("/bin/sh")).unwrap();
+        let s1 = manager.create_session("/ws", &cwd, Some("/bin/sh"), Launch::Shell).unwrap();
+        manager.create_session("/ws", &cwd, Some("/bin/sh"), Launch::Shell).unwrap();
 
-        let err = manager.create_session("/ws", &cwd, Some("/bin/sh")).unwrap_err();
+        let err = manager.create_session("/ws", &cwd, Some("/bin/sh"), Launch::Shell).unwrap_err();
         assert!(err.to_string().contains("session ceiling reached"), "{err}");
         assert_eq!(manager.sessions.lock().unwrap().len(), 2);
 
         // Killing one frees the slot the ceiling was counting.
         manager.kill_session(&s1).unwrap();
-        manager.create_session("/ws", &cwd, Some("/bin/sh")).unwrap();
+        manager.create_session("/ws", &cwd, Some("/bin/sh"), Launch::Shell).unwrap();
     }
 
     /// DP-05: `handle_connection` must refuse to admit a connection past
@@ -9962,7 +10061,7 @@ mod tests {
     /// `claim_card_for_session` reads to decide whether an existing
     /// binding still has an agent behind it.
     fn live_session(manager: &SessionManager) -> String {
-        manager.create_session("/tmp/ws", "/tmp", Some("/bin/sh")).unwrap()
+        manager.create_session("/tmp/ws", "/tmp", Some("/bin/sh"), Launch::Shell).unwrap()
     }
 
     // --- the run history (v27) ---------------------------------------
@@ -10266,7 +10365,7 @@ mod tests {
         .to_string();
 
         let (manager, root, card) = manager_watching_a_card(&dir, &ws, "In Progress");
-        let session = manager.create_session("/tmp/ws", repo_path, Some("/bin/sh")).unwrap();
+        let session = manager.create_session("/tmp/ws", repo_path, Some("/bin/sh"), Launch::Shell).unwrap();
 
         assert!(manager.claim_card_for_session(&root, &card, &session).unwrap());
         assert_eq!(
@@ -10297,7 +10396,7 @@ mod tests {
         }
 
         let (manager, root, card) = manager_watching_a_card(&dir, &ws, "In Progress");
-        let session = manager.create_session("/tmp/ws", outside_path, Some("/bin/sh")).unwrap();
+        let session = manager.create_session("/tmp/ws", outside_path, Some("/bin/sh"), Launch::Shell).unwrap();
 
         assert!(manager.claim_card_for_session(&root, &card, &session).unwrap());
         assert_eq!(manager.get_board("ws-1").unwrap().card_sessions[0].base_sha, None);
@@ -10826,6 +10925,7 @@ mod tests {
                 workspace_path: "/tmp/ws".to_string(),
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
+                profile_id: None,
             },
         );
         let id = match created {
@@ -11093,6 +11193,7 @@ mod tests {
                 workspace_path: "/tmp/ws".to_string(),
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
+                profile_id: None,
             },
         );
         let id = match created {
@@ -11128,6 +11229,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -11162,6 +11264,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -11200,6 +11303,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -11271,6 +11375,8 @@ mod tests {
                     process: None,
                     orphan: None,
                     failure_reason: None,
+                    compressed: false,
+                    uncompressed_reason: None,
                 })
                 .unwrap();
         }
@@ -11321,6 +11427,7 @@ mod tests {
                     workspace_path: repo_path.clone(),
                     cwd: repo_path.clone(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -11386,6 +11493,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -11432,6 +11540,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -11478,6 +11587,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -11525,6 +11635,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -11585,6 +11696,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -11678,6 +11790,7 @@ mod tests {
                 workspace_path: "/tmp/ws".to_string(),
                 cwd: "/tmp".to_string(),
                 command: Some(command.to_string()),
+                profile_id: None,
             },
         );
         match created {
@@ -12126,6 +12239,8 @@ mod tests {
             process: None,
             orphan: None,
             failure_reason: None,
+            compressed: false,
+            uncompressed_reason: None,
         }
     }
 
@@ -12165,6 +12280,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: None,
+                    profile_id: None,
                 },
             );
             match created {
@@ -12220,6 +12336,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -12285,6 +12402,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -12383,6 +12501,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -12444,6 +12563,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -12501,6 +12621,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -12554,6 +12675,7 @@ mod tests {
                     workspace_path: repo_path.clone(),
                     cwd: repo_path.clone(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -12628,6 +12750,8 @@ mod tests {
                     process: None,
                     orphan: None,
                     failure_reason: None,
+                    compressed: false,
+                    uncompressed_reason: None,
                 })
                 .unwrap();
         }
@@ -12693,6 +12817,8 @@ mod tests {
                 process,
                 orphan: None,
                 failure_reason: None,
+                compressed: false,
+                uncompressed_reason: None,
             })
             .unwrap();
     }
@@ -12818,6 +12944,60 @@ mod tests {
     }
 
     #[test]
+    fn recover_forgets_that_the_agent_it_replaced_was_compressed() {
+        // The decision describes the process that was launched, and that
+        // process is not what recovery leaves in the session: a bare
+        // shell is never compressed. A row still reading `compressed`
+        // would be a light that says the tab is routed through Headroom
+        // while nothing in it is.
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let registry = Registry::open(&dir.path().join("registry.sqlite")).unwrap();
+            for (id, compressed, reason) in
+                [("was-compressed", true, None), ("was-not", false, Some("not-ready"))]
+            {
+                registry
+                    .insert(&SessionRecord {
+                        id: id.to_string(),
+                        compressed,
+                        uncompressed_reason: reason.map(str::to_string),
+                        ..session_record(Some("sleep 30"), false)
+                    })
+                    .unwrap();
+            }
+        }
+
+        let manager = recovered_manager(&dir);
+
+        let sessions = manager.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 2);
+        for summary in sessions {
+            assert!(summary.restored, "{}", summary.id);
+            assert!(!summary.compressed, "{}", summary.id);
+            assert_eq!(summary.uncompressed_reason, None, "{}", summary.id);
+        }
+    }
+
+    #[test]
+    fn a_daemon_with_no_headroom_compresses_nothing_and_owes_no_reason() {
+        // Every unit test's manager, and the state a session is in when
+        // Headroom's supervisor was never handed over: a launch still
+        // goes ahead, exactly as it did before there was anything to
+        // decide.
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+
+        let id = manager
+            .create_session("/tmp", "/tmp", Some("sleep 30"), Launch::Profile("claude-code"))
+            .unwrap();
+
+        let summary = manager.list_sessions().unwrap().into_iter().find(|s| s.id == id).unwrap();
+        assert!(!summary.compressed);
+        assert_eq!(summary.uncompressed_reason, None);
+        manager.kill_session(&id).unwrap();
+    }
+
+    #[test]
     fn recover_resets_an_interrupted_rows_status_so_a_bare_shell_never_reads_as_working() {
         // Attach replays the stored status as its baseline. The stored
         // one describes the agent that was working; what is here now is a
@@ -12922,7 +13102,7 @@ mod tests {
             KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
             test_orchestration_store(),
         );
-        let id = manager.create_session("/tmp", "/tmp", Some("sleep 30")).unwrap();
+        let id = manager.create_session("/tmp", "/tmp", Some("sleep 30"), Launch::Shell).unwrap();
 
         manager.recover().unwrap();
 
@@ -13357,7 +13537,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manager = test_manager(&dir);
         let id = manager
-            .create_session("/tmp", "/tmp", Some("/bin/sleep 30"))
+            .create_session("/tmp", "/tmp", Some("/bin/sleep 30"), Launch::Shell)
             .unwrap();
 
         let sample = manager.session_processes().unwrap();
@@ -13431,8 +13611,8 @@ mod tests {
         // however long the walk happened to take between them.
         let dir = tempfile::tempdir().unwrap();
         let manager = test_manager(&dir);
-        let a = manager.create_session("/tmp", "/tmp", Some("/bin/sleep 30")).unwrap();
-        let b = manager.create_session("/tmp", "/tmp", Some("/bin/sleep 30")).unwrap();
+        let a = manager.create_session("/tmp", "/tmp", Some("/bin/sleep 30"), Launch::Shell).unwrap();
+        let b = manager.create_session("/tmp", "/tmp", Some("/bin/sleep 30"), Launch::Shell).unwrap();
 
         let sample = manager.session_processes().unwrap();
         let stamps: std::collections::HashSet<i64> = sample.iter().map(|p| p.sampled_at_us).collect();
@@ -13446,7 +13626,7 @@ mod tests {
     fn session_processes_is_dispatched_to_a_session_process_list() {
         let dir = tempfile::tempdir().unwrap();
         let manager = test_manager(&dir);
-        let id = manager.create_session("/tmp", "/tmp", None).unwrap();
+        let id = manager.create_session("/tmp", "/tmp", None, Launch::Shell).unwrap();
 
         match handle_request(&manager, Request::SessionProcesses) {
             Response::SessionProcessList { processes } => {
@@ -13720,6 +13900,7 @@ mod tests {
                     workspace_path: plain_path.clone(),
                     cwd: plain_path.clone(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -13781,7 +13962,7 @@ mod tests {
     fn killing_a_session_frees_its_screen() {
         let dir = tempfile::tempdir().unwrap();
         let manager = bare_manager(&dir);
-        let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh")).unwrap();
+        let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh"), Launch::Shell).unwrap();
 
         // Attaching spawns the pump, which is what creates the screen.
         let (client, server_side) = Stream::pair().unwrap();
@@ -13832,7 +14013,7 @@ mod tests {
         // that ends that session.
         let dir = tempfile::tempdir().unwrap();
         let manager = test_manager(&dir);
-        let id = manager.create_session("/tmp", "/tmp", None).unwrap();
+        let id = manager.create_session("/tmp", "/tmp", None, Launch::Shell).unwrap();
         manager.registry.lock().unwrap().queue_input(&id, "pasted secret").unwrap();
 
         manager.kill_session(&id).unwrap();
@@ -13862,7 +14043,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manager = test_manager(&dir);
         let id = manager
-            .create_session("/tmp", "/tmp", Some("trap '' HUP; sleep 30"))
+            .create_session("/tmp", "/tmp", Some("trap '' HUP; sleep 30"), Launch::Shell)
             .unwrap();
         let process = manager.registry.lock().unwrap().list().unwrap()[0]
             .process
@@ -13935,6 +14116,7 @@ mod tests {
                     workspace_path: cwd.to_string(),
                     cwd: cwd.to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             );
             match created {
@@ -14024,6 +14206,8 @@ mod tests {
                     process: None,
                     orphan: None,
                     failure_reason: None,
+                    compressed: false,
+                    uncompressed_reason: None,
                 })
                 .unwrap();
         }
@@ -14153,6 +14337,8 @@ mod tests {
                     process: None,
                     orphan: None,
                     failure_reason: None,
+                    compressed: false,
+                    uncompressed_reason: None,
                 })
                 .unwrap();
         }
@@ -14195,6 +14381,8 @@ mod tests {
                     process: None,
                     orphan: None,
                     failure_reason: None,
+                    compressed: false,
+                    uncompressed_reason: None,
                 })
                 .unwrap();
         }
@@ -14240,6 +14428,8 @@ mod tests {
                     process: None,
                     orphan: None,
                     failure_reason: None,
+                    compressed: false,
+                    uncompressed_reason: None,
                 })
                 .unwrap();
         }
@@ -14308,6 +14498,8 @@ mod tests {
                     process: None,
                     orphan: None,
                     failure_reason: None,
+                    compressed: false,
+                    uncompressed_reason: None,
                 })
                 .unwrap();
         }
@@ -14350,6 +14542,8 @@ mod tests {
                     process: None,
                     orphan: None,
                     failure_reason: None,
+                    compressed: false,
+                    uncompressed_reason: None,
                 })
                 .unwrap();
         }
@@ -14389,7 +14583,7 @@ mod tests {
             KanbanStore::open(&dir.path().join("kanban.sqlite")).unwrap(),
             test_orchestration_store(),
         );
-        let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh")).unwrap();
+        let id = manager.create_session("/tmp", "/tmp", Some("/bin/sh"), Launch::Shell).unwrap();
         manager.registry.lock().unwrap().mark_restored(&id).unwrap();
         assert_eq!(
             manager.registry.lock().unwrap().get(&id).unwrap().unwrap().restored,
@@ -14431,6 +14625,8 @@ mod tests {
                     process: None,
                     orphan: None,
                     failure_reason: None,
+                    compressed: false,
+                    uncompressed_reason: None,
                 })
                 .unwrap();
         }
@@ -14468,6 +14664,8 @@ mod tests {
             process: None,
             orphan: None,
             failure_reason: None,
+            compressed: false,
+            uncompressed_reason: None,
         }
     }
 
@@ -14780,6 +14978,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             ) {
                 Response::SessionCreated { id } => id,
@@ -14870,6 +15069,7 @@ mod tests {
                     workspace_path: "/tmp/ws".to_string(),
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
+                    profile_id: None,
                 },
             ) {
                 Response::SessionCreated { id } => id,
