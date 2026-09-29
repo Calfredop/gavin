@@ -1,5 +1,5 @@
 ---
-order: 35840
+order: 16384
 kind: task
 title: "[fix] terminal path links never match a Windows-spelled path"
 status: To Do

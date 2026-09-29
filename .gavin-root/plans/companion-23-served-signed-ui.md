@@ -1,4 +1,5 @@
 ---
+order: 24576
 kind: task
 title: Companion 23: served, signed Workstation UI
 status: To Do

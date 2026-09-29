@@ -1,5 +1,5 @@
 ---
-order: 8192
+order: 10240
 kind: task
 title: [ui] orchestration’s node rework
 status: To Do

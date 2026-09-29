@@ -1,4 +1,5 @@
 ---
+order: 21504
 kind: task
 title: Companion 20: Device keys in the shell
 status: To Do

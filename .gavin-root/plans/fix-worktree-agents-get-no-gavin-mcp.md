@@ -1,5 +1,5 @@
 ---
-order: 33792
+order: 15360
 kind: task
 title: "[fix] Agents in a fresh gavin worktree get no gavin_* tools"
 labels: bug

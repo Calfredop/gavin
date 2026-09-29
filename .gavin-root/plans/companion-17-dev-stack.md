@@ -1,4 +1,5 @@
 ---
+order: 19456
 kind: task
 title: Companion 17: local dev stack and dev-build guard
 status: To Do

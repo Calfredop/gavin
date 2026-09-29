@@ -1,4 +1,5 @@
 ---
+order: 29696
 kind: task
 title: Companion 30: settings, workspace settings and adding a workspace on the phone
 status: To Do

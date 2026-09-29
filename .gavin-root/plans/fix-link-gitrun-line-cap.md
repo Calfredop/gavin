@@ -1,4 +1,5 @@
 ---
+order: 35840
 kind: task
 title: [bug] A large git output on an ssh workspace drops the link's command connection
 status: To Do

@@ -1,4 +1,5 @@
 ---
+order: 22528
 kind: task
 title: Companion 21: the shell pairs with a real Workstation
 status: To Do

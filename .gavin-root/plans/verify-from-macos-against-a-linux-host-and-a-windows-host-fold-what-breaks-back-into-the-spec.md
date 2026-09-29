@@ -1,5 +1,5 @@
 ---
-order: 23552
+order: 3072
 status: In Progress
 kind: task
 title: Verify ssh workspaces from macOS against a Linux host and a Windows host
