@@ -10,7 +10,7 @@ import {
   switchWorkspace,
   type LayoutState,
 } from "$lib/core/layoutState";
-import { copySelection, pasteClipboard } from "$lib/core/clipboard";
+import { copySelection, pasteClipboard, terminalHasSelection } from "$lib/core/clipboard";
 import { confirmTabClose } from "$lib/shell/confirmClose";
 import { findLeafPath, getNodeAtPath, isPinned } from "$lib/panes/layout";
 import {
@@ -251,18 +251,28 @@ export async function handleShortcutKeydown(event: ShortcutKeyEvent): Promise<bo
     }
     return true;
   }
-  // Copy/paste stay macOS-only on metaKey: on Linux/Windows Ctrl+C in a
-  // terminal must remain SIGINT, not a copy.
-  //
-  // A text field keeps its own ⌘C/⌘V. Letting the event through is the
-  // whole fix: WebKit hands ⌘V to the page first, so preventing it here
-  // stopped macOS from ever reaching the Edit menu's Paste, and the
-  // field got nothing while the terminal got the clipboard.
+  // A text field keeps its own copy and paste chords. Letting the event
+  // through is the whole fix: WebKit hands ⌘V to the page first, so
+  // preventing it here stopped macOS from ever reaching the Edit menu's
+  // Paste, and the field got nothing while the terminal got the clipboard.
   const editing = isTextFieldTarget(event.target);
   if (isMac && event.metaKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "c") {
     if (editing) return false;
     consume();
-    await copySelection();
+    await copySelection(focused);
+    return true;
+  }
+  // Windows/Linux have no Command key and no Edit menu to fall back on,
+  // so Ctrl+C has to be both the copy and the terminal's interrupt. The
+  // selection decides, as in Windows Terminal: with one, Ctrl+C copies it
+  // and clears it, so the next Ctrl+C interrupts; with none it is left to
+  // xterm and reaches the shell as ^C. Ctrl+Shift+C, the Linux terminals'
+  // copy, never interrupts and keeps the selection. macOS is untouched:
+  // ⌃C there is only ever the interrupt. AltGr arrives as Ctrl+Alt.
+  if (!isMac && event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "c") {
+    if (editing || !terminalHasSelection(focused)) return false;
+    consume();
+    await copySelection(focused, { clear: !event.shiftKey });
     return true;
   }
   if (isMac && event.metaKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "v") {

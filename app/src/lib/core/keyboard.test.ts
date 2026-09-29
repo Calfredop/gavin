@@ -23,6 +23,7 @@ vi.mock("$lib/core/layoutState", async () => {
 vi.mock("$lib/core/clipboard", () => ({
   copySelection: vi.fn().mockResolvedValue(undefined),
   pasteClipboard: vi.fn().mockResolvedValue(undefined),
+  terminalHasSelection: vi.fn().mockReturnValue(false),
 }));
 vi.mock("$lib/shell/confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
 // Switchable per test via globalThis, which the hoisted factory can read
@@ -45,7 +46,7 @@ import {
   closeSession,
   splitPane,
 } from "$lib/core/layoutState";
-import { copySelection, pasteClipboard } from "$lib/core/clipboard";
+import { copySelection, pasteClipboard, terminalHasSelection } from "$lib/core/clipboard";
 import { handleShortcutKeydown, type ShortcutKeyEvent } from "$lib/core/keyboard";
 import { requestedCompose } from "$lib/cards/composeRequest";
 import { provideNextWaitingJump } from "$lib/agents/nextWaitingJump";
@@ -106,6 +107,9 @@ function hubWorkspace(view: string): unknown[] {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks keeps implementations, so a test that gave the terminal
+  // a selection would otherwise hand it to every test after it.
+  vi.mocked(terminalHasSelection).mockReturnValue(false);
   (globalThis as Record<string, unknown>).__testIsMac = true;
   requestedCompose.set(null);
   hubTabsHiddenDefault.set([]);
@@ -430,7 +434,15 @@ describe("clipboard shortcuts", () => {
   it("⌘C in the terminal still copies the terminal selection", async () => {
     const e = copy({ target: xtermTextarea() });
     expect(await handleShortcutKeydown(e)).toBe(true);
-    expect(copySelection).toHaveBeenCalled();
+    expect(copySelection).toHaveBeenCalledWith("a");
+  });
+
+  it("⌃C on macOS stays the interrupt, selection or not", async () => {
+    vi.mocked(terminalHasSelection).mockReturnValue(true);
+    const e = copy({ metaKey: false, ctrlKey: true, target: xtermTextarea() });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(copySelection).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
   });
 
   it("⌘V from a hub tab never reaches a background page's terminal", async () => {
@@ -446,6 +458,67 @@ describe("clipboard shortcuts", () => {
     const e = copy({ target: domTarget({ tagName: "DIV" }) });
     expect(await handleShortcutKeydown(e)).toBe(false);
     expect(copySelection).not.toHaveBeenCalled();
+  });
+});
+
+describe("clipboard shortcuts on Windows/Linux", () => {
+  // No Command key, and no Edit menu to fall back on: Ctrl carries both
+  // the copy and the interrupt, and the selection says which one it is.
+  const ctrl = (over: Partial<ShortcutKeyEvent> = {}) =>
+    event({ key: "c", code: "KeyC", metaKey: false, ctrlKey: true, target: xtermTextarea(), ...over });
+
+  beforeEach(() => {
+    (globalThis as Record<string, unknown>).__testIsMac = false;
+  });
+
+  it("Ctrl+C with a selection copies it and clears it, so the next Ctrl+C interrupts", async () => {
+    vi.mocked(terminalHasSelection).mockReturnValue(true);
+    const e = ctrl();
+    expect(await handleShortcutKeydown(e)).toBe(true);
+    expect(terminalHasSelection).toHaveBeenCalledWith("a");
+    expect(copySelection).toHaveBeenCalledWith("a", { clear: true });
+    // Consumed, or xterm would also send ^C to the shell.
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(e.stopPropagation).toHaveBeenCalled();
+  });
+
+  it("Ctrl+C with nothing selected is left to the terminal as the interrupt", async () => {
+    const e = ctrl();
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(copySelection).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    expect(e.stopPropagation).not.toHaveBeenCalled();
+  });
+
+  it("Ctrl+Shift+C copies the selection and keeps it", async () => {
+    vi.mocked(terminalHasSelection).mockReturnValue(true);
+    const e = ctrl({ key: "C", shiftKey: true });
+    expect(await handleShortcutKeydown(e)).toBe(true);
+    expect(copySelection).toHaveBeenCalledWith("a", { clear: false });
+  });
+
+  it("leaves Ctrl+C alone in a text field so the field copies its own selection", async () => {
+    vi.mocked(terminalHasSelection).mockReturnValue(true);
+    const e = ctrl({ target: domTarget({ tagName: "INPUT" }) });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(copySelection).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("leaves AltGr+C alone -- it arrives as Ctrl+Alt and types a character", async () => {
+    vi.mocked(terminalHasSelection).mockReturnValue(true);
+    const e = ctrl({ altKey: true });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(copySelection).not.toHaveBeenCalled();
+  });
+
+  it("Ctrl+C from a hub tab never copies a background page's selection", async () => {
+    vi.mocked(terminalHasSelection).mockReturnValue(true);
+    setState({ workspaces: hubWorkspace("prd") });
+    const e = ctrl({ target: domTarget({ tagName: "DIV" }) });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(copySelection).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
   });
 });
 
