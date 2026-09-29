@@ -2,7 +2,7 @@
 order: 34816
 kind: note
 title: Phase 3: the device pushes reach the app COMMAND connection too
-status: To Do
+status: Done
 priority: medium
 ---
 Found while wiring the three device pushes into the app (the settings-panel task).
@@ -16,3 +16,5 @@ Found while wiring the three device pushes into the app (the settings-panel task
 **Not fixed in the settings task**, deliberately: the fix is the daemon's, not the app's. The two connections are indistinguishable to `resolve_hello` today, so telling them apart needs a field on `Hello` (which connection this is) or a separate subscribe request -- a protocol change, and one that belongs with the transport that needs it.
 
 Worth folding into `docs/security/05-remote-access.md` §7 when the spec pass runs: 'push to every live app connection' is not the same as 'push to the connection the app reads pushes on', and the design says the former.
+
+**Resolved by `companion-05-hello-connection-kind.md` (protocol v44).** `Hello` gained `connection` (`ConnectionKind`: push or command); the app sends it on every connection it presents, and the daemon registers only a connection that reads pushes -- so `push_to_apps` and 'is an app live?' no longer see the command connection. A `Hello` with no field, which is every client older than v44, keeps today's behaviour. The command lane's `is_unsolicited` skip stays for a daemon older than v44. The §7 wording is left to `companion-08-security-doc.md`.

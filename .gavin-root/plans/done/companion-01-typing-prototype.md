@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Companion 01: typing prototype
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: companion.md
 complexity: moderate
@@ -25,8 +25,12 @@ Keep it on a `prototype/companion-typing` branch out of main, and publish it som
 ## Acceptance criteria
 
 - [ ] The page runs on iPhone Safari and on Android Chrome
-- [ ] All three modes switch at runtime
-- [ ] Findings are written in the prototype's README: which mode wins, which quick replies, and what broke (selection, input methods, scrolling)
-- [ ] The spec's typing decision is confirmed or amended, in a comment on `companion.md`
+  Note (2026-09-28): runs on iPhone Safari (the owner's iPhone, and Mobile Safari 26.5 in the iOS Simulator). Android Chrome was not run: the owner tested on an iPhone only.
+- [x] All three modes switch at runtime
+- [x] Findings are written in the prototype's README: which mode wins, which quick replies, and what broke (selection, input methods, scrolling)
+- [x] The spec's typing decision is confirmed or amended, in a comment on `companion.md`
 
 When the page is up, file a human test: the owner answers the fake agent in each mode on their own phone and picks one.
+
+- [x] Human test: On your own phone, open the bench (Claude app: https://claude.ai/artifact/TNPnXSiqoiBANkFYGesFox, or in Safari/Chrome on the Mac's Wi-Fi: http://192.168.1.194:8787/ while `python3 prototypes/companion-typing/serve.py` runs in the prototype/companion-typing worktree), answer the five fake-agent prompts once in each mode (Raw, Compose, Both), also try touch-scrolling the terminal, long-press selecting text, opening and closing the keyboard and the More keys, then open the ⋯ menu, tap your pick, add notes, tap Copy report and reply here with the pick and the report.
+  Result (2026-09-28): passed

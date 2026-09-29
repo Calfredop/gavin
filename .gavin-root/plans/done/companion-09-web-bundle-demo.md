@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Companion 09: web bundle, bundle channel and Demo Workstation
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: companion.md
 complexity: intricate
@@ -24,9 +24,14 @@ Traps:
 
 ## Acceptance criteria (seam 2: vitest against the Demo Workstation)
 
-- [ ] invoke and listen round-trip through the channel
-- [ ] A test proves no layout-saving command is ever sent
-- [ ] A test proves the rail scheduler never starts
-- [ ] The capabilities query lets a bundle degrade on an unknown message type
-- [ ] The bundle builds and runs in a desktop browser against the Demo Workstation
-- [ ] The desktop's own suites still pass (`npm test`, `npm run check`)
+- [x] invoke and listen round-trip through the channel
+- [x] A test proves no layout-saving command is ever sent
+- [x] A test proves the rail scheduler never starts
+- [x] The capabilities query lets a bundle degrade on an unknown message type
+- [x] The bundle builds and runs in a desktop browser against the Demo Workstation
+- [x] The desktop's own suites still pass (`npm test`, `npm run check`)
+- [ ] Human test: In `app/`, run `npm run companion:dev` and open http://localhost:1430 in Safari (WebKit, the engine an iPhone runs) at phone width, or on a phone on the same network. The workspace list and a board read well at that size, swiping the board moves the column strip with it, tapping a column moves the board, and nothing scrolls sideways.
+
+## Where it landed
+
+The bundle is `app/companion/` (branch `companion/phone`); its README has the channel's message set, the shell's side of the contract for companion-19, and what holds each of the three rules.

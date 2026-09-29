@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Companion 03: protocol crate compiles to WASM
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: companion.md
 complexity: moderate
@@ -22,7 +22,7 @@ Put those operating-system-specific parts behind a Cargo feature, on by default 
 
 ## Acceptance criteria
 
-- [ ] The protocol crate checks for `wasm32-unknown-unknown` with the OS feature off
-- [ ] `cargo test --workspace` passes unchanged. Re-run the daemon's `gavin::tests` alone before calling a failure a regression.
-- [ ] The pairing SAS and its pinned test vector stay available without the OS feature
-- [ ] CI runs the WASM check
+- [x] The protocol crate checks for `wasm32-unknown-unknown` with the OS feature off
+- [x] `cargo test --workspace` passes unchanged. Re-run the daemon's `gavin::tests` alone before calling a failure a regression.
+- [x] The pairing SAS and its pinned test vector stay available without the OS feature
+- [x] CI runs the WASM check

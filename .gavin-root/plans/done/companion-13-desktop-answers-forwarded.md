@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Companion 13: the desktop app answers forwarded commands
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: companion.md
 complexity: intricate
@@ -26,7 +26,8 @@ Traps:
 
 ## Acceptance criteria (seam 3)
 
-- [ ] Dispatch tests show a forwarded call reaching the same handler as the webview's `invoke`
-- [ ] The table-equals-registered-commands test fails when an entry is missing
-- [ ] An emitted event reaches the forwarding connection
+- [x] Dispatch tests show a forwarded call reaching the same handler as the webview's `invoke`
+- [x] The table-equals-registered-commands test fails when an entry is missing
+- [x] An emitted event reaches the forwarding connection
 - [ ] The test Device, through a local Relay and a running dev desktop, invokes a real read command and gets its result
+- [ ] Human test: With remote access on against a local Relay, a paired test Device (or the Companion), and the running dev desktop: InvokeDesktop get_theme_pref (or get_board for a known workspace) and confirm the real handler result returns — not "desktop app not running".

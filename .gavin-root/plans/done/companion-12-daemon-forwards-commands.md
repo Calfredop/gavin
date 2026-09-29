@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Companion 12: the daemon forwards gated commands
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: companion.md
 complexity: complex
@@ -23,8 +23,8 @@ The Remote role becomes useful.
 
 ## Acceptance criteria (seam 1, with a scripted desktop stand-in)
 
-- [ ] An allowed command reaches the stand-in, and its result returns
-- [ ] Trust and layout-saving commands are refused before any forwarding
-- [ ] An unknown command name is refused
-- [ ] Events reach only the Devices that subscribed
-- [ ] "desktop app not running" is answered when the stand-in is absent
+- [x] An allowed command reaches the stand-in, and its result returns
+- [x] Trust and layout-saving commands are refused before any forwarding
+- [x] An unknown command name is refused
+- [x] Events reach only the Devices that subscribed
+- [x] "desktop app not running" is answered when the stand-in is absent

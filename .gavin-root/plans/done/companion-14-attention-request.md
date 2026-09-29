@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Companion 14: the attention request
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: companion.md
 complexity: moderate
@@ -21,6 +21,6 @@ The request carries an explicit version, and it only ever grows by optional fiel
 
 ## Acceptance criteria
 
-- [ ] Seam 1: the test Device gets the items the stand-in reports, and the "desktop app not running" state when it is absent
-- [ ] The desktop's answer is built by a pure module, unit-tested from inbox, verdict and rail state
-- [ ] An older reader ignores an unknown optional field
+- [x] Seam 1: the test Device gets the items the stand-in reports, and the "desktop app not running" state when it is absent
+- [x] The desktop's answer is built by a pure module, unit-tested from inbox, verdict and rail state
+- [x] An older reader ignores an unknown optional field

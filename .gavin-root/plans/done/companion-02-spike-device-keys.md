@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Companion 02: spike, Device keys and the Unlock on real phones
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: companion.md
 complexity: complex
@@ -24,7 +24,15 @@ Answer these questions with a minimal, throwaway native test app: Swift for iOS 
 
 ## Acceptance criteria
 
-- [ ] Findings in `docs/research/`, with the recommended key parameters per platform
-- [ ] ADR 0001 or ADR 0004 amended if a finding contradicts it
+- [x] Findings in `docs/research/`, with the recommended key parameters per platform
+- [x] ADR 0001 or ADR 0004 amended if a finding contradicts it
 
 When the spike app runs, file a human test: the owner installs it on their iPhone and on an Android phone, and confirms the prompt behaviour for sign, sign again, background, Control Center, and lock.
+
+## Outcome
+
+Findings: `docs/research/2026-09-28-companion-device-keys.md`, committed with the ADR 0001, 0004 and 0005 amendments on `spike/companion-device-keys` (38b6f289). The throwaway app is outside git at `.gavin-worktrees/spike-companion-device-keys/.spike/device-keys/`; its `README.md` says how to put it on each phone.
+
+- [ ] Human test: Install KeySpike from `.gavin-worktrees/spike-companion-device-keys/.spike/device-keys` (see its README) on your iPhone and on an Android phone, run the 9 steps printed in the app, and confirm: exactly one prompt at Unlock; Sign and Sign ×5 with no prompt; Control Center / the notification shade and a call banner leave it unlocked; Home, then Sign, is refused; lock, then Sign, is refused. Screenshot the log at the end, including the "signLater" line from step 8.
+- [ ] Decision: Android hardware-key auth window T: a new connection opened more than T after the Unlock asks again, and any lock-screen unlock also reopens the window. Which T?
+  Options: A) 1 hour (recommended) B) 15 minutes C) 4 hours

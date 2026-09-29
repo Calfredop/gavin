@@ -1,7 +1,7 @@
 ---
 kind: task
 title: Companion 05: Hello tells the push connection from the command connection
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: companion.md
 complexity: moderate
@@ -23,6 +23,6 @@ To fix it:
 
 ## Acceptance criteria
 
-- [ ] A test shows a device push during an in-flight command never displaces that command's reply
-- [ ] An older app that sends no field keeps today's behaviour
-- [ ] The existing card is resolved and set Done
+- [x] A test shows a device push during an in-flight command never displaces that command's reply
+- [x] An older app that sends no field keeps today's behaviour
+- [x] The existing card is resolved and set Done
