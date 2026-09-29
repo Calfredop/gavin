@@ -195,6 +195,15 @@ Point the desktop app at it in Settings -> Remote access: Relay URL
 `ws://localhost:8443` and the token above. A phone or simulator on the same
 network uses this machine's LAN address instead of `localhost`. `docker compose
 -f compose.dev.yaml down -v` removes the stack and the gateway's database.
+
+**A dev build only talks to a local Relay.** A debug build of the desktop app
+may turn remote access on only against a Relay on loopback (`localhost`,
+`127.0.0.0/8`, `::1`) or the LAN (private and link-local addresses, `.local`
+names). Any other URL is refused, and the dev build's daemon does not dial
+one that the shared trust store already holds -- the release build may have
+saved a public Relay there. A release build takes any `wss://` Relay. The rule
+is `protocol::relay::RelayUrl::parse_for`.
+
 ## Run the daemon standalone
 
 Useful for testing/debugging the daemon without the GUI:

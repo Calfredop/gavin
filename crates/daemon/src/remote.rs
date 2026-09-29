@@ -379,6 +379,14 @@ fn desired(manager: &SessionManager) -> Option<Dial> {
         return None;
     }
     let url = settings.relay_url?;
+    // The store is shared with the release build, which may have saved a
+    // public Relay; a dev build's daemon does not dial it.
+    // (Any other fault in the URL is the dial's to name in the log.)
+    if let Err(relay::RelayUrlError::PublicHostInDevBuild) =
+        relay::RelayUrl::parse_for(&url, manager.build_profile())
+    {
+        return None;
+    }
     let key = trust.static_public_key().ok()?;
     Some(Dial {
         url,
@@ -1138,6 +1146,8 @@ mod tests {
             .unwrap(),
         );
         manager.set_trust_store(TrustStore::open(&dir.path().join("devices.sqlite")).unwrap());
+        // The tests below use example hosts; the dev guard has its own.
+        manager.set_build_profile(protocol::BuildProfile::Release);
         manager
     }
 
@@ -1151,6 +1161,22 @@ mod tests {
                 relay_admission: token.map(str::to_string),
             })
             .unwrap();
+    }
+
+    /// The dev build shares its trust store with the release build, so a
+    /// public Relay the release build saved must not be dialled by it.
+    #[test]
+    fn a_dev_build_does_not_dial_a_public_relay_the_store_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(&dir);
+        tell(&manager, true, Some("wss://relay.example"), Some("let-me-in"));
+        assert!(desired(&manager).is_some(), "a release build dials it");
+
+        manager.set_build_profile(protocol::BuildProfile::Dev);
+        assert_eq!(desired(&manager), None, "a dev build does not");
+
+        tell(&manager, true, Some("ws://192.168.1.20:9000"), Some("let-me-in"));
+        assert!(desired(&manager).is_some(), "a Relay on the LAN is fine");
     }
 
     /// The rule the whole module hangs on: there is something to dial

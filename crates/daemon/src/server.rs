@@ -1511,6 +1511,9 @@ pub struct SessionManager {
     /// above and unlike `trust`: it holds no file and cannot fail, and a
     /// manager whose dial was never started simply has nobody listening.
     remote_wake: Arc<crate::remote::Wake>,
+    /// Which Relays this daemon may use; see `protocol::RelayUrl::parse_for`.
+    /// A test may pin it, since the test build is a dev build.
+    build_profile: Mutex<protocol::BuildProfile>,
     /// Where the dial to the Relay stands, written by `remote.rs` and read
     /// by `GetRelayState`. Held here and not in the dial's thread because
     /// the desk asks for it from a connection's, and pushes follow every
@@ -1763,6 +1766,7 @@ impl SessionManager {
             pending_offer: Mutex::new(None),
             pending_pairings: Mutex::new(HashMap::new()),
             remote_wake: Arc::new(crate::remote::Wake::default()),
+            build_profile: Mutex::new(protocol::BuildProfile::current()),
             relay_state: Mutex::new(protocol::RelayState::NotWanted),
             next_pairing_ticket: AtomicU64::new(0),
             git_ops: Mutex::new(HashMap::new()),
@@ -1896,6 +1900,15 @@ impl SessionManager {
     /// Hands this daemon its trust store. Called once by `serve` before
     /// the socket accepts anything; idempotent, because the `OnceLock`
     /// ignores a second set.
+    pub fn build_profile(&self) -> protocol::BuildProfile {
+        *self.build_profile.lock().unwrap()
+    }
+
+    #[cfg(test)]
+    pub fn set_build_profile(&self, profile: protocol::BuildProfile) {
+        *self.build_profile.lock().unwrap() = profile;
+    }
+
     pub fn set_trust_store(&self, store: crate::trust::TrustStore) {
         let _ = self.trust.set(Mutex::new(store));
     }
@@ -2678,6 +2691,16 @@ impl SessionManager {
         relay_url: Option<String>,
         relay_admission: Option<String>,
     ) -> anyhow::Result<()> {
+        // A dev build turns remote access on only against a Relay on this
+        // machine or network. Switching it off, or storing a URL while it
+        // is off, is never refused: the store is shared with the release
+        // build, which may have put a public one there.
+        if enabled {
+            if let Some(url) = relay_url.as_deref().filter(|u| !u.trim().is_empty()) {
+                protocol::relay::RelayUrl::parse_for(url, self.build_profile())
+                    .map_err(|e| anyhow::anyhow!("gavin-daemon: {e}"))?;
+            }
+        }
         {
             let trust = self.trust_or_err()?;
             let relay_admission = match relay_admission {
@@ -11000,6 +11023,8 @@ mod tests {
     /// take the `app` role against it.
     fn paired_manager(dir: &tempfile::TempDir) -> Arc<SessionManager> {
         let manager = trusted_manager(dir);
+        // These tests use example hosts; the dev guard has its own.
+        manager.set_build_profile(protocol::BuildProfile::Release);
         manager.set_daemon_token("test-daemon-token".to_string());
         manager
     }
@@ -11807,6 +11832,33 @@ mod tests {
             }
             other => panic!("expected Devices, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_dev_build_refuses_to_turn_remote_access_on_against_a_public_relay() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = paired_manager(&dir);
+        let mut app = connect_as_app(&manager);
+
+        manager.set_build_profile(protocol::BuildProfile::Dev);
+        let refused = app.request(&Request::SetRemoteAccess {
+            enabled: true,
+            relay_url: Some("wss://relay.example/gavin".into()),
+            relay_admission: None,
+        });
+        match refused {
+            Response::Error { message } => assert!(message.contains("development build"), "{message}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(!manager.trust().unwrap().remote_access().unwrap().enabled);
+
+        // Off is never refused, and neither is a Relay on this network.
+        set_remote_access(&mut app, false, Some("wss://relay.example/gavin"), None);
+        set_remote_access(&mut app, true, Some("ws://127.0.0.1:9000"), None);
+
+        // A release build takes the public one.
+        manager.set_build_profile(protocol::BuildProfile::Release);
+        set_remote_access(&mut app, true, Some("wss://relay.example/gavin"), None);
     }
 
     fn set_remote_access(app: &mut AppConn, enabled: bool, url: Option<&str>, token: Option<&str>) {
