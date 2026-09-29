@@ -2,5 +2,5 @@ version = 1
 
 [agent]
 profile = "claude-code"
-command = "claude"
+command = "cclaude --dontask"
 file = "CLAUDE.md"
