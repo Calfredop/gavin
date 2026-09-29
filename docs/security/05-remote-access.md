@@ -123,7 +123,7 @@ pairing secret, records it with a two-minute expiry, and returns the QR payload.
 draws the QR. The phone scans it, connects (over the transport in §5, or the LAN), and
 runs a Noise `XX` handshake with the pairing secret mixed in as a pre-shared key. The
 phone sends its static public key and a device name inside the handshake. Both screens
-then show a six-digit short authentication string derived from both static keys. The
+then show a six-digit short authentication string derived from the handshake hash. The
 daemon pushes `DevicePairingRequested { device_id, name, sas }` to the app; the human
 compares the two codes and confirms **on the desktop**. Only then does the daemon write
 the device into the trust store and answer the phone with `HelloAck { role: "remote" }`.
@@ -146,17 +146,27 @@ implementer, settled in `crates/daemon/src/pairing.rs` and `crates/protocol`:
   belongs with the wire contract rather than inside one peer.
 
   ```text
-  lo     = min(key_a, key_b)            // bytewise lexicographic
-  hi     = max(key_a, key_b)
-  digest = SHA-256("gavin-pairing-sas-v1" || lo || hi)
+  digest = SHA-256("gavin-pairing-sas-v2" || handshake hash)
   sas    = u64::from_be_bytes(digest[0..8]) % 1_000_000
   shown  = sas, zero-padded to six digits ("000042", never "42")
   ```
 
-  The keys are **sorted** rather than ordered initiator-then-responder, so each side
-  computes the code from what it holds without first agreeing on who is who. The context
-  string carries a version, so a future change to the derivation is a *different* code
-  rather than the same six digits meaning two things. Zero-padding is load-bearing: a
+  The handshake hash is the Noise hash of this pairing's `XXpsk3` exchange, which both
+  ends hold after message 3 without agreeing on who is who. It covers both static keys,
+  both ephemerals and the mixing of the secret, so **a handshake the owner's phone did
+  not make shows other digits than the owner's phone does — even one made with a copy
+  of the phone's Noise key.** (v1 hashed the two static keys alone, so two pairings made
+  with one Noise key showed one code whoever made them, whatever hardware key each
+  registered: `companion-33`.) The context string carries a version, so the change was a
+  *different* code rather than the same six digits meaning two things.
+
+  **The Device shows the code only once the Workstation has said it took its proof.**
+  After the proof and before the desk rules, the daemon sends one sealed frame,
+  `PairingAck::ProofTaken`, and only after this handshake has spent the offer. A Device
+  whose handshake lost the race for the one-use secret is never sent it, so it shows no
+  code and no human is asked to compare one. And when `DevicePairingRequested` names an id
+  the trust store already holds, the desk's dialog says that confirming replaces that
+  Device's keys. Zero-padding is load-bearing: a
   human asked to compare "42" against "000042" has been handed a puzzle instead of a
   check, and the whole ceremony rests on that comparison being trivially obvious.
 - **There is a Reject button.** This section describes confirm and says nothing about
@@ -191,7 +201,7 @@ separately from the other devices that used it. Rejected. Trust-on-first-use wit
 confirmation (first scanner wins) loses to an attacker who photographs the QR and
 scans faster than the owner: the desktop would show "iPhone paired" and the human would
 nod. The SAS closes that: the attacker's phone and the human's phone produce different
-codes, and the code on the desktop belongs to whoever actually completed the handshake.
+codes (the code covers the handshake, not just the keys), and the code on the desktop belongs to whoever actually completed the handshake.
 This is Bluetooth numeric comparison and Signal safety numbers, which is where a
 single-developer product should stand rather than invent.
 
@@ -231,7 +241,8 @@ escape sequence at the desktop nor push the six-digit code off the dialog the hu
 supposed to be reading. A name that survives none of that becomes "unnamed device"
 rather than an empty string, because "confirm ''" tells the human nothing.
 
-**How many, for how long.** Three devices by default (Settings can raise it). A device's
+**How many, for how long.** Five devices (three when this was written; the Companion
+spec raised it, and `trust::DEFAULT_DEVICE_CAP` is where it is). A device's
 trust has no scheduled expiry: a certificate that lapses on a laptop that sleeps for a
 week is a re-pair the human did not ask for. Instead `last_seen_at` drives a nag: a
 device unseen for ninety days is shown greyed with "re-pair to use", and is refused
@@ -626,6 +637,18 @@ rather than a comment (`the_qr_payload_carries_only_what_section_3_allows`):
  "rendezvous":["wss://…"],"protocolVersion":42}
 ```
 
+**Since v52 the QR carries one thing more**, and only when there is one to
+carry: `"relayAdmission":"…"`, the Relay's admission token
+(`docs/superpowers/specs/2026-09-27-companion-design.md`, "Pairing and the
+trust store"). §3's "what it must not carry" lists "the relay's own
+credentials", and the token is not one of those: it is not what lets anyone
+be the Relay or run it, it is what the Relay asks of every peer it carries,
+already held by every Workstation and Device on that Relay. It reaches
+nothing on this machine, and the secret beside it still lapses in two
+minutes. `the_qr_carries_the_admission_token_when_there_is_one` pins the
+field; the test above it still pins the four that a QR without a token
+holds.
+
 `DeviceInfo` — one row of the trust store, as the device list reads it:
 
 ```json
@@ -870,7 +893,149 @@ relay URL stored, `netstat -ano` shows the daemon owning no TCP or UDP endpoint 
 before, during and after. There is nothing to find, because there is nothing that
 listens or dials — `SetRemoteAccess` writes two values into the trust store and stops.
 
-**Phase 3 — transport and relay.**
+**Phase 3 — transport and relay. — FIRST SLICE LANDED, `PROTOCOL_VERSION = 52` (built as 45 on its branch, renumbered past `main`'s Headroom when the two met).**
+What landed is pairing through a Relay, and it is the Companion spec's first
+ticket rather than this list: `crates/gavin-relay`, the daemon's dial
+(`remote.rs`: dial only while the store says enabled, reconnect on wake,
+the pairing responder over a stream the Relay hands it, the desk's verdict
+sent back in one padded frame), and `crates/companion-core`, whose native
+build is the test Device. Proved at the spec's seam 1
+(`crates/daemon/tests/device_wire.rs`): a real daemon under a temporary
+`$HOME`, a real local Relay over TLS, the test Device. Three things that
+were settled by building it:
+
+- **Admission rides in the first WebSocket frame**, not in a header or the
+  URL (`protocol::relay`). A webview's `WebSocket` cannot set a header, and
+  a token in a URL is a token in every proxy's log. The Relay URL is
+  therefore opaque and is dialled as typed.
+- **One stream, one connection.** The daemon holds a registration that
+  carries announcements and nothing else, and picks each Device's stream
+  up on a connection of its own, so the Relay's whole job stays "copy one
+  socket to another". A stream is announced to every registration under
+  the rendezvous id and picked up by one -- two daemons can share a key,
+  and the one that holds the pairing offer is the one that takes it.
+- **`ws://` is dialled only to this machine or this network.** Inside the
+  pipe everything is end to end regardless, but the admission token and
+  the rendezvous id are in the first frame. A host two URL parsers could
+  read two ways (`010.0.0.1`, a backslash, a zone id) is refused outright:
+  the Companion's webview has a parser of its own. The rule is
+  `protocol::relay::RelayUrl::parse`; the Settings field's hint is a
+  mirror of it, and `test-fixtures/relay-urls/` holds both to one table.
+- **The secret is spent by the handshake that completes, under a lock.**
+  §3's "a completed handshake spends it" was true of handshakes one after
+  another and not of two in flight at once, which a transport makes
+  possible: the offer is read before three round trips and used after
+  them. It is now checked again at completion -- still this offer, still
+  inside its two minutes -- and taken in the same step, so one secret asks
+  the desk about one Device, and a late handshake on a replaced offer
+  cannot take the new one with it.
+- **The token goes with its Relay.** Saving another Relay URL without a
+  token forgets the stored one, because the daemon presents what it holds
+  to whatever it dials.
+- **The daemon follows the store, not only its own requests.** The dev
+  build's daemon and the release build's share `devices.sqlite`, and
+  neither can tell the other what it wrote, so each re-reads the
+  remote-access settings every two seconds. Turning the switch off in
+  either app lets go of the Relay in both -- including a Device half-way
+  through pairing, which is told the pairing lapsed.
+
+**SECOND SLICE LANDED, `PROTOCOL_VERSION = 53` (built as 46): a paired Device connects.**
+`IK`, the hardware signature (ADR 0001) and the Remote role over the wire,
+proved at the same seam. What was settled by building it:
+
+- **The Device's proof is the first message on the channel EVERY handshake
+  leaves**, pairing's as well as a connection's (`protocol::device_wire`,
+  `UnlockProof`). It is the hardware key's signature over
+  `"gavin-device-unlock-v1" || handshake hash` — ECDSA P-256 over SHA-256,
+  ASN.1 DER, which is what both platforms' hardware emits. At pairing the
+  proof also carries the hardware public key, which is how the key is
+  registered, and the daemon verifies the signature before it asks the desk
+  anything: a Device that cannot sign with the key it registers is one that
+  could never connect. At connection the proof names no key. What a
+  connection is judged against is the trust store's row, never something the
+  connection brought with it (`daemon/src/unlock.rs`).
+- **The notification key is minted by the daemon when the desk confirms**,
+  stored on the Device's row, and told to the Device in the `paired` verdict
+  — inside the channel the pairing handshake left, which is the one moment
+  both ends are sure of each other and neither the Relay nor the Push gateway
+  is a party. Pairing again mints another.
+- **A refusal is said, by name, inside the channel.** A first message that
+  does not open ends the stream without a word — it was not sealed to this
+  Workstation's key, so there is no channel to say anything in — and that is
+  what a Device that pinned a rotated key meets. Every refusal after that
+  (`not-paired`, `revoked`, `stale`, `pair-again`, `unlock`, `busy`) reaches
+  the Device as what it is, because each is a different thing for the
+  Companion to tell the human holding it. It is told to a peer that has by
+  then proved it holds the Device's Noise key.
+- **The plaintext is this protocol, unchanged, as §5 said** — and the
+  connection loop is the local socket's own. `remote.rs` hands a verified
+  Device to `SessionManager::adopt_device`, which serves one end of an
+  in-process socket pair as `remote`; what `remote.rs` does from then on is
+  copy. So revocation drops a Device the way phase 2 built and tested it, by
+  shutting that socket.
+- **The transport's identity is final.** The loop used to take whatever a
+  `Hello` resolved to as the connection's identity, and a `Hello` that
+  presents nothing resolves to `local` — every request there is. On a
+  Device's connection a `Hello` is now answered `HelloAck { role: "remote" }`
+  with no `server_proof`, and changes nothing, whatever it presents.
+- **A connection is judged for as long as it is carried.** Once by the key
+  that completed its handshake; again by its id once it is registered —
+  after the entry exists that a revocation would find, because a revocation
+  marks the row and then shuts the connections it finds, and one that landed
+  between the two would otherwise be found by nobody; and then every second,
+  on the poll that re-reads the settings, because the daemon that pressed
+  Revoke may be the OTHER one sharing the store, which shuts the connections
+  IT holds.
+- **A handshake has one deadline**, ten seconds for the handshake and the
+  proof together, not a timeout on each read of them: a peer that sends a
+  byte inside every timeout would never run out. And connections being let
+  in have places of their own (eight), apart from the four a pairing can
+  take, because a connection can be asked for at any time by anything the
+  Relay admits and must not be what keeps the owner from pairing.
+- **Nothing that carries a connection waits on the connection loop.** Its
+  replies are read by one thread and what it is handed is written by
+  another, so the thread between them is always free to see that the Device
+  has gone or the switch has been turned off. A Device that sends without
+  reading is held to the pace it reads at, and given up on after thirty
+  seconds.
+- **A revoked Device that pairs again asks for a slot like any other**, and
+  pairing again shuts the connections made under the keys it replaces.
+- **A frame that does not open ends the connection.** Altered, repeated,
+  dropped or moved, it is read against the wrong count, and so is every frame
+  after it: there is nothing to skip to. §8's "a dropped frame" is that frame
+  and the connection with it, which is the Companion spec's user story 71 —
+  a failed connection, never a wrong answer.
+- **Two daemons, one key, one Device.** The dev build's daemon and the
+  release build's both hold the Device's row and are both announced its
+  stream. The one with a desktop app connected picks it up at once; one with
+  nobody at the desk waits 400 ms first, and picks it up all the same if
+  nobody else has.
+- **The Remote role may remove itself and ask the daemon to forward a
+  gated desktop command** (`InvokeDesktop`, `ListenDesktop`,
+  `UnlistenDesktop`): the command table refuses Trust, layout-saving,
+  window, updater and external-open names before any write to the
+  desktop, and with no forwarding connection live the answer is
+  "desktop app not running" (companion-12). Everything else is
+  `Forbidden`.
+- **The `IK` half of the proof phase 2 left owing is discharged**
+  (`after_revoke_all_an_old_devices_ik_is_refused`): after "Revoke all" a
+  Device that pinned the old key finds nobody at the old rendezvous; shown
+  the new one, its first message does not open; and told the new key too, it
+  is refused by its row.
+
+Still owed by this phase, and not by this slice: the per-connection request
+rate and the hourly rekey (§5, §8), neither of which the Companion spec
+asks of this ticket, and Android's attestation chain at pairing (ADR 0001),
+which arrives with the shell that produces one. The direct listener is out
+of the Companion spec's scope.
+
+**Closed by `companion-33`.** The six-digit code used to be derived from the two
+Noise keys alone, so it could not tell a pairing made with a copied Noise key and
+another hardware key from the one the owner's phone made. It now covers the
+pairing handshake (§3), the Device shows it only after the Workstation has taken
+its proof, and the desk's dialog says when a pairing is for a Device it already
+trusts.
+
 Lands: `remote.rs` (dial, reconnect on wake, Noise `IK`, framing, padding, caps) feeding
 `handle_connection` with role `remote`; `crates/gavin-relay`; the direct loopback/LAN
 listener for the Tailscale case; the daemon dials only when the store says enabled.
@@ -912,7 +1077,8 @@ it is not part of this design.
 2. Should gavin run a public relay, or ship `gavin-relay` self-host-only? — Default:
    ship it self-hostable first and run one public instance; the QR carries the URL, so
    the human can point at their own.
-3. Maximum paired devices? — Default: three, raisable in Settings.
+3. Maximum paired devices? — Default: three, raisable in Settings. *Answered by the
+   Companion spec: five.*
 4. Should device trust ever expire on its own? — Default: no scheduled expiry; a
    device unseen for ninety days must re-pair.
 5. Should `KillSession` be in the remote role at all? — Default: yes in phase 5, for

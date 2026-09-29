@@ -92,7 +92,7 @@ export function setRequireLocalToken(enabled: boolean): Promise<void> {
   return invoke("set_require_local_token", { enabled });
 }
 
-// -- Remote access, phase 2 -------------------------------------------
+// -- Remote access -----------------------------------------------------
 //
 // All seven aimed at the LOCAL daemon and nothing else (see session.rs):
 // a paired phone is neither a session nor a workspace, so there is no
@@ -107,8 +107,11 @@ export function beginPairing(): Promise<PairingOffer> {
 
 /// The human compared the six digits and said yes. The only call in the
 /// app that writes a row into the daemon's trust store.
-export function confirmPairing(deviceId: string): Promise<void> {
-  return invoke("confirm_pairing", { deviceId });
+///
+/// `code` is the six digits, and `token` the grant the host minted for
+/// this device and this code (`confirmGate.ts`).
+export function confirmPairing(deviceId: string, code: string, token: string): Promise<void> {
+  return invoke("confirm_pairing", { deviceId, code, token });
 }
 
 /// The human said no: discard the pending handshake so the phone hears
@@ -117,8 +120,8 @@ export function rejectPairing(deviceId: string): Promise<void> {
   return invoke("reject_pairing", { deviceId });
 }
 
-/// Every paired device, revoked ones included, plus the two
-/// remote-access settings that ride along with them.
+/// Every paired device, revoked ones included, plus the remote-access
+/// settings that ride along with them.
 export function listDevices(): Promise<DeviceList> {
   return invoke("list_devices");
 }
@@ -133,10 +136,21 @@ export function revokeAllDevices(): Promise<void> {
   return invoke("revoke_all_devices");
 }
 
-/// Stored and inert in this phase -- nothing dials and nothing listens
-/// until there is a transport.
-export function setRemoteAccess(enabled: boolean, relayUrl: string | null): Promise<void> {
-  return invoke("set_remote_access", { enabled, relayUrl });
+/// The switch, the Relay and -- when one is given -- the Relay's
+/// admission token. The daemon acts on it: on, with a Relay, it dials.
+///
+/// `relayAdmission` left out leaves the stored token as it is; an empty
+/// string clears it. Unlike `relayUrl`, where null clears.
+export function setRemoteAccess(
+  enabled: boolean,
+  relayUrl: string | null,
+  relayAdmission?: string
+): Promise<void> {
+  return invoke("set_remote_access", {
+    enabled,
+    relayUrl,
+    relayAdmission: relayAdmission ?? null,
+  });
 }
 
 export function getFileTabs(): Promise<Record<string, string>> {
@@ -793,6 +807,14 @@ export function setSessionName(sessionId: string, name: string): Promise<void> {
 
 export function signalFrontendReady(): Promise<void> {
   return invoke("signal_frontend_ready");
+}
+
+/// Publish the Companion attention snapshot the Forward connection
+/// answers GetAttention with (ADR 0005). Desk-only.
+export function setCompanionAttention(
+  items: import("$lib/companion/attentionAnswer").AttentionItem[]
+): Promise<void> {
+  return invoke("set_companion_attention", { items });
 }
 
 export function getBootstrapError(): Promise<string | null> {

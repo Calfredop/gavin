@@ -1591,7 +1591,7 @@ pub fn set_workspaces_state(
         custom_resume_args,
     )
     .map_err(|e| e.to_string())?;
-    let _ = app_handle.emit(
+    let _ = crate::forwarding::emit(&app_handle, 
         "workspaces-synced",
         WorkspacesSync { origin: window.label().to_string(), data },
     );
@@ -2915,6 +2915,9 @@ fn reconnect_swapping(app_handle: &AppHandle, command: &CommandConnection) -> an
         RelayOwner::Local,
     )?;
 
+    // Re-open the Forward connection against the new daemon (companion-13).
+    crate::forwarding::start(app_handle, compat.daemon_version);
+
     // The daemon's gavin watchers were per-connection and died with it.
     // Re-armed here rather than from the frontend because this is where
     // the new connection exists: miss it and the Plans, Kanban and
@@ -3085,6 +3088,13 @@ fn handshake_deadline(stream: &Stream, bounded: bool) {
 
 /// A command connection to the local daemon, ready for its handshake.
 /// Left bounded: a command lane sets its own deadline before every read.
+///
+/// Also the opener the forwarding connection uses (companion-13): same
+/// socket, same bound, different Hello kind afterwards.
+pub(crate) fn connect_local(socket: &Path) -> anyhow::Result<Stream> {
+    connect_for_handshake(socket)
+}
+
 fn connect_for_handshake(socket: &Path) -> anyhow::Result<Stream> {
     let stream = Stream::connect(socket)?;
     handshake_deadline(&stream, true);
@@ -3223,16 +3233,27 @@ pub(crate) fn verify_app_ack(ack: Response, token: &str, nonce: &str) -> anyhow:
 /// and both real clients probe the version before it.
 fn app_handshake_command(conn: &Mutex<Stream>, token: &str) -> anyhow::Result<()> {
     let nonce = protocol::random_hex(16)?;
-    let ack = send_command(
-        conn,
-        &Request::Hello {
-            client: "app".to_string(),
-            protocol_version: protocol::PROTOCOL_VERSION,
-            auth: protocol::HelloAuth::DaemonToken { token: token.to_string() },
-            nonce: nonce.clone(),
-        },
-    )?;
+    let ack = send_command(conn, &app_hello(token, &nonce, protocol::ConnectionKind::Command))?;
     verify_app_ack(ack, token, &nonce)
+}
+
+/// The `Hello` that presents this app to its daemon on one of its two
+/// connections. Says WHICH one, because the daemon sends the device pushes
+/// only to the connection that reads them: a command connection reads the
+/// next message as the reply to its request, and a push arriving mid-request
+/// would take that reply's place (`protocol::ConnectionKind`).
+///
+/// Every connection the app presents goes through here -- the two
+/// handshakes below and a command lane's redial -- so a connection that
+/// forgot to say what it is cannot be added without going around it.
+pub(crate) fn app_hello(token: &str, nonce: &str, connection: protocol::ConnectionKind) -> Request {
+    Request::Hello {
+        client: "app".to_string(),
+        protocol_version: protocol::PROTOCOL_VERSION,
+        auth: protocol::HelloAuth::DaemonToken { token: token.to_string() },
+        nonce: nonce.to_string(),
+        connection: Some(connection),
+    }
 }
 
 /// Send a `Hello` with the daemon token directly on the streaming
@@ -3241,15 +3262,7 @@ fn app_handshake_command(conn: &Mutex<Stream>, token: &str) -> anyhow::Result<()
 /// `line_reader` guards, though at bootstrap nothing is attached yet.
 fn app_handshake_stream(stream: &mut Stream, token: &str) -> anyhow::Result<()> {
     let nonce = protocol::random_hex(16)?;
-    write_message(
-        stream,
-        &Request::Hello {
-            client: "app".to_string(),
-            protocol_version: protocol::PROTOCOL_VERSION,
-            auth: protocol::HelloAuth::DaemonToken { token: token.to_string() },
-            nonce: nonce.clone(),
-        },
-    )?;
+    write_message(stream, &app_hello(token, &nonce, protocol::ConnectionKind::Push))?;
     let mut reader = BufReader::with_capacity(1, &mut *stream);
     let ack = read_message(&mut reader)?
         .ok_or_else(|| anyhow::anyhow!("daemon closed the connection during the app handshake"))?;
@@ -3357,7 +3370,7 @@ pub struct PairingOffer {
     pub expires_at: i64,
 }
 
-/// `ListDevices`'s answer: the trust store's rows plus the two
+/// `ListDevices`'s answer: the trust store's rows plus the
 /// remote-access settings that ride along with them (see
 /// `protocol::Response::Devices` for why they share one round trip).
 #[derive(Debug, Clone, Serialize)]
@@ -3366,6 +3379,9 @@ pub struct DeviceList {
     pub devices: Vec<protocol::DeviceInfo>,
     pub remote_access_enabled: bool,
     pub relay_url: Option<String>,
+    /// Whether the daemon holds an admission token for the Relay, never
+    /// the token. `false` from a daemon older than v52, which holds none.
+    pub relay_admission_set: bool,
 }
 
 /// Mint a one-time pairing secret and hand back the QR payload (§3, "The
@@ -3390,12 +3406,26 @@ pub async fn begin_pairing(
 
 /// The human compared the two six-digit codes and pressed Confirm. The
 /// only call in the app that writes a row into `devices.sqlite`.
+///
+/// Gated: `token` is the grant minted for THIS device and THESE six digits
+/// (`confirm_gate::pairing_subject`), so a script in the page cannot
+/// confirm a pairing nobody was asked about with the token of another.
+/// `code` is not sent to the daemon; it only binds the token.
 #[tauri::command]
 pub async fn confirm_pairing(
     device_id: String,
+    code: String,
+    token: String,
+    gate: State<'_, crate::confirm_gate::ConfirmGate>,
     state: State<'_, CommandConnection>,
     compat: State<'_, DaemonCompatState>,
 ) -> Result<(), String> {
+    crate::confirm_gate::spend(
+        &gate,
+        &token,
+        "confirm_pairing",
+        &crate::confirm_gate::pairing_subject(&device_id, &code),
+    )?;
     let resp = state
         .lanes(current_compat(&compat))
         .request(Request::ConfirmPairing { device_id })
@@ -3436,8 +3466,8 @@ pub async fn list_devices(
         .await
         .map_err(|e| e.to_string())?;
     match resp {
-        Response::Devices { devices, remote_access_enabled, relay_url } => {
-            Ok(DeviceList { devices, remote_access_enabled, relay_url })
+        Response::Devices { devices, remote_access_enabled, relay_url, relay_admission_set } => {
+            Ok(DeviceList { devices, remote_access_enabled, relay_url, relay_admission_set })
         }
         Response::Error { message } => Err(message),
         other => Err(format!("expected Devices, got {other:?}")),
@@ -3477,10 +3507,14 @@ pub async fn revoke_all_devices(
     expect_ok(resp)
 }
 
-/// Store whether remote access is on and which relay to reach this daemon
-/// through. Stored and INERT in this phase: nothing dials and nothing
-/// listens until phase 3's `remote.rs`, which is what the section's own
-/// copy says in so many words.
+/// Store whether remote access is on, which Relay to reach this daemon
+/// through, and the Relay's admission token. The daemon acts on it: on,
+/// with a Relay, it dials (`daemon/src/remote.rs`).
+///
+/// `relay_admission` is `None` to leave the stored token alone and empty
+/// to clear it -- see `protocol::Request::SetRemoteAccess`. A daemon
+/// older than v52 drops it unread, which is what
+/// `FEATURE_MIN_VERSION.relayAdmission` greys the field for.
 ///
 /// Every window hears the switch move (`remote-access-changed`), not only
 /// the one whose Settings flipped it: what closing the main window does
@@ -3491,13 +3525,14 @@ pub async fn revoke_all_devices(
 pub async fn set_remote_access(
     enabled: bool,
     relay_url: Option<String>,
+    relay_admission: Option<String>,
     app_handle: AppHandle,
     state: State<'_, CommandConnection>,
     compat: State<'_, DaemonCompatState>,
 ) -> Result<(), String> {
     let resp = state
         .lanes(current_compat(&compat))
-        .request(Request::SetRemoteAccess { enabled, relay_url })
+        .request(Request::SetRemoteAccess { enabled, relay_url, relay_admission })
         .await
         .map_err(|e| e.to_string())?;
     expect_ok(resp)?;
@@ -4150,6 +4185,80 @@ mod command_connection_tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+}
+
+/// The daemon sends the device pushes only to the connection whose `Hello`
+/// says it reads them, so each of the app's two connections has to say
+/// which it is -- and say it truthfully: the command connection saying
+/// "push" would bring back the desync `ConnectionKind` exists to end.
+#[cfg(test)]
+mod app_hello_tests {
+    use super::*;
+
+    /// Plays the daemon for one `Hello`: reads it, answers with the proof
+    /// the app expects, and hands the `Hello` back.
+    fn take_hello(daemon: Stream, token: &'static str) -> std::thread::JoinHandle<Request> {
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(daemon.try_clone().unwrap());
+            let hello: Request = read_message(&mut reader).unwrap().unwrap();
+            let Request::Hello { nonce, .. } = &hello else { panic!("expected Hello, got {hello:?}") };
+            write_message(
+                &mut &daemon,
+                &Response::HelloAck {
+                    role: "app".to_string(),
+                    daemon_version: protocol::PROTOCOL_VERSION,
+                    session_id: None,
+                    server_proof: Some(protocol::server_proof(token, nonce)),
+                    workspace_root: None,
+                },
+            )
+            .unwrap();
+            hello
+        })
+    }
+
+    fn connection_of(hello: Request) -> Option<protocol::ConnectionKind> {
+        match hello {
+            Request::Hello { connection, .. } => connection,
+            other => panic!("expected Hello, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_command_connection_says_it_is_the_command_connection() {
+        let (client, daemon) = Stream::pair().unwrap();
+        let daemon = take_hello(daemon, "t0k3n");
+        app_handshake_command(&Mutex::new(client), "t0k3n").unwrap();
+        assert_eq!(connection_of(daemon.join().unwrap()), Some(protocol::ConnectionKind::Command));
+    }
+
+    #[test]
+    fn the_streaming_connection_says_it_is_the_push_connection() {
+        let (mut client, daemon) = Stream::pair().unwrap();
+        let daemon = take_hello(daemon, "t0k3n");
+        app_handshake_stream(&mut client, "t0k3n").unwrap();
+        assert_eq!(connection_of(daemon.join().unwrap()), Some(protocol::ConnectionKind::Push));
+    }
+
+    /// Both together, through the entry point a link to another host uses
+    /// as well as the local bootstrap: one of each, never two of a kind.
+    #[test]
+    fn a_handshake_presents_one_command_connection_and_one_push_connection() {
+        let (command, command_daemon) = Stream::pair().unwrap();
+        let (mut stream, stream_daemon) = Stream::pair().unwrap();
+        let command_daemon = take_hello(command_daemon, "t0k3n");
+        let stream_daemon = take_hello(stream_daemon, "t0k3n");
+        let compat = DaemonCompat {
+            daemon_version: protocol::PROTOCOL_VERSION,
+            app_version: protocol::PROTOCOL_VERSION,
+            degraded: false,
+        };
+
+        app_handshake_with_token(&compat, &Mutex::new(command), &mut stream, "t0k3n").unwrap();
+
+        assert_eq!(connection_of(command_daemon.join().unwrap()), Some(protocol::ConnectionKind::Command));
+        assert_eq!(connection_of(stream_daemon.join().unwrap()), Some(protocol::ConnectionKind::Push));
     }
 }
 
@@ -4980,7 +5089,7 @@ fn report_disconnect(app_handle: &AppHandle, epoch: u64, message: String) {
     if app_handle.state::<ConnectionEpoch>().0.load(std::sync::atomic::Ordering::SeqCst) != epoch {
         return;
     }
-    let _ = app_handle.emit("daemon-error", message);
+    let _ = crate::forwarding::emit(&app_handle, "daemon-error", message);
 }
 
 /// Attaches every session on the streaming connection and starts the
@@ -5069,19 +5178,19 @@ pub(crate) fn attach_and_relay(
             };
             match resp {
                 Response::Output { id, data } => {
-                    let _ = reader_app_handle.emit("pty-output", (id, data));
+                    let _ = crate::forwarding::emit(&reader_app_handle, "pty-output", (id, data));
                 }
                 Response::SessionExited { id, exit_code } => {
-                    let _ = reader_app_handle.emit("session-exited", (id, exit_code));
+                    let _ = crate::forwarding::emit(&reader_app_handle, "session-exited", (id, exit_code));
                 }
                 Response::CwdChanged { id, cwd } => {
-                    let _ = reader_app_handle.emit("cwd-changed", (id, cwd));
+                    let _ = crate::forwarding::emit(&reader_app_handle, "cwd-changed", (id, cwd));
                 }
                 Response::StatusChanged { id, status } => {
-                    let _ = reader_app_handle.emit("session-status-changed", (id, status));
+                    let _ = crate::forwarding::emit(&reader_app_handle, "session-status-changed", (id, status));
                 }
                 Response::GitStatusChanged { id, status } => {
-                    let _ = reader_app_handle.emit("git-status-changed", (id, status));
+                    let _ = crate::forwarding::emit(&reader_app_handle, "git-status-changed", (id, status));
                 }
                 Response::GitOpProgress { op_id, line } => {
                     // The very event `git::ops`'s local runner emits, with
@@ -5100,47 +5209,47 @@ pub(crate) fn attach_and_relay(
                     // The host's watcher fired. Emitted as `git-changed`,
                     // the same event the desktop's own `notify` watch
                     // emits for a local worktree (v42).
-                    let _ = reader_app_handle
-                        .emit("git-changed", crate::git::watch::GitChanged { cwd });
+                    let _ = crate::forwarding::emit(&reader_app_handle,
+                        "git-changed", crate::git::watch::GitChanged { cwd });
                 }
                 Response::SessionRestored { id } => {
-                    let _ = reader_app_handle.emit("session-restored", id);
+                    let _ = crate::forwarding::emit(&reader_app_handle, "session-restored", id);
                 }
                 Response::SessionInterrupted { id } => {
-                    let _ = reader_app_handle.emit("session-interrupted", id);
+                    let _ = crate::forwarding::emit(&reader_app_handle, "session-interrupted", id);
                 }
                 Response::SessionOrphaned { id, orphan } => {
-                    let _ = reader_app_handle.emit("session-orphaned", (id, orphan));
+                    let _ = crate::forwarding::emit(&reader_app_handle, "session-orphaned", (id, orphan));
                 }
                 Response::SessionFailed { id, reason } => {
-                    let _ = reader_app_handle.emit("session-failed", (id, reason));
+                    let _ = crate::forwarding::emit(&reader_app_handle, "session-failed", (id, reason));
                 }
                 Response::QueuedInputsChanged { id, queued } => {
                     // Carries the whole queue, never a delta, so a
                     // frontend that missed one of these cannot drift --
                     // and so the Attach baseline and this push are the
                     // same message with the same handler.
-                    let _ = reader_app_handle.emit("queued-inputs-changed", (id, queued));
+                    let _ = crate::forwarding::emit(&reader_app_handle, "queued-inputs-changed", (id, queued));
                 }
                 Response::OrchestrationChanged { workspace_id, orchestration } => {
-                    let _ = reader_app_handle
-                        .emit("orchestration-changed", (workspace_id, orchestration));
+                    let _ = crate::forwarding::emit(&reader_app_handle,
+                        "orchestration-changed", (workspace_id, orchestration));
                 }
                 Response::GavinTreeChanged { workspace_id, tree } => {
-                    let _ = reader_app_handle.emit("gavin-tree-changed", (workspace_id, tree));
+                    let _ = crate::forwarding::emit(&reader_app_handle, "gavin-tree-changed", (workspace_id, tree));
                 }
                 Response::ToolsChanged { workspace_id, tools } => {
                     // An agent authored a tool over gavin-mcp (v37). The
                     // whole library, never a delta, so the frontend
                     // replaces its rows for this workspace the same way
                     // a fetch would -- and cannot drift by missing one.
-                    let _ = reader_app_handle.emit("tools-changed", (workspace_id, tools));
+                    let _ = crate::forwarding::emit(&reader_app_handle, "tools-changed", (workspace_id, tools));
                 }
                 Response::SessionNamed { session_id, name } => {
                     // The frontend applies it through setSessionName, the
                     // very path the tab's own rename UI takes -- so an
                     // agent rename and a human rename persist identically.
-                    let _ = reader_app_handle.emit("session-named", (session_id, name));
+                    let _ = crate::forwarding::emit(&reader_app_handle, "session-named", (session_id, name));
                 }
                 // The three device pushes (v42). Forwarded verbatim, the
                 // way `remote-link-ready`/`remote-link-lost` are: the
@@ -5156,8 +5265,8 @@ pub(crate) fn attach_and_relay(
                 // connection, which is the one the app keeps open for its
                 // whole life.
                 Response::DevicePairingRequested { device_id, name, sas } => {
-                    let _ = reader_app_handle
-                        .emit("device-pairing-requested", (device_id, name, sas));
+                    let _ = crate::forwarding::emit(&reader_app_handle,
+                        "device-pairing-requested", (device_id, name, sas));
                 }
                 // Nothing in the binary produces these two in phase 2 --
                 // there is no transport yet -- so today they arrive only
@@ -5166,10 +5275,10 @@ pub(crate) fn attach_and_relay(
                 // that has to be remembered later is a listener that is
                 // forgotten.
                 Response::DeviceConnected { device_id } => {
-                    let _ = reader_app_handle.emit("device-connected", device_id);
+                    let _ = crate::forwarding::emit(&reader_app_handle, "device-connected", device_id);
                 }
                 Response::DeviceDisconnected { device_id } => {
-                    let _ = reader_app_handle.emit("device-disconnected", device_id);
+                    let _ = crate::forwarding::emit(&reader_app_handle, "device-disconnected", device_id);
                 }
                 Response::AgentSessionSpawned {
                     workspace_id,
@@ -5194,8 +5303,8 @@ pub(crate) fn attach_and_relay(
                         &reader_app_handle,
                         &CreatedSession { id: session_id.clone(), compressed, uncompressed_reason },
                     );
-                    let _ = reader_app_handle
-                        .emit("agent-session-spawned", (workspace_id, session_id, cwd, command));
+                    let _ = crate::forwarding::emit(&reader_app_handle,
+                        "agent-session-spawned", (workspace_id, session_id, cwd, command));
                 }
                 Response::Error { message } => {
                     // A REJECTED REQUEST, not a lost connection. This
@@ -5212,7 +5321,7 @@ pub(crate) fn attach_and_relay(
                     // connection is gone. A rejected request gets its own
                     // event, surfaced as a dismissible banner over a
                     // still-working app.
-                    let _ = reader_app_handle.emit("daemon-request-error", message);
+                    let _ = crate::forwarding::emit(&reader_app_handle, "daemon-request-error", message);
                 }
                 _ => {}
             }
@@ -5400,9 +5509,14 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
     app_handle.manage(HeadroomDefaults(Mutex::new(config.headroom)));
     app_handle.manage(LaunchSettings(Mutex::new(config.launch)));
     app_handle.manage(CustomResumeArgs(Mutex::new(config.custom_resume_args)));
-    app_handle.emit("workspaces-ready", &workspaces_data)?;
+    crate::forwarding::emit(&app_handle, "workspaces-ready", &workspaces_data)?;
 
     attach_and_relay(&app_handle, &writer, reader_stream, session_ids, compat, RelayOwner::Local)?;
+    // The desktop's Forward connection (v54 / companion-13): gated
+    // commands from Devices, and events offered back. Starts after the
+    // push connection is attached so a Device that connects in the same
+    // moment finds a desk that can answer.
+    crate::forwarding::start(&app_handle, compat.daemon_version);
     // The ssh workspaces, after the window is up: each host on its own
     // thread, a host that is down costing only its own workspaces.
     crate::remote::link_all(app_handle.clone());

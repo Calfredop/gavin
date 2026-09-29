@@ -184,6 +184,13 @@ jobs:
       - name: cargo check — the daemon, the MCP server and the protocol
         run: cargo check -p protocol -p gavin-daemon -p gavin-mcp --locked
 
+      # The Device wire's two crates, beside the three above and a gate
+      # for their reason. The daemon already pulls the Relay's client in,
+      # so what this adds is the Relay itself -- the one part of the
+      # workspace on an async runtime -- and the Companion core.
+      - name: cargo check — the Relay and the Companion core
+        run: cargo check -p gavin-relay -p companion-core --all-features --locked
+
       # The rest of this job was written to report rather than gate, so
       # that an unfinished port could not block a push; each step becomes
       # a gate as it goes green. Two `npm` steps and this one have, on
@@ -252,6 +259,42 @@ jobs:
       - name: npm run build
         working-directory: app
         run: npm run build
+
+  # The protocol crate without its operating-system parts, and the
+  # Companion core, for the target the core is built to. Its own small job
+  # rather than a step in `linux`: it needs none of the GTK/WebKit stack or
+  # node, and a red here should say "the protocol crate grew an OS
+  # dependency" -- or "the core grew one" -- rather than sit at the bottom
+  # of a twenty-minute job.
+  #
+  # `-p` and not `--workspace`: only these two are meant to build for
+  # wasm, and the workspace's other members (the daemon, the Relay, the
+  # app host) are the OS-specific ones by design. The native test run
+  # without the feature keeps the same code proven where the suite can
+  # execute it -- the pairing SAS and its pinned vector included.
+  wasm:
+    name: Protocol and Companion core for WASM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: cargo check — the protocol crate for wasm32-unknown-unknown
+        run: cargo check -p protocol --no-default-features --target wasm32-unknown-unknown --locked
+
+      - name: cargo test — the protocol crate without the os feature
+        run: cargo test -p protocol --no-default-features --locked
+
+      # Without `test-device`, which is the native build's and brings a
+      # socket with it. What is checked is the core the shell will run:
+      # a Noise handshake with no OS random source linked, because on
+      # this target there is none.
+      - name: cargo check — the Companion core for wasm32-unknown-unknown
+        run: cargo check -p companion-core --target wasm32-unknown-unknown --locked
 
   audit:
     name: Dependency audit

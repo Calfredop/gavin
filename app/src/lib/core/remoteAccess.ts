@@ -4,14 +4,14 @@
 // this and holds no rule of its own -- the repo's split (CLAUDE.md), and
 // the only one that lets a rendered surface be tested at all.
 //
-// What the section is FOR, said once here because three different pieces
-// of copy below depend on it being true: phase 2 gives the daemon a trust
-// store and a pairing handshake and NO transport
-// (`docs/security/05-remote-access.md` §10). Nothing listens, nothing
-// dials. Turning remote access on records a choice; pairing a device
-// writes a row. Both are real and durable, and neither makes this machine
-// reachable from anywhere, because there is nothing yet to reach it
-// through.
+// What the section is FOR, said once here because the copy below depends
+// on it being true: while remote access is on, the DAEMON dials the Relay
+// the human named and holds that connection, with the window open or
+// closed (`crates/daemon/src/remote.rs`). Nothing listens on this machine
+// -- both ends dial out -- and what travels through the Relay is a Noise
+// channel the Relay holds no key for. A Device reaches the Workstation
+// through that Relay and nowhere else, and becomes a Device only by
+// pairing at the desk.
 
 import { relativeTime } from "$lib/hub/appHub";
 import { featureBlockedReason, type DaemonCompat } from "$lib/core/daemonCompat";
@@ -48,6 +48,10 @@ export interface DeviceList {
   devices: DeviceInfo[];
   remoteAccessEnabled: boolean;
   relayUrl: string | null;
+  /// WHETHER the daemon holds an admission token for the Relay, never
+  /// what it is. The token is a credential somebody handed the human,
+  /// and nothing on the desk needs to read it back.
+  relayAdmissionSet: boolean;
 }
 
 /// `BeginPairing`'s answer.
@@ -64,8 +68,8 @@ export interface PairingOffer {
 export interface PairingRequest {
   deviceId: string;
   name: string;
-  /// Six decimal digits, derived from both static keys. The human
-  /// compares them against the phone's screen.
+  /// Six decimal digits, derived from the pairing handshake's hash. The
+  /// human compares them against the phone's screen.
   sas: string;
 }
 
@@ -257,6 +261,23 @@ export interface ConfirmCopy {
   danger: boolean;
 }
 
+/// The row this pairing is for, when the trust store already holds one.
+///
+/// `DevicePairingRequested` names the id the row already has: the daemon
+/// files a Device under its Noise key, so the same id is the same key.
+/// Which is also all it says: a copy of that key on another phone is the
+/// same id, and confirming replaces the hardware key the row trusts.
+export function knownDevice(
+  request: PairingRequest,
+  list: DeviceList | null,
+): DeviceInfo | null {
+  return list?.devices.find((d) => d.deviceId === request.deviceId) ?? null;
+}
+
+function knownDeviceLine(known: DeviceInfo): string {
+  return `This desk already trusts a device called “${known.name}” with this identity. Confirming REPLACES that device's keys and drops its open connections: if you are not pairing that phone again right now, reject this.`;
+}
+
 /// The question the six digits are for.
 ///
 /// `danger` is not about destruction here: it is what keeps keyboard
@@ -265,11 +286,15 @@ export interface ConfirmCopy {
 /// SAS -- an attacker who photographed the QR and scanned it faster gets
 /// a dialog whose digits do not match the phone in the human's hand --
 /// and a prompt answerable by reflex would give it away.
-export function pairingConfirmCopy(request: PairingRequest): ConfirmCopy {
+export function pairingConfirmCopy(
+  request: PairingRequest,
+  known: DeviceInfo | null = null,
+): ConfirmCopy {
   return {
     title: `Pair “${request.name}”?`,
     lines: [
       `Your phone should be showing ${formatSas(request.sas)}. If it is showing anything else, reject this: some other device completed the handshake.`,
+      ...(known ? [knownDeviceLine(known)] : []),
       "Confirming is what writes this device into the daemon's trust store. Until you confirm, it does not exist.",
       "If you lose the phone, Revoke all devices is the one-button answer — it rotates the daemon's key, so every device has to pair again.",
     ],
@@ -309,12 +334,23 @@ export function revokeAllCopy(): ConfirmCopy {
 
 // -- the section's own copy -------------------------------------------
 
-/// What "on" actually means in this build. The section says it in its own
-/// words because the alternative is a switch that promises reachability
-/// and delivers a row in a database -- and the human would only find out
-/// when a phone they do not have yet failed to connect.
+/// What "on" actually means. The section says it in its own words
+/// because a switch that makes a background process dial out should say
+/// so before it is pressed: what is opened on this machine (nothing),
+/// whether it depends on this window (it does not), and what off means.
 export const TRANSPORT_NOTE =
-  "Nothing listens and nothing dials: this build has no transport yet, so turning remote access on records the choice for a phone app that does not exist yet. What IS real is the trust store — a paired device is written to disk, and revoking one holds at 02:00 with gavin closed.";
+  "On, the daemon dials the Relay below and stays connected to it, with this window open or closed. It opens no port on this machine — both ends dial out — and the Relay carries traffic it cannot read. Off, it dials nothing. A Device becomes one only by pairing here, at the desk.";
+
+/// What the note says instead against a daemon that does not dial --
+/// one older than v52, which has the switch and the Relay URL and acts on
+/// neither. `TRANSPORT_NOTE` would be untrue of it, and the human would
+/// turn remote access on, see nothing wrong, and wait for a Device that
+/// cannot arrive.
+export function transportNote(compat: DaemonCompat | null): string {
+  const blocked = featureBlockedReason(compat, "relayDial");
+  if (blocked === null) return TRANSPORT_NOTE;
+  return `The running daemon dials nothing, whatever this switch says: it keeps the switch and the Relay URL, and acts on neither. ${blocked}`;
+}
 
 /// What turning the switch on changes at the desk today, said under the
 /// switch because nowhere else would: with it on, the red button no
@@ -323,25 +359,294 @@ export const TRANSPORT_NOTE =
 export const KEEP_RUNNING_NOTE =
   "While it is on, closing the window keeps gavin running in the menu bar — Quit is in that icon's menu — and your Mac does not idle-sleep while an agent is running. The display still sleeps.";
 
-/// The relay field's own line. The daemon keeps the URL raw and has no
-/// opinion about which relay you self-host, so neither does this.
+/// The relay field's own line.
 export const RELAY_NOTE =
-  "Where a phone would reach this daemon once there is something to reach it through. Empty means LAN only. It is stored exactly as typed — gavin has no opinion about whose relay it is — and it goes into the pairing QR so a phone knows where to look.";
+  "The Relay this Workstation and its Devices both dial. It goes into the pairing QR, so a Device that scans it knows where to look. It starts wss:// — or ws:// for a Relay on this machine or this network. Empty means there is nowhere to dial.";
 
-/// The relay URL to send, or null for "no relay, LAN only".
+/// The admission token's own line. It has to say that the field is
+/// write-only, because the first thing a human does with a credential
+/// field that comes back empty is assume the save failed.
+export const ADMISSION_NOTE =
+  "What the Relay asks of everything it carries: whoever runs the Relay gives it to you. The daemon keeps it and presents it when it dials, and it goes into the pairing QR beside the Relay URL. Once saved it is not shown again. Changing the Relay URL forgets it — a token belongs to the Relay that issued it.";
+
+/// The relay URL to send, or null for "no relay".
 export function relayUrlToSave(draft: string): string | null {
   const trimmed = draft.trim();
   return trimmed === "" ? null : trimmed;
 }
 
-/// A hint, never a refusal. The daemon stores the string raw (§11 Q2), so
-/// the app has no standing to reject one — but a value with no scheme is
-/// almost certainly a half-typed one, and saying so beats storing it
-/// silently.
+// -- which Relay URLs the daemon will dial ------------------------------
+//
+// A mirror of `protocol::relay::RelayUrl::parse`, which is the rule the
+// daemon dials by. It is a second implementation in a second language,
+// so it is held to the first by a table both suites read:
+// `test-fixtures/relay-urls/cases.json`. Change the rule in one place
+// and that table fails in the other.
+
+/// Why the daemon will not dial a URL. The kinds are the daemon's own
+/// (`RelayUrlError`), under the names the shared table gives them.
+export interface RelayUrlProblem {
+  kind:
+    | "no-scheme"
+    | "scheme"
+    | "no-host"
+    | "host"
+    | "port"
+    | "credentials"
+    | "plain-to-public-host";
+  message: string;
+}
+
+/// Four decimal parts from 0 to 255, none with a leading zero. Nothing
+/// else is an IPv4 address here -- not octal, not hex, not one number.
+function parseIpv4(text: string): number[] | null {
+  const parts = text.split(".");
+  if (parts.length !== 4) return null;
+  const octets: number[] = [];
+  for (const part of parts) {
+    if (!/^(0|[1-9][0-9]{0,2})$/.test(part)) return null;
+    const n = Number(part);
+    if (n > 255) return null;
+    octets.push(n);
+  }
+  return octets;
+}
+
+/// The eight groups of an IPv6 address, or null. Groups of one to four
+/// hex digits, one `::` at most, and an IPv4 address allowed in place of
+/// the last two groups. No zone: `fe80::1%en0` is not an address.
+function parseIpv6(text: string): number[] | null {
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+
+  const groupsOf = (half: string, last: boolean): number[] | null => {
+    if (half === "") return [];
+    const parts = half.split(":");
+    const groups: number[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (last && i === parts.length - 1 && part.includes(".")) {
+        const v4 = parseIpv4(part);
+        if (v4 === null) return null;
+        groups.push(v4[0] * 256 + v4[1], v4[2] * 256 + v4[3]);
+      } else if (/^[0-9a-fA-F]{1,4}$/.test(part)) {
+        groups.push(parseInt(part, 16));
+      } else {
+        return null;
+      }
+    }
+    return groups;
+  };
+
+  if (halves.length === 1) {
+    const groups = groupsOf(halves[0], true);
+    return groups !== null && groups.length === 8 ? groups : null;
+  }
+  const head = groupsOf(halves[0], false);
+  const tail = groupsOf(halves[1], true);
+  if (head === null || tail === null) return null;
+  // `::` stands for at least one group.
+  if (head.length + tail.length > 7) return null;
+  return [...head, ...new Array<number>(8 - head.length - tail.length).fill(0), ...tail];
+}
+
+function ipv4IsLocal([a, b]: number[]): boolean {
+  return (
+    a === 127 ||
+    a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254) ||
+    // Tailscale hands these out, and encrypts what travels to them.
+    (a === 100 && b >= 64 && b <= 127)
+  );
+}
+
+function ipv6IsLocal(groups: number[]): boolean {
+  const loopback = groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1;
+  return loopback || (groups[0] & 0xffc0) === 0xfe80 || (groups[0] & 0xfe00) === 0xfc00;
+}
+
+/// A name is local only when it says so itself; any other name is
+/// public, because nothing here resolves one.
+function nameIsLocal(name: string): boolean {
+  const n = (name.endsWith(".") ? name.slice(0, -1) : name).toLowerCase();
+  return n === "localhost" || n.endsWith(".localhost") || n.endsWith(".local");
+}
+
+/// An unbracketed host: the IPv4 address it is, "name" for a name, or
+/// null for something that is neither -- or that a webview's URL parser
+/// would read as a different host than the daemon's does. See
+/// `name_or_ipv4` in `protocol::relay` for why a host that ends in a
+/// number has to be an address written plainly.
+function nameOrIpv4(host: string): number[] | "name" | null {
+  if (!/^[A-Za-z0-9.-]+$/.test(host)) return null;
+  const name = host.endsWith(".") ? host.slice(0, -1) : host;
+  const labels = name.split(".");
+  if (labels.some((label) => label === "")) return null;
+  const last = labels[labels.length - 1];
+  if (/^[0-9]+$/.test(last) || /^0x/i.test(last)) return parseIpv4(host);
+  return "name";
+}
+
+const NOT_A_HOST =
+  "The Relay URL's host is not a host name or an address — letters, digits, dots and hyphens, or an address written plainly.";
+
+/// What is wrong with a Relay URL, as the daemon would find it, or null
+/// when the daemon will dial it.
+export function relayUrlProblem(draft: string): RelayUrlProblem | null {
+  const url = draft.trim();
+  const at = url.indexOf("://");
+  if (at < 0) return { kind: "no-scheme", message: "No scheme — a Relay URL starts wss://." };
+  const scheme = url.slice(0, at).toLowerCase();
+  if (scheme !== "wss" && scheme !== "ws") {
+    return { kind: "scheme", message: `A Relay URL starts wss://, not ${scheme}://.` };
+  }
+  const authority = url.slice(at + 3).split(/[/?#]/)[0];
+  if (authority.includes("@")) {
+    return {
+      kind: "credentials",
+      message:
+        "A Relay URL must not carry a user or password — the admission token has its own field.",
+    };
+  }
+
+  const noHost: RelayUrlProblem = { kind: "no-host", message: "The Relay URL names no host." };
+  const badHost: RelayUrlProblem = { kind: "host", message: NOT_A_HOST };
+  const badPort: RelayUrlProblem = {
+    kind: "port",
+    message: "The Relay URL's port is not a number from 1 to 65535.",
+  };
+
+  let port: string | null;
+  let local: boolean;
+  if (authority.startsWith("[")) {
+    const close = authority.indexOf("]");
+    if (close < 0) return noHost;
+    const host = authority.slice(1, close);
+    if (host === "") return noHost;
+    const groups = parseIpv6(host);
+    if (groups === null) return badHost;
+    const after = authority.slice(close + 1);
+    if (after !== "" && !after.startsWith(":")) return badPort;
+    port = after === "" ? null : after.slice(1);
+    local = ipv6IsLocal(groups);
+  } else {
+    const colon = authority.lastIndexOf(":");
+    const host = colon < 0 ? authority : authority.slice(0, colon);
+    port = colon < 0 ? null : authority.slice(colon + 1);
+    if (host === "") return noHost;
+    const judged = nameOrIpv4(host);
+    if (judged === null) return badHost;
+    local = judged === "name" ? nameIsLocal(host) : ipv4IsLocal(judged);
+  }
+
+  if (port !== null) {
+    // Decimal digits and nothing else. `Number` would take a sign, a
+    // space and an exponent, and no URL parser does.
+    if (!/^[0-9]{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) return badPort;
+  }
+  if (scheme === "ws" && !local) {
+    return {
+      kind: "plain-to-public-host",
+      message:
+        "ws:// would send the admission token unencrypted — use wss:// for a Relay that is not on this machine or this network.",
+    };
+  }
+  return null;
+}
+
+/// A hint, never a refusal to save. The daemon stores the string as
+/// typed (§11 Q2) — but it will only DIAL one it can read and may dial,
+/// and its one other way of saying so is a line in its log.
 export function relayUrlHint(draft: string): string | null {
+  if (draft.trim() === "") return null;
+  const problem = relayUrlProblem(draft);
+  return problem === null
+    ? null
+    : `${problem.message} Saved as typed, but the daemon will not dial it.`;
+}
+
+// -- the admission token ------------------------------------------------
+
+/// What to send for the token: the token typed, or `undefined` to leave
+/// the stored one as it is.
+///
+/// Empty is "unchanged", not "cleared". The field is write-only, so it
+/// is empty whenever the human has not just typed into it -- and a save
+/// that read that as "clear" would wipe the token every time the switch
+/// was toggled. Clearing is its own button, which sends `ADMISSION_CLEAR`.
+export function admissionToSave(draft: string): string | undefined {
   const trimmed = draft.trim();
-  if (trimmed === "" || trimmed.includes("://")) return null;
-  return "No scheme — a relay URL usually starts wss:// or https://. Saved as typed either way.";
+  return trimmed === "" ? undefined : trimmed;
+}
+
+/// What the daemon reads as "forget the token".
+export const ADMISSION_CLEAR = "";
+
+/// Whether the daemon will hold a token once a save has landed, so the
+/// field can say so at once rather than after the next read.
+///
+/// The daemon's rule (`SessionManager::set_remote_access`), mirrored: a
+/// token that was sent is the token; an empty one clears it; and with
+/// none sent the stored one is kept FOR THE SAME RELAY. A save that
+/// changes the Relay URL forgets it, because the daemon presents what it
+/// holds to whatever it dials.
+export function admissionAfterSave(
+  stored: { relayUrl: string | null; relayAdmissionSet: boolean },
+  relayUrl: string | null,
+  admission: string | undefined
+): boolean {
+  if (admission !== undefined) return admission.trim() !== ADMISSION_CLEAR;
+  return stored.relayAdmissionSet && stored.relayUrl === relayUrl;
+}
+
+/// The field cannot show the token, so this is where it says whether
+/// there is one.
+export function admissionPlaceholder(set: boolean): string {
+  return set ? "A token is stored — type a new one to replace it" : "No token stored";
+}
+
+/// The admission field's own gate, on top of the section's. A daemon
+/// older than v52 parses `SetRemoteAccess` and drops the token on the
+/// floor (the compat gate is per request TYPE), so against one the field
+/// would accept a token and keep nothing.
+export function relayAdmissionBlocked(compat: DaemonCompat | null): string | null {
+  return featureBlockedReason(compat, "relayAdmission");
+}
+
+// -- whether pairing can work -------------------------------------------
+
+/// Why a QR drawn now could not pair anything, or null when it could.
+///
+/// A Device reaches this Workstation through the Relay and nowhere
+/// else. With remote access off, or no Relay the daemon will dial, the
+/// daemon is not connected to one: a Device would scan the QR, dial, and
+/// be told the Workstation is not there -- two minutes of the human's
+/// time, spent finding out what this can say before the QR is drawn.
+///
+/// Null before the settings have been read: unknown is not unavailable.
+///
+/// A daemon that does not dial at all comes first, and is refused by
+/// the version it needs: nothing in the settings can make a QR from it
+/// work.
+export function pairingUnavailable(
+  list: DeviceList | null,
+  compat: DaemonCompat | null
+): string | null {
+  const blocked = featureBlockedReason(compat, "relayDial");
+  if (blocked !== null) return blocked;
+  if (list === null) return null;
+  if (!list.remoteAccessEnabled) {
+    return "Turn remote access on first — a Device pairs through the Relay, and with this off the daemon is not connected to it.";
+  }
+  if (list.relayUrl === null) {
+    return "Set a Relay URL first — a Device pairs through the Relay.";
+  }
+  if (relayUrlHint(list.relayUrl) !== null) {
+    return "The daemon will not dial the Relay URL above, so a Device has nowhere to pair through.";
+  }
+  return null;
 }
 
 /// The gate. Every control in the section reads this: the toggle, the

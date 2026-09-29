@@ -161,7 +161,7 @@ The earlier remote-access design stopped at phase 2. Pairing and the trust store
 ### The shared protocol crate
 
 - **Its operating-system-specific parts move behind a Cargo feature**, so the crate compiles to `wasm32-unknown-unknown`. Those parts are the local transport, randomness taken from the OS, and the platform data paths.
-- **The pairing SAS stays where it is and is reused as-is**, so the Device computes the code with the daemon's own implementation.
+- **The pairing SAS stays where it is**, so the Device computes the code with the daemon's own implementation. What goes into it changed with `companion-33`: it is derived from the pairing handshake's hash rather than the two static keys (`gavin-pairing-sas-v2`; ADR 0001), and the Device shows it only after the Workstation's `PairingAck`.
 - **It hosts the Remote role command table**, so that both the daemon (which enforces it) and the desktop host (which tests it for completeness) read the same table. The table maps every desktop command name to allowed or refused for the Remote role:
   - **Refused:** Trust (pairing, revoking, remote-access settings), the layout-saving commands, window management, the updater, opening things externally on the desk, and anything meaningless away from the desk.
   - **Allowed:** everything else.

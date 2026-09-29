@@ -55,6 +55,10 @@ type Bucket = "gated" | "destructive" | "ordinary";
 /// deliverable, not the label.
 const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // ---- gated: the host refuses these without a confirmation token ----
+  confirm_pairing: [
+    "gated",
+    "the one command that WIDENS who reaches this machine. With a transport (ticket 10) a script in the page can run the whole ceremony -- set_remote_access, begin_pairing, its own Device, confirm_pairing -- and the six digits only protect a confirmation a human makes. The subject is the device_id AND the six digits, so a token for one pairing cannot confirm another. Still a page-drawn prompt: a script that knows gavin can open and answer it itself (confirm_gate.rs); closing that takes a host-drawn confirmation, filed as 06-companion Q15.",
+  ],
   trash_entry: ["gated", "moves a file out of the workspace"],
   delete_card_file: ["gated", "removes a card from the board and from disk"],
   remove_gavin_footprint: ["gated", "empties a workspace of gavin, through the delete wizard"],
@@ -81,32 +85,30 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // confirm grant, only the Remote access surface's own reach.
   get_require_local_token: ["ordinary"],
   set_require_local_token: ["ordinary"],
-  // Remote access phase 2. Four reads-and-writes of the daemon's trust
-  // store; the two Revoke commands are destructive and sit in their own
-  // block below.
+  // Remote access. `confirm_pairing` is gated, above, for the reason
+  // written there: it is the only command here that can widen who reaches
+  // this machine, and ticket 10's transport removed the reason it was
+  // ordinary in phase 2 ("nothing can reach the state it settles").
   //
-  // `confirm_pairing` is the one worth stopping on, because it is the
-  // only command in this table that can WIDEN who reaches this machine.
-  // It is ordinary anyway, and the reason is that it cannot invent a
-  // device: it names a `device_id` the daemon is already holding a
-  // COMPLETED Noise handshake for, and refuses any other. Completing one
-  // needs a live two-minute secret and the phone's own static key, over
-  // a transport -- and phase 2 ships no transport at all, so today
-  // nothing can reach the state this command settles. When phase 3 gives
-  // it one, what stands between a scripted confirm and a paired
-  // attacker is the SAS: six digits derived from both static keys, which
-  // the human compares against the phone in their hand.
+  // `begin_pairing` stays ordinary. It mints a two-minute secret and
+  // returns the QR, and reaches nothing on its own: a paired row needs
+  // the confirmation, which is now gated. It cannot be gated without
+  // buying nothing -- the desk must draw the QR, so the page has to be
+  // able to read it, and a token a script can mint itself protects
+  // nothing more than the page-drawn confirmation already does.
   //
-  // `begin_pairing` mints that secret and hands back the QR. Ordinary
-  // for the same reason and one more: the secret expires in two minutes
-  // and reaches nothing on its own, which is exactly why §3 rejects a
-  // bare-token QR in favour of this ceremony.
+  // `set_remote_access` stays ordinary, by this table's own line (it
+  // removes no work and ends no process) and because choosing a Relay is
+  // step 1 of an attack that cannot finish without step 4: a Relay of the
+  // script's choosing is handed no admission token (the daemon forgets it
+  // when the URL changes; `list_devices` says only whether one is set),
+  // and a Device that pairs through it still needs `confirm_pairing`.
+  // The token itself IS readable by the page, through the QR that
+  // `begin_pairing` returns -- that is what a QR is for. Gating the
+  // switch would also gate the toggle that turns remote access OFF.
   //
-  // `set_remote_access` stores two scalars the daemon does not act on --
-  // nothing listens and nothing dials in this phase -- and `list_devices`
-  // is a read that deliberately leaves the static keys behind.
+  // `reject_pairing` and `list_devices` only narrow or read.
   begin_pairing: ["ordinary"],
-  confirm_pairing: ["ordinary"],
   reject_pairing: ["ordinary"],
   list_devices: ["ordinary"],
   set_remote_access: ["ordinary"],
@@ -209,6 +211,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   open_path_externally: ["ordinary"],
   reveal_path_externally: ["ordinary"],
   signal_frontend_ready: ["ordinary"],
+  set_companion_attention: ["ordinary"],
   title_bar_double_click_action: ["ordinary"],
   get_bootstrap_error: ["ordinary"],
   daemon_compat: ["ordinary"],

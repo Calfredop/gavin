@@ -3,11 +3,13 @@ mod agent_setup;
 mod agent_tokens;
 mod agent_usage;
 mod command_lane;
+mod commands;
 mod config;
 mod confirm_gate;
 mod daemon;
 mod edge_expand;
 mod fileviewer;
+mod forwarding;
 mod git;
 mod home;
 mod keep_running;
@@ -28,7 +30,7 @@ mod workspace_settings;
 mod workspace_window;
 mod worktree_setup;
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 /// The frontend's read of the compat verdict Rust negotiated with the
 /// daemon (session::verify_daemon_protocol, at both bootstrap and
@@ -85,6 +87,7 @@ pub fn run() {
         .manage(workspace_window::DutyWindow::default())
         .manage(remote::RemoteLinks::default())
         .manage(remote::SessionHosts::default())
+        .manage(forwarding::Forwarding::default())
         .manage(keep_running::SleepHold::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -103,7 +106,7 @@ pub fn run() {
                 if let Err(e) = session::bootstrap(handle.clone()) {
                     let message = e.to_string();
                     *handle.state::<session::BootstrapError>().0.lock().unwrap() = Some(message.clone());
-                    let _ = handle.emit("daemon-error", message);
+                    let _ = crate::forwarding::emit(&handle, "daemon-error", message);
                 }
             });
             Ok(())
@@ -172,6 +175,7 @@ pub fn run() {
             fileviewer::open_path_externally,
             fileviewer::reveal_path_externally,
             session::signal_frontend_ready,
+            forwarding::set_companion_attention,
             mac_window::title_bar_double_click_action,
             session::get_bootstrap_error,
             session::restart_daemon,

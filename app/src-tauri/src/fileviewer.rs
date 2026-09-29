@@ -6,7 +6,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 /// Files larger than this are truncated rather than rendered whole --
 /// generous for source/markdown, small enough to never freeze the
@@ -455,7 +455,7 @@ pub fn watch_file_for_viewer(
     }
     let emitter = app_handle.clone();
     let debouncer = spawn_file_watcher(&path, move |changed| {
-        let _ = emitter.emit("file-changed", changed);
+        let _ = crate::forwarding::emit(&emitter, "file-changed", changed);
     })
     .map_err(|e| e.to_string())?;
     watchers.insert(path, (debouncer, 1));

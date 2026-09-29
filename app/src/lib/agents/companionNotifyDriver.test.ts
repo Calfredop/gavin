@@ -45,19 +45,31 @@ describe("eventsFromWaitingSets", () => {
 });
 
 describe("companionNotifyBlocked", () => {
-  it("blocks against a daemon older than v44", () => {
+  it("blocks against a daemon older than v49", () => {
     const compat: DaemonCompat = {
       daemonVersion: 43,
-      appVersion: 44,
+      appVersion: 49,
       degraded: true,
     };
-    expect(companionNotifyBlocked(compat)).toMatch(/44/);
+    expect(companionNotifyBlocked(compat)).toMatch(/49/);
   });
 
-  it("allows a v44 daemon", () => {
+  // Before its renumber, the Device wire's branch numbered its own bumps
+  // 44..48, none of which carries the notification requests: a daemon
+  // built there must not be sent them.
+  it("blocks against a v48 daemon, which answers with a newer number and lacks the requests", () => {
     const compat: DaemonCompat = {
-      daemonVersion: 44,
-      appVersion: 44,
+      daemonVersion: 48,
+      appVersion: 49,
+      degraded: true,
+    };
+    expect(companionNotifyBlocked(compat)).toMatch(/49/);
+  });
+
+  it("allows a v49 daemon", () => {
+    const compat: DaemonCompat = {
+      daemonVersion: 49,
+      appVersion: 49,
       degraded: false,
     };
     expect(companionNotifyBlocked(compat)).toBeNull();
