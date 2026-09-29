@@ -3405,6 +3405,41 @@ export function retainTabOnExit(sessionId: string): void {
   retainedOnExit.add(sessionId);
 }
 
+/// A retained tab outlives its process, and its status has to stop
+/// describing one.
+///
+/// The daemon sends no status on exit -- it forgets the row and drops
+/// the writer -- so without this the tab keeps whatever it was last
+/// pushed. A shell tool prints until the moment it exits, the quiet timer
+/// never gets its two seconds, and that last push is `working`: a
+/// finished "Run tests" tab then spun on every surface keyed by the
+/// layout (tab, sidebar row and tallies, hub, Close Idle Tabs) for as
+/// long as it stayed open, and one that had rung a bell sat in the
+/// attention inbox as a wait nobody could answer.
+///
+/// Only motion is settled. `failed` is still true of a run after it
+/// exits, and its reason still explains it.
+///
+/// Here and not in the daemon, and only for a RETAINED tab: an exit push
+/// of `idle` would reach every session, and a crashed agent step reading
+/// idle-after-working is exactly what `agentTurnEnded` completes.
+/// Written directly rather than through `handleSessionStatusChanged`,
+/// whose hooks (a turn verdict, an OS notification) are about an agent
+/// finishing a turn -- a question a dead shell cannot answer.
+function settleExitedStatus(sessionId: string): void {
+  layoutState.update((s) => {
+    const status = s.sessionStatusById[sessionId];
+    if (status !== "working" && status !== "waiting_for_input") return s;
+    return {
+      ...s,
+      sessionStatusById: { ...s.sessionStatusById, [sessionId]: "idle" },
+      statusSinceById: { ...s.statusSinceById, [sessionId]: { at: Date.now(), watched: true } },
+      // A read mark acknowledges one wait, and the exit ended it.
+      readSessionIds: clearSessionRead(readMarks(s), sessionId),
+    };
+  });
+}
+
 export function handleSessionExited(
   sessionId: string,
   opts: { force?: boolean } = {}
@@ -3432,6 +3467,7 @@ export function handleSessionExited(
     // Leave the tab and its xterm alone. The exit code is already in
     // `sessionExits` (recorded before this call), and the tool-run row
     // is closed by the daemon; what the human still needs is the text.
+    settleExitedStatus(sessionId);
     return;
   }
   retainedOnExit.delete(sessionId);

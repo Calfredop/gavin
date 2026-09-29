@@ -1364,6 +1364,51 @@ describe("handleSessionExited", () => {
     expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["other"]));
     expect(terminalRegistry.destroyTerminal).toHaveBeenCalledWith("tool-1");
   });
+
+  // The daemon sends no status when a session exits -- it forgets the
+  // row and drops the writer -- so a retained tab kept the last one it
+  // was pushed. A test run prints until the moment it exits, the quiet
+  // timer never fires, and a finished "Run tests" tab read as Working
+  // on every surface for as long as it stayed open.
+  it("settles a retained tab that exited mid-output to idle", () => {
+    setState([ws("ws-1", [page("page-1", leaf(["tool-working"]))])], "ws-1", "tool-working");
+    layoutState.update((s) => ({ ...s, sessionStatusById: { "tool-working": "working" } }));
+    retainTabOnExit("tool-working");
+
+    handleSessionExited("tool-working");
+
+    expect(get(layoutState).sessionStatusById["tool-working"]).toBe("idle");
+  });
+
+  // Same gap, worse surface: a script that rang a bell and then exited
+  // sat in the attention inbox as a human-shaped wait nobody could answer.
+  it("settles a retained tab that exited while asking to idle", () => {
+    setState([ws("ws-1", [page("page-1", leaf(["tool-asking"]))])], "ws-1", "tool-asking");
+    layoutState.update((s) => ({ ...s, sessionStatusById: { "tool-asking": "waiting_for_input" } }));
+    retainTabOnExit("tool-asking");
+
+    handleSessionExited("tool-asking");
+
+    expect(get(layoutState).sessionStatusById["tool-asking"]).toBe("idle");
+  });
+
+  // Only MOTION ends with the process. "Something broke" is still true
+  // of a run after it exits, and the reason beside it still explains it.
+  it("keeps a retained tab's failed status through the exit", () => {
+    setState([ws("ws-1", [page("page-1", leaf(["tool-failed"]))])], "ws-1", "tool-failed");
+    layoutState.update((s) => ({
+      ...s,
+      sessionStatusById: { "tool-failed": "failed" },
+      failureReasonById: { "tool-failed": "API Error: 500" },
+    }));
+    retainTabOnExit("tool-failed");
+
+    handleSessionExited("tool-failed");
+
+    const state = get(layoutState);
+    expect(state.sessionStatusById["tool-failed"]).toBe("failed");
+    expect(state.failureReasonById["tool-failed"]).toBe("API Error: 500");
+  });
 });
 
 describe("handleCwdChanged", () => {
