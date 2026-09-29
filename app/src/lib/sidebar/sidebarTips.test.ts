@@ -135,12 +135,22 @@ describe("tabRowKindWord", () => {
 
 describe("tabRowTip", () => {
   it("is one line for a row that points nowhere and holds no repo", () => {
-    expect(tabRowTip({ lead: "Board", where: "", git: null })).toBe("Board");
+    expect(tabRowTip({ name: "", lead: "Board", where: "", git: null })).toBe("Board");
+  });
+
+  // The row's label is ellipsized at 200px; the bubble is where the whole
+  // name can be read, so it comes before anything else.
+  it("leads with the tab's own name", () => {
+    expect(tabRowTip({ name: "fix the login flow", lead: "Agent · idle", where: "", git: null })).toBe(
+      "fix the login flow\nAgent · idle"
+    );
   });
 
   // An empty `where` draws no line rather than a blank one.
   it("adds where it points, when it points anywhere", () => {
-    expect(tabRowTip({ lead: "File", where: "/ws/a.txt", git: null })).toBe("File\n/ws/a.txt");
+    expect(tabRowTip({ name: "a.txt", lead: "File", where: "/ws/a.txt", git: null })).toBe(
+      "a.txt\nFile\n/ws/a.txt"
+    );
   });
 
   // Spelled out where the row can only afford glyphs -- including the
@@ -149,16 +159,19 @@ describe("tabRowTip", () => {
   it("spells the checkout out in full, arrows in words", () => {
     expect(
       tabRowTip({
+        name: "feature x",
         lead: "Agent · working",
         where: "/ws/project",
         git: git({ repoRoot: "/ws/project", branch: "feat/x", dirty: true, ahead: 2, behind: 1 }),
       })
-    ).toBe("Agent · working\n/ws/project\n/ws/project -- on feat/x -- uncommitted changes -- ahead 2 behind 1");
+    ).toBe(
+      "feature x\nAgent · working\n/ws/project\n/ws/project -- on feat/x -- uncommitted changes -- ahead 2 behind 1"
+    );
   });
 
   it("says clean, and drops the sync clause with nothing to sync", () => {
-    expect(tabRowTip({ lead: "Agent · idle", where: "", git: git() })).toBe(
-      "Agent · idle\n/ws -- on main -- clean"
+    expect(tabRowTip({ name: "shell", lead: "Agent · idle", where: "", git: git() })).toBe(
+      "shell\nAgent · idle\n/ws -- on main -- clean"
     );
   });
 });
