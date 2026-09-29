@@ -66,7 +66,7 @@ struct Inner {
     /// not change, and detection is asked for more than once.
     env: detect::Env,
     unavailable: Option<&'static str>,
-    supervisor: Supervisor,
+    pub supervisor: Supervisor,
     /// `None` until this lifetime has looked. The stored record says
     /// where Headroom WAS; it is checked before it is reported.
     detected: Mutex<Option<Detected>>,
@@ -105,7 +105,7 @@ struct Tracked {
 /// One daemon's Headroom: what is installed, and the process it runs.
 #[derive(Clone)]
 pub struct Headroom {
-    inner: Arc<Inner>,
+    pub inner: Arc<Inner>,
 }
 
 impl Headroom {
