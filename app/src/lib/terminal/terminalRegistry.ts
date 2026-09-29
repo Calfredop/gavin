@@ -3,10 +3,12 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import * as backend from "$lib/core/backend";
 import { isViewableInApp } from "$lib/files/fileTypes";
 import { hotState } from "$lib/core/hotState";
 import { xtermTheme } from "$lib/ui/terminalTheme";
+import { osc52Text } from "$lib/terminal/osc52";
 import type { EffectiveTheme } from "$lib/ui/theme";
 
 interface RegistryEntry {
@@ -181,6 +183,16 @@ export function getOrCreateTerminal(sessionId: string, fontSize: number): Regist
     })
   );
   registerPathLinks(term, sessionId);
+  // A program copying through the terminal (see osc52.ts). Claimed even
+  // when it asks for nothing honoured, so no later handler answers a
+  // query. The daemon's replay on Attach is a snapshot rendered from its
+  // screen model, which never re-emits the sequence, so a reconnect
+  // cannot copy something a second time.
+  term.parser.registerOscHandler(52, (payload) => {
+    const text = osc52Text(payload);
+    if (text !== null) void writeText(text).catch(() => {});
+    return true;
+  });
   const container = document.createElement("div");
   container.style.width = "100%";
   container.style.height = "100%";
