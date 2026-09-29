@@ -1319,6 +1319,16 @@ pub struct SessionManager {
     /// no devices, which is the safe default: `revoke_device` says so by
     /// name rather than silently reporting success.
     trust: std::sync::OnceLock<Mutex<crate::trust::TrustStore>>,
+    /// This daemon's Headroom (`headroom/`): what is installed on the
+    /// machine, and the proxy process it supervises.
+    ///
+    /// A `OnceLock` for the same reason as `trust`: `serve` opens it
+    /// before the socket accepts anything, and every test that builds a
+    /// manager stays unchanged. A manager that never had one set refuses
+    /// every Headroom request by name -- an empty status would read as
+    /// "Headroom is absent", which is a statement about a machine this
+    /// manager never looked at.
+    headroom: std::sync::OnceLock<crate::headroom::Headroom>,
     /// Live connections whose identity names a paired device, keyed by a
     /// token this manager hands out, each with a socket handle that can
     /// close it.
@@ -1517,6 +1527,7 @@ impl SessionManager {
             connection_ceiling: AtomicUsize::new(MAX_CONNECTIONS),
             daemon_token: std::sync::OnceLock::new(),
             trust: std::sync::OnceLock::new(),
+            headroom: std::sync::OnceLock::new(),
             device_connections: Mutex::new(HashMap::new()),
             next_device_connection: AtomicU64::new(0),
             app_connections: Mutex::new(HashMap::new()),
@@ -1598,6 +1609,28 @@ impl SessionManager {
     /// the daemon token against such a manager stays `local`.
     fn daemon_token(&self) -> &str {
         self.daemon_token.get().map(String::as_str).unwrap_or("")
+    }
+
+    /// Hands this daemon its Headroom. Called once by `serve` before the
+    /// socket accepts anything; idempotent, like `set_trust_store`.
+    pub fn set_headroom(&self, headroom: crate::headroom::Headroom) {
+        let _ = self.headroom.set(headroom);
+    }
+
+    /// This daemon's Headroom, or the error every Headroom request
+    /// answers when it has none.
+    pub fn headroom_or_err(&self) -> anyhow::Result<&crate::headroom::Headroom> {
+        self.headroom
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("gavin-daemon: this daemon was started without its Headroom supervisor"))
+    }
+
+    /// Stops this daemon's Headroom because the daemon itself is
+    /// stopping. Nothing to do on a manager that has none.
+    pub fn close_headroom(&self) {
+        if let Some(headroom) = self.headroom.get() {
+            headroom.close();
+        }
     }
 
     /// Hands this daemon its trust store. Called once by `serve` before
@@ -4677,6 +4710,27 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 .push_companion_notify(&crate::companion_push::UreqTransport, &mapped)
                 .map(|_| Response::Ok)
         }
+        // -- Headroom (v45) -------------------------------------------
+        //
+        // Every one answers with the status AFTER what it did. None of
+        // them waits on Headroom itself: a start returns before the
+        // proxy is ready and an install before it has finished, because
+        // both take longer than a request should hold its connection.
+        Request::GetHeadroomStatus => {
+            manager.headroom_or_err().map(|h| Response::Headroom { status: h.status() })
+        }
+        Request::DetectHeadroom { located_path } => manager
+            .headroom_or_err()
+            .map(|h| Response::Headroom { status: h.detect(located_path) }),
+        Request::StartHeadroom => {
+            manager.headroom_or_err().map(|h| Response::Headroom { status: h.start() })
+        }
+        Request::StopHeadroom => {
+            manager.headroom_or_err().map(|h| Response::Headroom { status: h.stop() })
+        }
+        Request::InstallHeadroom => {
+            manager.headroom_or_err().map(|h| Response::Headroom { status: h.install() })
+        }
         Request::GetBoardByRoot { root_path } => manager
             .board_by_root(&root_path)
             .map(|board| Response::Board { columns: board.columns, labels: board.labels, card_sessions: board.card_sessions }),
@@ -5074,6 +5128,18 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::SetPushGatewayUrl { .. }
         | Request::SetDeviceSendPermission { .. }
         | Request::PushCompanionNotify { .. }
+        // Headroom (v45) is the desktop's. It is the proxy every
+        // compressed agent's model traffic crosses: an agent that could
+        // stop it would cut the fleet off mid-turn, one that could
+        // point detection at a file of its choosing would pick what the
+        // daemon executes, and the install runs a package manager on
+        // the human's machine. The read goes with the rest -- what is
+        // installed here is not a fact about the agent's workspace.
+        | Request::GetHeadroomStatus
+        | Request::DetectHeadroom { .. }
+        | Request::StartHeadroom
+        | Request::StopHeadroom
+        | Request::InstallHeadroom
         // What finishes them (v42): the streaming network ops and their
         // cancel, the worktree watch, the env-carrying run and the three
         // tree mutations. Same reasoning, and it does not weaken for the
@@ -5133,6 +5199,15 @@ fn is_privileged(req: &Request) -> bool {
             | Request::SetPushGatewayUrl { .. }
             | Request::SetDeviceSendPermission { .. }
             | Request::PushCompanionNotify { .. }
+            // Headroom (v45). Each of the four starts a process --
+            // detection runs the file it is handed, which is the same
+            // reach as the shell `CreateSession` starts -- or ends the
+            // one every compressed agent is talking through. The status
+            // read stays OUT: it runs nothing and changes nothing.
+            | Request::DetectHeadroom { .. }
+            | Request::StartHeadroom
+            | Request::StopHeadroom
+            | Request::InstallHeadroom
             // The v42 half of the same reach: another way to run git,
             // git run long, and three ways to change the tree. Its
             // cancel and the two watch requests stay OUT -- they start
@@ -5602,6 +5677,11 @@ fn handle_connection_as(
         // sees an acknowledgement rather than a connection that just closed.
         if matches!(req, Request::Shutdown) {
             let _ = write_message(&mut *writer.lock().unwrap(), &Response::Ok);
+            // After the reply, so the caller is not kept waiting on a
+            // proxy draining its connections; before the exit, because
+            // nothing else will stop it. The sessions end with this
+            // process, so there is no agent left for it to serve.
+            manager.close_headroom();
             std::process::exit(0);
         }
 
@@ -6710,7 +6790,100 @@ mod tests {
                 permission: "v1.perm".into(),
             },
             Request::PushCompanionNotify { events: vec![] },
+            Request::GetHeadroomStatus,
+            Request::DetectHeadroom { located_path: None },
+            Request::StartHeadroom,
+            Request::StopHeadroom,
+            Request::InstallHeadroom,
         ]
+    }
+
+    /// Every request v45 added, one of each, for the role tests below.
+    fn every_headroom_request() -> Vec<Request> {
+        vec![
+            Request::GetHeadroomStatus,
+            Request::DetectHeadroom { located_path: Some("/opt/venv/bin/headroom".into()) },
+            Request::StartHeadroom,
+            Request::StopHeadroom,
+            Request::InstallHeadroom,
+        ]
+    }
+
+    /// Headroom is the proxy every compressed agent's model traffic
+    /// crosses, so who may start it, stop it, install it or choose the
+    /// file the daemon executes is the desktop's decision alone.
+    /// `agent_allows` is an exhaustive match, which forces a decision
+    /// per variant and cannot check that it was the right one -- this
+    /// walks the five and checks the answer.
+    #[test]
+    fn agents_and_remotes_are_forbidden_every_headroom_request() {
+        let agent = ClientIdentity::agent("sess-1", "/tmp/ws", "/tmp/ws");
+        let remote = ClientIdentity::remote("dev-1");
+        for req in every_headroom_request() {
+            for id in [&agent, &remote] {
+                match authorize(id, &req, false) {
+                    Err(Response::Forbidden { request_type, .. }) => {
+                        assert_eq!(request_type, request_type_name(&req));
+                    }
+                    other => panic!("{} reached {:?}: {other:?}", request_type_name(&req), id.role),
+                }
+            }
+        }
+    }
+
+    /// The other half: a gate that refused everyone would pass the test
+    /// above and ship a Settings section nothing works in.
+    #[test]
+    fn an_app_may_make_every_headroom_request() {
+        let app = ClientIdentity {
+            role: Role::App,
+            session_id: None,
+            workspace_root: None,
+            cwd: None,
+            device_id: None,
+        };
+        for req in every_headroom_request() {
+            for switch in [false, true] {
+                assert!(authorize(&app, &req, switch).is_ok(), "{}", request_type_name(&req));
+            }
+        }
+    }
+
+    /// With `require_local_token` on, an untokened local connection
+    /// loses the four that start or end a process and keeps the read.
+    #[test]
+    fn the_local_token_switch_narrows_every_headroom_request_but_the_read() {
+        let local = ClientIdentity::local();
+        for req in every_headroom_request() {
+            assert!(
+                authorize(&local, &req, false).is_ok(),
+                "the default must not narrow local: {}",
+                request_type_name(&req)
+            );
+            assert_eq!(
+                authorize(&local, &req, true).is_err(),
+                !matches!(req, Request::GetHeadroomStatus),
+                "{}",
+                request_type_name(&req)
+            );
+        }
+    }
+
+    /// A manager nobody handed a Headroom -- every unit test's -- refuses
+    /// by name. An empty status would read as "Headroom is absent", which
+    /// is a statement about the machine this daemon never checked.
+    #[test]
+    fn a_manager_with_no_headroom_refuses_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        for req in every_headroom_request() {
+            match handle_request(&manager, req) {
+                Response::Error { message } => {
+                    assert!(message.contains("Headroom"), "{message}");
+                }
+                other => panic!("expected an error, got {other:?}"),
+            }
+        }
     }
 
     #[test]

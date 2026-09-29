@@ -2,6 +2,7 @@ mod bridge;
 mod gavin;
 mod git_status;
 mod git_watch;
+mod headroom;
 mod input;
 mod kanban;
 mod orchestration;
@@ -123,6 +124,13 @@ fn serve() -> anyhow::Result<()> {
     // key.
     manager.set_trust_store(trust::TrustStore::open(&devices_db_path()?)?);
     manager.recover()?;
+    // After the sessions are recovered and before the socket accepts
+    // anything, like the trust store. `resume` returns at once: taking
+    // back the last lifetime's Headroom, or starting a fresh one, happens
+    // on the supervisor's own thread.
+    let headroom = headroom::Headroom::open(&dir);
+    headroom.resume();
+    manager.set_headroom(headroom);
 
     let socket = protocol::socket_path()?;
     println!("gavin-daemon listening on {}", socket.display());

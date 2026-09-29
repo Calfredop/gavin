@@ -18,6 +18,16 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v45 lets the daemon run Headroom (ADR 0007,
+/// `2026-09-28-headroom-design.md`): `GetHeadroomStatus`,
+/// `DetectHeadroom`, `StartHeadroom`, `StopHeadroom` and
+/// `InstallHeadroom`, all answered with `Response::Headroom`. Five new
+/// request TYPES and no widened payload, so `min_version_for` is the whole
+/// wire gate and an older daemon is never sent one. No `daemonCompat.ts`
+/// entry lands with them: nothing in the app sends one until the setup
+/// surfaces do (headroom-04), and an entry with no consumer is a dead
+/// gate.
+///
 /// v44 adds Companion notification sends: `PushCompanionNotify` (the desk
 /// decides; the daemon seals and posts), `SetPushGatewayUrl`, and
 /// `SetDeviceSendPermission` (the shell hands over a gateway permission).
@@ -476,7 +486,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 44;
+pub const PROTOCOL_VERSION: u32 = 45;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -1316,6 +1326,32 @@ pub enum Request {
         events: Vec<CompanionNotifyEvent>,
     },
 
+    /// What this daemon knows about Headroom: whether it is installed at
+    /// a version gavin will start, and whether it is running. Cheap -- it
+    /// reads what detection already stored and never runs the binary.
+    GetHeadroomStatus,
+    /// Look for Headroom again: uv's tool bin directory, then `PATH`,
+    /// then the located path. `located_path` is the file the human picked
+    /// with Locate…, remembered from then on; `None` is "Check again"
+    /// against whatever was located before, and an empty string forgets
+    /// it. The path that wins is stored, and `PATH` is never searched at
+    /// a start.
+    DetectHeadroom {
+        #[serde(default)]
+        located_path: Option<String>,
+    },
+    /// Run Headroom and keep it running: restarted on the same port when
+    /// it dies, and re-adopted by the next daemon after a crash. Answers
+    /// at once -- readiness is read from the status, because the
+    /// compression model takes seconds to load.
+    StartHeadroom,
+    /// Stop the Headroom this daemon started. Never one it did not.
+    StopHeadroom,
+    /// Install the pinned Headroom with `uv tool install`, then fetch the
+    /// compression model. Answers at once with the install marked
+    /// running; its output and outcome are read from the status.
+    InstallHeadroom,
+
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
     /// a daemon it owns without `pkill`, which cannot distinguish this
@@ -1547,6 +1583,17 @@ pub fn min_version_for(req: &Request) -> u32 {
         Request::PushCompanionNotify { .. }
         | Request::SetPushGatewayUrl { .. }
         | Request::SetDeviceSendPermission { .. } => 44,
+
+        // The daemon runs Headroom (ADR 0007). Five new TYPES, so this
+        // match is the whole wire gate. The app owes a
+        // `FEATURE_MIN_VERSION` entry when the setup surfaces land
+        // (headroom-04), for the COPY: a Settings row has to say "this
+        // daemon cannot run Headroom" rather than "Headroom is absent".
+        Request::GetHeadroomStatus
+        | Request::DetectHeadroom { .. }
+        | Request::StartHeadroom
+        | Request::StopHeadroom
+        | Request::InstallHeadroom => 45,
 
         Request::Shutdown => 12,
 
@@ -2152,6 +2199,71 @@ pub enum Response {
     /// Push to every live `app` connection: a paired device's connection
     /// closed, whether it hung up or a revocation cut it.
     DeviceDisconnected { device_id: String },
+    /// The answer to every Headroom request (v45): the status AFTER
+    /// whatever the request did, so a caller never has to ask twice to
+    /// see what its own press changed.
+    Headroom { status: HeadroomStatus },
+}
+
+/// Headroom on this machine, as the daemon that has to execute it sees
+/// it (`daemon/src/headroom`).
+///
+/// `state` is one of `verified`, `too-old`, `absent` and `unavailable`,
+/// kept as a string like `SessionSummary::status` so a word written by a
+/// newer daemon reaches the app as written. There is no "asserted": the
+/// human's word is enough for Superpowers because the agent runs it, and
+/// gavin has to execute Headroom -- a word does not name a file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadroomStatus {
+    pub state: String,
+    /// Why, for the states that owe one: what makes it unavailable here,
+    /// or how far below the floor it is.
+    pub reason: Option<String>,
+    /// Verified, and above the pin: it runs, but nobody ran the
+    /// concurrency probe or the recipe tests against it.
+    pub newer_than_tested: bool,
+    /// What `headroom --version` said, when there was one to ask.
+    pub version: Option<String>,
+    /// The oldest version gavin will start.
+    pub floor: String,
+    /// The version gavin installs and was tested against.
+    pub pin: String,
+    /// The absolute path every start uses.
+    pub path: Option<String>,
+    /// Where that path was found: `uv-tool-dir`, `path` or `located`.
+    pub source: Option<String>,
+    /// Whether `uv` was found, which is whether Install can run at all.
+    pub uv_found: bool,
+    /// Whether this daemon has been asked to keep Headroom running.
+    pub wanted: bool,
+    /// Whether its process is alive.
+    pub running: bool,
+    /// Whether `/readyz` answered at the last look.
+    pub ready: bool,
+    /// The loopback port this daemon's Headroom listens on. Chosen once
+    /// and kept, because every compressed agent carries it in its
+    /// environment for as long as it lives.
+    pub port: Option<u16>,
+    /// How many times this daemon has restarted a Headroom that died.
+    pub restarts: u32,
+    /// Why the last start did not happen, when it did not.
+    pub last_error: Option<String>,
+    /// `/stats`' `persistent_savings.lifetime.tokens_saved`, as last
+    /// read. Tokens, never dollars.
+    pub lifetime_tokens_saved: Option<u64>,
+    /// The install this daemon ran last, or is running.
+    pub install: Option<HeadroomInstall>,
+}
+
+/// One run of the Install button. `state` is `running`, `succeeded` or
+/// `failed`; `output` is both of the install's streams, which is where
+/// the reason a failure failed is.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadroomInstall {
+    pub state: String,
+    pub output: String,
 }
 
 /// One row of the trust store, as the Settings device list reads it
@@ -5110,7 +5222,10 @@ mod tests {
         // CardSession reply.
         // v44: Companion notifications -- PushCompanionNotify,
         // SetPushGatewayUrl, SetDeviceSendPermission. Three new TYPES.
-        assert_eq!(PROTOCOL_VERSION, 44);
+        // v45: the daemon runs Headroom -- GetHeadroomStatus,
+        // DetectHeadroom, StartHeadroom, StopHeadroom, InstallHeadroom,
+        // and the Headroom reply. Five new TYPES and no widened payload.
+        assert_eq!(PROTOCOL_VERSION, 45);
     }
 
     #[test]
@@ -5247,6 +5362,85 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    /// Five new TYPES, so `min_version_for` is the whole wire gate: a
+    /// daemon older than 45 is never sent one, and answers `Unsupported`
+    /// to a client that sends it anyway.
+    #[test]
+    fn headroom_requests_are_v45() {
+        for req in [
+            Request::GetHeadroomStatus,
+            Request::DetectHeadroom { located_path: Some("/opt/venv/bin/headroom".into()) },
+            Request::StartHeadroom,
+            Request::StopHeadroom,
+            Request::InstallHeadroom,
+        ] {
+            assert_eq!(min_version_for(&req), 45, "{req:?}");
+        }
+    }
+
+    /// The status crosses to the frontend, so its field names are part of
+    /// the wire. `rename_all` on an ENUM renames variants only, which is
+    /// how snake_case fields have reached TypeScript as `undefined`
+    /// before -- so the reply keeps its one field a single word and the
+    /// struct carries the camelCase, and both are asserted here.
+    #[test]
+    fn headroom_status_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let status = HeadroomStatus {
+            state: "verified".into(),
+            reason: None,
+            newer_than_tested: true,
+            version: Some("0.40.0".into()),
+            floor: "0.38.0".into(),
+            pin: "0.39.1".into(),
+            path: Some("/Users/x/.local/bin/headroom".into()),
+            source: Some("uv-tool-dir".into()),
+            uv_found: true,
+            wanted: true,
+            running: true,
+            ready: false,
+            port: Some(51234),
+            restarts: 2,
+            last_error: None,
+            lifetime_tokens_saved: Some(1200),
+            install: Some(HeadroomInstall { state: "running".into(), output: "Resolved 86 packages".into() }),
+        };
+        let json = serde_json::to_value(Response::Headroom { status: status.clone() }).unwrap();
+        assert_eq!(json["type"], "Headroom");
+        let body = &json["status"];
+        assert_eq!(body["state"], "verified");
+        assert_eq!(body["reason"], serde_json::Value::Null);
+        assert_eq!(body["newerThanTested"], true);
+        assert_eq!(body["version"], "0.40.0");
+        assert_eq!(body["floor"], "0.38.0");
+        assert_eq!(body["pin"], "0.39.1");
+        assert_eq!(body["path"], "/Users/x/.local/bin/headroom");
+        assert_eq!(body["source"], "uv-tool-dir");
+        assert_eq!(body["uvFound"], true);
+        assert_eq!(body["wanted"], true);
+        assert_eq!(body["running"], true);
+        assert_eq!(body["ready"], false);
+        assert_eq!(body["port"], 51234);
+        assert_eq!(body["restarts"], 2);
+        assert_eq!(body["lastError"], serde_json::Value::Null);
+        assert_eq!(body["lifetimeTokensSaved"], 1200);
+        assert_eq!(body["install"]["state"], "running");
+        assert_eq!(body["install"]["output"], "Resolved 86 packages");
+
+        let line = serde_json::to_string(&Response::Headroom { status: status.clone() }).unwrap();
+        match serde_json::from_str::<Response>(&line).unwrap() {
+            Response::Headroom { status: back } => assert_eq!(back, status),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// `located_path` is the one field any of the five carries, and an
+    /// absent one is "check again", not a parse error.
+    #[test]
+    fn detect_headroom_reads_a_missing_located_path_as_check_again() {
+        let parsed: Request = serde_json::from_str(r#"{"type":"DetectHeadroom"}"#).unwrap();
+        assert!(matches!(parsed, Request::DetectHeadroom { located_path: None }));
     }
 
     #[test]
@@ -5538,6 +5732,12 @@ mod tests {
                     id: "session:s1".into(),
                 }],
             },
+            // v45's Headroom requests.
+            Request::GetHeadroomStatus,
+            Request::DetectHeadroom { located_path: None },
+            Request::StartHeadroom,
+            Request::StopHeadroom,
+            Request::InstallHeadroom,
             Request::Unknown,
         ]
     }
@@ -5574,7 +5774,7 @@ mod tests {
     /// client identity), v37=2 (an agent authoring its own workspace's
     /// tools), v39=1 (SessionScreen), v40=3 (ssh workspace files), v41=2
     /// (ssh git/files), v42=2 (the Decisions tab's writes), v43=1
-    /// (GetCardSession), plus Unknown.
+    /// (GetCardSession), v45=5 (the daemon runs Headroom), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -5634,6 +5834,9 @@ mod tests {
         // Companion encrypted notifications: PushCompanionNotify,
         // SetPushGatewayUrl, SetDeviceSendPermission.
         expected.insert(44, 3);
+        // The daemon runs Headroom: GetHeadroomStatus, DetectHeadroom,
+        // StartHeadroom, StopHeadroom, InstallHeadroom.
+        expected.insert(45, 5);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
