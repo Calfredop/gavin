@@ -36,6 +36,14 @@ export interface CardRun {
   exitCode: number | null;
   outcome: string;
   resumeAttempts: number | null;
+  /// What Headroom saved this run, snapshotted when its session ended
+  /// (v49). Absent from an older daemon, null for a run that was not
+  /// compressed or whose snapshot could not be taken -- and neither is a
+  /// saving of zero.
+  headroomTokensSaved?: number | null;
+  /// How many of the run's requests Headroom saw. Set exactly when the
+  /// saving is.
+  headroomRequests?: number | null;
 }
 
 /// What one run cost. Mirrors `TokenTotals` in `agent_tokens.rs`.
@@ -292,6 +300,45 @@ export function tokenBreakdown(report: TokenReport | null): string | null {
   ];
   if (report.models.length > 0) rows.push(report.models.join(", "));
   return rows.join(" · ");
+}
+
+/// What Headroom saved this run, for the slot beside what it cost:
+/// "saved 41k tokens". Null for a run with no snapshot, so a run that was
+/// not compressed shows nothing new -- no "saved 0" for a run Headroom
+/// never saw. A snapshot of nothing saved is a reading, and says so.
+///
+/// The saving comes from Headroom and not from the transcript: what the
+/// transcript bills is what reached the model AFTER compression, so the
+/// two numbers never overlap.
+export function savedSummary(run: CardRun): string | null {
+  const saved = run.headroomTokensSaved;
+  if (saved === null || saved === undefined) return null;
+  return `saved ${formatTokens(saved)} tokens`;
+}
+
+/// The exact figures behind that line, for a title attribute.
+export function savedBreakdown(run: CardRun): string | null {
+  const saved = run.headroomTokensSaved;
+  if (saved === null || saved === undefined) return null;
+  const requests = run.headroomRequests ?? 0;
+  return `Headroom saved ${grouped(saved)} tokens over ${grouped(requests)} request${requests === 1 ? "" : "s"}`;
+}
+
+/// What Headroom saved the whole card, over the runs that have a
+/// snapshot. A session is counted once: one linked to the card twice is
+/// two rows carrying the same snapshot. Null when no run has one, so a
+/// card nobody compressed gains no line at all.
+export function totalSaved(runs: CardRun[]): string | null {
+  const bySession = new Map<string, number>();
+  for (const run of runs) {
+    const saved = run.headroomTokensSaved;
+    if (saved === null || saved === undefined) continue;
+    bySession.set(run.sessionId, saved);
+  }
+  if (bySession.size === 0) return null;
+  let total = 0;
+  for (const saved of bySession.values()) total += saved;
+  return `saved ${formatTokens(total)} tokens`;
 }
 
 /// Why this run has no cost to show, or null when it does. Kept separate

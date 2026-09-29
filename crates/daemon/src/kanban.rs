@@ -1,4 +1,4 @@
-use protocol::{Board, CardRun, CardSession, Column, Label};
+use protocol::{Board, CardRun, CardSession, Column, Label, RunSavings};
 use rusqlite::{params, Connection};
 
 /// The three canonical statuses (D6's vocabulary). Permanent: the board
@@ -117,7 +117,13 @@ impl KanbanStore {
                 -- `abandoned`, which is a fact about the daemon, not an
                 -- absence of one about the run.
                 outcome TEXT NOT NULL,
-                resume_attempts INTEGER
+                resume_attempts INTEGER,
+                -- v49: what Headroom saved this run, snapshotted from
+                -- its /stats when the session ended. Both NULL for a run
+                -- that was not compressed or whose snapshot could not be
+                -- taken, and written together or not at all.
+                headroom_tokens_saved INTEGER,
+                headroom_requests INTEGER
             );
             CREATE INDEX IF NOT EXISTS card_runs_by_card
                 ON card_runs (workspace_id, path, id);
@@ -139,6 +145,10 @@ impl KanbanStore {
             "ALTER TABLE card_sessions ADD COLUMN launch_cwd TEXT",
             "ALTER TABLE card_sessions ADD COLUMN resume_attempts INTEGER",
             "ALTER TABLE card_sessions ADD COLUMN base_sha TEXT",
+            // v49's snapshot, for the same reason: every install already
+            // has a card_runs, and `card_runs` below selects both.
+            "ALTER TABLE card_runs ADD COLUMN headroom_tokens_saved INTEGER",
+            "ALTER TABLE card_runs ADD COLUMN headroom_requests INTEGER",
         ] {
             let _ = conn.execute(stmt, []);
         }
@@ -457,7 +467,8 @@ impl KanbanStore {
     pub fn card_runs(&self, workspace_id: &str, path: &str) -> anyhow::Result<Vec<CardRun>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, session_id, command, conversation_id, launch_cwd, base_sha,
-                    started_at, ended_at, exit_code, outcome, resume_attempts
+                    started_at, ended_at, exit_code, outcome, resume_attempts,
+                    headroom_tokens_saved, headroom_requests
              FROM card_runs WHERE workspace_id = ?1 AND path = ?2 ORDER BY id DESC",
         )?;
         let rows = stmt.query_map(params![workspace_id, path], |row| {
@@ -474,6 +485,8 @@ impl KanbanStore {
                 exit_code: row.get(9)?,
                 outcome: row.get(10)?,
                 resume_attempts: row.get::<_, Option<i64>>(11)?.map(|v| v.max(0) as u32),
+                headroom_tokens_saved: row.get::<_, Option<i64>>(12)?.map(|v| v.max(0) as u64),
+                headroom_requests: row.get::<_, Option<i64>>(13)?.map(|v| v.max(0) as u64),
             })
         })?;
         let mut out = Vec::new();
@@ -499,6 +512,62 @@ impl KanbanStore {
             params![session_id, now_secs(), exit_code],
         )?;
         Ok(())
+    }
+
+    /// Writes what Headroom saved a session onto every run it was the
+    /// run OF (v49). Called once, when the session has ended.
+    ///
+    /// Keyed on the session and not on the outcome, unlike
+    /// `finish_runs_for_session`: a run that was `replaced` or `unlinked`
+    /// while its session carried on is still that session's run, and
+    /// the saving is the session's. A session bound to two cards puts
+    /// the same snapshot on both rows; a sum counts the session once.
+    pub fn record_savings_for_session(
+        &mut self,
+        session_id: &str,
+        tokens_saved: u64,
+        requests: u64,
+    ) -> anyhow::Result<()> {
+        self.conn.execute(
+            "UPDATE card_runs SET headroom_tokens_saved = ?2, headroom_requests = ?3
+             WHERE session_id = ?1",
+            params![
+                session_id,
+                i64::try_from(tokens_saved).unwrap_or(i64::MAX),
+                i64::try_from(requests).unwrap_or(i64::MAX)
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Every run with a snapshot that ended at or after `since`, oldest
+    /// first, across every card and workspace: what the hub sums into a
+    /// limit window. A run is placed at its end because that is when
+    /// its snapshot was taken.
+    pub fn savings_since(&self, since: i64) -> anyhow::Result<Vec<RunSavings>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT workspace_id, path, session_id, started_at, ended_at,
+                    headroom_tokens_saved, headroom_requests
+             FROM card_runs
+             WHERE headroom_tokens_saved IS NOT NULL AND ended_at >= ?1
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![since], |row| {
+            Ok(RunSavings {
+                workspace_id: row.get(0)?,
+                path: row.get(1)?,
+                session_id: row.get(2)?,
+                started_at: row.get(3)?,
+                ended_at: row.get(4)?,
+                tokens_saved: row.get::<_, i64>(5)?.max(0) as u64,
+                requests: row.get::<_, Option<i64>>(6)?.unwrap_or(0).max(0) as u64,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     /// Downgrades runs that still CLAIM to be running but whose session
@@ -833,6 +902,129 @@ mod tests {
         link(&mut store, "/p/t.md", "s-1");
 
         assert_eq!(store.card_runs("ws-1", "/p/t.md").unwrap().len(), 1);
+    }
+
+    // --- savings (v49) -------------------------------------------------
+
+    /// Moves a run's end to a known second, so a window can be drawn
+    /// around it.
+    fn end_at(store: &KanbanStore, session: &str, ended_at: i64) {
+        store
+            .conn
+            .execute("UPDATE card_runs SET ended_at = ?2 WHERE session_id = ?1", params![session, ended_at])
+            .unwrap();
+    }
+
+    #[test]
+    fn a_snapshot_lands_on_the_run_and_an_unsnapshotted_run_keeps_none() {
+        let (_dir, mut store) = store();
+        link(&mut store, "/p/a.md", "s-compressed");
+        link(&mut store, "/p/b.md", "s-plain");
+        store.finish_runs_for_session("s-compressed", Some(0)).unwrap();
+        store.finish_runs_for_session("s-plain", Some(0)).unwrap();
+
+        store.record_savings_for_session("s-compressed", 41_200, 37).unwrap();
+
+        let compressed = &store.card_runs("ws-1", "/p/a.md").unwrap()[0];
+        assert_eq!(compressed.headroom_tokens_saved, Some(41_200));
+        assert_eq!(compressed.headroom_requests, Some(37));
+        let plain = &store.card_runs("ws-1", "/p/b.md").unwrap()[0];
+        assert_eq!(plain.headroom_tokens_saved, None, "no snapshot is not a saving of zero");
+        assert_eq!(plain.headroom_requests, None);
+    }
+
+    /// The row a relaunch superseded is still the old session's run, and
+    /// that session's saving is recorded when IT ends, later.
+    #[test]
+    fn a_snapshot_reaches_a_run_its_card_already_let_go_of() {
+        let (_dir, mut store) = store();
+        link(&mut store, "/p/t.md", "s-1");
+        link(&mut store, "/p/t.md", "s-2");
+
+        store.record_savings_for_session("s-1", 900, 4).unwrap();
+
+        let runs = store.card_runs("ws-1", "/p/t.md").unwrap();
+        assert_eq!(runs[1].session_id, "s-1");
+        assert_eq!(runs[1].outcome, "replaced");
+        assert_eq!(runs[1].headroom_tokens_saved, Some(900));
+        assert_eq!(runs[0].headroom_tokens_saved, None, "the run that replaced it has its own session");
+    }
+
+    #[test]
+    fn savings_since_lists_snapshots_by_where_their_run_ended() {
+        let (_dir, mut store) = store();
+        for (path, session) in [("/p/a.md", "s-early"), ("/p/b.md", "s-late"), ("/p/c.md", "s-plain")] {
+            link(&mut store, path, session);
+            store.finish_runs_for_session(session, Some(0)).unwrap();
+        }
+        link(&mut store, "/p/d.md", "s-live");
+        store.record_savings_for_session("s-early", 100, 1).unwrap();
+        store.record_savings_for_session("s-late", 2_000, 9).unwrap();
+        end_at(&store, "s-early", 1_000);
+        end_at(&store, "s-late", 5_000);
+        end_at(&store, "s-plain", 5_000);
+
+        let runs = store.savings_since(4_000).unwrap();
+
+        assert_eq!(runs.len(), 1, "one run ended in the window with a snapshot: {runs:?}");
+        assert_eq!(runs[0].session_id, "s-late");
+        assert_eq!(runs[0].workspace_id, "ws-1");
+        assert_eq!(runs[0].path, "/p/b.md");
+        assert_eq!(runs[0].ended_at, Some(5_000));
+        assert_eq!(runs[0].tokens_saved, 2_000);
+        assert_eq!(runs[0].requests, 9);
+        assert_eq!(store.savings_since(0).unwrap().len(), 2, "the open run and the plain one never count");
+    }
+
+    /// Every install already has a `card_runs` from v27, and `CREATE
+    /// TABLE IF NOT EXISTS` never gives it the v49 columns. Without the
+    /// ALTERs the run history stops loading entirely ("no such column:
+    /// headroom_tokens_saved"), and every test above opens a file this
+    /// build created, which is exactly why none of them can see it.
+    #[test]
+    fn opening_a_pre_v49_database_migrates_card_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kanban.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE card_runs (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     workspace_id TEXT NOT NULL,
+                     path TEXT NOT NULL,
+                     session_id TEXT NOT NULL,
+                     command TEXT,
+                     conversation_id TEXT,
+                     launch_cwd TEXT,
+                     base_sha TEXT,
+                     started_at INTEGER NOT NULL,
+                     ended_at INTEGER,
+                     exit_code INTEGER,
+                     outcome TEXT NOT NULL,
+                     resume_attempts INTEGER
+                 );
+                 INSERT INTO card_runs (workspace_id, path, session_id, command, started_at,
+                     ended_at, exit_code, outcome)
+                 VALUES ('ws-1', '/p/t.md', 's-old', 'claude', 10, 20, 0, 'exited');",
+            )
+            .unwrap();
+        }
+
+        let mut store = KanbanStore::open(&path).unwrap();
+        let runs = store.card_runs("ws-1", "/p/t.md").unwrap();
+        assert_eq!(runs.len(), 1, "the run from before v49 survives the migration");
+        assert_eq!(runs[0].headroom_tokens_saved, None, "a run from before v49 has no snapshot");
+        assert_eq!(runs[0].headroom_requests, None);
+
+        store.record_savings_for_session("s-old", 5, 1).unwrap();
+        assert_eq!(store.card_runs("ws-1", "/p/t.md").unwrap()[0].headroom_tokens_saved, Some(5));
+        assert_eq!(store.savings_since(0).unwrap().len(), 1);
+
+        // Idempotent: the ALTERs run on every open, and the second must
+        // swallow the duplicate rather than fail the open.
+        drop(store);
+        let reopened = KanbanStore::open(&path).unwrap();
+        assert_eq!(reopened.card_runs("ws-1", "/p/t.md").unwrap()[0].headroom_requests, Some(1));
     }
 
     #[test]

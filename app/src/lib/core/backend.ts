@@ -34,6 +34,7 @@ import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspace
 import type { AttachmentStatus } from "$lib/cards/attachments";
 import type { WorkspaceSettingsPatch, WorkspaceSettingsRecord } from "$lib/workspace/workspaceSettings";
 import type { HeadroomStatus, HeadroomWorkspace } from "$lib/agents/compression";
+import type { RunSavings } from "$lib/agents/headroomSavings";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
 import type { DeviceList, PairingOffer } from "$lib/core/remoteAccess";
 import { keyedQueue } from "$lib/core/keyedQueue";
@@ -425,6 +426,14 @@ export function setHeadroomWorkspaces(workspaces: HeadroomWorkspace[]): Promise<
 /// See `headroomState.ts`, its one caller.
 export function getHeadroomStatus(): Promise<HeadroomStatus> {
   return invoke("get_headroom_status");
+}
+
+/// Every card run's savings snapshot that ended at or after `since`
+/// (epoch seconds), from the local daemon (v49). Gate on
+/// FEATURE_MIN_VERSION.headroomSavings first: an older daemon refuses the
+/// request. See `headroomSavingsState.ts`, its one caller.
+export function headroomSavings(since: number): Promise<RunSavings[]> {
+  return invoke("headroom_savings", { since });
 }
 
 /// Looks for Headroom again. `locatedPath` absent is Check again; a path

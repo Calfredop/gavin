@@ -184,6 +184,9 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // which costs a running agent one retried request -- the same trade as
   // the switch above, and Settings asks before it. Nothing is removed.
   get_headroom_status: ["ordinary"],
+  // The hub's savings in a limit window: a read of snapshots the daemon
+  // already took.
+  headroom_savings: ["ordinary"],
   detect_headroom: ["ordinary"],
   install_headroom: ["ordinary"],
   get_session_names: ["ordinary"],

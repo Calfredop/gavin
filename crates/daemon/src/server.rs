@@ -2991,6 +2991,39 @@ impl SessionManager {
         kanban.card_runs(workspace_id, path)
     }
 
+    /// Whether a session's agent talked to its model through Headroom,
+    /// as its registry row says. False for a session the registry has
+    /// no row for: nothing can be claimed about it.
+    fn was_compressed(&self, session_id: &str) -> bool {
+        self.registry
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .ok()
+            .flatten()
+            .is_some_and(|record| record.compressed)
+    }
+
+    /// Writes what Headroom saved a session onto every card run it was
+    /// (v49; spec, "Savings"). Gavin keeps the record: Headroom's own
+    /// per-session map is capped and evicts, so the snapshot taken when
+    /// the session ends is what every surface reads.
+    ///
+    /// `None` writes nothing, and nothing is the honest answer for it:
+    /// Headroom was not there to ask, or had no entry for the session,
+    /// and neither of those is a saving of zero. A failure to write is
+    /// logged and stepped over, like the run's own close.
+    pub fn record_savings(&self, session_id: &str, savings: Option<crate::headroom::http::SessionSavings>) {
+        let Some(savings) = savings else { return };
+        if let Err(e) = self.kanban.lock().unwrap().record_savings_for_session(
+            session_id,
+            savings.tokens_saved,
+            savings.requests,
+        ) {
+            eprintln!("failed to record Headroom's savings for session {session_id}: {e}");
+        }
+    }
+
     /// An agent session claiming the card it just wrote. The app binds a
     /// card the moment it launches an agent FOR it; nothing did the same
     /// for a card an agent picked up by itself -- so a card the Home
@@ -4223,6 +4256,23 @@ impl SessionManager {
             if let Err(e) = manager.kanban.lock().unwrap().finish_runs_for_session(&id, Some(exit_code)) {
                 eprintln!("failed to close card runs for session {id}: {e}");
             }
+            // And what Headroom saved it (v49), for a compressed session
+            // only: an uncompressed one has nothing to snapshot, and
+            // asking would cost every plain exit a `/stats`. Whether it
+            // was compressed is read here, before the reap below forgets
+            // the row that says so; the asking happens on a thread of its
+            // own, because `/stats` is megabytes on a long-lived proxy
+            // and the exit announced below must not wait on it.
+            if manager.was_compressed(&id) {
+                if let Some(headroom) = manager.headroom.get().cloned() {
+                    let manager = Arc::clone(&manager);
+                    let id = id.clone();
+                    std::thread::spawn(move || {
+                        let savings = headroom.session_savings(&id);
+                        manager.record_savings(&id, savings);
+                    });
+                }
+            }
             // And whatever standalone TOOL run it was (v30), here for the
             // same reason: this is the one block that runs for both a
             // natural exit and a kill. For a `command` or `script` tool
@@ -4633,6 +4683,12 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         Request::GetCardSession { workspace_id, path } => manager
             .card_session(&workspace_id, &path)
             .map(|card_session| Response::CardSession { card_session }),
+        Request::HeadroomSavings { since } => manager
+            .kanban
+            .lock()
+            .unwrap()
+            .savings_since(since)
+            .map(|runs| Response::HeadroomSavings { runs }),
         Request::CardRuns { workspace_id, path } => {
             manager.card_runs(&workspace_id, &path).map(|runs| Response::CardRuns { runs })
         }
@@ -5158,6 +5214,10 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::UnlinkCardSession { .. }
         | Request::GetCardSession { .. }
         | Request::CardRuns { .. }
+        // Every card's savings in every workspace (v49): the run history
+        // above, read across the whole daemon, and no more the agent's
+        // than a card run is.
+        | Request::HeadroomSavings { .. }
         | Request::StartToolRun { .. }
         | Request::SetToolRunOutcome { .. }
         | Request::ToolRuns { .. }
@@ -10194,6 +10254,61 @@ mod tests {
                 assert_eq!(runs[0].conversation_id.as_deref(), Some("conv-1"));
             }
             other => panic!("expected ToolRuns, got {other:?}"),
+        }
+    }
+
+    // --- savings (v49) -------------------------------------------------
+
+    #[test]
+    fn a_snapshot_reaches_the_card_run_and_the_hubs_window_over_the_wire() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .link_card_session("ws-1", "/p/t.md", "s-1", "/p", Some("claude"), None, None, None, None)
+            .unwrap();
+        manager.kanban.lock().unwrap().finish_runs_for_session("s-1", Some(0)).unwrap();
+
+        manager.record_savings(
+            "s-1",
+            Some(crate::headroom::http::SessionSavings { tokens_saved: 41_200, requests: 37 }),
+        );
+
+        match handle_request(&manager, Request::CardRuns { workspace_id: "ws-1".into(), path: "/p/t.md".into() }) {
+            Response::CardRuns { runs } => {
+                assert_eq!(runs[0].headroom_tokens_saved, Some(41_200));
+                assert_eq!(runs[0].headroom_requests, Some(37));
+            }
+            other => panic!("expected CardRuns, got {other:?}"),
+        }
+        match handle_request(&manager, Request::HeadroomSavings { since: 0 }) {
+            Response::HeadroomSavings { runs } => {
+                assert_eq!(runs.len(), 1);
+                assert_eq!(runs[0].session_id, "s-1");
+                assert_eq!(runs[0].tokens_saved, 41_200);
+            }
+            other => panic!("expected HeadroomSavings, got {other:?}"),
+        }
+    }
+
+    /// Headroom not there to ask, or no entry for the session: neither is
+    /// a saving of zero, so neither writes one.
+    #[test]
+    fn no_reading_writes_no_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager
+            .link_card_session("ws-1", "/p/t.md", "s-1", "/p", Some("claude"), None, None, None, None)
+            .unwrap();
+        manager.kanban.lock().unwrap().finish_runs_for_session("s-1", Some(0)).unwrap();
+
+        manager.record_savings("s-1", None);
+
+        let runs = manager.card_runs("ws-1", "/p/t.md").unwrap();
+        assert_eq!(runs[0].headroom_tokens_saved, None);
+        assert_eq!(runs[0].headroom_requests, None);
+        match handle_request(&manager, Request::HeadroomSavings { since: 0 }) {
+            Response::HeadroomSavings { runs } => assert!(runs.is_empty()),
+            other => panic!("expected HeadroomSavings, got {other:?}"),
         }
     }
 

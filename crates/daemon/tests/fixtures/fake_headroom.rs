@@ -16,6 +16,10 @@
 //! - `FAKE_HEADROOM_VERSION`: the version it claims (default `0.39.1`)
 //! - `FAKE_HEADROOM_READY_AFTER_MS`: how long `/readyz` answers 503
 //! - `FAKE_HEADROOM_TOKENS_SAVED`: the lifetime total `/stats` reports
+//! - `FAKE_HEADROOM_PER_PROJECT_FILE`: a file holding the JSON object
+//!   `/stats` reports as `savings.per_project`. Read on every request,
+//!   because a test learns a session's id only after the daemon has
+//!   started its Headroom; absent or empty is `{}`
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -102,6 +106,7 @@ fn serve(args: &[String], version: &str) {
         );
     let tokens_saved: u64 =
         knob("FAKE_HEADROOM_TOKENS_SAVED").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let per_project_file = knob("FAKE_HEADROOM_PER_PROJECT_FILE");
     println!("fake headroom {version} listening on {host}:{port}");
 
     for stream in listener.incoming() {
@@ -131,12 +136,20 @@ fn serve(args: &[String], version: &str) {
                     std::process::id()
                 ),
             ),
-            "/stats" => (
-                200,
-                format!(
-                    "{{\"persistent_savings\":{{\"schema_version\":6,\"lifetime\":{{\"requests\":1,\"tokens_saved\":{tokens_saved}}}}}}}"
-                ),
-            ),
+            "/stats" => {
+                let per_project = per_project_file
+                    .as_deref()
+                    .and_then(|file| std::fs::read_to_string(file).ok())
+                    .map(|body| body.trim().to_string())
+                    .filter(|body| !body.is_empty())
+                    .unwrap_or_else(|| "{}".to_string());
+                (
+                    200,
+                    format!(
+                        "{{\"savings\":{{\"per_project\":{per_project}}},\"persistent_savings\":{{\"schema_version\":6,\"lifetime\":{{\"requests\":1,\"tokens_saved\":{tokens_saved}}}}}}}"
+                    ),
+                )
+            }
             _ => (404, "{}".to_string()),
         };
         let _ = write!(

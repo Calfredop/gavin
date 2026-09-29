@@ -70,6 +70,13 @@
   } from "$lib/sessions/sessionsManager";
   import { barPercent, displayPercent, formatResetsIn } from "$lib/agents/agentUsage";
   import { agentUsageStore, nowStore, pausedWorkspaces } from "$lib/agents/agentPauseState";
+  import {
+    savingsByProfile,
+    savingsSince,
+    windowSavingsLine,
+    windowSavingsTip,
+  } from "$lib/agents/headroomSavings";
+  import { headroomSavingsStore, loadHeadroomSavings } from "$lib/agents/headroomSavingsState";
   import { openAppPanel, showAppPanel } from "$lib/panes/appPanels";
   import {
     newWorkspaceFlow,
@@ -276,16 +283,44 @@
   //
   // Fetches nothing: startPauseClock already reads every profile the
   // fleet runs, app-wide, whether or not the hub is open.
+  const profileByWorkspace = $derived(
+    Object.fromEntries($layoutState.workspaces.map((w) => [w.id, $resolvedAgents(w.id).profileId ?? null]))
+  );
   const usage = $derived(
     usageRecap({
       profiles: $agentProfilesStore,
-      profileByWorkspace: Object.fromEntries(
-        $layoutState.workspaces.map((w) => [w.id, $resolvedAgents(w.id).profileId ?? null])
-      ),
+      profileByWorkspace,
       reports: $agentUsageStore,
     })
   );
   const worstAgent = $derived(worstUsageRow(usage));
+
+  // ---- what Headroom saved in each window ----------------------------
+  //
+  // The daemon's snapshots, summed into the window each usage row shows
+  // (headroomSavings.ts). Asked only while the hub is on screen, like the
+  // session recap, and back to the earliest window any row shows. A
+  // minute apart: a snapshot lands when a run ENDS, so nothing here moves
+  // faster than runs finish.
+  const SAVINGS_POLL_MS = 60_000;
+  const savingsFrom = $derived(savingsSince(usage.map((row) => row.worst)));
+  const savedByProfile = $derived(savingsByProfile(usage, profileByWorkspace, $headroomSavingsStore));
+  let savingsTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Re-asked whenever the reach changes -- a window reset, or the first
+  // usage reading arriving -- or the daemon's version becomes known, as
+  // well as on the timer.
+  $effect(() => {
+    void loadHeadroomSavings($daemonCompat, savingsFrom);
+  });
+
+  onMount(() => {
+    savingsTimer = setInterval(() => void loadHeadroomSavings($daemonCompat, savingsFrom), SAVINGS_POLL_MS);
+  });
+
+  onDestroy(() => {
+    if (savingsTimer !== null) clearInterval(savingsTimer);
+  });
 
   /// What the heading's badge means, spelled out. The percentage alone
   /// says nothing about WHICH window is nearly full, and the weekly and
@@ -745,6 +780,14 @@
                 </div>
                 <span class="pct">{displayPercent(worst.usedPercent)}%</span>
                 <span class="resets">{formatResetsIn(worst.resetsAt, $nowStore) ?? ""}</span>
+                <!-- Tokens Headroom saved in this same window, from the
+                     runs of the workspaces on this agent. Nothing at all
+                     when none of them ran compressed in it. -->
+                {@const saved = savedByProfile[row.profileId] ?? null}
+                {@const savedLine = windowSavingsLine(saved)}
+                {#if saved && savedLine}
+                  <span class="saved" use:tooltip={windowSavingsTip(saved, worst)}>{savedLine}</span>
+                {/if}
               {:else}
                 <span class="usage-note">{note}</span>
               {/if}
@@ -1528,6 +1571,12 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--text-subtle);
+  }
+  .saved {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
   }
   /* A sentence where a bar would be: no probe, no reading yet, or a
      reading that carried no windows. Wraps, because every one of them is

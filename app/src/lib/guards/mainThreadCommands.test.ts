@@ -161,6 +161,7 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // the first ask of a daemon's lifetime runs detection. Check again and
   // Locate… run `headroom --version`, a Python start.
   ["session.rs", "get_headroom_status", "a daemon round trip, polled while Settings is open"],
+  ["session.rs", "headroom_savings", "a daemon round trip, polled while the hub is open"],
   ["session.rs", "detect_headroom", "`headroom --version` in the daemon, a Python start"],
   ["session.rs", "install_headroom", "a daemon round trip"],
   ["session.rs", "session_screen", "a daemon round trip, per turn verdict"],

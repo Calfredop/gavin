@@ -13,10 +13,13 @@
   import {
     historySummary,
     runRows,
+    savedBreakdown,
+    savedSummary,
     tokenBreakdown,
     tokenProblem,
     tokenSummary,
     totalCost,
+    totalSaved,
   } from "$lib/cards/runHistory";
   import {
     closeRunHistory,
@@ -63,6 +66,7 @@
   const rows = $derived(runRows(runs, nowSeconds));
   const summary = $derived(historySummary(runs, nowSeconds));
   const cost = $derived(totalCost(runs.map((run) => tokensForRun(view ?? undefined, run))));
+  const saved = $derived(totalSaved(runs));
 
   function close(): void {
     closeRunHistory(path);
@@ -76,7 +80,7 @@
       <div class="titles">
         <h2>{title}</h2>
         <p class="sub">
-          {summary}{#if cost} · {cost}{/if}
+          {summary}{#if cost} · {cost}{/if}{#if saved} · {saved}{/if}
         </p>
       </div>
       <button
@@ -100,6 +104,7 @@
           {@const report = tokensForRun(view ?? undefined, row.run)}
           {@const pending = tokensPending(view ?? undefined, row.run)}
           {@const problem = tokenProblem(report)}
+          {@const runSaved = savedSummary(row.run)}
           <div class="row" class:resumed={row.resumed}>
             <div class="when">
               <StatusBadge
@@ -139,6 +144,12 @@
                 <span class="quiet" use:tooltip={problem}>No cost recorded</span>
               {:else}
                 <span class="quiet">—</span>
+              {/if}
+              <!-- Headroom's snapshot, beside the transcript's bill. Its
+                   own line and its own source: a run with no snapshot
+                   was not compressed, and gets nothing here. -->
+              {#if runSaved}
+                <span class="saved" use:tooltip={savedBreakdown(row.run) ?? undefined}>{runSaved}</span>
               {/if}
             </div>
 
@@ -243,8 +254,16 @@
     white-space: nowrap;
   }
   .cost {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 1px;
     font-variant-numeric: tabular-nums;
     text-align: right;
+  }
+  .saved {
+    color: var(--text-dim);
+    font-size: 0.92em;
   }
   .go {
     display: flex;

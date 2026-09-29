@@ -514,6 +514,21 @@ export const FEATURE_MIN_VERSION = {
   // → Custom agent, disabled with this reason rather than offering a
   // choice the running daemon would drop.
   customApiFamily: 48,
+  // Savings (v49): `HeadroomSavings`, every card run's snapshot since a
+  // moment, which the hub sums into each agent's limit window. A new
+  // request TYPE, so `min_version_for` already refuses it against an
+  // older daemon and nothing can be silently dropped. The entry is read
+  // for `companionNotifications`' reason: the hub asks on a timer, and a
+  // loader that sent it to a v48 daemon would take a version error on
+  // every tick. Its consumer is that loader (`loadHeadroomSavings` in
+  // headroomSavingsState.ts), which does not ask and leaves the hub's
+  // rows as they were -- an older daemon took no snapshots to sum.
+  //
+  // The snapshot's other half, `CardRun` widened with the saved tokens
+  // and the request count, is a REPLY and needs no entry: an older
+  // daemon's run has no snapshot, and absent is what the run history
+  // reads as "nothing new to show".
+  headroomSavings: 49,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

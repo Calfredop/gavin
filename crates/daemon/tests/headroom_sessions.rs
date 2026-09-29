@@ -762,3 +762,124 @@ fn a_list_naming_no_workspace_turns_compression_off_everywhere() {
     assert_eq!(session.summary.uncompressed_reason, None);
     assert!(session.routing().is_empty());
 }
+
+// --- savings (v49) -----------------------------------------------------
+
+/// Waits for its own go file, so the test can bind it to a card and
+/// attach before it ends.
+const HELD: &str = r#"while [ ! -e "$HOME/go-$GAVIN_SESSION_ID" ]; do sleep 0.05; done"#;
+
+fn held(daemon: &Daemon, root: &str, profile: Option<&str>) -> String {
+    created(daemon.ask(Request::CreateSession {
+        workspace_path: root.to_string(),
+        cwd: root.to_string(),
+        command: Some(HELD.to_string()),
+        profile_id: profile.map(str::to_string),
+        api_family: None,
+    }))
+}
+
+fn release(machine: &Machine, id: &str) {
+    std::fs::write(machine.home.path().join(format!("go-{id}")), "").unwrap();
+}
+
+fn bind(daemon: &Daemon, root: &str, card: &str, id: &str) {
+    match daemon.ask(Request::LinkCardSession {
+        workspace_id: "ws-1".into(),
+        path: card.into(),
+        session_id: id.into(),
+        cwd: root.into(),
+        command: Some(HELD.into()),
+        conversation_id: None,
+        launch_cwd: Some(root.into()),
+        resume_attempts: None,
+        base_sha: None,
+    }) {
+        Response::Ok => {}
+        other => panic!("expected the card bound, got {other:?}"),
+    }
+}
+
+/// Attaches and drains, on a thread that holds the connection: the pump
+/// that sees a session end, and closes its runs, exists only once
+/// something has attached.
+fn attach(daemon: &Daemon, id: &str) {
+    let mut stream = daemon.connect();
+    write_message(&mut stream, &Request::Attach { id: id.to_string() }).unwrap();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stream);
+        while let Ok(Some(_)) = read_message::<_, Response>(&mut reader) {}
+    });
+}
+
+fn run_of(daemon: &Daemon, card: &str) -> protocol::CardRun {
+    match daemon.ask(Request::CardRuns { workspace_id: "ws-1".into(), path: card.into() }) {
+        Response::CardRuns { mut runs } => runs.remove(0),
+        other => panic!("expected the card's runs, got {other:?}"),
+    }
+}
+
+/// The snapshot, end to end: the fake's `/stats` names both sessions,
+/// and only the one whose agent talked to Headroom keeps what it says.
+/// The plain one ends first, and its run is closed before the
+/// compressed one is let go, so its "nothing" is a decision already
+/// made rather than a snapshot not yet written.
+#[test]
+fn a_compressed_card_run_keeps_what_headroom_saved_it_and_a_plain_one_keeps_nothing() {
+    if unavailable_here() {
+        return;
+    }
+    let machine = machine_with_headroom();
+    let per_project = machine.home.path().join("per-project.json");
+    let daemon =
+        machine.daemon_with(&[("FAKE_HEADROOM_PER_PROJECT_FILE", per_project.to_str().unwrap())]);
+    let root = workspace(&machine, "repo");
+    switch(&daemon, &[(&root, true)]);
+    daemon.until_ready();
+
+    let compressed = held(&daemon, &root, Some(CLAUDE_CODE));
+    let plain = held(&daemon, &root, None);
+    assert!(summary(&daemon, &compressed).compressed);
+    assert!(!summary(&daemon, &plain).compressed);
+    let (compressed_card, plain_card) = ("/repo/plans/a.md", "/repo/plans/b.md");
+    bind(&daemon, &root, compressed_card, &compressed);
+    bind(&daemon, &root, plain_card, &plain);
+    std::fs::write(
+        &per_project,
+        format!(
+            r#"{{"{compressed}":{{"requests":37,"tokens_saved":41200,"savings_percent":14.1}},
+                "{plain}":{{"requests":5,"tokens_saved":999}}}}"#
+        ),
+    )
+    .unwrap();
+    attach(&daemon, &compressed);
+    attach(&daemon, &plain);
+
+    release(&machine, &plain);
+    let plain_run = wait_for("the plain run to be closed", || {
+        let run = run_of(&daemon, plain_card);
+        (run.outcome == "exited").then_some(run)
+    });
+    release(&machine, &compressed);
+    let compressed_run = wait_for("the compressed run's snapshot", || {
+        let run = run_of(&daemon, compressed_card);
+        run.headroom_tokens_saved.is_some().then_some(run)
+    });
+
+    assert_eq!(compressed_run.outcome, "exited");
+    assert_eq!(compressed_run.headroom_tokens_saved, Some(41_200));
+    assert_eq!(compressed_run.headroom_requests, Some(37));
+    assert_eq!(plain_run.headroom_tokens_saved, None);
+    let plain_run = run_of(&daemon, plain_card);
+    assert_eq!(plain_run.headroom_tokens_saved, None, "a plain run is never asked about");
+    assert_eq!(plain_run.headroom_requests, None);
+    match daemon.ask(Request::HeadroomSavings { since: 0 }) {
+        Response::HeadroomSavings { runs } => {
+            assert_eq!(runs.len(), 1, "{runs:?}");
+            assert_eq!(runs[0].session_id, compressed);
+            assert_eq!(runs[0].path, compressed_card);
+            assert_eq!(runs[0].tokens_saved, 41_200);
+        }
+        other => panic!("expected the savings, got {other:?}"),
+    }
+}

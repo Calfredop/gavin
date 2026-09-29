@@ -5675,6 +5675,33 @@ pub async fn get_headroom_status(
     headroom_status(resp)
 }
 
+/// Every card run's savings snapshot that ended at or after `since`
+/// (epoch seconds), from the LOCAL daemon: what the hub sums into each
+/// agent's limit window.
+///
+/// Local only, like the other Headroom commands: an ssh workspace is
+/// Unavailable, so its host's daemon took no snapshots for this machine.
+/// A new request TYPE (v49), so the lane's gate refuses it against an
+/// older daemon; the app reads `FEATURE_MIN_VERSION.headroomSavings`
+/// first and does not ask one.
+#[tauri::command]
+pub async fn headroom_savings(
+    since: i64,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<Vec<protocol::RunSavings>, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::HeadroomSavings { since })
+        .await
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::HeadroomSavings { runs } => Ok(runs),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected Headroom's savings, got {other:?}")),
+    }
+}
+
 /// Looks for Headroom again: Settings' Check again (`located_path`
 /// absent) and Locate… (the file the human picked, remembered from then
 /// on; an empty string forgets it). Runs `headroom --version`, which is
@@ -7569,6 +7596,8 @@ mod kanban_command_tests {
                     exit_code: None,
                     outcome: "running".to_string(),
                     resume_attempts: None,
+                    headroom_tokens_saved: None,
+                    headroom_requests: None,
                 },
                 CardRun {
                     id: 1,
@@ -7583,6 +7612,8 @@ mod kanban_command_tests {
                     exit_code: Some(0),
                     outcome: "exited".to_string(),
                     resume_attempts: None,
+                    headroom_tokens_saved: None,
+                    headroom_requests: None,
                 },
             ],
         }]);

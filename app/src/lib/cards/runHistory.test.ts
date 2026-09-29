@@ -9,10 +9,13 @@ import {
   outcomeSentence,
   runRows,
   runSeconds,
+  savedBreakdown,
+  savedSummary,
   tokenBreakdown,
   tokenProblem,
   tokenSummary,
   totalCost,
+  totalSaved,
   type CardRun,
   type TokenReport,
 } from "$lib/cards/runHistory";
@@ -294,5 +297,46 @@ describe("totalCost", () => {
 
   it("is null rather than zero when nothing could be read", () => {
     expect(totalCost([null, { kind: "unsupported", reason: "no" }])).toBe(null);
+  });
+});
+
+describe("Headroom savings", () => {
+  it("says what a compressed run saved, beside what it cost", () => {
+    const saved = run({ headroomTokensSaved: 41_200, headroomRequests: 37 });
+    expect(savedSummary(saved)).toBe("saved 41k tokens");
+    expect(savedBreakdown(saved)).toBe("Headroom saved 41,200 tokens over 37 requests");
+  });
+
+  it("says nothing new for a run that was not compressed", () => {
+    // An unknown is never a zero: no snapshot is not "saved 0".
+    for (const plain of [run(), run({ headroomTokensSaved: null, headroomRequests: null })]) {
+      expect(savedSummary(plain)).toBeNull();
+      expect(savedBreakdown(plain)).toBeNull();
+    }
+  });
+
+  it("keeps a snapshot of nothing saved, because Headroom saw the run", () => {
+    const nothing = run({ headroomTokensSaved: 0, headroomRequests: 4 });
+    expect(savedSummary(nothing)).toBe("saved 0 tokens");
+    expect(savedBreakdown(nothing)).toBe("Headroom saved 0 tokens over 4 requests");
+    expect(savedBreakdown(run({ headroomTokensSaved: 812, headroomRequests: 1 }))).toBe(
+      "Headroom saved 812 tokens over 1 request"
+    );
+  });
+
+  it("totals a card over the runs that have a snapshot, counting a session once", () => {
+    const runs = [
+      run({ id: 3, sessionId: "s-3", headroomTokensSaved: 40_000, headroomRequests: 9 }),
+      run({ id: 2, sessionId: "s-2" }),
+      // One session linked twice is two rows with the same snapshot.
+      run({ id: 1, sessionId: "s-1", headroomTokensSaved: 5_000, headroomRequests: 2 }),
+      run({ id: 0, sessionId: "s-1", headroomTokensSaved: 5_000, headroomRequests: 2 }),
+    ];
+    expect(totalSaved(runs)).toBe("saved 45k tokens");
+  });
+
+  it("has no card total when no run was compressed", () => {
+    expect(totalSaved([])).toBeNull();
+    expect(totalSaved([run(), run({ id: 2, sessionId: "s-2" })])).toBeNull();
   });
 });

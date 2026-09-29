@@ -18,6 +18,18 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v49 is savings (`2026-09-28-headroom-design.md`, "Savings"). When a
+/// compressed session ends, the daemon snapshots what Headroom saved it
+/// onto its card runs, and two things carry that out:
+///
+/// - `CardRun` widened with `headroom_tokens_saved` and
+///   `headroom_requests`, both `serde(default)`. A REPLY, so an older
+///   client ignores them, and an older daemon's absence reads as "no
+///   snapshot", which is true of every run it ever recorded.
+/// - `HeadroomSavings`, a new request TYPE: every snapshot since a
+///   moment, across cards, for the hub's limit-window sums.
+///   `min_version_for` is its whole wire gate.
+///
 /// v48 widens `CreateSession` with `api_family`, the API the custom
 /// agent speaks (`2026-09-28-headroom-design.md`, "The recipes", the
 /// Custom row). It is how a custom agent can be compressed at all: gavin
@@ -536,7 +548,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 48;
+pub const PROTOCOL_VERSION: u32 = 49;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -1460,6 +1472,14 @@ pub enum Request {
     SetHeadroomWorkspaces {
         workspaces: Vec<HeadroomWorkspace>,
     },
+    /// Every card run with a savings snapshot that ended at or after
+    /// `since`, epoch seconds (v49): what the hub sums into each limit
+    /// window. Across every card and workspace this daemon hosts, because
+    /// a window belongs to the subscription and not to one card; the
+    /// sums themselves are the app's.
+    HeadroomSavings {
+        since: i64,
+    },
 
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
@@ -1710,6 +1730,11 @@ pub fn min_version_for(req: &Request) -> u32 {
         // request that has been v1 since v1, which this match cannot
         // see (FEATURE_MIN_VERSION.compressedLaunch).
         Request::SetHeadroomWorkspaces { .. } => 47,
+
+        // The hub's savings in a limit window. A new TYPE, so this match
+        // is its whole wire gate; FEATURE_MIN_VERSION.headroomSavings
+        // keeps the hub from asking an older daemon at all.
+        Request::HeadroomSavings { .. } => 49,
 
         Request::Shutdown => 12,
 
@@ -2319,6 +2344,8 @@ pub enum Response {
     /// whatever the request did, so a caller never has to ask twice to
     /// see what its own press changed.
     Headroom { status: HeadroomStatus },
+    /// The answer to `HeadroomSavings` (v49), oldest first.
+    HeadroomSavings { runs: Vec<RunSavings> },
 }
 
 /// Headroom on this machine, as the daemon that has to execute it sees
@@ -2392,6 +2419,27 @@ pub struct HeadroomInstall {
 pub struct HeadroomWorkspace {
     pub workspace_path: String,
     pub enabled: bool,
+}
+
+/// One card run's savings snapshot, for the hub's window sums (v49).
+///
+/// A session bound to two cards is one row per card with the same
+/// snapshot on each, because the snapshot is the SESSION's. The daemon
+/// hands both over as they are stored, and a sum counts a session once.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSavings {
+    pub workspace_id: String,
+    pub path: String,
+    pub session_id: String,
+    /// Wall-clock epoch seconds, like `CardRun`'s.
+    pub started_at: i64,
+    /// When the run ended, which is where a sum places it. None only for
+    /// a row whose end nobody recorded, and no snapshot is ever taken of
+    /// one of those.
+    pub ended_at: Option<i64>,
+    pub tokens_saved: u64,
+    pub requests: u64,
 }
 
 /// One row of the trust store, as the Settings device list reads it
@@ -2881,6 +2929,17 @@ pub struct CardRun {
     /// (see `CardSession::resume_attempts`). Not the number of times the
     /// run was resumed INTO a new session -- that is the chain above.
     pub resume_attempts: Option<u32>,
+    /// The tokens Headroom saved this run, snapshotted from its `/stats`
+    /// when the session ended (v49). None for a run that was not
+    /// compressed, and for one whose snapshot could not be taken: an
+    /// unknown is never a zero. Gavin keeps the record, because
+    /// Headroom's own per-session map is capped and evicts.
+    #[serde(default)]
+    pub headroom_tokens_saved: Option<u64>,
+    /// How many of this run's requests Headroom saw, from the same
+    /// snapshot. Set exactly when `headroom_tokens_saved` is.
+    #[serde(default)]
+    pub headroom_requests: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -4728,6 +4787,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn savings_in_a_window_are_v49() {
+        assert_eq!(min_version_for(&Request::HeadroomSavings { since: 1_756_900_000 }), 49);
+    }
+
+    /// The snapshots cross to the frontend, so their field names are part
+    /// of the wire: the reply's one field is a single word, and the
+    /// struct carries the camelCase.
+    #[test]
+    fn run_savings_serialize_to_the_camel_case_shape_the_frontend_expects() {
+        let run = RunSavings {
+            workspace_id: "ws".into(),
+            path: "/p/t.md".into(),
+            session_id: "s-1".into(),
+            started_at: 1_756_900_000,
+            ended_at: Some(1_756_903_600),
+            tokens_saved: 41_200,
+            requests: 37,
+        };
+        assert_eq!(
+            serde_json::to_value(Response::HeadroomSavings { runs: vec![run] }).unwrap(),
+            serde_json::json!({ "type": "HeadroomSavings", "runs": [{
+                "workspaceId": "ws", "path": "/p/t.md", "sessionId": "s-1",
+                "startedAt": 1_756_900_000, "endedAt": 1_756_903_600,
+                "tokensSaved": 41_200, "requests": 37 }] })
+        );
+    }
+
+    /// A v48 daemon's run has no snapshot fields, and it recorded no
+    /// snapshot: absent reads as None, never as a zero.
+    #[test]
+    fn a_card_run_from_a_daemon_that_took_no_snapshots_parses_with_none() {
+        let run: CardRun = serde_json::from_value(serde_json::json!({
+            "id": 1, "path": "/p/t.md", "sessionId": "s-1", "command": null,
+            "conversationId": null, "launchCwd": null, "baseSha": null,
+            "startedAt": 10, "endedAt": 20, "exitCode": 0, "outcome": "exited",
+            "resumeAttempts": null
+        }))
+        .unwrap();
+        assert_eq!(run.headroom_tokens_saved, None);
+        assert_eq!(run.headroom_requests, None);
+    }
+
     /// The list crosses from the frontend, so its field names are part
     /// of the wire: the struct carries the camelCase, and the request
     /// keeps its one field a single word.
@@ -5565,7 +5667,9 @@ mod tests {
         // v48: CreateSession widened with `api_family`, the custom
         // agent's, gated by FEATURE_MIN_VERSION.customApiFamily. No new
         // TYPE.
-        assert_eq!(PROTOCOL_VERSION, 48);
+        // v49: savings -- HeadroomSavings, one new TYPE; CardRun widened
+        // with `headroom_tokens_saved` and `headroom_requests`.
+        assert_eq!(PROTOCOL_VERSION, 49);
     }
 
     #[test]
@@ -6086,6 +6190,8 @@ mod tests {
             Request::InstallHeadroom,
             // v47's copy of the compression switch.
             Request::SetHeadroomWorkspaces { workspaces: vec![] },
+            // v49's savings in a window.
+            Request::HeadroomSavings { since: 0 },
             Request::Unknown,
         ]
     }
@@ -6123,7 +6229,7 @@ mod tests {
     /// tools), v39=1 (SessionScreen), v40=3 (ssh workspace files), v41=2
     /// (ssh git/files), v42=2 (the Decisions tab's writes), v43=1
     /// (GetCardSession), v46=5 (the daemon runs Headroom), v47=1
-    /// (SetHeadroomWorkspaces), plus Unknown.
+    /// (SetHeadroomWorkspaces), v49=1 (HeadroomSavings), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -6189,6 +6295,8 @@ mod tests {
         // The daemon's copy of the compression switch:
         // SetHeadroomWorkspaces.
         expected.insert(47, 1);
+        // Savings in a limit window: HeadroomSavings.
+        expected.insert(49, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
@@ -6221,6 +6329,8 @@ mod tests {
             exit_code: None,
             outcome: "running".to_string(),
             resume_attempts: Some(2),
+            headroom_tokens_saved: Some(41_200),
+            headroom_requests: Some(37),
         };
         assert_eq!(
             serde_json::to_value(&run).unwrap(),
@@ -6230,7 +6340,8 @@ mod tests {
                                 "baseSha": "f75db30f75db30f75db30f75db30f75db30f75db",
                                 "startedAt": 1_756_900_000, "endedAt": null,
                                 "exitCode": null, "outcome": "running",
-                                "resumeAttempts": 2 })
+                                "resumeAttempts": 2, "headroomTokensSaved": 41_200,
+                                "headroomRequests": 37 })
         );
 
         let mut buf = Vec::new();

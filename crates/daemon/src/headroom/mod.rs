@@ -254,6 +254,15 @@ impl Headroom {
         })
     }
 
+    /// What Headroom saved one session, asked of the running proxy: the
+    /// snapshot a card run keeps when its session ends (spec,
+    /// "Savings"). `None` while no Headroom is ready to ask, and when it
+    /// has no entry for the session. It is an HTTP call, and `/stats` is
+    /// megabytes on a long-lived proxy, so never ask it under a lock.
+    pub fn session_savings(&self, session_id: &str) -> Option<http::SessionSavings> {
+        http::session_savings(self.inner.supervisor.ready_port()?, session_id)
+    }
+
     /// The opencode plugin of the Headroom this daemon starts: the one at
     /// the stored path, which is the file every start runs.
     fn opencode_plugin(&self) -> Option<PathBuf> {

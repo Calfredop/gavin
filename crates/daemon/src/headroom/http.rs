@@ -1,7 +1,8 @@
 //! The three things the daemon asks a running Headroom.
 //!
 //! `/readyz` for readiness, `/health` to recognise a proxy after a
-//! crash, and `/stats` for the lifetime total. All three are loopback
+//! crash, and `/stats` for the lifetime total and what one session
+//! saved. All three are loopback
 //! GETs with short deadlines: the supervisor asks on every tick, and a
 //! proxy that does not answer in a second is not ready in any sense that
 //! matters to an agent about to be pointed at it.
@@ -69,6 +70,30 @@ pub fn health(port: u16) -> Option<Health> {
     }
 }
 
+/// What Headroom saved one session, as its `/stats` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionSavings {
+    pub tokens_saved: u64,
+    /// The requests Headroom saw tagged with the session.
+    pub requests: u64,
+}
+
+/// The session's entry in `/stats`' per-project savings, or `None` when
+/// Headroom did not answer or has no entry for it.
+///
+/// No entry is not a saving of zero. Headroom 0.39.1 keeps at most 50
+/// projects and evicts the one that saved least whenever a new one
+/// arrives (`savings_tracker.py`, `DEFAULT_MAX_PROJECTS`), so a session
+/// that is missing may have sent nothing, or may have been pushed out.
+/// The same eviction resets a session that comes back, which is why an
+/// entry can undercount in a busy fleet.
+pub fn session_savings(port: u16, session_id: &str) -> Option<SessionSavings> {
+    match get(port, "/stats")? {
+        (200, body) => read_session_savings(&body, session_id),
+        _ => None,
+    }
+}
+
 pub fn lifetime_tokens_saved(port: u16) -> Option<u64> {
     match get(port, "/stats")? {
         (200, body) => read_lifetime_tokens_saved(&body),
@@ -93,6 +118,19 @@ fn read_lifetime_tokens_saved(body: &str) -> Option<u64> {
     value.get("persistent_savings")?.get("lifetime")?.get("tokens_saved")?.as_u64()
 }
 
+/// `savings.per_project.<session id>`: a compressed session is tagged
+/// with its gavin session id as Headroom's project (`compress.rs`), and
+/// Headroom keys its per-project savings by that tag. Tokens only, like
+/// the lifetime total.
+fn read_session_savings(body: &str, session_id: &str) -> Option<SessionSavings> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let entry = value.get("savings")?.get("per_project")?.get(session_id)?;
+    Some(SessionSavings {
+        tokens_saved: entry.get("tokens_saved")?.as_u64()?,
+        requests: entry.get("requests")?.as_u64()?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,14 +147,23 @@ mod tests {
         "config":{"backend":"anthropic","optimize":true,"cache":true,"memory":false,"learn":false,
         "savings_profile":"coding","pid":39205}}"#;
 
-    /// `/stats`' `persistent_savings` from the same run, with a total
-    /// put in.
-    const STATS_0_39_1: &str = r#"{"summary":{},"persistent_savings":{"schema_version":6,
+    /// `/stats`' `savings` and `persistent_savings` from the same run,
+    /// with a total and one session's entry put in. A project entry
+    /// carries the keys `_projects_snapshot_locked` gives it in 0.39.1.
+    const STATS_0_39_1: &str = r#"{"summary":{},
+        "savings":{"total_tokens":182044,
+        "per_project":{"0b6c4a52-7f0e-4d0c-9a53-3f6f0c1f2a11":{"requests":37,"tokens_saved":41200,
+        "compression_savings_usd":0.12,"total_input_tokens":250000,"total_input_cost_usd":0.75,
+        "last_activity_at":"2026-09-29T01:40:00Z","savings_percent":14.15}},
+        "by_source":[],"by_layer":{}},
+        "persistent_savings":{"schema_version":6,
         "storage_path":"/state/headroom/proxy_savings.json",
         "lifetime":{"requests":41,"tokens_saved":182044,"compression_savings_usd":0.55,
         "savings_basis":"unknown","total_input_tokens":903112},
         "display_session":{"requests":3,"tokens_saved":912},
-        "projects":{},"by_model":{}},"config":{}}"#;
+        "projects":{},"projects_limit":50,"by_model":{}},"config":{}}"#;
+
+    const SESSION: &str = "0b6c4a52-7f0e-4d0c-9a53-3f6f0c1f2a11";
 
     #[test]
     fn health_is_read_in_the_shape_the_pinned_headroom_answers() {
@@ -139,6 +186,26 @@ mod tests {
         assert_eq!(read_lifetime_tokens_saved(STATS_0_39_1), Some(182_044));
         assert_eq!(read_lifetime_tokens_saved(r#"{"persistent_savings":{}}"#), None);
         assert_eq!(read_lifetime_tokens_saved("not json"), None);
+    }
+
+    #[test]
+    fn a_sessions_savings_are_its_per_project_entry() {
+        assert_eq!(
+            read_session_savings(STATS_0_39_1, SESSION),
+            Some(SessionSavings { tokens_saved: 41_200, requests: 37 })
+        );
+    }
+
+    /// Absent is not zero: the session may have sent nothing, or been
+    /// evicted from a full map.
+    #[test]
+    fn a_session_headroom_has_no_entry_for_has_no_savings() {
+        assert_eq!(read_session_savings(STATS_0_39_1, "some-other-session"), None);
+        assert_eq!(read_session_savings(r#"{"savings":{}}"#, SESSION), None);
+        assert_eq!(read_session_savings(r#"{"persistent_savings":{}}"#, SESSION), None);
+        assert_eq!(read_session_savings("not json", SESSION), None);
+        let half = format!(r#"{{"savings":{{"per_project":{{"{SESSION}":{{"tokens_saved":5}}}}}}}}"#);
+        assert_eq!(read_session_savings(&half, SESSION), None, "both numbers or neither");
     }
 
     /// A server that answers each path with a fixed status and body,
@@ -189,6 +256,7 @@ mod tests {
         assert!(!ready(port));
         assert_eq!(health(port), None);
         assert_eq!(lifetime_tokens_saved(port), None);
+        assert_eq!(session_savings(port, SESSION), None);
     }
 
     #[test]
@@ -196,6 +264,7 @@ mod tests {
         let port = serve(vec![("/health", 200, HEALTH_0_39_1), ("/stats", 200, STATS_0_39_1)]);
         assert_eq!(health(port).unwrap().version, "0.39.1");
         assert_eq!(lifetime_tokens_saved(port), Some(182_044));
+        assert_eq!(session_savings(port, SESSION), Some(SessionSavings { tokens_saved: 41_200, requests: 37 }));
     }
 
     /// Something else on the port: it answers, and it is not Headroom.
