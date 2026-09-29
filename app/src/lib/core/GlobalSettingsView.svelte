@@ -110,6 +110,7 @@
     deviceRows,
     pairingClosed,
     pairingConfirmCopy,
+    knownDevice,
     pairingConfirmed,
     pairingOffered,
     pairingOpen,
@@ -564,7 +565,7 @@
   /// prompt keeps focus on Reject (`danger`), so Enter cannot confirm a
   /// code nobody compared.
   async function askPairing(request: PairingRequest): Promise<void> {
-    const said = await askConfirm(pairingConfirmCopy(request));
+    const said = await askConfirm(pairingConfirmCopy(request, knownDevice(request, devices)));
     pairingError = null;
     try {
       if (said) {

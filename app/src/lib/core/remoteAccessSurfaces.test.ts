@@ -174,7 +174,7 @@ describe("the Settings section", () => {
   // tests hold is the copy on screen. A title written into the markup
   // would be a second one that drifts.
   it("asks through askConfirm with the module's copy", () => {
-    for (const copy of ["pairingConfirmCopy(request)", "revokeDeviceCopy(row)", "revokeAllCopy()"]) {
+    for (const copy of ["pairingConfirmCopy(request, knownDevice(request, devices))", "revokeDeviceCopy(row)", "revokeAllCopy()"]) {
       expect(VIEW).toContain(`askConfirm(${copy})`);
     }
   });

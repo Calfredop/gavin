@@ -15,6 +15,7 @@ import {
   countdownLabel,
   deviceRows,
   formatSas,
+  knownDevice,
   pairingClosed,
   pairingConfirmCopy,
   pairingConfirmed,
@@ -272,6 +273,32 @@ describe("the prompts", () => {
     expect(copy.confirmLabel).toBe("Pair this device");
     expect(copy.cancelLabel).toBe("Reject");
     expect(copy.confirmLabel).not.toBe("OK");
+  });
+
+  // A pairing for an id the row already has replaces that row's keys.
+  it("says when the pairing is for a device the desk already trusts", () => {
+    const row: DeviceInfo = {
+      deviceId: "dev-1",
+      name: "Alex's old name",
+      role: "remote",
+      createdAt: 1,
+      lastSeenAt: 2,
+      revokedAt: null,
+      stale: false,
+    };
+    const list = { devices: [row], remoteAccessEnabled: true } as DeviceList;
+    const known = knownDevice(REQUEST, list);
+    expect(known).toBe(row);
+
+    const text = pairingConfirmCopy(REQUEST, known).lines.join(" ");
+    expect(text).toContain("already trusts");
+    expect(text).toContain("REPLACES");
+    expect(text).toContain("Alex's old name");
+
+    // A Device the desk has not met gets no such line.
+    expect(knownDevice({ ...REQUEST, deviceId: "dev-2" }, list)).toBeNull();
+    expect(knownDevice(REQUEST, null)).toBeNull();
+    expect(pairingConfirmCopy(REQUEST).lines.join(" ")).not.toContain("already trusts");
   });
 
   // `danger` is what keeps focus on the dismissing button, so Enter

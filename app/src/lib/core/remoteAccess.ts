@@ -261,6 +261,23 @@ export interface ConfirmCopy {
   danger: boolean;
 }
 
+/// The row this pairing is for, when the trust store already holds one.
+///
+/// `DevicePairingRequested` names the id the row already has: the daemon
+/// files a Device under its Noise key, so the same id is the same key.
+/// Which is also all it says: a copy of that key on another phone is the
+/// same id, and confirming replaces the hardware key the row trusts.
+export function knownDevice(
+  request: PairingRequest,
+  list: DeviceList | null,
+): DeviceInfo | null {
+  return list?.devices.find((d) => d.deviceId === request.deviceId) ?? null;
+}
+
+function knownDeviceLine(known: DeviceInfo): string {
+  return `This desk already trusts a device called “${known.name}” with this identity. Confirming REPLACES that device's keys and drops its open connections: if you are not pairing that phone again right now, reject this.`;
+}
+
 /// The question the six digits are for.
 ///
 /// `danger` is not about destruction here: it is what keeps keyboard
@@ -269,11 +286,15 @@ export interface ConfirmCopy {
 /// SAS -- an attacker who photographed the QR and scanned it faster gets
 /// a dialog whose digits do not match the phone in the human's hand --
 /// and a prompt answerable by reflex would give it away.
-export function pairingConfirmCopy(request: PairingRequest): ConfirmCopy {
+export function pairingConfirmCopy(
+  request: PairingRequest,
+  known: DeviceInfo | null = null,
+): ConfirmCopy {
   return {
     title: `Pair “${request.name}”?`,
     lines: [
       `Your phone should be showing ${formatSas(request.sas)}. If it is showing anything else, reject this: some other device completed the handshake.`,
+      ...(known ? [knownDeviceLine(known)] : []),
       "Confirming is what writes this device into the daemon's trust store. Until you confirm, it does not exist.",
       "If you lose the phone, Revoke all devices is the one-button answer — it rotates the daemon's key, so every device has to pair again.",
     ],
