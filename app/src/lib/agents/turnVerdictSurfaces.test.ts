@@ -118,7 +118,12 @@ describe("the wiring", () => {
     const orch = source("orchestrationState.ts");
     // Both a derived-store input and a scheduler tick input.
     expect(orch).toMatch(/nowStore,\s*turnVerdictById,\s*\]/);
-    expect(orch).toMatch(/prReports,[\s\S]*?turnVerdictById,\s*\];/);
+    // In the scheduler's own list, wherever in it: the list has grown
+    // past this entry since, and what matters is that it is IN it. No
+    // bracket may come between the two names or before the close, which
+    // is what keeps the match inside ONE list -- the derived store's
+    // inputs name both as well, and close with no semicolon.
+    expect(orch).toMatch(/prReports,[^\]]*?turnVerdictById,[^\]]*?\];/);
     expect(orch).toContain("verdictsOf(get(turnVerdictById))");
   });
 
