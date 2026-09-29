@@ -88,6 +88,10 @@ export interface PlanFileInfo {
   // because a pre-v32 daemon never sends either.
   agent?: string | null;
   model?: string | null;
+  // The card's `effort:` line -- how hard that agent thinks. The third
+  // half of the same override, raw for `model`'s reason; a pre-v56 daemon
+  // never sends it.
+  effort?: string | null;
   // The card's `Decision:` / `Human test:` lines, parsed -- everything on
   // this card waiting on a person.
   //
@@ -123,6 +127,11 @@ export interface AgentConfig {
   /// binary the table cannot know. Optional because a pre-v31 daemon
   /// never sends it.
   modelFlag?: string | null;
+  /// How hard the workspace's agent thinks, and the flag that carries it
+  /// for a `custom` agent -- `model` and `modelFlag` again, one question
+  /// over. Optional because a pre-v56 daemon never sends either.
+  effort?: string | null;
+  effortFlag?: string | null;
 }
 
 export interface GavinContext {

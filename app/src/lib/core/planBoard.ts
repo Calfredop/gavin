@@ -46,6 +46,10 @@ export interface CardView {
   // never sends either.
   agent?: string | null;
   model?: string | null;
+  // The effort that agent thinks at -- part of the same override, so a
+  // card naming only `effort:` still replaces its level's pair. A pre-v56
+  // daemon never sends it.
+  effort?: string | null;
   checklistDone: number;
   checklistTotal: number;
   contextName: string;
@@ -124,6 +128,7 @@ function cardView(ctx: GavinContext, plan: PlanFileInfo): CardView {
     complexity: plan.complexity ?? null,
     agent: plan.agent ?? null,
     model: plan.model ?? null,
+    effort: plan.effort ?? null,
     checklistDone: plan.checklistDone,
     checklistTotal: plan.checklistTotal,
     contextName: ctx.name,

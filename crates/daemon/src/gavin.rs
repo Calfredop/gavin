@@ -209,6 +209,9 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
     // model, even though nothing will ever run it.
     let agent = get("agent").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     let model = get("model").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    // The third half of the same override (v56): how hard that agent
+    // thinks. Raw for `model`'s reason -- the levels are the CLI's.
+    let effort = get("effort").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     let (checklist_done, checklist_total) = checklist_counts(content);
     PlanFileInfo {
         path: protocol::wire_path(path),
@@ -225,6 +228,7 @@ pub fn plan_file_info(path: &Path, content: &str) -> PlanFileInfo {
         complexity,
         agent,
         model,
+        effort,
         checklist_done,
         checklist_total,
         parse_warning: warning,
@@ -1481,7 +1485,7 @@ pub fn set_plan_field(
     if value.is_empty() {
         match key {
             "status" | "parent" | "labels" | "attachments" | "complexity" | "agent"
-            | "model" => {
+            | "model" | "effort" => {
                 write_plan_field(path, key, value)?;
                 return relocate_for_status(path, index);
             }
@@ -1552,7 +1556,7 @@ pub fn set_plan_field(
         // Refusing what it cannot check would refuse writes the app knows
         // are fine; a name the app cannot resolve shows back on the card
         // as what it says instead.
-        "agent" | "model" => {
+        "agent" | "model" | "effort" => {
             if value.contains('\n') {
                 anyhow::bail!("{key} must be a single line");
             }
@@ -1819,6 +1823,8 @@ fn parse_context_config(config_path: &Path) -> (Option<String>, Option<AgentConf
                     mcp_format: get("mcp_format"),
                     model: get("model"),
                     model_flag: get("model_flag"),
+                    effort: get("effort"),
+                    effort_flag: get("effort_flag"),
                 }
             });
             (name, agent, false)
@@ -1835,7 +1841,7 @@ fn parse_context_config(config_path: &Path) -> (Option<String>, Option<AgentConf
 /// Removing rather than blanking is the point: a `model = ""` line reads
 /// as a deliberate empty model to whoever opens the file next, where an
 /// absent key reads as "gavin decides".
-const CLEARABLE_KEYS: &[&str] = &["model", "model_flag", "prd"];
+const CLEARABLE_KEYS: &[&str] = &["model", "model_flag", "effort", "effort_flag", "prd"];
 
 /// Writes one key of `.gavin-root/config.toml`. Uses toml_edit so
 /// comments, key order and formatting survive -- this file is hand-edited
@@ -1849,9 +1855,8 @@ const CLEARABLE_KEYS: &[&str] = &["model", "model_flag", "prd"];
 /// at the document root beside `name` and `extra_contexts`.
 pub fn set_root_config_field(root: &Path, key: &str, value: &str) -> anyhow::Result<()> {
     let table = match key {
-        "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model" | "model_flag" => {
-            Some("agent")
-        }
+        "profile" | "file" | "command" | "mcp_file" | "mcp_format" | "model" | "model_flag"
+        | "effort" | "effort_flag" => Some("agent"),
         "prd" => None,
         _ => anyhow::bail!("not a settable config key: {key}"),
     };
@@ -2167,6 +2172,7 @@ fn oversize_plan_file_info(path: &Path) -> PlanFileInfo {
         complexity: None,
         agent: None,
         model: None,
+        effort: None,
         // None, not an empty list: the body was never read, so "this
         // card has nothing waiting on you" is a claim nothing here can
         // make. It rides out with `parse_warning: true` beside it.
@@ -3826,6 +3832,29 @@ mod tests {
         assert!(set_plan_field(&path, "model", "opus\nsonnet").is_err());
     }
 
+    /// The third half of a card's override (v56), under the same rules as
+    /// the other two: kept raw, single-line, and cleared by an empty value
+    /// rather than left behind as a line that names nothing.
+    #[test]
+    fn set_plan_field_writes_and_clears_the_card_effort() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = write_card(
+            &dir.path().join(GAVIN_ROOT_DIR).join("plans"),
+            "p.md",
+            "---\ntitle: T\n---\nbody\n",
+        );
+
+        set_plan_field(&path, "effort", "max").unwrap();
+        let info = plan_file_info(&path, &std::fs::read_to_string(&path).unwrap());
+        assert_eq!(info.effort.as_deref(), Some("max"));
+        assert!(!info.parse_warning);
+
+        set_plan_field(&path, "effort", "").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "---\ntitle: T\n---\nbody\n");
+        assert!(set_plan_field(&path, "effort", "high\nmax").is_err());
+    }
+
     #[test]
     fn create_plan_file_writes_a_complexity_line_and_refuses_an_unknown_level() {
         let dir = tempfile::tempdir().unwrap();
@@ -5222,6 +5251,30 @@ mod tests {
         assert!(!after.contains("model_flag"), "the key is removed, not blanked: {after}");
         assert!(after.contains("command = \"my-agent\""), "{after}");
         assert_eq!(scan_root(dir.path()).contexts[0].agent.as_ref().unwrap().model_flag, None);
+    }
+
+    /// `effort` and `effort_flag` are `model` and `model_flag` again, one
+    /// question over (v56): both parse back off `[agent]`, and both clear
+    /// to an absent key -- the app-wide default and the profile table's
+    /// flag are what sit underneath them.
+    #[test]
+    fn effort_and_its_flag_are_settable_and_an_empty_value_clears_them() {
+        let dir = tempfile::tempdir().unwrap();
+        init_gavin_root(dir.path(), "WS").unwrap();
+        let path = dir.path().join(GAVIN_ROOT_DIR).join("config.toml");
+
+        set_root_config_field(dir.path(), "effort", "high").unwrap();
+        set_root_config_field(dir.path(), "effort_flag", "--think=").unwrap();
+        let agent = scan_root(dir.path()).contexts[0].agent.clone().unwrap();
+        assert_eq!(agent.effort.as_deref(), Some("high"));
+        assert_eq!(agent.effort_flag.as_deref(), Some("--think="));
+
+        set_root_config_field(dir.path(), "effort", "").unwrap();
+        set_root_config_field(dir.path(), "effort_flag", "").unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains("effort"), "the keys are removed, not blanked: {after}");
+        let agent = scan_root(dir.path()).contexts[0].agent.clone().unwrap();
+        assert_eq!((agent.effort, agent.effort_flag), (None, None));
     }
 
     #[test]

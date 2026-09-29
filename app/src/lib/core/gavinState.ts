@@ -197,7 +197,8 @@ export function patchPlanField(
     | "attachments"
     | "complexity"
     | "agent"
-    | "model",
+    | "model"
+    | "effort",
   value: string
 ): void {
   gavinTrees.update((m) => {
@@ -228,6 +229,7 @@ export function patchPlanField(
         // answer from naming the profile the workspace happens to be on.
         if (key === "agent") return { ...p, agent: value.trim() || null };
         if (key === "model") return { ...p, model: value.trim() || null };
+        if (key === "effort") return { ...p, effort: value.trim() || null };
         const n = Number(value);
         return Number.isFinite(n) ? { ...p, order: n } : p;
       }),

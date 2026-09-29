@@ -43,6 +43,17 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v56 is agent effort (`2026-09-30-agent-effort-design.md`): how hard an
+/// agent thinks, set wherever its model is. `AgentConfig` gains `effort`
+/// and `effort_flag` (the root config's `[agent]` keys of those names),
+/// `PlanFileInfo` gains `effort` (a card's `effort:` line), and
+/// `SetRootConfigField` / `SetPlanFrontmatterField` accept the new keys.
+/// Not one new Request variant, so `min_version_for` is blind to all of
+/// it; the gate is the app's `FEATURE_MIN_VERSION.agentEffort`, and it
+/// covers the read as well as the write -- a v55 daemon refuses the keys
+/// loudly but also never parses them, so a card's `effort:` reads back
+/// as absent and the run launches at the agent's default.
+///
 /// v55 is the attention request (`companion-14`, ADR 0005): the one
 /// deliberately stable API between the Companion shell and a Workstation.
 /// It adds `GetAttention` (a Device asks) and `AttentionResult` (the
@@ -693,7 +704,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 55;
+pub const PROTOCOL_VERSION: u32 = 56;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -4023,6 +4034,14 @@ pub struct PlanFileInfo {
     /// `serde(default)` so an older daemon's tree still parses.
     #[serde(default)]
     pub model: Option<String>,
+    /// The card's `effort:` line -- how hard its agent thinks (v56). Raw
+    /// for `model`'s reason: the levels belong to whichever CLI runs the
+    /// card. Part of the same override as `agent` and `model`, so a card
+    /// naming only an effort runs the workspace's agent at it.
+    ///
+    /// `serde(default)` so an older daemon's tree still parses.
+    #[serde(default)]
+    pub effort: Option<String>,
     /// The card's `Decision:` / `Human test:` checklist lines, parsed
     /// (v42) -- everything on this card that is waiting on a person.
     ///
@@ -4201,6 +4220,18 @@ pub struct AgentConfig {
     /// `model` does above.
     #[serde(default)]
     pub model_flag: Option<String>,
+    /// How hard this workspace's agent thinks -- `high`, `max` -- composed
+    /// onto the command after the model as `<effort_flag> <effort>`.
+    /// Absent means "inherit the app-wide default for this profile",
+    /// exactly as `model` does (v56).
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// The argv that carries `effort`, for the `custom` profile whose
+    /// flag the table cannot know -- `model_flag`'s twin. A value ending
+    /// in `=` takes the level attached. Absent means the profile table's
+    /// own flag (v56).
+    #[serde(default)]
+    pub effort_flag: Option<String>,
 }
 
 /// A folder that contains a `.gavin-root/` (kind Root, only ever directly
@@ -6172,6 +6203,7 @@ mod tests {
                     complexity: Some(Complexity::Moderate),
                     agent: Some("codex".to_string()),
                     model: Some("gpt-5.1".to_string()),
+                    effort: Some("xhigh".to_string()),
                     human_items: Some(vec![HumanItem {
                         kind: HumanItemKind::Decision,
                         text: "Which serializer?".to_string(),
@@ -6227,6 +6259,7 @@ mod tests {
                         "complexity": "moderate",
                         "agent": "codex",
                         "model": "gpt-5.1",
+                        "effort": "xhigh",
                         "humanItems": [{
                             "kind": "decision",
                             "text": "Which serializer?",
@@ -6372,6 +6405,8 @@ mod tests {
                 mcp_format: None,
                 model: Some("sonnet".to_string()),
                 model_flag: None,
+                effort: Some("high".to_string()),
+                effort_flag: None,
             }),
             outside: false,
             prd: Some("docs/PRD.md".to_string()),
@@ -6389,7 +6424,9 @@ mod tests {
                 "mcpFile": null,
                 "mcpFormat": null,
                 "model": "sonnet",
-                "modelFlag": null
+                "modelFlag": null,
+                "effort": "high",
+                "effortFlag": null
             })
         );
     }
@@ -6638,7 +6675,10 @@ mod tests {
         // between the shell and a Workstation (ADR 0005). Two new TYPES.
         // The Device wire built these five at 44..48 on its own branch
         // and moved them past main's 44..50 when the two met.
-        assert_eq!(PROTOCOL_VERSION, 55);
+        // v56: agent effort -- `AgentConfig.effort`/`effort_flag`,
+        // `PlanFileInfo.effort` and the keys that write them. Widened
+        // payloads and no new TYPE.
+        assert_eq!(PROTOCOL_VERSION, 56);
     }
 
     #[test]

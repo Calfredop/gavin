@@ -6,16 +6,13 @@
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import { worktreeStaleIndicator } from "$lib/ui/indicators";
   import {
-    agentProfilesStore,
     createSessionForCard,
-    agentModelDefaultsStore,
     layoutState,
     profileIdForLaunch,
-    trustedAgentConfigs,
+    resolvedAgents,
   } from "$lib/core/layoutState";
   import { allSessionIdsInWorkspace } from "$lib/core/workspace";
   import { orchestrations } from "$lib/orchestration/orchestrationState";
-  import { resolveAgentConfig } from "$lib/core/settings";
   import { askConfirmChecked, showAlert } from "$lib/core/dialog";
   import {
     gitStore,
@@ -54,13 +51,10 @@
   // Match on git's canonical toplevel, not on the cwd string we were given.
   const current = $derived(worktrees.find((w) => w.path === view?.repo?.root) ?? worktrees.find((w) => w.path === view?.cwd) ?? null);
   const anyPrunable = $derived(worktrees.some((w) => w.prunable));
-  const agent = $derived(
-    resolveAgentConfig(
-      $trustedAgentConfigs(workspaceId),
-      $agentProfilesStore,
-      $agentModelDefaultsStore
-    )
-  );
+  // The reactive resolution every launcher shares, so an agent opened in
+  // a worktree carries the same custom command, model and effort as one
+  // opened anywhere else.
+  const agent = $derived($resolvedAgents(workspaceId));
   const agentCommand = $derived(agent.launchCommand);
 
   // Every rail in the app, not only this workspace's: a rail is bound to

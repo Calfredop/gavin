@@ -867,11 +867,14 @@ mod workspaces_data_tests {
             crate::config::ComplexityAgent {
                 profile: "claude-code".to_string(),
                 model: "opus".to_string(),
+                effort: "max".to_string(),
             },
         );
         let defaults = crate::config::AgentDefaultsConfig {
             custom_command: "my-agent --yolo".to_string(),
             custom_model_flag: "--llm".to_string(),
+            custom_effort_flag: "--think".to_string(),
+            agent_efforts: HashMap::from([("claude-code".to_string(), "high".to_string())]),
             custom_api_family: "openai".to_string(),
             complexity,
             agent_fallback: vec!["codex".to_string()],
@@ -1182,6 +1185,7 @@ mod workspaces_data_tests {
             crate::config::ComplexityAgent {
                 profile: String::new(),
                 model: "haiku".to_string(),
+                effort: String::new(),
             },
         );
         let data = WorkspacesData {

@@ -376,6 +376,29 @@ pub struct AgentProfile {
     /// of the six rows have none, and for them the picker is `models`
     /// plus "Custom…", exactly as before.
     pub model_catalog: Option<ModelCatalog>,
+    /// The argv that sets how hard this agent thinks, composed onto the
+    /// command after the model. Two shapes, told apart the way
+    /// `headless_args` tells its two apart: a flag ending in `=` is
+    /// concatenated with the level (`-c model_reasoning_effort=high`),
+    /// anything else takes it as the next argument (`--effort high`).
+    ///
+    /// Empty where the launched TUI has no such flag, which hides every
+    /// effort control for the profile -- the posture `model_flag` takes.
+    /// Checked 2026-09-30:
+    ///
+    /// - gemini -- no flag; the thinking budget lives in settings.json.
+    /// - cursor -- effort is a bracket parameter OF the model id
+    ///   (`claude-opus-4-8[effort=high]`, `agent --help`), so the model's
+    ///   own Custom… box is already the route and a second flag would
+    ///   be a second, conflicting spelling of it.
+    /// - opencode -- `--variant` is the provider's reasoning effort, but
+    ///   only `opencode run` takes it; the interactive TUI gavin launches
+    ///   rejects it (1.18.25, `opencode --help`).
+    pub effort_flag: &'static str,
+    /// The effort levels the CLI itself documents, lowest first. Offered
+    /// as picks beside "Custom…", which stays for a level a newer CLI
+    /// adds before this list does. Empty wherever `effort_flag` is.
+    pub efforts: &'static [&'static str],
     /// The text this agent prints on screen when it has STOPPED because
     /// something BROKE, rather than because its turn ended. Handed to the
     /// daemon per session (`Request::SetFailurePatterns`) and matched
@@ -716,6 +739,12 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // need one -- the aliases above are the whole picker and each
         // already means "the latest of this tier".
         model_catalog: None,
+        // `claude --help` (2.1.285, 2026-09-30): "--effort <level>
+        // Effort level for the current session (low, medium, high,
+        // xhigh, max)". A model that does not support a level falls back
+        // to its own highest, so the list is the CLI's, not the model's.
+        effort_flag: "--effort",
+        efforts: &["low", "medium", "high", "xhigh", "max"],
         label: "Claude Code",
         instructions_file: "CLAUDE.md",
         command: "claude",
@@ -872,6 +901,14 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         model_flag: "--model",
         models: &[],
         model_catalog: Some(ModelCatalog::CodexCache),
+        // No dedicated flag: effort is the `model_reasoning_effort`
+        // config key, which `-c key=value` overrides for one run (its
+        // value parsed as TOML, a bare word kept as a string). ATTACHED,
+        // hence the trailing `=`. Levels from the Codex config
+        // reference's `model_reasoning_effort` enum, 2026-09-30; no local
+        // `codex` binary was available to run.
+        effort_flag: "-c model_reasoning_effort=",
+        efforts: &["minimal", "low", "medium", "high", "xhigh"],
         label: "Codex CLI",
         instructions_file: "AGENTS.md",
         command: "codex",
@@ -946,6 +983,8 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // endpoint that does list them wants an API key a CLI signed in
         // with a Google account does not have.
         model_catalog: None,
+        effort_flag: "",
+        efforts: &[],
         label: "Gemini CLI",
         instructions_file: "GEMINI.md",
         command: "gemini",
@@ -1022,6 +1061,8 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         model_flag: "--model",
         models: &[],
         model_catalog: None,
+        effort_flag: "",
+        efforts: &[],
         label: "Cursor",
         instructions_file: "AGENTS.md",
         // The terminal agent binary (`agent`), not the IDE launcher
@@ -1101,6 +1142,8 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         // from the machine's own catalogue instead.
         models: &[],
         model_catalog: Some(ModelCatalog::OpencodeCli),
+        effort_flag: "",
+        efforts: &[],
         label: "opencode",
         instructions_file: "AGENTS.md",
         command: "opencode",
@@ -1200,6 +1243,10 @@ pub const AGENT_PROFILES: &[AgentProfile] = &[
         model_flag: "",
         models: &[],
         model_catalog: None,
+        // The user's own binary: its flag comes from config.json /
+        // config.toml (`custom_effort_flag`, `[agent] effort_flag`).
+        effort_flag: "",
+        efforts: &[],
         label: "Custom…",
         instructions_file: "",
         command: "",
@@ -2406,6 +2453,12 @@ pub struct AgentProfileDto {
     /// Stable model aliases offered as picks; empty where the CLI has
     /// none worth pinning.
     pub models: Vec<String>,
+    /// The flag that sets the effort level, empty where the CLI takes
+    /// none -- the same gate `model_flag` is for the model controls. A
+    /// trailing `=` means the level is attached rather than separated.
+    pub effort_flag: String,
+    /// The effort levels the CLI documents, lowest first.
+    pub efforts: Vec<String>,
     /// What this agent prints when it has BROKEN. Empty means no failure
     /// detection for the profile (see AgentProfile::failure_patterns);
     /// the app hands these to the daemon per session.
@@ -2479,6 +2532,8 @@ pub fn agent_profiles() -> Vec<AgentProfileDto> {
             headless_args: p.headless_args.to_string(),
             model_flag: p.model_flag.to_string(),
             models: p.models.iter().map(|m| m.to_string()).collect(),
+            effort_flag: p.effort_flag.to_string(),
+            efforts: p.efforts.iter().map(|e| e.to_string()).collect(),
             failure_patterns: p.failure_patterns.iter().map(|f| f.to_string()).collect(),
             failure_causes: p
                 .failure_causes
@@ -2626,6 +2681,36 @@ mod tests {
                 "fable", "opus", "sonnet", "haiku", "opusplan", "best", "sonnet[1m]", "opus[1m]"
             ])
         );
+        assert_eq!(json["effortFlag"], "--effort");
+        assert_eq!(json["efforts"], serde_json::json!(["low", "medium", "high", "xhigh", "max"]));
+    }
+
+    /// Only the two CLIs whose LAUNCHED command takes an effort argument
+    /// carry a flag: claude's own `--effort`, and codex's config override
+    /// (attached, hence the `=`). The other rows are empty on purpose --
+    /// see `AgentProfile::effort_flag` for what each one was checked for.
+    #[test]
+    fn only_verified_cli_s_ship_an_effort_flag() {
+        let by = |id: &str| AGENT_PROFILES.iter().find(|p| p.id == id).unwrap();
+        assert_eq!(by("claude-code").effort_flag, "--effort");
+        assert_eq!(by("codex").effort_flag, "-c model_reasoning_effort=");
+        assert_eq!(by("codex").efforts, &["minimal", "low", "medium", "high", "xhigh"]);
+        for id in ["gemini", "cursor", "opencode", "custom"] {
+            assert_eq!(by(id).effort_flag, "", "{id} ships an unverified effort flag");
+        }
+    }
+
+    /// A preset list with no flag to carry it would be a picker whose
+    /// every choice silently goes nowhere.
+    #[test]
+    fn effort_presets_ship_only_beside_a_flag() {
+        for profile in AGENT_PROFILES {
+            assert!(
+                !profile.effort_flag.is_empty() || profile.efforts.is_empty(),
+                "{} offers effort levels it has no flag for",
+                profile.id
+            );
+        }
     }
 
     #[test]

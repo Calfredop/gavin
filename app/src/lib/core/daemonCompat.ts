@@ -589,6 +589,20 @@ export const FEATURE_MIN_VERSION = {
   // other about a socket being opened, and the next bump may move one
   // without the other.
   relayDial: 52,
+  // Agent effort (v56, `2026-09-30-agent-effort-design.md`). The daemon
+  // half is `cardAgent`'s shape again: `[agent] effort`/`effort_flag`
+  // and a card's `effort:` line widen EXISTING requests and replies, so
+  // `min_version_for` is blind to them. A v55 daemon refuses the three
+  // writes loudly and, worse, never PARSES the lines -- a card that
+  // carries `effort: max` reads back as carrying none and runs at the
+  // agent's own default with nothing on screen to say so.
+  //
+  // Consumers: the workspace Settings tab's Effort and Effort flag rows,
+  // and the card's Effort picker (CardAgentControls, in the card detail
+  // modal and the Plans tab strip). The app-wide defaults, the custom
+  // agent's flag and both complexity tables live in config.json and
+  // work against any daemon, so they are not behind it.
+  agentEffort: 56,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

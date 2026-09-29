@@ -52,7 +52,12 @@
   } from "$lib/git/gitTracking";
   import { gavinTrees } from "$lib/core/gavinState";
   import { featureBlockedReason } from "$lib/core/daemonCompat";
-  import { modelIsCustom as modelIsCustomFor, modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
+  import {
+    effortOptions,
+    modelIsCustom as modelIsCustomFor,
+    modelOptions,
+    CUSTOM_MODEL,
+  } from "$lib/agents/agentModel";
   import {
     resolveAgentConfig,
     validateAgentFileName,
@@ -132,10 +137,18 @@
   const tree = $derived($gavinTrees[workspaceId]);
   const rootContext = $derived(tree?.contexts.find((c) => c.kind === "root"));
   const agent = $derived(
-    resolveAgentConfig($trustedAgentConfigs(workspaceId), $agentProfilesStore, $agentModelDefaultsStore, {
-      command: $agentDefaultsStore.customCommand,
-      modelFlag: $agentDefaultsStore.customModelFlag,
-    })
+    resolveAgentConfig(
+      $trustedAgentConfigs(workspaceId),
+      $agentProfilesStore,
+      $agentModelDefaultsStore,
+      {
+        command: $agentDefaultsStore.customCommand,
+        modelFlag: $agentDefaultsStore.customModelFlag,
+        effortFlag: $agentDefaultsStore.customEffortFlag,
+      },
+      {},
+      $agentDefaultsStore.agentEfforts
+    )
   );
   const configWarning = $derived(Boolean(rootContext?.configWarning));
   const hasRoot = $derived(Boolean(ws?.rootPath));
@@ -248,6 +261,8 @@
         "Command",
         "Model flag",
         "Model",
+        "Effort",
+        "Effort flag",
         "Agent file",
         "PRD file",
         "MCP config",
@@ -257,7 +272,7 @@
         "compression",
       ],
     },
-    { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
+    { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model", "effort"] },
     {
       id: "agent-pause",
       keywords: ["Agent pause", "pause", "cycle", "limit", "usage", "quota", "rate limit"],
@@ -471,6 +486,21 @@
   /// went nowhere. This is the only surface that can produce the payload.
   const modelFlagBlocked = $derived(featureBlockedReason($daemonCompat, "agentModelFlag"));
 
+  // --- effort -----------------------------------------------------------
+  /// `ownModel` and `ownModelFlag` again, one question over: what this
+  /// workspace has set of its OWN, so the pickers can tell inheriting from
+  /// choosing the same value.
+  const ownEffort = $derived(rootContext?.agent?.effort ?? "");
+  const ownEffortFlag = $derived(rootContext?.agent?.effortFlag ?? "");
+  const globalEffort = $derived($agentDefaultsStore.agentEfforts?.[agent.profileId] ?? "");
+  /// A v55 daemon refuses both keys and never parses them back, so both
+  /// rows are dark with the reason rather than failing on blur.
+  const effortBlocked = $derived(featureBlockedReason($daemonCompat, "agentEffort"));
+  /// Only a custom agent needs a flag of its own -- every stock profile's
+  /// is verified in the table -- but a workspace that already holds one
+  /// keeps the row, so the value can be seen and cleared.
+  const showEffortFlag = $derived(isCustom || ownEffortFlag !== "");
+
   // --- complexity -------------------------------------------------------
   /// This workspace's own overrides. Per LEVEL: a level absent here runs
   /// whatever the app-wide table says, which is what the picker's first
@@ -567,6 +597,43 @@
   });
 
   const modelIsCustom = $derived(modelIsCustomFor(modelCustomOpen, ownModel, profileInfo?.models ?? []));
+
+  let effortCustomOpen = $state(false);
+  let effortDraft = $state("");
+  $effect(() => {
+    const effort = ownEffort;
+    if (focused !== "effort") effortDraft = effort;
+  });
+
+  let effortFlagDraft = $state("");
+  $effect(() => {
+    const flag = ownEffortFlag;
+    if (focused !== "effortFlag") effortFlagDraft = flag;
+  });
+
+  const effortIsCustom = $derived(modelIsCustomFor(effortCustomOpen, ownEffort, profileInfo?.efforts ?? []));
+
+  function pickEffort(value: string): void {
+    if (value === CUSTOM_MODEL) {
+      effortCustomOpen = true;
+      effortDraft = ownEffort;
+      return;
+    }
+    effortCustomOpen = false;
+    void setAgentField(workspaceId, "effort", value);
+  }
+
+  /// "" clears the key, putting the workspace back on the app-wide
+  /// default effort for its profile -- `commitModel`'s rule.
+  function commitEffort(): void {
+    const commit = fieldCommit(effortDraft, ownEffort, { empty: "clear" });
+    if (commit.kind === "write") void setAgentField(workspaceId, "effort", commit.value);
+  }
+
+  function commitEffortFlag(): void {
+    const commit = fieldCommit(effortFlagDraft, ownEffortFlag, { empty: "clear" });
+    if (commit.kind === "write") void setAgentField(workspaceId, "effort_flag", commit.value);
+  }
 
   function pickModel(value: string): void {
     if (value === CUSTOM_MODEL) {
@@ -980,14 +1047,82 @@
           </div>
           {#if modelBlocked}
             <p class="hint warn">{modelBlocked}</p>
-          {:else if agent.model}
-            <p class="hint">Launches as <code>{agent.launchCommand}</code>.</p>
           {/if}
         {:else if profileInfo}
           <p class="hint">
             No model flag, so gavin has no way to put one on the command — name the flag above, or
             put the model in Command itself.
           </p>
+        {/if}
+        {#if showEffortFlag}
+          <div class="row">
+            <label for="effort-flag-{workspaceId}">Effort flag</label>
+            <input
+              id="effort-flag-{workspaceId}"
+              bind:value={effortFlagDraft}
+              spellcheck="false"
+              placeholder={profileInfo?.effortFlag || $agentDefaultsStore.customEffortFlag || "--effort"}
+              disabled={Boolean(effortBlocked)}
+              title={effortBlocked ?? ""}
+              onfocus={() => (focused = "effortFlag")}
+              onblur={() => {
+                focused = null;
+                commitEffortFlag();
+              }}
+              onkeydown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+          </div>
+          {#if !effortBlocked}
+            <p class="hint">
+              How gavin tells a custom agent how hard to think. End it with <code>=</code> when the
+              level goes straight after it (<code>--think=high</code>). Empty uses the app-wide
+              custom agent's flag.
+            </p>
+          {/if}
+        {/if}
+        {#if agent.effortFlag}
+          <div class="row model-row">
+            <span>Effort</span>
+            <select
+              value={effortIsCustom ? CUSTOM_MODEL : ownEffort}
+              disabled={Boolean(effortBlocked)}
+              title={effortBlocked ?? ""}
+              onchange={(e) => pickEffort(e.currentTarget.value)}
+            >
+              {#each effortOptions({ effortFlag: agent.effortFlag, efforts: profileInfo?.efforts ?? [] }, globalEffort) as opt (opt.value)}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </select>
+            {#if effortIsCustom}
+              <input
+                bind:value={effortDraft}
+                spellcheck="false"
+                placeholder="effort"
+                disabled={Boolean(effortBlocked)}
+                title={effortBlocked ?? ""}
+                onfocus={() => (focused = "effort")}
+                onblur={() => {
+                  focused = null;
+                  commitEffort();
+                }}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+              />
+            {/if}
+          </div>
+        {:else if profileInfo && !isCustom}
+          <p class="hint">
+            {profileLabel} takes no effort flag gavin knows, so it thinks at its own default.
+          </p>
+        {/if}
+        {#if effortBlocked && (agent.effortFlag || showEffortFlag)}
+          <p class="hint warn">{effortBlocked}</p>
+        {/if}
+        {#if !modelBlocked && (agent.model || agent.effort)}
+          <p class="hint">Launches as <code>{agent.launchCommand}</code>.</p>
         {/if}
         <div class="row">
           <label for="agent-file-{workspaceId}">Agent file</label>
@@ -1155,7 +1290,8 @@
       <p class="hint">
         Which agent runs a card of each difficulty, in this workspace only. A level left on its
         default follows the app-wide table in Settings, so leaving one alone is how this workspace
-        tracks that; naming an agent or a model here overrides that level and nothing else.
+        tracks that; naming an agent, a model or an effort here overrides that level and nothing
+        else.
       </p>
       <ComplexityTable
         profiles={$agentProfilesStore}

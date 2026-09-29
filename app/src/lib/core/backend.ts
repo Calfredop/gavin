@@ -1137,7 +1137,8 @@ export function setPlanFrontmatterField(
     | "attachments"
     | "complexity"
     | "agent"
-    | "model",
+    | "model"
+    | "effort",
   value: string
 ): Promise<string> {
   return invoke("set_plan_frontmatter_field", { path, key, value });
