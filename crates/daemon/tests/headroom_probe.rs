@@ -9,19 +9,43 @@
 //! open. So gavin does not take the fix on trust. Every pin bump
 //! re-runs this.
 //!
-//! The probe sends pairs of requests at the same moment, through a
-//! daemon-run Headroom, to a fake upstream that records what arrives.
-//! The two requests of a pair differ in every piece of content and
-//! COLLIDE in every `tool_use` id, because the tool-call map is keyed
-//! by that id. Then, for each pair: neither upstream body may carry
-//! anything of the other's.
+//! The probe sends requests at the same moment, through a daemon-run
+//! Headroom, to a fake upstream that records what arrives. Each round
+//! is a pair that differs in every piece of content, plus a third
+//! request that reads a file -- and all three COLLIDE in their
+//! `tool_use` id, because the state #3556 moved is keyed by it. Then,
+//! for each round:
 //!
-//! Two things keep a pass from being vacuous. Every body must have been
-//! compressed -- a proxy that passed everything through has proved
-//! nothing about compression. And every body must still carry some of
-//! its OWN content: a compressor that replaces a block with "[400 lines
-//! omitted]" leaves nothing a leak could be seen in, so the payloads
-//! are shaped to survive in part.
+//! - neither body of the pair may carry anything of the other's, and
+//! - the file read must arrive byte for byte as it was sent. Headroom
+//!   protects a recent read so the agent keeps exact bytes to patch,
+//!   and that protection is one of the maps the bug overwrote: the
+//!   symptom #3549 itself describes is a protected read compressed
+//!   because a concurrent request replaced the map naming it.
+//!
+//! Two things keep a pass from being vacuous. Every body of a pair must
+//! have been compressed -- a proxy that passed everything through has
+//! proved nothing about compression. And every one must still carry
+//! some of its OWN content: a compressor that replaces a block with
+//! "[400 lines omitted]" leaves nothing a leak could be seen in, so the
+//! payloads are shaped to survive in part.
+//!
+//! **What a pass is worth.** Less than it looks, and this was measured
+//! rather than assumed. Run against 0.37.0, which predates the fix, the
+//! pair's half of the probe passes too: 16 concurrent requests, all
+//! compressed, nothing crossed. The read's half cannot be asked of
+//! 0.37.0 at all -- that version compresses a log read even when it is
+//! sent alone, so it fails the baseline below, which is its ordinary
+//! behaviour and says nothing about concurrency. So the bug was never
+//! reproduced from outside the process. The race is a window inside one
+//! `apply()`, and upstream's own regression test only hits it by
+//! pausing a call with a `threading.Event`.
+//!
+//! A failure here is therefore proof of a leak, and a pass is not proof
+//! of its absence. The floor rests on the fix being in the source --
+//! 0.38.0's content router keeps its runtime state in a `ContextVar`,
+//! 0.37.0's keeps it on `self` -- and this probe is the tripwire behind
+//! that reading, not the evidence for it.
 //!
 //! Ignored by default, because it needs a real Headroom and its model:
 //!
@@ -32,7 +56,10 @@
 //!
 //! `HF_HOME` is passed through when set, else the human's own
 //! Hugging Face cache is used, so the model is not downloaded per run.
-//! `GAVIN_HEADROOM_PROBE_ROUNDS` sets the number of pairs (default 6).
+//! `GAVIN_HEADROOM_PROBE_ROUNDS` sets the number of rounds (default 6).
+//! Three requests a round, and Headroom's own limiter allows 60 a
+//! minute for one token from one address: past about 18 rounds it
+//! answers 429 itself.
 //!
 //! If it fails: stop. The floor rises, or the default goes lossless
 //! (`--lossless`).
@@ -183,36 +210,68 @@ fn prose(marker: &str) -> String {
         .join(" ")
 }
 
-/// The tool results every request carries. The ids are the same in
-/// every request, on purpose.
-const RESULTS: [(&str, &str, fn(&str) -> String); 3] = [
-    ("toolu_01LOG", "Bash", log),
-    ("toolu_02ROWS", "mcp__db__query", rows),
-    ("toolu_03PROSE", "mcp__wiki__page", prose),
-];
+/// One tool call and what it returned.
+struct Call {
+    id: &'static str,
+    tool: &'static str,
+    input: Value,
+    result: String,
+}
 
-fn request(who: &str, marker: &str) -> String {
-    let schema = json!({"type": "object", "properties": {"command": {"type": "string"}}});
+/// The id every request's first tool call carries. The same in all of
+/// them, on purpose.
+const SHARED_ID: &str = "toolu_01SHARED";
+
+/// What each request of a pair carries: a log, a table and prose, so
+/// that the log compressor, the JSON one and the model all run.
+fn noisy(marker: &str) -> Vec<Call> {
+    let about = json!({"command": format!("read {}", marker.to_lowercase())});
+    vec![
+        Call { id: SHARED_ID, tool: "Bash", input: about.clone(), result: log(marker) },
+        Call { id: "toolu_02ROWS", tool: "mcp__db__query", input: about.clone(), result: rows(marker) },
+        Call { id: "toolu_03PROSE", tool: "mcp__wiki__page", input: about, result: prose(marker) },
+    ]
+}
+
+/// A file read, under the id the pair's Bash call uses.
+///
+/// Of a LOG, and that choice is the check. Headroom leaves source code
+/// alone whichever tool returned it, so a source file arriving intact
+/// says nothing about protection. A log is compressed when `Bash`
+/// returns it and left byte for byte when `Read` does: the only thing
+/// keeping this one whole is the map that says it was read.
+fn reading(marker: &str) -> Vec<Call> {
+    vec![Call {
+        id: SHARED_ID,
+        tool: "Read",
+        input: json!({"file_path": format!("/repo/logs/{}.log", marker.to_lowercase())}),
+        result: log(marker),
+    }]
+}
+
+fn request(who: &str, calls: &[Call]) -> String {
+    let schema = json!({"type": "object", "properties": {}});
+    let tools: Vec<Value> = ["Bash", "Read", "mcp__db__query", "mcp__wiki__page"]
+        .iter()
+        .map(|tool| json!({"name": tool, "description": "A tool", "input_schema": schema}))
+        .collect();
     json!({
         "model": "claude-sonnet-4-5",
         "max_tokens": 64,
         "metadata": {"user_id": who},
         "system": "You are a coding agent.",
-        "tools": RESULTS.iter().map(|(_, tool, _)| json!({
-            "name": tool, "description": "Run a command", "input_schema": schema
-        })).collect::<Vec<_>>(),
+        "tools": tools,
         "messages": [
-            {"role": "user", "content": format!("Look at the {marker} service.")},
+            {"role": "user", "content": "Go on."},
             {"role": "assistant", "content":
                 std::iter::once(json!({"type": "text", "text": "Reading."}))
-                    .chain(RESULTS.iter().map(|(id, tool, _)| json!({
-                        "type": "tool_use", "id": id, "name": tool,
-                        "input": {"command": format!("read {}", marker.to_lowercase())}
+                    .chain(calls.iter().map(|call| json!({
+                        "type": "tool_use", "id": call.id, "name": call.tool, "input": call.input
                     })))
                     .collect::<Vec<_>>()},
             // The newest turn, which is the one cache mode compresses.
-            {"role": "user", "content": RESULTS.iter().map(|(id, _, make)| json!({
-                "type": "tool_result", "tool_use_id": id, "content": make(marker)
+            {"role": "user", "content": calls.iter().map(|call| json!({
+                "type": "tool_result", "tool_use_id": call.id, "content": call.result
             })).collect::<Vec<_>>()},
         ]
     })
@@ -222,8 +281,8 @@ fn request(who: &str, marker: &str) -> String {
 /// Sends one request the way Claude Code on a subscription login does,
 /// tagged the way gavin tags a compressed session. Returns the size of
 /// what was sent.
-fn send(port: u16, who: &str, marker: &str) -> usize {
-    let body = request(who, marker);
+fn send(port: u16, who: &str, calls: &[Call]) -> usize {
+    let body = request(who, calls);
     let response = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(300))
         .build()
@@ -234,9 +293,30 @@ fn send(port: u16, who: &str, marker: &str) -> usize {
         .set("user-agent", "claude-cli/2.1.0 (external, cli)")
         .set("x-headroom-project", who)
         .send_string(&body)
-        .unwrap_or_else(|e| panic!("{who}: Headroom did not answer: {e}"));
+        .unwrap_or_else(|e| match e {
+            ureq::Error::Status(429, _) => panic!(
+                "{who}: Headroom's own rate limiter refused the request (60 a minute by \
+                 default). Run fewer rounds."
+            ),
+            e => panic!("{who}: Headroom did not answer: {e}"),
+        });
     assert_eq!(response.status(), 200, "{who}");
     body.len()
+}
+
+/// What reached upstream as a request's first tool result.
+fn first_result(body: &str) -> String {
+    let parsed: Value = serde_json::from_str(body).unwrap();
+    let content = &parsed["messages"].as_array().and_then(|m| m.last()).unwrap()["content"][0]
+        ["content"];
+    match content {
+        Value::String(text) => text.clone(),
+        // A result can travel as a list of text blocks.
+        Value::Array(blocks) => {
+            blocks.iter().filter_map(|block| block["text"].as_str()).collect()
+        }
+        other => other.to_string(),
+    }
 }
 
 fn readyz(port: u16) -> Option<Value> {
@@ -301,10 +381,23 @@ fn concurrent_compressions_do_not_leak_into_each_other() {
 
     // The model loads in the background after the proxy is ready, and a
     // request that arrives first is not compressed by it.
-    send(port, "warm-up", "WARMUPX");
+    send(port, "warm-up", &noisy("WARMUPX"));
     wait_up_to(Duration::from_secs(180), "the compression model to load", || {
         readyz(port)?["checks"]["kompress"]["ready"].as_bool()?.then_some(())
     });
+
+    // The baseline the rounds are held to: alone, a file read arrives as
+    // it was sent. If this fails, Headroom's protection changed and the
+    // probe's premise went with it -- that is a finding about the pin,
+    // not a leak.
+    let alone = reading("SOLOX");
+    send(port, "solo", &alone);
+    assert_eq!(
+        first_result(&arrived.lock().unwrap()["solo"][0]),
+        alone[0].result,
+        "Headroom rewrote a file read that was sent alone: it no longer protects one, so \
+         the probe cannot tell a leak from its ordinary behaviour"
+    );
 
     let mut leaks: Vec<String> = Vec::new();
     let mut requests = 0;
@@ -315,15 +408,32 @@ fn concurrent_compressions_do_not_leak_into_each_other() {
             (format!("alpha-{round}"), format!("ALPHA{round}X")),
             (format!("bravo-{round}"), format!("BRAVO{round}X")),
         ];
+        let reader = format!("reader-{round}");
+        let read = reading(&format!("READ{round}X"));
         let sent: Vec<usize> = std::thread::scope(|scope| {
+            let reading = scope.spawn(|| send(port, &reader, &read));
             let sending: Vec<_> = pair
                 .iter()
-                .map(|(who, marker)| scope.spawn(move || send(port, who, marker)))
+                .map(|(who, marker)| scope.spawn(move || send(port, who, &noisy(marker))))
                 .collect();
-            sending.into_iter().map(|thread| thread.join().unwrap()).collect()
+            let sent = sending.into_iter().map(|thread| thread.join().unwrap()).collect();
+            reading.join().unwrap();
+            sent
         });
 
         let arrived = arrived.lock().unwrap();
+        requests += 1;
+        for body in arrived.get(&reader).unwrap_or_else(|| panic!("{reader} never reached upstream")) {
+            let got = first_result(body);
+            if got != read[0].result {
+                leaks.push(format!(
+                    "round {round}: a protected file read was rewritten while other requests \
+                     were being compressed ({} bytes sent, {} upstream)",
+                    read[0].result.len(),
+                    got.len()
+                ));
+            }
+        }
         let mut seen: Vec<BTreeSet<String>> = Vec::new();
         for (index, (who, marker)) in pair.iter().enumerate() {
             let (_, other) = &pair[1 - index];
