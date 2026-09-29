@@ -139,13 +139,67 @@ fn launch_in(
     cwd: &str,
     profile: Option<&str>,
 ) -> Launched {
+    launch_line(machine, daemon, root, cwd, REPORT, profile, None)
+}
+
+/// A launch of any line, with the custom agent's API family if the app
+/// named one.
+fn launch_line(
+    machine: &Machine,
+    daemon: &Daemon,
+    root: &str,
+    cwd: &str,
+    line: &str,
+    profile: Option<&str>,
+    api_family: Option<&str>,
+) -> Launched {
     let id = created(daemon.ask(Request::CreateSession {
         workspace_path: root.to_string(),
         cwd: cwd.to_string(),
-        command: Some(REPORT.to_string()),
+        command: Some(line.to_string()),
         profile_id: profile.map(str::to_string),
+        api_family: api_family.map(str::to_string),
     }));
     reported(machine, daemon, id)
+}
+
+/// An agent's binary, by name, that reports instead of talking to a
+/// model: the arguments it was handed, then its environment.
+fn agent_binary(machine: &Machine, name: &str) -> PathBuf {
+    let bin = machine.home.path().join("agents");
+    std::fs::create_dir_all(&bin).unwrap();
+    let script = bin.join(name);
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$HOME/launch-$GAVIN_SESSION_ID.args\"\n{REPORT}\n"),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+/// The arguments an `agent_binary` was handed. Written before its
+/// environment, so there by the time `reported` has returned.
+fn args_of(machine: &Machine, id: &str) -> Vec<String> {
+    let body = std::fs::read(machine.home.path().join(format!("launch-{id}.args"))).unwrap();
+    String::from_utf8_lossy(&body)
+        .split_terminator('\0')
+        .map(str::to_string)
+        .collect()
+}
+
+/// The line the daemon recorded for a session, as a task manager reads
+/// it.
+fn recorded_command(daemon: &Daemon, id: &str) -> Option<String> {
+    match daemon.ask(Request::SessionProcesses) {
+        Response::SessionProcessList { processes } => processes
+            .into_iter()
+            .find(|process| process.session_id == id)
+            .unwrap_or_else(|| panic!("the daemon lists no session {id}"))
+            .command,
+        other => panic!("expected the processes, got {other:?}"),
+    }
 }
 
 fn launch(machine: &Machine, daemon: &Daemon, root: &str, profile: Option<&str>) -> Launched {
@@ -252,7 +306,7 @@ fn an_agent_gavin_cannot_route_launches_uncompressed_and_says_which_kind_it_is()
     }
     let (machine, daemon, root, _port) = compressing();
 
-    for (profile, reason) in [("cursor", "unsupported-agent"), ("codex", "no-recipe")] {
+    for (profile, reason) in [("cursor", "unsupported-agent"), ("gemini", "no-recipe")] {
         let session = launch(&machine, &daemon, &root, Some(profile));
 
         assert!(session.routing().is_empty(), "{profile}");
@@ -477,21 +531,15 @@ fn a_session_that_is_not_compressed_keeps_the_routing_the_human_gave_it() {
 /// A session another agent spawns over MCP never passes through the
 /// app, so there is no profile: the command line speaks for itself.
 #[test]
-fn an_mcp_spawn_of_claude_is_compressed_and_one_of_anything_else_is_not() {
+fn an_mcp_spawn_of_an_agent_is_compressed_and_one_of_anything_else_is_not() {
     if unavailable_here() {
         return;
     }
-    let (machine, daemon, root, _port) = compressing();
-    // An agent's binary, by name, that reports instead of talking to a
-    // model.
-    let bin = machine.home.path().join("agents");
-    std::fs::create_dir_all(&bin).unwrap();
-    for name in ["claude", "not-an-agent"] {
-        let script = bin.join(name);
-        std::fs::write(&script, format!("#!/bin/sh\n{REPORT}\n")).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (machine, daemon, root, port) = compressing();
+    for name in ["claude", "codex", "not-an-agent"] {
+        agent_binary(&machine, name);
     }
+    let bin = machine.home.path().join("agents");
     assert!(matches!(
         daemon.ask(Request::InitGavinRoot {
             root_path: root.clone(),
@@ -519,6 +567,7 @@ fn an_mcp_spawn_of_claude_is_compressed_and_one_of_anything_else_is_not() {
         }))
     };
     let agent = reported(&machine, &daemon, spawn("claude"));
+    let codex = reported(&machine, &daemon, spawn("codex"));
     let other = reported(&machine, &daemon, spawn("not-an-agent"));
 
     assert!(agent.summary.compressed);
@@ -527,10 +576,172 @@ fn an_mcp_spawn_of_claude_is_compressed_and_one_of_anything_else_is_not() {
         agent.env.get("ANTHROPIC_CUSTOM_HEADERS").map(String::as_str),
         Some(format!("X-Headroom-Project: {}", agent.id).as_str())
     );
+    assert!(codex.summary.compressed);
+    let url = format!("http://127.0.0.1:{port}/p/{}/v1", codex.id);
+    assert_eq!(
+        args_of(&machine, &codex.id),
+        ["-c", &format!("openai_base_url=\"{url}\""), "--model", "opus", "Read the card"]
+    );
+    assert_eq!(codex.env.get("OPENAI_BASE_URL"), Some(&url));
     assert!(!other.summary.compressed);
     assert_eq!(other.summary.uncompressed_reason, None, "a command is not an agent that failed to compress");
     assert!(other.routing().is_empty());
+    assert_eq!(args_of(&machine, &other.id), ["--model", "opus", "Read the card"]);
     drop(app);
+}
+
+/// Codex is the one agent the environment alone does not route: its
+/// built-in provider reads its base URL only from its config, so the
+/// URL goes on the command line as well. What is checked is what the
+/// binary was actually handed -- the shell's reading of the line, not
+/// the line.
+#[test]
+fn a_codex_card_run_is_handed_the_base_url_on_its_command_line_and_in_its_environment() {
+    if unavailable_here() {
+        return;
+    }
+    let (machine, daemon, root, port) = compressing();
+    let codex = agent_binary(&machine, "codex");
+    let line = format!("true && {} --model gpt-5.5 'Read the card. It'\\''s codex'", codex.display());
+
+    let session = launch_line(&machine, &daemon, &root, &root, &line, Some("codex"), None);
+
+    let url = format!("http://127.0.0.1:{port}/p/{}/v1", session.id);
+    assert!(session.summary.compressed);
+    assert_eq!(
+        args_of(&machine, &session.id),
+        ["-c", &format!("openai_base_url=\"{url}\""), "--model", "gpt-5.5", "Read the card. It's codex"]
+    );
+    assert_eq!(session.env.get("OPENAI_BASE_URL"), Some(&url));
+    // A relaunch built from the record must not carry this session's
+    // tag and port into the next one.
+    assert_eq!(recorded_command(&daemon, &session.id), Some(line));
+}
+
+/// The profile is believed, and the line still has to have a Codex in it
+/// to hand the flag to. A session marked compressed that is not would be
+/// a lie.
+#[test]
+fn a_codex_launch_whose_line_runs_no_codex_goes_ahead_uncompressed() {
+    if unavailable_here() {
+        return;
+    }
+    let (machine, daemon, root, _port) = compressing();
+
+    let session = launch(&machine, &daemon, &root, Some("codex"));
+
+    assert!(!session.summary.compressed);
+    assert_eq!(session.summary.uncompressed_reason.as_deref(), Some("no-recipe"));
+    assert_eq!(session.env.get("OPENAI_BASE_URL"), None);
+}
+
+/// Where uv puts Headroom's opencode plugin, relative to the `headroom`
+/// the daemon found: the fake is installed straight into the bin
+/// directory, so its environment is the one that directory belongs to.
+fn install_opencode_plugin(machine: &Machine) -> PathBuf {
+    let plugin = machine
+        .home
+        .path()
+        .join(".local/lib/python3.13/site-packages/headroom/providers/opencode/_dist/entry.opencode.js");
+    std::fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+    std::fs::write(&plugin, "export default async () => ({})\n").unwrap();
+    std::fs::canonicalize(plugin).unwrap()
+}
+
+#[test]
+fn an_opencode_card_run_loads_headroom_s_plugin_for_its_session() {
+    if unavailable_here() {
+        return;
+    }
+    let (machine, daemon, root, port) = compressing();
+    let plugin = install_opencode_plugin(&machine);
+
+    let session = launch(&machine, &daemon, &root, Some("opencode"));
+
+    assert!(session.summary.compressed);
+    let config: serde_json::Value = serde_json::from_str(
+        session.env.get("OPENCODE_CONFIG_CONTENT").expect("the recipe reached the process"),
+    )
+    .expect("OPENCODE_CONFIG_CONTENT is JSON");
+    let url = format!("http://127.0.0.1:{port}/p/{}/v1", session.id);
+    assert_eq!(config["provider"]["anthropic"]["options"]["baseURL"], url.as_str());
+    assert_eq!(config["provider"]["openai"]["options"]["baseURL"], url.as_str());
+    assert_eq!(
+        config["plugin"],
+        serde_json::json!([[
+            plugin.to_string_lossy(),
+            { "proxyUrl": format!("http://127.0.0.1:{port}"), "project": session.id },
+        ]])
+    );
+
+    // Without the plugin, Zen and Go never reach Headroom.
+    std::fs::remove_file(&plugin).unwrap();
+    let without = launch(&machine, &daemon, &root, Some("opencode"));
+
+    assert!(!without.summary.compressed);
+    assert_eq!(without.summary.uncompressed_reason.as_deref(), Some("no-recipe"));
+    assert_eq!(without.env.get("OPENCODE_CONFIG_CONTENT"), None);
+}
+
+#[test]
+fn a_custom_agent_is_compressed_only_when_its_api_family_is_named() {
+    if unavailable_here() {
+        return;
+    }
+    let (machine, daemon, root, port) = compressing();
+    let custom = |family: Option<&str>| {
+        launch_line(&machine, &daemon, &root, &root, REPORT, Some("custom"), family)
+    };
+
+    let anthropic = custom(Some("anthropic"));
+    let openai = custom(Some("openai"));
+    let none = custom(None);
+
+    assert!(anthropic.summary.compressed);
+    assert_eq!(
+        anthropic.env.get("ANTHROPIC_BASE_URL"),
+        Some(&format!("http://127.0.0.1:{port}/p/{}", anthropic.id))
+    );
+    assert_eq!(anthropic.env.get("OPENAI_BASE_URL"), None);
+    assert!(openai.summary.compressed);
+    assert_eq!(
+        openai.env.get("OPENAI_BASE_URL"),
+        Some(&format!("http://127.0.0.1:{port}/p/{}/v1", openai.id))
+    );
+    assert_eq!(openai.env.get("ANTHROPIC_BASE_URL"), None);
+    assert!(!none.summary.compressed);
+    assert_eq!(none.summary.uncompressed_reason.as_deref(), Some("no-recipe"));
+    assert_eq!(none.env.get("ANTHROPIC_BASE_URL"), None);
+    assert_eq!(none.env.get("OPENAI_BASE_URL"), None);
+}
+
+/// The same leak 02 stopped for Claude Code, one recipe later: a daemon
+/// started from inside a compressed Codex or opencode session.
+#[test]
+fn a_daemon_started_from_a_compressed_codex_or_opencode_session_does_not_pass_its_routing_on() {
+    if unavailable_here() {
+        return;
+    }
+    let machine = machine_with_headroom();
+    let launcher_opencode = serde_json::json!({
+        "provider": { "openai": { "options": { "baseURL": "http://127.0.0.1:1/p/the-launcher/v1" } } },
+        "plugin": [[
+            "/x/site-packages/headroom/providers/opencode/_dist/entry.opencode.js",
+            { "proxyUrl": "http://127.0.0.1:1", "project": "the-launcher" },
+        ]],
+    })
+    .to_string();
+    let daemon = machine.daemon_with(&[
+        ("GAVIN_SESSION_ID", "the-launcher"),
+        ("OPENAI_BASE_URL", "http://127.0.0.1:1/p/the-launcher/v1"),
+        ("OPENCODE_CONFIG_CONTENT", &launcher_opencode),
+    ]);
+    let root = workspace(&machine, "repo");
+
+    let shell = launch(&machine, &daemon, &root, None);
+
+    assert_eq!(shell.env.get("OPENAI_BASE_URL"), None);
+    assert_eq!(shell.env.get("OPENCODE_CONFIG_CONTENT"), None);
 }
 
 /// What the app sends when its last workspace is closed. The list is

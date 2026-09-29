@@ -226,6 +226,30 @@ describe("the compressed-launch gate", () => {
   });
 });
 
+describe("the custom API family gate", () => {
+  // v48 widened `CreateSession` again, with the custom agent's API
+  // family. A v47 daemon reads the profile and drops the family, so the
+  // picker that sets it says why instead of offering a dead choice.
+  it("blocks the picker on a daemon that would drop the family", () => {
+    const c = { daemonVersion: 47, appVersion: 48, degraded: true };
+    const reason = featureBlockedReason(c, "customApiFamily");
+    expect(reason).toContain("v48");
+    expect(reason).toContain("v47");
+  });
+
+  it("allows it at exactly v48", () => {
+    const c = { daemonVersion: 48, appVersion: 48, degraded: false };
+    expect(featureBlockedReason(c, "customApiFamily")).toBeNull();
+  });
+
+  // The same daemon still takes the profile: a custom agent is simply
+  // not compressed there, and every other agent is.
+  it("leaves compressed launches alone on that daemon", () => {
+    const c = { daemonVersion: 47, appVersion: 48, degraded: true };
+    expect(featureBlockedReason(c, "compressedLaunch")).toBeNull();
+  });
+});
+
 // The one screen whose COPY asserts v20's recovery behaviour. A
 // confirmation that promises "stopped, not restarted" and then hands the
 // work to a daemon that re-runs every command from scratch is worse than

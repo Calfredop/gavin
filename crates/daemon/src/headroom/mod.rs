@@ -221,17 +221,44 @@ impl Headroom {
     /// Asked at every spawn and remembered by nobody: a resume is a
     /// fresh session, and it is decided against the Headroom that is
     /// there when it launches.
-    pub fn decide(&self, workspace_path: &str, launch: Launch, session_id: &str) -> Decision {
+    ///
+    /// `command` is the line the session is about to run: Codex's recipe
+    /// is the one that changes it, and the answer carries the line to
+    /// run instead.
+    pub fn decide(
+        &self,
+        workspace_path: &str,
+        launch: Launch,
+        session_id: &str,
+        command: Option<&str>,
+    ) -> Decision {
         // Read per spawn, like everything else a session inherits: it
         // is the daemon's environment the PTY is about to be handed.
         let inherited_headers = std::env::var(compress::CLAUDE_HEADERS).ok();
+        let inherited_opencode_config = std::env::var(compress::OPENCODE_CONFIG).ok();
+        // Looked for only when it is needed: it is a walk of the
+        // install's directory, and only opencode's recipe reads it.
+        let opencode_plugin = match launch.agent() {
+            Some(compress::Agent::Opencode) => self.opencode_plugin(),
+            _ => None,
+        };
         compress::decide(Facts {
             workspace_on: self.inner.switch.is_on(workspace_path),
             ready_port: self.inner.supervisor.ready_port(),
             launch,
             session_id,
+            command,
             inherited_headers: inherited_headers.as_deref(),
+            inherited_opencode_config: inherited_opencode_config.as_deref(),
+            opencode_plugin: opencode_plugin.as_deref(),
         })
+    }
+
+    /// The opencode plugin of the Headroom this daemon starts: the one at
+    /// the stored path, which is the file every start runs.
+    fn opencode_plugin(&self) -> Option<PathBuf> {
+        let record: InstallRecord = store::load(&self.install_path());
+        install::opencode_plugin(record.path.as_deref()?)
     }
 
     /// Starts the install and returns. Its output and its outcome are

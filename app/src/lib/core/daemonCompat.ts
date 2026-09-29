@@ -479,6 +479,22 @@ export const FEATURE_MIN_VERSION = {
   // daemon would take a version error on every settings change
   // (`compressionSwitchBlocked` in compressionDriver.ts).
   compressedLaunch: 47,
+  // The custom agent's API family (v48), which is what lets Headroom
+  // compress a custom agent at all: gavin knows nothing of the binary,
+  // and the family names the one variable that routes it. It WIDENS
+  // `CreateSession` a second time, with `apiFamily`, so `min_version_for`
+  // is as blind to it as to `compressedLaunch`'s profile: a v47 daemon
+  // reads the profile, drops the family and launches the agent
+  // uncompressed as `no-recipe`.
+  //
+  // No launch surface sends it. The host reads the family from the
+  // custom agent's own settings and attaches it to a launch of the
+  // custom profile, and withholds it from an older daemon besides
+  // (`api_family_for_daemon` in session.rs). So its consumer is the one
+  // surface that produces the value: the API family picker in Settings
+  // → Custom agent, disabled with this reason rather than offering a
+  // choice the running daemon would drop.
+  customApiFamily: 48,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

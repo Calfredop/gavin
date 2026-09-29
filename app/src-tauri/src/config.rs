@@ -719,6 +719,19 @@ pub struct AgentDefaultsConfig {
     /// guessing a flag -- the same posture the Rust profile table takes.
     #[serde(default)]
     pub custom_model_flag: String,
+    /// The API the custom agent speaks, which is what lets Headroom
+    /// compress it: `anthropic`, `openai` (OpenAI-compatible), or empty
+    /// for none -- the shipped state, and no recipe. Sent to the daemon
+    /// with every launch of the custom profile (`create_session`).
+    ///
+    /// A string rather than an enum, because config.json is read by more
+    /// than one build: a family a newer build added would make an older
+    /// one's parse of the WHOLE file fail, and every setting with it.
+    /// An unknown word reaches the daemon, which reads it as none.
+    /// Skipped when empty, so a config that never chose one is written
+    /// as it was.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub custom_api_family: String,
     /// Which agent and model each complexity level runs, keyed by the
     /// level's written name (`Complexity::as_str`). A level with no entry
     /// runs the workspace's own agent, exactly as every card did before
@@ -1265,6 +1278,31 @@ mod tests {
         assert!(old.workspaces[0].declined_agents.is_empty());
         assert!(old.agent_defaults.agent_fallback.is_empty());
         assert!(old.agent_defaults.fallback_thresholds.is_empty());
+    }
+
+    /// The custom agent's API family persists, and a config that never
+    /// chose one -- every config written before it existed -- reads as
+    /// none, which is the default and means no recipe. None is written
+    /// as no key at all.
+    #[test]
+    fn the_custom_api_family_roundtrips_and_defaults_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.agent_defaults.custom_api_family = "anthropic".to_string();
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap().agent_defaults.custom_api_family, "anthropic");
+
+        config.agent_defaults.custom_api_family = String::new();
+        save(dir.path(), &config).unwrap();
+        let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
+        assert!(!written.contains("customApiFamily"), "{written}");
+
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces":[],"agent_defaults":{"customCommand":"my-agent","customModelFlag":"--model","complexity":{}}}"#,
+        )
+        .unwrap();
+        assert_eq!(load(dir.path()).unwrap().agent_defaults.custom_api_family, "");
     }
 
     #[test]

@@ -2409,10 +2409,11 @@ impl SessionManager {
         // environment it is born with. A resume or a relaunch arrives as
         // another call to this function and is decided again, against
         // Headroom as it is then.
-        let compression = self.decide_compression(workspace_path, launch, &id);
+        let compression = self.decide_compression(workspace_path, launch, &id, command);
         let pty = PtySession::spawn_with_env(
             cwd,
-            command,
+            // Codex's recipe hands its base URL over on the command line.
+            compression.command().or(command),
             &id,
             Some(&session_token),
             compression.env(),
@@ -2422,6 +2423,11 @@ impl SessionManager {
             id: id.clone(),
             workspace_path: workspace_path.to_string(),
             cwd: cwd.to_string(),
+            // The line that was asked for, never the one a recipe made
+            // of it. The one it made names this session's tag and this
+            // Headroom's port, and a relaunch built from it would carry
+            // both into a session that is decided afresh -- pointed at a
+            // proxy that may have gone, under an id that is not its own.
             command: command.map(|c| c.to_string()),
             status: SessionStatus::Idle,
             restored: false,
@@ -2460,9 +2466,15 @@ impl SessionManager {
     /// nothing a human runs -- compresses nothing and owes no reason: it
     /// holds no copy of the switch, so no workspace of its has
     /// compression on.
-    fn decide_compression(&self, workspace_path: &str, launch: Launch, session_id: &str) -> Decision {
+    fn decide_compression(
+        &self,
+        workspace_path: &str,
+        launch: Launch,
+        session_id: &str,
+        command: Option<&str>,
+    ) -> Decision {
         match self.headroom.get() {
-            Some(headroom) => headroom.decide(workspace_path, launch, session_id),
+            Some(headroom) => headroom.decide(workspace_path, launch, session_id, command),
             None => Decision::Uncompressed(None),
         }
     }
@@ -4287,7 +4299,7 @@ impl SessionManager {
 
 pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
     let result = match req {
-        Request::CreateSession { workspace_path, cwd, command, profile_id } => manager
+        Request::CreateSession { workspace_path, cwd, command, profile_id, api_family } => manager
             .create_session(
                 &workspace_path,
                 &cwd,
@@ -4295,8 +4307,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 // The app's word for what it launched. None is a shell
                 // tab, a command tool or a setup script -- and an agent
                 // launched by an app older than v47, which has no switch
-                // to have turned on.
-                profile_id.as_deref().map_or(Launch::Shell, Launch::Profile),
+                // to have turned on. The API family is the custom
+                // agent's, and only its (v48).
+                Launch::requested(profile_id.as_deref(), api_family.as_deref()),
             )
             .map(|id| Response::SessionCreated { id }),
         Request::ListSessions => manager
@@ -6252,7 +6265,7 @@ mod tests {
         assert!(authorize(&id, &Request::Shutdown, false).is_ok());
         assert!(authorize(
             &id,
-            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None },
+            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None },
             true, // even with the switch on
         )
         .is_ok());
@@ -6265,7 +6278,7 @@ mod tests {
         assert!(authorize(&id, &Request::Shutdown, false).is_ok());
         assert!(authorize(
             &id,
-            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None },
+            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None },
             false,
         )
         .is_ok());
@@ -6277,7 +6290,7 @@ mod tests {
         assert!(matches!(
             authorize(
                 &id,
-                &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None },
+                &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None },
                 true
             ),
             Err(Response::Forbidden { .. })
@@ -6616,7 +6629,7 @@ mod tests {
         let (_ws, root, _card) = workspace_with_card();
         let id = ClientIdentity::agent("sess-1", &root, &root);
         for req in [
-            Request::CreateSession { workspace_path: root.clone(), cwd: root.clone(), command: None, profile_id: None },
+            Request::CreateSession { workspace_path: root.clone(), cwd: root.clone(), command: None, profile_id: None, api_family: None },
             Request::Shutdown,
             Request::EndOrphan { id: "x".into() },
             Request::WriteInput { id: "other".into(), data: "rm -rf /\n".into() },
@@ -6755,7 +6768,7 @@ mod tests {
     /// not depend on that helper's visibility.
     fn one_of_every_request_variant_for_authorize() -> Vec<Request> {
         vec![
-            Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None },
+            Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None },
             Request::ListSessions,
             Request::SessionProcesses,
             Request::EndOrphan { id: "s".into() },
@@ -7886,6 +7899,7 @@ mod tests {
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
+                api_family: None,
             },
         );
         let session_id = match resp {
@@ -7993,6 +8007,7 @@ mod tests {
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
+                api_family: None,
             },
         );
         let session_id = match resp {
@@ -8341,6 +8356,7 @@ mod tests {
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
+                api_family: None,
             },
         );
         let id = match created {
@@ -8633,6 +8649,7 @@ mod tests {
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
+                api_family: None,
             },
         ) {
             Response::SessionCreated { id } => id,
@@ -8679,6 +8696,7 @@ mod tests {
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
+                api_family: None,
             },
         ) {
             Response::SessionCreated { id } => id,
@@ -8881,6 +8899,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -8917,6 +8936,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -8962,6 +8982,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -9011,6 +9032,7 @@ mod tests {
                 cwd: "/tmp/definitely-does-not-exist-xyz".to_string(),
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
+                api_family: None,
             },
         );
         assert!(matches!(resp, Response::Error { .. }));
@@ -10926,6 +10948,7 @@ mod tests {
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
+                api_family: None,
             },
         );
         let id = match created {
@@ -11194,6 +11217,7 @@ mod tests {
                 cwd: "/tmp".to_string(),
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
+                api_family: None,
             },
         );
         let id = match created {
@@ -11230,6 +11254,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -11265,6 +11290,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -11304,6 +11330,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -11428,6 +11455,7 @@ mod tests {
                     cwd: repo_path.clone(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -11494,6 +11522,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -11541,6 +11570,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -11588,6 +11618,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -11636,6 +11667,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -11697,6 +11729,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -11791,6 +11824,7 @@ mod tests {
                 cwd: "/tmp".to_string(),
                 command: Some(command.to_string()),
                 profile_id: None,
+                api_family: None,
             },
         );
         match created {
@@ -12281,6 +12315,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: None,
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -12337,6 +12372,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -12403,6 +12439,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -12502,6 +12539,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -12564,6 +12602,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -12622,6 +12661,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -12676,6 +12716,7 @@ mod tests {
                     cwd: repo_path.clone(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -13901,6 +13942,7 @@ mod tests {
                     cwd: plain_path.clone(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -14117,6 +14159,7 @@ mod tests {
                     cwd: cwd.to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             );
             match created {
@@ -14979,6 +15022,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             ) {
                 Response::SessionCreated { id } => id,
@@ -15070,6 +15114,7 @@ mod tests {
                     cwd: "/tmp".to_string(),
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
+                    api_family: None,
                 },
             ) {
                 Response::SessionCreated { id } => id,

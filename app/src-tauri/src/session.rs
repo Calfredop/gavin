@@ -872,6 +872,7 @@ mod workspaces_data_tests {
         let defaults = crate::config::AgentDefaultsConfig {
             custom_command: "my-agent --yolo".to_string(),
             custom_model_flag: "--llm".to_string(),
+            custom_api_family: "openai".to_string(),
             complexity,
             agent_fallback: vec!["codex".to_string()],
             fallback_thresholds: {
@@ -3546,6 +3547,7 @@ pub(crate) fn resolve_sessions(
                         workspace_root,
                         None,
                         None,
+                        None,
                         home,
                     ))?;
                     // A pin belongs to the tab slot, not the dead process:
@@ -4077,6 +4079,7 @@ mod command_connection_tests {
                 cwd: "/tmp".to_string(),
                 command: None,
                 profile_id: None,
+                api_family: None,
             },
         )
         .unwrap();
@@ -4118,6 +4121,7 @@ mod command_connection_tests {
             cwd: "/tmp".to_string(),
             command: None,
             profile_id: None,
+            api_family: None,
         };
 
         let first = send_command(&conn, &make_req()).unwrap();
@@ -4457,7 +4461,7 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = lanes_over(client);
 
-        block_on(create_fresh_session(&conn, Some("/tmp"), None, None, None, "/home/t")).unwrap();
+        block_on(create_fresh_session(&conn, Some("/tmp"), None, None, None, None, "/home/t")).unwrap();
 
 
         let requests = captured.lock().unwrap();
@@ -4473,7 +4477,7 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = lanes_over(client);
 
-        block_on(create_fresh_session(&conn, Some("/tmp"), None, Some("npm test"), None, "/home/t"))
+        block_on(create_fresh_session(&conn, Some("/tmp"), None, Some("npm test"), None, None, "/home/t"))
             .unwrap();
 
         let requests = captured.lock().unwrap();
@@ -4500,6 +4504,7 @@ mod resolve_workspaces_tests {
             Some("/Users/alice/project"),
             None,
             None,
+            None,
             "/Users/alice",
         ))
         .unwrap();
@@ -4522,7 +4527,7 @@ mod resolve_workspaces_tests {
             fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
         let conn = lanes_over(client);
 
-        block_on(create_fresh_session(&conn, Some("/tmp/loose"), None, None, None, "/home/t")).unwrap();
+        block_on(create_fresh_session(&conn, Some("/tmp/loose"), None, None, None, None, "/home/t")).unwrap();
 
         let requests = captured.lock().unwrap();
         match &requests[0] {
@@ -4564,6 +4569,7 @@ mod resolve_workspaces_tests {
             Some("/Users/alice/project"),
             Some("claude 'Read the card'"),
             Some("claude-code"),
+            None,
             "/Users/alice",
         ))
         .unwrap();
@@ -4587,6 +4593,7 @@ mod resolve_workspaces_tests {
             Some("/tmp"),
             Some("claude 'Read the card'"),
             Some("claude-code"),
+            None,
             "/home/t",
         ))
         .unwrap();
@@ -4627,12 +4634,109 @@ mod resolve_workspaces_tests {
             Some("/Users/alice/project"),
             Some("claude 'Read the card'"),
             Some("claude-code"),
+            None,
             "/home/t",
         ))
         .unwrap();
 
         assert_eq!(the_profile_sent(&captured, 0).as_deref(), Some("claude-code"));
         assert_eq!(the_profile_sent(&captured, 1), None);
+    }
+
+    fn the_family_sent(captured: &Arc<Mutex<Vec<Request>>>, index: usize) -> Option<String> {
+        match &captured.lock().unwrap()[index] {
+            Request::CreateSession { api_family, .. } => api_family.clone(),
+            other => panic!("expected CreateSession, got {other:?}"),
+        }
+    }
+
+    /// What lets a custom agent be compressed: the daemon knows nothing
+    /// of the binary, and the family names the variable that routes it.
+    #[test]
+    fn a_custom_launch_names_the_api_family_its_settings_name() {
+        let (client, captured, _dir) =
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+        let conn = lanes_over(client);
+
+        block_on(create_fresh_session(
+            &conn,
+            Some("/tmp"),
+            Some("/tmp"),
+            Some("my-agent 'Read the card'"),
+            Some("custom"),
+            Some("anthropic"),
+            "/home/t",
+        ))
+        .unwrap();
+
+        assert_eq!(the_profile_sent(&captured, 0).as_deref(), Some("custom"));
+        assert_eq!(the_family_sent(&captured, 0).as_deref(), Some("anthropic"));
+    }
+
+    /// None is the default, and it is no field at all: the request a
+    /// v47 daemon has always read.
+    #[test]
+    fn a_custom_agent_with_no_api_family_sends_none() {
+        let (client, captured, _dir) =
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+        let conn = lanes_over(client);
+
+        block_on(create_fresh_session(
+            &conn,
+            Some("/tmp"),
+            Some("/tmp"),
+            Some("my-agent 'Read the card'"),
+            Some("custom"),
+            Some(""),
+            "/home/t",
+        ))
+        .unwrap();
+
+        assert_eq!(the_family_sent(&captured, 0), None);
+        let sent = serde_json::to_value(&captured.lock().unwrap()[0]).unwrap();
+        assert!(sent.get("api_family").is_none(), "{sent}");
+    }
+
+    #[test]
+    fn the_api_family_is_sent_only_with_the_custom_profile_to_a_daemon_that_reads_it() {
+        let at = protocol::CUSTOM_API_FAMILY_MIN_VERSION;
+        assert_eq!(api_family_for_daemon(at, Some("custom"), Some("openai")).as_deref(), Some("openai"));
+        assert_eq!(api_family_for_daemon(at + 1, Some("custom"), Some(" anthropic ")).as_deref(), Some("anthropic"));
+        // A v47 daemon would drop it; it reads profile_id and nothing more.
+        assert_eq!(api_family_for_daemon(at - 1, Some("custom"), Some("openai")), None);
+        // Every other profile is a binary the daemon knows the API of.
+        assert_eq!(api_family_for_daemon(at, Some("claude-code"), Some("openai")), None);
+        assert_eq!(api_family_for_daemon(at, Some("codex"), Some("anthropic")), None);
+        // A shell names no profile, and so no family.
+        assert_eq!(api_family_for_daemon(at, None, Some("openai")), None);
+        // None, the default.
+        assert_eq!(api_family_for_daemon(at, Some("custom"), Some("")), None);
+        assert_eq!(api_family_for_daemon(at, Some("custom"), None), None);
+    }
+
+    /// The fallback shell belongs to no workspace and runs no agent, so
+    /// it names neither.
+    #[test]
+    fn the_home_fallback_drops_the_api_family_along_with_the_profile() {
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![
+            Response::Error { message: "cwd does not exist or is not a directory".to_string() },
+            Response::SessionCreated { id: "s2".to_string() },
+        ]);
+        let conn = lanes_over(client);
+
+        block_on(create_fresh_session(
+            &conn,
+            Some("/definitely/does/not/exist/anywhere"),
+            Some("/Users/alice/project"),
+            Some("my-agent 'Read the card'"),
+            Some("custom"),
+            Some("openai"),
+            "/home/t",
+        ))
+        .unwrap();
+
+        assert_eq!(the_family_sent(&captured, 0).as_deref(), Some("openai"));
+        assert_eq!(the_family_sent(&captured, 1), None);
     }
 }
 
@@ -5350,26 +5454,55 @@ pub(crate) fn profile_for_daemon(daemon_version: u32, profile_id: Option<&str>) 
     profile_id.map(str::trim).filter(|id| !id.is_empty()).map(str::to_string)
 }
 
+/// The API family to name in a `CreateSession`: the custom agent's, on
+/// a launch of the custom profile, for a daemon that reads it -- and
+/// none otherwise.
+///
+/// Only the custom profile, because every other one is a binary the
+/// daemon already knows the API of, and a family sent with it would be
+/// a second answer to a question it has settled. None when the setting
+/// names none, which is the default and means no recipe. And none for a
+/// daemon older than the widening, for the reason `profile_for_daemon`
+/// gives: it would parse the request and drop the field.
+pub(crate) fn api_family_for_daemon(
+    daemon_version: u32,
+    profile_id: Option<&str>,
+    api_family: Option<&str>,
+) -> Option<String> {
+    if daemon_version < protocol::CUSTOM_API_FAMILY_MIN_VERSION {
+        return None;
+    }
+    if profile_id.map(str::trim) != Some("custom") {
+        return None;
+    }
+    api_family.map(str::trim).filter(|family| !family.is_empty()).map(str::to_string)
+}
+
 /// `home` is the fallback cwd, and it belongs to the machine the daemon
 /// is on: `local_home()` for the local daemon, the banner's `home` for a
 /// link (`remote.rs`).
 ///
 /// `profile_id` is the agent profile doing the launching, and `None` for
 /// everything that is not an agent launch. It is what makes the session
-/// a candidate for compression, which the daemon decides.
+/// a candidate for compression, which the daemon decides. `api_family`
+/// is the custom agent's, from its settings; it is sent only with the
+/// custom profile (`api_family_for_daemon`).
 pub(crate) async fn create_fresh_session(
     lanes: &DaemonLanes,
     cwd: Option<&str>,
     workspace_root: Option<&str>,
     command: Option<&str>,
     profile_id: Option<&str>,
+    api_family: Option<&str>,
     home: &str,
 ) -> anyhow::Result<String> {
     let home = home.to_string();
     let target = cwd.map(str::to_string).unwrap_or_else(|| home.clone());
     let workspace = workspace_root.map(str::to_string).unwrap_or_else(|| target.clone());
     let command = command.map(str::to_string);
-    let profile_id = profile_for_daemon(lanes.compat().daemon_version, profile_id);
+    let daemon_version = lanes.compat().daemon_version;
+    let api_family = api_family_for_daemon(daemon_version, profile_id, api_family);
+    let profile_id = profile_for_daemon(daemon_version, profile_id);
 
     let resp = lanes
         .request(Request::CreateSession {
@@ -5377,6 +5510,7 @@ pub(crate) async fn create_fresh_session(
             cwd: target.clone(),
             command: command.clone(),
             profile_id,
+            api_family,
         })
         .await?;
     match resp {
@@ -5393,14 +5527,16 @@ pub(crate) async fn create_fresh_session(
     // that workspace's session -- and an agent scope the session's cwd no
     // longer sits inside is not one to hand it on an error path.
     //
-    // The profile goes with them. Compression is a property of the
-    // workspace a session belongs to, and this one belongs to none.
+    // The profile goes with them, and its API family. Compression is a
+    // property of the workspace a session belongs to, and this one
+    // belongs to none.
     let resp = lanes
         .request(Request::CreateSession {
             workspace_path: home.clone(),
             cwd: home.clone(),
             command,
             profile_id: None,
+            api_family: None,
         })
         .await?;
     match resp {
@@ -5420,7 +5556,15 @@ pub(crate) async fn create_fresh_session(
 /// switch -- the desk pushes that to its own daemon only -- so a session
 /// there is never compressed, which is what v1 of Headroom promises for
 /// an ssh workspace.
+///
+/// The custom agent's API family is read here rather than sent by every
+/// surface that launches one: it is a setting of the custom agent this
+/// host keeps (`AgentDefaultsConfig::custom_api_family`), the profile id
+/// already says the launch is that agent's, and a launch that had to
+/// carry it would be one more argument on every surface for a value
+/// none of them decides.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_session(
     cwd: Option<String>,
     workspace_root: Option<String>,
@@ -5430,7 +5574,9 @@ pub async fn create_session(
     command_state: State<'_, CommandConnection>,
     daemon_state: State<'_, DaemonConnection>,
     compat: State<'_, DaemonCompatState>,
+    agent_defaults: State<'_, AgentDefaults>,
 ) -> Result<String, String> {
+    let api_family = agent_defaults.0.lock().unwrap().custom_api_family.clone();
     if let crate::remote::Route::Remote(link) =
         crate::remote::route_for_root(&app_handle, workspace_root.as_deref())?
     {
@@ -5440,6 +5586,7 @@ pub async fn create_session(
             workspace_root.as_deref(),
             command.as_deref(),
             profile_id.as_deref(),
+            Some(&api_family),
             &link.home,
         )
         .await
@@ -5456,6 +5603,7 @@ pub async fn create_session(
         workspace_root.as_deref(),
         command.as_deref(),
         profile_id.as_deref(),
+        Some(&api_family),
         &local_home(),
     )
     .await
@@ -7082,7 +7230,7 @@ mod gate_tests {
     /// changes.
     fn one_of_every_request_variant() -> Vec<Request> {
         vec![
-            Request::CreateSession { workspace_path: "w".into(), cwd: "c".into(), command: None, profile_id: None },
+            Request::CreateSession { workspace_path: "w".into(), cwd: "c".into(), command: None, profile_id: None, api_family: None },
             Request::ListSessions,
             Request::WriteInput { id: "s".into(), data: "d".into() },
             Request::ResizeSession { id: "s".into(), cols: 80, rows: 24 },

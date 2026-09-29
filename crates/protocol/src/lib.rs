@@ -18,6 +18,19 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v48 widens `CreateSession` with `api_family`, the API the custom
+/// agent speaks (`2026-09-28-headroom-design.md`, "The recipes", the
+/// Custom row). It is how a custom agent can be compressed at all: gavin
+/// knows nothing of the binary, and the family names the one variable
+/// that routes it. A widened payload on a v1 TYPE, so `min_version_for`
+/// cannot see it; FEATURE_MIN_VERSION.customApiFamily is its gate in the
+/// app, and the host withholds the field from an older daemon besides
+/// (`CUSTOM_API_FAMILY_MIN_VERSION`). An older daemon that were sent it
+/// would drop it and launch the agent uncompressed as `no-recipe`, the
+/// answer it gives a custom agent today -- quiet, but no broken row.
+/// The Codex and opencode recipes that ship with it change nothing on
+/// the wire: both agents were already named by `profile_id`.
+///
 /// v47 is compressed sessions (`2026-09-28-headroom-design.md`, "The
 /// switch" and "Compressed sessions"), and it is three changes of three
 /// different kinds:
@@ -523,7 +536,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 47;
+pub const PROTOCOL_VERSION: u32 = 48;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -534,6 +547,15 @@ pub const PROTOCOL_VERSION: u32 = 47;
 /// (`FEATURE_MIN_VERSION.compressedLaunch` in the app, and the host's
 /// own `create_fresh_session` behind it).
 pub const COMPRESSED_LAUNCH_MIN_VERSION: u32 = 47;
+
+/// The version that widened `CreateSession` with `api_family`.
+///
+/// Its own number rather than `COMPRESSED_LAUNCH_MIN_VERSION`'s, for the
+/// reason that one exists: a v47 daemon reads `profile_id` and drops
+/// this. A client that sends it compares the daemon's version with this
+/// (`FEATURE_MIN_VERSION.customApiFamily` in the app, and the host's
+/// `create_fresh_session` behind it).
+pub const CUSTOM_API_FAMILY_MIN_VERSION: u32 = 48;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -565,6 +587,17 @@ pub enum Request {
         /// byte for byte the request every daemon since v1 has parsed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         profile_id: Option<String>,
+        /// The API the custom agent speaks -- `anthropic` or `openai`
+        /// -- and `None` for every other launch, and for a custom agent
+        /// whose settings name none (v48).
+        ///
+        /// Only the `custom` profile reads it: every other profile is a
+        /// binary gavin already knows. It picks the variable that routes
+        /// the agent through Headroom (`headroom::compress`), and none
+        /// means no recipe. A word the daemon does not know is read as
+        /// none, so a newer app's family is never routed as a guess.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_family: Option<String>,
     },
     ListSessions,
     /// What every live session is costing right now: one sample of the
@@ -4555,6 +4588,7 @@ mod tests {
             cwd: "/tmp/ws".to_string(),
             command: None,
             profile_id: None,
+            api_family: None,
         };
         write_message(&mut buf, &req).unwrap();
 
@@ -4562,11 +4596,12 @@ mod tests {
         let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
 
         match decoded {
-            Request::CreateSession { workspace_path, cwd, command, profile_id } => {
+            Request::CreateSession { workspace_path, cwd, command, profile_id, api_family } => {
                 assert_eq!(workspace_path, "/tmp/ws");
                 assert_eq!(cwd, "/tmp/ws");
                 assert_eq!(command, None);
                 assert_eq!(profile_id, None);
+                assert_eq!(api_family, None);
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -4583,6 +4618,7 @@ mod tests {
             cwd: "/ws/tree".into(),
             command: Some("npm test".into()),
             profile_id: None,
+            api_family: None,
         };
 
         let written = serde_json::to_value(&bare).unwrap();
@@ -4605,6 +4641,7 @@ mod tests {
             cwd: "/ws/tree".into(),
             command: Some("claude 'do it'".into()),
             profile_id: Some("claude-code".into()),
+            api_family: None,
         };
         let written = serde_json::to_string(&launch).unwrap();
         assert!(written.contains(r#""profile_id":"claude-code""#), "{written}");
@@ -4618,9 +4655,52 @@ mod tests {
         // What a v46 client sends.
         let older = r#"{"type":"CreateSession","workspace_path":"/ws","cwd":"/ws","command":null}"#;
         match serde_json::from_str::<Request>(older).unwrap() {
-            Request::CreateSession { profile_id, .. } => assert_eq!(profile_id, None),
+            Request::CreateSession { profile_id, api_family, .. } => {
+                assert_eq!(profile_id, None);
+                assert_eq!(api_family, None);
+            }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_custom_launch_carries_its_api_family_and_every_other_launch_is_unchanged() {
+        let custom = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws".into(),
+            command: Some("my-agent 'do it'".into()),
+            profile_id: Some("custom".into()),
+            api_family: Some("openai".into()),
+        };
+        let written = serde_json::to_string(&custom).unwrap();
+        assert!(written.contains(r#""api_family":"openai""#), "{written}");
+        match serde_json::from_str::<Request>(&written).unwrap() {
+            Request::CreateSession { api_family, .. } => {
+                assert_eq!(api_family.as_deref(), Some("openai"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // No family is no field: byte for byte what a v47 client sends.
+        let claude = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws".into(),
+            command: Some("claude".into()),
+            profile_id: Some("claude-code".into()),
+            api_family: None,
+        };
+        assert!(!serde_json::to_string(&claude).unwrap().contains("api_family"));
+
+        // What a v47 client sends.
+        let older = r#"{"type":"CreateSession","workspace_path":"/ws","cwd":"/ws","command":null,"profile_id":"custom"}"#;
+        match serde_json::from_str::<Request>(older).unwrap() {
+            Request::CreateSession { profile_id, api_family, .. } => {
+                assert_eq!(profile_id.as_deref(), Some("custom"));
+                assert_eq!(api_family, None);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        assert_eq!(min_version_for(&custom), 1, "FEATURE_MIN_VERSION.customApiFamily is its gate");
     }
 
     /// A new TYPE, so `min_version_for` is its whole wire gate -- and the
@@ -4637,6 +4717,7 @@ mod tests {
             cwd: "/ws".into(),
             command: Some("claude".into()),
             profile_id: Some("claude-code".into()),
+            api_family: None,
         };
         assert_eq!(
             min_version_for(&launch),
@@ -5479,7 +5560,10 @@ mod tests {
         // TYPE; CreateSession widened with `profile_id`, gated by
         // FEATURE_MIN_VERSION.compressedLaunch; and SessionSummary
         // widened with `compressed` and `uncompressed_reason`.
-        assert_eq!(PROTOCOL_VERSION, 47);
+        // v48: CreateSession widened with `api_family`, the custom
+        // agent's, gated by FEATURE_MIN_VERSION.customApiFamily. No new
+        // TYPE.
+        assert_eq!(PROTOCOL_VERSION, 48);
     }
 
     #[test]
@@ -5773,6 +5857,7 @@ mod tests {
                 cwd: "c".into(),
                 command: None,
                 profile_id: None,
+                api_family: None,
             },
             Request::ListSessions,
             Request::WriteInput { id: "s".into(), data: "d".into() },

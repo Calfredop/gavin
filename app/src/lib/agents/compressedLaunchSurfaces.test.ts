@@ -249,9 +249,36 @@ describe("the gate", () => {
     }) as Record<string, string>;
     const session = Object.values(RUST)[0];
     expect(session).toContain("if daemon_version < protocol::COMPRESSED_LAUNCH_MIN_VERSION {");
+    expect(session).toContain("let daemon_version = lanes.compat().daemon_version;");
+    expect(session).toContain("let profile_id = profile_for_daemon(daemon_version, profile_id);");
+  });
+
+  // v48's custom API family rides the same request, and the host is
+  // the one that sends it: from the custom agent's settings, with the
+  // custom profile only, and never to a daemon that would drop it.
+  it("is joined by the custom API family, which the host attaches and withholds itself", () => {
+    const RUST = import.meta.glob("../../../src-tauri/src/session.rs", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+    const session = Object.values(RUST)[0];
+    expect(FEATURE_MIN_VERSION.customApiFamily).toBe(48);
+    expect(session).toContain("if daemon_version < protocol::CUSTOM_API_FAMILY_MIN_VERSION {");
+    expect(session).toContain('if profile_id.map(str::trim) != Some("custom") {');
     expect(session).toContain(
-      "let profile_id = profile_for_daemon(lanes.compat().daemon_version, profile_id);"
+      "let api_family = api_family_for_daemon(daemon_version, profile_id, api_family);"
     );
+    expect(session).toContain(
+      "let api_family = agent_defaults.0.lock().unwrap().custom_api_family.clone();"
+    );
+    // Both routes a launch takes, the local daemon and an ssh host's.
+    expect(session.match(/profile_id\.as_deref\(\),\n\s+Some\(&api_family\),/g)).toHaveLength(2);
+    // Its one consumer in the app: the picker that sets it.
+    expect(source("GlobalSettingsView.svelte")).toContain(
+      'const apiFamilyBlocked = $derived(featureBlockedReason($daemonCompat, "customApiFamily"));'
+    );
+    expect(source("GlobalSettingsView.svelte")).toContain("disabled={apiFamilyBlocked !== null}");
   });
 
   // A launch is never refused over it. Every other widened payload

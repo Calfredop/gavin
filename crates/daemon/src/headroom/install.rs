@@ -13,6 +13,7 @@
 //! one lock for the machine so a second click cannot start a second
 //! install into the same tool directory.
 
+use super::compress;
 use super::detect::{self, Env};
 use super::run::{self, Run};
 use super::version::PIN;
@@ -80,6 +81,39 @@ pub fn tool_python(headroom: &Path) -> Option<PathBuf> {
     let names: &[&str] =
         if cfg!(windows) { &["python.exe"] } else { &["python", "python3"] };
     names.iter().map(|name| dir.join(name)).find(|python| python.is_file())
+}
+
+/// Headroom's opencode transport plugin, inside the package that
+/// `headroom` was installed as, or `None` when it is not there.
+///
+/// Found from the same fact `tool_python` rests on: a console script is
+/// written into its environment's `bin` (`Scripts` on Windows), and the
+/// package is in that environment's `site-packages` -- a uv tool, a
+/// virtualenv, pipx and a Homebrew prefix alike. The file is looked for
+/// rather than asked of Headroom's Python, which would be a process per
+/// launch for a path that only moves when Headroom is reinstalled.
+pub fn opencode_plugin(headroom: &Path) -> Option<PathBuf> {
+    let real = headroom.canonicalize().ok()?;
+    let prefix = real.parent()?.parent()?;
+    let site_packages: Vec<PathBuf> = if cfg!(windows) {
+        vec![prefix.join("Lib").join("site-packages")]
+    } else {
+        // `lib/python3.13`, named for the interpreter the environment
+        // was made with. Sorted, so a prefix holding two answers the
+        // same way every time.
+        let mut versions: Vec<PathBuf> = std::fs::read_dir(prefix.join("lib"))
+            .ok()?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("python"))
+            .map(|entry| entry.path().join("site-packages"))
+            .collect();
+        versions.sort();
+        versions
+    };
+    site_packages
+        .into_iter()
+        .map(|dir| compress::OPENCODE_PLUGIN.iter().fold(dir, |path, part| path.join(part)))
+        .find(|plugin| plugin.is_file())
 }
 
 /// The machine's one install at a time, held for as long as this value
@@ -406,5 +440,52 @@ mod tests {
                 .join("python")
         );
         assert_eq!(tool_python(Path::new("/nonexistent/headroom")), None);
+    }
+
+    /// Where the plugin sits in a uv tool environment, beside the
+    /// interpreter the tool was built on.
+    #[cfg(unix)]
+    fn plugin_in(tool: &Path, python: &str) -> PathBuf {
+        let plugin = compress::OPENCODE_PLUGIN
+            .iter()
+            .fold(tool.join("lib").join(python).join("site-packages"), |path, part| path.join(part));
+        std::fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+        std::fs::write(&plugin, "export default async () => ({})\n").unwrap();
+        plugin
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_opencode_plugin_is_found_in_the_package_the_link_leads_to() {
+        let home = tempfile::tempdir().unwrap();
+        let tool = home.path().join("tools").join("headroom-ai");
+        script(&tool.join("bin").join("headroom"), "true");
+        let bin = home.path().join(".local").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let link = bin.join("headroom");
+        std::os::unix::fs::symlink(tool.join("bin").join("headroom"), &link).unwrap();
+
+        assert_eq!(opencode_plugin(&link), None, "nothing is there yet");
+
+        let plugin = plugin_in(&tool, "python3.13");
+        assert_eq!(opencode_plugin(&link), Some(plugin.canonicalize().unwrap()));
+        // Not beside the link: `~/.local/lib` holds nobody's package.
+        assert!(!home.path().join(".local").join("lib").exists());
+        assert_eq!(opencode_plugin(Path::new("/nonexistent/bin/headroom")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_prefix_with_two_pythons_answers_the_same_way_every_time() {
+        let home = tempfile::tempdir().unwrap();
+        let tool = home.path().join("env");
+        script(&tool.join("bin").join("headroom"), "true");
+        let older = plugin_in(&tool, "python3.12");
+        plugin_in(&tool, "python3.13");
+        std::fs::create_dir_all(tool.join("lib").join("pkgconfig")).unwrap();
+
+        let found = opencode_plugin(&tool.join("bin").join("headroom"));
+
+        assert_eq!(found, Some(older.canonicalize().unwrap()));
     }
 }
