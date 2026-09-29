@@ -25,43 +25,22 @@ fi
 shell=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 log="$work/device.log"
-app_id=com.gavin.companion
+. "$shell/scripts/device.sh"
 
-(cd "$shell/.." && npm run --silent companion-shell:sync -- "$platform" --probe >"$work/sync.log" 2>&1) || {
-  cat "$work/sync.log"
-  exit 1
-}
+build_and_install "$platform" "$target" "$work" --probe
 
 case "$platform" in
   ios)
-    (cd "$shell/ios/App" && xcodebuild -project App.xcodeproj -scheme App -configuration Debug \
-      -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$work/dd" build \
-      CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= >"$work/build.log" 2>&1) || {
-      grep -E "error:" "$work/build.log" || tail -20 "$work/build.log"
-      exit 1
-    }
-    xcrun simctl install "$target" "$work/dd/Build/Products/Debug-iphonesimulator/App.app"
     # The launch argument lands in UserDefaults, where a DEBUG build looks.
     xcrun simctl launch --console-pty --terminate-running-process "$target" "$app_id" \
       -GavinBundleProbe YES >"$log" 2>&1 &
     watcher=$!
     ;;
   android)
-    java_home=${JAVA_HOME:-$(/usr/libexec/java_home -v 21)}
-    (cd "$shell/android" && JAVA_HOME="$java_home" ./gradlew -q :app:assembleDebug >"$work/build.log" 2>&1) || {
-      tail -30 "$work/build.log"
-      exit 1
-    }
-    adb=${ANDROID_HOME:-$HOME/Library/Android/sdk}/platform-tools/adb
-    "$adb" -s "$target" install -r "$shell/android/app/build/outputs/apk/debug/app-debug.apk" >/dev/null
     "$adb" -s "$target" logcat -c
     "$adb" -s "$target" logcat -v raw -s Capacitor/Console:* GavinShell:* >"$log" 2>&1 &
     watcher=$!
     "$adb" -s "$target" shell am start -S -n "$app_id/.MainActivity" --ez gavinBundleProbe true >/dev/null
-    ;;
-  *)
-    echo "unknown platform: $platform (ios or android)" >&2
-    exit 2
     ;;
 esac
 
