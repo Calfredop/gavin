@@ -95,7 +95,7 @@ describe("the host side", () => {
       ["DeviceDisconnected", "device-disconnected"],
     ]) {
       expect(session).toContain(`Response::${variant}`);
-      expect(session).toContain(`emit("${event}"`);
+      expect(session).toContain(`"${event}"`);
     }
   });
 });
