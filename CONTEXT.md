@@ -36,6 +36,10 @@ _Avoid_: mobile client, phone app, mobile app
 One install of the Companion, identified by its own keys to every Workstation it has paired with. An iPhone and an iPad are two Devices, and a reinstall is a new Device.
 _Avoid_: phone, client, paired phone
 
+**Presence**:
+Where a Device is on a Workstation and what it is doing there: the workspace it last worked in, the session it is typing into, and the sessions it started. The daemon reads it off the commands the Device has the desktop app run, so a Device never reports its own.
+_Avoid_: activity, status (that is a session's), online (that is being connected)
+
 **Workstations hub**:
 The Companion's home screen: every paired Workstation with its state, and one attention inbox across all of them.
 _Avoid_: hub (on its own, that is the desktop app's view one level above any workspace), home, dashboard

@@ -5309,6 +5309,17 @@ pub(crate) fn attach_and_relay(
                         (device_id, refusal),
                     );
                 }
+                // A Device's presence changed (v58): the whole of it, which
+                // the Devices panel draws, the terminal a Device is typing
+                // into marks, and from which the desk places a session the
+                // Device started. Only sent to an app that speaks 58.
+                Response::DevicePresenceChanged { device_id, presence } => {
+                    let _ = crate::forwarding::emit(
+                        &reader_app_handle,
+                        "device-presence-changed",
+                        (device_id, presence),
+                    );
+                }
                 // The dial's state changed (v56). The payload is the state
                 // itself, so the section redraws without asking again.
                 Response::RelayStateChanged { state } => {

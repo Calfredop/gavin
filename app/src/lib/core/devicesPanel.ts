@@ -26,6 +26,7 @@ import {
   type DeviceRow,
 } from "$lib/core/remoteAccess";
 import type { DeviceIndicatorState } from "$lib/ui/indicators";
+import { presenceLine, type PresenceNaming, type Presences } from "$lib/core/devicePresence";
 
 /// The footer row's label and the panel's title. One constant, so the row
 /// and the panel cannot name themselves differently.
@@ -160,20 +161,32 @@ export function refusalsBlocked(compat: DaemonCompat | null): string | null {
   return featureBlockedReason(compat, "deviceRefusals");
 }
 
+/// Why the panel cannot say where Devices are, or null. Read beside the
+/// list, for `refusalsBlocked`'s reason: against a daemon older than v58 a
+/// row with no presence line is not a Device doing nothing.
+export function presenceBlocked(compat: DaemonCompat | null): string | null {
+  return featureBlockedReason(compat, "devicePresence");
+}
+
 export interface PanelRow extends DeviceRow {
   connected: boolean;
   /// What the state column says: "Connected", or "seen 3w ago".
   state: string;
   /// The daemon's last refusal of this Device, or null.
   refusal: RefusalNotice | null;
+  /// Where it is and what it is doing (`devicePresence.ts`'s line), or null.
+  presence: string | null;
 }
 
 /// The list the panel draws: `deviceRows`' order and dimming, plus whether
 /// each row is connected now. A revoked or stale row is never "connected".
+/// With `naming`, each row also carries its presence line.
 export function panelRows(
   devices: DeviceInfo[],
   connected: ReadonlySet<string>,
-  nowMs: number
+  nowMs: number,
+  presences: Presences = {},
+  naming: PresenceNaming | null = null
 ): PanelRow[] {
   const live = new Set(devices.filter(admitted).map((d) => d.deviceId));
   const byId = new Map(devices.map((d) => [d.deviceId, d]));
@@ -185,6 +198,7 @@ export function panelRows(
       connected: isConnected,
       state: isConnected ? "Connected" : `seen ${row.lastSeen}`,
       refusal: refusalNotice(byId.get(row.deviceId)!, nowMs),
+      presence: naming ? presenceLine(presences[row.deviceId], isConnected, naming, nowMs) : null,
     };
   });
   // Connected first, then `deviceRows`' own order. Stable, so ties keep it.

@@ -6,7 +6,6 @@
   import * as backend from "$lib/core/backend";
   import { tooltip } from "$lib/core/tooltip";
   import { askConfirm } from "$lib/core/dialog";
-  import { daemonCompat } from "$lib/core/layoutState";
   import { grantForAnsweredPrompt, pairingSubject } from "$lib/core/confirmGate";
   import {
     NO_DEVICES,
@@ -33,11 +32,16 @@
     DEVICES_LABEL,
     devicesBlocked,
     panelRows,
+    presenceBlocked,
     refusalsBlocked,
   } from "$lib/core/devicesPanel";
+  import type { PresenceNaming } from "$lib/core/devicePresence";
+  import { daemonCompat, layoutState } from "$lib/core/layoutState";
+  import { sessionLabel } from "$lib/core/paths";
   import {
     connectedDevices,
     deviceList,
+    devicePresences,
     deviceRelayState,
     devicesFailure,
     refreshDeviceList,
@@ -56,6 +60,8 @@
   // Separate from `gate`: an older daemon can list and revoke, it just
   // cannot say a Device was refused (v57).
   const refusalGate = $derived(refusalsBlocked($daemonCompat));
+  // And again for presence (v58).
+  const presenceGate = $derived(presenceBlocked($daemonCompat));
 
   let pairing = $state<PairingState>(PAIRING_IDLE);
   let pairingError = $state<string | null>(null);
@@ -63,7 +69,15 @@
   let actionError = $state<string | null>(null);
   let nowMs = $state(Date.now());
 
-  const rows = $derived($deviceList ? panelRows($deviceList.devices, $connectedDevices, nowMs) : []);
+  // The names a presence line uses, from the stores that hold them: a
+  // workspace by its sidebar name, a session by its tab's own name.
+  const naming = $derived<PresenceNaming>({
+    workspaceName: (id) => $layoutState.workspaces.find((w) => w.id === id)?.name ?? null,
+    sessionName: (id) => sessionLabel($layoutState.sessionNames, $layoutState.cwdBySessionId, id),
+  });
+  const rows = $derived(
+    $deviceList ? panelRows($deviceList.devices, $connectedDevices, nowMs, $devicePresences, naming) : []
+  );
   const pairingGate = $derived(pairingUnavailable($deviceList, $daemonCompat, $deviceRelayState));
   const relayLine = $derived(relayStatus($deviceRelayState, nowMs));
   const relayBadge = $derived(
@@ -296,11 +310,15 @@
                   Revoke
                 </button>
               </span>
+              {#if row.presence}<span class="presence">{row.presence}</span>{/if}
             </li>
           {/each}
         </ul>
         {#if refusalGate}
           <p class="hint">Refused connections are not shown. {refusalGate}</p>
+        {/if}
+        {#if presenceGate}
+          <p class="hint">Where each Device is, and what it started, is not shown. {presenceGate}</p>
         {/if}
       {/if}
     {/if}
@@ -388,6 +406,7 @@
   }
   .devices li {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
     padding: 4px 0;
@@ -415,6 +434,15 @@
   .refusal {
     flex: 0 1 auto;
     min-width: 0;
+  }
+  /* Its own line under the row: a sentence, not a column. */
+  .presence {
+    flex: 1 0 100%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-subtle);
   }
   .device-state.connected {
     color: var(--success-text, var(--text));

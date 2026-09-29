@@ -607,6 +607,15 @@ export const FEATURE_MIN_VERSION = {
   // panel reads to say so under the list rather than leave the silence to
   // be taken for a clean record.
   deviceRefusals: 57,
+  // Where each Device is and what it is doing (`companion-16`):
+  // `DeviceInfo.presence` and the `DevicePresenceChanged` push are v58. An
+  // older daemon sends neither, so a row with no presence line reads as a
+  // Device doing nothing -- which that daemon cannot say -- and no session
+  // a Device starts is placed at the desk.
+  //
+  // Consumer: `devicesPanel.ts`'s `presenceBlocked`, which the Devices panel
+  // reads to say so under the list.
+  devicePresence: 58,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

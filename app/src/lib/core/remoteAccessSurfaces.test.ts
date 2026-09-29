@@ -103,6 +103,15 @@ describe("the host side", () => {
   });
 });
 
+describe("presence (v58)", () => {
+  it("is forwarded by the host as an event the Devices state hears", () => {
+    const session = rust("session.rs");
+    expect(session).toContain("Response::DevicePresenceChanged");
+    expect(session).toContain('"device-presence-changed"');
+    expect(source("devicesState.ts")).toContain('"device-presence-changed"');
+  });
+});
+
 describe("the backend wrappers", () => {
   it("invokes the command each one is named for", () => {
     for (const [command, wrapper] of COMMANDS) {

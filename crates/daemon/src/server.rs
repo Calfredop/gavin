@@ -1479,6 +1479,9 @@ pub struct SessionManager {
     /// the other daemon sharing that store cannot see it. Only a key the
     /// store holds gets an entry -- see `note_device_refusal`.
     device_refusals: Mutex<HashMap<String, protocol::DeviceRefusal>>,
+    /// Each Device's presence (v58), read off the commands it has had the
+    /// desktop run (`presence.rs`). In memory, for the refusals' reason.
+    device_presence: Mutex<crate::presence::Presences>,
     next_app_connection: AtomicU64,
     /// The one live pairing offer, or none.
     ///
@@ -1755,6 +1758,7 @@ impl SessionManager {
             next_device_connection: AtomicU64::new(0),
             app_connections: Mutex::new(HashMap::new()),
             device_refusals: Mutex::new(HashMap::new()),
+            device_presence: Mutex::new(crate::presence::Presences::default()),
             next_app_connection: AtomicU64::new(0),
             pending_offer: Mutex::new(None),
             pending_pairings: Mutex::new(HashMap::new()),
@@ -2288,6 +2292,27 @@ impl SessionManager {
         );
     }
 
+    /// Records a command the desktop ran for `device_id`, and tells the
+    /// desks that can be told when its presence changed (v58). See
+    /// `presence.rs` for what counts.
+    fn note_device_activity(
+        &self,
+        device_id: &str,
+        command: &str,
+        args: &serde_json::Value,
+        value: Option<&serde_json::Value>,
+    ) {
+        let now = crate::remote::epoch_seconds();
+        let changed =
+            self.device_presence.lock().unwrap().observe(device_id, command, args, value, now);
+        if let Some(presence) = changed {
+            self.push_to_apps_speaking(
+                protocol::DEVICE_PRESENCE_MIN_VERSION,
+                &Response::DevicePresenceChanged { device_id: device_id.to_string(), presence },
+            );
+        }
+    }
+
     // -- pairing (§3's ceremony, phase 2) ------------------------------
 
     /// `BeginPairing`: mint a one-time secret and build the QR the phone
@@ -2608,11 +2633,13 @@ impl SessionManager {
         let now = crate::trust::now_us();
         let settings = trust.remote_access()?;
         let refusals = self.device_refusals.lock().unwrap().clone();
+        let presences = self.device_presence.lock().unwrap();
         let devices = trust
             .list()?
             .into_iter()
             .map(|d| protocol::DeviceInfo {
                 last_refusal: refusals.get(&d.device_id).cloned(),
+                presence: presences.get(&d.device_id),
                 // Computed here, by the daemon that enforces it, rather
                 // than left for the app to re-derive from `last_seen_at`
                 // -- see `protocol::DeviceInfo`. Read before the row is
@@ -6738,8 +6765,16 @@ fn serve_connection(
         // the result comes back on the forwarding connection as
         // `ForwardResult`.
         if let Request::InvokeDesktop { command, args } = req {
-            let resp = manager.invoke_desktop(&command, args);
+            let resp = manager.invoke_desktop(&command, args.clone());
             write_message(&mut *writer.lock().unwrap(), &resp)?;
+            // After the answer, so the Device is not kept waiting on the
+            // desk being told. Only a Device has a presence: the desk's
+            // own connections never send this request.
+            if let (Some(device_id), Response::DesktopResult { value, error: None }) =
+                (identity.device_id.as_deref(), &resp)
+            {
+                manager.note_device_activity(device_id, &command, &args, value.as_ref());
+            }
             continue;
         }
 

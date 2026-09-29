@@ -64,6 +64,7 @@ import {
   SignalHigh,
   SignalLow,
   SignalMedium,
+  Smartphone,
   Square,
   SquareCheck,
   SquareDot,
@@ -768,6 +769,21 @@ export function deviceIndicator(state: DeviceIndicatorState, why?: string | null
   return { ...base, tip, label: tip };
 }
 
+// A Device typing into a terminal right now (companion-16): the marker on
+// that terminal's tab. On the device axis because it is a fact about a
+// Device, and accent because that is the app's one "happening now" -- not a
+// shield, because it says nothing about trust. `devicePresence.ts` decides
+// when it is up and whose names it carries.
+const DEVICE_TYPING = make("device", "typing", Smartphone, "accent", "a Device is typing here");
+
+/// The marker on a terminal a Device is typing into. `who` -- "Pixel is
+/// typing" -- goes in the bubble after the axis.
+export function deviceTypingIndicator(who?: string | null): Indicator {
+  if (!who) return DEVICE_TYPING;
+  const tip = `${AXIS_LABEL.device} · ${who}`;
+  return { ...DEVICE_TYPING, tip, label: tip };
+}
+
 // ---- attention ---------------------------------------------------------
 // What a RUNNING step is waiting on a human for. Not an axis of its own:
 // all three answers are facts about the agent, so they are agent badges,
@@ -855,5 +871,6 @@ export function allIndicators(): Indicator[] {
     ...HEADROOM_EXCEPTIONS.map((exception) => HEADROOM[exception]),
     ...RELAY_STATES.map((state) => RELAY[state]),
     ...DEVICE_STATES.map((state) => DEVICE[state]),
+    DEVICE_TYPING,
   ];
 }

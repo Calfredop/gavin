@@ -10,7 +10,7 @@
   import { onMount } from "svelte";
   import DevicesPanel from "$lib/core/DevicesPanel.svelte";
   import { DEVICES_LABEL, devicesBadgeTip } from "$lib/core/devicesPanel";
-  import { devicesBadgeText, watchDevices } from "$lib/core/devicesState";
+  import { deviceNameBySessionId, devicesBadgeText, watchDevices } from "$lib/core/devicesState";
   import { activePause, nowStore, usageRefreshingStore, worstUsageProjection } from "$lib/agents/agentPauseState";
   import {
     armRequest,
@@ -596,6 +596,7 @@
     cwdBySessionId: $layoutState.cwdBySessionId,
     trees: $gavinTrees,
     orchestrations: $orchestrations,
+    deviceBySessionId: $deviceNameBySessionId,
   });
 
   // A tab's name in the expansion, by the very rules the tab bar itself

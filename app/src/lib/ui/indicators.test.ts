@@ -15,6 +15,8 @@ import {
   tabAgentIndicator,
   allIndicators,
   attentionIndicator,
+  deviceIndicator,
+  deviceTypingIndicator,
   gitIndicator,
   headroomIndicator,
   priorityIndicator,
@@ -168,6 +170,21 @@ describe("the indicator vocabulary", () => {
     expect(stepIndicator("pending").tone).toBe("neutral");
     expect(railIndicator("idle").tone).toBe("neutral");
     expect(railIndicator("paused").tone).toBe("warning");
+    // A Device typing into a terminal is happening now, and says nothing
+    // about whether the Device is trusted.
+    expect(deviceTypingIndicator().tone).toBe("accent");
+  });
+});
+
+describe("deviceTypingIndicator", () => {
+  it("names who is typing after the axis", () => {
+    expect(deviceTypingIndicator("Pixel is typing").tip).toBe("Device · Pixel is typing");
+    expect(deviceTypingIndicator().tip).toBe("Device · a Device is typing here");
+  });
+
+  it("is drawn apart from both refusals", () => {
+    const icons = new Set([deviceIndicator("proof_failed").icon, deviceIndicator("refused").icon]);
+    expect(icons.has(deviceTypingIndicator().icon)).toBe(false);
   });
 });
 

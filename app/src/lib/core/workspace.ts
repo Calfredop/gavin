@@ -1,7 +1,7 @@
 import type { PauseCycle } from "$lib/agents/agentPause";
 import type { ComplexityTable } from "$lib/cards/complexity";
 import type { LayoutNode } from "$lib/panes/layout";
-import { allSessionIds, findLeafPath } from "$lib/panes/layout";
+import { addTab, allSessionIds, findLeafPath } from "$lib/panes/layout";
 
 export interface Page {
   id: string;
@@ -534,6 +534,38 @@ export function createPage(
       w.id === workspaceId ? { ...w, pages: [...w.pages, page], activePageId: pageId } : w
     ),
   };
+}
+
+/// The page an agent session lands on when nothing chose one for it: an MCP
+/// spawn, a card run, a session adopted from the Sessions manager, and a
+/// session a Device started (`devicePresence.ts`). Found by name.
+export const AGENTS_PAGE_NAME = "Agents";
+
+/// Adds `sessionId` as a tab on the workspace's Agents page, creating the
+/// page with the session as its first tab when there is none (`newPageId`
+/// is only used then). Never steals focus: `createPage` activates the page
+/// it makes, so the page that was active is put back.
+export function addToAgentsPage(
+  state: WorkspacesData,
+  workspaceId: string,
+  sessionId: string,
+  newPageId: string
+): WorkspacesData {
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return state;
+  const agentsPage = ws.pages.find((p) => p.name === AGENTS_PAGE_NAME);
+  if (agentsPage) {
+    const anchor = allSessionIds(agentsPage.layout)[0];
+    const tree = addTab(agentsPage.layout, anchor, sessionId);
+    return updatePageLayout(state, workspaceId, agentsPage.id, tree);
+  }
+  const previousActive = ws.activePageId;
+  const data = createPage(state, workspaceId, newPageId, AGENTS_PAGE_NAME, {
+    type: "leaf",
+    tabs: [sessionId],
+    activeTabIndex: 0,
+  });
+  return previousActive ? switchPage(data, workspaceId, previousActive) : data;
 }
 
 export function renamePage(state: WorkspacesData, workspaceId: string, pageId: string, name: string): WorkspacesData {

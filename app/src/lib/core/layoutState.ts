@@ -100,6 +100,7 @@ import {
   isMainWindow,
 } from "$lib/shell/appWindowState";
 import { initAppDuty, whileHoldingAppDuties } from "$lib/shell/appDuty";
+import { placeDeviceSession } from "$lib/core/devicePresence";
 import {
   adoptSettingsRecord,
   normalizeSettingsPatch,
@@ -3528,21 +3529,22 @@ export function handleAgentSessionSpawned(workspaceId: string, sessionId: string
     return;
   }
   const base: WorkspacesData = { workspaces: state.workspaces, activeWorkspaceId: state.activeWorkspaceId };
-  const agentsPage = ws.pages.find((p) => p.name === "Agents");
-  let data: WorkspacesData;
-  if (agentsPage) {
-    const anchor = layout.allSessionIds(agentsPage.layout)[0];
-    const newTree = layout.addTab(agentsPage.layout, anchor, sessionId);
-    data = workspace.updatePageLayout(base, workspaceId, agentsPage.id, newTree);
-  } else {
-    const previousActive = ws.activePageId;
-    data = workspace.createPage(base, workspaceId, crypto.randomUUID(), "Agents", {
-      type: "leaf",
-      tabs: [sessionId],
-      activeTabIndex: 0,
-    });
-    if (previousActive) data = workspace.switchPage(data, workspaceId, previousActive);
-  }
+  const data = workspace.addToAgentsPage(base, workspaceId, sessionId, crypto.randomUUID());
+  layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
+  void persistWorkspaces(data.workspaces, state.activeWorkspaceId);
+}
+
+// A session a Device started (companion-16), placed where a card run at the
+// desk lands -- the workspace's Agents page -- unless it is already showing
+// somewhere. `devicePresence.ts` decides; this applies and saves. Unlike
+// handleAgentSessionSpawned, a session this window cannot place is left
+// alone rather than killed: it belongs to the Device, where a human is
+// watching it.
+export function placeDeviceStartedSession(workspaceId: string, sessionId: string): void {
+  const state = get(layoutState);
+  const base: WorkspacesData = { workspaces: state.workspaces, activeWorkspaceId: state.activeWorkspaceId };
+  const data = placeDeviceSession(base, workspaceId, sessionId, crypto.randomUUID());
+  if (!data) return;
   layoutState.update((s) => ({ ...s, workspaces: data.workspaces }));
   void persistWorkspaces(data.workspaces, state.activeWorkspaceId);
 }

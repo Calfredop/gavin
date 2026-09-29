@@ -42,6 +42,37 @@ export interface DeviceInfo {
   /// absent: an older daemon never sends it, and a Device that has not
   /// been refused since the daemon started has none.
   lastRefusal?: DeviceRefusal;
+  /// Where the Device is and what it is doing (v58), or absent: an older
+  /// daemon never sends it, and a Device that has had the desktop run
+  /// nothing since the daemon started has none.
+  presence?: DevicePresence;
+}
+
+/// `protocol::DevicePresence` (v58): what the daemon read off the commands
+/// a Device had the desktop run. `devicePresence.ts` holds every rule about
+/// it.
+export interface DevicePresence {
+  /// The desk's id of the workspace the Device last named.
+  workspaceId?: string;
+  /// The session it last sent input to. Whether that is typing NOW is
+  /// `devicePresence.ts`'s reading of `at`.
+  typing?: DeviceTyping;
+  /// The sessions it started, oldest first.
+  started: DeviceStartedSession[];
+}
+
+export interface DeviceTyping {
+  sessionId: string;
+  /// Wall-clock epoch SECONDS.
+  at: number;
+}
+
+export interface DeviceStartedSession {
+  sessionId: string;
+  workspaceRoot?: string;
+  cwd?: string;
+  /// Wall-clock epoch SECONDS.
+  at: number;
 }
 
 /// Why a paired Device was refused, as `protocol::device_wire::

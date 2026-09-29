@@ -7,28 +7,64 @@
 // come off one set. Pairing stays the panel's own: `DevicePairingRequested`
 // is a question, and a question nobody is being asked is not a
 // notification (see the panel).
+//
+// Presence (v58) lives here for the badge's reason: a terminal's typing
+// marker and a Device-started tab's label are read with the panel closed,
+// and this listener is what places a session a Device started. The rules are
+// `devicePresence.ts`'s.
 
 import { derived, get, writable, type Readable } from "svelte/store";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import * as backend from "$lib/core/backend";
-import { daemonCompat } from "$lib/core/layoutState";
-import type { DeviceList, RelayState } from "$lib/core/remoteAccess";
+import { daemonCompat, layoutState, placeDeviceStartedSession } from "$lib/core/layoutState";
+import type { DeviceList, DevicePresence, RelayState } from "$lib/core/remoteAccess";
 import {
   devicesAskable,
   devicesBadge,
   withConnected,
   withoutConnected,
 } from "$lib/core/devicesPanel";
+import {
+  deviceNameBySession,
+  presencesFromList,
+  sessionsToPlace,
+  typingBySession,
+  typingChangesAt,
+  workspaceForStarted,
+  type Presences,
+} from "$lib/core/devicePresence";
+import { runsRailsFor } from "$lib/shell/appDuty";
 
 const list = writable<DeviceList | null>(null);
 const connected = writable<ReadonlySet<string>>(new Set());
 const relay = writable<RelayState | null>(null);
 const failure = writable<string | null>(null);
+/// Every Device's presence (v58): seeded by the list read, replaced per
+/// Device by each push, which carries the whole of it.
+const presences = writable<Presences>({});
+/// The clock the typing markers are read against. Moved only when a marker
+/// could change: a push, and the moment the freshest typing goes stale.
+const typingClock = writable(Date.now());
 
 export const deviceList: Readable<DeviceList | null> = { subscribe: list.subscribe };
 export const connectedDevices: Readable<ReadonlySet<string>> = { subscribe: connected.subscribe };
 export const deviceRelayState: Readable<RelayState | null> = { subscribe: relay.subscribe };
 export const devicesFailure: Readable<string | null> = { subscribe: failure.subscribe };
+
+export const devicePresences: Readable<Presences> = { subscribe: presences.subscribe };
+
+/// Which Device started each session, by name: what its tab is labelled
+/// with. Needs the list for the names, so it is empty until the first read.
+export const deviceNameBySessionId: Readable<Record<string, string>> = derived(
+  [list, presences],
+  ([$list, $presences]) => deviceNameBySession($list?.devices ?? [], $presences)
+);
+
+/// The Devices typing into each session right now: the terminal marker.
+export const typingBySessionId: Readable<Record<string, string[]>> = derived(
+  [list, presences, typingClock],
+  ([$list, $presences, $now]) => typingBySession($list?.devices ?? [], $presences, $now)
+);
 
 /// The footer row's badge text, or null.
 export const devicesBadgeText: Readable<string | null> = derived(
@@ -49,6 +85,12 @@ export async function refreshDeviceList(): Promise<void> {
     if (mine !== token) return;
     failure.set(null);
     list.set(next);
+    // Over what the pushes said: a read is the daemon's whole account. A
+    // push that crossed this read in flight is lost only until the Device
+    // does anything else, since every push is the whole presence again --
+    // and placement cannot repeat on it (`handledStarts`).
+    presences.set(presencesFromList(next.devices));
+    scheduleTypingClock();
     // A revoked Device is no longer connected whatever the last push said.
     const revoked = next.devices.filter((d) => d.revokedAt !== null).map((d) => d.deviceId);
     if (revoked.length > 0) {
@@ -67,9 +109,55 @@ export async function refreshDeviceRelay(): Promise<void> {
   }
 }
 
+let typingTimer: ReturnType<typeof setTimeout> | null = null;
+
+/// Moves the typing clock now, and again when the freshest typing goes
+/// stale -- one timer, re-aimed by every change, and none while nobody is
+/// typing.
+function scheduleTypingClock(): void {
+  if (typingTimer !== null) clearTimeout(typingTimer);
+  typingTimer = null;
+  const now = Date.now();
+  typingClock.set(now);
+  const changesAt = typingChangesAt(get(presences), now);
+  if (changesAt !== null) {
+    typingTimer = setTimeout(scheduleTypingClock, Math.max(changesAt - now, 0) + 50);
+  }
+}
+
+/// Sessions this window has placed, or decided not to (another window
+/// shows that workspace, or no workspace here holds it). Each is handled
+/// once: a Device's presence keeps listing what it started.
+const handledStarts = new Set<string>();
+
+/// A Device's presence was pushed: take it, and place any session it newly
+/// started as a tab labelled with the Device. The window that places it is
+/// the one showing its workspace -- the rail rule (`runsRailsFor`), since
+/// every window holds every workspace and exactly one should add the tab.
+function presencePushed(deviceId: string, presence: DevicePresence, sinceSeconds: number): void {
+  presences.update((all) => ({ ...all, [deviceId]: presence }));
+  scheduleTypingClock();
+  const workspaces = get(layoutState).workspaces;
+  for (const started of sessionsToPlace(presence, handledStarts, sinceSeconds)) {
+    handledStarts.add(started.sessionId);
+    const workspaceId = workspaceForStarted(workspaces, started);
+    if (workspaceId !== null && runsRailsFor(workspaceId)) {
+      placeDeviceStartedSession(workspaceId, started.sessionId);
+    }
+  }
+  // A Device this window has not listed yet has a name nobody can show.
+  if (!get(list)?.devices.some((d) => d.deviceId === deviceId)) void refreshDeviceList();
+}
+
 /// Starts listening; returns the stop. Called once, from the sidebar.
 export function watchDevices(): () => void {
+  // A little before now: the daemon stamps a start in whole seconds.
+  const listeningSince = Math.floor(Date.now() / 1000) - 2;
   const stop: Promise<UnlistenFn>[] = [
+    listen<[string, DevicePresence]>("device-presence-changed", (event) => {
+      const [deviceId, presence] = event.payload;
+      presencePushed(deviceId, presence, listeningSince);
+    }),
     listen<string>("device-connected", (event) => {
       connected.update((set) => withConnected(set, event.payload));
       void refreshDeviceList();
@@ -90,5 +178,7 @@ export function watchDevices(): () => void {
   return () => {
     unsubscribe();
     for (const p of stop) void p.then((off) => off());
+    if (typingTimer !== null) clearTimeout(typingTimer);
+    typingTimer = null;
   };
 }

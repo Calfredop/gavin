@@ -7,6 +7,7 @@ import {
   devicesBadgeTip,
   devicesBlocked,
   panelRows,
+  presenceBlocked,
   refusalNotice,
   refusalsBlocked,
   withConnected,
@@ -173,5 +174,36 @@ describe("a refused Device's row", () => {
     expect(refusalsBlocked({ daemonVersion: 57 } as never)).toBeNull();
     expect(refusalsBlocked(null)).toBeNull();
     expect(source("DevicesPanel.svelte")).toContain("refusalsBlocked(");
+  });
+});
+
+describe("a Device's presence on its row", () => {
+  const naming = {
+    workspaceName: (id: string) => (id === "w1" ? "gavin" : null),
+    sessionName: (id: string) => `tab ${id}`,
+  };
+  const presences = {
+    a: { workspaceId: "w1", typing: { sessionId: "s1", at: NOW / 1000 }, started: [{ sessionId: "s2", at: NOW / 1000 }] },
+  };
+
+  it("says where a connected Device is and what it is doing", () => {
+    const rows = panelRows([dev("a"), dev("b")], new Set(["a"]), NOW, presences, naming);
+    expect(rows.find((r) => r.deviceId === "a")?.presence).toBe("in gavin · typing into tab s1 · started tab s2");
+    expect(rows.find((r) => r.deviceId === "b")?.presence).toBeNull();
+  });
+
+  it("keeps only what it started once it has gone", () => {
+    const rows = panelRows([dev("a")], new Set(), NOW, presences, naming);
+    expect(rows[0].presence).toBe("started tab s2");
+  });
+
+  it("is absent where the panel gave no names", () => {
+    expect(panelRows([dev("a")], new Set(["a"]), NOW, presences)[0].presence).toBeNull();
+  });
+
+  it("is gated on the daemon that can report it, and the panel reads the gate", () => {
+    expect(presenceBlocked({ daemonVersion: 57 } as never)).toMatch(/v58/);
+    expect(presenceBlocked({ daemonVersion: 58 } as never)).toBeNull();
+    expect(source("DevicesPanel.svelte")).toContain("presenceBlocked(");
   });
 });

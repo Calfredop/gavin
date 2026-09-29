@@ -9,6 +9,7 @@ mod kanban;
 mod orchestration;
 mod osc;
 mod pairing;
+mod presence;
 mod proc;
 mod program;
 mod pty;

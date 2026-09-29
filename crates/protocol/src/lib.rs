@@ -43,6 +43,16 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v58 is the desk seeing where each Device is and what it is doing
+/// (`companion-16`). The daemon reads a Device's presence off the commands
+/// it has the desktop run -- the workspace it last named, the session it is
+/// typing into, the sessions it started -- and carries it on
+/// `DeviceInfo::presence`, pushing `DevicePresenceChanged` when it changes.
+/// Like v57's push, a new `Response` variant, so it goes only to an app
+/// whose `Hello` said it speaks 58 or more (`DEVICE_PRESENCE_MIN_VERSION`);
+/// the field is defaulted and skipped when absent. No new request. The
+/// Devices panel owes `FEATURE_MIN_VERSION.devicePresence`.
+///
 /// v57 is the desk hearing of a Device that was refused
 /// (`companion-34`). `DeviceInfo` gains `last_refusal`, and the
 /// `DeviceRefusalChanged` push says when one changes. The push is a new
@@ -711,7 +721,12 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 57;
+pub const PROTOCOL_VERSION: u32 = 58;
+
+/// The first version that pushes `DevicePresenceChanged` and carries
+/// `DeviceInfo::presence`. The daemon compares an app's `Hello` version
+/// with this before it writes the push (v58).
+pub const DEVICE_PRESENCE_MIN_VERSION: u32 = 58;
 
 /// The first version that pushes `DeviceRefusalChanged` and carries
 /// `DeviceInfo::last_refusal`. The daemon compares an app's `Hello`
@@ -2855,6 +2870,15 @@ pub enum Response {
     /// `DEVICE_REFUSALS_MIN_VERSION` or more: an older app cannot parse a
     /// variant it has never heard of.
     DeviceRefusalChanged { device_id: String, refusal: DeviceRefusal },
+    /// Push (v58): a Device's presence changed, and this is the whole of
+    /// it -- never a delta, so a desk that missed one cannot drift. Sent
+    /// only to an `app` connection that reads pushes and whose `Hello`
+    /// said it speaks `DEVICE_PRESENCE_MIN_VERSION` or more, for the
+    /// reason `DeviceRefusalChanged` is.
+    ///
+    /// A session appearing in `presence.started` is how the desk learns a
+    /// Device started it, and places it as a tab labelled with the Device.
+    DevicePresenceChanged { device_id: String, presence: DevicePresence },
     /// Push to every live `app` connection (v56): the dial's state
     /// changed. Only to a connection that reads pushes, like the device
     /// pushes -- see `ConnectionKind`.
@@ -3074,6 +3098,68 @@ pub struct DeviceInfo {
     /// past, not the trust store's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_refusal: Option<DeviceRefusal>,
+    /// Where this Device is and what it is doing (v58), or `None` if it
+    /// has had the desktop run nothing since this daemon started. In
+    /// memory on the daemon, like `last_refusal`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence: Option<DevicePresence>,
+}
+
+/// Where a Device is on this Workstation and what it is doing there (v58),
+/// as the daemon read it off the commands the Device had the desktop run.
+///
+/// Only commands the desktop ran without error count: a refused name, a
+/// desktop that is not running and a command that failed tell the desk
+/// nothing about where the Device is.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DevicePresence {
+    /// The desk's id of the workspace the Device last named in a command
+    /// (`workspaceId`, the argument most workspace commands take).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// The session the Device last sent input to, and when. Whether it is
+    /// typing NOW is the desk's reading of `at` (see `DeviceTyping`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typing: Option<DeviceTyping>,
+    /// Sessions the Device started, oldest first, the most recent few.
+    #[serde(default)]
+    pub started: Vec<DeviceStartedSession>,
+}
+
+/// A Device's input into one session (v58).
+///
+/// `at` is the latest keystroke the daemon has recorded, and the daemon
+/// pushes it again at most every `DEVICE_TYPING_REPUSH_SECS` while the
+/// Device keeps typing into the same session -- so a desk that reads
+/// "typing" as "`at` within a few seconds of now" has to allow for that
+/// cadence (the app's `TYPING_FRESH_MS`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceTyping {
+    pub session_id: String,
+    /// Wall-clock epoch seconds.
+    pub at: i64,
+}
+
+/// How often the daemon re-pushes a Device's presence while it keeps
+/// typing into the same session (v58).
+pub const DEVICE_TYPING_REPUSH_SECS: i64 = 2;
+
+/// A session a Device started (v58): the id the desktop's `create_session`
+/// answered, and where it was asked to start it. The desk places it as a
+/// tab in the workspace `workspace_root` names, or failing that the one
+/// `cwd` is under.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceStartedSession {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Wall-clock epoch seconds.
+    pub at: i64,
 }
 
 /// One refused connection from a paired Device, as the desk shows it (v57).
@@ -5303,6 +5389,7 @@ mod tests {
             revoked_at: None,
             stale: false,
             last_refusal: None,
+            presence: None,
         };
         let v = serde_json::to_value(&info).unwrap();
         assert_eq!(v["deviceId"], "dev-1");
@@ -5334,6 +5421,43 @@ mod tests {
         let v = serde_json::to_value(&refused).unwrap();
         assert_eq!(v["lastRefusal"]["reason"], "unlock");
         assert_eq!(v["lastRefusal"]["at"], 1_770_000_900);
+    }
+
+    /// v58: a row from an older daemon has no `presence`, and a Device
+    /// that has done nothing says nothing -- the older app's parse is
+    /// unchanged. A presence crosses in the camelCase the desk reads.
+    #[test]
+    fn device_info_carries_presence_only_when_there_is_one() {
+        let old = r#"{"deviceId":"d","name":"n","role":"remote","createdAt":1,"lastSeenAt":2,"revokedAt":null,"stale":false}"#;
+        let parsed: DeviceInfo = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.presence, None);
+        assert!(serde_json::to_value(&parsed).unwrap().get("presence").is_none());
+
+        let present = DeviceInfo {
+            presence: Some(DevicePresence {
+                workspace_id: Some("w1".into()),
+                typing: Some(DeviceTyping { session_id: "s1".into(), at: 1_770_000_950 }),
+                started: vec![DeviceStartedSession {
+                    session_id: "s2".into(),
+                    workspace_root: Some("/work/app".into()),
+                    cwd: None,
+                    at: 1_770_000_900,
+                }],
+            }),
+            ..parsed
+        };
+        let v = serde_json::to_value(&present).unwrap();
+        assert_eq!(v["presence"]["workspaceId"], "w1");
+        assert_eq!(v["presence"]["typing"]["sessionId"], "s1");
+        assert_eq!(v["presence"]["typing"]["at"], 1_770_000_950);
+        assert_eq!(v["presence"]["started"][0]["sessionId"], "s2");
+        assert_eq!(v["presence"]["started"][0]["workspaceRoot"], "/work/app");
+        assert!(v["presence"]["started"][0].get("cwd").is_none());
+
+        // An empty presence from a newer daemon that trims its fields
+        // still parses.
+        let bare: DevicePresence = serde_json::from_str("{}").unwrap();
+        assert_eq!(bare, DevicePresence::default());
     }
 
     /// The env-carrying run is a SEPARATE request from `RunGit`, not a
@@ -6771,7 +6895,9 @@ mod tests {
         // and RelayStateChanged push).
         // v57: no new request. DeviceInfo.last_refusal and the
         // DeviceRefusalChanged push, which is gated by the app's Hello.
-        assert_eq!(PROTOCOL_VERSION, 57);
+        // v58: no new request. DeviceInfo.presence and the
+        // DevicePresenceChanged push, gated the same way.
+        assert_eq!(PROTOCOL_VERSION, 58);
     }
 
     #[test]
