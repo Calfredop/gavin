@@ -29,7 +29,18 @@ use std::path::PathBuf;
 const CLAUDE_CODE: &str = "claude-code";
 
 /// The three variables the Claude Code recipe sets, and the only ones.
-const ROUTING: [&str; 3] = ["ANTHROPIC_BASE_URL", "ENABLE_TOOL_SEARCH", "ANTHROPIC_CUSTOM_HEADERS"];
+const ROUTING: [&str; 4] =
+    ["ANTHROPIC_BASE_URL", "ENABLE_TOOL_SEARCH", "ANTHROPIC_CUSTOM_HEADERS", "GOOGLE_GEMINI_BASE_URL"];
+
+/// The two Gemini logins, as the CLI's user settings select them.
+const GEMINI_KEY: &str = r#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#;
+const GEMINI_LOGIN: &str = r#"{"security":{"auth":{"selectedType":"oauth-personal"}}}"#;
+
+fn gemini_settings(machine: &Machine, text: &str) {
+    let dir = machine.home.path().join(".gemini");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("settings.json"), text).unwrap();
+}
 
 /// Writes the environment it runs in where the test can read it, and
 /// exits. NUL-separated, because a header list is more than one line.
@@ -314,6 +325,31 @@ fn an_agent_gavin_cannot_route_launches_uncompressed_and_says_which_kind_it_is()
         assert!(!session.summary.compressed, "{profile}");
         assert_eq!(session.summary.uncompressed_reason.as_deref(), Some(reason), "{profile}");
     }
+}
+
+/// Gemini is the one agent whose recipe depends on how the human logged
+/// in: an API key is routed, Login with Google is not (headroom-07).
+#[test]
+fn gemini_is_compressed_on_an_api_key_and_left_alone_on_login_with_google() {
+    if unavailable_here() {
+        return;
+    }
+    let (machine, daemon, root, port) = compressing();
+
+    gemini_settings(&machine, GEMINI_LOGIN);
+    let login = launch(&machine, &daemon, &root, Some("gemini"));
+    assert!(login.routing().is_empty(), "{:?}", login.routing());
+    assert_eq!(login.summary.uncompressed_reason.as_deref(), Some("no-recipe"));
+    assert!(!login.env.contains_key("CODE_ASSIST_ENDPOINT"));
+
+    gemini_settings(&machine, GEMINI_KEY);
+    let key = launch(&machine, &daemon, &root, Some("gemini"));
+    assert!(key.summary.compressed);
+    assert_eq!(
+        key.routing(),
+        [("GOOGLE_GEMINI_BASE_URL", format!("http://127.0.0.1:{port}/p/{}", key.id).as_str())]
+    );
+    assert!(!key.env.contains_key("CODE_ASSIST_ENDPOINT"));
 }
 
 /// Compression never stops a launch. A Headroom that is installed and

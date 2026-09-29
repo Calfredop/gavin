@@ -404,7 +404,7 @@ export function profileRecipeReason(profileId: string, customApiFamily: ApiFamil
     case "cursor":
       return "Cursor sends everything through Cursor's servers — Headroom can't reach it.";
     case "gemini":
-      return "Gemini isn't compressed yet: which of its logins can go through Headroom is still being tried on real accounts.";
+      return "Gemini is compressed only when its CLI uses an API key. Login with Google isn't routed: Google's endpoint for it is documented for testing only, and Headroom can't undo lossy compression on streamed Gemini replies.";
     case "custom":
       return customApiFamily
         ? null

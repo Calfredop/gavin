@@ -44,6 +44,11 @@ const SESSION_ID: &str = "GAVIN_SESSION_ID";
 const CLAUDE_BASE_URL: &str = "ANTHROPIC_BASE_URL";
 const CLAUDE_TOOL_SEARCH: &str = "ENABLE_TOOL_SEARCH";
 
+/// What the Gemini CLI reads its API endpoint from when it authenticates
+/// with an API key. It appends `/v1beta/models/...` to it, so a `/p/<id>`
+/// prefix survives.
+const GEMINI_BASE_URL: &str = "GOOGLE_GEMINI_BASE_URL";
+
 /// What Codex and every other OpenAI client reads its base URL from.
 /// Not enough on its own for current Codex (see `recipe`), and set
 /// anyway: it is what the commands Codex runs read.
@@ -310,6 +315,47 @@ pub struct Facts<'a> {
     /// The launch asked not to be routed through Headroom: a relaunch
     /// of a session that broke on it (`CreateSession.without_headroom`).
     pub without_headroom: bool,
+    /// Whether the Gemini CLI would authenticate with an API key
+    /// (`gemini_uses_api_key`). Only a Gemini launch reads it.
+    pub gemini_api_key: bool,
+}
+
+/// What of the environment decides the Gemini CLI's auth type.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GeminiEnv {
+    /// `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set and not empty.
+    pub api_key: bool,
+    /// `GOOGLE_GENAI_USE_VERTEXAI` is `true` or `1`.
+    pub vertex: bool,
+    /// `GOOGLE_GENAI_USE_GCA` is `true` or `1`.
+    pub login: bool,
+}
+
+/// The auth type a Gemini settings file selects, or `None` when it
+/// selects none. `security.auth.selectedType` is where the CLI keeps it
+/// now; the top-level `selectedAuthType` is the older spelling, read
+/// only when the new one is absent.
+fn gemini_selected_type(settings: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(settings).ok()?;
+    let new = value.pointer("/security/auth/selectedType").and_then(Value::as_str);
+    let old = value.get("selectedAuthType").and_then(Value::as_str);
+    new.or(old).map(str::to_string)
+}
+
+/// Whether the Gemini CLI, as configured, authenticates with an API key
+/// -- the one mode of its two that is routed (`recipe`).
+///
+/// `settings` are the settings files that apply, highest precedence
+/// first (the project's, then the user's). A selected type wins over the
+/// environment, which the CLI only consults to pick a mode when none is
+/// selected: an API key in the environment does not override a Login
+/// with Google the human chose. A file that names no type, or does not
+/// parse, defers to the next.
+pub fn gemini_uses_api_key(settings: &[&str], env: GeminiEnv) -> bool {
+    if let Some(selected) = settings.iter().find_map(|text| gemini_selected_type(text)) {
+        return selected == "gemini-api-key";
+    }
+    env.api_key && !env.vertex && !env.login
 }
 
 /// Whether this session is compressed.
@@ -353,9 +399,13 @@ pub fn decide(facts: Facts) -> Decision {
 /// when it has one.
 fn unroutable(agent: Agent) -> Option<Reason> {
     match agent {
-        Agent::ClaudeCode | Agent::Codex | Agent::Opencode | Agent::Custom(_) => None,
+        Agent::ClaudeCode
+        | Agent::Codex
+        | Agent::Gemini
+        | Agent::Opencode
+        | Agent::Custom(_) => None,
         Agent::Cursor => Some(Reason::UnsupportedAgent),
-        Agent::Gemini | Agent::Other => Some(Reason::NoRecipe),
+        Agent::Other => Some(Reason::NoRecipe),
     }
 }
 
@@ -391,6 +441,16 @@ fn unroutable(agent: Agent) -> Option<Reason> {
 /// marked compressed and send Headroom nothing, so there is no recipe
 /// without it.
 ///
+/// **Gemini.** Routed only when the CLI authenticates with an API key,
+/// through `GOOGLE_GEMINI_BASE_URL`; the spike (headroom-07) proved that
+/// request path reaches Headroom and Google's answer comes back through
+/// it. Login with Google has no recipe: its endpoint variable
+/// (`CODE_ASSIST_ENDPOINT`) is documented only "for development and
+/// testing", Headroom serves `/v1internal` for other Gemini clients, and
+/// Google itself now refuses the CLI's individual tier
+/// (`UNSUPPORTED_CLIENT`), so a session marked compressed there would not
+/// be a session that works.
+///
 /// **Custom.** Whichever variable its API family's SDK reads.
 pub fn recipe(agent: Agent, port: u16, facts: &Facts) -> Option<Recipe> {
     let base = base_url(port);
@@ -411,6 +471,9 @@ pub fn recipe(agent: Agent, port: u16, facts: &Facts) -> Option<Recipe> {
             let config =
                 opencode_config(facts.inherited_opencode_config, &base, session, plugin);
             Some(Recipe::env(vec![(OPENCODE_CONFIG, config)]))
+        }
+        Agent::Gemini if facts.gemini_api_key => {
+            Some(Recipe::env(vec![(GEMINI_BASE_URL, tagged_url(&base, session))]))
         }
         Agent::Custom(ApiFamily::Anthropic) => {
             Some(Recipe::env(vec![(CLAUDE_BASE_URL, tagged_url(&base, session))]))
@@ -901,6 +964,7 @@ mod tests {
             inherited_opencode_config: None,
             opencode_plugin: None,
             without_headroom: false,
+            gemini_api_key: false,
         }
     }
 
@@ -1032,6 +1096,78 @@ mod tests {
             assert!(decision.compressed(), "{line}");
             assert_eq!(decision.command(), None, "Claude Code is routed by environment alone");
         }
+    }
+
+    fn gemini() -> Facts<'static> {
+        Facts {
+            launch: Launch::Profile("gemini"),
+            command: Some("gemini --yolo --prompt='Read the card'"),
+            ..facts()
+        }
+    }
+
+    #[test]
+    fn gemini_on_an_api_key_is_routed_through_a_tagged_base_url() {
+        let decision = decide(Facts { gemini_api_key: true, ..gemini() });
+
+        assert_eq!(
+            decision.env(),
+            [("GOOGLE_GEMINI_BASE_URL".to_string(), format!("http://127.0.0.1:{PORT}/p/{SESSION}"))]
+        );
+        assert_eq!(decision.command(), None, "Gemini is routed by environment alone");
+    }
+
+    #[test]
+    fn gemini_on_any_other_login_has_no_recipe_and_is_handed_nothing() {
+        let decision = decide(gemini());
+
+        assert_eq!(decision, Decision::Uncompressed(Some(Reason::NoRecipe)));
+        assert!(decision.env().is_empty(), "Login with Google must never get CODE_ASSIST_ENDPOINT");
+    }
+
+    #[test]
+    fn a_gemini_that_is_not_ready_says_so_before_saying_it_has_no_recipe() {
+        let decision = decide(Facts { ready_port: None, gemini_api_key: true, ..gemini() });
+
+        assert_eq!(decision, Decision::Uncompressed(Some(Reason::NotReady)));
+    }
+
+    #[test]
+    fn an_mcp_spawn_of_gemini_follows_the_configured_auth() {
+        let key = decide(Facts { gemini_api_key: true, ..spawned("gemini 'fix it'") });
+
+        assert!(key.compressed());
+    }
+
+    const KEY: &str = r#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#;
+    const LOGIN: &str = r#"{"security":{"auth":{"selectedType":"oauth-personal"}}}"#;
+
+    #[test]
+    fn the_auth_type_is_the_configured_one_and_the_environment_only_fills_a_gap() {
+        let key_in_env = GeminiEnv { api_key: true, ..Default::default() };
+        // Chosen Login with Google outranks a key that happens to be set.
+        assert!(!gemini_uses_api_key(&[LOGIN], key_in_env));
+        assert!(gemini_uses_api_key(&[KEY], GeminiEnv::default()));
+        // Nothing chosen: the environment decides.
+        assert!(gemini_uses_api_key(&[], key_in_env));
+        assert!(gemini_uses_api_key(&["{}"], key_in_env));
+        assert!(!gemini_uses_api_key(&[], GeminiEnv::default()));
+        assert!(!gemini_uses_api_key(&[], GeminiEnv { vertex: true, ..key_in_env }));
+        assert!(!gemini_uses_api_key(&[], GeminiEnv { login: true, ..key_in_env }));
+    }
+
+    #[test]
+    fn the_projects_settings_outrank_the_users_and_a_bad_file_defers() {
+        let none = GeminiEnv::default();
+        assert!(gemini_uses_api_key(&[KEY, LOGIN], none));
+        assert!(!gemini_uses_api_key(&[LOGIN, KEY], none));
+        assert!(gemini_uses_api_key(&["not json", "{}", KEY], none));
+        // The older spelling is read only when the new one is absent.
+        assert!(gemini_uses_api_key(&[r#"{"selectedAuthType":"gemini-api-key"}"#], none));
+        assert!(!gemini_uses_api_key(
+            &[r#"{"selectedAuthType":"gemini-api-key","security":{"auth":{"selectedType":"oauth-personal"}}}"#],
+            none
+        ));
     }
 
     #[test]

@@ -269,6 +269,12 @@ impl Headroom {
             Some(compress::Agent::Opencode) => self.opencode_plugin(),
             _ => None,
         };
+        // Likewise: read only for Gemini, whose recipe depends on the
+        // auth type its CLI is configured with.
+        let gemini_api_key = match launch.agent() {
+            Some(compress::Agent::Gemini) => gemini_configured_for_api_key(workspace_path),
+            _ => false,
+        };
         let serving = self.inner.supervisor.serving();
         let decision = compress::decide(Facts {
             workspace_on: self.inner.switch.is_on(workspace_path),
@@ -280,6 +286,7 @@ impl Headroom {
             inherited_opencode_config: inherited_opencode_config.as_deref(),
             opencode_plugin: opencode_plugin.as_deref(),
             without_headroom,
+            gemini_api_key,
         });
         if let (true, Some(serving)) = (decision.compressed(), serving) {
             self.lock_compressed()
@@ -1173,4 +1180,28 @@ mod tests {
         assert_eq!(stopped.lifetime_tokens_saved, Some(0));
         assert_eq!(daemon.record().lifetime_tokens_saved, Some(0));
     }
+}
+
+/// Whether the Gemini CLI, run in `workspace_path`, would authenticate
+/// with an API key: its project settings, then the user's, then the
+/// environment (`compress::gemini_uses_api_key`).
+fn gemini_configured_for_api_key(workspace_path: &str) -> bool {
+    let home = std::env::var_os("GEMINI_CLI_HOME")
+        .or_else(|| std::env::var_os("HOME"))
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from);
+    let read = |dir: &std::path::Path| std::fs::read_to_string(dir.join(".gemini/settings.json")).ok();
+    let project = read(std::path::Path::new(workspace_path));
+    let user = home.as_deref().and_then(read);
+    let set = |name: &str| std::env::var(name).is_ok_and(|value| !value.trim().is_empty());
+    let on = |name: &str| std::env::var(name).is_ok_and(|value| matches!(value.trim(), "true" | "1"));
+    let files: Vec<&str> = project.iter().chain(user.iter()).map(String::as_str).collect();
+    compress::gemini_uses_api_key(
+        &files,
+        compress::GeminiEnv {
+            api_key: set("GEMINI_API_KEY") || set("GOOGLE_API_KEY"),
+            vertex: on("GOOGLE_GENAI_USE_VERTEXAI"),
+            login: on("GOOGLE_GENAI_USE_GCA"),
+        },
+    )
 }

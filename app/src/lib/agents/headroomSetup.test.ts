@@ -318,7 +318,8 @@ describe("the switch", () => {
     expect(profileRecipeReason("cursor", "")).toBe(
       "Cursor sends everything through Cursor's servers — Headroom can't reach it."
     );
-    expect(profileRecipeReason("gemini", "")).toContain("Gemini");
+    expect(profileRecipeReason("gemini", "")).toContain("only when its CLI uses an API key");
+    expect(profileRecipeReason("gemini", "")).toContain("Login with Google");
     expect(profileRecipeReason("custom", "")).toContain("API family");
     expect(profileRecipeReason("custom", "anthropic")).toBeNull();
     expect(profileRecipeReason("from-a-newer-app", "")).not.toBeNull();
