@@ -65,6 +65,8 @@ export const WORKSPACE_SETTINGS_KEYS = [
   "reviewedCards",
   "requireReview",
   "requireReviewAsked",
+  "headroom",
+  "headroomAsked",
   "customResumeArgs",
   "actionPromptOverrides",
   // Runs in flight are not layout: a Generate or a Develop started from

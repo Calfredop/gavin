@@ -1,4 +1,5 @@
 ---
+order: 20480
 kind: task
 title: Companion 18: signed Docker images and self-hosting docs
 status: To Do

@@ -352,7 +352,7 @@ describe("the section's copy", () => {
   });
 
   // The note describes what the DAEMON does, so it has to be about the
-  // daemon that is running. One older than v45 has the switch and the
+  // daemon that is running. One older than v52 has the switch and the
   // URL and dials nothing: under the ordinary note a human would turn
   // remote access on, see nothing wrong, and wait for a Device that
   // cannot arrive.
@@ -362,7 +362,7 @@ describe("the section's copy", () => {
     const current = { daemonVersion: needed, appVersion: needed, degraded: false };
 
     it("is gated at the version that started dialling", () => {
-      expect(needed).toBe(45);
+      expect(needed).toBe(52);
     });
 
     it("says the running daemon dials nothing, and what to do about it", () => {
@@ -564,7 +564,7 @@ describe("the admission token", () => {
 
   it("is gated on the daemon that keeps it", () => {
     const needed = FEATURE_MIN_VERSION.relayAdmission;
-    expect(needed).toBe(45);
+    expect(needed).toBe(52);
     const reason = relayAdmissionBlocked({
       daemonVersion: needed - 1,
       appVersion: needed,
@@ -599,7 +599,7 @@ describe("whether a Device can pair at all", () => {
     expect(pairingUnavailable(list({}), null)).toBeNull();
   });
 
-  // A daemon older than v45 draws a QR and dials nothing: the Device
+  // A daemon older than v52 draws a QR and dials nothing: the Device
   // that scans it is told the Workstation is not there.
   it("cannot against a daemon that does not dial, and names the version", () => {
     const reason = pairingUnavailable(list({}), {

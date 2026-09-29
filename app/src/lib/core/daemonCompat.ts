@@ -431,9 +431,134 @@ export const FEATURE_MIN_VERSION = {
   // through the v40 file requests, so they work on a v41 host and sit
   // behind `sshGitFiles` with the rest of the tab.
   sshGitSync: 42,
-  // The Relay's admission token (`companion-10`). v45 widened
+  // Companion encrypted notifications (v44): the desk's notify/resolve
+  // batch, the Push gateway URL, and the Device's send permission.
+  // Three new TYPES, so `min_version_for` already refuses them against
+  // an older daemon. The consumer is the companion-notify driver that
+  // posts the desk's waiting-set diff; against an older daemon it stays
+  // quiet rather than throwing on every inbox change.
+  //
+  // 49, not the 44 they shipped at: before the Device wire was
+  // renumbered to 51..55, a daemon built on its branch answered 45..48
+  // without knowing any of the three. Gated at 44, the driver would send
+  // to one and be refused on every inbox change. A main-built v44..48
+  // daemon, which does know them, is told it is too old -- the cheap
+  // direction to be wrong in, and a rebuild and restart fix it.
+  companionNotifications: 49,
+  // A rail trigger's `at` -- the epoch-seconds instant an `at-time`
+  // schedule waits for (v45). Widens SetOrchestration the same way
+  // `trigger` itself did at v36, so `min_version_for` is structurally
+  // blind to it. A v44 daemon takes the write, drops the field and
+  // hands the rail back with kind `at-time` and no time -- a condition
+  // that never fires, and that the chip then draws as broken.
+  //
+  // The bind dialog's Trigger panel already gates the WHOLE panel on
+  // `railTrigger` (36); this entry gates only the datetime choice and
+  // its picker, so a v36–v44 daemon still offers the standing triggers
+  // and refuses the one payload it cannot store. See FEATURE_MIN_VERSION
+  // discipline in CLAUDE.md: the entry alone is a dead gate without a
+  // featureBlockedReason consumer on every surface that can produce it.
+  railSchedule: 45,
+  // The daemon runs Headroom (v46): its status, Check again and Locate…,
+  // and the Install that also serves as Update. Five new request TYPES,
+  // so `min_version_for` already refuses every one of them against an
+  // older daemon and nothing can be silently dropped -- this entry is not
+  // guarding a widened payload.
+  //
+  // It earns its place for `remoteAccess`'s reason: refusing to SEND
+  // decides nothing about what to show instead. Asked of a v45 daemon,
+  // the status comes back as a wire error, and a section that drew that
+  // as "Absent" would offer an Install the daemon cannot run; one that
+  // drew nothing would read as "gavin has no Headroom" when the truth is
+  // "the daemon has not been restarted".
+  //
+  // Its consumer is the one reader, `readHeadroom` in headroomState.ts,
+  // which settles on the reason instead of asking. Every surface draws
+  // from that reading -- Settings' Headroom section, the workspace
+  // switch and the wizard's step -- so the gate reaches all three, and
+  // the wizard's step is settled rather than pending forever.
+  headroomSetup: 46,
+  // Compressed sessions (`2026-09-28-headroom-design.md`). v47 is two
+  // changes, and this entry is the only gate either of them has in the
+  // app.
+  //
+  // `CreateSession` was WIDENED with `profileId`, the agent profile
+  // doing the launching, which is what makes a session a candidate for
+  // compression. `min_version_for` gates request TYPES and this request
+  // has been v1 since v1, so it is structurally blind to the field: a
+  // v46 daemon parses the launch, drops the profile and starts the
+  // agent uncompressed, with nothing anywhere to say why.
+  //
+  // Its consumer is the LAUNCH, like `conversationResume` and
+  // `runChanges` and unlike a disabled control: against an older daemon
+  // gavin names no profile at all (`profileIdForLaunch` in
+  // layoutState.ts), and the agent launches exactly as it did before
+  // there was anything to decide. A launch is never refused over it --
+  // compression must not be able to stop a rail. Every surface that
+  // launches an agent goes through that one function
+  // (compressedLaunchSurfaces.test.ts holds the list), and the host
+  // withholds the field besides (`profile_for_daemon` in session.rs).
+  //
+  // `SetHeadroomWorkspaces`, the daemon's copy of the switch, is a new
+  // TYPE, so the wire gate stops it. It reads this entry for the reason
+  // `companionNotifications` is read: a driver that sent it to an older
+  // daemon would take a version error on every settings change
+  // (`compressionSwitchBlocked` in compressionDriver.ts).
+  compressedLaunch: 47,
+  // The custom agent's API family (v48), which is what lets Headroom
+  // compress a custom agent at all: gavin knows nothing of the binary,
+  // and the family names the one variable that routes it. It WIDENS
+  // `CreateSession` a second time, with `apiFamily`, so `min_version_for`
+  // is as blind to it as to `compressedLaunch`'s profile: a v47 daemon
+  // reads the profile, drops the family and launches the agent
+  // uncompressed as `no-recipe`.
+  //
+  // No launch surface sends it. The host reads the family from the
+  // custom agent's own settings and attaches it to a launch of the
+  // custom profile, and withholds it from an older daemon besides
+  // (`api_family_for_daemon` in session.rs). So its consumer is the one
+  // surface that produces the value: the API family picker in Settings
+  // → Custom agent, disabled with this reason rather than offering a
+  // choice the running daemon would drop.
+  customApiFamily: 48,
+  // Savings (v49): `HeadroomSavings`, every card run's snapshot since a
+  // moment, which the hub sums into each agent's limit window. A new
+  // request TYPE, so `min_version_for` already refuses it against an
+  // older daemon and nothing can be silently dropped. The entry is read
+  // for `companionNotifications`' reason: the hub asks on a timer, and a
+  // loader that sent it to a v48 daemon would take a version error on
+  // every tick. Its consumer is that loader (`loadHeadroomSavings` in
+  // headroomSavingsState.ts), which does not ask and leaves the hub's
+  // rows as they were -- an older daemon took no snapshots to sum.
+  //
+  // The snapshot's other half, `CardRun` widened with the saved tokens
+  // and the request count, is a REPLY and needs no entry: an older
+  // daemon's run has no snapshot, and absent is what the run history
+  // reads as "nothing new to show".
+  headroomSavings: 49,
+  // Honest failures (v50), two changes and one gate.
+  //
+  // `CreateSession` was WIDENED a third time, with `withoutHeadroom`:
+  // auto-resume's relaunch of a session that broke on Headroom, which
+  // must go around it whatever Headroom looks like. `min_version_for`
+  // cannot see a field, and a v49 daemon would drop this one and decide
+  // the relaunch against the proxy the session just broke on -- spending
+  // the one automatic attempt on it, fleet-wide. Its consumer is the
+  // surface that produces it, auto-resume's decision
+  // (`withoutHeadroomBlocked` in autoResume.ts, read by
+  // autoResumeState.ts), which declines a `headroom` failure with this
+  // reason rather than sending it; the host withholds the field besides
+  // (`without_headroom_for_daemon` in session.rs).
+  //
+  // `HeadroomReach` is a new request TYPE, so the wire gate stops it;
+  // the entry is read for `headroomSavings`' reason: the driver asks at
+  // the end of every compressed turn, and asking a v49 daemon would be a
+  // version error each time (`reachCheckBlocked` in
+  // headroomReachDriver.ts).
+  headroomFailures: 50,
+  // The Relay's admission token (`companion-10`). v52 widened
   // `SetRemoteAccess` with `relay_admission`, and `min_version_for`
-  // cannot see a field: a v44 daemon parses the request, stores the
+  // cannot see a field: an older daemon parses the request, stores the
   // switch and the URL, and drops the token on the floor. The field
   // would take a token and keep nothing, and the human would find out
   // when a Device that scanned the QR was refused by the Relay.
@@ -447,12 +572,12 @@ export const FEATURE_MIN_VERSION = {
   // stores both exactly as it always did, and what it does not do --
   // dial -- is not something a gate on a field can say; the section's
   // copy is where that lives.
-  relayAdmission: 45,
+  relayAdmission: 52,
   // The daemon DIALS (`companion-10`). Not a request type and not a
-  // widened payload: v45 changed what the daemon does with a setting it
+  // widened payload: v52 changed what the daemon does with a setting it
   // already stored, so `min_version_for` is blind to it in principle,
-  // like `cardCleanup` above. A v44 daemon takes the switch and the
-  // Relay URL exactly as a v45 one does and then dials nothing.
+  // like `cardCleanup` above. An older daemon takes the switch and the
+  // Relay URL exactly as a v52 one does and then dials nothing.
   //
   // Consumers, both in `remoteAccess.ts`: `transportNote`, which stops
   // the section telling the human that the daemon is connected to a
@@ -463,21 +588,7 @@ export const FEATURE_MIN_VERSION = {
   // they are separate promises: one is about a field being kept, the
   // other about a socket being opened, and the next bump may move one
   // without the other.
-  relayDial: 45,
-  // Companion encrypted notifications: the desk's notify/resolve batch,
-  // the Push gateway URL, and the Device's send permission. Three new
-  // TYPES, so `min_version_for` already refuses them against an older
-  // daemon. The consumer is the companion-notify driver that posts the
-  // desk's waiting-set diff; against an older daemon it stays quiet
-  // rather than throwing on every inbox change.
-  //
-  // 49, not the 44 they shipped at on main: the Device wire took 44..48
-  // on its own branch, and a daemon built there answers 45..48 without
-  // knowing any of the three. Gated at 44, the driver would send to one
-  // and be refused on every inbox change. A main-built v44 daemon, which
-  // does know them, is now told it is too old -- the cheap direction to
-  // be wrong in, and a rebuild and restart fix it.
-  companionNotifications: 49,
+  relayDial: 52,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

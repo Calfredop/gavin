@@ -627,7 +627,7 @@ rather than a comment (`the_qr_payload_carries_only_what_section_3_allows`):
  "rendezvous":["wss://…"],"protocolVersion":42}
 ```
 
-**Since v45 the QR carries one thing more**, and only when there is one to
+**Since v52 the QR carries one thing more**, and only when there is one to
 carry: `"relayAdmission":"…"`, the Relay's admission token
 (`docs/superpowers/specs/2026-09-27-companion-design.md`, "Pairing and the
 trust store"). §3's "what it must not carry" lists "the relay's own
@@ -883,7 +883,7 @@ relay URL stored, `netstat -ano` shows the daemon owning no TCP or UDP endpoint 
 before, during and after. There is nothing to find, because there is nothing that
 listens or dials — `SetRemoteAccess` writes two values into the trust store and stops.
 
-**Phase 3 — transport and relay. — FIRST SLICE LANDED, `PROTOCOL_VERSION = 45`.**
+**Phase 3 — transport and relay. — FIRST SLICE LANDED, `PROTOCOL_VERSION = 52` (built as 45 on its branch, renumbered past `main`'s Headroom when the two met).**
 What landed is pairing through a Relay, and it is the Companion spec's first
 ticket rather than this list: `crates/gavin-relay`, the daemon's dial
 (`remote.rs`: dial only while the store says enabled, reconnect on wake,
@@ -929,7 +929,7 @@ were settled by building it:
   either app lets go of the Relay in both -- including a Device half-way
   through pairing, which is told the pairing lapsed.
 
-**SECOND SLICE LANDED, `PROTOCOL_VERSION = 46`: a paired Device connects.**
+**SECOND SLICE LANDED, `PROTOCOL_VERSION = 53` (built as 46): a paired Device connects.**
 `IK`, the hardware signature (ADR 0001) and the Remote role over the wire,
 proved at the same seam. What was settled by building it:
 

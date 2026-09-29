@@ -1,4 +1,5 @@
 ---
+order: 25600
 kind: task
 title: Companion 26: terminals on the phone
 status: To Do

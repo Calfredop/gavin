@@ -54,9 +54,9 @@ describe("companionNotifyBlocked", () => {
     expect(companionNotifyBlocked(compat)).toMatch(/49/);
   });
 
-  // The Device wire's branch numbered its own bumps 44..48, none of which
-  // carries the notification requests: a daemon built there must not be
-  // sent them.
+  // Before its renumber, the Device wire's branch numbered its own bumps
+  // 44..48, none of which carries the notification requests: a daemon
+  // built there must not be sent them.
   it("blocks against a v48 daemon, which answers with a newer number and lacks the requests", () => {
     const compat: DaemonCompat = {
       daemonVersion: 48,

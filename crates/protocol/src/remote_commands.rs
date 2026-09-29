@@ -67,6 +67,18 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("set_git_tracking_default", RemoteAllowance::Allowed),
     ("get_require_review", RemoteAllowance::Allowed),
     ("set_require_review", RemoteAllowance::Allowed),
+    ("get_headroom_default", RemoteAllowance::Allowed),
+    ("set_headroom_default", RemoteAllowance::Allowed),
+    // The desk resolves every workspace's compression against the app-wide
+    // default and tells the daemon, from the window holding the app's
+    // duties -- which a Device never is. A Device moves the switch itself
+    // through `set_workspace_settings`.
+    ("set_headroom_workspaces", RemoteAllowance::Refused), // meaningless away from the desk
+    ("get_headroom_status", RemoteAllowance::Allowed),
+    ("headroom_savings", RemoteAllowance::Allowed),
+    ("headroom_reach", RemoteAllowance::Allowed),
+    ("detect_headroom", RemoteAllowance::Allowed),
+    ("install_headroom", RemoteAllowance::Allowed),
     ("get_session_names", RemoteAllowance::Allowed),
     ("set_session_name", RemoteAllowance::Allowed),
     ("get_file_tabs", RemoteAllowance::Allowed),
@@ -321,6 +333,7 @@ mod tests {
             "app_duty",
             "hide_to_menu_bar",
             "set_sleep_hold",
+            "set_headroom_workspaces",
             "update_settings",
             "install_update",
             "open_path_externally",

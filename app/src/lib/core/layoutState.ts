@@ -6,6 +6,7 @@ import * as layout from "$lib/panes/layout";
 import * as backend from "$lib/core/backend";
 import { setTempRoot } from "$lib/orchestration/orchestrationLoop";
 import type { PauseCycle } from "$lib/agents/agentPause";
+import type { LaunchProfile } from "$lib/agents/compression";
 import * as terminalRegistry from "$lib/terminal/terminalRegistry";
 import { hotState } from "$lib/core/hotState";
 import * as workspace from "$lib/core/workspace";
@@ -45,6 +46,7 @@ import {
   type McpFormatInfo,
 } from "$lib/core/settings";
 import { mergeDiscoveredModels } from "$lib/agents/agentModel";
+import { noteSessionCompression, seedSessionCompression } from "$lib/agents/headroomMarkState";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
 import { normalizeAutoCommit, resolveAutoCommit } from "$lib/git/autoCommit";
 import { normalizeGitTracking } from "$lib/git/gitTracking";
@@ -1114,6 +1116,9 @@ async function seedSessionBaselines(): Promise<void> {
     () => null
   );
   if (!baselines) return;
+  // The Headroom mark's facts, from the same read: a reload missed the
+  // `session-compression` event each session was created with.
+  seedSessionCompression(baselines);
   const known = get(layoutState);
   const fresh = baselines.filter((b) => known.cwdBySessionId[b.id] === undefined);
   for (const b of fresh) {
@@ -1393,6 +1398,16 @@ export async function bootstrap(): Promise<void> {
       handleSessionFailed(event.payload[0], event.payload[1]);
     })
   );
+  // What the daemon decided about routing a session through Headroom,
+  // sent by the host for every session this app creates and every one an
+  // agent spawns over MCP, before the tab paints (v50). The tab's
+  // exception mark reads it (headroomMark.ts).
+  unlisteners.push(
+    await listen<{ id: string; compressed: boolean; uncompressedReason: string | null }>(
+      "session-compression",
+      (event) => noteSessionCompression(event.payload.id, event.payload)
+    )
+  );
   // Fires for every change to a session's queue, whoever made it: this
   // window adding one, another surface reordering one, and -- the case
   // with no local cause at all -- the daemon delivering the head because
@@ -1468,6 +1483,17 @@ export async function bootstrap(): Promise<void> {
   unlisteners.push(whileHoldingAppDuties(startUsagePoll));
   const { startArmOnFocus } = await import("$lib/agents/agentFallbackState");
   unlisteners.push(startArmOnFocus());
+  // The compression switch: every window reads the app-wide default (a
+  // workspace that inherits resolves against it), and the window holding
+  // the duties tells the daemon what each workspace comes to. One teller,
+  // because the list replaces the daemon's copy whole and two windows a
+  // round trip apart would each undo the other. Dynamically imported for
+  // the cycle reason above (it reads this module's stores).
+  const { initCompression, startCompressionSwitch } = await import(
+    "$lib/agents/compressionDriver"
+  );
+  unlisteners.push(await initCompression());
+  unlisteners.push(whileHoldingAppDuties(startCompressionSwitch));
   // The memory probe, on the same terms and for a sharper version of the
   // same reason: the launch gate reads its sample at the moment somebody
   // presses Run, with no panel open and possibly in a window showing a
@@ -1991,6 +2017,24 @@ export const gitTrackingDefault = writable<boolean | null>(null);
 /// deliberately not parked across an HMR remount.
 export const requireReviewDefault = writable<boolean | null>(null);
 
+/// The app-wide compression default from config.json, or null when
+/// nobody has chosen -- the same three-state as `requireReviewDefault`,
+/// except that what null falls through to is OFF (`compression.ts`).
+///
+/// Re-fetched on every bootstrap, and kept current between them by
+/// `headroom-default-changed`: the window that tells the daemon is the
+/// one holding the app's duties, which is often not the one whose
+/// Settings moved the switch.
+export const headroomDefault = writable<boolean | null>(null);
+
+/// Whether `headroomDefault` has been READ yet. Null in that store means
+/// "nobody chose", and before bootstrap's fetch lands it also means
+/// "nobody has looked" -- and the two must not be confused by the one
+/// reader that acts on it. A list resolved against a default that was
+/// never loaded says every inheriting workspace is off, and the daemon
+/// would stop the Headroom every running agent is talking through.
+export const headroomDefaultKnown = writable(false);
+
 export const newCardAutoCommit = derived(
   [layoutState, autoCommitDefault],
   ([$layout, $default]) =>
@@ -2063,6 +2107,44 @@ export async function baseShaForLaunch(cwd: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/// The profile to name in a launch, or undefined to name none.
+///
+/// The profile is what makes a session a candidate for compression: the
+/// daemon decides, as it spawns the process, from the workspace's
+/// setting, whether Headroom is ready, and this. Every surface that
+/// launches an AGENT sends it, whether or not the workspace has
+/// compression on -- the switch is the daemon's to read, and a launch
+/// that guessed at it would be deciding with a copy.
+///
+/// One gate, the daemon's version. `profileId` widens `CreateSession`, a
+/// request as old as the protocol, so `min_version_for` cannot see it: a
+/// v46 daemon parses the launch and drops the profile. Against one,
+/// gavin names none and the agent launches exactly as it did before
+/// there was anything to decide. It is never a reason to refuse the
+/// launch.
+///
+/// A shell names none either, and does not come here: a session is an
+/// agent's when its caller says so, not when its command looks like one.
+export function profileIdForLaunch(agent: { profileId: string }): string | undefined {
+  if (featureBlockedReason(get(daemonCompat), "compressedLaunch")) return undefined;
+  return agent.profileId || undefined;
+}
+
+/// `backend.createSession`, naming a profile only when there is one.
+///
+/// A shell's launch is the call it has always been, with no fourth
+/// argument at all -- which is what the request it becomes is, too.
+function createDaemonSession(
+  cwd: string | undefined,
+  command: string | undefined,
+  workspaceRoot: string | undefined,
+  profileId: LaunchProfile | undefined
+): Promise<string> {
+  return profileId === undefined
+    ? backend.createSession(cwd, command, workspaceRoot)
+    : backend.createSession(cwd, command, workspaceRoot, profileId);
 }
 
 /// The app-wide custom agent, in the shape `resolveAgentConfig` takes.
@@ -2415,7 +2497,12 @@ export async function startMainAgent(workspaceId: string): Promise<void> {
   const agent = resolvedAgentFor(workspaceId);
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(ws.rootPath, agent.launchCommand, ws.rootPath);
+    sessionId = await createDaemonSession(
+      ws.rootPath,
+      agent.launchCommand,
+      ws.rootPath,
+      profileIdForLaunch(agent)
+    );
   } catch (e) {
     setError(String(e));
     return;
@@ -2467,7 +2554,12 @@ export async function startMainAgentWithPrompt(
   }
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(ws.rootPath, command, ws.rootPath);
+    sessionId = await createDaemonSession(
+      ws.rootPath,
+      command,
+      ws.rootPath,
+      profileIdForLaunch(agent)
+    );
   } catch (e) {
     setError(String(e));
     return;
@@ -2700,6 +2792,24 @@ export async function setRequireReviewDefault(enabled: boolean | null): Promise<
   }
 }
 
+/// The app-wide compression default (`compression.ts`). Written to
+/// config.json like the require-review default above, and live like it:
+/// every workspace that inherits resolves against this value, so moving
+/// it changes what the daemon is told about each of them at once
+/// (`compressionDriver.ts`).
+///
+/// Null clears the setting rather than storing `false`, which is what
+/// puts every inheriting workspace back on gavin's own default (off).
+export async function setHeadroomDefault(enabled: boolean | null): Promise<void> {
+  try {
+    await backend.setHeadroomDefault(enabled);
+    headroomDefault.set(enabled);
+    headroomDefaultKnown.set(true);
+  } catch (e) {
+    setError(String(e));
+  }
+}
+
 /// The app-wide git-tracking default. Machine-local beside the theme and
 /// the auto-commit default, so it goes straight to config.json through
 /// Tauri and never touches the daemon.
@@ -2794,6 +2904,18 @@ export async function setWorkspaceRequireReview(
   await saveWorkspaceSettings(workspaceId, { requireReview: enabled });
 }
 
+/// One workspace's own compression switch, or null to inherit the
+/// app-wide one. A workspace SETTING, so it goes through
+/// `saveWorkspaceSettings` like every other (ADR 0006): written through
+/// the layout save it would show in this window and be gone after a
+/// restart.
+export async function setWorkspaceHeadroom(
+  workspaceId: string,
+  enabled: boolean | null
+): Promise<void> {
+  await saveWorkspaceSettings(workspaceId, { headroom: enabled });
+}
+
 /// Records that this workspace's human has answered the git question --
 /// in the wizard's git step, in the init prompt, or by flipping the switch
 /// on the Settings tab. Every route through the question calls it, because
@@ -2821,6 +2943,17 @@ export async function markRequireReviewAsked(workspaceId: string): Promise<void>
   const state = get(layoutState);
   if (state.workspaces.find((w) => w.id === workspaceId)?.requireReviewAsked) return;
   await saveWorkspaceSettings(workspaceId, { requireReviewAsked: true });
+}
+
+/// Records that this workspace's human has answered the compression
+/// question -- in the wizard's Headroom step, or by moving the switch on
+/// the Settings tab. Same shape and reason as `markRequireReviewAsked`:
+/// both answers are legitimate, so this records only that the question
+/// was put, never which side was picked.
+export async function markHeadroomAsked(workspaceId: string): Promise<void> {
+  const state = get(layoutState);
+  if (state.workspaces.find((w) => w.id === workspaceId)?.headroomAsked) return;
+  await saveWorkspaceSettings(workspaceId, { headroomAsked: true });
 }
 
 export async function setWorkspaceColor(workspaceId: string, color: string): Promise<void> {
@@ -3272,6 +3405,41 @@ export function retainTabOnExit(sessionId: string): void {
   retainedOnExit.add(sessionId);
 }
 
+/// A retained tab outlives its process, and its status has to stop
+/// describing one.
+///
+/// The daemon sends no status on exit -- it forgets the row and drops
+/// the writer -- so without this the tab keeps whatever it was last
+/// pushed. A shell tool prints until the moment it exits, the quiet timer
+/// never gets its two seconds, and that last push is `working`: a
+/// finished "Run tests" tab then spun on every surface keyed by the
+/// layout (tab, sidebar row and tallies, hub, Close Idle Tabs) for as
+/// long as it stayed open, and one that had rung a bell sat in the
+/// attention inbox as a wait nobody could answer.
+///
+/// Only motion is settled. `failed` is still true of a run after it
+/// exits, and its reason still explains it.
+///
+/// Here and not in the daemon, and only for a RETAINED tab: an exit push
+/// of `idle` would reach every session, and a crashed agent step reading
+/// idle-after-working is exactly what `agentTurnEnded` completes.
+/// Written directly rather than through `handleSessionStatusChanged`,
+/// whose hooks (a turn verdict, an OS notification) are about an agent
+/// finishing a turn -- a question a dead shell cannot answer.
+function settleExitedStatus(sessionId: string): void {
+  layoutState.update((s) => {
+    const status = s.sessionStatusById[sessionId];
+    if (status !== "working" && status !== "waiting_for_input") return s;
+    return {
+      ...s,
+      sessionStatusById: { ...s.sessionStatusById, [sessionId]: "idle" },
+      statusSinceById: { ...s.statusSinceById, [sessionId]: { at: Date.now(), watched: true } },
+      // A read mark acknowledges one wait, and the exit ended it.
+      readSessionIds: clearSessionRead(readMarks(s), sessionId),
+    };
+  });
+}
+
 export function handleSessionExited(
   sessionId: string,
   opts: { force?: boolean } = {}
@@ -3299,6 +3467,7 @@ export function handleSessionExited(
     // Leave the tab and its xterm alone. The exit code is already in
     // `sessionExits` (recorded before this call), and the tool-run row
     // is closed by the daemon; what the human still needs is the text.
+    settleExitedStatus(sessionId);
     return;
   }
   retainedOnExit.delete(sessionId);
@@ -3459,6 +3628,7 @@ export function handleSessionStatusChanged(sessionId: string, rawStatus: string)
       readSessionIds: clearSessionRead(readMarks(s), sessionId),
     };
   });
+  for (const listener of sessionStatusListeners) listener(sessionId, status, previousStatus);
   if (status === "failed") {
     // Held for the reason, which the daemon sends immediately after this
     // (`persist_and_emit_failure` writes StatusChanged first, so every
@@ -3556,9 +3726,10 @@ export function setSessionFailureHook(hook: SessionFailureHook | null): void {
 /// A hook rather than an import for the reason the failure hook is one:
 /// its owner (turnVerdictDriver.ts) reads `orchestrations` and
 /// `kanbanState`, and both of those read THIS module, so a static import
-/// here would close a cycle. One hook, not a list -- the same shape as
-/// its sibling, to be widened when a second listener exists rather than
-/// before.
+/// here would close a cycle. The hook is the turn verdict's slot, which
+/// has to run BEFORE the store update (see handleSessionStatusChanged);
+/// anything else that only needs to hear about a report registers a
+/// listener instead (`addSessionStatusListener`).
 export type SessionStatusHook = (
   sessionId: string,
   status: SessionStatus,
@@ -3571,11 +3742,27 @@ export function setSessionStatusHook(hook: SessionStatusHook | null): void {
   sessionStatusHook = hook;
 }
 
+/// Everything else that hears every status report, with what was
+/// reported before it: today the "not reaching Headroom" check
+/// (headroomReachDriver.ts). Called after the store update, because none
+/// of them owns a decision a subscriber has to see first -- that is the
+/// hook's job, and it keeps its own slot. Registered rather than imported
+/// for the hook's reason. Returns its own removal.
+const sessionStatusListeners = new Set<SessionStatusHook>();
+
+export function addSessionStatusListener(listener: SessionStatusHook): () => void {
+  sessionStatusListeners.add(listener);
+  return () => {
+    sessionStatusListeners.delete(listener);
+  };
+}
+
 /// @internal - for testing only
 export function __resetFailureNotices(): void {
   pendingFailureNotice.clear();
   sessionFailureHook = null;
   statusNoticeHold = null;
+  sessionStatusListeners.clear();
 }
 
 function notifyStatus(
@@ -4147,7 +4334,12 @@ export async function createPage(
     freshIds = await Promise.all(
       Array.from({ length: sessionCount }, () =>
         agent
-          ? backend.createSession(sessionCwd, agent.launchCommand, workspaceRoot)
+          ? createDaemonSession(
+              sessionCwd,
+              agent.launchCommand,
+              workspaceRoot,
+              profileIdForLaunch(agent)
+            )
           : backend.createSession(sessionCwd, undefined, workspaceRoot)
       )
     );
@@ -4191,10 +4383,15 @@ export async function createPage(
 /// with a hole in it. The caller owns the worktrees those sessions were
 /// going to run in, and a half-built page would leave it guessing which
 /// of them are still needed.
+///
+/// A spec that launches an AGENT names its profile (`profileId`, from
+/// `profileIdForLaunch`); one that runs a command names none. Per spec
+/// and not per page, because a best-of-N page and a critical review are
+/// each several agents of several profiles.
 export async function createTiledPage(
   workspaceId: string,
   name: string,
-  specs: readonly { cwd: string; command: string | null }[],
+  specs: readonly { cwd: string; command: string | null; profileId?: LaunchProfile }[],
   opts: { activate?: boolean } = {}
 ): Promise<{ pageId: string; sessionIds: string[] } | null> {
   const state = get(layoutState);
@@ -4212,10 +4409,11 @@ export async function createTiledPage(
       // SessionLink -- a one-pane page is spawned by callers that carry
       // a rail's launch, not only by best-of-N's real worktree paths.
       sessionIds.push(
-        await backend.createSession(
+        await createDaemonSession(
           spec.cwd || undefined,
           spec.command ?? undefined,
-          workspaceRootPath(workspaceId) ?? undefined
+          workspaceRootPath(workspaceId) ?? undefined,
+          spec.profileId
         )
       );
 
@@ -4258,14 +4456,18 @@ export async function createTiledPage(
 ///
 /// `createPage` stays right for the human-facing "+": there the blank
 /// shell IS the ask.
+///
+/// `opts.profileId` is the profile of the agent being launched, and
+/// absent for a command.
 export async function createSessionOnNewPage(
   workspaceId: string,
   name: string,
   cwd: string,
   command: string | null,
-  opts: { activate?: boolean } = {}
+  opts: { activate?: boolean; profileId?: LaunchProfile } = {}
 ): Promise<{ pageId: string; sessionId: string } | null> {
-  const made = await createTiledPage(workspaceId, name, [{ cwd, command }], opts);
+  const { profileId, ...pageOpts } = opts;
+  const made = await createTiledPage(workspaceId, name, [{ cwd, command, profileId }], pageOpts);
   return made ? { pageId: made.pageId, sessionId: made.sessionIds[0] } : null;
 }
 
@@ -4285,23 +4487,32 @@ export async function createSessionOnNewPage(
 /// rail binds to a page (orchestration spec §4.3). A null or unknown
 /// pageId falls back to createSessionForCard's behavior, which is the
 /// Agents-page posture.
+///
+/// `profileId` is the profile of the agent being launched
+/// (`profileIdForLaunch`), and absent for a command.
 export async function createSessionOnPage(
   workspaceId: string,
   pageId: string | null,
   cwd: string,
-  command: string | null
+  command: string | null,
+  profileId?: LaunchProfile
 ): Promise<string | null> {
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   const page = pageId ? ws?.pages.find((p) => p.id === pageId) : undefined;
-  if (!ws || !page) return createSessionForCard(workspaceId, cwd, command);
+  if (!ws || !page) {
+    return profileId === undefined
+      ? createSessionForCard(workspaceId, cwd, command)
+      : createSessionForCard(workspaceId, cwd, command, profileId);
+  }
 
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(
+    sessionId = await createDaemonSession(
       cwd || undefined,
       command ?? undefined,
-      ws.rootPath ?? undefined
+      ws.rootPath ?? undefined,
+      profileId
     );
   } catch (e) {
     setError(String(e));
@@ -4321,7 +4532,8 @@ export async function createSessionOnPage(
 export async function createSessionForCard(
   workspaceId: string,
   cwd: string,
-  command: string | null
+  command: string | null,
+  profileId?: LaunchProfile
 ): Promise<string | null> {
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
@@ -4329,10 +4541,11 @@ export async function createSessionForCard(
 
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(
+    sessionId = await createDaemonSession(
       cwd || undefined,
       command ?? undefined,
-      ws.rootPath ?? undefined
+      ws.rootPath ?? undefined,
+      profileId
     );
 
   } catch (e) {

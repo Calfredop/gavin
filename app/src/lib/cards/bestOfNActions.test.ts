@@ -24,7 +24,7 @@ vi.mock("$lib/core/backend", () => ({
   createSession: vi.fn(),
 }));
 
-const createTiledPage = vi.fn(async (_ws: string, _name: string, specs: { cwd: string; command: string }[]) => {
+const createTiledPage = vi.fn(async (_ws: string, _name: string, specs: { cwd: string; command: string; profileId?: string }[]) => {
   trace.push(`sessions:${specs.length}`);
   return { pageId: "page-1", sessionIds: specs.map((_, i) => `s${i + 1}`) };
 });
@@ -37,6 +37,9 @@ vi.mock("$lib/core/layoutState", () => ({
   agentDefaultsStore: writable({ actionPromptOverrides: {} }),
   setAgentDefaults: vi.fn().mockResolvedValue(undefined),
   createTiledPage: (...args: Parameters<typeof createTiledPage>) => createTiledPage(...args),
+  // The launching profile, as the real one names it against a daemon
+  // new enough to read it (`compressedLaunch`).
+  profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   candidateAgentFor: vi.fn((_ws: string, c: { profileId: string; model: string }) => ({
     profileId: c.profileId,
     label: c.profileId === "custom" ? "Custom" : "Claude Code",
@@ -206,6 +209,38 @@ describe("starting a run", () => {
     // Each candidate is told which one it is, or three tabs name
     // themselves the same thing.
     expect(specs[0].command).toContain("Claude Code · opus");
+  });
+
+  // What makes each session a candidate for compression, which the
+  // daemon decides as it spawns it. Per candidate: a run can pit one
+  // agent against another, and only some of them can be compressed.
+  it("launches every candidate under its own profile", async () => {
+    vi.mocked(layoutState.profileIdForLaunch).mockImplementation((agent) => agent.profileId);
+
+    await startBestOfN(
+      "ws-1",
+      CARD,
+      [plan("claude-code", "opus", "auth-opus"), plan("codex", "gpt", "auth-codex")],
+      "main"
+    );
+
+    const specs = createTiledPage.mock.calls[0][2];
+    expect(specs.map((sp: { profileId?: string }) => sp.profileId)).toEqual(["claude-code", "codex"]);
+    // The line opens with the worktree's setup, not the agent's binary:
+    // the profile is said because it could not have been read off it.
+    expect(specs[0].command.startsWith("npm install && ")).toBe(true);
+  });
+
+  // A daemon too old to read the profile is never sent one, and the run
+  // starts all the same.
+  it("launches every candidate with no profile when there is none to name", async () => {
+    vi.mocked(layoutState.profileIdForLaunch).mockImplementation(() => undefined);
+
+    expect(await startBestOfN("ws-1", CARD, PLANS, "main")).toBeNull();
+
+    const specs = createTiledPage.mock.calls[0][2];
+    expect(specs).toHaveLength(2);
+    expect(specs.every((sp: { profileId?: string }) => sp.profileId === undefined)).toBe(true);
   });
 
   it("drops the repo's setup from every candidate until the human has approved it", async () => {

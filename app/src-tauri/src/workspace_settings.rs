@@ -74,6 +74,8 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "reviewedCards",
     "requireReview",
     "requireReviewAsked",
+    "headroom",
+    "headroomAsked",
     "customResumeArgs",
     "actionPromptOverrides",
     // Runs in flight are not layout: a Generate or a Develop started from
@@ -329,7 +331,9 @@ mod tests {
             }),
             reviewed_cards: Some(HashMap::from([(s("/card"), s("digest"))])),
             require_review: Some(flavour == "a"),
+            headroom: Some(flavour == "a"),
             require_review_asked: flavour == "a",
+            headroom_asked: flavour == "a",
             custom_resume_args: Some(s("--resume")),
             agent_fallback: Some(vec![s("fallback")]),
             armed_agents: vec![s("armed")],
@@ -393,6 +397,55 @@ mod tests {
             ..before
         };
         assert_eq!(after, expected);
+    }
+
+    /// The compression switch (`2026-09-28-headroom-design.md`, "The
+    /// switch"): a setting, written as one, that is still there after a
+    /// restart -- and that leaves no trace while nobody has chosen.
+    #[test]
+    fn the_compression_switch_is_a_setting_that_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut undecided = every_key("ws-a", "b");
+        undecided.headroom = None;
+        let as_written = serde_json::to_value(&undecided).unwrap();
+        assert!(as_written.get("headroom").is_none(), "absence is inherit, and is not written");
+
+        let on = apply_settings_patch(&undecided, &patch(serde_json::json!({ "headroom": true }))).unwrap();
+        let config = crate::config::AppConfig { workspaces: vec![on], ..Default::default() };
+        crate::config::save(dir.path(), &config).unwrap();
+
+        // The next launch reads the file.
+        let restarted = crate::config::load(dir.path()).unwrap();
+        assert_eq!(restarted.workspaces[0].headroom, Some(true));
+        assert_eq!(settings_record(&restarted.workspaces[0]).get("headroom"), Some(&Value::Bool(true)));
+
+        // Off is a choice of its own, and null is no choice at all.
+        let off = apply_settings_patch(
+            &restarted.workspaces[0],
+            &patch(serde_json::json!({ "headroom": false })),
+        )
+        .unwrap();
+        assert_eq!(off.headroom, Some(false));
+        let cleared =
+            apply_settings_patch(&off, &patch(serde_json::json!({ "headroom": null }))).unwrap();
+        assert_eq!(cleared.headroom, None);
+        assert_eq!(cleared.pages, undecided.pages);
+    }
+
+    /// The desk's layout save must not be able to undo the switch: it is
+    /// the write ADR 0006 took the settings away from.
+    #[test]
+    fn a_layout_save_cannot_turn_compression_off() {
+        let mut stored = every_key("ws-a", "b");
+        stored.headroom = Some(true);
+        let mut from_the_desk = stored.clone();
+        from_the_desk.headroom = None;
+
+        let merged = merge_layout_save(&[stored.clone()], vec![from_the_desk.clone()]);
+
+        assert_eq!(merged[0].headroom, Some(true));
+        // And a debug build says which setting the save tried to change.
+        assert_eq!(dropped_settings(&stored, &from_the_desk), vec!["headroom"]);
     }
 
     #[test]

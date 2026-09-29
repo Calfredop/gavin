@@ -110,10 +110,22 @@ pub(crate) fn deadline_for(req: &Request) -> Duration {
 /// scan of a root -- and nothing ordered depends on them: a write never
 /// has to land after one, and a caller that needs a read to see its
 /// write awaits the write first.
+///
+/// The three Headroom requests are here for the same reason: a `/stats`
+/// read (megabytes on a long-lived proxy, 3 s timeout) or a
+/// `headroom --version` (about 2 s, up to 20 s) is served inline on the
+/// connection thread. `DetectHeadroom` also stores the path it located,
+/// but its only callers (`checkHeadroomAgain`, `locateHeadroom`) await
+/// the reply before acting on it.
 pub(crate) fn is_slow_read(req: &Request) -> bool {
     matches!(
         req,
-        Request::GetGavinTree { .. } | Request::SessionProcesses | Request::ScanGavinRoot { .. }
+        Request::GetGavinTree { .. }
+            | Request::SessionProcesses
+            | Request::ScanGavinRoot { .. }
+            | Request::GetHeadroomStatus
+            | Request::DetectHeadroom { .. }
+            | Request::HeadroomReach { .. }
     )
 }
 
@@ -135,7 +147,7 @@ pub(crate) fn runs_apart(req: &Request) -> bool {
 }
 
 /// Pushes the daemon writes to `app` connections whether they asked or not
-/// (`SessionManager::push_to_apps`). A daemon from v44 on sends them only
+/// (`SessionManager::push_to_apps`). A daemon from v51 on sends them only
 /// to a connection whose `Hello` says it reads pushes, and every lane's
 /// says it is a command connection -- but the app may run against an older
 /// daemon, which sends them to both, and there one can arrive where a reply
@@ -1414,6 +1426,17 @@ mod tests {
         assert_eq!(main_arrived.join().unwrap(), vec!["s-3".to_string()]);
         drop(lanes);
         assert_eq!(wedged_reads.join().unwrap(), 1);
+    }
+
+    /// The Headroom requests that block on HTTP or a child process ride
+    /// the reads lane; a write does not.
+    #[test]
+    fn headroom_reads_are_slow_reads() {
+        assert!(is_slow_read(&Request::GetHeadroomStatus));
+        assert!(is_slow_read(&Request::DetectHeadroom { located_path: None }));
+        assert!(is_slow_read(&Request::HeadroomReach { session_id: "s".into() }));
+        assert!(!is_slow_read(&Request::StartHeadroom));
+        assert!(!is_slow_read(&kill(1)));
     }
 
     /// Room for a test daemon that holds its answer on purpose.

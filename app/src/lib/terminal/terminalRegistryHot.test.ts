@@ -38,6 +38,7 @@ vi.mock("@xterm/xterm", () => ({
     constructor(options: Record<string, unknown>) {
       this.options = { ...options };
     }
+    parser = { registerOscHandler() {} };
     loadAddon() {}
     open() {}
     onData() {}

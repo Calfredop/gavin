@@ -216,13 +216,13 @@ describe("the Settings section", () => {
 });
 
 describe("the admission token", () => {
-  // v45 widened `SetRemoteAccess`, and the compat gate is per request
-  // TYPE: a v44 daemon parses the request and drops the token. The
+  // v52 widened `SetRemoteAccess`, and the compat gate is per request
+  // TYPE: a v51 daemon parses the request and drops the token. The
   // entry alone is a dead gate (CLAUDE.md); these are its consumers.
   it("is a featureBlockedReason consumer of the relayAdmission entry", () => {
     expect(MODULE).toContain('featureBlockedReason(compat, "relayAdmission")');
     expect(VIEW).toContain("relayAdmissionBlocked($daemonCompat)");
-    expect(FEATURE_MIN_VERSION.relayAdmission).toBe(45);
+    expect(FEATURE_MIN_VERSION.relayAdmission).toBe(52);
   });
 
   it("greys the field and its Clear button behind that gate", () => {
@@ -290,7 +290,7 @@ describe("Pair a device", () => {
     expect(VIEW).toContain("pairingUnavailable(devices, $daemonCompat)");
     // `relayDial` is a gate like any other: the entry, and a consumer.
     expect(MODULE).toContain('featureBlockedReason(compat, "relayDial")');
-    expect(FEATURE_MIN_VERSION.relayDial).toBe(45);
+    expect(FEATURE_MIN_VERSION.relayDial).toBe(52);
     const button = VIEW.match(
       /disabled=\{([^}]*)\}\s*onclick=\{\(\) => void startPairing\(\)\}/
     );

@@ -55,6 +55,8 @@ import {
   Pencil,
   Repeat,
   RotateCw,
+  RouteOff,
+  Shrink,
   Signal,
   SignalHigh,
   SignalLow,
@@ -78,6 +80,9 @@ import type { ProjectionBand } from "$lib/agents/usageProjection";
 // each reason is allowed to be called. A badge that spelled them here
 // would be free to say "Queued" where the queue row says "Paused".
 import { holdLabel, type HoldReason } from "$lib/agents/launchGate";
+// ...and headroomMark owns which sessions are exceptions and why; this
+// file only draws the three it names.
+import type { HeadroomException } from "$lib/agents/headroomMark";
 
 /// The five meanings colour is allowed to carry. Matches IconButton's own
 /// tone scale one for one, so a badge and a button beside it never
@@ -95,7 +100,8 @@ export type IndicatorAxis =
   | "step"
   | "rail"
   | "run"
-  | "usage";
+  | "usage"
+  | "headroom";
 
 /// The human-readable name of each axis. Every tooltip leads with it,
 /// which is the whole point: the old badges said "amber" and left the
@@ -110,6 +116,7 @@ export const AXIS_LABEL: Record<IndicatorAxis, string> = {
   rail: "Rail",
   run: "Run",
   usage: "Usage",
+  headroom: "Headroom",
 };
 
 export interface Indicator {
@@ -645,6 +652,57 @@ export function usageProjectionIndicator(
 
 export const PROJECTION_BANDS = ["clear", "tight", "over"] as const;
 
+// ---- headroom ----------------------------------------------------------
+// Whether a session in a compressed workspace is compressed as the
+// workspace asks. Drawn ONLY for the exception (headroomMark.ts): in such
+// a workspace every agent tab is compressed, and a badge saying so on each
+// of them would be the noise this vocabulary exists to stop. So a tab
+// that says nothing here is compressed, and the three that say something
+// are not.
+//
+// Two glyphs, for two claims. `Shrink` -- this session is not compressed,
+// and gavin knew it at launch -- with the tone carrying why: neutral when
+// Headroom was simply not ready yet (nothing to do; the next launch is
+// compressed), warning when it broke under the session and the session
+// was relaunched without it (a Headroom that keeps doing that wants
+// looking at). `RouteOff` for the third, because it is a different claim
+// and the run axis's rule applies: two states that render identically
+// cannot be told apart. That session IS routed through Headroom and none
+// of its traffic arrives there -- an agent CLI ignoring its routing,
+// which is also a human's to look at.
+
+const HEADROOM: Record<HeadroomException, Indicator> = {
+  "not-ready": make(
+    "headroom",
+    "not-ready",
+    Shrink,
+    "neutral",
+    "not compressed — Headroom was not ready when this session launched"
+  ),
+  relaunched: make(
+    "headroom",
+    "relaunched",
+    Shrink,
+    "warning",
+    "not compressed — it broke on Headroom, and was relaunched without it"
+  ),
+  "not-reaching": make(
+    "headroom",
+    "not-reaching",
+    RouteOff,
+    "warning",
+    "not reaching Headroom — a turn ended and none of its requests had arrived there"
+  ),
+};
+
+/// The exception mark on a tab. Null in, null out: a compressed session,
+/// and one in a workspace that never asked for compression, draw nothing.
+export function headroomIndicator(exception: HeadroomException | null): Indicator | null {
+  return exception ? HEADROOM[exception] : null;
+}
+
+export const HEADROOM_EXCEPTIONS = ["not-ready", "relaunched", "not-reaching"] as const;
+
 // ---- attention ---------------------------------------------------------
 // What a RUNNING step is waiting on a human for. Not an axis of its own:
 // all three answers are facts about the agent, so they are agent badges,
@@ -729,5 +787,6 @@ export function allIndicators(): Indicator[] {
     shellRestartedIndicator(true),
     shellOrphanIndicator(),
     ...PROJECTION_BANDS.map((band) => USAGE[band]),
+    ...HEADROOM_EXCEPTIONS.map((exception) => HEADROOM[exception]),
   ];
 }

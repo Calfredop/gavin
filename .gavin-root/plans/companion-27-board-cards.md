@@ -1,4 +1,5 @@
 ---
+order: 26624
 kind: task
 title: Companion 27: board and cards on the phone
 status: To Do

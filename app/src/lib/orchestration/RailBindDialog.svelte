@@ -23,7 +23,9 @@
   import type { Rail, RailTrigger, RailTriggerKind } from "$lib/orchestration/orchestration";
   import {
     RAIL_TRIGGER_CHOICES,
+    datetimeLocalToEpochSeconds,
     emptyOrchestration,
+    epochSecondsToDatetimeLocal,
     railTriggerVerdict,
   } from "$lib/orchestration/orchestration";
 
@@ -115,6 +117,11 @@
   /// reaches disk. See FEATURE_MIN_VERSION.railTrigger.
   const triggerBlocked = $derived(featureBlockedReason($daemonCompat, "railTrigger"));
 
+  /// `at` widens the trigger further (v45). A daemon that knows triggers
+  /// but not schedules would store `at-time` with no instant -- broken
+  /// forever -- so only this choice is gated, not the whole panel.
+  const scheduleBlocked = $derived(featureBlockedReason($daemonCompat, "railSchedule"));
+
   /// The plan itself, for the trigger panel alone: what a condition WOULD
   /// do right now -- which rails it is still waiting for, whether the name
   /// it holds resolves -- is an answer about the whole workspace, and it
@@ -133,6 +140,12 @@
     (rail.trigger?.kind as RailTriggerKind | undefined) ?? null
   );
 
+  const scheduleValue = $derived(
+    rail.trigger?.kind === "at-time" && rail.trigger.at != null
+      ? epochSecondsToDatetimeLocal(rail.trigger.at)
+      : ""
+  );
+
   /// Picking the KIND writes the trigger immediately, even when it is not
   /// yet complete: `rail-done` with no name is stored, and the verdict
   /// says what is missing. The alternative -- holding the choice back
@@ -140,6 +153,14 @@
   /// visible, which reads as a dead control.
   function setTrigger(next: RailTrigger | null): void {
     void setRailTriggerAction(workspaceId, railId, next);
+  }
+
+  function setSchedule(value: string): void {
+    setTrigger({
+      kind: "at-time",
+      rail: null,
+      at: datetimeLocalToEpochSeconds(value),
+    });
   }
 
   let naming = $state(false);
@@ -301,8 +322,8 @@
             <p class="note">
               What arms this rail without you. Gavin starts it from its first unfinished stage, the
               same as the Start button — it never resumes a paused rail, and never rewinds a running
-              one. The condition STANDS: give this rail new work and it runs itself again, so pause
-              it when you want it held.
+              one. Standing conditions (after another rail) keep firing when you give this rail new
+              work; a date and time fires once and clears.
             </p>
             {#if triggerBlocked}
               <p class="err">{triggerBlocked}</p>
@@ -322,18 +343,23 @@
                 </button>
               </li>
               {#each RAIL_TRIGGER_CHOICES as choice (choice.kind)}
+                {@const choiceBlocked =
+                  triggerBlocked ?? (choice.needsAt ? scheduleBlocked : null)}
                 <li>
                   <button
                     type="button"
                     class:on={triggerKind === choice.kind}
-                    disabled={Boolean(triggerBlocked)}
+                    disabled={Boolean(choiceBlocked)}
+                    title={choiceBlocked ?? undefined}
                     onclick={() =>
                       setTrigger({
                         kind: choice.kind,
                         // The rail a `rail-done` trigger names is picked
                         // in the list below; keeping whatever was there
                         // means re-picking the kind does not erase it.
+                        // Same for an `at-time` instant.
                         rail: choice.needsRail ? (rail.trigger?.rail ?? null) : null,
+                        at: choice.needsAt ? (rail.trigger?.at ?? null) : null,
                       })}
                   >
                     <span class="path">{choice.label}</span>
@@ -342,6 +368,9 @@
                 </li>
               {/each}
             </ul>
+            {#if scheduleBlocked && !triggerBlocked}
+              <p class="err">{scheduleBlocked}</p>
+            {/if}
 
             <!-- The second half of the two-part question, shown only when
                  the kind asks it. A rail list rather than a text box: the
@@ -368,6 +397,19 @@
                   {/each}
                 </ul>
               {/if}
+            {/if}
+
+            {#if triggerKind === "at-time"}
+              <p class="note">When this machine's clock should start the rail:</p>
+              <label class="schedule">
+                <span class="sr-only">Date and time</span>
+                <input
+                  type="datetime-local"
+                  value={scheduleValue}
+                  disabled={Boolean(triggerBlocked ?? scheduleBlocked)}
+                  onchange={(e) => setSchedule(e.currentTarget.value)}
+                />
+              </label>
             {/if}
 
             <!-- What the condition says RIGHT NOW. A trigger is the one
@@ -716,6 +758,36 @@
   .err {
     color: var(--danger-text);
     font-size: 11px;
+  }
+  .schedule {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+  .schedule input {
+    background: var(--surface-base);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text);
+    font-family: monospace;
+    font-size: 12px;
+    padding: 4px 7px;
+  }
+  .schedule input:focus {
+    outline: none;
+    border-color: var(--border-accent);
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
   .secondary {
     align-self: flex-start;

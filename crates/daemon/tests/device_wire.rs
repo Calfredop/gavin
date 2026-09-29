@@ -357,7 +357,7 @@ impl Workstation {
         )))
     }
 
-    /// Opens the desktop's forwarding connection (v47).
+    /// Opens the desktop's forwarding connection (v54).
     fn open_forwarding(&self) -> Desk {
         Desk::connect(&self.endpoint(), &self.daemon_token, ConnectionKind::Forward)
     }
@@ -1319,7 +1319,14 @@ fn refused_to_a_device() -> Vec<Request> {
     vec![
         Request::GetProtocolVersion,
         Request::ListSessions,
-        Request::CreateSession { workspace_path: "/tmp".into(), cwd: "/tmp".into(), command: None },
+        Request::CreateSession {
+            workspace_path: "/tmp".into(),
+            cwd: "/tmp".into(),
+            command: None,
+            profile_id: None,
+            api_family: None,
+            without_headroom: false,
+        },
         Request::WriteInput { id: "s".into(), data: "rm -rf ~\n".into() },
         Request::BeginPairing,
         Request::ListDevices,

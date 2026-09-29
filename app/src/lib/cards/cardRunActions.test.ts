@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { isAwaitingFirstSubmit } from "$lib/agents/headroomMarkState";
 import { get, writable } from "svelte/store";
 import type { DaemonCompat } from "$lib/core/daemonCompat";
 import type { SessionStatus } from "$lib/core/notifications";
@@ -90,6 +91,9 @@ vi.mock("$lib/core/layoutState", () => ({
   // The DAEMON half of the conversation-resume gate lives here, so the
   // tests drive it from one place: null is "no id", which is both a
   // profile with no verified argv and a daemon too old to persist one.
+  // The launching profile, as the real one names it against a daemon
+  // new enough to read it (`compressedLaunch`).
+  profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   conversationIdForLaunch: vi.fn(() => null as string | null),
   // The baseline half of the same gate: null is "this run has none",
   // which covers a launch outside a repo, an unborn HEAD and a daemon
@@ -140,7 +144,7 @@ vi.mock("$lib/core/workspace", () => {
 });
 
 import * as backend from "$lib/core/backend";
-import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, daemonCompat, workspaceRootPath, resolvedAgentFor, agentForCard, conversationIdForLaunch, baseShaForLaunch, armFailureDetection, setDevelopingCards } from "$lib/core/layoutState";
+import { handleAgentSessionSpawned, setSessionName, switchToSessionInPage, switchWorkspaceView, layoutState, daemonCompat, workspaceRootPath, resolvedAgentFor, agentForCard, conversationIdForLaunch, baseShaForLaunch, armFailureDetection, setDevelopingCards, profileIdForLaunch } from "$lib/core/layoutState";
 import { cardReviewed } from "$lib/core/layoutState";
 import { ensureCardReviewed } from "$lib/cards/cardReviewActions";
 import { findSessionLocation } from "$lib/core/workspace";
@@ -228,6 +232,7 @@ beforeEach(() => {
   // swaps the profile in has to be undone here or it leaks forward.
   vi.mocked(resolvedAgentFor).mockReturnValue(NO_RESUME_AGENT as never);
   vi.mocked(conversationIdForLaunch).mockReturnValue(null);
+  vi.mocked(profileIdForLaunch).mockImplementation((agent) => agent.profileId);
   vi.mocked(baseShaForLaunch).mockResolvedValue(null);
   vi.mocked(findSessionLocation).mockReturnValue(null);
   // Both halves of the first-Run review, restored for the same reason
@@ -1138,7 +1143,7 @@ describe("relaunchCard", () => {
     expect(err).toBeNull();
     // The command came from the one-card read: the board never had it.
     expect(backend.cardSession).toHaveBeenCalledWith("ws-1", "/p/t.md");
-    expect(backend.createSession).toHaveBeenCalledWith("/p", "claude 'x'", "/ws");
+    expect(backend.createSession).toHaveBeenCalledWith("/p", "claude 'x'", "/ws", "claude-code");
     expect(handleAgentSessionSpawned).toHaveBeenCalledWith("ws-1", "s-new");
     expect(get(kanbanState)["ws-1"].cardSessions[0].sessionId).toBe("s-new");
   });
@@ -1346,7 +1351,12 @@ describe("a failed binding", () => {
     // Relaunched in the worktree the run was launched in, scoped to the
     // workspace whose card it is writing -- the two directories a rail
     // agent needs the daemon to hold at once.
-    expect(backend.createSession).toHaveBeenCalledWith("/ws/worktree", "claude --resume u-1", "/ws");
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/ws/worktree",
+      "claude --resume u-1",
+      "/ws",
+      "claude-code"
+    );
 
     // Nothing composed and nothing read: the transcript already holds
     // the whole task.
@@ -1358,6 +1368,42 @@ describe("a failed binding", () => {
       conversationId: "u-1",
       launchCwd: "/ws/worktree",
     });
+  });
+
+  // Auto-resume's relaunch of a run whose agent broke on Headroom: the
+  // same reopened conversation, sent around Headroom rather than decided
+  // again against the proxy it broke on. The daemon marks the new session
+  // `headroom-failed`, which is its tab's mark (headroomMark.ts).
+  it("reopens the conversation without Headroom when the run broke on it", async () => {
+    vi.mocked(resolvedAgentFor).mockReturnValue(claudeAgent as never);
+    kanbanState.set({
+      "ws-1": board([
+        {
+          path: "/ws/.gavin-root/plans/t.md",
+          sessionId: "s-live",
+          cwd: "/ws",
+          conversationId: "u-1",
+          launchCwd: "/ws/worktree",
+        },
+      ]),
+    });
+    broke("s-live");
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+
+    const err = await resumeCard("ws-1", card("task", "In Progress"), {
+      automatic: true,
+      withoutHeadroom: true,
+    });
+
+    expect(err).toBeNull();
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/ws/worktree",
+      "claude --resume u-1",
+      "/ws",
+      { profileId: "claude-code", withoutHeadroom: true }
+    );
+    // Its first quiet is the history being painted, not a turn.
+    expect(isAwaitingFirstSubmit("s-new")).toBe(true);
   });
 
   // A profile with no verified resume argv keeps today's behaviour, and
@@ -1479,13 +1525,141 @@ describe("a failed binding", () => {
       bindingWithConversation();
       vi.mocked(backend.conversationLog).mockResolvedValueOnce(answer);
       expect(await resumeCard("ws-1", card("task", "In Progress"))).toBeNull();
-      expect(backend.createSession).toHaveBeenCalledWith("/ws", "claude --resume u-1", "/ws");
+      expect(backend.createSession).toHaveBeenCalledWith(
+        "/ws",
+        "claude --resume u-1",
+        "/ws",
+        "claude-code"
+      );
     }
     vi.clearAllMocks();
     bindingWithConversation();
     vi.mocked(backend.conversationLog).mockRejectedValueOnce(new Error("no such command"));
     expect(await resumeCard("ws-1", card("task", "In Progress"))).toBeNull();
-    expect(backend.createSession).toHaveBeenCalledWith("/ws", "claude --resume u-1", "/ws");
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/ws",
+      "claude --resume u-1",
+      "/ws",
+      "claude-code"
+    );
+  });
+});
+
+/// What makes a session a candidate for compression, which the daemon
+/// decides as it spawns the process. Every launch of a card's agent
+/// names the profile doing the launching; none of them decides anything
+/// about Headroom itself, and none is ever refused over it.
+describe("the launching profile", () => {
+  const conversing = {
+    profileId: "claude-code",
+    file: "CLAUDE.md",
+    command: "claude",
+    launchCommand: "claude",
+    promptArgs: "",
+    mcpSupported: true,
+    failurePatterns: ["API Error:"],
+    failureCauses: [],
+    sessionIdArgs: "--session-id",
+    resumeArgs: "--resume",
+  };
+
+  beforeEach(() => {
+    vi.mocked(backend.readFileForViewer).mockResolvedValue({
+      content: "---\nkind: task\ntitle: Fix login\nstatus: To Do\n---\nDo the thing.\n",
+      truncated: false,
+      exists: true,
+    });
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+    vi.mocked(backend.linkCardSession).mockResolvedValue(undefined);
+    vi.mocked(backend.setPlanFrontmatterField).mockImplementation(async (p) => p);
+  });
+
+  /// A run that failed, with a conversation to reopen: the state Resume
+  /// and auto-resume both start from.
+  function failedWithConversation(): void {
+    vi.mocked(resolvedAgentFor).mockReturnValue(conversing as never);
+    kanbanState.set({
+      "ws-1": board([
+        {
+          path: "/ws/.gavin-root/plans/t.md",
+          sessionId: "s-live",
+          cwd: "/ws",
+          conversationId: "u-1",
+          launchCwd: "/ws",
+          resumeAttempts: 0,
+        },
+      ]),
+    });
+    layoutState.update((s) => ({ ...s, failureReasonById: { "s-live": "API Error: Connection dropped" } }));
+    vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
+    vi.mocked(backend.conversationLog).mockResolvedValue({ kind: "present" } as never);
+  }
+
+  const launches: [string, () => Promise<string | null>][] = [
+    ["a run", () => runCard("ws-1", card("task", "To Do"))],
+    ["a develop", () => developCard("ws-1", card("task", "To Do"))],
+    [
+      "a resume that reopens the conversation",
+      () => {
+        failedWithConversation();
+        return resumeCard("ws-1", card("task", "In Progress"));
+      },
+    ],
+    [
+      "a resume with no conversation to reopen",
+      () => {
+        kanbanState.set({
+          "ws-1": board([{ path: "/ws/.gavin-root/plans/t.md", sessionId: "s-live", cwd: "/ws" }]),
+        });
+        layoutState.update((s) => ({ ...s, failureReasonById: { "s-live": "API Error: Connection dropped" } }));
+        vi.mocked(findSessionLocation).mockReturnValue({ workspaceId: "ws-1", pageId: "pg-1" });
+        return resumeCard("ws-1", card("task", "In Progress"));
+      },
+    ],
+    [
+      "a re-launch",
+      () => {
+        remembered({ path: "/p/t.md", sessionId: "s-dead", cwd: "/p", command: "claude 'x'" });
+        return relaunchCard("ws-1", "/p/t.md");
+      },
+    ],
+  ];
+
+  for (const [what, launch] of launches) {
+    it(`${what} names the profile it launches`, async () => {
+      expect(await launch()).toBeNull();
+
+      expect(backend.createSession).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(backend.createSession).mock.calls[0][3]).toBe("claude-code");
+    });
+
+    // A daemon too old to read the profile is never sent one, and the
+    // agent launches exactly as it did before there was anything to
+    // decide: compression is never a reason to refuse a launch.
+    it(`${what} still launches, naming none, when there is none to name`, async () => {
+      vi.mocked(profileIdForLaunch).mockReturnValue(undefined);
+
+      expect(await launch()).toBeNull();
+
+      expect(backend.createSession).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(backend.createSession).mock.calls[0][3]).toBeUndefined();
+    });
+  }
+
+  // A resume is a fresh session. Nothing of the one before it is sent:
+  // whether it was compressed is not the app's to carry over, and the
+  // daemon decides again against Headroom as it is now.
+  it("a resume carries nothing of the session it replaces", async () => {
+    failedWithConversation();
+
+    expect(await resumeCard("ws-1", card("task", "In Progress"))).toBeNull();
+
+    expect(vi.mocked(backend.createSession).mock.calls[0]).toEqual([
+      "/ws",
+      "claude --resume u-1",
+      "/ws",
+      "claude-code",
+    ]);
   });
 });
 

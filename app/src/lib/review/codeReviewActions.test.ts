@@ -15,6 +15,9 @@ vi.mock("$lib/core/layoutState", () => ({
   agentDefaultsStore: writable({ actionPromptOverrides: {} }),
   setAgentDefaults: vi.fn().mockResolvedValue(undefined),
   layoutState: writable({ workspaces: [], sessionStatusById: {}, interruptedSessionIds: new Set(), failureReasonById: {} }),
+  // The launching profile, as the real one names it against a daemon
+  // new enough to read it (`compressedLaunch`).
+  profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
   resolvedAgentFor: vi.fn(),
   armFailureDetection: vi.fn().mockResolvedValue(undefined),
   handleAgentSessionSpawned: vi.fn(),
@@ -40,6 +43,7 @@ vi.mock("$lib/agents/launchQueue", () => ({
 
 import * as backend from "$lib/core/backend";
 import {
+  profileIdForLaunch,
   resolvedAgentFor,
   handleAgentSessionSpawned,
   setSessionName,
@@ -240,6 +244,29 @@ describe("createReviewRules", () => {
 });
 
 describe("confirmReview", () => {
+  // A review is an agent's launch like any other, so it is a candidate
+  // for compression on the same terms.
+  it("names the profile it launches", async () => {
+    vi.mocked(profileIdForLaunch).mockImplementation((agent) => agent.profileId);
+    await requestBranchReview("ws-1", "/repo");
+
+    expect(await confirmReview("origin/main")).toBeNull();
+
+    const profile = vi.mocked(backend.createSession).mock.calls[0][3];
+    expect(profile).toBe(vi.mocked(resolvedAgentFor).mock.results.at(-1)?.value.profileId);
+    expect(profile).toBeTruthy();
+  });
+
+  it("launches with no profile against a daemon too old to read one", async () => {
+    vi.mocked(profileIdForLaunch).mockImplementation(() => undefined);
+    await requestBranchReview("ws-1", "/repo");
+
+    expect(await confirmReview("origin/main")).toBeNull();
+
+    expect(backend.createSession).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(backend.createSession).mock.calls[0][3]).toBeUndefined();
+  });
+
   it("launches a visible session in the reviewed checkout and clears the dialog", async () => {
     await requestBranchReview("ws-1", "/repo");
     expect(await confirmReview("origin/main")).toBeNull();

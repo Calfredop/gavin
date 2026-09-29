@@ -412,6 +412,25 @@ pub struct Workspace {
     /// everyone who clones the repo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require_review: Option<bool>,
+    /// Whether the agents gavin launches in this workspace talk to their
+    /// model through Headroom (`2026-09-28-headroom-design.md`, "The
+    /// switch"). Absent means inherit `AppConfig::headroom`, and failing
+    /// that gavin's own default, which is OFF -- so absence is a real
+    /// state, not a stand-in for `false`, and a later change to the
+    /// app-wide default reaches every workspace that never chose.
+    ///
+    /// Per workspace because compression is a property of how a repo is
+    /// run: one where it misbehaves can opt out without turning it off
+    /// everywhere. Machine-local like `require_review`, for the same
+    /// reason: whether THIS machine has Headroom is not a fact about
+    /// the project.
+    ///
+    /// The daemon holds a copy of the RESOLVED answer, pushed whenever
+    /// it changes (`session::set_headroom_workspaces`), because a
+    /// session another agent spawns over MCP never passes through the
+    /// app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headroom: Option<bool>,
     /// Whether the human has been ASKED whether this workspace requires
     /// the first-Run review. Not the answer -- `require_review` (or its
     /// absence) is that. Same shape and reason as `git_tracking_asked`:
@@ -419,6 +438,19 @@ pub struct Workspace {
     /// indistinguishable on disk from nobody having decided yet.
     #[serde(default)]
     pub require_review_asked: bool,
+    /// Whether the human has been ASKED whether this workspace compresses
+    /// its agents through Headroom -- in the setup wizard's Headroom step,
+    /// or by moving the switch on the workspace's Settings tab. Not the
+    /// answer -- `headroom` (or its absence) is that. Same shape and
+    /// reason as `require_review_asked`: leaving compression on the
+    /// app-wide default is indistinguishable on disk from nobody having
+    /// decided yet.
+    ///
+    /// Written only once it is true, unlike the two before it: a config
+    /// written by a build without the field must survive a save by this
+    /// one unchanged, and every workspace in it has never been asked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub headroom_asked: bool,
     /// This workspace's own resume flag for the `custom` agent profile
     /// (v38), e.g. `--resume`. Absent means inherit
     /// `AppConfig::custom_resume_args`, and failing that no resume at all
@@ -700,6 +732,19 @@ pub struct AgentDefaultsConfig {
     /// guessing a flag -- the same posture the Rust profile table takes.
     #[serde(default)]
     pub custom_model_flag: String,
+    /// The API the custom agent speaks, which is what lets Headroom
+    /// compress it: `anthropic`, `openai` (OpenAI-compatible), or empty
+    /// for none -- the shipped state, and no recipe. Sent to the daemon
+    /// with every launch of the custom profile (`create_session`).
+    ///
+    /// A string rather than an enum, because config.json is read by more
+    /// than one build: a family a newer build added would make an older
+    /// one's parse of the WHOLE file fail, and every setting with it.
+    /// An unknown word reaches the daemon, which reads it as none.
+    /// Skipped when empty, so a config that never chose one is written
+    /// as it was.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub custom_api_family: String,
     /// Which agent and model each complexity level runs, keyed by the
     /// level's written name (`Complexity::as_str`). A level with no entry
     /// runs the workspace's own agent, exactly as every card did before
@@ -878,6 +923,27 @@ pub struct AppConfig {
     /// the answer for every inheriting workspace immediately.
     #[serde(default)]
     pub require_review: RequireReviewDefault,
+    /// The app-wide default for whether agents are compressed through
+    /// Headroom. `None` means nobody has chosen and gavin's own default
+    /// applies, which is OFF: installing Headroom must never quietly
+    /// change how the workspaces that already exist talk to their
+    /// models. The THIRTEENTH carry-through field: like session_names/
+    /// file_tabs/board_tabs/theme/agent_models/removed_workspaces/
+    /// agent_pause/superpowers/agent_defaults/git_tracking/
+    /// require_review/launch/custom_resume_args it must be carried
+    /// through `persist_workspaces`, or it silently resets on the next
+    /// save.
+    ///
+    /// Live, like `require_review`: a workspace with no override of its
+    /// own resolves against whatever this holds at the moment it is
+    /// resolved, so changing it here changes the answer for every
+    /// inheriting workspace at once.
+    ///
+    /// Skipped while unset, unlike `require_review` one field up, so a
+    /// config.json nobody has touched this setting in is written back
+    /// exactly as it was read.
+    #[serde(default, skip_serializing_if = "HeadroomDefault::is_unset")]
+    pub headroom: HeadroomDefault,
     /// The app-wide launch wall. The ELEVENTH carry-through field: like
     /// session_names/file_tabs/board_tabs/theme/agent_models/
     /// removed_workspaces/agent_pause/superpowers/agent_defaults/
@@ -972,6 +1038,24 @@ pub struct TypeSafeConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct RequireReviewDefault(pub Option<bool>);
+
+/// The app-wide compression default, wrapped in a type of its own for
+/// the reason `GitTrackingDefault` gives: a bare `Option<bool>` would be
+/// the third of that shape in `persist_workspaces`' argument list, and
+/// nothing the compiler can see would stop two of them being swapped.
+///
+/// `None` means nobody has chosen, and gavin's own default applies:
+/// Off.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct HeadroomDefault(pub Option<bool>);
+
+impl HeadroomDefault {
+    /// Whether there is nothing to write. See `AppConfig::headroom`.
+    pub fn is_unset(&self) -> bool {
+        self.0.is_none()
+    }
+}
 
 /// The app-wide git-tracking default, wrapped in a type of its own.
 ///
@@ -1116,7 +1200,9 @@ mod tests {
             mcp_foreign_servers_choice: None,
             reviewed_cards: None,
             require_review: None,
+            headroom: None,
             require_review_asked: false,
+            headroom_asked: false,
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
@@ -1206,6 +1292,31 @@ mod tests {
         assert!(old.workspaces[0].declined_agents.is_empty());
         assert!(old.agent_defaults.agent_fallback.is_empty());
         assert!(old.agent_defaults.fallback_thresholds.is_empty());
+    }
+
+    /// The custom agent's API family persists, and a config that never
+    /// chose one -- every config written before it existed -- reads as
+    /// none, which is the default and means no recipe. None is written
+    /// as no key at all.
+    #[test]
+    fn the_custom_api_family_roundtrips_and_defaults_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.agent_defaults.custom_api_family = "anthropic".to_string();
+        save(dir.path(), &config).unwrap();
+        assert_eq!(load(dir.path()).unwrap().agent_defaults.custom_api_family, "anthropic");
+
+        config.agent_defaults.custom_api_family = String::new();
+        save(dir.path(), &config).unwrap();
+        let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
+        assert!(!written.contains("customApiFamily"), "{written}");
+
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces":[],"agent_defaults":{"customCommand":"my-agent","customModelFlag":"--model","complexity":{}}}"#,
+        )
+        .unwrap();
+        assert_eq!(load(dir.path()).unwrap().agent_defaults.custom_api_family, "");
     }
 
     #[test]
@@ -1298,6 +1409,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,
@@ -1330,6 +1442,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,
@@ -1376,6 +1489,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,
@@ -1528,6 +1642,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,
@@ -1580,6 +1695,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,
@@ -1617,6 +1733,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,
@@ -1657,6 +1774,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,
@@ -1711,6 +1829,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,
@@ -1740,6 +1859,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,
@@ -1777,6 +1897,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,
@@ -1925,6 +2046,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,
@@ -1972,6 +2094,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,
@@ -2014,6 +2137,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,
@@ -2081,6 +2205,7 @@ mod tests {
             agent_defaults: AgentDefaultsConfig::default(),
             git_tracking: GitTrackingDefault::default(),
             require_review: RequireReviewDefault::default(),
+            headroom: HeadroomDefault::default(),
             launch: None,
             custom_resume_args: None,
             typesafe: None,

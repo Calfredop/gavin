@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { sessionCompressionById } from "$lib/agents/headroomMarkState";
+import { FEATURE_MIN_VERSION } from "$lib/core/daemonCompat";
 import { get } from "svelte/store";
 import { gavinTrees, worktreeSetups } from "$lib/core/gavinState";
 import { executionKeys, executionKeysHash } from "$lib/workspace/workspaceTrust";
@@ -80,6 +82,9 @@ vi.mock("$lib/core/backend", () => ({
   getAutoCommit: vi.fn().mockResolvedValue(null),
   getGitTrackingDefault: vi.fn().mockResolvedValue(null),
   getRequireReview: vi.fn().mockResolvedValue(null),
+  getHeadroomDefault: vi.fn().mockResolvedValue(null),
+  setHeadroomDefault: vi.fn().mockResolvedValue(undefined),
+  setHeadroomWorkspaces: vi.fn().mockResolvedValue(undefined),
   setAutoCommit: vi.fn().mockResolvedValue(undefined),
   setRequireReview: vi.fn().mockResolvedValue(undefined),
   setTerminalFontSize: vi.fn().mockResolvedValue(undefined),
@@ -197,6 +202,7 @@ import {
   retainTabOnExit,
   handleCwdChanged,
   handleSessionStatusChanged,
+  addSessionStatusListener,
   setSessionRead,
   attentionStatusById,
   attentionState,
@@ -273,6 +279,13 @@ import {
   setWorkspaceRequireReview,
   setRequireReviewDefault,
   requireReviewDefault,
+  setWorkspaceHeadroom,
+  setHeadroomDefault,
+  headroomDefault,
+  headroomDefaultKnown,
+  profileIdForLaunch,
+  createSessionOnPage,
+  createTiledPage,
   markRequireReviewAsked,
   setStatusNoticeHold,
   setWorkspacePause,
@@ -345,6 +358,9 @@ beforeEach(() => {
   // Module-level store, same reason: without this, a compat verdict set
   // by one test would leak into the next one's assertions.
   daemonCompat.set(null);
+  // Module-level stores, same reason.
+  headroomDefault.set(null);
+  headroomDefaultKnown.set(false);
   // Module-level store, same reason.
   daemonRequestError.set(null);
   // Module-level store, same reason: a queue seeded by one test would
@@ -1348,6 +1364,51 @@ describe("handleSessionExited", () => {
     expect(state.workspaces[0].pages[0].layout).toEqual(leaf(["other"]));
     expect(terminalRegistry.destroyTerminal).toHaveBeenCalledWith("tool-1");
   });
+
+  // The daemon sends no status when a session exits -- it forgets the
+  // row and drops the writer -- so a retained tab kept the last one it
+  // was pushed. A test run prints until the moment it exits, the quiet
+  // timer never fires, and a finished "Run tests" tab read as Working
+  // on every surface for as long as it stayed open.
+  it("settles a retained tab that exited mid-output to idle", () => {
+    setState([ws("ws-1", [page("page-1", leaf(["tool-working"]))])], "ws-1", "tool-working");
+    layoutState.update((s) => ({ ...s, sessionStatusById: { "tool-working": "working" } }));
+    retainTabOnExit("tool-working");
+
+    handleSessionExited("tool-working");
+
+    expect(get(layoutState).sessionStatusById["tool-working"]).toBe("idle");
+  });
+
+  // Same gap, worse surface: a script that rang a bell and then exited
+  // sat in the attention inbox as a human-shaped wait nobody could answer.
+  it("settles a retained tab that exited while asking to idle", () => {
+    setState([ws("ws-1", [page("page-1", leaf(["tool-asking"]))])], "ws-1", "tool-asking");
+    layoutState.update((s) => ({ ...s, sessionStatusById: { "tool-asking": "waiting_for_input" } }));
+    retainTabOnExit("tool-asking");
+
+    handleSessionExited("tool-asking");
+
+    expect(get(layoutState).sessionStatusById["tool-asking"]).toBe("idle");
+  });
+
+  // Only MOTION ends with the process. "Something broke" is still true
+  // of a run after it exits, and the reason beside it still explains it.
+  it("keeps a retained tab's failed status through the exit", () => {
+    setState([ws("ws-1", [page("page-1", leaf(["tool-failed"]))])], "ws-1", "tool-failed");
+    layoutState.update((s) => ({
+      ...s,
+      sessionStatusById: { "tool-failed": "failed" },
+      failureReasonById: { "tool-failed": "API Error: 500" },
+    }));
+    retainTabOnExit("tool-failed");
+
+    handleSessionExited("tool-failed");
+
+    const state = get(layoutState);
+    expect(state.sessionStatusById["tool-failed"]).toBe("failed");
+    expect(state.failureReasonById["tool-failed"]).toBe("API Error: 500");
+  });
 });
 
 describe("handleCwdChanged", () => {
@@ -1365,6 +1426,23 @@ describe("handleCwdChanged", () => {
 });
 
 describe("handleSessionStatusChanged", () => {
+  // The second seam (the "not reaching Headroom" check): every report,
+  // with what came before it, after the store has taken it.
+  it("tells every status listener what was reported and what came before", () => {
+    const heard: [string, string, string | undefined, string | undefined][] = [];
+    const stop = addSessionStatusListener((id, status, previous) =>
+      heard.push([id, status, previous, get(layoutState).sessionStatusById[id]])
+    );
+    handleSessionStatusChanged("a", "working");
+    handleSessionStatusChanged("a", "idle");
+    stop();
+    handleSessionStatusChanged("a", "working");
+    expect(heard).toEqual([
+      ["a", "working", undefined, "working"],
+      ["a", "idle", "working", "idle"],
+    ]);
+  });
+
   it("records working and waiting as a session that has actually started", () => {
     handleSessionStatusChanged("a", "working");
     expect(get(layoutState).sessionsSeenWorking.has("a")).toBe(true);
@@ -2390,9 +2468,11 @@ describe("createPage", () => {
 
     await createPage("ws-1", ([x, y]) => ({ type: "split", direction: "row", children: [leaf([x]), leaf([y])], sizes: [0.5, 0.5] }), 2, "Page 1", { withAgent: true });
 
+    // Under the profile launching them: each is an agent's session, and
+    // a candidate for compression like any other.
     expect(vi.mocked(backend.createSession).mock.calls).toEqual([
-      ["/repos/gavin", "claude --model opus", "/repos/gavin"],
-      ["/repos/gavin", "claude --model opus", "/repos/gavin"],
+      ["/repos/gavin", "claude --model opus", "/repos/gavin", "claude-code"],
+      ["/repos/gavin", "claude --model opus", "/repos/gavin", "claude-code"],
     ]);
   });
 
@@ -2487,6 +2567,124 @@ describe("createSessionOnNewPage", () => {
 
     expect(await createSessionOnNewPage("missing", "backend", "/x", "claude")).toBeNull();
     expect(backend.createSession).not.toHaveBeenCalled();
+  });
+});
+
+/// `CreateSession`'s `profileId` is what makes a session a candidate for
+/// compression, and the daemon decides. This is the one gate the app has
+/// on sending it, and the rest of these are the ways it gets there.
+describe("the launching profile", () => {
+  const NEEDED = FEATURE_MIN_VERSION.compressedLaunch;
+  const claude = { profileId: "claude-code" };
+
+  it("is named against a daemon new enough to read it", () => {
+    daemonCompat.set({ daemonVersion: NEEDED, appVersion: NEEDED, degraded: false });
+    expect(profileIdForLaunch(claude)).toBe("claude-code");
+
+    daemonCompat.set({ daemonVersion: NEEDED + 1, appVersion: NEEDED + 1, degraded: false });
+    expect(profileIdForLaunch({ profileId: "codex" })).toBe("codex");
+  });
+
+  // `CreateSession` is as old as the protocol, so nothing on the wire
+  // can keep the field from a daemon that would parse it and drop it.
+  it("is withheld from a daemon too old to read it", () => {
+    daemonCompat.set({ daemonVersion: NEEDED - 1, appVersion: NEEDED, degraded: true });
+
+    expect(profileIdForLaunch(claude)).toBeUndefined();
+  });
+
+  // Not connected yet is not "too old": nothing is greyed out ahead of
+  // the verdict, and the host withholds the field itself if it has to.
+  it("is named before the daemon's version is known", () => {
+    daemonCompat.set(null);
+
+    expect(profileIdForLaunch(claude)).toBe("claude-code");
+  });
+
+  it("is none for an agent that has no profile to name", () => {
+    expect(profileIdForLaunch({ profileId: "" })).toBeUndefined();
+  });
+
+  it("rides a tiled page's specs, each under its own", async () => {
+    setState([ws("ws-1", [], null, "/repos/gavin")], "ws-1", null);
+    vi.mocked(backend.createSession)
+      .mockResolvedValueOnce("a")
+      .mockResolvedValueOnce("b")
+      .mockResolvedValueOnce("c");
+
+    await createTiledPage("ws-1", "review", [
+      { cwd: "/repos/wt-a", command: "claude 'x'", profileId: "claude-code" },
+      { cwd: "/repos/wt-b", command: "codex 'x'", profileId: "codex" },
+      { cwd: "/repos/wt-c", command: "npm test" },
+    ]);
+
+    expect(vi.mocked(backend.createSession).mock.calls).toEqual([
+      ["/repos/wt-a", "claude 'x'", "/repos/gavin", "claude-code"],
+      ["/repos/wt-b", "codex 'x'", "/repos/gavin", "codex"],
+      // A command names none, and its launch is the call it always was.
+      ["/repos/wt-c", "npm test", "/repos/gavin"],
+    ]);
+  });
+
+  it("rides a session made with a page of its own", async () => {
+    setState([ws("ws-1", [page("p1", leaf(["s1"]))], "p1", "/repos/gavin")], "ws-1", "s1");
+    vi.mocked(backend.createSession).mockResolvedValue("agent");
+
+    await createSessionOnNewPage("ws-1", "backend", "/repos/wt", "claude", {
+      activate: false,
+      profileId: "claude-code",
+    });
+
+    expect(backend.createSession).toHaveBeenCalledWith("/repos/wt", "claude", "/repos/gavin", "claude-code");
+    // The posture still holds: the option beside it is not lost.
+    expect(get(layoutState).workspaces[0].activePageId).toBe("p1");
+  });
+
+  it("rides a session landed on a named page, and on the active one", async () => {
+    setState([ws("ws-1", [page("p1", leaf(["s1"]))], "p1", "/repos/gavin")], "ws-1", "s1");
+    vi.mocked(backend.createSession).mockResolvedValue("agent");
+
+    await createSessionOnPage("ws-1", "p1", "/repos/wt", "claude", "claude-code");
+    await createSessionForCard("ws-1", "/repos/wt", "claude", "claude-code");
+    // A page that is gone falls back to the active one, profile and all.
+    await createSessionOnPage("ws-1", "closed", "/repos/wt", "claude", "claude-code");
+
+    expect(vi.mocked(backend.createSession).mock.calls).toEqual([
+      ["/repos/wt", "claude", "/repos/gavin", "claude-code"],
+      ["/repos/wt", "claude", "/repos/gavin", "claude-code"],
+      ["/repos/wt", "claude", "/repos/gavin", "claude-code"],
+    ]);
+  });
+
+  it("is not an argument at all for a shell", async () => {
+    setState([ws("ws-1", [page("p1", leaf(["s1"]))], "p1", "/repos/gavin")], "ws-1", "s1");
+    vi.mocked(backend.createSession).mockResolvedValue("shell");
+
+    await createSessionOnPage("ws-1", "p1", "/repos/gavin", "git mergetool");
+    await createSessionForCard("ws-1", "/repos/gavin", "git mergetool");
+    await createSessionOnNewPage("ws-1", "setup", "/repos/wt", "npm ci");
+
+    for (const call of vi.mocked(backend.createSession).mock.calls) {
+      expect(call).toHaveLength(3);
+    }
+  });
+
+  // The "New page" dropdown with its box ticked, and the main agent, both
+  // against a daemon that cannot read the profile: they launch exactly as
+  // they did before there was anything to decide.
+  it("is withheld from the launches this module makes itself", async () => {
+    daemonCompat.set({ daemonVersion: NEEDED - 1, appVersion: NEEDED, degraded: true });
+    setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
+    seedAgentConfig("ws-1", { profile: "claude-code", file: null, command: "claude" });
+    vi.mocked(backend.createSession).mockResolvedValue("agent-1");
+
+    await startMainAgent("ws-1");
+    await createPage("ws-1", ([x]) => leaf([x]), 1, "Page 1", { withAgent: true });
+
+    expect(vi.mocked(backend.createSession).mock.calls).toEqual([
+      ["/tmp/ws", "claude", "/tmp/ws"],
+      ["/tmp/ws", "claude", "/tmp/ws"],
+    ]);
   });
 });
 
@@ -3274,6 +3472,23 @@ describe("daemon errors: refused request vs lost connection", () => {
     return handlers;
   }
 
+  // Not an error, but the one other host event this file wires and no
+  // other suite fires: what the daemon decided about compressing a
+  // session, which its tab's Headroom mark reads (v50).
+  it("takes what the daemon decided about compressing a session, for its tab's mark", async () => {
+    const handlers = await bootstrapCapturingListeners();
+
+    handlers.get("session-compression")!({
+      payload: { id: "s-new", compressed: false, uncompressedReason: "headroom-failed" },
+    });
+
+    expect(get(sessionCompressionById)["s-new"]).toEqual({
+      compressed: false,
+      uncompressedReason: "headroom-failed",
+      reach: null,
+    });
+  });
+
   it("a refused request banners, leaving the app up", async () => {
     const handlers = await bootstrapCapturingListeners();
 
@@ -3508,6 +3723,48 @@ describe("bootstrap seeds the push-fed session maps", () => {
     // Read straight into the map, never through handleSessionFailed:
     // re-reading a failure the human has already seen is not a new one.
     expect(notifications.maybeNotifyStatusChange).not.toHaveBeenCalled();
+  });
+
+  // The `session-compression` event arrives once, with the session's
+  // creation; a reloaded frontend missed it, and a tab that should say
+  // "Headroom failed, relaunched without it" would say nothing.
+  it("fills what the daemon decided about compressing each session, so a reload keeps the mark", async () => {
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(baselinesRead([
+      {
+        id: "s-relaunched",
+        cwd: "/ws",
+        status: "idle",
+        restored: false,
+        interrupted: false,
+        orphan: null,
+        failureReason: null,
+        compressed: false,
+        uncompressedReason: "headroom-failed",
+        headroomReach: null,
+      },
+      {
+        id: "s-bypassing",
+        cwd: "/ws",
+        status: "idle",
+        restored: false,
+        interrupted: false,
+        orphan: null,
+        failureReason: null,
+        compressed: true,
+        uncompressedReason: null,
+        headroomReach: "unreached",
+      },
+    ]));
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(sessionCompressionById)["s-relaunched"]).toBeDefined());
+    expect(get(sessionCompressionById)["s-relaunched"].uncompressedReason).toBe("headroom-failed");
+    expect(get(sessionCompressionById)["s-bypassing"]).toEqual({
+      compressed: true,
+      uncompressedReason: null,
+      reach: "unreached",
+    });
   });
 
   it("never overwrites a push that already landed", async () => {
@@ -4037,6 +4294,50 @@ describe("workspace settings", () => {
     expect(get(requireReviewDefault)).toBeNull();
   });
 
+  it("setWorkspaceHeadroom stores the choice, and null clears it back to inherit", async () => {
+    setState([ws("ws-1", [])], "ws-1", null);
+
+    await setWorkspaceHeadroom("ws-1", true);
+    expect(get(layoutState).workspaces[0].headroom).toBe(true);
+    expect(backend.setWorkspaceSettings).toHaveBeenCalledWith("ws-1", { headroom: true });
+
+    // Off is a choice of its own: a workspace can opt out of a default
+    // that is on.
+    await setWorkspaceHeadroom("ws-1", false);
+    expect(get(layoutState).workspaces[0].headroom).toBe(false);
+    expect(backend.setWorkspaceSettings).toHaveBeenLastCalledWith("ws-1", { headroom: false });
+
+    await setWorkspaceHeadroom("ws-1", null);
+    expect(get(layoutState).workspaces[0].headroom).toBeUndefined();
+    expect(backend.setWorkspaceSettings).toHaveBeenLastCalledWith("ws-1", { headroom: null });
+    // A setting, written as one (ADR 0006): through the layout save it
+    // would show in this window and be gone after a restart.
+    expect(backend.setWorkspacesState).not.toHaveBeenCalled();
+  });
+
+  it("setHeadroomDefault persists to config.json and updates the store", async () => {
+    expect(get(headroomDefaultKnown)).toBe(false);
+
+    await setHeadroomDefault(true);
+    expect(backend.setHeadroomDefault).toHaveBeenCalledWith(true);
+    expect(get(headroomDefault)).toBe(true);
+    // Written is known: what this window just set is what is on disk.
+    expect(get(headroomDefaultKnown)).toBe(true);
+
+    await setHeadroomDefault(null);
+    expect(backend.setHeadroomDefault).toHaveBeenCalledWith(null);
+    expect(get(headroomDefault)).toBeNull();
+  });
+
+  it("setHeadroomDefault leaves the store alone when the write is refused", async () => {
+    vi.mocked(backend.setHeadroomDefault).mockRejectedValueOnce(new Error("disk full"));
+
+    await setHeadroomDefault(true);
+
+    expect(get(headroomDefault)).toBeNull();
+    expect(get(headroomDefaultKnown)).toBe(false);
+  });
+
   it("markRequireReviewAsked records the question was put, once", async () => {
     setState([ws("ws-1", [])], "ws-1", null);
     expect(get(layoutState).workspaces[0].requireReviewAsked).toBeUndefined();
@@ -4187,7 +4488,12 @@ describe("main agent session", () => {
 
     await startMainAgent("ws-1");
 
-    expect(backend.createSession).toHaveBeenCalledWith("/tmp/ws", "claude --model opus", "/tmp/ws");
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/tmp/ws",
+      "claude --model opus",
+      "/tmp/ws",
+      "claude-code"
+    );
     expect(get(layoutState).workspaces[0].mainSessionId).toBe("agent-1");
     expect(backend.setWorkspacesState).toHaveBeenCalled();
   });
@@ -4196,7 +4502,7 @@ describe("main agent session", () => {
     setState([{ ...ws("ws-1", []), rootPath: "/tmp/ws" }], "ws-1", null);
     vi.mocked(backend.createSession).mockResolvedValue("agent-1");
     await startMainAgent("ws-1");
-    expect(backend.createSession).toHaveBeenCalledWith("/tmp/ws", "claude", "/tmp/ws");
+    expect(backend.createSession).toHaveBeenCalledWith("/tmp/ws", "claude", "/tmp/ws", "claude-code");
 
     // Already running: no second spawn.
     await startMainAgent("ws-1");
@@ -4228,7 +4534,8 @@ describe("main agent session", () => {
     expect(backend.createSession).toHaveBeenCalledWith(
       "/tmp/ws",
       "claude 'Use the gavin-write-prd skill.'",
-      "/tmp/ws"
+      "/tmp/ws",
+      "claude-code"
     );
 
     expect(get(layoutState).workspaces[0].mainSessionId).toBe("agent-1");

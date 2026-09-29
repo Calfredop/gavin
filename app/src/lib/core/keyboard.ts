@@ -10,7 +10,7 @@ import {
   switchWorkspace,
   type LayoutState,
 } from "$lib/core/layoutState";
-import { copySelection, pasteClipboard } from "$lib/core/clipboard";
+import { copySelection, hasTerminal, pasteClipboard, terminalHasSelection } from "$lib/core/clipboard";
 import { confirmTabClose } from "$lib/shell/confirmClose";
 import { findLeafPath, getNodeAtPath, isPinned } from "$lib/panes/layout";
 import {
@@ -23,7 +23,7 @@ import {
 import { tabStripHubViewIds } from "$lib/hub/hubViewMeta";
 import { currentHubTabPrefs } from "$lib/hub/hubTabPrefs";
 import { scratchpadEnabled } from "$lib/sidebar/sidebarPrefs";
-import { cmdHeld, isMacSync } from "$lib/core/platform";
+import { cmdHeld, currentPlatform, isMacSync } from "$lib/core/platform";
 import { digitFromCode, matchesChord, resolveIndex, SHORTCUTS } from "$lib/core/shortcuts";
 import { requestedCompose, resolveComposeTarget } from "$lib/cards/composeRequest";
 import { nextWaitingJump } from "$lib/agents/nextWaitingJump";
@@ -251,24 +251,43 @@ export async function handleShortcutKeydown(event: ShortcutKeyEvent): Promise<bo
     }
     return true;
   }
-  // Copy/paste stay macOS-only on metaKey: on Linux/Windows Ctrl+C in a
-  // terminal must remain SIGINT, not a copy.
-  //
-  // A text field keeps its own ⌘C/⌘V. Letting the event through is the
-  // whole fix: WebKit hands ⌘V to the page first, so preventing it here
-  // stopped macOS from ever reaching the Edit menu's Paste, and the
-  // field got nothing while the terminal got the clipboard.
-  const editing = isTextFieldTarget(event.target);
-  if (isMac && event.metaKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "c") {
-    if (editing) return false;
+  // The clipboard chords belong to a TERMINAL. A text field keeps its
+  // own: WebKit hands ⌘V to the page first, so claiming it here stopped
+  // macOS from ever reaching the Edit menu's Paste, and the field got
+  // nothing while the terminal got the clipboard. So does a card, file or
+  // board tab sharing the page: it holds the focus but has no terminal,
+  // and claiming ⌘C there copied nothing while cancelling the browser's
+  // copy of the text selected in it.
+  if (isTextFieldTarget(event.target) || !hasTerminal(focused)) return false;
+  const key = event.key.toLowerCase();
+  if (isMac) {
+    if (!event.metaKey || event.shiftKey || event.altKey) return false;
+    if (key !== "c" && key !== "v") return false;
     consume();
-    await copySelection();
+    await (key === "c" ? copySelection(focused) : pasteClipboard(focused));
     return true;
   }
-  if (isMac && event.metaKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "v") {
-    if (editing) return false;
+  // Windows/Linux have no Command key and no Edit menu to fall back on,
+  // so Ctrl+C has to be both the copy and the terminal's interrupt. The
+  // selection decides, as in Windows Terminal: with one, Ctrl+C copies it
+  // and clears it, so the next Ctrl+C interrupts; with none it is left to
+  // xterm and reaches the shell as ^C. Ctrl+Shift+C, the Linux terminals'
+  // copy, never interrupts and keeps the selection. macOS is untouched:
+  // ⌃C there is only ever the interrupt. AltGr arrives as Ctrl+Alt.
+  if (!event.ctrlKey || event.metaKey || event.altKey) return false;
+  if (key === "c") {
+    if (!terminalHasSelection(focused)) return false;
     consume();
-    await pasteClipboard();
+    await copySelection(focused, { clear: !event.shiftKey });
+    return true;
+  }
+  // Ctrl+Shift+V pastes on both; plain Ctrl+V only on Windows, where
+  // Windows Terminal does the same. On Linux it stays the shell's quoted
+  // insert and vim's block select, which is why the terminals there moved
+  // paste onto Shift.
+  if (key === "v" && (event.shiftKey || currentPlatform() === "windows")) {
+    consume();
+    await pasteClipboard(focused);
     return true;
   }
   return false;

@@ -180,7 +180,7 @@ export interface Rail {
 /// ahead -- never fires. Never firing is the safe reading of a condition
 /// this build cannot state, and the rail's chip says so rather than
 /// pretending it has none.
-export type RailTriggerKind = "all-rails-done" | "rail-done";
+export type RailTriggerKind = "all-rails-done" | "rail-done" | "at-time";
 
 export interface RailTrigger {
   kind: RailTriggerKind | (string & {});
@@ -189,6 +189,11 @@ export interface RailTrigger {
   /// same case- and space-insensitive way `startRailVerdict` matches
   /// `builtin:start-rail`'s. Absent for every other kind.
   rail?: string | null;
+  /// Epoch seconds for an `at-time` trigger -- the machine-local
+  /// instant the human's datetime picker wrote. Absent for every other
+  /// kind. Compared to `Date.now()/1000` on this machine; one-shot
+  /// (cleared after it arms).
+  at?: number | null;
 }
 
 export interface ConflictNote {
@@ -647,12 +652,13 @@ export function startRailTargetWorkspace(
 ///
 /// `needsRail` is what makes the second one a two-part question: a
 /// `rail-done` trigger is meaningless without a name, and the picker has
-/// to know to ask for one.
+/// to know to ask for one. `needsAt` is the same for a datetime.
 export const RAIL_TRIGGER_CHOICES: {
   kind: RailTriggerKind;
   label: string;
   blurb: string;
   needsRail: boolean;
+  needsAt: boolean;
 }[] = [
   {
     kind: "all-rails-done",
@@ -660,6 +666,7 @@ export const RAIL_TRIGGER_CHOICES: {
     blurb:
       "Gavin arms this rail the moment no other rail in this workspace has anything left to do. The fan-in a step on one rail cannot express: whichever of the others finishes last is the one that starts this.",
     needsRail: false,
+    needsAt: false,
   },
   {
     kind: "rail-done",
@@ -667,6 +674,15 @@ export const RAIL_TRIGGER_CHOICES: {
     blurb:
       "Gavin arms this rail once that one has nothing left to do. Said HERE rather than as a Start rail step over there, so the rail that waits is the rail that says what it waits for.",
     needsRail: true,
+    needsAt: false,
+  },
+  {
+    kind: "at-time",
+    label: "At a date and time",
+    blurb:
+      "Gavin arms this rail once, when this machine's clock reaches that moment. One-shot: the schedule clears after it fires, so the rail does not re-arm every tick past the time.",
+    needsRail: false,
+    needsAt: true,
   },
 ];
 
@@ -680,10 +696,42 @@ export function railTriggerLabel(trigger: RailTrigger | null | undefined): strin
     const name = trigger.rail?.trim();
     return name ? `after “${name}”` : "after a rail";
   }
+  if (trigger.kind === "at-time") {
+    if (trigger.at == null || !Number.isFinite(trigger.at)) return "at a time";
+    return `at ${formatScheduledAt(trigger.at)}`;
+  }
   // An unrecognised kind. Named rather than hidden: the rail IS carrying
   // a condition, this build simply cannot evaluate it, and drawing it as
   // "starts by hand" would be a lie the human acts on.
   return `after “${trigger.kind}”`;
+}
+
+/// Short local wall-clock wording for a chip: "Mon, Sep 28, 3:00 PM".
+export function formatScheduledAt(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toLocaleString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/// `<input type="datetime-local">` value ↔ epoch seconds on this machine.
+/// The picker speaks local wall time; `Date` parses that string as local.
+export function epochSecondsToDatetimeLocal(epochSeconds: number): string {
+  const d = new Date(epochSeconds * 1000);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+export function datetimeLocalToEpochSeconds(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const d = new Date(trimmed);
+  if (Number.isNaN(d.getTime())) return null;
+  return Math.floor(d.getTime() / 1000);
 }
 
 /// Whether this rail arms itself right now, and if not, why not.
@@ -707,7 +755,15 @@ export type RailTriggerVerdict =
   | { kind: "wait"; reason: string }
   | { kind: "broken"; reason: string };
 
-export function railTriggerVerdict(orch: Orchestration, rail: Rail): RailTriggerVerdict {
+export function railTriggerVerdict(
+  orch: Orchestration,
+  rail: Rail,
+  /// Epoch SECONDS. Only `at-time` reads it. Passed rather than read
+  /// from the clock so this function stays pure: a test that fixes it
+  /// gets the same verdict every time, and `nextActions` hands through
+  /// the same `now` the PR rules already take.
+  now: number = Math.floor(Date.now() / 1000)
+): RailTriggerVerdict {
   const trigger = rail.trigger ?? null;
   if (!trigger) return { kind: "off" };
 
@@ -762,6 +818,15 @@ export function railTriggerVerdict(orch: Orchestration, rail: Rail): RailTrigger
     }
     if (railIsFinished(orch, target)) return { kind: "fire" };
     return { kind: "wait", reason: `waiting for “${target.name}”` };
+  }
+
+  if (trigger.kind === "at-time") {
+    const at = trigger.at;
+    if (at == null || !Number.isFinite(at)) {
+      return { kind: "broken", reason: "no time set — pick when this rail should start" };
+    }
+    if (now >= at) return { kind: "fire" };
+    return { kind: "wait", reason: `waiting until ${formatScheduledAt(at)}` };
   }
 
   return {
@@ -1476,11 +1541,11 @@ export function nextActions(
   /// a caller that does not know reads as "nothing has been polled",
   /// and every pr step simply waits.
   prReports: Readonly<Record<string, PrReport>> = {},
-  /// Epoch SECONDS. Only the pull-request rules read it, and only to
-  /// tell "this PR has no CI" from "its CI has not started yet"
-  /// (EMPTY_ROLLUP_GRACE_SECS). Passed rather than read from the clock
-  /// so this function stays pure and total: a test that fixes it gets
-  /// the same list every time.
+  /// Epoch SECONDS. The pull-request rules read it to tell "this PR has
+  /// no CI" from "its CI has not started yet" (EMPTY_ROLLUP_GRACE_SECS),
+  /// and `at-time` triggers read it to tell "waiting" from "fire".
+  /// Passed rather than read from the clock so this function stays pure
+  /// and total: a test that fixes it gets the same list every time.
   now: number = Math.floor(Date.now() / 1000),
   /// Sessions that have been `working` or `waiting_for_input`. An `idle`
   /// agent-tool step without this is the shell's first prompt, not a
@@ -1709,14 +1774,18 @@ export function nextActions(
       // just armed; the tick that follows the repair decides on rows
       // that are true.
       //
-      // The trigger is STANDING, not spent: a rail that finishes and is
-      // then given new work arms again once its condition holds again.
-      // That is the plain reading of "start when the others are done",
-      // and it is why nothing here records that the trigger has fired --
-      // there is no such fact.
+      // Event triggers (all-rails-done, rail-done) are STANDING, not
+      // spent: a rail that finishes and is then given new work arms
+      // again once its condition holds again. That is the plain reading
+      // of "start when the others are done", and it is why nothing here
+      // records that the trigger has fired -- there is no such fact.
+      //
+      // An `at-time` schedule is the opposite: one-shot. The executor
+      // clears it after arming so a time that has passed does not re-arm
+      // the rail on every later tick.
       if (actions.length === before && railStateOf(orch, rail.id) === "idle") {
         const stageId = firstUnfinishedStageId(rail, orch);
-        if (stageId !== null && railTriggerVerdict(orch, rail).kind === "fire") {
+        if (stageId !== null && railTriggerVerdict(orch, rail, now).kind === "fire") {
           actions.push({ kind: "arm", railId: rail.id, stageId });
         }
       }

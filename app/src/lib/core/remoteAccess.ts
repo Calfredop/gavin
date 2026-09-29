@@ -321,7 +321,7 @@ export const TRANSPORT_NOTE =
   "On, the daemon dials the Relay below and stays connected to it, with this window open or closed. It opens no port on this machine — both ends dial out — and the Relay carries traffic it cannot read. Off, it dials nothing. A Device becomes one only by pairing here, at the desk.";
 
 /// What the note says instead against a daemon that does not dial --
-/// one older than v45, which has the switch and the Relay URL and acts on
+/// one older than v52, which has the switch and the Relay URL and acts on
 /// neither. `TRANSPORT_NOTE` would be untrue of it, and the human would
 /// turn remote access on, see nothing wrong, and wait for a Device that
 /// cannot arrive.
@@ -587,7 +587,7 @@ export function admissionPlaceholder(set: boolean): string {
 }
 
 /// The admission field's own gate, on top of the section's. A daemon
-/// older than v45 parses `SetRemoteAccess` and drops the token on the
+/// older than v52 parses `SetRemoteAccess` and drops the token on the
 /// floor (the compat gate is per request TYPE), so against one the field
 /// would accept a token and keep nothing.
 export function relayAdmissionBlocked(compat: DaemonCompat | null): string | null {

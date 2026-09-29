@@ -81,6 +81,9 @@ vi.mock("$lib/core/layoutState", async () => {
     // consent, and whether this daemon can persist the budget at all.
     daemonCompat: writable({ daemonVersion: 22, appVersion: 22, degraded: false }),
     createSessionForCard: vi.fn().mockResolvedValue("sess-1"),
+    // The launching profile, as the real one names it against a daemon
+    // new enough to read it (`compressedLaunch`).
+    profileIdForLaunch: vi.fn((agent: { profileId: string }): string | undefined => agent.profileId),
     resolvedAgentFor: vi.fn(() => ({
       profileId: "claude-code",
       label: "Claude Code",
@@ -120,6 +123,7 @@ import {
   setGitViewPrefs,
   createSessionForCard,
   layoutState,
+  profileIdForLaunch,
   resolvedAgentFor,
   sessionExits,
   handleAgentSessionSpawned,
@@ -1051,7 +1055,28 @@ describe("commit via agent", () => {
     for (const l of ptyListeners) l({ payload: [sessionId, data] });
   }
 
+  // Hidden, and an agent all the same: it spends the limits a card run
+  // does, so it is a candidate for compression on the same terms.
+  it("names the profile it launches, and launches without one when there is none to name", async () => {
+    vi.mocked(profileIdForLaunch).mockImplementation((agent) => agent.profileId);
+    await launch();
+    expect(vi.mocked(backend.createSession).mock.calls[0]![3]).toBe(
+      vi.mocked(resolvedAgentFor).mock.results[0]!.value.profileId
+    );
+    expect(vi.mocked(backend.createSession).mock.calls[0]![3]).toBeTruthy();
+  });
+
+  it("launches with no profile against a daemon too old to read one", async () => {
+    vi.mocked(profileIdForLaunch).mockImplementation(() => undefined);
+
+    await launch();
+
+    expect(backend.createSession).toHaveBeenCalledOnce();
+    expect(vi.mocked(backend.createSession).mock.calls[0]![3]).toBeUndefined();
+  });
+
   it("runs the canned prompt headlessly, in the view's cwd, with no tab", async () => {
+    vi.mocked(profileIdForLaunch).mockImplementation((agent) => agent.profileId);
     const { done } = await launch();
     expect(backend.createSession).toHaveBeenCalledOnce();
     const [, command, root] = vi.mocked(backend.createSession).mock.calls[0]!;

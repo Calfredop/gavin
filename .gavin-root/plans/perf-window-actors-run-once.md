@@ -1,4 +1,5 @@
 ---
+order: 37888
 kind: task
 title: [perf] Turn verdicts, auto-resume and reclaim still run in every window
 status: To Do

@@ -16,12 +16,26 @@
     setGitTrackingDefault,
     restartDaemonInPlace,
     daemonCompat,
+    headroomDefault,
+    setHeadroomDefault,
   } from "$lib/core/layoutState";
   import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
   import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
   import { sanitizeFallbackThreshold } from "$lib/agents/agentFallback";
   import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
   import { modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
+  import { API_FAMILIES, apiFamilyOf, withApiFamily, type ApiFamily } from "$lib/agents/apiFamily";
+  import HeadroomControls from "$lib/agents/HeadroomControls.svelte";
+  import { DEFAULT_HEADROOM } from "$lib/agents/compression";
+  import { compressionSwitchBlocked } from "$lib/agents/compressionDriver";
+  import {
+    HEADROOM_RESIDUAL_NOTE,
+    headroomDefaultBlocked,
+    headroomFromSelect,
+    headroomOptions,
+    headroomToSelect,
+  } from "$lib/agents/headroomSetup";
+  import { headroomReading, watchHeadroom } from "$lib/agents/headroomState";
   import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "$lib/terminal/terminalFont";
   import {
     DEFAULT_AUTO_COMMIT,
@@ -240,6 +254,16 @@
     void setAgentDefaults(next);
   }
 
+  /// The custom agent's API family: what lets Headroom compress it. A
+  /// select commits on change -- there is no half-chosen family to guard
+  /// against. Dark on a daemon that would drop the family it is sent.
+  const apiFamilyBlocked = $derived(featureBlockedReason($daemonCompat, "customApiFamily"));
+
+  function commitApiFamily(family: ApiFamily): void {
+    if (family === apiFamilyOf($agentDefaultsStore)) return;
+    void setAgentDefaults(withApiFamily($agentDefaultsStore, family));
+  }
+
   /// One complexity row. `null` clears it, which is what "no agent for
   /// this level" means -- the card then runs the workspace's own.
   function setComplexity(level: Complexity, entry: ComplexityAgent | null): void {
@@ -248,6 +272,17 @@
     else delete complexity[level];
     void setAgentDefaults({ ...$agentDefaultsStore, complexity });
   }
+
+  // --- headroom --------------------------------------------------------
+  //
+  // Live while this page is open: whether it is running, its port and the
+  // lifetime total change by themselves, and an install's progress is
+  // read off the status. Everything the section draws is
+  // headroomSetup.ts's; the controls are shared with the wizard's step.
+  onMount(() => watchHeadroom());
+  const headroomDefaultGate = $derived(
+    headroomDefaultBlocked($headroomReading, compressionSwitchBlocked($daemonCompat))
+  );
 
   // --- updates ---------------------------------------------------------
   //
@@ -419,11 +454,11 @@
   // refetch afterwards.
   const remoteAccessGate = $derived(remoteAccessBlocked($daemonCompat));
   // The admission field's own gate, on top of the section's: a daemon
-  // older than v45 parses `SetRemoteAccess` and drops the token, so
+  // older than v52 parses `SetRemoteAccess` and drops the token, so
   // against one the field would take a token and keep nothing.
   const admissionGate = $derived(relayAdmissionBlocked($daemonCompat));
   /// What "on" means for the daemon that is actually running: one older
-  /// than v45 keeps the switch and dials nothing, and the note says so.
+  /// than v52 keeps the switch and dials nothing, and the note says so.
   const transportLine = $derived(transportNote($daemonCompat));
 
   let devices = $state<DeviceList | null>(null);
@@ -647,7 +682,26 @@
       keywords: ["Git", "Track gavin's files", "tracking", "gitignore", "initialize"],
     },
     { id: "agent-defaults", keywords: ["Agent defaults", "model", "Claude Code", "Codex"] },
-    { id: "custom-agent", keywords: ["Custom agent", "Command", "Model flag"] },
+    {
+      id: "custom-agent",
+      keywords: ["Custom agent", "Command", "Model flag", "API family", "Headroom", "compression"],
+    },
+    {
+      id: "headroom",
+      keywords: [
+        "Headroom",
+        "compression",
+        "compress",
+        "tokens saved",
+        "savings",
+        "proxy",
+        "uv",
+        "Install",
+        "Update",
+        "Locate",
+        "Check again",
+      ],
+    },
     {
       id: "tools",
       keywords: [
@@ -1023,6 +1077,22 @@
           }}
         />
       </div>
+      <div class="row">
+        <label for="custom-api-family">API family</label>
+        <select
+          id="custom-api-family"
+          value={apiFamilyOf($agentDefaultsStore)}
+          disabled={apiFamilyBlocked !== null}
+          onchange={(e) => commitApiFamily(e.currentTarget.value as ApiFamily)}
+        >
+          {#each API_FAMILIES as family (family.value)}
+            <option value={family.value}>{family.label}</option>
+          {/each}
+        </select>
+      </div>
+      {#if apiFamilyBlocked}
+        <p class="hint warn">{apiFamilyBlocked}</p>
+      {/if}
       <p class="hint">
         The agent behind the <strong>Custom…</strong> profile — your own CLI, launched as written.
         Any workspace on that profile that names no command of its own uses this one. The model flag
@@ -1030,6 +1100,52 @@
         custom agent stays dark rather than guessing a flag. A workspace can override both on its
         own Settings tab.
       </p>
+      <p class="hint">
+        The API family is the API your agent talks to, and it is how a workspace with compression
+        on can send it through Headroom: Anthropic points <code>ANTHROPIC_BASE_URL</code> at
+        Headroom, OpenAI-compatible points <code>OPENAI_BASE_URL</code>. None leaves the agent
+        uncompressed.
+      </p>
+    </section>
+
+    <section hidden={!settingsFilter.visible("headroom") || selectedSection !== "headroom"}>
+      <h3>Headroom</h3>
+      <p class="hint">
+        Headroom compresses what your agents send their model — tool output, logs, file reads — so
+        the same work spends less of a subscription's limit. gavin installs a version it has tested,
+        runs it as part of the daemon, and routes an agent through it only in a workspace with
+        compression on.
+      </p>
+      <div class="compression-controls">
+        <HeadroomControls reading={$headroomReading} />
+      </div>
+      <div class="row">
+        <label for="headroom-default">Compression</label>
+        <!-- The reason hangs on the wrapping span, not the select: a
+             disabled element fires no mouseenter, so a tooltip on it can
+             never open. -->
+        <span use:tooltip={headroomDefaultGate ?? ""}>
+          <select
+            id="headroom-default"
+            value={headroomToSelect($headroomDefault)}
+            disabled={headroomDefaultGate !== null}
+            onchange={(e) => void setHeadroomDefault(headroomFromSelect(e.currentTarget.value))}
+          >
+            {#each headroomOptions(DEFAULT_HEADROOM) as opt (opt.value)}
+              <option value={opt.value}>{opt.label}</option>
+            {/each}
+          </select>
+        </span>
+      </div>
+      {#if headroomDefaultGate}
+        <p class="hint warn">{headroomDefaultGate}</p>
+      {/if}
+      <p class="hint">
+        Every workspace that sets nothing of its own follows this. It starts off, so installing
+        Headroom never changes how a workspace already talks to its model; a workspace can switch it
+        either way on its own Settings tab, under Agent.
+      </p>
+      <p class="hint">{HEADROOM_RESIDUAL_NOTE}</p>
     </section>
 
     <section hidden={!settingsFilter.visible("tools") || selectedSection !== "tools"}>
@@ -1789,6 +1905,9 @@
   }
   .hint.error {
     color: var(--danger-text);
+  }
+  .compression-controls {
+    margin: 12px 0;
   }
   .tools-explorer {
     margin-top: 10px;

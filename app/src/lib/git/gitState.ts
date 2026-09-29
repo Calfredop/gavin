@@ -10,6 +10,7 @@ import {
   daemonCompat,
   setGitViewPrefs,
   createSessionForCard,
+  profileIdForLaunch,
   resolvedAgentFor,
   sessionExits,
   handleAgentSessionSpawned,
@@ -784,8 +785,14 @@ export async function commitViaAgent(
   }));
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(s.cwd, command, workspaceRootPath(workspaceId) ?? undefined);
-
+    // Hidden, and an agent all the same: it spends the same limits a
+    // card run does, so it is compressed on the same terms.
+    sessionId = await backend.createSession(
+      s.cwd,
+      command,
+      workspaceRootPath(workspaceId) ?? undefined,
+      profileIdForLaunch(agent)
+    );
   } catch (e) {
     update(workspaceId, (st) => ({ ...st, agentCommit: null, error: `Commit via agent failed: ${errorText(e)}` }));
     return false;

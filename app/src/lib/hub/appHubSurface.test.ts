@@ -134,6 +134,40 @@ describe("the agent usage recap", () => {
   });
 });
 
+describe("Headroom's savings in each window", () => {
+  it("sums through headroomSavings.ts, in the window the row already shows", () => {
+    const hub = source(HUB);
+    expect(hub).toContain("savingsByProfile(usage, profileByWorkspace, $headroomSavingsStore)");
+    expect(hub).toContain("savingsSince(usage.map((row) => row.worst))");
+    // The usage recap and the savings attribute a workspace to the same
+    // agent from one map, so a row's bar and its saving are one fleet.
+    expect(hub).toContain("profileByWorkspace,");
+    expect(hub).toContain("windowSavingsLine(saved)");
+    expect(hub).toContain("windowSavingsTip(saved, worst)");
+  });
+
+  it("asks through the gated loader, re-asking when the daemon's version is known", () => {
+    const hub = source(HUB);
+    expect(hub).toContain("loadHeadroomSavings($daemonCompat, savingsFrom)");
+    expect(hub).not.toContain("backend.headroomSavings");
+  });
+
+  it("stops asking when the hub goes away", () => {
+    const hub = source(HUB);
+    expect(hub).toContain("savingsTimer = setInterval(");
+    expect(hub).toContain("if (savingsTimer !== null) clearInterval(savingsTimer)");
+  });
+});
+
+describe("the run history's savings", () => {
+  it("words a run's saving and the card's through runHistory.ts", () => {
+    const modal = source("RunHistoryModal.svelte");
+    expect(modal).toContain("savedSummary(row.run)");
+    expect(modal).toContain("savedBreakdown(row.run)");
+    expect(modal).toContain("totalSaved(runs)");
+  });
+});
+
 describe("the sessions recap", () => {
   it("builds its rows with the task manager's own builder", () => {
     // One set of rules for naming, placing and calling a session stale,

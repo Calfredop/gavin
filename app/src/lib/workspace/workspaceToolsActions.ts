@@ -40,6 +40,7 @@ import {
   daemonCompat,
   handleAgentSessionSpawned,
   layoutState,
+  profileIdForLaunch,
   resolvedAgentFor,
   retainTabOnExit,
   setSessionName,
@@ -180,10 +181,19 @@ async function launch(
     return `${agent.label} has no verified way to take a prompt on the command line, so gavin cannot run an agent tool with it.`;
   }
 
+  // Only an agent tool names a profile, for the reason only one gets a
+  // conversation: a command or script tool is a shell, and a shell is
+  // never compressed.
+  const profileId = tool.kind === "agent" ? profileIdForLaunch(agent) : undefined;
+
   let sessionId: string;
   try {
-    sessionId = await backend.createSession(cwd, command, workspaceRootPath(workspaceId) ?? undefined);
-
+    sessionId = await backend.createSession(
+      cwd,
+      command,
+      workspaceRootPath(workspaceId) ?? undefined,
+      profileId
+    );
   } catch (e) {
     return `Couldn't start ${tool.name}: ${e instanceof Error ? e.message : e}`;
   }

@@ -23,7 +23,11 @@
     queuedInputsById,
     repairUnknownTabs,
     terminalFontSize,
+    headroomDefault,
   } from "$lib/core/layoutState";
+  import { ownHeadroom, resolveHeadroom } from "$lib/agents/compression";
+  import { headroomException } from "$lib/agents/headroomMark";
+  import { sessionCompressionById } from "$lib/agents/headroomMarkState";
   import { turnVerdictById } from "$lib/agents/turnVerdictState";
   import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
   import { gavinTrees } from "$lib/core/gavinState";
@@ -59,6 +63,7 @@
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
   import {
     gitIndicator,
+    headroomIndicator,
     shellOrphanIndicator,
     shellRestartedIndicator,
     tabAgentIndicator,
@@ -296,6 +301,18 @@
     const status = $layoutState.gitStatusById[sessionId];
     if (!status) return null;
     return gitIndicator(status.dirty);
+  }
+
+  // The Headroom exception mark (headroomMark.ts): only on a session in a
+  // workspace with compression on that is not compressed, naming which of
+  // the three reasons it is. A compressed session draws nothing, which is
+  // every agent tab in such a workspace. The workspace is this pane's own
+  // -- only the active page renders panes -- and its setting is the one
+  // it has NOW: a switch turned off since the launch has asked for
+  // exactly what the session is.
+  function tabHeadroomBadge(sessionId: string): Indicator | null {
+    const compressedHere = resolveHeadroom(ownHeadroom(getActiveWorkspace($layoutState)), $headroomDefault);
+    return headroomIndicator(headroomException($sessionCompressionById[sessionId], compressedHere));
   }
 
   // The three pane controls, on the pane. They used to live in the app's
@@ -606,6 +623,10 @@
           {#if tabGitBadge(sessionId)}
             {@const git = tabGitBadge(sessionId)}
             {#if git}<StatusBadge indicator={git} size={10} />{/if}
+          {/if}
+          {#if tabHeadroomBadge(sessionId)}
+            {@const headroom = tabHeadroomBadge(sessionId)}
+            {#if headroom}<StatusBadge indicator={headroom} size={10} />{/if}
           {/if}
           <!-- `restored` still decides whether the badge is THERE, exactly
                as it always did: it is a note about the screen, and typing

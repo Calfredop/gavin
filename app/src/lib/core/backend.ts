@@ -8,6 +8,7 @@ import type { CardRun, TokenReport } from "$lib/cards/runHistory";
 import type { ConversationLog } from "$lib/cards/cardRun";
 import { invoke } from "@tauri-apps/api/core";
 import { isTerminalReport } from "$lib/terminal/terminalReport";
+import { noteInputSubmitted } from "$lib/agents/headroomMarkState";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Board, CardSessionRecord, Column, Label } from "$lib/board/kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
@@ -33,6 +34,8 @@ import type { ManagedSessions } from "$lib/sessions/sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspace/workspaceDelete";
 import type { AttachmentStatus } from "$lib/cards/attachments";
 import type { WorkspaceSettingsPatch, WorkspaceSettingsRecord } from "$lib/workspace/workspaceSettings";
+import type { HeadroomStatus, HeadroomWorkspace, LaunchProfile } from "$lib/agents/compression";
+import type { RunSavings } from "$lib/agents/headroomSavings";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
 import type { DeviceList, PairingOffer } from "$lib/core/remoteAccess";
 import { keyedQueue } from "$lib/core/keyedQueue";
@@ -44,12 +47,30 @@ import { keyedQueue } from "$lib/core/keyedQueue";
 /// to its cwd alone is refused every write to the card it was launched
 /// for, which lives in the main checkout. Omit it only where there is no
 /// workspace to name.
+///
+/// `profileId` is the agent profile doing the launching, and it is sent
+/// by every surface that launches an AGENT and by nothing else: it is
+/// what makes the session a candidate for compression, which the daemon
+/// decides as it spawns the process. A shell tab, a command tool and a
+/// setup script name none. Callers get theirs from `profileIdForLaunch`,
+/// which names none against a daemon too old to read it.
+///
+/// Auto-resume's relaunch of a session that broke on Headroom passes the
+/// profile with the override attached (`withoutHeadroom` in
+/// compression.ts); every other launch passes the bare id, and sends
+/// exactly the arguments it always did. What the daemon decided comes
+/// back as the `session-compression` event, not here.
 export function createSession(
   cwd?: string,
   command?: string,
-  workspaceRoot?: string
+  workspaceRoot?: string,
+  profileId?: LaunchProfile
 ): Promise<string> {
-  return invoke("create_session", { cwd, command, workspaceRoot });
+  if (typeof profileId === "object") {
+    const { profileId: id, withoutHeadroom } = profileId;
+    return invoke("create_session", { cwd, command, workspaceRoot, profileId: id, withoutHeadroom });
+  }
+  return invoke("create_session", { cwd, command, workspaceRoot, profileId });
 }
 
 
@@ -403,6 +424,62 @@ export function setRequireReview(enabled: boolean | null): Promise<void> {
   return invoke("set_require_review", { enabled });
 }
 
+/// The app-wide compression default from config.json, or null when
+/// nobody has chosen -- in which case gavin's own default applies, which
+/// is off. Live, like `getRequireReview`: a workspace with no setting of
+/// its own resolves against this at the moment it is resolved.
+export function getHeadroomDefault(): Promise<boolean | null> {
+  return invoke("get_headroom_default");
+}
+
+export function setHeadroomDefault(enabled: boolean | null): Promise<void> {
+  return invoke("set_headroom_default", { enabled });
+}
+
+/// Hands the local daemon every workspace's effective compression
+/// setting, in place of whatever it held. Answers with Headroom's status
+/// AFTER the list was taken. See `compressionDriver.ts`, its one caller.
+export function setHeadroomWorkspaces(workspaces: HeadroomWorkspace[]): Promise<HeadroomStatus> {
+  return invoke("set_headroom_workspaces", { workspaces });
+}
+
+/// Headroom on this machine, as the local daemon sees it. Reads what
+/// detection stored; the first ask of a daemon's lifetime runs detection.
+/// See `headroomState.ts`, its one caller.
+export function getHeadroomStatus(): Promise<HeadroomStatus> {
+  return invoke("get_headroom_status");
+}
+
+/// Every card run's savings snapshot that ended at or after `since`
+/// (epoch seconds), from the local daemon (v49). Gate on
+/// FEATURE_MIN_VERSION.headroomSavings first: an older daemon refuses the
+/// request. See `headroomSavingsState.ts`, its one caller.
+export function headroomSavings(since: number): Promise<RunSavings[]> {
+  return invoke("headroom_savings", { since });
+}
+
+/// Whether Headroom has seen a compressed session's requests, asked of
+/// the local daemon when one of the session's turns ends (v50):
+/// `reached`, `unreached` or `unknown`, as the daemon wrote it. Gate on
+/// FEATURE_MIN_VERSION.headroomFailures first: an older daemon refuses
+/// the request. See `headroomReachDriver.ts`, its one caller.
+export function headroomReach(sessionId: string): Promise<string> {
+  return invoke("headroom_reach", { sessionId });
+}
+
+/// Looks for Headroom again. `locatedPath` absent is Check again; a path
+/// is the file Locate… picked, remembered from then on; "" forgets it.
+export function detectHeadroom(locatedPath?: string): Promise<HeadroomStatus> {
+  return invoke("detect_headroom", { locatedPath: locatedPath ?? null });
+}
+
+/// Installs the pinned Headroom and fetches its compression model. Answers
+/// at once with the install marked running; its progress is read off the
+/// status.
+export function installHeadroom(): Promise<HeadroomStatus> {
+  return invoke("install_headroom");
+}
+
 /// The app-wide default a NEW workspace's init starts from. Same
 /// absence-not-the-default convention as the theme, the font size and the
 /// auto-commit block: null means nobody chose, `false` means an install
@@ -604,6 +681,8 @@ export function setOnWriteInputHook(handler: (sessionId: string) => void): void 
 
 export function writeInput(sessionId: string, data: string): Promise<void> {
   if (!isTerminalReport(data)) onWriteInput?.(sessionId);
+  // Every submit crosses here: a keystroke Enter, or a paste sent with one.
+  if (data.endsWith("\r")) noteInputSubmitted(sessionId);
   return invoke("write_input", { sessionId, data });
 }
 
@@ -873,6 +952,13 @@ export interface SessionBaseline {
   /// push arrives once per app PROCESS -- and it matters more: a red
   /// session with nothing to say for itself is the state this replaces.
   failureReason: string | null;
+  /// What the daemon decided about routing it through Headroom, and what
+  /// Headroom was later found to have seen of it (v50): the tab's
+  /// exception mark reads all three. Absent from a host older than the
+  /// fields, which reads as "not compressed, nothing to explain".
+  compressed?: boolean;
+  uncompressedReason?: string | null;
+  headroomReach?: string | null;
 }
 
 /// Every live session on every daemon, and which linked ssh hosts those

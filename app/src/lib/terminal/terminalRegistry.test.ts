@@ -6,6 +6,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // exists is a repaint nobody receives.
 const written: string[] = [];
 let resolveListen: (() => void) | undefined;
+// The OSC handlers the last terminal built registered, by identifier.
+const oscHandlers = new Map<number, (payload: string) => boolean>();
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -18,6 +20,11 @@ vi.mock("@xterm/xterm", () => ({
     write(data: string) {
       written.push(data);
     }
+    parser = {
+      registerOscHandler(ident: number, handler: (payload: string) => boolean) {
+        oscHandlers.set(ident, handler);
+      },
+    };
     loadAddon() {}
     open() {}
     onData() {}
@@ -29,6 +36,7 @@ vi.mock("@xterm/xterm", () => ({
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({ writeText: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@tauri-apps/api/event", () => ({
   // Deliberately never resolved on its own: each test decides when the
   // listener becomes live, which is the whole point.
@@ -45,6 +53,7 @@ vi.mock("$lib/core/backend", () => ({
 }));
 
 import * as backend from "$lib/core/backend";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   getOrCreateTerminal,
   restoreScreen,
@@ -143,5 +152,41 @@ describe("terminal font size", () => {
 
   it("does nothing for a session with no terminal", () => {
     expect(setTerminalFontSize("nobody", 13)).toBe(false);
+  });
+});
+
+describe("a program copying through the terminal (OSC 52)", () => {
+  const b64 = (text: string) => btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+
+  beforeEach(() => {
+    oscHandlers.clear();
+    vi.mocked(writeText).mockClear();
+    vi.stubGlobal("document", { createElement: () => ({ style: {} }) });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("puts what the program copied on the clipboard", () => {
+    getOrCreateTerminal("o1", 13);
+    // Claude Code over SSH has no pbcopy on the far side: this is its copy.
+    expect(oscHandlers.get(52)?.(`c;${b64("copied over ssh")}`)).toBe(true);
+    expect(writeText).toHaveBeenCalledWith("copied over ssh");
+    destroyTerminal("o1");
+  });
+
+  it("claims a query without answering it or touching the clipboard", () => {
+    getOrCreateTerminal("o2", 13);
+    expect(oscHandlers.get(52)?.("c;?")).toBe(true);
+    expect(writeText).not.toHaveBeenCalled();
+    destroyTerminal("o2");
+  });
+
+  it("survives a clipboard that refuses the write", async () => {
+    vi.mocked(writeText).mockRejectedValueOnce("no clipboard here");
+    getOrCreateTerminal("o3", 13);
+    expect(oscHandlers.get(52)?.(`c;${b64("x")}`)).toBe(true);
+    await flush();
+    destroyTerminal("o3");
   });
 });

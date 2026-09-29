@@ -35,6 +35,7 @@ import {
   conversationIdForLaunch,
   createTiledPage,
   layoutState,
+  profileIdForLaunch,
   setSessionName,
   switchWorkspaceView,
 } from "$lib/core/layoutState";
@@ -215,7 +216,14 @@ export async function startBestOfN(
   const page = await createTiledPage(
     workspaceId,
     runPageName(card.title),
-    launches.map((l) => ({ cwd: l.plan.worktreePath, command: l.line as string }))
+    // Each candidate under its OWN profile. The line may open with the
+    // worktree's setup rather than the agent's binary, which is why the
+    // profile is said and not read off the command.
+    launches.map((l) => ({
+      cwd: l.plan.worktreePath,
+      command: l.line as string,
+      profileId: profileIdForLaunch(l.agent),
+    }))
   );
   if (!page) {
     await rollback(workspaceId, created);

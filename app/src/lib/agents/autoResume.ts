@@ -30,6 +30,22 @@
 /// failure unclassifiable.
 export const SLEPT_REASON_PREFIX = "the machine slept for";
 
+/// The gavin-authored opening of a HEADROOM failure's reason
+/// (`HEADROOM_REASON_PREFIX`, `crates/daemon/src/server.rs`): a
+/// compressed session broke while Headroom was failing its health check.
+///
+/// Gavin's own sentence for the reason the suspend's is: the daemon
+/// reached it from a fact the screen does not show -- Headroom's health
+/// at the moment of the break -- so no profile's table could name it.
+/// Pinned on the Rust side by
+/// `the_headroom_reason_keeps_the_prefix_the_app_classifies_on`. The
+/// agent's own line is left out of that reason on purpose: a build older
+/// than this one matches reasons against the agent lines they contain,
+/// and reading this one as `network` would resume every compressed
+/// session into the proxy they all broke on. Without it, such a build
+/// reads `unknown`, which never resumes.
+export const HEADROOM_REASON_PREFIX = "Headroom stopped answering";
+
 /// Why an agent stopped, as far as gavin can tell.
 ///
 /// - `suspend` -- the machine slept through the conversation. The
@@ -43,6 +59,11 @@ export const SLEPT_REASON_PREFIX = "the machine slept for";
 /// - `auth` -- the agent wants a login.
 /// - `crashed` -- the agent process died. Not a connection failure, and
 ///   nothing suggests a second run behaves differently.
+/// - `headroom` -- a compressed session broke while Headroom, the proxy
+///   its model traffic crosses, was failing its health check. Transient
+///   like `network`, and unlike it a retry through the same route fails
+///   the same way, across every compressed session at once -- so the
+///   relaunch goes around Headroom rather than through it.
 /// - `unknown` -- nothing in the profile's table matched. Not an error
 ///   and not "probably a network blip": a cause gavin cannot name.
 export type FailureCause =
@@ -52,6 +73,7 @@ export type FailureCause =
   | "usage-limit"
   | "auth"
   | "crashed"
+  | "headroom"
   | "unknown";
 
 /// One row of a profile's cause table (`agent_setup.rs`'s
@@ -68,13 +90,14 @@ const KNOWN_CAUSES: readonly FailureCause[] = [
   "usage-limit",
   "auth",
   "crashed",
+  "headroom",
   "unknown",
 ];
 
 /// What the daemon's failure reason MEANS.
 ///
-/// The suspend prefix first, because it is gavin's own sentence and can
-/// never be in a profile's table. Then the profile's rows in order, FIRST
+/// The two prefixes first -- the suspend's and Headroom's -- because they
+/// are gavin's own sentences and can never be in a profile's table. Then the profile's rows in order, FIRST
 /// MATCH WINS -- Claude Code's expired-token line carries the generic
 /// `API Error:` marker as well as `/login`, so an unordered scan would
 /// classify an auth failure as a network one and resume into a login
@@ -92,6 +115,7 @@ export function classifyFailure(
   const said = reason?.trim();
   if (!said) return "unknown";
   if (said.startsWith(SLEPT_REASON_PREFIX)) return "suspend";
+  if (said.startsWith(HEADROOM_REASON_PREFIX)) return "headroom";
   for (const row of causes) {
     if (row.pattern && said.includes(row.pattern)) {
       return (KNOWN_CAUSES as readonly string[]).includes(row.cause)
@@ -129,6 +153,10 @@ export type AutoResumePolicy =
 /// - `auth` -- resuming loops against a wall.
 /// - `crashed` -- not a connection failure. Nothing suggests a second
 ///   run behaves differently, and the transcript may be why it died.
+/// - `headroom` -- resume, once the network is reachable, and WITHOUT
+///   Headroom (`relaunchesWithoutHeadroom`). Reachability rather than a
+///   backoff, because the relaunch no longer depends on the thing that
+///   broke: what it needs is the route to the model, like `network`.
 /// - `unknown` -- see the header. Never.
 export function autoResumePolicy(cause: FailureCause): AutoResumePolicy {
   switch (cause) {
@@ -159,9 +187,26 @@ export function autoResumePolicy(cause: FailureCause): AutoResumePolicy {
       return { kind: "never", why: "the agent is asking for a login, which only you can give it" };
     case "crashed":
       return { kind: "never", why: "the agent process died, which a second run would not change" };
+    case "headroom":
+      return { kind: "resume", on: "reachable" };
     case "unknown":
       return { kind: "never", why: "gavin cannot tell what broke, so it will not guess" };
   }
+}
+
+/// Whether a resume for this cause relaunches the agent without Headroom
+/// (`CreateSession.withoutHeadroom`, v50).
+///
+/// Only `headroom`. Every other resume is a fresh spawn the daemon decides
+/// again against Headroom as it is then, which is right when something
+/// else broke. After Headroom broke, that decision would pick the same
+/// proxy whenever it looks ready -- one the supervisor restarted a moment
+/// ago, or one that answers `/readyz` and fails the rest -- and the one
+/// automatic attempt would be spent on it. The override is the daemon's
+/// to honour, and the relaunched session carries `headroom-failed`, so
+/// its tab says why it is not compressed.
+export function relaunchesWithoutHeadroom(cause: FailureCause): boolean {
+  return cause === "headroom";
 }
 
 /// At most ONE automatic resume per run. No exponential ladder and no
@@ -245,6 +290,13 @@ export interface AutoResumeInput {
   /// parallel stage also failed, a daemon too old to persist the budget,
   /// a claim already held. Reported as-is so the audit trail can say it.
   blocked?: string | null;
+  /// Non-null when the daemon cannot take a relaunch without Headroom
+  /// (`featureBlockedReason(compat, "headroomFailures")`): the reason to
+  /// say instead of resuming a `headroom` failure. Read for that cause
+  /// only -- an older daemon would drop the override and hand the
+  /// relaunch the proxy it broke on, which is the loop this cause exists
+  /// to break.
+  withoutHeadroomBlocked?: string | null;
 }
 
 export type AutoResumeDecision =
@@ -280,6 +332,9 @@ export function autoResumeDecision(input: AutoResumeInput): AutoResumeDecision {
 
   const policy = autoResumePolicy(cause);
   if (policy.kind !== "resume") return skip(policy.why);
+  if (relaunchesWithoutHeadroom(cause) && input.withoutHeadroomBlocked) {
+    return skip(input.withoutHeadroomBlocked);
+  }
   return { kind: "resume", cause, on: policy.on, delayMs: resumeDelayMs(policy.on) };
 }
 

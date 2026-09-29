@@ -1,5 +1,5 @@
 ---
-order: 11264
+order: 13312
 kind: task
 title: [fix] A kept-open shell tool tab can show nothing
 labels: bug

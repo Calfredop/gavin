@@ -739,7 +739,9 @@ describe("the until step's wiring", () => {
     expect(source).toContain(
       'buildToolCommand("script", buildUntilScript(body, untilLogPath(step.id)), tool.name)'
     );
-    expect(source).toContain("createSessionOnRailPage(workspaceId, rail.id, cwd, command)");
+    expect(source).toContain(
+      "createSessionOnRailPage(workspaceId, rail.id, cwd, command, profileId)"
+    );
   });
 
   // The budget lives in `resumeAttempts` on the run row. Every other

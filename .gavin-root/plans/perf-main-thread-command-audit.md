@@ -1,5 +1,5 @@
 ---
-order: 12288
+order: 14336
 kind: plan
 title: "[perf] Commands that freeze the UI: audit of every Tauri command"
 labels: bug

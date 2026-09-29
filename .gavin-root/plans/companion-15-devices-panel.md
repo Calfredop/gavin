@@ -1,4 +1,5 @@
 ---
+order: 17408
 kind: task
 title: Companion 15: Devices panel at the desk
 status: To Do

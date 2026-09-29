@@ -1,12 +1,12 @@
 //! The desktop's forwarding connection (ADR 0003, companion-13).
 //!
-//! While the daemon is new enough (v47), the app opens a third connection
+//! While the daemon is new enough (v54), the app opens a third connection
 //! Hello'd as `ConnectionKind::Forward`. Over it the daemon hands gated
 //! Tauri commands (`ForwardCommand`); this module dispatches each through
 //! the **same** invoke handler the webview's `invoke` reaches, and writes
 //! `ForwardResult` back. Events the host emits to its webview are offered
 //! on the same connection as `OfferDesktopEvent`, so subscribed Devices
-//! hear them. Attention asks (`ForwardAttention`, v48) are answered from
+//! hear them. Attention asks (`ForwardAttention`, v55) are answered from
 //! the snapshot the webview keeps filled via `set_companion_attention`.
 //!
 //! One thread owns the connection: offers and results both travel through
@@ -29,8 +29,8 @@ use tauri::webview::InvokeRequest;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 /// Protocol version that introduced the Forward connection and the five
-/// forwarding request types (`PROTOCOL_VERSION` v47 / companion-12).
-pub const FORWARDING_MIN_VERSION: u32 = 47;
+/// forwarding request types (`PROTOCOL_VERSION` v54 / companion-12).
+pub const FORWARDING_MIN_VERSION: u32 = 54;
 
 /// How long a single forwarded command may take before we answer the
 /// daemon with an error. Matches the daemon's own wait in
@@ -77,7 +77,7 @@ pub fn attention_items<R: Runtime>(app: &AppHandle<R>) -> Vec<AttentionItem> {
 }
 
 /// Opens (or re-opens) the forwarding connection against the local
-/// daemon. No-op when the daemon is older than v47 or has no token yet.
+/// daemon. No-op when the daemon is older than v54 or has no token yet.
 ///
 /// Called from `bootstrap` and `reconnect` once the command and push
 /// connections are live. The previous loop, if any, exits when its socket

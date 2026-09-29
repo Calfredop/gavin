@@ -12,6 +12,8 @@
   import { resolveAgentConfig, resolvePrdPath } from "$lib/core/settings";
   import { setupProgress, SETUP_STEPS } from "$lib/workspace/setupWizard";
   import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
+  import { workspaceHeadroomReading } from "$lib/agents/headroomSetup";
+  import { ensureHeadroomReading, headroomReading } from "$lib/agents/headroomState";
   import { gavinTrees, refreshGavinTree } from "$lib/core/gavinState";
   import { fetchBoard, kanbanState } from "$lib/board/kanbanState";
   import { boardSummary, planSummary, prdExcerpt, orchestrationSummary } from "$lib/hub/homeSummary";
@@ -80,6 +82,12 @@
   // rendered as a step left undone.
   let superpowers = $state<SuperpowersStatus | undefined>(undefined);
   let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
+  // And the Headroom step's reading, which is the machine's rather than
+  // this root's: shared, asked once and kept, so a visit to this tab costs
+  // no round trip once it has landed. Unknown until then, for the reason
+  // the two above are.
+  ensureHeadroomReading();
+  const headroom = $derived(workspaceHeadroomReading($headroomReading, ws));
 
   const setup = $derived(
     setupProgress({
@@ -97,6 +105,8 @@
       gitTrackingAsked: Boolean(ws?.gitTrackingAsked),
       // Same shape, same reason -- see the git field above.
       requireReviewAsked: Boolean(ws?.requireReviewAsked),
+      headroomReading: headroom,
+      headroomAsked: Boolean(ws?.headroomAsked),
     })
   );
 

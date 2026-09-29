@@ -61,7 +61,7 @@ describe("the fork dialog says why it failed", () => {
     // leave a worktree with no binding AND no setup session. The catch
     // is around the callback alone; the session is outside it.
     expect(s).toMatch(
-      /try \{\s*await onPicked\?\.\(path\);\s*\} catch \(e\) \{\s*reportAfterCreate\([^)]*\);\s*\}\s*\/\/[^]*?if \(run\) onRunInWorktree\(path, run\.line\);/
+      /try \{\s*await onPicked\?\.\(path\);\s*\} catch \(e\) \{\s*reportAfterCreate\([^)]*\);\s*\}\s*\/\/[^]*?if \(run\) onRunInWorktree\(path, run\.line, run\.agentAfter\);/
     );
     // Nothing on screen to put it in by then -- the dialog closed itself
     // before these ran -- so it goes to an alert, unawaited so the

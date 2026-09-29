@@ -94,7 +94,9 @@ describe("the session a new worktree gets", () => {
     // Captured before the awaits, run after them: what executes is what
     // the human saw on the button they pressed.
     expect(s).toContain("const run = plan;");
-    expect(s).toContain("if (run) onRunInWorktree(path, run.line);");
+    // With whether the agent is on the end of it: a line that is setup
+    // and nothing else is a shell, and names no profile.
+    expect(s).toContain("if (run) onRunInWorktree(path, run.line, run.agentAfter);");
   });
 
   it("reads the setup from the WORKSPACE root, not the git toplevel it forks from", () => {

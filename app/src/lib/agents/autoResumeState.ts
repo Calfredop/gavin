@@ -15,6 +15,7 @@ import {
   autoResumeDecision,
   classifyFailure,
   isImmediateRefailure,
+  relaunchesWithoutHeadroom,
   resumeNotificationBody,
   resumeSkippedBody,
   staggerDelays,
@@ -189,6 +190,10 @@ function decide(
   // surfaces, because a workspace that opted in against a NEWER daemon
   // and then fell back to an older one would otherwise loop.
   const tooOld = featureBlockedReason(get(daemonCompat), "autoResume");
+  // A Headroom failure is relaunched around Headroom, and a daemon older
+  // than v50 would drop the override and hand the relaunch the proxy it
+  // broke on. Read for that cause only (autoResume.ts).
+  const withoutHeadroomBlocked = featureBlockedReason(get(daemonCompat), "headroomFailures");
 
   if (owner.kind === "step") {
     const orch = get(orchestrations)[owner.workspaceId];
@@ -203,6 +208,7 @@ function decide(
       conversationId: run?.conversationId,
       workFinished: owner.step.cardPath ? cardIsFinished(owner.workspaceId, owner.step.cardPath) : false,
       blocked: tooOld ?? parallelStageBlocker(owner.rail, owner.step),
+      withoutHeadroomBlocked,
     });
   }
 
@@ -219,6 +225,7 @@ function decide(
     conversationId: binding?.conversationId,
     workFinished: cardIsFinished(owner.workspaceId, owner.path),
     blocked: tooOld,
+    withoutHeadroomBlocked,
   });
 }
 
@@ -334,10 +341,17 @@ async function fire(sessionId: string, previousStatus: SessionStatus | undefined
   const failedAt = clock.now();
   const reason = get(layoutState).failureReasonById[sessionId] ?? "";
   const label = ownerLabel(owner, sessionId);
+  // A run that broke on Headroom goes back WITHOUT it: decided again, the
+  // relaunch would be handed the proxy it broke on whenever that proxy
+  // looks ready. Named only when it applies, so every other resume is the
+  // call it always was.
+  const options = relaunchesWithoutHeadroom(decision.cause)
+    ? { automatic: true, withoutHeadroom: true }
+    : { automatic: true };
   const error =
     owner.kind === "step"
-      ? await resumeStep(owner.workspaceId, owner.step.id, { automatic: true })
-      : await resumeCardByPath(owner.workspaceId, owner.path);
+      ? await resumeStep(owner.workspaceId, owner.step.id, options)
+      : await resumeCardByPath(owner.workspaceId, owner.path, options);
 
   if (error) {
     // The caller that takes a claim and then fails to launch gives it
@@ -366,10 +380,14 @@ async function fire(sessionId: string, previousStatus: SessionStatus | undefined
   void notify(resumeNotificationBody(label, record));
 }
 
-async function resumeCardByPath(workspaceId: string, path: string): Promise<string | null> {
+async function resumeCardByPath(
+  workspaceId: string,
+  path: string,
+  options: { automatic?: boolean; withoutHeadroom?: boolean }
+): Promise<string | null> {
   const card = cardViewForPath(get(gavinTrees)[workspaceId], path);
   if (!card) return "the card file is gone";
-  return resumeCard(workspaceId, card, { automatic: true });
+  return resumeCard(workspaceId, card, options);
 }
 
 /// Arms (or re-arms) a resume, staggered against everything else already

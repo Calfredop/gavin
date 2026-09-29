@@ -65,6 +65,8 @@ function everyKey(id: string, flavour: string): Workspace {
     reviewedCards: { [`/card-${flavour}.md`]: `digest-${flavour}` },
     requireReview: flavour === "a",
     requireReviewAsked: flavour === "a",
+    headroom: flavour === "a",
+    headroomAsked: flavour === "a",
     customResumeArgs: `--resume-${flavour}`,
     actionPromptOverrides: { "action:run-task": `prompt-${flavour}` },
   };

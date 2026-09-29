@@ -95,6 +95,11 @@ export interface AgentDefaults {
   /// has no verified way to put a model on it, and every model control
   /// for `custom` stays hidden rather than guessing a flag.
   customModelFlag: string;
+  /// The API that command speaks -- `anthropic`, `openai` -- which is
+  /// what lets Headroom compress it. Absent is None, the default: no
+  /// recipe, and the agent launches as it always did. See
+  /// `agents/apiFamily.ts`.
+  customApiFamily?: string;
   complexity: ComplexityTable;
   /// App-wide fallback chain. Empty means pause-only when a launch's
   /// resolved agent is over its usage-probe threshold.

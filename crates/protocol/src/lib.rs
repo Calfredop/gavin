@@ -43,27 +43,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
-/// v49 is Companion notification sends: `PushCompanionNotify` (the desk
-/// decides; the daemon seals and posts), `SetPushGatewayUrl`, and
-/// `SetDeviceSendPermission` (the shell hands over a gateway permission).
-/// Ciphertext never crosses this socket -- only the plaintext the desk
-/// already knew, and the permission string the Device minted. Three new
-/// TYPES, gated by `min_version_for`; the app's
-/// `FEATURE_MIN_VERSION.companionNotifications` is what keeps the desk's
-/// driver quiet against an older daemon.
-///
-/// They shipped on main as v44 while the Device wire took 44..48 on its
-/// own branch, so two builds answer 44 and mean different things by it.
-/// Merged, they took the next number instead: a daemon built on the
-/// Device wire's branch answers 45..48 without knowing any of the three,
-/// and gated at 44 they would be sent to it and refused on every inbox
-/// change. A main-built v44 daemon, which does know them, is now refused
-/// them too -- the cheap direction to be wrong in, and a rebuild and
-/// restart from right. Nothing else is at risk from the shared number:
-/// the v44 below is a widened `Hello` and gates nothing, and the v45
-/// gates are above both builds' 44.
-///
-/// v48 is the attention request (`companion-14`, ADR 0005): the one
+/// v55 is the attention request (`companion-14`, ADR 0005): the one
 /// deliberately stable API between the Companion shell and a Workstation.
 /// It adds `GetAttention` (a Device asks) and `AttentionResult` (the
 /// desktop answers a `ForwardAttention` push) -- two new TYPES, gated by
@@ -72,7 +52,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// `FEATURE_MIN_VERSION` entry is not owed: nothing in the desktop UI
 /// sends `GetAttention`, and the shell versions the payload itself.
 ///
-/// v47 is the third slice of the Device wire (`companion-12`): the daemon
+/// v54 is the third slice of the Device wire (`companion-12`): the daemon
 /// forwards gated desktop commands. It adds `InvokeDesktop`,
 /// `ListenDesktop`, `UnlistenDesktop`, `ForwardResult` and
 /// `OfferDesktopEvent` -- five new TYPES, gated by `min_version_for` --
@@ -82,14 +62,14 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// requests: companion-13 opens the forwarding connection and answers
 /// there, so no `FEATURE_MIN_VERSION` entry is owed on this bump.
 ///
-/// v46 is the second slice of the Device wire (`companion-11`): a paired
+/// v53 is the second slice of the Device wire (`companion-11`): a paired
 /// Device connects. It adds `RemoveThisDevice`, by which a Device deletes
 /// its own row -- one new TYPE, gated by `min_version_for`, and (until
-/// v47) the only request the Remote role may make. Nothing in the
+/// v54) the only request the Remote role may make. Nothing in the
 /// desktop app sends it, so no `FEATURE_MIN_VERSION` entry is owed: there
 /// is no surface for one to grey.
 ///
-/// The rest of v46 is not on this wire. Pairing registers the Device's
+/// The rest of v53 is not on this wire. Pairing registers the Device's
 /// hardware key and agrees a notification key, and a connection is Noise
 /// `IK` followed by the hardware key's signature -- all of it between the
 /// daemon and the Companion core, inside the Relay's pipe
@@ -98,7 +78,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// `PAIRING_MIN_VERSION`, which would neither read its proof nor send it
 /// a notification key.
 ///
-/// v45 is the first slice of the Device wire (`companion-10`): the daemon
+/// v52 is the first slice of the Device wire (`companion-10`): the daemon
 /// dials a Relay while remote access is on, and the Relay admits only
 /// peers that hold its admission token, so the token has to reach the
 /// daemon and the pairing QR. `SetRemoteAccess` gains `relay_admission`,
@@ -113,11 +93,11 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// a daemon that would discard what is typed into it.
 ///
 /// An older APP matters more, because the two builds share one
-/// `devices.sqlite`: a v44 app that toggles the switch sends no
-/// `relay_admission` at all. Absent therefore means UNCHANGED, never
+/// `devices.sqlite`: an app older than v52 that toggles the switch sends
+/// no `relay_admission` at all. Absent therefore means UNCHANGED, never
 /// "cleared" -- see `Request::SetRemoteAccess`.
 ///
-/// v44 widens `Hello` with `connection`: which of the app's two
+/// v51 widens `Hello` with `connection`: which of the app's two
 /// connections this is, push or command (`ConnectionKind`). The daemon
 /// used to send the device pushes to every `app` connection, and the
 /// command connection takes the first message it reads as the reply to
@@ -137,6 +117,129 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// them (`is_unsolicited`). An older client sends no field, which the
 /// daemon reads as today's behaviour, so nothing is dropped in either
 /// direction.
+///
+/// The Device wire's five are 51..55 and not the 44..48 they were built
+/// at, for the reason Headroom below is 46 and not 45: the wire's branch
+/// was cut at v43 and numbered its slices 44..48 while `main` gave 44..50
+/// to Companion notifications, the rail schedule and Headroom, and the
+/// two met in one merge. `main`'s numbers had landed, so the wire's moved
+/// past them. A daemon built from `main` alone reports up to 50 and has
+/// none of the wire: gated at 46..48, a Device's requests would reach it
+/// and be answered `Unsupported` where the gate promised an answer, and a
+/// Device would accept its pairing QR and send a proof it never reads.
+///
+/// v50 is honest failures (`2026-09-28-headroom-design.md`, "Failures"):
+/// a session that should have been compressed and was not says why, and
+/// a broken Headroom stops being a retry loop. Four changes of three
+/// kinds:
+///
+/// - `CreateSession` WIDENED with `without_headroom`, the override
+///   auto-resume sends when it relaunches a session that broke on
+///   Headroom. `min_version_for` cannot see a field, so
+///   FEATURE_MIN_VERSION.headroomFailures is its gate in the app, and the
+///   host withholds it from an older daemon besides
+///   (`HEADROOM_FAILURES_MIN_VERSION`).
+/// - `HeadroomReach`, a new request TYPE: whether Headroom has seen a
+///   compressed session's requests, asked when one of its turns ends.
+///   `min_version_for` is its whole wire gate.
+/// - `SessionCreated`, `AgentSessionSpawned` and `SessionSummary` widened
+///   with what the daemon decided (`compressed`, `uncompressed_reason`)
+///   and what it later found (`headroom_reach`), all `serde(default)`.
+///   Replies and a push, so an older client ignores them.
+/// - No wire change at all, and the one an older app is exposed to: a
+///   compressed session that breaks while Headroom fails its health
+///   check is reported with gavin's own sentence
+///   (`HEADROOM_REASON_PREFIX` in the daemon) instead of the agent's.
+///   An older app classifies that as a cause it cannot name, which never
+///   resumes -- the safe reading of it.
+///
+/// v49 is savings (`2026-09-28-headroom-design.md`, "Savings"). When a
+/// compressed session ends, the daemon snapshots what Headroom saved it
+/// onto its card runs, and two things carry that out:
+///
+/// - `CardRun` widened with `headroom_tokens_saved` and
+///   `headroom_requests`, both `serde(default)`. A REPLY, so an older
+///   client ignores them, and an older daemon's absence reads as "no
+///   snapshot", which is true of every run it ever recorded.
+/// - `HeadroomSavings`, a new request TYPE: every snapshot since a
+///   moment, across cards, for the hub's limit-window sums.
+///   `min_version_for` is its whole wire gate.
+///
+/// v48 widens `CreateSession` with `api_family`, the API the custom
+/// agent speaks (`2026-09-28-headroom-design.md`, "The recipes", the
+/// Custom row). It is how a custom agent can be compressed at all: gavin
+/// knows nothing of the binary, and the family names the one variable
+/// that routes it. A widened payload on a v1 TYPE, so `min_version_for`
+/// cannot see it; FEATURE_MIN_VERSION.customApiFamily is its gate in the
+/// app, and the host withholds the field from an older daemon besides
+/// (`CUSTOM_API_FAMILY_MIN_VERSION`). An older daemon that were sent it
+/// would drop it and launch the agent uncompressed as `no-recipe`, the
+/// answer it gives a custom agent today -- quiet, but no broken row.
+/// The Codex and opencode recipes that ship with it change nothing on
+/// the wire: both agents were already named by `profile_id`.
+///
+/// v47 is compressed sessions (`2026-09-28-headroom-design.md`, "The
+/// switch" and "Compressed sessions"), and it is three changes of three
+/// different kinds:
+///
+/// - `SetHeadroomWorkspaces`, a new request TYPE: the app hands the
+///   daemon each workspace's effective compression setting, and the
+///   daemon keeps its own copy, because a session another agent spawns
+///   over MCP never passes through the app. `min_version_for` is its
+///   whole wire gate.
+/// - `CreateSession` WIDENED with `profile_id`, the agent profile doing
+///   the launching. `min_version_for` gates request TYPES and cannot see
+///   it: a v46 daemon parses the request, drops the field and launches
+///   the agent uncompressed with nothing to say why. So
+///   FEATURE_MIN_VERSION.compressedLaunch is the gate that matters, read
+///   by every surface that launches an agent, and the host strips the
+///   field for an older daemon besides.
+/// - `SessionSummary` widened with `compressed` and
+///   `uncompressed_reason`, both `serde(default)`. A REPLY, so an older
+///   client ignores them and an older daemon's absence reads as "not
+///   compressed", which is true of every session it ever started.
+///
+/// v46 lets the daemon run Headroom (ADR 0007,
+/// `2026-09-28-headroom-design.md`): `GetHeadroomStatus`,
+/// `DetectHeadroom`, `StartHeadroom`, `StopHeadroom` and
+/// `InstallHeadroom`, all answered with `Response::Headroom`. Five new
+/// request TYPES and no widened payload, so `min_version_for` is the whole
+/// wire gate and an older daemon is never sent one. No `daemonCompat.ts`
+/// entry lands with them: nothing in the app sends one until the setup
+/// surfaces do (headroom-04), and an entry with no consumer is a dead
+/// gate.
+///
+/// It is 46 and not 45 for the reason v36 below is not 35: the Headroom
+/// branch was cut at v44 and took 45 while `main` gave 45 to the rail
+/// schedule, and the two met in one merge. A daemon built from `main`
+/// alone reports 45 and has no Headroom, so a client gating Headroom at
+/// 45 would send it one and get `Unsupported` where the gate promised an
+/// answer.
+///
+/// v45 widens `RailTrigger` with `at`: epoch seconds for an `at-time`
+/// schedule that arms a rail at a machine-local datetime. `serde(default)`
+/// on an EXISTING request (`SetOrchestration`), which `min_version_for`
+/// gates by TYPE and therefore cannot see -- so
+/// FEATURE_MIN_VERSION.railSchedule is the gate that matters, and the
+/// bind dialog's Trigger panel (the datetime choice) is its consumer. A
+/// v44 daemon takes the write, drops the field and hands the rail back
+/// with an `at-time` kind and no time -- a condition that never fires.
+///
+/// v44 adds Companion notification sends: `PushCompanionNotify` (the desk
+/// decides; the daemon seals and posts), `SetPushGatewayUrl`, and
+/// `SetDeviceSendPermission` (the shell hands over a gateway permission).
+/// Ciphertext never crosses this socket -- only the plaintext the desk
+/// already knew, and the permission string the Device minted.
+/// Three new TYPES, gated by `min_version_for` -- at 49, not 44. Before
+/// the renumber above, the Device wire's branch answered 44..48 without
+/// knowing any of the three, and gated at 44 they would be sent to such a
+/// daemon and refused on every inbox change. 49 is the lowest number every
+/// build of either line knows them at: `main` has had them since 44, and
+/// the wire's branch since it first answered 49. A main-built v44..48
+/// daemon, which does know them, is refused them -- the cheap direction to
+/// be wrong in, and a rebuild and restart put it right. The app's
+/// `FEATURE_MIN_VERSION.companionNotifications` is what keeps the desk's
+/// driver quiet against an older daemon.
 ///
 /// v43 takes the launch command OUT of the board read, and adds
 /// `GetCardSession` to read one binding with its command put back
@@ -590,12 +693,41 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 49;
+pub const PROTOCOL_VERSION: u32 = 55;
+
+/// The version that widened `CreateSession` with `profile_id`.
+///
+/// `min_version_for` gates request TYPES, and `CreateSession` has been
+/// v1 since v1, so nothing there can keep the field from a daemon that
+/// would parse the request and drop it. A client that sends the field
+/// compares the daemon's version with this instead
+/// (`FEATURE_MIN_VERSION.compressedLaunch` in the app, and the host's
+/// own `create_fresh_session` behind it).
+pub const COMPRESSED_LAUNCH_MIN_VERSION: u32 = 47;
+
+/// The version that widened `CreateSession` with `api_family`.
+///
+/// Its own number rather than `COMPRESSED_LAUNCH_MIN_VERSION`'s, for the
+/// reason that one exists: a v47 daemon reads `profile_id` and drops
+/// this. A client that sends it compares the daemon's version with this
+/// (`FEATURE_MIN_VERSION.customApiFamily` in the app, and the host's
+/// `create_fresh_session` behind it).
+pub const CUSTOM_API_FAMILY_MIN_VERSION: u32 = 48;
+
+/// The version that widened `CreateSession` with `without_headroom`.
+///
+/// A v49 daemon would parse the request, drop the override and decide
+/// the relaunch against Headroom as it stands -- which, for a Headroom
+/// that is answering `/readyz` and failing everything else, is the very
+/// proxy the session just broke on. A client that sends it compares the
+/// daemon's version with this (`FEATURE_MIN_VERSION.headroomFailures` in
+/// the app, and the host's `create_agent_session` behind it).
+pub const HEADROOM_FAILURES_MIN_VERSION: u32 = 50;
 
 /// The oldest daemon a Device can pair with: the first whose pairing
 /// reads the Device's proof and answers with a notification key. Read by
 /// the Companion core against the `protocolVersion` a pairing QR carries.
-pub const PAIRING_MIN_VERSION: u32 = 46;
+pub const PAIRING_MIN_VERSION: u32 = 53;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -613,6 +745,47 @@ pub enum Request {
         workspace_path: String,
         cwd: String,
         command: Option<String>,
+        /// The agent profile doing the launching (`claude-code`,
+        /// `codex`, …), or `None` for anything that is not an agent
+        /// launch: a shell tab, a command tool, a setup script (v47).
+        ///
+        /// It is what makes a session a candidate for compression. The
+        /// daemon decides at spawn, from this, the workspace's setting
+        /// and whether Headroom is ready (`headroom::compress`); a
+        /// session with no profile is never compressed, which is how a
+        /// plain shell tab keeps its own `ANTHROPIC_BASE_URL`.
+        ///
+        /// Skipped when `None`, so a launch that names no profile is
+        /// byte for byte the request every daemon since v1 has parsed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile_id: Option<String>,
+        /// The API the custom agent speaks -- `anthropic` or `openai`
+        /// -- and `None` for every other launch, and for a custom agent
+        /// whose settings name none (v48).
+        ///
+        /// Only the `custom` profile reads it: every other profile is a
+        /// binary gavin already knows. It picks the variable that routes
+        /// the agent through Headroom (`headroom::compress`), and none
+        /// means no recipe. A word the daemon does not know is read as
+        /// none, so a newer app's family is never routed as a guess.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_family: Option<String>,
+        /// This launch must not be routed through Headroom, whatever
+        /// Headroom's state (v50). Sent by auto-resume, and only when it
+        /// relaunches a session that broke on Headroom: the `headroom`
+        /// failure cause, which the daemon reported because Headroom was
+        /// failing its health check when the session broke.
+        ///
+        /// An override and not a request to decide again: a Headroom
+        /// that answers `/readyz` and fails every request is one the
+        /// decision would pick again, and the relaunch would break the
+        /// same way -- across the whole fleet at once. The session
+        /// records `headroom-failed` as its reason, so its tab says so.
+        ///
+        /// Skipped when false, so every other launch is byte for byte
+        /// the request a v49 daemon parses.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        without_headroom: bool,
     },
     ListSessions,
     /// What every live session is costing right now: one sample of the
@@ -1357,8 +1530,8 @@ pub enum Request {
         protocol_version: u32,
         auth: HelloAuth,
         nonce: String,
-        /// Which of the app's connections this is (v44). `None` -- the
-        /// only thing a client older than v44 can say -- is today's
+        /// Which of the app's connections this is (v51). `None` -- the
+        /// only thing a client older than v51 can say -- is today's
         /// behaviour: the connection is sent every device push. See
         /// `ConnectionKind`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1411,17 +1584,17 @@ pub enum Request {
     /// Store whether remote access is on and which relay to reach this
     /// daemon through.
     ///
-    /// Since v45 the daemon ACTS on it: while `enabled` is set and there
+    /// Since v52 the daemon ACTS on it: while `enabled` is set and there
     /// is a Relay URL, it dials that Relay and holds the connection
     /// (`daemon/src/remote.rs`); turning it off lets go. `relay_url` is
     /// `None` for "no Relay" and is stored as typed -- the daemon has no
     /// opinion about which Relay the human self-hosts (§11 Q2), only
     /// about whether the URL may be dialled (`relay::RelayUrl`).
     ///
-    /// `relay_admission` is the Relay's admission token (v45), and its
+    /// `relay_admission` is the Relay's admission token (v52), and its
     /// absence means UNCHANGED: `None` leaves the stored token alone, an
     /// empty string clears it, anything else replaces it. Unlike
-    /// `relay_url`, where `None` clears -- because an app older than v45
+    /// `relay_url`, where `None` clears -- because an app older than v52
     /// sends no `relay_admission` at all, the two builds share one trust
     /// store, and a switch toggled from the older one must not wipe a
     /// token it has never heard of.
@@ -1437,7 +1610,7 @@ pub enum Request {
         relay_admission: Option<String>,
     },
 
-    /// A Device removes itself from this Workstation (v46): its row is
+    /// A Device removes itself from this Workstation (v53): its row is
     /// deleted and every connection it holds is dropped.
     ///
     /// It names no Device. Which row goes is decided by the connection
@@ -1449,7 +1622,7 @@ pub enum Request {
     /// away.
     RemoveThisDevice,
 
-    /// A Device asks the daemon to invoke a desktop Tauri command (v47).
+    /// A Device asks the daemon to invoke a desktop Tauri command (v54).
     ///
     /// The daemon checks `command` against the Remote role table
     /// (`remote_commands`), forwards an allowed name to the desktop's
@@ -1464,17 +1637,17 @@ pub enum Request {
         args: serde_json::Value,
     },
 
-    /// A Device asks to receive pushes for a desktop event by name (v47).
+    /// A Device asks to receive pushes for a desktop event by name (v54).
     ///
     /// Events the desktop offers on its forwarding connection
     /// (`OfferDesktopEvent`) are then written to every Device connection
     /// that has listened for that name, as `Response::DesktopEvent`.
     ListenDesktop { event: String },
 
-    /// Stop receiving a previously listened desktop event (v47).
+    /// Stop receiving a previously listened desktop event (v54).
     UnlistenDesktop { event: String },
 
-    /// The desktop app's answer to a `ForwardCommand` (v47).
+    /// The desktop app's answer to a `ForwardCommand` (v54).
     ///
     /// Arrives on the forwarding connection. `error` present means the
     /// command failed; otherwise `value` is what the handler returned
@@ -1488,7 +1661,7 @@ pub enum Request {
     },
 
     /// A desktop event the host emitted, offered on the forwarding
-    /// connection (v47). The daemon relays it to Devices that listened
+    /// connection (v54). The daemon relays it to Devices that listened
     /// for `event`.
     OfferDesktopEvent {
         event: String,
@@ -1496,7 +1669,7 @@ pub enum Request {
     },
 
     /// A Device asks what is waiting on the human on this Workstation
-    /// (v48, ADR 0005).
+    /// (v55, ADR 0005).
     ///
     /// `version` is the attention API version the Device understands
     /// (`ATTENTION_API_VERSION`). The daemon asks the desktop over the
@@ -1508,7 +1681,7 @@ pub enum Request {
         version: u32,
     },
 
-    /// The desktop's answer to a `ForwardAttention` (v48).
+    /// The desktop's answer to a `ForwardAttention` (v55).
     ///
     /// Arrives on the forwarding connection. `items` is what the
     /// desktop built from the attention inbox, turn verdicts and rails;
@@ -1538,6 +1711,67 @@ pub enum Request {
     /// Push gateway. Plaintext only crosses the local socket.
     PushCompanionNotify {
         events: Vec<CompanionNotifyEvent>,
+    },
+
+    /// What this daemon knows about Headroom: whether it is installed at
+    /// a version gavin will start, and whether it is running. Cheap -- it
+    /// reads what detection already stored and never runs the binary.
+    GetHeadroomStatus,
+    /// Look for Headroom again: uv's tool bin directory, then `PATH`,
+    /// then the located path. `located_path` is the file the human picked
+    /// with Locate…, remembered from then on; `None` is "Check again"
+    /// against whatever was located before, and an empty string forgets
+    /// it. The path that wins is stored, and `PATH` is never searched at
+    /// a start.
+    DetectHeadroom {
+        #[serde(default)]
+        located_path: Option<String>,
+    },
+    /// Run Headroom and keep it running: restarted on the same port when
+    /// it dies, and re-adopted by the next daemon after a crash. Answers
+    /// at once -- readiness is read from the status, because the
+    /// compression model takes seconds to load.
+    StartHeadroom,
+    /// Stop the Headroom this daemon started. Never one it did not.
+    StopHeadroom,
+    /// Install the pinned Headroom with `uv tool install`, then fetch the
+    /// compression model. Answers at once with the install marked
+    /// running; its output and outcome are read from the status. An
+    /// install that changed what is installed -- Settings' Update --
+    /// replaces a Headroom already running, on the same port.
+    InstallHeadroom,
+    /// Every workspace's effective compression setting, as the app
+    /// resolved it (the workspace's own choice, else the app-wide
+    /// default), replacing whatever this daemon held (v47).
+    ///
+    /// The whole list rather than one workspace's change: a workspace
+    /// the app has closed has to stop counting, and a list that is
+    /// replaced cannot drift from the one it was copied from. The daemon
+    /// persists it -- a daemon that restarts before any app connects
+    /// still knows whether to start Headroom -- and runs Headroom while
+    /// any workspace is on, stopping it when none is.
+    SetHeadroomWorkspaces {
+        workspaces: Vec<HeadroomWorkspace>,
+    },
+    /// Every card run with a savings snapshot that ended at or after
+    /// `since`, epoch seconds (v49): what the hub sums into each limit
+    /// window. Across every card and workspace this daemon hosts, because
+    /// a window belongs to the subscription and not to one card; the
+    /// sums themselves are the app's.
+    HeadroomSavings {
+        since: i64,
+    },
+    /// Whether Headroom has seen this compressed session's requests
+    /// (v50), asked by the app when one of the session's turns ends.
+    ///
+    /// Answered with `Response::HeadroomReach`, from Headroom's `/stats`
+    /// read at that moment. A session that finished a turn and sent
+    /// Headroom nothing is talking to its model some other way -- an
+    /// agent CLI that stopped honouring the routing -- and its tab says
+    /// so. The daemon keeps the answer, so `SessionSummary.headroom_reach`
+    /// carries it to a frontend that reloads.
+    HeadroomReach {
+        session_id: String,
     },
 
     GetProtocolVersion,
@@ -1575,8 +1809,8 @@ pub enum HelloAuth {
     SessionToken { token: String },
 }
 
-/// Which of the desktop app's connections a `Hello` is introducing (v44;
-/// `Forward` added in v47).
+/// Which of the desktop app's connections a `Hello` is introducing (v51;
+/// `Forward` added in v54).
 ///
 /// The app opens connections to its daemon and each proves the daemon
 /// token, so each becomes `app`. They are not alike: the push connection
@@ -1590,11 +1824,11 @@ pub enum HelloAuth {
 /// So the daemon sends the device pushes (`DevicePairingRequested`,
 /// `DeviceConnected`, `DeviceDisconnected`) only to a connection that can
 /// read them: `Push`, or one that sent no kind at all. Sending none is what
-/// a client older than v44 does and is kept as it was, so an older app
+/// a client older than v51 does and is kept as it was, so an older app
 /// keeps the pushes on both of its connections, and the command lane's own
 /// skip of them (`is_unsolicited` in the app) stays for exactly that case.
 ///
-/// `Forward` (v47) is the third: the daemon hands it gated commands to run
+/// `Forward` (v54) is the third: the daemon hands it gated commands to run
 /// and it hands back results and events (ADR 0003). It reads
 /// `ForwardCommand` pushes the way a push connection reads device pushes,
 /// and writes `ForwardResult` / `OfferDesktopEvent` as requests. It is
@@ -1613,7 +1847,7 @@ pub enum ConnectionKind {
     Push,
     /// Written a request and read for its answer, and nothing else.
     Command,
-    /// The desktop's forwarding connection (v47): reads `ForwardCommand`
+    /// The desktop's forwarding connection (v54): reads `ForwardCommand`
     /// and writes results and events.
     Forward,
     /// A kind a newer client sent. Deserialize-only: never constructed or
@@ -1625,7 +1859,7 @@ pub enum ConnectionKind {
 impl ConnectionKind {
     /// Whether a connection that introduced itself as `kind` is sent the
     /// device pushes. `None` is a `Hello` with no kind, which is every
-    /// client older than v44 and keeps today's answer: yes.
+    /// client older than v51 and keeps today's answer: yes.
     pub fn takes_device_pushes(kind: Option<ConnectionKind>) -> bool {
         matches!(kind, None | Some(ConnectionKind::Push))
     }
@@ -1821,14 +2055,53 @@ pub fn min_version_for(req: &Request) -> u32 {
         | Request::RevokeAllDevices
         | Request::SetRemoteAccess { .. } => 42,
 
-        // A Device removing itself (v46). Sent by a Device over the
+        // Companion encrypted notifications (ticket 25). Three new TYPES:
+        // the desk's notify/resolve batch, the Push gateway URL, and the
+        // Device's send permission for this Workstation. 49, not the 44
+        // they shipped at on main: before the Device wire was renumbered,
+        // a daemon from its branch answered 45..48 without them (see
+        // `PROTOCOL_VERSION`).
+        Request::PushCompanionNotify { .. }
+        | Request::SetPushGatewayUrl { .. }
+        | Request::SetDeviceSendPermission { .. } => 49,
+
+        // The daemon runs Headroom (ADR 0007). Five new TYPES, so this
+        // match is the whole wire gate. The app owes a
+        // `FEATURE_MIN_VERSION` entry when the setup surfaces land
+        // (headroom-04), for the COPY: a Settings row has to say "this
+        // daemon cannot run Headroom" rather than "Headroom is absent".
+        Request::GetHeadroomStatus
+        | Request::DetectHeadroom { .. }
+        | Request::StartHeadroom
+        | Request::StopHeadroom
+        | Request::InstallHeadroom => 46,
+
+        // The daemon's copy of the compression switch. A new TYPE, so
+        // this match is its whole wire gate. `CreateSession`'s
+        // `profile_id` is the same version and is NOT here: it widens a
+        // request that has been v1 since v1, which this match cannot
+        // see (FEATURE_MIN_VERSION.compressedLaunch).
+        Request::SetHeadroomWorkspaces { .. } => 47,
+
+        // The hub's savings in a limit window. A new TYPE, so this match
+        // is its whole wire gate; FEATURE_MIN_VERSION.headroomSavings
+        // keeps the hub from asking an older daemon at all.
+        Request::HeadroomSavings { .. } => 49,
+
+        // Whether a compressed session reaches Headroom. A new TYPE, so
+        // this match is its whole wire gate; the same version's
+        // `CreateSession.without_headroom` is NOT here, because it widens
+        // a v1 request (FEATURE_MIN_VERSION.headroomFailures).
+        Request::HeadroomReach { .. } => 50,
+
+        // A Device removing itself (v53). Sent by a Device over the
         // Device wire and by nothing in the desktop app, so there is no
         // surface to owe a FEATURE_MIN_VERSION entry. The gate that
         // matters is the role: `server::authorize` allows it to `remote`,
         // and the handler refuses a connection that carries no Device.
-        Request::RemoveThisDevice => 46,
+        Request::RemoveThisDevice => 53,
 
-        // Forwarding gated desktop commands (v47). Five new TYPES: three
+        // Forwarding gated desktop commands (v54). Five new TYPES: three
         // a Device sends, two the desktop's forwarding connection sends.
         // companion-13 is the surface that opens the forwarding
         // connection; until then nothing in the desktop app sends any of
@@ -1837,22 +2110,13 @@ pub fn min_version_for(req: &Request) -> u32 {
         | Request::ListenDesktop { .. }
         | Request::UnlistenDesktop { .. }
         | Request::ForwardResult { .. }
-        | Request::OfferDesktopEvent { .. } => 47,
+        | Request::OfferDesktopEvent { .. } => 54,
 
-        // The attention request (v48 / companion-14). A Device asks; the
+        // The attention request (v55 / companion-14). A Device asks; the
         // desktop's forwarding connection answers. Two new TYPES. The
         // payload's own `ATTENTION_API_VERSION` is the compat gate for
         // fields, so no FEATURE_MIN_VERSION entry is owed.
-        Request::GetAttention { .. } | Request::AttentionResult { .. } => 48,
-
-        // Companion encrypted notifications (ticket 25). Three new TYPES:
-        // the desk's notify/resolve batch, the Push gateway URL, and the
-        // Device's send permission for this Workstation. 49, not the 44
-        // they shipped at on main: a daemon from the Device wire's branch
-        // answers 45..48 without them (see `PROTOCOL_VERSION`).
-        Request::PushCompanionNotify { .. }
-        | Request::SetPushGatewayUrl { .. }
-        | Request::SetDeviceSendPermission { .. } => 49,
+        Request::GetAttention { .. } | Request::AttentionResult { .. } => 55,
 
         Request::Shutdown => 12,
 
@@ -1867,8 +2131,8 @@ pub fn min_version_for(req: &Request) -> u32 {
         // FEATURE_MIN_VERSION.clientIdentity so the Settings surface can
         // say WHY it is greyed, per CLAUDE.md.
         //
-        // v44 gave it `connection`, which this arm cannot see -- and does
-        // not need to: see `PROTOCOL_VERSION`'s v44 note for why a daemon
+        // v51 gave it `connection`, which this arm cannot see -- and does
+        // not need to: see `PROTOCOL_VERSION`'s v51 note for why a daemon
         // that ignores it costs nothing.
         Request::Hello { .. } => 35,
 
@@ -2236,7 +2500,22 @@ pub fn require_local_token_path() -> anyhow::Result<PathBuf> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Response {
-    SessionCreated { id: String },
+    /// A new session's id, and what the daemon decided about routing it
+    /// through Headroom as it spawned (v50): the same two facts
+    /// `SessionSummary` carries, handed back with the id so the app can
+    /// mark a launch that should have been compressed and was not from
+    /// its first frame, rather than from the next time it lists sessions.
+    ///
+    /// `serde(default)` on both, because a v49 daemon sends only the id,
+    /// and "not compressed, no reason" is the true reading of that: it
+    /// marks nothing.
+    SessionCreated {
+        id: String,
+        #[serde(default)]
+        compressed: bool,
+        #[serde(default)]
+        uncompressed_reason: Option<String>,
+    },
     SessionList { sessions: Vec<SessionSummary> },
     Output { id: String, data: String },
     SessionExited { id: String, exit_code: i32 },
@@ -2390,7 +2669,20 @@ pub enum Response {
     /// the filter that decided this was worth saying already ran here.
     GitWorktreeChanged { cwd: String },
     PlanCreated { path: String },
-    AgentSessionSpawned { workspace_id: String, session_id: String, cwd: String, command: String },
+    /// Push: another agent spawned a session over MCP. Carries what the
+    /// daemon decided about compressing it (v50), for the reason
+    /// `SessionCreated` does -- an MCP spawn never passes through the
+    /// app's own create call. `serde(default)` for a v49 daemon.
+    AgentSessionSpawned {
+        workspace_id: String,
+        session_id: String,
+        cwd: String,
+        command: String,
+        #[serde(default)]
+        compressed: bool,
+        #[serde(default)]
+        uncompressed_reason: Option<String>,
+    },
     /// Push: an agent renamed its own tab. The app applies it through the
     /// very same path a human rename takes.
     SessionNamed { session_id: String, name: String },
@@ -2476,7 +2768,7 @@ pub enum Response {
     /// in the SAME version costs nothing -- no peer older than 42 ever
     /// receives one.
     ///
-    /// `relay_admission_set` (v45) says WHETHER an admission token is
+    /// `relay_admission_set` (v52) says WHETHER an admission token is
     /// stored and never what it is. The token is a credential the human
     /// was handed by whoever runs the Relay; the panel has to show that
     /// one is there, and nothing on the desk needs to read it back. The
@@ -2509,7 +2801,7 @@ pub enum Response {
     /// closed, whether it hung up or a revocation cut it.
     DeviceDisconnected { device_id: String },
 
-    /// The answer to `InvokeDesktop` (v47): what the desktop command
+    /// The answer to `InvokeDesktop` (v54): what the desktop command
     /// returned, or the error string it failed with.
     ///
     /// `error` present means the command failed; otherwise `value` is the
@@ -2523,7 +2815,7 @@ pub enum Response {
         error: Option<String>,
     },
 
-    /// Push to the desktop's forwarding connection (v47): run this Tauri
+    /// Push to the desktop's forwarding connection (v54): run this Tauri
     /// command and answer with `ForwardResult { call_id, … }`.
     ForwardCommand {
         call_id: u64,
@@ -2531,14 +2823,14 @@ pub enum Response {
         args: serde_json::Value,
     },
 
-    /// Push to every Device connection that listened for `event` (v47):
+    /// Push to every Device connection that listened for `event` (v54):
     /// a desktop event the host offered on its forwarding connection.
     DesktopEvent {
         event: String,
         payload: serde_json::Value,
     },
 
-    /// The answer to `GetAttention` (v48, ADR 0005): the Workstation's
+    /// The answer to `GetAttention` (v55, ADR 0005): the Workstation's
     /// state and the waiting items.
     ///
     /// `version` is the attention API version of this answer. New optional
@@ -2550,12 +2842,122 @@ pub enum Response {
         version: u32,
     },
 
-    /// Push to the desktop's forwarding connection (v48): build the
+    /// Push to the desktop's forwarding connection (v55): build the
     /// attention answer and reply with `AttentionResult { call_id, … }`.
     ForwardAttention {
         call_id: u64,
         version: u32,
     },
+
+    /// The answer to every Headroom request (v46): the status AFTER
+    /// whatever the request did, so a caller never has to ask twice to
+    /// see what its own press changed.
+    Headroom { status: HeadroomStatus },
+    /// The answer to `HeadroomSavings` (v49), oldest first.
+    HeadroomSavings { runs: Vec<RunSavings> },
+    /// The answer to `HeadroomReach` (v50). `reach` is `reached`,
+    /// `unreached`, or `unknown` when it could not be told -- Headroom
+    /// not answering, restarted since the session launched, or keeping
+    /// as many sessions as it will hold, so that an absent one may have
+    /// been pushed out rather than never have arrived. A string for the
+    /// reason `status` is one: a word a newer daemon writes reaches the
+    /// app as written, and the app reads a word it does not know as
+    /// `unknown`.
+    HeadroomReach { session_id: String, reach: String },
+}
+
+/// Headroom on this machine, as the daemon that has to execute it sees
+/// it (`daemon/src/headroom`).
+///
+/// `state` is one of `verified`, `too-old`, `absent` and `unavailable`,
+/// kept as a string like `SessionSummary::status` so a word written by a
+/// newer daemon reaches the app as written. There is no "asserted": the
+/// human's word is enough for Superpowers because the agent runs it, and
+/// gavin has to execute Headroom -- a word does not name a file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadroomStatus {
+    pub state: String,
+    /// Why, for the states that owe one: what makes it unavailable here,
+    /// or how far below the floor it is.
+    pub reason: Option<String>,
+    /// Verified, and above the pin: it runs, but nobody ran the
+    /// concurrency probe or the recipe tests against it.
+    pub newer_than_tested: bool,
+    /// What `headroom --version` said, when there was one to ask.
+    pub version: Option<String>,
+    /// The oldest version gavin will start.
+    pub floor: String,
+    /// The version gavin installs and was tested against.
+    pub pin: String,
+    /// The absolute path every start uses.
+    pub path: Option<String>,
+    /// Where that path was found: `uv-tool-dir`, `path` or `located`.
+    pub source: Option<String>,
+    /// Whether `uv` was found, which is whether Install can run at all.
+    pub uv_found: bool,
+    /// Whether this daemon has been asked to keep Headroom running.
+    pub wanted: bool,
+    /// Whether its process is alive.
+    pub running: bool,
+    /// Whether `/readyz` answered at the last look.
+    pub ready: bool,
+    /// The loopback port this daemon's Headroom listens on. Chosen once
+    /// and kept, because every compressed agent carries it in its
+    /// environment for as long as it lives.
+    pub port: Option<u16>,
+    /// How many times this daemon has restarted a Headroom that died.
+    pub restarts: u32,
+    /// Why the last start did not happen, when it did not.
+    pub last_error: Option<String>,
+    /// `/stats`' `persistent_savings.lifetime.tokens_saved`, as last
+    /// read. Tokens, never dollars.
+    pub lifetime_tokens_saved: Option<u64>,
+    /// The install this daemon ran last, or is running.
+    pub install: Option<HeadroomInstall>,
+}
+
+/// One run of the Install button. `state` is `running`, `succeeded` or
+/// `failed`; `output` is both of the install's streams, which is where
+/// the reason a failure failed is.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadroomInstall {
+    pub state: String,
+    pub output: String,
+}
+
+/// One workspace's effective compression setting (v47).
+///
+/// `workspace_path` is the path `CreateSession` sends as
+/// `workspace_path` and `SpawnAgentSession` as `root_path`: the
+/// workspace a session BELONGS to, never the worktree it runs in.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadroomWorkspace {
+    pub workspace_path: String,
+    pub enabled: bool,
+}
+
+/// One card run's savings snapshot, for the hub's window sums (v49).
+///
+/// A session bound to two cards is one row per card with the same
+/// snapshot on each, because the snapshot is the SESSION's. The daemon
+/// hands both over as they are stored, and a sum counts a session once.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSavings {
+    pub workspace_id: String,
+    pub path: String,
+    pub session_id: String,
+    /// Wall-clock epoch seconds, like `CardRun`'s.
+    pub started_at: i64,
+    /// When the run ended, which is where a sum places it. None only for
+    /// a row whose end nobody recorded, and no snapshot is ever taken of
+    /// one of those.
+    pub ended_at: Option<i64>,
+    pub tokens_saved: u64,
+    pub requests: u64,
 }
 
 /// One row of the trust store, as the Settings device list reads it
@@ -2650,7 +3052,7 @@ pub struct PairingQr {
     /// The daemon's protocol version, so a phone can say "this gavin is
     /// too old for me" before it starts a handshake rather than after.
     pub protocol_version: u32,
-    /// The Relay's admission token (v45), which the Device presents to
+    /// The Relay's admission token (v52), which the Device presents to
     /// the Relay in `rendezvous` to be carried at all. Omitted when the
     /// human has set none.
     ///
@@ -2736,6 +3138,36 @@ pub struct SessionSummary {
     /// asserting something nobody measured.
     #[serde(default)]
     pub orphan: Option<OrphanProcess>,
+    /// This session's agent talks to its model through Headroom (v47).
+    /// Settled once, when the session was spawned, and never carried
+    /// over: a resume or a relaunch is a fresh session that is decided
+    /// again against Headroom as it is then.
+    ///
+    /// `serde(default)` because a v46 daemon does not send it, and false
+    /// is the honest reading there: it never compressed one.
+    #[serde(default)]
+    pub compressed: bool,
+    /// Why a session in a workspace with compression ON is not
+    /// compressed: `not-ready`, `no-recipe` or `unsupported-agent`.
+    /// A string for the reason `status` is one -- a word a newer daemon
+    /// writes reaches the app as written.
+    ///
+    /// `None` for a compressed session, and for every session that was
+    /// never a candidate: one in a workspace with compression off, and a
+    /// plain shell tab in any workspace.
+    #[serde(default)]
+    pub uncompressed_reason: Option<String>,
+    /// What Headroom was last found to have seen of this compressed
+    /// session (v50): `reached` once any request tagged with its id has
+    /// arrived, `unreached` when a turn ended and none had. A string for
+    /// the reason `status` is one.
+    ///
+    /// `None` for a session nobody has asked about, for one the answer
+    /// could not be read for, and for every session that is not
+    /// compressed. Kept by the daemon in memory: a session outlives an
+    /// app reload, never a daemon restart, which interrupts it anyway.
+    #[serde(default)]
+    pub headroom_reach: Option<String>,
 }
 
 /// A surviving process, as much of it as the app needs to talk about it.
@@ -3040,6 +3472,17 @@ pub struct CardRun {
     /// (see `CardSession::resume_attempts`). Not the number of times the
     /// run was resumed INTO a new session -- that is the chain above.
     pub resume_attempts: Option<u32>,
+    /// The tokens Headroom saved this run, snapshotted from its `/stats`
+    /// when the session ended (v49). None for a run that was not
+    /// compressed, and for one whose snapshot could not be taken: an
+    /// unknown is never a zero. Gavin keeps the record, because
+    /// Headroom's own per-session map is capped and evicts.
+    #[serde(default)]
+    pub headroom_tokens_saved: Option<u64>,
+    /// How many of this run's requests Headroom saw, from the same
+    /// snapshot. Set exactly when `headroom_tokens_saved` is.
+    #[serde(default)]
+    pub headroom_requests: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -3102,12 +3545,19 @@ pub struct Rail {
 /// `gavin_get_orchestration` shows an agent -- the same choice
 /// `builtin:start-rail`'s `rail` parameter makes, and resolved by the
 /// same case- and space-insensitive match.
+///
+/// `at` is the epoch-seconds instant an `at-time` trigger waits for
+/// (v45). Machine-local wall clock: the app writes what the human's
+/// datetime picker said, and the scheduler compares it to
+/// `Date.now()/1000` on that same machine. Absent for every other kind.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RailTrigger {
     pub kind: String,
     #[serde(default)]
     pub rail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<i64>,
 }
 
 /// How a stage's steps run: "sequence" (one at a time, in position
@@ -4510,7 +4960,7 @@ mod tests {
         assert_eq!(v["relayAdmission"], "let-me-in");
         assert_eq!(PairingQr::parse(&qr.to_qr_string()).unwrap(), qr);
 
-        // A QR drawn by a daemon older than v45 has no such field, and
+        // A QR drawn by a daemon older than v52 has no such field, and
         // still parses: the Device then has no token to present.
         let old = r#"{"daemonPublicKey":"aa","secret":"bb","rendezvous":[],"protocolVersion":44}"#;
         assert_eq!(PairingQr::parse(old).unwrap().relay_admission, None);
@@ -4519,24 +4969,24 @@ mod tests {
     /// A Device deleting its own row: it names no Device, because the
     /// connection it arrives on already is one.
     #[test]
-    fn remove_this_device_names_nobody_and_is_gated_at_46() {
+    fn remove_this_device_names_nobody_and_is_gated_at_53() {
         let req = Request::RemoveThisDevice;
         assert_eq!(serde_json::to_string(&req).unwrap(), r#"{"type":"RemoveThisDevice"}"#);
-        assert_eq!(min_version_for(&req), 46);
+        assert_eq!(min_version_for(&req), 53);
         assert!(matches!(
             serde_json::from_str::<Request>(r#"{"type":"RemoveThisDevice"}"#).unwrap(),
             Request::RemoveThisDevice
         ));
     }
 
-    /// Forwarding requests are gated at 47 and round-trip on the wire.
+    /// Forwarding requests are gated at 54 and round-trip on the wire.
     #[test]
-    fn invoke_desktop_and_friends_are_gated_at_47() {
+    fn invoke_desktop_and_friends_are_gated_at_54() {
         let invoke = Request::InvokeDesktop {
             command: "get_board".into(),
             args: serde_json::json!({"workspaceId": "w"}),
         };
-        assert_eq!(min_version_for(&invoke), 47);
+        assert_eq!(min_version_for(&invoke), 54);
         let v = serde_json::to_value(&invoke).unwrap();
         assert_eq!(v["type"], "InvokeDesktop");
         assert_eq!(v["command"], "get_board");
@@ -4546,18 +4996,18 @@ mod tests {
             Request::InvokeDesktop { .. }
         ));
 
-        assert_eq!(min_version_for(&Request::ListenDesktop { event: "e".into() }), 47);
-        assert_eq!(min_version_for(&Request::UnlistenDesktop { event: "e".into() }), 47);
+        assert_eq!(min_version_for(&Request::ListenDesktop { event: "e".into() }), 54);
+        assert_eq!(min_version_for(&Request::UnlistenDesktop { event: "e".into() }), 54);
         assert_eq!(
             min_version_for(&Request::ForwardResult { call_id: 1, value: None, error: None }),
-            47
+            54
         );
         assert_eq!(
             min_version_for(&Request::OfferDesktopEvent {
                 event: "e".into(),
                 payload: serde_json::json!({}),
             }),
-            47
+            54
         );
 
         let forward = Response::ForwardCommand {
@@ -4570,14 +5020,14 @@ mod tests {
         assert_eq!(v["call_id"], 7);
     }
 
-    /// The attention request is gated at 48; an older reader ignores an
+    /// The attention request is gated at 55; an older reader ignores an
     /// unknown optional field on the answer.
     #[test]
-    fn get_attention_is_gated_at_48_and_grows_by_optional_fields() {
+    fn get_attention_is_gated_at_55_and_grows_by_optional_fields() {
         let req = Request::GetAttention {
             version: ATTENTION_API_VERSION,
         };
-        assert_eq!(min_version_for(&req), 48);
+        assert_eq!(min_version_for(&req), 55);
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["type"], "GetAttention");
         assert_eq!(v["version"], ATTENTION_API_VERSION);
@@ -4587,7 +5037,7 @@ mod tests {
                 call_id: 1,
                 items: vec![],
             }),
-            48
+            55
         );
 
         // A newer answer carried `priority`. An older reader that has
@@ -4618,16 +5068,16 @@ mod tests {
     }
 
     /// A pairing is the proof after the handshake and the notification
-    /// key in the verdict, and a daemon older than 46 does neither. The
+    /// key in the verdict, and a daemon older than 53 does neither. The
     /// QR says which daemon drew it, so a Device can decline before it
     /// has used the secret.
     #[test]
     fn a_device_pairs_with_a_daemon_that_registers_its_hardware_key() {
-        assert_eq!(PAIRING_MIN_VERSION, 46);
+        assert_eq!(PAIRING_MIN_VERSION, 53);
         assert!(PAIRING_MIN_VERSION <= PROTOCOL_VERSION);
     }
 
-    /// An app older than v45 sends no `relay_admission`, and the daemon
+    /// An app older than v52 sends no `relay_admission`, and the daemon
     /// must read that as "leave the token alone" -- so the absence has to
     /// survive the parse as `None`, and a request that names none has to
     /// write the bytes an older daemon has always seen.
@@ -4923,7 +5373,7 @@ mod tests {
         assert_eq!(n, serde_json::json!({"kind": "none"}));
     }
 
-    /// A client older than v44 sends no `connection`, and the daemon must
+    /// A client older than v51 sends no `connection`, and the daemon must
     /// read that as what it always meant: the connection is sent the
     /// device pushes. Both directions matter -- an old `Hello` parses, and
     /// a new one that names no kind writes the bytes an old daemon has
@@ -5023,6 +5473,9 @@ mod tests {
             workspace_path: "/tmp/ws".to_string(),
             cwd: "/tmp/ws".to_string(),
             command: None,
+            profile_id: None,
+            api_family: None,
+            without_headroom: false,
         };
         write_message(&mut buf, &req).unwrap();
 
@@ -5030,13 +5483,351 @@ mod tests {
         let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
 
         match decoded {
-            Request::CreateSession { workspace_path, cwd, command } => {
+            Request::CreateSession {
+                workspace_path,
+                cwd,
+                command,
+                profile_id,
+                api_family,
+                without_headroom,
+            } => {
                 assert_eq!(workspace_path, "/tmp/ws");
                 assert_eq!(cwd, "/tmp/ws");
                 assert_eq!(command, None);
+                assert_eq!(profile_id, None);
+                assert_eq!(api_family, None);
+                assert!(!without_headroom);
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    /// The widening is invisible to `min_version_for`, so what an older
+    /// daemon is sent is decided by what is WRITTEN: a launch that names
+    /// no profile must be the request every daemon since v1 has parsed,
+    /// with no new key in it at all.
+    #[test]
+    fn a_create_session_that_names_no_profile_is_the_request_it_always_was() {
+        let bare = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws/tree".into(),
+            command: Some("npm test".into()),
+            profile_id: None,
+            api_family: None,
+            without_headroom: false,
+        };
+
+        let written = serde_json::to_value(&bare).unwrap();
+
+        assert_eq!(
+            written,
+            serde_json::json!({
+                "type": "CreateSession",
+                "workspace_path": "/ws",
+                "cwd": "/ws/tree",
+                "command": "npm test",
+            })
+        );
+    }
+
+    #[test]
+    fn a_create_session_carries_the_launching_profile_and_reads_one_without_it() {
+        let launch = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws/tree".into(),
+            command: Some("claude 'do it'".into()),
+            profile_id: Some("claude-code".into()),
+            api_family: None,
+            without_headroom: false,
+        };
+        let written = serde_json::to_string(&launch).unwrap();
+        assert!(written.contains(r#""profile_id":"claude-code""#), "{written}");
+        match serde_json::from_str::<Request>(&written).unwrap() {
+            Request::CreateSession { profile_id, .. } => {
+                assert_eq!(profile_id.as_deref(), Some("claude-code"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // What a v46 client sends.
+        let older = r#"{"type":"CreateSession","workspace_path":"/ws","cwd":"/ws","command":null}"#;
+        match serde_json::from_str::<Request>(older).unwrap() {
+            Request::CreateSession { profile_id, api_family, .. } => {
+                assert_eq!(profile_id, None);
+                assert_eq!(api_family, None);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_custom_launch_carries_its_api_family_and_every_other_launch_is_unchanged() {
+        let custom = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws".into(),
+            command: Some("my-agent 'do it'".into()),
+            profile_id: Some("custom".into()),
+            api_family: Some("openai".into()),
+            without_headroom: false,
+        };
+        let written = serde_json::to_string(&custom).unwrap();
+        assert!(written.contains(r#""api_family":"openai""#), "{written}");
+        match serde_json::from_str::<Request>(&written).unwrap() {
+            Request::CreateSession { api_family, .. } => {
+                assert_eq!(api_family.as_deref(), Some("openai"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // No family is no field: byte for byte what a v47 client sends.
+        let claude = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws".into(),
+            command: Some("claude".into()),
+            profile_id: Some("claude-code".into()),
+            api_family: None,
+            without_headroom: false,
+        };
+        assert!(!serde_json::to_string(&claude).unwrap().contains("api_family"));
+
+        // What a v47 client sends.
+        let older = r#"{"type":"CreateSession","workspace_path":"/ws","cwd":"/ws","command":null,"profile_id":"custom"}"#;
+        match serde_json::from_str::<Request>(older).unwrap() {
+            Request::CreateSession { profile_id, api_family, .. } => {
+                assert_eq!(profile_id.as_deref(), Some("custom"));
+                assert_eq!(api_family, None);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        assert_eq!(min_version_for(&custom), 1, "FEATURE_MIN_VERSION.customApiFamily is its gate");
+    }
+
+    /// A new TYPE, so `min_version_for` is its whole wire gate -- and the
+    /// same version's OTHER change is deliberately not behind it.
+    #[test]
+    fn the_compression_switch_is_v47_and_a_create_session_is_still_v1() {
+        let switch = Request::SetHeadroomWorkspaces {
+            workspaces: vec![HeadroomWorkspace { workspace_path: "/ws".into(), enabled: true }],
+        };
+        assert_eq!(min_version_for(&switch), 47);
+
+        let launch = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws".into(),
+            command: Some("claude".into()),
+            profile_id: Some("claude-code".into()),
+            api_family: None,
+            without_headroom: false,
+        };
+        assert_eq!(
+            min_version_for(&launch),
+            1,
+            "a widened payload is invisible here: FEATURE_MIN_VERSION.compressedLaunch is its gate"
+        );
+    }
+
+    #[test]
+    fn savings_in_a_window_are_v49() {
+        assert_eq!(min_version_for(&Request::HeadroomSavings { since: 1_756_900_000 }), 49);
+    }
+
+    /// The snapshots cross to the frontend, so their field names are part
+    /// of the wire: the reply's one field is a single word, and the
+    /// struct carries the camelCase.
+    #[test]
+    fn run_savings_serialize_to_the_camel_case_shape_the_frontend_expects() {
+        let run = RunSavings {
+            workspace_id: "ws".into(),
+            path: "/p/t.md".into(),
+            session_id: "s-1".into(),
+            started_at: 1_756_900_000,
+            ended_at: Some(1_756_903_600),
+            tokens_saved: 41_200,
+            requests: 37,
+        };
+        assert_eq!(
+            serde_json::to_value(Response::HeadroomSavings { runs: vec![run] }).unwrap(),
+            serde_json::json!({ "type": "HeadroomSavings", "runs": [{
+                "workspaceId": "ws", "path": "/p/t.md", "sessionId": "s-1",
+                "startedAt": 1_756_900_000, "endedAt": 1_756_903_600,
+                "tokensSaved": 41_200, "requests": 37 }] })
+        );
+    }
+
+    /// A v48 daemon's run has no snapshot fields, and it recorded no
+    /// snapshot: absent reads as None, never as a zero.
+    #[test]
+    fn a_card_run_from_a_daemon_that_took_no_snapshots_parses_with_none() {
+        let run: CardRun = serde_json::from_value(serde_json::json!({
+            "id": 1, "path": "/p/t.md", "sessionId": "s-1", "command": null,
+            "conversationId": null, "launchCwd": null, "baseSha": null,
+            "startedAt": 10, "endedAt": 20, "exitCode": 0, "outcome": "exited",
+            "resumeAttempts": null
+        }))
+        .unwrap();
+        assert_eq!(run.headroom_tokens_saved, None);
+        assert_eq!(run.headroom_requests, None);
+    }
+
+    /// The list crosses from the frontend, so its field names are part
+    /// of the wire: the struct carries the camelCase, and the request
+    /// keeps its one field a single word.
+    #[test]
+    fn the_compression_switch_reads_the_camel_case_shape_the_frontend_sends() {
+        let sent = r#"{"type":"SetHeadroomWorkspaces","workspaces":[{"workspacePath":"/ws","enabled":true},{"workspacePath":"/other","enabled":false}]}"#;
+
+        match serde_json::from_str::<Request>(sent).unwrap() {
+            Request::SetHeadroomWorkspaces { workspaces } => assert_eq!(
+                workspaces,
+                vec![
+                    HeadroomWorkspace { workspace_path: "/ws".into(), enabled: true },
+                    HeadroomWorkspace { workspace_path: "/other".into(), enabled: false },
+                ]
+            ),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// A v46 daemon sends neither field. Absent has to read as "not
+    /// compressed, and nothing to explain", which is true of every
+    /// session such a daemon ever started.
+    #[test]
+    fn a_session_summary_from_an_older_daemon_reads_as_not_compressed() {
+        let older = r#"{"id":"s1","workspace_path":"/ws","cwd":"/ws","status":"idle","restored":false}"#;
+
+        let summary: SessionSummary = serde_json::from_str(older).unwrap();
+
+        assert!(!summary.compressed);
+        assert_eq!(summary.uncompressed_reason, None);
+    }
+
+    #[test]
+    fn a_session_summary_carries_the_decision_and_its_reason() {
+        let summary = SessionSummary {
+            id: "s1".into(),
+            workspace_path: "/ws".into(),
+            cwd: "/ws".into(),
+            status: "idle".into(),
+            restored: false,
+            interrupted: false,
+            failure_reason: None,
+            orphan: None,
+            compressed: false,
+            uncompressed_reason: Some("not-ready".into()),
+            headroom_reach: None,
+        };
+
+        let written = serde_json::to_string(&summary).unwrap();
+        let read: SessionSummary = serde_json::from_str(&written).unwrap();
+
+        assert_eq!(read, summary);
+        assert!(written.contains(r#""uncompressed_reason":"not-ready""#), "{written}");
+    }
+
+    /// v50's half of the summary: what Headroom was found to have seen.
+    /// Absent from an older daemon, which never asked.
+    #[test]
+    fn a_session_summary_carries_what_headroom_has_seen_and_an_older_one_says_nothing() {
+        let older = r#"{"id":"s1","workspace_path":"/ws","cwd":"/ws","status":"idle","restored":false,"compressed":true}"#;
+        let read: SessionSummary = serde_json::from_str(older).unwrap();
+        assert!(read.compressed);
+        assert_eq!(read.headroom_reach, None);
+
+        let summary = SessionSummary { headroom_reach: Some("unreached".into()), ..read };
+        let written = serde_json::to_string(&summary).unwrap();
+        assert!(written.contains(r#""headroom_reach":"unreached""#), "{written}");
+        assert_eq!(serde_json::from_str::<SessionSummary>(&written).unwrap(), summary);
+    }
+
+    /// The override is v50's widened payload: invisible to
+    /// `min_version_for`, and absent from every launch that does not
+    /// carry it, so an older daemon is sent exactly what it always was.
+    #[test]
+    fn a_relaunch_without_headroom_says_so_and_every_other_launch_is_unchanged() {
+        let relaunch = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws".into(),
+            command: Some("claude --resume abc".into()),
+            profile_id: Some("claude-code".into()),
+            api_family: None,
+            without_headroom: true,
+        };
+        let written = serde_json::to_string(&relaunch).unwrap();
+        assert!(written.contains(r#""without_headroom":true"#), "{written}");
+        match serde_json::from_str::<Request>(&written).unwrap() {
+            Request::CreateSession { without_headroom, .. } => assert!(without_headroom),
+            other => panic!("wrong variant: {other:?}"),
+        }
+        assert_eq!(
+            min_version_for(&relaunch),
+            1,
+            "a widened payload is invisible here: FEATURE_MIN_VERSION.headroomFailures is its gate"
+        );
+
+        let launch = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws".into(),
+            command: Some("claude --resume abc".into()),
+            profile_id: Some("claude-code".into()),
+            api_family: None,
+            without_headroom: false,
+        };
+        assert!(!serde_json::to_string(&launch).unwrap().contains("without_headroom"));
+
+        // What a v49 client sends.
+        let older = r#"{"type":"CreateSession","workspace_path":"/ws","cwd":"/ws","command":null,"profile_id":"claude-code"}"#;
+        match serde_json::from_str::<Request>(older).unwrap() {
+            Request::CreateSession { without_headroom, .. } => assert!(!without_headroom),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// A v49 daemon answers a launch with the id alone. That reads as
+    /// "not compressed, and nothing to explain" -- no mark.
+    #[test]
+    fn a_created_session_carries_the_decision_and_an_older_reply_reads_as_none() {
+        let older: Response = serde_json::from_str(r#"{"type":"SessionCreated","id":"s1"}"#).unwrap();
+        match older {
+            Response::SessionCreated { id, compressed, uncompressed_reason } => {
+                assert_eq!(id, "s1");
+                assert!(!compressed);
+                assert_eq!(uncompressed_reason, None);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        let created = Response::SessionCreated {
+            id: "s2".into(),
+            compressed: false,
+            uncompressed_reason: Some("headroom-failed".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&created).unwrap(),
+            serde_json::json!({
+                "type": "SessionCreated",
+                "id": "s2",
+                "compressed": false,
+                "uncompressed_reason": "headroom-failed",
+            })
+        );
+    }
+
+    #[test]
+    fn whether_a_session_reaches_headroom_is_v50() {
+        let asked = Request::HeadroomReach { session_id: "s1".into() };
+        assert_eq!(min_version_for(&asked), 50);
+        assert_eq!(
+            serde_json::to_value(&asked).unwrap(),
+            serde_json::json!({ "type": "HeadroomReach", "session_id": "s1" })
+        );
+        assert_eq!(
+            serde_json::to_value(Response::HeadroomReach {
+                session_id: "s1".into(),
+                reach: "unreached".into()
+            })
+            .unwrap(),
+            serde_json::json!({ "type": "HeadroomReach", "session_id": "s1", "reach": "unreached" })
+        );
     }
 
     #[test]
@@ -5808,27 +6599,47 @@ mod tests {
         // v43: GetCardSession -- one binding with its launch command, which
         // the board read no longer carries. One new TYPE, plus the
         // CardSession reply.
-        // v44: `Hello.connection` -- which of the app's connections this
+        // v44: Companion notifications -- PushCompanionNotify,
+        // SetPushGatewayUrl, SetDeviceSendPermission. Three new TYPES,
+        // gated at 49 (see `PROTOCOL_VERSION`).
+        // v45: RailTrigger.at -- the at-time schedule. A widened payload
+        // on an existing TYPE, gated by FEATURE_MIN_VERSION.railSchedule.
+        // v46: the daemon runs Headroom -- GetHeadroomStatus,
+        // DetectHeadroom, StartHeadroom, StopHeadroom, InstallHeadroom,
+        // and the Headroom reply. Five new TYPES and no widened payload.
+        // v47: compressed sessions -- SetHeadroomWorkspaces, one new
+        // TYPE; CreateSession widened with `profile_id`, gated by
+        // FEATURE_MIN_VERSION.compressedLaunch; and SessionSummary
+        // widened with `compressed` and `uncompressed_reason`.
+        // v48: CreateSession widened with `api_family`, the custom
+        // agent's, gated by FEATURE_MIN_VERSION.customApiFamily. No new
+        // TYPE.
+        // v49: savings -- HeadroomSavings, one new TYPE; CardRun widened
+        // with `headroom_tokens_saved` and `headroom_requests`.
+        // v50: honest failures -- HeadroomReach, one new TYPE;
+        // CreateSession widened with `without_headroom`, gated by
+        // FEATURE_MIN_VERSION.headroomFailures; SessionCreated,
+        // AgentSessionSpawned and SessionSummary widened with what the
+        // daemon decided and found.
+        // v51: `Hello.connection` -- which of the app's connections this
         // is. A widened payload and no new TYPE, so no band count moves
         // in the table below and `min_version_for` has no new arm.
-        // v45: the Relay's admission token -- `SetRemoteAccess.
+        // v52: the Relay's admission token -- `SetRemoteAccess.
         // relay_admission`, `Devices.relay_admission_set` and the QR's
         // `relayAdmission`. Widened payloads again and no new TYPE.
-        // v46: RemoveThisDevice -- a Device deleting its own row, over the
+        // v53: RemoveThisDevice -- a Device deleting its own row, over the
         // connection the Device wire's second slice gives it. One new
         // TYPE.
-        // v47: InvokeDesktop, ListenDesktop, UnlistenDesktop,
+        // v54: InvokeDesktop, ListenDesktop, UnlistenDesktop,
         // ForwardResult, OfferDesktopEvent -- the Device asks, the
         // desktop's forwarding connection answers. Five new TYPES. The
         // `Hello.connection` value `Forward` is a widened payload and
         // invisible here.
-        // v48: GetAttention + AttentionResult -- the one stable API
+        // v55: GetAttention + AttentionResult -- the one stable API
         // between the shell and a Workstation (ADR 0005). Two new TYPES.
-        // v49: Companion notifications -- PushCompanionNotify,
-        // SetPushGatewayUrl, SetDeviceSendPermission. Three new TYPES,
-        // which main shipped as v44 before the Device wire's 44..48 met
-        // them.
-        assert_eq!(PROTOCOL_VERSION, 49);
+        // The Device wire built these five at 44..48 on its own branch
+        // and moved them past main's 44..50 when the two met.
+        assert_eq!(PROTOCOL_VERSION, 55);
     }
 
     #[test]
@@ -5967,6 +6778,85 @@ mod tests {
         }
     }
 
+    /// Five new TYPES, so `min_version_for` is the whole wire gate: a
+    /// daemon older than 46 is never sent one, and answers `Unsupported`
+    /// to a client that sends it anyway.
+    #[test]
+    fn headroom_requests_are_v46() {
+        for req in [
+            Request::GetHeadroomStatus,
+            Request::DetectHeadroom { located_path: Some("/opt/venv/bin/headroom".into()) },
+            Request::StartHeadroom,
+            Request::StopHeadroom,
+            Request::InstallHeadroom,
+        ] {
+            assert_eq!(min_version_for(&req), 46, "{req:?}");
+        }
+    }
+
+    /// The status crosses to the frontend, so its field names are part of
+    /// the wire. `rename_all` on an ENUM renames variants only, which is
+    /// how snake_case fields have reached TypeScript as `undefined`
+    /// before -- so the reply keeps its one field a single word and the
+    /// struct carries the camelCase, and both are asserted here.
+    #[test]
+    fn headroom_status_serializes_to_the_camel_case_shape_the_frontend_expects() {
+        let status = HeadroomStatus {
+            state: "verified".into(),
+            reason: None,
+            newer_than_tested: true,
+            version: Some("0.40.0".into()),
+            floor: "0.38.0".into(),
+            pin: "0.39.1".into(),
+            path: Some("/Users/x/.local/bin/headroom".into()),
+            source: Some("uv-tool-dir".into()),
+            uv_found: true,
+            wanted: true,
+            running: true,
+            ready: false,
+            port: Some(51234),
+            restarts: 2,
+            last_error: None,
+            lifetime_tokens_saved: Some(1200),
+            install: Some(HeadroomInstall { state: "running".into(), output: "Resolved 86 packages".into() }),
+        };
+        let json = serde_json::to_value(Response::Headroom { status: status.clone() }).unwrap();
+        assert_eq!(json["type"], "Headroom");
+        let body = &json["status"];
+        assert_eq!(body["state"], "verified");
+        assert_eq!(body["reason"], serde_json::Value::Null);
+        assert_eq!(body["newerThanTested"], true);
+        assert_eq!(body["version"], "0.40.0");
+        assert_eq!(body["floor"], "0.38.0");
+        assert_eq!(body["pin"], "0.39.1");
+        assert_eq!(body["path"], "/Users/x/.local/bin/headroom");
+        assert_eq!(body["source"], "uv-tool-dir");
+        assert_eq!(body["uvFound"], true);
+        assert_eq!(body["wanted"], true);
+        assert_eq!(body["running"], true);
+        assert_eq!(body["ready"], false);
+        assert_eq!(body["port"], 51234);
+        assert_eq!(body["restarts"], 2);
+        assert_eq!(body["lastError"], serde_json::Value::Null);
+        assert_eq!(body["lifetimeTokensSaved"], 1200);
+        assert_eq!(body["install"]["state"], "running");
+        assert_eq!(body["install"]["output"], "Resolved 86 packages");
+
+        let line = serde_json::to_string(&Response::Headroom { status: status.clone() }).unwrap();
+        match serde_json::from_str::<Response>(&line).unwrap() {
+            Response::Headroom { status: back } => assert_eq!(back, status),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// `located_path` is the one field any of the five carries, and an
+    /// absent one is "check again", not a parse error.
+    #[test]
+    fn detect_headroom_reads_a_missing_located_path_as_check_again() {
+        let parsed: Request = serde_json::from_str(r#"{"type":"DetectHeadroom"}"#).unwrap();
+        assert!(matches!(parsed, Request::DetectHeadroom { located_path: None }));
+    }
+
     #[test]
     fn group_template_requests_are_v15() {
         for req in [
@@ -6038,7 +6928,14 @@ mod tests {
     /// below instead of failing loudly.
     fn one_of_every_request_variant() -> Vec<Request> {
         vec![
-            Request::CreateSession { workspace_path: "w".into(), cwd: "c".into(), command: None },
+            Request::CreateSession {
+                workspace_path: "w".into(),
+                cwd: "c".into(),
+                command: None,
+                profile_id: None,
+                api_family: None,
+                without_headroom: false,
+            },
             Request::ListSessions,
             Request::WriteInput { id: "s".into(), data: "d".into() },
             Request::ResizeSession { id: "s".into(), cols: 80, rows: 24 },
@@ -6244,9 +7141,9 @@ mod tests {
             Request::RevokeDevice { device_id: "d1".into() },
             Request::RevokeAllDevices,
             Request::SetRemoteAccess { enabled: true, relay_url: None, relay_admission: None },
-            // v46: a Device removing itself.
+            // v53: a Device removing itself.
             Request::RemoveThisDevice,
-            // v47: forwarding gated desktop commands.
+            // v54: forwarding gated desktop commands.
             Request::InvokeDesktop {
                 command: "get_board".into(),
                 args: serde_json::json!({}),
@@ -6262,7 +7159,7 @@ mod tests {
                 event: "status-changed".into(),
                 payload: serde_json::json!({}),
             },
-            // v48: the attention request.
+            // v55: the attention request.
             Request::GetAttention {
                 version: ATTENTION_API_VERSION,
             },
@@ -6270,7 +7167,7 @@ mod tests {
                 call_id: 1,
                 items: vec![],
             },
-            // v49: Companion notifications.
+            // Companion notifications, gated at 49.
             Request::SetPushGatewayUrl {
                 url: Some("https://push.example".into()),
             },
@@ -6283,6 +7180,17 @@ mod tests {
                     id: "session:s1".into(),
                 }],
             },
+            // v46's Headroom requests.
+            Request::GetHeadroomStatus,
+            Request::DetectHeadroom { located_path: None },
+            Request::StartHeadroom,
+            Request::StopHeadroom,
+            Request::InstallHeadroom,
+            // v47's copy of the compression switch.
+            Request::SetHeadroomWorkspaces { workspaces: vec![] },
+            // v49's savings in a window.
+            Request::HeadroomSavings { since: 0 },
+            Request::HeadroomReach { session_id: "s".into() },
             Request::Unknown,
         ]
     }
@@ -6319,7 +7227,11 @@ mod tests {
     /// client identity), v37=2 (an agent authoring its own workspace's
     /// tools), v39=1 (SessionScreen), v40=3 (ssh workspace files), v41=2
     /// (ssh git/files), v42=2 (the Decisions tab's writes), v43=1
-    /// (GetCardSession), plus Unknown.
+    /// (GetCardSession), v46=5 (the daemon runs Headroom), v47=1
+    /// (SetHeadroomWorkspaces), v49=4 (the three Companion notification
+    /// requests and HeadroomSavings), v50=1 (HeadroomReach), v53=1
+    /// (RemoveThisDevice), v54=5 (forwarding desktop commands), v55=2 (the
+    /// attention request), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -6376,16 +7288,27 @@ mod tests {
         // GetCardSession -- one binding with its command, now the board
         // read leaves the command out.
         expected.insert(43, 1);
+        // The daemon runs Headroom: GetHeadroomStatus, DetectHeadroom,
+        // StartHeadroom, StopHeadroom, InstallHeadroom.
+        expected.insert(46, 5);
+        // The daemon's copy of the compression switch:
+        // SetHeadroomWorkspaces.
+        expected.insert(47, 1);
+        // Two features share 49. Companion notifications:
+        // PushCompanionNotify, SetPushGatewayUrl, SetDeviceSendPermission
+        // -- three, gated at 49 rather than the 44 they shipped at (see
+        // `PROTOCOL_VERSION`). And savings in a limit window:
+        // HeadroomSavings -- one.
+        expected.insert(49, 4);
+        // Whether a compressed session reaches Headroom: HeadroomReach.
+        expected.insert(50, 1);
         // RemoveThisDevice -- a Device deleting its own row.
-        expected.insert(46, 1);
+        expected.insert(53, 1);
         // InvokeDesktop + Listen/UnlistenDesktop + ForwardResult +
         // OfferDesktopEvent -- forwarding gated desktop commands.
-        expected.insert(47, 5);
+        expected.insert(54, 5);
         // GetAttention + AttentionResult -- the attention request.
-        expected.insert(48, 2);
-        // Companion notifications: PushCompanionNotify,
-        // SetPushGatewayUrl, SetDeviceSendPermission.
-        expected.insert(49, 3);
+        expected.insert(55, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
@@ -6418,6 +7341,8 @@ mod tests {
             exit_code: None,
             outcome: "running".to_string(),
             resume_attempts: Some(2),
+            headroom_tokens_saved: Some(41_200),
+            headroom_requests: Some(37),
         };
         assert_eq!(
             serde_json::to_value(&run).unwrap(),
@@ -6427,7 +7352,8 @@ mod tests {
                                 "baseSha": "f75db30f75db30f75db30f75db30f75db30f75db",
                                 "startedAt": 1_756_900_000, "endedAt": null,
                                 "exitCode": null, "outcome": "running",
-                                "resumeAttempts": 2 })
+                                "resumeAttempts": 2, "headroomTokensSaved": 41_200,
+                                "headroomRequests": 37 })
         );
 
         let mut buf = Vec::new();
@@ -6813,19 +7739,40 @@ mod tests {
             session_id: "s-1".to_string(),
             cwd: "/ws".to_string(),
             command: "claude".to_string(),
+            compressed: false,
+            uncompressed_reason: Some("not-ready".to_string()),
         };
         write_message(&mut buf, &resp).unwrap();
         let mut cursor = Cursor::new(buf);
         let decoded: Response = read_message(&mut cursor).unwrap().unwrap();
         match decoded {
-            Response::AgentSessionSpawned { workspace_id, session_id, cwd, command } => {
+            Response::AgentSessionSpawned {
+                workspace_id,
+                session_id,
+                cwd,
+                command,
+                compressed,
+                uncompressed_reason,
+            } => {
                 assert_eq!(workspace_id, "ws-1");
                 assert_eq!(session_id, "s-1");
                 assert_eq!(cwd, "/ws");
                 assert_eq!(command, "claude");
+                assert!(!compressed);
+                assert_eq!(uncompressed_reason.as_deref(), Some("not-ready"));
             }
             other => panic!("wrong variant: {other:?}"),
         }
+
+        // What a v49 daemon pushes: no decision, and none is read into it.
+        let older: Response = serde_json::from_str(
+            r#"{"type":"AgentSessionSpawned","workspace_id":"w","session_id":"s","cwd":"/","command":"claude"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            older,
+            Response::AgentSessionSpawned { compressed: false, uncompressed_reason: None, .. }
+        ));
     }
 
     #[test]
@@ -6857,7 +7804,11 @@ mod tests {
             worktree_path: Some("/x/gavin-backend".into()),
             branch: Some("feature/api".into()),
             auto_resume: Some(true),
-            trigger: Some(RailTrigger { kind: "rail-done".into(), rail: Some("frontend".into()) }),
+            trigger: Some(RailTrigger {
+                kind: "rail-done".into(),
+                rail: Some("frontend".into()),
+                at: None,
+            }),
             page_id: None,
             stages: vec![Stage {
                 id: "s1".into(),
@@ -6939,8 +7890,36 @@ mod tests {
         .unwrap();
         assert_eq!(
             rail.trigger,
-            Some(RailTrigger { kind: "all-rails-done".into(), rail: None })
+            Some(RailTrigger { kind: "all-rails-done".into(), rail: None, at: None })
         );
+    }
+
+    /// An `at-time` trigger carries its instant; every other kind omits
+    /// the field, and a rail written before v45 has none.
+    #[test]
+    fn a_trigger_with_an_at_parses_and_one_without_has_none() {
+        let timed: Rail = serde_json::from_value(serde_json::json!({
+            "id": "r1", "name": "nightly", "position": 0,
+            "worktreePath": null, "pageId": null, "stages": [],
+            "trigger": { "kind": "at-time", "at": 1_800_000_000 }
+        }))
+        .unwrap();
+        assert_eq!(
+            timed.trigger,
+            Some(RailTrigger {
+                kind: "at-time".into(),
+                rail: None,
+                at: Some(1_800_000_000),
+            })
+        );
+
+        let old: Rail = serde_json::from_value(serde_json::json!({
+            "id": "r1", "name": "release", "position": 0,
+            "worktreePath": null, "pageId": null, "stages": [],
+            "trigger": { "kind": "all-rails-done" }
+        }))
+        .unwrap();
+        assert_eq!(old.trigger.as_ref().and_then(|t| t.at), None);
     }
 
     /// The old shape must still parse: an agent that has never heard of
