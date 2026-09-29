@@ -24,15 +24,19 @@ vi.mock("$lib/core/clipboard", () => ({
   copySelection: vi.fn().mockResolvedValue(undefined),
   pasteClipboard: vi.fn().mockResolvedValue(undefined),
   terminalHasSelection: vi.fn().mockReturnValue(false),
+  hasTerminal: vi.fn().mockReturnValue(true),
 }));
 vi.mock("$lib/shell/confirmClose", () => ({ confirmTabClose: vi.fn().mockResolvedValue(true) }));
 // Switchable per test via globalThis, which the hoisted factory can read
 // without closing over module scope (that would be uninitialized here).
+// Off macOS the platform is Linux unless a test names Windows.
 vi.mock("$lib/core/platform", () => {
-  const mac = () => (globalThis as Record<string, unknown>).__testIsMac !== false;
+  const g = globalThis as Record<string, unknown>;
+  const mac = () => g.__testIsMac !== false;
   return {
     isMacSync: mac,
     cmdHeld: (e: KeyboardEvent) => (mac() ? e.metaKey : e.ctrlKey),
+    currentPlatform: () => (mac() ? "macos" : ((g.__testPlatform as string | undefined) ?? "linux")),
   };
 });
 
@@ -46,7 +50,7 @@ import {
   closeSession,
   splitPane,
 } from "$lib/core/layoutState";
-import { copySelection, pasteClipboard, terminalHasSelection } from "$lib/core/clipboard";
+import { copySelection, pasteClipboard, terminalHasSelection, hasTerminal } from "$lib/core/clipboard";
 import { handleShortcutKeydown, type ShortcutKeyEvent } from "$lib/core/keyboard";
 import { requestedCompose } from "$lib/cards/composeRequest";
 import { provideNextWaitingJump } from "$lib/agents/nextWaitingJump";
@@ -110,7 +114,9 @@ beforeEach(() => {
   // clearAllMocks keeps implementations, so a test that gave the terminal
   // a selection would otherwise hand it to every test after it.
   vi.mocked(terminalHasSelection).mockReturnValue(false);
+  vi.mocked(hasTerminal).mockReturnValue(true);
   (globalThis as Record<string, unknown>).__testIsMac = true;
+  (globalThis as Record<string, unknown>).__testPlatform = undefined;
   requestedCompose.set(null);
   hubTabsHiddenDefault.set([]);
   hubTabsHiddenByWorkspace.set({});
@@ -389,7 +395,7 @@ describe("clipboard shortcuts", () => {
   it("⌘V still reaches the focused terminal", async () => {
     const e = paste();
     expect(await handleShortcutKeydown(e)).toBe(true);
-    expect(pasteClipboard).toHaveBeenCalled();
+    expect(pasteClipboard).toHaveBeenCalledWith("a");
     expect(e.preventDefault).toHaveBeenCalled();
   });
 
@@ -435,6 +441,25 @@ describe("clipboard shortcuts", () => {
     const e = copy({ target: xtermTextarea() });
     expect(await handleShortcutKeydown(e)).toBe(true);
     expect(copySelection).toHaveBeenCalledWith("a");
+  });
+
+  it("⌘C in a card, file or board tab on a terminal page is the browser's copy", async () => {
+    // The tab has focus on the page, but no terminal behind it: claiming
+    // the chord copied nothing and cancelled the copy of what IS selected.
+    vi.mocked(hasTerminal).mockReturnValue(false);
+    const e = copy({ target: domTarget({ tagName: "DIV" }) });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(hasTerminal).toHaveBeenCalledWith("a");
+    expect(copySelection).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("⌘V in a tab with no terminal behind it is left to the page", async () => {
+    vi.mocked(hasTerminal).mockReturnValue(false);
+    const e = paste({ target: domTarget({ tagName: "DIV" }) });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(pasteClipboard).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
   });
 
   it("⌃C on macOS stays the interrupt, selection or not", async () => {
@@ -519,6 +544,53 @@ describe("clipboard shortcuts on Windows/Linux", () => {
     expect(await handleShortcutKeydown(e)).toBe(false);
     expect(copySelection).not.toHaveBeenCalled();
     expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("Ctrl+Shift+V pastes into the terminal on Linux", async () => {
+    const e = ctrl({ key: "V", code: "KeyV", shiftKey: true });
+    expect(await handleShortcutKeydown(e)).toBe(true);
+    expect(pasteClipboard).toHaveBeenCalledWith("a");
+    expect(e.preventDefault).toHaveBeenCalled();
+  });
+
+  it("Ctrl+V on Linux stays the shell's (quoted insert, vim's block select)", async () => {
+    const e = ctrl({ key: "v", code: "KeyV" });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(pasteClipboard).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("Ctrl+V pastes on Windows, as in Windows Terminal", async () => {
+    (globalThis as Record<string, unknown>).__testPlatform = "windows";
+    const e = ctrl({ key: "v", code: "KeyV" });
+    expect(await handleShortcutKeydown(e)).toBe(true);
+    expect(pasteClipboard).toHaveBeenCalledWith("a");
+  });
+
+  it("Ctrl+Shift+V pastes on Windows too", async () => {
+    (globalThis as Record<string, unknown>).__testPlatform = "windows";
+    const e = ctrl({ key: "V", code: "KeyV", shiftKey: true });
+    expect(await handleShortcutKeydown(e)).toBe(true);
+    expect(pasteClipboard).toHaveBeenCalledWith("a");
+  });
+
+  it("leaves a paste chord alone in a text field", async () => {
+    (globalThis as Record<string, unknown>).__testPlatform = "windows";
+    const e = ctrl({ key: "v", code: "KeyV", target: domTarget({ tagName: "TEXTAREA" }) });
+    expect(await handleShortcutKeydown(e)).toBe(false);
+    expect(pasteClipboard).not.toHaveBeenCalled();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("leaves both chords alone in a tab with no terminal behind it", async () => {
+    vi.mocked(hasTerminal).mockReturnValue(false);
+    vi.mocked(terminalHasSelection).mockReturnValue(true);
+    const copyKey = ctrl({ target: domTarget({ tagName: "DIV" }) });
+    const pasteKey = ctrl({ key: "V", code: "KeyV", shiftKey: true, target: domTarget({ tagName: "DIV" }) });
+    expect(await handleShortcutKeydown(copyKey)).toBe(false);
+    expect(await handleShortcutKeydown(pasteKey)).toBe(false);
+    expect(copySelection).not.toHaveBeenCalled();
+    expect(pasteClipboard).not.toHaveBeenCalled();
   });
 });
 

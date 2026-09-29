@@ -4,23 +4,19 @@ vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
   writeText: vi.fn().mockResolvedValue(undefined),
   readText: vi.fn().mockResolvedValue(""),
 }));
-vi.mock("$lib/core/layoutState", async () => {
-  const { writable } = await import("svelte/store");
-  return { layoutState: writable({ focusedSessionId: null }) };
-});
-vi.mock("$lib/core/backend", () => ({ writeInput: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("$lib/terminal/terminalRegistry", () => ({ getTerminal: vi.fn() }));
 
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { writeText, readText } from "@tauri-apps/plugin-clipboard-manager";
 import { getTerminal } from "$lib/terminal/terminalRegistry";
-import { copySelection, terminalHasSelection } from "$lib/core/clipboard";
+import { copySelection, hasTerminal, pasteClipboard, terminalHasSelection } from "$lib/core/clipboard";
 
-/// Just the three calls the clipboard layer makes on an xterm Terminal.
+/// Just the calls the clipboard layer makes on an xterm Terminal.
 function fakeTerminal(selection: string) {
   return {
     hasSelection: vi.fn(() => selection !== ""),
     getSelection: vi.fn(() => selection),
     clearSelection: vi.fn(),
+    paste: vi.fn(),
   };
 }
 
@@ -78,5 +74,36 @@ describe("copySelection", () => {
   it("writes nothing for a session with no terminal", async () => {
     await copySelection("gone");
     expect(writeText).not.toHaveBeenCalled();
+  });
+});
+
+describe("hasTerminal", () => {
+  it("is true for a session with a terminal and false for any other tab", () => {
+    withTerminal("");
+    expect(hasTerminal("s1")).toBe(true);
+    expect(hasTerminal("board-tab")).toBe(false);
+  });
+});
+
+describe("pasteClipboard", () => {
+  it("hands the text to xterm's own paste, which brackets it and turns newlines into Enter", async () => {
+    const term = withTerminal("");
+    vi.mocked(readText).mockResolvedValueOnce("echo one\necho two");
+    await pasteClipboard("s1");
+    expect(term.paste).toHaveBeenCalledWith("echo one\necho two");
+  });
+
+  it("pastes nothing when the clipboard holds no text", async () => {
+    const term = withTerminal("");
+    vi.mocked(readText).mockResolvedValueOnce("");
+    await pasteClipboard("s1");
+    expect(term.paste).not.toHaveBeenCalled();
+  });
+
+  it("does not throw when the clipboard cannot be read as text (an image)", async () => {
+    const term = withTerminal("");
+    vi.mocked(readText).mockRejectedValueOnce("The clipboard contents were not available");
+    await expect(pasteClipboard("s1")).resolves.toBeUndefined();
+    expect(term.paste).not.toHaveBeenCalled();
   });
 });
