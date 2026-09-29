@@ -23,6 +23,9 @@ import {
 // app (CLAUDE.md). This is the static pre-flight under it.
 
 const VIEW = source("GlobalSettingsView.svelte");
+// Pairing, the Device list and revocation moved out of Settings into the
+// Devices panel; the Settings section keeps the switch, Relay and token.
+const PANEL = source("DevicesPanel.svelte");
 const MODULE = source("remoteAccess.ts");
 const BACKEND = source("backend.ts");
 
@@ -110,15 +113,24 @@ describe("the backend wrappers", () => {
 });
 
 describe("the Settings section", () => {
-  it("reaches every one of the seven from the template", () => {
+  it("reaches every one of the seven from the Settings section or the Devices panel", () => {
     for (const [, wrapper] of COMMANDS) {
-      expect(VIEW, `nothing calls backend.${wrapper}`).toContain(`backend.${wrapper}(`);
+      const at = wrapper === "setRemoteAccess" ? VIEW : PANEL + source("devicesState.ts");
+      expect(at, `nothing calls backend.${wrapper}`).toContain(`backend.${wrapper}(`);
     }
   });
 
-  it("listens for the three device events", () => {
-    for (const event of ["device-pairing-requested", "device-connected", "device-disconnected"]) {
-      expect(VIEW).toContain(`"${event}"`);
+  it("hears the pairing question in the panel and the connect pushes in the state", () => {
+    expect(PANEL).toContain('"device-pairing-requested"');
+    expect(VIEW).not.toContain('"device-pairing-requested"');
+    for (const event of ["device-connected", "device-disconnected"]) {
+      expect(source("devicesState.ts")).toContain(`"${event}"`);
+    }
+  });
+
+  it("no longer draws pairing or the Device list in Settings", () => {
+    for (const gone of ["startPairing", "pairingOpen", "qrDraw", "revokeAll", "revokeOne", "deviceRows", "Pair a device</", "class=\"devices\""]) {
+      expect(VIEW, gone).not.toContain(gone);
     }
   });
 
@@ -139,9 +151,9 @@ describe("the Settings section", () => {
   it("greys every control behind that gate", () => {
     const disabled = [...VIEW.matchAll(/disabled=\{([^}]*)\}/g)].map((m) => m[1]);
     const gated = disabled.filter((d) => d.includes("remoteAccessGate !== null"));
-    // The toggle, the relay field, Pair a device, Revoke all, and the
-    // per-row Revoke.
-    expect(gated.length).toBeGreaterThanOrEqual(5);
+    // The toggle and the relay field (the admission controls are
+    // counted below); Pair a device and Revoke are the panel's.
+    expect(gated.length).toBeGreaterThanOrEqual(2);
     // And the section says which version it needs, rather than only
     // going dark.
     expect(VIEW).toContain("{remoteAccessGate}");
@@ -156,26 +168,26 @@ describe("the Settings section", () => {
   });
 
   it("draws the QR inline, from the payload, with no network anywhere", () => {
-    expect(VIEW).toContain("qrDraw(pairing.qr)");
-    expect(VIEW).toContain("<svg");
-    expect(VIEW).toContain("<path d={drawn.path}");
+    expect(PANEL).toContain("qrDraw(pairing.qr)");
+    expect(PANEL).toContain("<svg");
+    expect(PANEL).toContain("<path d={drawn.path}");
     // No image service, no CDN, no <img>: the thing being drawn is a
     // pairing secret, and a URL is a copy of it leaving the machine.
-    expect(VIEW).not.toMatch(/<img[^>]*qr/i);
+    expect(PANEL).not.toMatch(/<img[^>]*qr/i);
     expect(MODULE).not.toContain("http://");
     expect(source("qr.ts")).not.toContain("https://");
   });
 
   it("shows the countdown beside it", () => {
-    expect(VIEW).toContain("countdownLabel(pairing.expiresAt, nowMs)");
+    expect(PANEL).toContain("countdownLabel(pairing.expiresAt, nowMs)");
   });
 
   // Every prompt's words come from the module, so the copy the unit
   // tests hold is the copy on screen. A title written into the markup
   // would be a second one that drifts.
   it("asks through askConfirm with the module's copy", () => {
-    for (const copy of ["pairingConfirmCopy(request, knownDevice(request, devices))", "revokeDeviceCopy(row)", "revokeAllCopy()"]) {
-      expect(VIEW).toContain(`askConfirm(${copy})`);
+    for (const copy of ["pairingConfirmCopy(request, knownDevice(request, $deviceList))", "revokeDeviceCopy(row)", "revokeAllCopy()"]) {
+      expect(PANEL).toContain(`askConfirm(${copy})`);
     }
   });
 
@@ -188,14 +200,14 @@ describe("the Settings section", () => {
     expect(VIEW).toContain("{KEEP_RUNNING_NOTE}");
     expect(VIEW).toContain("{RELAY_NOTE}");
     expect(VIEW).toContain("{ADMISSION_NOTE}");
-    expect(VIEW).toContain("{NO_DEVICES}");
+    expect(PANEL).toContain("{NO_DEVICES}");
     // The strings themselves live in the module, not the markup.
     expect(MODULE).toContain(TRANSPORT_NOTE);
     expect(VIEW).not.toContain(TRANSPORT_NOTE);
     expect(VIEW).not.toContain(KEEP_RUNNING_NOTE);
     expect(VIEW).not.toContain(RELAY_NOTE);
     expect(VIEW).not.toContain(ADMISSION_NOTE);
-    expect(VIEW).not.toContain(NO_DEVICES);
+    expect(PANEL).not.toContain(NO_DEVICES);
   });
 
   // The section used to say, truthfully, that nothing dialled. The
@@ -287,33 +299,33 @@ describe("Pair a device", () => {
   // A QR drawn with remote access off points a Device at a Relay the
   // daemon is not connected to.
   it("is offered only when a Device could pair", () => {
-    expect(VIEW).toContain("pairingUnavailable(devices, $daemonCompat, relayState)");
+    expect(PANEL).toContain("pairingUnavailable($deviceList, $daemonCompat, $deviceRelayState)");
     // `relayDial` is a gate like any other: the entry, and a consumer.
     expect(MODULE).toContain('featureBlockedReason(compat, "relayDial")');
     expect(FEATURE_MIN_VERSION.relayDial).toBe(52);
-    const button = VIEW.match(
+    const button = PANEL.match(
       /disabled=\{([^}]*)\}\s*onclick=\{\(\) => void startPairing\(\)\}/
     );
     expect(button, "the Pair a device button").not.toBeNull();
-    expect((button as RegExpMatchArray)[1]).toContain("remoteAccessGate !== null");
+    expect((button as RegExpMatchArray)[1]).toContain("gate !== null");
     expect((button as RegExpMatchArray)[1]).toContain("pairingGate !== null");
-    expect(VIEW).toContain('use:tooltip={remoteAccessGate ?? pairingGate ?? ""}');
+    expect(PANEL).toContain('use:tooltip={gate ?? pairingGate ?? ""}');
   });
 
   it("renders every column the device list promises", () => {
-    for (const field of ["row.name", "row.role", "row.pairedAt", "row.lastSeen", "row.note"]) {
-      expect(VIEW).toContain(field);
+    for (const field of ["row.name", "row.role", "row.state", "row.note"]) {
+      expect(PANEL).toContain(field);
     }
     // Greyed, with §3's own words, rather than hidden.
-    expect(VIEW).toContain("class:dimmed={row.dimmed}");
+    expect(PANEL).toContain("class:dimmed={row.dimmed}");
     expect(MODULE).toContain(`"${STALE_NOTE}"`);
   });
 
-  it("is findable by the words a human would type for it", () => {
+  it("leaves Settings findable by what stayed, and by where pairing went", () => {
     const table = VIEW.match(/id: "remote-access",\s*keywords: \[([\s\S]*?)\]/);
     expect(table).not.toBeNull();
     const keywords = (table as RegExpMatchArray)[1];
-    for (const word of ["Pair a device", "QR", "Relay URL", "Revoke", "lost phone", "phone"]) {
+    for (const word of ["Relay URL", "Admission token", "phone", "Devices"]) {
       expect(keywords).toContain(word);
     }
   });

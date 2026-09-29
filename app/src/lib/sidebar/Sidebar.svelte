@@ -7,6 +7,10 @@
   import SessionsManagerModal from "$lib/sessions/SessionsManagerModal.svelte";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import AgentUsageModal from "$lib/agents/AgentUsageModal.svelte";
+  import { onMount } from "svelte";
+  import DevicesPanel from "$lib/core/DevicesPanel.svelte";
+  import { DEVICES_LABEL, devicesBadgeTip } from "$lib/core/devicesPanel";
+  import { devicesBadgeText, watchDevices } from "$lib/core/devicesState";
   import { activePause, nowStore, usageRefreshingStore, worstUsageProjection } from "$lib/agents/agentPauseState";
   import {
     armRequest,
@@ -88,6 +92,7 @@
     SquareArrowOutUpRight,
     Boxes,
     Activity,
+    Smartphone,
     AppWindow,
     Search,
     Pin,
@@ -189,6 +194,10 @@
     saveExpandedPages,
     type WorkspaceExpansion,
   } from "$lib/sidebar/sidebarExpansion";
+
+  // The badge counts connected Devices while the panel is closed, so the
+  // pushes are heard here, for the life of the sidebar.
+  onMount(() => watchDevices());
 
   // Which workspaces show their page list, and which pages show their
   // tab list. Kept apart rather than in one Set, since workspace ids and
@@ -1769,6 +1778,18 @@
         >
       {/if}
     </button>
+    <button class="footer-row" onclick={() => showAppPanel("devices")}>
+      <Smartphone size={12} />
+      <span>{DEVICES_LABEL}</span>
+      <!-- Connected Devices, from the daemon's connect and disconnect
+           pushes (devicesState.ts). Drawn only when there is one, so a
+           desk with no phone connected keeps a plain row. -->
+      {#if $devicesBadgeText}
+        <span class="footer-badge" use:tooltip={devicesBadgeTip(Number($devicesBadgeText))}
+          >{$devicesBadgeText}</span
+        >
+      {/if}
+    </button>
     <button
       class="footer-row"
       class:active={$appSettingsOpen}
@@ -1848,6 +1869,10 @@
 
 {#if $openAppPanel === "usage"}
   <AgentUsageModal onClose={closeAppPanel} />
+{/if}
+
+{#if $openAppPanel === "devices"}
+  <DevicesPanel onClose={closeAppPanel} />
 {/if}
 
 {#if $armRequest}
