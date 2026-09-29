@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { takeReopenedPaint } from "$lib/agents/headroomMarkState";
+import { isAwaitingFirstSubmit } from "$lib/agents/headroomMarkState";
 import { get, writable, type Writable } from "svelte/store";
 
 vi.mock("$lib/core/backend", () => ({
@@ -992,7 +992,7 @@ describe("rail controls", () => {
       "claude --resume conv-1",
       { profileId: "claude-code", withoutHeadroom: true }
     );
-    expect(takeReopenedPaint("sess-2")).toBe(true);
+    expect(isAwaitingFirstSubmit("sess-2")).toBe(true);
   });
 
   it("Resume step names the bare profile on every other resume", async () => {

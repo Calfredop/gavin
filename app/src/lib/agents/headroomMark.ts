@@ -115,9 +115,9 @@ export interface ReachCheckInput {
   /// The session is gavin's work -- bound to a card run or standing
   /// behind a rail step -- rather than a terminal the human opened.
   run: boolean;
-  /// This is the first quiet of a conversation that was REOPENED
-  /// (resume, review): what went quiet was the history being painted,
-  /// not a turn, and nothing has been asked of the model yet.
+  /// A conversation that was REOPENED (resume, review) and has not been
+  /// submitted to: what went quiet was the history being painted or the
+  /// human pausing mid-sentence, not a turn.
   reopenedPaint: boolean;
   /// Why the daemon cannot be asked, or null when it can
   /// (`featureBlockedReason(compat, "headroomFailures")`).
@@ -133,8 +133,8 @@ export interface ReachCheckInput {
 /// something: a terminal the human opened goes quiet after painting its
 /// welcome screen, and again every time the human pauses mid-sentence,
 /// and "Headroom has seen nothing" is true and means nothing at either.
-/// A reopened conversation is a run with no prompt, so its first quiet is
-/// its paint and is passed over the same way.
+/// A reopened conversation is a run with no prompt: it is passed over the
+/// same way, at every quiet, until a line has been submitted to it.
 ///
 /// A session that was not compressed is never asked about: its reason is
 /// its mark, and Headroom has nothing of it to have seen.

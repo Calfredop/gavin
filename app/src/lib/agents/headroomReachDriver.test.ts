@@ -47,6 +47,7 @@ import { orchestrations } from "$lib/orchestration/orchestrationState";
 import { headroomException } from "$lib/agents/headroomMark";
 import {
   __resetForTesting as resetMarks,
+  noteInputSubmitted,
   noteReopenedConversation,
   noteSessionCompression,
   sessionCompressionById,
@@ -193,18 +194,23 @@ describe("what is never asked about", () => {
     expect(reach).not.toHaveBeenCalled();
   });
 
-  // Resume reopens the conversation without a prompt: what goes quiet
-  // first is its history being painted. The turn after that is a turn.
-  it("the first quiet of a reopened conversation, and only the first", async () => {
+  // Resume reopens the conversation without a prompt: what goes quiet is
+  // its history being painted, then the human pausing mid-sentence. Only
+  // a submitted line makes the next quiet a turn.
+  it("a reopened conversation, until a line has been submitted to it", async () => {
     cardRun("s1");
     compressed("s1");
     noteReopenedConversation("s1");
     reach.mockResolvedValue("unreached");
 
-    turnEnds("s1");
+    turnEnds("s1"); // the paint
+    await settled();
+    turnEnds("s1"); // typing, then a pause before Enter
     await settled();
     expect(reach).not.toHaveBeenCalled();
+    expect(markOf("s1")).toBeNull();
 
+    noteInputSubmitted("s1");
     turnEnds("s1");
     await settled();
     expect(reach).toHaveBeenCalledTimes(1);
