@@ -5,7 +5,7 @@
 // crate's own tests' (`crates/companion-wasm`), and the whole pairing
 // against a real daemon is `scripts/pair.sh`'s.
 import { beforeAll, describe, expect, it } from "vitest";
-import { CoreError, loadCore, PAIRING_ENTROPY, type CoreModule } from "$shell/core/core";
+import { CONNECT_ENTROPY, CoreError, loadCore, PAIRING_ENTROPY, type CoreModule } from "$shell/core/core";
 import { coreWasm } from "$shell/testing/coreWasm";
 
 const wasm = coreWasm();
@@ -120,5 +120,44 @@ describe("the Companion core in the shell", () => {
       message: "the Relay did not accept the admission token",
     });
     expect(() => exchange.relayReply("not json")).toThrow(expect.objectContaining({ kind: "request" }));
+  });
+
+  describe("a connection to a paired Workstation", () => {
+    const kept = {
+      workstationKey: "42".repeat(32),
+      relays: ["ws://relay.example", "ws://127.0.0.1:8443"],
+      relayAdmission: "let-me-in",
+      noisePrivateKey: "11".repeat(32),
+      entropy: new Uint8Array(CONNECT_ENTROPY).fill(0x79),
+    };
+
+    it("starts: the first frame, and the Relays to dial with a hello to connect", async () => {
+      const started = (await core.exchange()).connectStart(kept);
+      const length = (started.send[0] << 8) | started.send[1];
+      expect(started.send.length).toBe(2 + length);
+      // -> e, es, s, ss: the ephemeral key, the static key sealed, and
+      // the tag on an empty payload.
+      expect(length).toBe(32 + 32 + 16 + 16);
+      expect(started.dials.map((d) => d.url)).toEqual(["ws://127.0.0.1:8443"]);
+      expect(JSON.parse(started.dials[0].hello)).toMatchObject({ role: "device", token: "let-me-in", purpose: "connect" });
+    });
+
+    it("sends nothing before the Workstation has said connected", async () => {
+      const exchange = await core.exchange();
+      exchange.connectStart(kept);
+      expect(() => exchange.connectSend('{"type":"GetAttention","version":1}')).toThrow(
+        expect.objectContaining({ kind: "not-ready" })
+      );
+    });
+
+    it("is an exchange of its own, and refuses a key of the wrong shape", async () => {
+      const exchange = await core.exchange();
+      exchange.connectStart(kept);
+      expect(() => exchange.connectStart(kept)).toThrow(expect.objectContaining({ kind: "request" }));
+      const other = await core.exchange();
+      expect(() => other.connectStart({ ...kept, workstationKey: "42".repeat(31) })).toThrow(
+        expect.objectContaining({ kind: "offer" })
+      );
+    });
   });
 });

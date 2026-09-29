@@ -10,9 +10,9 @@
 // this file only carries calls across.
 //
 // **One exchange, one instance.** `CoreModule.exchange()` instantiates the
-// module afresh. A trap (a panic, on that target) ends the exchange it
-// happened in and nothing else, and no state crosses from one pairing to
-// the next.
+// module afresh, for one pairing or one connection. A trap (a panic, on
+// that target) ends the exchange it happened in and nothing else, and no
+// state crosses from one exchange to the next.
 import { fromHex, toHex } from "$shell/keys/deviceKeys";
 
 /// Why the core stopped: `CoreError` in `crates/companion-core`, by name,
@@ -76,6 +76,31 @@ export type PairingEvent =
   | { type: "finished"; verdict: "paired"; workstation: KeptWorkstation }
   | { type: "finished"; verdict: "rejected" | "expired" | "unknown" };
 
+export interface ConnectStart {
+  /// The handshake's first message, held until the Relay says the
+  /// Workstation is there.
+  send: Uint8Array;
+  /// The Relays the Workstation named at pairing that this build may
+  /// dial, in order.
+  dials: RelayDial[];
+}
+
+/// Why a Workstation refused a connection: `ConnectRefusal` in
+/// `protocol::device_wire`, by name. A newer Workstation's reason is
+/// `other`.
+export type ConnectRefusal = "not-paired" | "revoked" | "stale" | "pair-again" | "unlock" | "busy" | "other";
+
+export type ConnectEvent =
+  | { type: "send"; bytes: Uint8Array }
+  /// Have the hardware key sign this hash (hex), without asking the
+  /// owner again: the Unlock already did.
+  | { type: "prove"; handshakeHash: string }
+  | { type: "connected"; deviceId: string }
+  /// `message` is the core's words for the human.
+  | { type: "refused"; reason: ConnectRefusal; message: string }
+  /// One line of the daemon's protocol: JSON.
+  | { type: "message"; text: string };
+
 export type RelayReplyReading =
   | { reply: "ready" }
   | { reply: "refused"; reason: string; message: string }
@@ -93,6 +118,21 @@ export interface CoreExchange {
   pairingReceive(bytes: Uint8Array): PairingEvent[];
   /// The hardware's signature, ASN.1 DER, hex.
   pairingProve(signature: string): PairingEvent[];
+  connectStart(options: {
+    /// What the shell kept at pairing.
+    workstationKey: string;
+    relays: string[];
+    relayAdmission: string | null;
+    noisePrivateKey: string;
+    /// Fresh random bytes, at least `CONNECT_ENTROPY` of them.
+    entropy: Uint8Array;
+  }): ConnectStart;
+  connectReceive(bytes: Uint8Array): ConnectEvent[];
+  /// The hardware's signature, ASN.1 DER, hex.
+  connectProve(signature: string): ConnectEvent[];
+  /// The bytes that carry one message -- a line of the daemon's
+  /// protocol, without its newline -- to the Workstation.
+  connectSend(message: string): Uint8Array;
   relayReply(text: string): RelayReplyReading;
 }
 
@@ -102,6 +142,9 @@ export interface CoreModule {
 
 /// How many random bytes a pairing handshake draws: `PAIRING_ENTROPY`.
 export const PAIRING_ENTROPY = 32;
+
+/// How many a connection's handshake draws: `CONNECT_ENTROPY`.
+export const CONNECT_ENTROPY = 32;
 
 interface Exports {
   memory: WebAssembly.Memory;
@@ -150,9 +193,9 @@ function exchangeOver(exports: Exports): CoreExchange {
     return answer.ok;
   };
 
-  const events = (answer: unknown): PairingEvent[] =>
+  const events = <E>(answer: unknown): E[] =>
     (answer as { events: Array<Record<string, unknown>> }).events.map((event) =>
-      event.type === "send" ? { type: "send", bytes: bytes(event.bytes as string) } : (event as PairingEvent)
+      event.type === "send" ? ({ type: "send", bytes: bytes(event.bytes as string) } as E) : (event as E)
     );
 
   return {
@@ -167,8 +210,22 @@ function exchangeOver(exports: Exports): CoreExchange {
       }) as { send: string; dials: RelayDial[]; workstationKey: string };
       return { send: bytes(started.send), dials: started.dials, workstationKey: started.workstationKey };
     },
-    pairingReceive: (arrived) => events(call({ op: "pairing-receive", bytes: toHex(arrived) })),
-    pairingProve: (signature) => events(call({ op: "pairing-prove", signature })),
+    pairingReceive: (arrived) => events<PairingEvent>(call({ op: "pairing-receive", bytes: toHex(arrived) })),
+    pairingProve: (signature) => events<PairingEvent>(call({ op: "pairing-prove", signature })),
+    connectStart({ workstationKey, relays, relayAdmission, noisePrivateKey, entropy }) {
+      const started = call({
+        op: "connect-start",
+        workstationKey,
+        relays,
+        relayAdmission,
+        noisePrivateKey,
+        entropy: toHex(entropy),
+      }) as { send: string; dials: RelayDial[] };
+      return { send: bytes(started.send), dials: started.dials };
+    },
+    connectReceive: (arrived) => events<ConnectEvent>(call({ op: "connect-receive", bytes: toHex(arrived) })),
+    connectProve: (signature) => events<ConnectEvent>(call({ op: "connect-prove", signature })),
+    connectSend: (message) => bytes((call({ op: "connect-send", message }) as { bytes: string }).bytes),
     relayReply: (text) => call({ op: "relay-reply", text }) as RelayReplyReading,
   };
 }

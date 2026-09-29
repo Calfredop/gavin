@@ -60,6 +60,12 @@ function scriptedCore(dials = [{ url: "ws://127.0.0.1:8443", hello: '{"role":"de
       }
     },
     pairingProve: (signature) => [{ type: "send", bytes: new Uint8Array([0x30, signature.length]) }],
+    connectStart: () => {
+      throw new Error("a pairing does not connect");
+    },
+    connectReceive: () => [],
+    connectProve: () => [],
+    connectSend: () => new Uint8Array(),
     relayReply(text) {
       const reply = JSON.parse(text);
       if (reply.type === "ready") return { reply: "ready" };

@@ -14,11 +14,11 @@
 //! sizes -- a handful of frames of a few hundred bytes -- that price is
 //! nothing.
 //!
-//! **One exchange per instance.** An instance holds at most one pairing,
-//! and the shell makes a fresh instance for each. A module that trapped
-//! halfway through a call -- a panic is a trap on this target -- is then
-//! thrown away with the one exchange it was running, and never asked
-//! anything again.
+//! **One exchange per instance.** An instance holds at most one pairing
+//! or one connection, and the shell makes a fresh instance for each. A
+//! module that trapped halfway through a call -- a panic is a trap on
+//! this target -- is then thrown away with the one exchange it was
+//! running, and never asked anything again.
 //!
 //! **The calls** (`op`, then its fields, camelCase):
 //!
@@ -27,16 +27,25 @@
 //! | `pairing-start` | `qr`, `noisePrivateKey`, `hardwareKey`, `deviceName`, `entropy` | `send`, `dials`, `workstationKey` |
 //! | `pairing-receive` | `bytes` | `events` |
 //! | `pairing-prove` | `signature` | `events` |
+//! | `connect-start` | `workstationKey`, `relays`, `relayAdmission`, `noisePrivateKey`, `entropy` | `send`, `dials` |
+//! | `connect-receive` | `bytes` | `events` |
+//! | `connect-prove` | `signature` | `events` |
+//! | `connect-send` | `message` | `bytes` |
 //! | `relay-reply` | `text` | `reply`, and for a refusal `reason` and `message` |
+//!
+//! A connection's events are `send`, `prove` (the bare handshake hash),
+//! `connected` with the `deviceId`, `refused` with the Workstation's
+//! `reason` and its `message`, and `message` with one line of the daemon's
+//! protocol as `text`.
 //!
 //! Every answer is `{"ok": …}` or `{"error": {"kind", "message"}}`. The
 //! kinds are the core's `CoreError` by name, and `request` for a call
 //! that was not one.
 
-use companion_core::connect::PairedWorkstation;
-use companion_core::pairing::{relay_dials, PairingClient, PairingEvent};
+use companion_core::connect::{connect_dials, ConnectClient, ConnectEvent, PairedWorkstation};
+use companion_core::pairing::{relay_dials, PairingClient, PairingEvent, RelayDial};
 use companion_core::{CoreError, DeviceKeys, Entropy};
-use protocol::device_wire::{self, PairingVerdict};
+use protocol::device_wire::{self, ConnectRefusal, PairingVerdict};
 use protocol::relay::RelayReply;
 use protocol::PairingQr;
 use serde::{Deserialize, Serialize};
@@ -63,6 +72,27 @@ enum Call {
     },
     PairingProve {
         signature: String,
+    },
+    /// Prepares a connection to a Workstation this Device paired with:
+    /// the handshake's first message, held until the Relay says the
+    /// Workstation is there, and the Relays to try, from what the shell
+    /// kept at pairing.
+    ConnectStart {
+        workstation_key: String,
+        relays: Vec<String>,
+        relay_admission: Option<String>,
+        noise_private_key: String,
+        entropy: String,
+    },
+    ConnectReceive {
+        bytes: String,
+    },
+    ConnectProve {
+        signature: String,
+    },
+    /// One line of the daemon's protocol, for the Workstation.
+    ConnectSend {
+        message: String,
     },
     /// Reads one of the Relay's text frames.
     RelayReply {
@@ -92,6 +122,22 @@ enum Event {
         code: String,
     },
     Finished(Finished),
+    /// The Workstation verified the proof: the connection holds the
+    /// Remote role.
+    Connected {
+        device_id: String,
+    },
+    /// The Workstation refused the connection, and why, in words for
+    /// the human.
+    Refused {
+        reason: ConnectRefusal,
+        message: String,
+    },
+    /// One message from the Workstation: a line of the daemon's
+    /// protocol, which is JSON and so text.
+    Message {
+        text: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -166,8 +212,9 @@ struct Pairing {
 }
 
 thread_local! {
-    /// The one exchange this instance runs.
+    /// The one exchange this instance runs: a pairing, or a connection.
     static PAIRING: RefCell<Option<Pairing>> = const { RefCell::new(None) };
+    static CONNECTION: RefCell<Option<ConnectClient>> = const { RefCell::new(None) };
     /// The last answer, until the next call replaces it.
     static OUTPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
@@ -196,11 +243,7 @@ fn answer(call: Call) -> Result<Value, Failure> {
             device_name,
             entropy,
         } => {
-            if PAIRING.with(|p| p.borrow().is_some()) {
-                return Err(Failure::request(
-                    "this instance already ran a pairing; each exchange gets an instance of its own",
-                ));
-            }
+            refuse_a_second_exchange()?;
             let offer = PairingQr::parse(&qr)
                 .map_err(|e| CoreError::Offer(format!("it is not a Gavin pairing code ({e})")))?;
             let keys = DeviceKeys::from_private(&bytes("noisePrivateKey", &noise_private_key)?)?;
@@ -212,10 +255,7 @@ fn answer(call: Call) -> Result<Value, Failure> {
             let answer = json!({
                 "send": protocol::hex_encode(&first),
                 "workstationKey": offer.daemon_public_key,
-                "dials": dials
-                    .iter()
-                    .map(|dial| json!({ "url": dial.url, "hello": dial.hello.to_frame() }))
-                    .collect::<Vec<_>>(),
+                "dials": dials_json(&dials),
             });
             PAIRING.with(|p| *p.borrow_mut() = Some(Pairing { client, offer }));
             Ok(answer)
@@ -234,6 +274,36 @@ fn answer(call: Call) -> Result<Value, Failure> {
                 events_for(pairing, events)
             })
         }
+        Call::ConnectStart {
+            workstation_key,
+            relays,
+            relay_admission,
+            noise_private_key,
+            entropy,
+        } => {
+            refuse_a_second_exchange()?;
+            let workstation_key = bytes("workstationKey", &workstation_key)?;
+            let keys = DeviceKeys::from_private(&bytes("noisePrivateKey", &noise_private_key)?)?;
+            let entropy = Entropy::from_bytes(bytes("entropy", &entropy)?);
+            let (client, first) = ConnectClient::start(&workstation_key, &keys, entropy)?;
+            let dials = connect_dials(&workstation_key, &relays, relay_admission.as_deref());
+            CONNECTION.with(|c| *c.borrow_mut() = Some(client));
+            Ok(json!({
+                "send": protocol::hex_encode(&first),
+                "dials": dials_json(&dials),
+            }))
+        }
+        Call::ConnectReceive { bytes: arrived } => {
+            let arrived = bytes("bytes", &arrived)?;
+            with_connection(|client| connect_events(client.receive(&arrived)?))
+        }
+        Call::ConnectProve { signature } => {
+            let signature = bytes("signature", &signature)?;
+            with_connection(|client| connect_events(client.prove(&signature)?))
+        }
+        Call::ConnectSend { message } => with_connection(|client| {
+            Ok(json!({ "bytes": protocol::hex_encode(&client.send(message.as_bytes())?) }))
+        }),
         Call::RelayReply { text } => match RelayReply::from_frame(&text) {
             Ok(RelayReply::Ready) => Ok(json!({ "reply": "ready" })),
             Ok(RelayReply::Refused { reason }) => Ok(json!({
@@ -249,6 +319,61 @@ fn answer(call: Call) -> Result<Value, Failure> {
             Err(e) => Err(Failure::request(format!("not a reply from a Relay: {e}"))),
         },
     }
+}
+
+/// An instance runs one exchange: a second, of either kind, is refused.
+fn refuse_a_second_exchange() -> Result<(), Failure> {
+    if PAIRING.with(|p| p.borrow().is_some()) || CONNECTION.with(|c| c.borrow().is_some()) {
+        return Err(Failure::request(
+            "this instance already ran an exchange; each exchange gets an instance of its own",
+        ));
+    }
+    Ok(())
+}
+
+fn dials_json(dials: &[RelayDial]) -> Vec<Value> {
+    dials
+        .iter()
+        .map(|dial| json!({ "url": dial.url, "hello": dial.hello.to_frame() }))
+        .collect()
+}
+
+fn with_connection(
+    f: impl FnOnce(&mut ConnectClient) -> Result<Value, Failure>,
+) -> Result<Value, Failure> {
+    CONNECTION.with(|c| match c.borrow_mut().as_mut() {
+        Some(client) => f(client),
+        None => Err(Failure::from(CoreError::NotReady)),
+    })
+}
+
+fn connect_events(events: Vec<ConnectEvent>) -> Result<Value, Failure> {
+    let events = events
+        .into_iter()
+        .map(|event| {
+            Ok(match event {
+                ConnectEvent::Send(bytes) => Event::Send {
+                    bytes: protocol::hex_encode(&bytes),
+                },
+                ConnectEvent::Prove { message } => Event::Prove {
+                    handshake_hash: protocol::hex_encode(&handshake_hash(&message)?),
+                },
+                ConnectEvent::Connected { device_id } => Event::Connected { device_id },
+                ConnectEvent::Refused(reason) => Event::Refused {
+                    reason,
+                    message: reason.to_string(),
+                },
+                ConnectEvent::Message(line) => Event::Message {
+                    text: String::from_utf8(line).map_err(|_| {
+                        Failure::from(CoreError::Frame(
+                            "a message from the Workstation is not text".into(),
+                        ))
+                    })?,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, Failure>>()?;
+    Ok(json!({ "events": events }))
 }
 
 fn with_pairing(f: impl FnOnce(&mut Pairing) -> Result<Value, Failure>) -> Result<Value, Failure> {

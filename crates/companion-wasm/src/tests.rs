@@ -401,7 +401,7 @@ fn what_is_not_a_call_is_refused_by_name() {
         serde_json::from_slice::<Value>(&call(b"{")).unwrap()["error"]["kind"],
         "request"
     );
-    assert_eq!(error_kind(json!({ "op": "connect-start" })), "request");
+    assert_eq!(error_kind(json!({ "op": "connect-begin" })), "request");
     assert_eq!(
         error_kind(json!({ "op": "pairing-receive", "bytes": "zz" })),
         "request"
@@ -458,4 +458,235 @@ fn the_abi_takes_a_call_and_leaves_the_answer_to_be_read() {
         serde_json::from_slice::<Value>(&empty).unwrap()["error"]["kind"],
         "request"
     );
+}
+
+// -- connecting ------------------------------------------------------------
+
+/// The Workstation's half of the connection handshake, as the daemon's
+/// `remote.rs` runs it: `IK`, the proof, the verdict, then the stream.
+struct Connected {
+    keys: DeviceKeys,
+    handshake: Option<snow::HandshakeState>,
+    transport: Option<snow::TransportState>,
+    hash: Vec<u8>,
+}
+
+impl Connected {
+    fn new() -> Self {
+        Self {
+            keys: DeviceKeys::generate(Entropy::from_bytes(vec![0x52; 32])).unwrap(),
+            handshake: None,
+            transport: None,
+            hash: Vec::new(),
+        }
+    }
+
+    /// Reads message 1 and answers with message 2; returns the Device's
+    /// static key, as the Workstation learns it.
+    fn answer(&mut self, first: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let mut handshake = snow::Builder::with_resolver(
+            device_wire::CONNECT_NOISE_PARAMS.parse().unwrap(),
+            Box::new(Resolver),
+        )
+        .prologue(device_wire::CONNECT_PROLOGUE)
+        .unwrap()
+        .local_private_key(&self.keys.private)
+        .unwrap()
+        .build_responder()
+        .unwrap();
+        let mut payload = vec![0u8; MAX_NOISE_MESSAGE];
+        handshake.read_message(unframe(first), &mut payload).unwrap();
+        let device = handshake.get_remote_static().unwrap().to_vec();
+        let mut out = vec![0u8; MAX_NOISE_MESSAGE];
+        let n = handshake.write_message(&[], &mut out).unwrap();
+        self.hash = handshake.get_handshake_hash().to_vec();
+        self.transport = Some(handshake.into_transport_mode().unwrap());
+        self.handshake = None;
+        (device, frame(&out[..n]))
+    }
+
+    fn open(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let mut plaintext = vec![0u8; MAX_NOISE_MESSAGE];
+        let n = self
+            .transport
+            .as_mut()
+            .unwrap()
+            .read_message(unframe(bytes), &mut plaintext)
+            .unwrap();
+        device_wire::unpad(&plaintext[..n]).unwrap().to_vec()
+    }
+
+    fn seal(&mut self, payload: &[u8]) -> Vec<u8> {
+        let plaintext = device_wire::pad(payload).unwrap();
+        let mut out = vec![0u8; MAX_NOISE_MESSAGE];
+        let n = self
+            .transport
+            .as_mut()
+            .unwrap()
+            .write_message(&plaintext, &mut out)
+            .unwrap();
+        frame(&out[..n])
+    }
+}
+
+fn connect_start(ws: &Connected) -> Value {
+    call_json(json!({
+        "op": "connect-start",
+        "workstationKey": protocol::hex_encode(&ws.keys.public),
+        "relays": ["wss://relay.example/gavin", "ws://relay.example", "ws://127.0.0.1:8443"],
+        "relayAdmission": "let-me-in",
+        "noisePrivateKey": noise_key(),
+        "entropy": "78".repeat(32),
+    }))
+}
+
+fn connect_receive(bytes: &[u8]) -> Vec<Value> {
+    let answer = ok(json!({ "op": "connect-receive", "bytes": protocol::hex_encode(bytes) }));
+    answer["events"].as_array().unwrap().clone()
+}
+
+/// Everything up to the verdict: returns the Workstation, ready to rule.
+fn connected_up_to_the_verdict() -> Connected {
+    let mut ws = Connected::new();
+    let started = connect_start(&ws);
+    let started = started.get("ok").unwrap_or_else(|| panic!("{started}")).clone();
+
+    let (device, second) =
+        ws.answer(&protocol::hex_decode(started["send"].as_str().unwrap()).unwrap());
+    assert_eq!(
+        device,
+        DeviceKeys::from_private(&protocol::hex_decode(&noise_key()).unwrap()).unwrap().public,
+        "message 1 carries the Device's own key, which the Workstation looks up"
+    );
+    let events = connect_receive(&second);
+    assert_eq!(
+        events,
+        vec![json!({ "type": "prove", "handshakeHash": protocol::hex_encode(&ws.hash) })],
+        "the native plugin is handed the bare hash; it adds the unlock prefix itself"
+    );
+
+    let proved = ok(json!({ "op": "connect-prove", "signature": SIGNATURE }));
+    let events = proved["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1, "{events:?}");
+    let proof = UnlockProof::from_bytes(&ws.open(&bytes_of(&events[0]))).unwrap();
+    assert_eq!(proof.signature, SIGNATURE);
+    assert_eq!(proof.hardware_key, None, "a connection's proof names no key: the row does");
+    ws
+}
+
+#[test]
+fn a_connection_runs_through_the_json_face() {
+    let mut ws = connected_up_to_the_verdict();
+    let verdict = ws.seal(
+        &device_wire::ConnectVerdict::Connected {
+            device_id: "dev-1".into(),
+        }
+        .to_bytes(),
+    );
+    assert_eq!(
+        connect_receive(&verdict),
+        vec![json!({ "type": "connected", "deviceId": "dev-1" })]
+    );
+
+    let ask = r#"{"type":"GetAttention","version":1}"#;
+    let sent = ok(json!({ "op": "connect-send", "message": ask }));
+    let line = ws.open(&protocol::hex_decode(sent["bytes"].as_str().unwrap()).unwrap());
+    assert_eq!(line, format!("{ask}\n").into_bytes(), "one line of the daemon's protocol");
+
+    // The answer, in two pieces, and a second message behind it.
+    let answer = r#"{"type":"Attention","state":"ready","items":[],"version":1}"#;
+    let stream = format!("{answer}\n{{\"type\":\"Ok\"}}\n");
+    let (head, tail) = stream.as_bytes().split_at(20);
+    assert_eq!(connect_receive(&ws.seal(head)), Vec::<Value>::new());
+    assert_eq!(
+        connect_receive(&ws.seal(tail)),
+        vec![
+            json!({ "type": "message", "text": answer }),
+            json!({ "type": "message", "text": "{\"type\":\"Ok\"}" }),
+        ]
+    );
+}
+
+#[test]
+fn a_workstation_that_refuses_says_why_in_words() {
+    let mut ws = connected_up_to_the_verdict();
+    let verdict = ws.seal(
+        &device_wire::ConnectVerdict::Refused {
+            reason: ConnectRefusal::Revoked,
+        }
+        .to_bytes(),
+    );
+    assert_eq!(
+        connect_receive(&verdict),
+        vec![json!({
+            "type": "refused",
+            "reason": "revoked",
+            "message": ConnectRefusal::Revoked.to_string(),
+        })]
+    );
+    assert_eq!(
+        error_kind(json!({ "op": "connect-send", "message": "{}" })),
+        "not-ready",
+        "nothing is sent on a refused connection"
+    );
+}
+
+#[test]
+fn connect_names_the_relays_to_dial_for_a_connection() {
+    let ws = Connected::new();
+    let started = connect_start(&ws);
+    let dials = started["ok"]["dials"].as_array().unwrap();
+    let urls: Vec<_> = dials.iter().map(|d| d["url"].clone()).collect();
+    assert_eq!(
+        urls,
+        vec![json!("wss://relay.example/gavin"), json!("ws://127.0.0.1:8443")],
+        "ws:// to a public host is refused"
+    );
+    let hello: Value = serde_json::from_str(dials[0]["hello"].as_str().unwrap()).unwrap();
+    assert_eq!(hello["role"], "device");
+    assert_eq!(hello["token"], "let-me-in");
+    assert_eq!(hello["purpose"], "connect");
+    assert_eq!(hello["rendezvous"], protocol::relay::rendezvous_id(&ws.keys.public));
+}
+
+#[test]
+fn nothing_is_sent_before_the_workstation_says_connected() {
+    assert_eq!(
+        error_kind(json!({ "op": "connect-send", "message": "{}" })),
+        "not-ready"
+    );
+    let ws = Connected::new();
+    assert!(connect_start(&ws).get("ok").is_some());
+    assert_eq!(
+        error_kind(json!({ "op": "connect-send", "message": "{}" })),
+        "not-ready"
+    );
+    assert_eq!(
+        error_kind(json!({ "op": "connect-prove", "signature": SIGNATURE })),
+        "not-ready",
+        "nor is a proof taken before the handshake asks for one"
+    );
+}
+
+#[test]
+fn a_connection_is_an_exchange_of_its_own() {
+    let ws = Connected::new();
+    assert!(connect_start(&ws).get("ok").is_some());
+    assert_eq!(connect_start(&ws)["error"]["kind"], "request");
+    assert_eq!(start(&Workstation::new().qr())["error"]["kind"], "request");
+}
+
+#[test]
+fn a_pairing_instance_does_not_connect() {
+    assert!(start(&Workstation::new().qr()).get("ok").is_some());
+    assert_eq!(connect_start(&Connected::new())["error"]["kind"], "request");
+}
+
+#[test]
+fn a_workstation_key_of_the_wrong_shape_is_refused_before_anything_is_dialled() {
+    let answer = call_json(json!({
+        "op": "connect-start", "workstationKey": "ab".repeat(31), "relays": [],
+        "relayAdmission": null, "noisePrivateKey": noise_key(), "entropy": "78".repeat(32),
+    }));
+    assert_eq!(answer["error"]["kind"], "offer", "{answer}");
 }

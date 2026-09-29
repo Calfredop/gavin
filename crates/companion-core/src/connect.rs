@@ -88,17 +88,29 @@ impl PairedWorkstation {
     /// not a Relay this build may dial is left out, as `relay_dials`
     /// leaves it out for a pairing.
     pub fn relay_dials(&self) -> Vec<RelayDial> {
-        let rendezvous = relay::rendezvous_id(&self.workstation_key);
-        let token = self.relay_admission.as_deref().unwrap_or("");
-        self.relays
-            .iter()
-            .filter_map(|url| RelayUrl::parse(url).ok())
-            .map(|url| RelayDial {
-                url: url.url,
-                hello: RelayHello::device(token, &rendezvous, relay::PURPOSE_CONNECT),
-            })
-            .collect()
+        connect_dials(&self.workstation_key, &self.relays, self.relay_admission.as_deref())
     }
+}
+
+/// Where to dial to connect to the Workstation holding `workstation_key`,
+/// through the Relays it named at pairing, in the order to try: what
+/// `PairedWorkstation::relay_dials` answers, for a caller that keeps the
+/// Workstation its own way (the shell keeps a record, not this type).
+pub fn connect_dials(
+    workstation_key: &[u8],
+    relays: &[String],
+    relay_admission: Option<&str>,
+) -> Vec<RelayDial> {
+    let rendezvous = relay::rendezvous_id(workstation_key);
+    let token = relay_admission.unwrap_or("");
+    relays
+        .iter()
+        .filter_map(|url| RelayUrl::parse(url).ok())
+        .map(|url| RelayDial {
+            url: url.url,
+            hello: RelayHello::device(token, &rendezvous, relay::PURPOSE_CONNECT),
+        })
+        .collect()
 }
 
 /// Never the notification key.
