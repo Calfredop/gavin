@@ -1,7 +1,10 @@
 package com.gavin.companion;
 
 import android.app.KeyguardManager;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.hardware.biometrics.BiometricManager;
@@ -13,6 +16,7 @@ import android.security.keystore.KeyInfo;
 import android.security.keystore.KeyPermanentlyInvalidatedException;
 import android.security.keystore.KeyProperties;
 import android.security.keystore.StrongBoxUnavailableException;
+import android.security.keystore.UserNotAuthenticatedException;
 import android.util.Base64;
 import android.util.Log;
 
@@ -75,8 +79,19 @@ import javax.crypto.spec.GCMParameterSpec;
  * marked {@code software-debug}, which only a debug daemon accepts; any
  * other build refuses the phone ({@code docs/research/2026-09-28-companion-device-keys.md}).
  *
- * <p>Each sign asks for the owner. Keeping one authentication for a whole
- * foreground stretch is the Unlock's, and the Unlock is companion-22's.
+ * <p>{@code sign} asks for the owner every time: pairing. The Unlock
+ * (ADR 0004) is {@code unlock}, which asks once -- and so opens the key's
+ * auth window -- and {@code signUnlocked}, which signs without asking for
+ * as long as the Unlock is held: every connection, to every Workstation.
+ * The window is the hardware's rule and the Unlock is the shell's: the
+ * window also opens at any lock-screen unlock, so the shell forgets the
+ * Unlock itself when the app goes to the background ({@link AppForeground},
+ * across both of the app's processes) or the screen turns off, and says
+ * so to the web layer as a {@code lifecycle} event. Losing the focus --
+ * the shade, a call banner, the prompt itself -- ends nothing
+ * ({@code docs/research/2026-09-28-companion-device-keys.md}, "Brief
+ * interruptions"). Once the window closes, the key refuses
+ * ({@code unlock-expired}), and a new Unlock opens it again.
  */
 @CapacitorPlugin(name = "DeviceKeys")
 public class DeviceKeysPlugin extends Plugin {
@@ -104,6 +119,9 @@ public class DeviceKeysPlugin extends Plugin {
     static final String NO_KEYS = "no-keys";
     static final String CANCELLED = "cancelled";
     static final String BAD_HASH = "bad-hash";
+    static final String LOCKED = "locked";
+    static final String UNLOCK_EXPIRED = "unlock-expired";
+    static final String BACKGROUND = "background";
     static final String FAILED = "failed";
 
     static final String STRONGBOX = "strongbox";
@@ -117,6 +135,62 @@ public class DeviceKeysPlugin extends Plugin {
 
     /** Keystore work is slow on StrongBox and never belongs on the UI thread. */
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+
+    /** Whether the Unlock is held: the owner confirmed since the app last came to the front. */
+    private volatile boolean unlocked = false;
+
+    private final BroadcastReceiver screenOff = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) ended("screen-locked");
+        }
+    };
+
+    @Override
+    public void load() {
+        AppForeground.listen((phase) -> {
+            if ("background".equals(phase)) ended("background");
+            else notifyLifecycle(phase);
+        });
+        IntentFilter filter = new IntentFilter(Intent.ACTION_SCREEN_OFF);
+        if (Build.VERSION.SDK_INT >= 33) getContext().registerReceiver(screenOff, filter, Context.RECEIVER_NOT_EXPORTED);
+        else getContext().registerReceiver(screenOff, filter);
+    }
+
+    @Override
+    protected void handleOnStart() {
+        super.handleOnStart();
+        AppForeground.shell(true);
+    }
+
+    @Override
+    protected void handleOnStop() {
+        AppForeground.shell(false);
+        super.handleOnStop();
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        try {
+            getContext().unregisterReceiver(screenOff);
+        } catch (IllegalArgumentException ignored) {
+            // Never registered.
+        }
+        super.handleOnDestroy();
+    }
+
+    /** The Unlock ends: the app went to the background, or the screen went off. */
+    private void ended(String phase) {
+        if (unlocked) Log.i(BundleChannel.TAG, "DeviceKeys: the Unlock ends (" + phase + ")");
+        unlocked = false;
+        notifyLifecycle(phase);
+    }
+
+    private void notifyLifecycle(String phase) {
+        JSObject event = new JSObject();
+        event.put("phase", phase);
+        notifyListeners("lifecycle", event);
+    }
 
     // status
 
@@ -252,6 +326,7 @@ public class DeviceKeysPlugin extends Plugin {
 
     @PluginMethod
     public void deleteKeys(PluginCall call) {
+        unlocked = false;
         Log.i(BundleChannel.TAG, "DeviceKeys: deleting the Device's keys");
         worker.execute(() -> {
             deleteAll();
@@ -409,6 +484,11 @@ public class DeviceKeysPlugin extends Plugin {
     }
 
     private void askForOwner(PluginCall call, String reason, byte[] hash) {
+        askForOwner(call, reason, () -> worker.execute(() -> signNow(call, hash)));
+    }
+
+    /** One prompt, and {@code confirmed} once the owner has answered it; a refusal rejects {@code call}. */
+    private void askForOwner(PluginCall call, String reason, Runnable confirmed) {
         BiometricPrompt prompt = new BiometricPrompt.Builder(getActivity())
             .setTitle(reason)
             .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG
@@ -418,7 +498,7 @@ public class DeviceKeysPlugin extends Plugin {
             new BiometricPrompt.AuthenticationCallback() {
                 @Override
                 public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
-                    worker.execute(() -> signNow(call, hash));
+                    confirmed.run();
                 }
 
                 @Override
@@ -439,6 +519,71 @@ public class DeviceKeysPlugin extends Plugin {
             });
     }
 
+    // the Unlock
+
+    /** Asks for the owner once, which opens the key's auth window, and holds the Unlock. */
+    @PluginMethod
+    public void unlock(PluginCall call) {
+        String reason = call.getString("reason", "");
+        if (reason.isEmpty()) {
+            call.reject("unlock needs a reason to show the owner", FAILED);
+            return;
+        }
+        Log.i(BundleChannel.TAG, "DeviceKeys: asked to unlock");
+        worker.execute(() -> {
+            if (stored() == null) {
+                call.reject("this phone holds no Device keys", NO_KEYS);
+                return;
+            }
+            getActivity().runOnUiThread(() -> askForOwner(call, reason, () -> {
+                // A prompt answered after the app left the front unlocks
+                // nothing.
+                if (!AppForeground.inFront()) {
+                    call.reject("the app went to the background while the owner was asked", BACKGROUND);
+                    return;
+                }
+                unlocked = true;
+                Log.i(BundleChannel.TAG, "DeviceKeys: unlocked");
+                call.resolve();
+            }));
+        });
+    }
+
+    /** Signs under the held Unlock, never asking. */
+    @PluginMethod
+    public void signUnlocked(PluginCall call) {
+        byte[] hash = bytes(call.getString("handshakeHash", ""));
+        if (hash == null || hash.length != HANDSHAKE_HASH_BYTES) {
+            call.reject("a handshake hash is " + HANDSHAKE_HASH_BYTES + " bytes of hex", BAD_HASH);
+            return;
+        }
+        if (!unlocked) {
+            call.reject("no Unlock is held", LOCKED);
+            return;
+        }
+        worker.execute(() -> {
+            if (!unlocked) {
+                call.reject("no Unlock is held", LOCKED);
+                return;
+            }
+            signNow(call, hash);
+        });
+    }
+
+    @PluginMethod
+    public void lock(PluginCall call) {
+        unlocked = false;
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void unlockState(PluginCall call) {
+        JSObject answer = new JSObject();
+        answer.put("unlocked", unlocked);
+        answer.put("foreground", AppForeground.inFront());
+        call.resolve(answer);
+    }
+
     /** ECDSA over SHA-256 of the unlock message, ASN.1 DER: what the daemon verifies. */
     private void signNow(PluginCall call, byte[] hash) {
         try {
@@ -453,8 +598,18 @@ public class DeviceKeysPlugin extends Plugin {
         } catch (KeyPermanentlyInvalidatedException e) {
             // The lock screen was removed: the key is gone for good, and
             // this phone must pair again as a new Device.
+            unlocked = false;
             deleteAll();
             call.reject("the key was invalidated when the screen lock was removed", NO_KEYS);
+        } catch (UserNotAuthenticatedException e) {
+            // The auth window closed since the owner last authenticated.
+            // Only the Unlock's signing gets here: a sign that asked first
+            // is inside the window it just opened. An Unlock that ended
+            // meanwhile -- background, screen off -- is locked, not lapsed.
+            boolean held = unlocked;
+            unlocked = false;
+            if (held) call.reject("the key's auth window has closed", UNLOCK_EXPIRED);
+            else call.reject("the Unlock ended while it signed", LOCKED);
         } catch (Exception e) {
             call.reject("the key would not sign: " + e, FAILED);
         }

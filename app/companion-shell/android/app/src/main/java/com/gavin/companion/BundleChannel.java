@@ -35,6 +35,8 @@ final class BundleChannel {
     static final int FROM_BUNDLE = 2;
     static final int DROPPED = 3;
     static final int CLOSED = 4;
+    static final int STARTED = 5;
+    static final int STOPPED = 6;
     // To the bundle's activity.
     static final int TO_BUNDLE = 10;
     static final int CLOSE = 11;
@@ -67,12 +69,27 @@ final class BundleChannel {
         events = sink;
     }
 
-    /** A new bundle view is opening; whatever was open is closed. */
-    static synchronized void opening(int next) {
-        if (session != 0) send(bundle, CLOSE, session, null);
-        session = next;
-        bundle = null;
-        early.clear();
+    /**
+     * A new bundle view is opening; whatever was open is closed. The app
+     * counts as in front through the opening: the shell's activity stops
+     * before the bundle's has said it started.
+     */
+    static void opening(int next) {
+        synchronized (BundleChannel.class) {
+            if (session != 0) send(bundle, CLOSE, session, null);
+            session = next;
+            bundle = null;
+            early.clear();
+        }
+        AppForeground.bundle(true);
+    }
+
+    /** The open session's activity started or stopped: Home, and back. */
+    static void shown(int from, boolean started) {
+        synchronized (BundleChannel.class) {
+            if (from != session) return;
+        }
+        AppForeground.bundle(started);
     }
 
     static synchronized void hello(int from, Messenger activity) {
@@ -92,12 +109,15 @@ final class BundleChannel {
         else send(bundle, TO_BUNDLE, session, data);
     }
 
-    static synchronized void close(int which) {
-        if (which != session) return;
-        send(bundle, CLOSE, session, null);
-        session = 0;
-        bundle = null;
-        early.clear();
+    static void close(int which) {
+        synchronized (BundleChannel.class) {
+            if (which != session) return;
+            send(bundle, CLOSE, session, null);
+            session = 0;
+            bundle = null;
+            early.clear();
+        }
+        AppForeground.bundle(false);
     }
 
     static void fromBundle(int from, String origin, String data) {
@@ -128,6 +148,7 @@ final class BundleChannel {
             early.clear();
             sink = events;
         }
+        AppForeground.bundle(false);
         if (sink != null) sink.closed(from);
     }
 

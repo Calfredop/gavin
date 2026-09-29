@@ -18,7 +18,7 @@
 //
 // The decisions over what it reports (whether this phone can be a Device,
 // what a refusal says, whether a signature is good) are `keys/deviceKeys.ts`.
-import { registerPlugin } from "@capacitor/core";
+import { registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
 /// Where the hardware key lives. `software-debug` is the one kind that is
 /// not hardware: a debug build on a Simulator or an emulator, which have
@@ -42,6 +42,16 @@ export type KeysErrorCode =
   | "cancelled"
   /// A handshake hash that is not 32 bytes of hex. Refused before any prompt.
   | "bad-hash"
+  /// `signUnlocked`: no Unlock is held -- never made, or ended by the
+  /// app going to the background or the phone locking.
+  | "locked"
+  /// `signUnlocked`: the Unlock is held, but the hardware no longer signs
+  /// under it. On Android, the key's auth window has closed since the
+  /// owner last authenticated; a new Unlock opens it again.
+  | "unlock-expired"
+  /// `unlock`: the app went to the background while the prompt was up,
+  /// so the authentication does not count.
+  | "background"
   | "failed";
 
 export interface DeviceKeysStatus {
@@ -92,4 +102,40 @@ export interface DeviceKeysPlugin {
   deleteKeys(): Promise<void>;
 }
 
-export const DeviceKeys = registerPlugin<DeviceKeysPlugin>("DeviceKeys");
+/// Where the app is, as the native side sees it (`lifecycle` events):
+///
+/// - `foreground`: it came back to the front after being in the
+///   background. Not sent at launch; `unlockState` says where it is then.
+/// - `background`: it went to the background -- Home, the app switcher,
+///   another app, a call answered. The native side has already ended the
+///   Unlock.
+/// - `screen-locked`: the phone locked. The Unlock is ended, likewise.
+///
+/// Brief interruptions -- Control Center, the notification shade, a call
+/// banner, the Unlock's own prompt -- are none of these, and are not sent
+/// (`docs/research/2026-09-28-companion-device-keys.md`, "Brief
+/// interruptions").
+export type LifecyclePhase = "foreground" | "background" | "screen-locked";
+
+export interface UnlockPlugin {
+  /// The Unlock (ADR 0004): asks for the owner once -- Face ID, Touch ID
+  /// or a fingerprint, else the passcode -- and holds that
+  /// authentication while the app stays in front, so `signUnlocked`
+  /// signs without asking again. On iOS the evaluated `LAContext` is
+  /// held; on Android the hardware key's auth window is what opened.
+  /// Refused with `cancelled`, `no-keys`, `no-passcode`, or `background`
+  /// when the app left the front while the prompt was up.
+  unlock(options: { reason: string }): Promise<void>;
+  /// Signs `"gavin-device-unlock-v1" || handshakeHash` under the held
+  /// Unlock, never showing anything. Refused with `locked` when no
+  /// Unlock is held and `unlock-expired` when the hardware no longer
+  /// signs under it.
+  signUnlocked(options: { handshakeHash: string }): Promise<{ signature: string }>;
+  /// Ends the Unlock.
+  lock(): Promise<void>;
+  /// Whether an Unlock is held, and whether the app is in front now.
+  unlockState(): Promise<{ unlocked: boolean; foreground: boolean }>;
+  addListener(event: "lifecycle", listener: (e: { phase: LifecyclePhase }) => void): Promise<PluginListenerHandle>;
+}
+
+export const DeviceKeys = registerPlugin<DeviceKeysPlugin & UnlockPlugin>("DeviceKeys");

@@ -292,6 +292,19 @@ public class BundleActivity extends AppCompatActivity {
         if (webView != null) paint();
     }
 
+    /** Tells the shell's process, which decides whether the app is in front ({@link AppForeground}). */
+    @Override
+    protected void onStart() {
+        super.onStart();
+        send(message(BundleChannel.STARTED));
+    }
+
+    @Override
+    protected void onStop() {
+        send(message(BundleChannel.STOPPED));
+        super.onStop();
+    }
+
     @Override
     protected void onDestroy() {
         if (webView != null) {

@@ -3,6 +3,7 @@ import Capacitor
 import CryptoKit
 import LocalAuthentication
 import Security
+import UIKit
 
 /// The Device's two keys (ADR 0001), as the shell's web layer drives them
 /// (`src/shell/native/deviceKeys.ts`).
@@ -26,8 +27,17 @@ import Security
 /// is still real; the gate behind it is not
 /// (`docs/research/2026-09-28-companion-device-keys.md`).
 ///
-/// Each sign asks for the owner. Holding one authentication for a whole
-/// foreground stretch is the Unlock's, and the Unlock is companion-22's.
+/// `sign` asks for the owner every time: pairing. The Unlock (ADR 0004) is
+/// `unlock`, which asks once and holds the evaluated `LAContext`, and
+/// `signUnlocked`, which signs through that context and never shows
+/// anything -- every connection, to every Workstation, for as long as the
+/// app stays in front. The context is invalidated when the app goes to the
+/// background or the phone locks (`didEnterBackground`,
+/// `protectedDataWillBecomeUnavailable`), never when it merely resigns
+/// active: Control Center, a call banner and the Face ID sheet itself do
+/// that (`docs/research/2026-09-28-companion-device-keys.md`, "Brief
+/// interruptions"). Each of those is also told to the web layer as a
+/// `lifecycle` event, with coming back to the front.
 @objc(DeviceKeysPlugin)
 public class DeviceKeysPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "DeviceKeysPlugin"
@@ -39,6 +49,10 @@ public class DeviceKeysPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "noiseKey", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "sign", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "deleteKeys", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "unlock", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "signUnlocked", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "lock", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "unlockState", returnType: CAPPluginReturnPromise),
     ]
 
     /// What the hardware key signs ahead of the handshake hash: the wire's
@@ -60,6 +74,9 @@ public class DeviceKeysPlugin: CAPPlugin, CAPBridgedPlugin {
         case noKeys = "no-keys"
         case cancelled
         case badHash = "bad-hash"
+        case locked
+        case unlockExpired = "unlock-expired"
+        case background
         case failed
     }
 
@@ -116,6 +133,124 @@ public class DeviceKeysPlugin: CAPPlugin, CAPBridgedPlugin {
         if !UserDefaults.standard.bool(forKey: Self.installedMarker) {
             Self.deleteAll()
             UserDefaults.standard.set(true, forKey: Self.installedMarker)
+        }
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(didEnterBackground),
+                           name: UIApplication.didEnterBackgroundNotification, object: nil)
+        center.addObserver(self, selector: #selector(phoneWillLock),
+                           name: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil)
+        center.addObserver(self, selector: #selector(willEnterForeground),
+                           name: UIApplication.willEnterForegroundNotification, object: nil)
+    }
+
+    // MARK: the Unlock
+
+    /// The authentication the Unlock holds, and the key it unlocks. Only
+    /// ever read or replaced under `heldLock`: prompts answer on a queue of
+    /// their own, and lifecycle notifications on the main thread.
+    private var held: (context: LAContext, backing: Backing)?
+    private let heldLock = NSLock()
+
+    private func hold(_ next: (context: LAContext, backing: Backing)?) {
+        heldLock.lock()
+        let before = held
+        held = next
+        heldLock.unlock()
+        if let before, before.context !== next?.context { before.context.invalidate() }
+    }
+
+    private func current() -> (context: LAContext, backing: Backing)? {
+        heldLock.lock()
+        defer { heldLock.unlock() }
+        return held
+    }
+
+    @objc private func didEnterBackground() {
+        NSLog("[gavin-shell] DeviceKeys: the app went to the background; the Unlock ends")
+        hold(nil)
+        notifyListeners("lifecycle", data: ["phase": "background"])
+    }
+
+    @objc private func phoneWillLock() {
+        NSLog("[gavin-shell] DeviceKeys: the phone is locking; the Unlock ends")
+        hold(nil)
+        notifyListeners("lifecycle", data: ["phase": "screen-locked"])
+    }
+
+    @objc private func willEnterForeground() {
+        notifyListeners("lifecycle", data: ["phase": "foreground"])
+    }
+
+    /// Asks for the owner once, and holds that for `signUnlocked`.
+    @objc func unlock(_ call: CAPPluginCall) {
+        let reason = call.getString("reason") ?? ""
+        guard !reason.isEmpty else {
+            reject(call, .failed, "unlock needs a reason to show the owner")
+            return
+        }
+        guard let backing = Self.stored() else {
+            reject(call, .noKeys, "this phone holds no Device keys")
+            return
+        }
+        NSLog("[gavin-shell] DeviceKeys: asked to unlock")
+        let context = LAContext()
+        evaluate(context, backing: backing, reason: reason, call: call) {
+            DispatchQueue.main.async {
+                // A prompt answered after the app left the front -- the
+                // phone locked with it up -- unlocks nothing.
+                guard UIApplication.shared.applicationState != .background else {
+                    context.invalidate()
+                    self.reject(call, .background, "the app went to the background while the owner was asked")
+                    return
+                }
+                // From here the context authorises the key without showing
+                // anything more: a signature is made, or it fails.
+                context.interactionNotAllowed = true
+                self.hold((context, backing))
+                NSLog("[gavin-shell] DeviceKeys: unlocked")
+                call.resolve()
+            }
+        }
+    }
+
+    /// Signs under the held Unlock, never asking.
+    @objc func signUnlocked(_ call: CAPPluginCall) {
+        guard let hash = Self.bytes(hex: call.getString("handshakeHash") ?? ""), hash.count == Self.handshakeHashBytes else {
+            reject(call, .badHash, "a handshake hash is \(Self.handshakeHashBytes) bytes of hex")
+            return
+        }
+        guard let (context, backing) = current() else {
+            reject(call, .locked, "no Unlock is held")
+            return
+        }
+        do {
+            let signature = try Self.signature(of: Self.unlockContext + hash, backing: backing, through: context)
+            call.resolve(["signature": Self.hex(signature)])
+        } catch {
+            // Ended meanwhile -- the app went to the background, or the
+            // phone locked, as it signed: that is locked, not lapsed.
+            guard current()?.context === context else {
+                reject(call, .locked, "the Unlock ended while it signed")
+                return
+            }
+            // The held context no longer authorises the key: the Unlock
+            // is over, and a new one is needed.
+            hold(nil)
+            reject(call, .unlockExpired, "the key would not sign under the Unlock: \(error.localizedDescription)")
+        }
+    }
+
+    @objc func lock(_ call: CAPPluginCall) {
+        hold(nil)
+        call.resolve()
+    }
+
+    @objc func unlockState(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            call.resolve([
+                "unlocked": self.current() != nil,
+                "foreground": UIApplication.shared.applicationState != .background,
+            ])
         }
     }
 
@@ -174,6 +309,7 @@ public class DeviceKeysPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func deleteKeys(_ call: CAPPluginCall) {
         NSLog("[gavin-shell] DeviceKeys: deleting the Device's keys")
+        hold(nil)
         Self.deleteAll()
         call.resolve()
     }
@@ -366,9 +502,28 @@ public class DeviceKeysPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         let message = Self.unlockContext + hash
         let context = LAContext()
-        let evaluated: (Bool, Error?) -> Void = { ok, error in
+        evaluate(context, backing: backing, reason: reason, call: call) {
             defer { context.invalidate() }
+            // From here the context authorises the key without showing
+            // anything more: the signature is made, or it fails.
+            context.interactionNotAllowed = true
+            do {
+                let signature = try Self.signature(of: message, backing: backing, through: context)
+                call.resolve(["signature": Self.hex(signature)])
+            } catch {
+                self.reject(call, .failed, "the key would not sign: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Asks for the owner through `context`, exactly as the key's own
+    /// access control would, and runs `confirmed` once they are; a refusal
+    /// rejects `call` in words.
+    private func evaluate(_ context: LAContext, backing: Backing, reason: String, call: CAPPluginCall,
+                          confirmed: @escaping () -> Void) {
+        let evaluated: (Bool, Error?) -> Void = { ok, error in
             guard ok else {
+                context.invalidate()
                 let code = (error as? LAError)?.code
                 switch code {
                 case .userCancel?, .appCancel?, .systemCancel?:
@@ -380,15 +535,7 @@ public class DeviceKeysPlugin: CAPPlugin, CAPBridgedPlugin {
                 }
                 return
             }
-            // From here the context authorises the key without showing
-            // anything more: the signature is made, or it fails.
-            context.interactionNotAllowed = true
-            do {
-                let signature = try Self.signature(of: message, backing: backing, through: context)
-                call.resolve(["signature": Self.hex(signature)])
-            } catch {
-                self.reject(call, .failed, "the key would not sign: \(error.localizedDescription)")
-            }
+            confirmed()
         }
         switch backing {
         case .secureEnclave:
@@ -397,6 +544,7 @@ public class DeviceKeysPlugin: CAPPlugin, CAPBridgedPlugin {
                 context.evaluateAccessControl(try Self.hardwareAccess(), operation: .useKeySign,
                                               localizedReason: reason, reply: evaluated)
             } catch {
+                context.invalidate()
                 reject(call, .failed, "the key's access control: \(error.localizedDescription)")
             }
         case .softwareDebug:

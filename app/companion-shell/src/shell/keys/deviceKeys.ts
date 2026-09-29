@@ -64,6 +64,9 @@ const CODES: ReadonlySet<string> = new Set<KeysErrorCode>([
   "no-keys",
   "cancelled",
   "bad-hash",
+  "locked",
+  "unlock-expired",
+  "background",
   "failed",
 ]);
 
