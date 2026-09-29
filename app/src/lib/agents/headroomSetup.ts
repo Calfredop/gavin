@@ -151,7 +151,8 @@ export function installRunning(status: HeadroomStatus): boolean {
 ///   installs it some other way needs.
 /// - Too old: Update, the same install, which puts the pin in place.
 /// - Verified below the pin: Update. At or above it: only Check again, for
-///   a Headroom upgraded outside gavin.
+///   a Headroom upgraded outside gavin -- and Update again after a failed
+///   install, which re-runs the model fetch the failure left undone.
 /// - Unavailable: nothing. No button can make this machine run it.
 export function headroomActions(status: HeadroomStatus): HeadroomAction[] {
   if (installRunning(status)) return [];
@@ -162,7 +163,9 @@ export function headroomActions(status: HeadroomStatus): HeadroomAction[] {
     case "too-old":
       return uv ? ["update", "locate", "check-again"] : ["locate", "check-again"];
     case "verified":
-      return uv && updateOffered(status) ? ["update", "check-again"] : ["check-again"];
+      return uv && (updateOffered(status) || status.install?.state === "failed")
+        ? ["update", "check-again"]
+        : ["check-again"];
     default:
       return [];
   }
@@ -401,7 +404,7 @@ export function profileRecipeReason(profileId: string, customApiFamily: ApiFamil
     case "cursor":
       return "Cursor sends everything through Cursor's servers — Headroom can't reach it.";
     case "gemini":
-      return "Gemini isn't compressed yet: which of its logins can go through Headroom is still being tried on real accounts.";
+      return "Gemini is compressed only when its CLI uses an API key. Login with Google isn't routed: Google's endpoint for it is documented for testing only, and Headroom can't undo lossy compression on streamed Gemini replies.";
     case "custom":
       return customApiFamily
         ? null

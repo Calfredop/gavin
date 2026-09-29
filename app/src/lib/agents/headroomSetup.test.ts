@@ -119,6 +119,13 @@ describe("each state's actions", () => {
     expect(headroomActions(verified({ version: "0.38.0", uvFound: false }))).toEqual(["check-again"]);
   });
 
+  it("keeps Update on offer at the pin while the last install failed, to re-run the model fetch", () => {
+    const failed = { state: "failed", output: "prefetch exited 1" };
+    expect(headroomActions(verified({ install: failed }))).toEqual(["update", "check-again"]);
+    expect(headroomActions(verified({ install: { state: "succeeded", output: "" } }))).toEqual(["check-again"]);
+    expect(headroomActions(verified({ install: failed, uvFound: false }))).toEqual(["check-again"]);
+  });
+
   it("Unavailable: nothing, because no button can make this machine run it", () => {
     expect(headroomActions(unavailable())).toEqual([]);
   });
@@ -311,7 +318,8 @@ describe("the switch", () => {
     expect(profileRecipeReason("cursor", "")).toBe(
       "Cursor sends everything through Cursor's servers — Headroom can't reach it."
     );
-    expect(profileRecipeReason("gemini", "")).toContain("Gemini");
+    expect(profileRecipeReason("gemini", "")).toContain("only when its CLI uses an API key");
+    expect(profileRecipeReason("gemini", "")).toContain("Login with Google");
     expect(profileRecipeReason("custom", "")).toContain("API family");
     expect(profileRecipeReason("custom", "anthropic")).toBeNull();
     expect(profileRecipeReason("from-a-newer-app", "")).not.toBeNull();

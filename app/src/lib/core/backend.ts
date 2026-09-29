@@ -8,6 +8,7 @@ import type { CardRun, TokenReport } from "$lib/cards/runHistory";
 import type { ConversationLog } from "$lib/cards/cardRun";
 import { invoke } from "@tauri-apps/api/core";
 import { isTerminalReport } from "$lib/terminal/terminalReport";
+import { noteInputSubmitted } from "$lib/agents/headroomMarkState";
 import type { GitStatus, RemovedWorkspace, Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Board, CardSessionRecord, Column, Label } from "$lib/board/kanban";
 import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
@@ -669,6 +670,8 @@ export function setOnWriteInputHook(handler: (sessionId: string) => void): void 
 
 export function writeInput(sessionId: string, data: string): Promise<void> {
   if (!isTerminalReport(data)) onWriteInput?.(sessionId);
+  // Every submit crosses here: a keystroke Enter, or a paste sent with one.
+  if (data.endsWith("\r")) noteInputSubmitted(sessionId);
   return invoke("write_input", { sessionId, data });
 }
 

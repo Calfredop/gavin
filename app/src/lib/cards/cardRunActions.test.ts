@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { takeReopenedPaint } from "$lib/agents/headroomMarkState";
+import { isAwaitingFirstSubmit } from "$lib/agents/headroomMarkState";
 import { get, writable } from "svelte/store";
 import type { DaemonCompat } from "$lib/core/daemonCompat";
 import type { SessionStatus } from "$lib/core/notifications";
@@ -1403,7 +1403,7 @@ describe("a failed binding", () => {
       { profileId: "claude-code", withoutHeadroom: true }
     );
     // Its first quiet is the history being painted, not a turn.
-    expect(takeReopenedPaint("s-new")).toBe(true);
+    expect(isAwaitingFirstSubmit("s-new")).toBe(true);
   });
 
   // A profile with no verified resume argv keeps today's behaviour, and

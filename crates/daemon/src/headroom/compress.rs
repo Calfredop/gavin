@@ -44,6 +44,11 @@ const SESSION_ID: &str = "GAVIN_SESSION_ID";
 const CLAUDE_BASE_URL: &str = "ANTHROPIC_BASE_URL";
 const CLAUDE_TOOL_SEARCH: &str = "ENABLE_TOOL_SEARCH";
 
+/// What the Gemini CLI reads its API endpoint from when it authenticates
+/// with an API key. It appends `/v1beta/models/...` to it, so a `/p/<id>`
+/// prefix survives.
+const GEMINI_BASE_URL: &str = "GOOGLE_GEMINI_BASE_URL";
+
 /// What Codex and every other OpenAI client reads its base URL from.
 /// Not enough on its own for current Codex (see `recipe`), and set
 /// anyway: it is what the commands Codex runs read.
@@ -310,6 +315,47 @@ pub struct Facts<'a> {
     /// The launch asked not to be routed through Headroom: a relaunch
     /// of a session that broke on it (`CreateSession.without_headroom`).
     pub without_headroom: bool,
+    /// Whether the Gemini CLI would authenticate with an API key
+    /// (`gemini_uses_api_key`). Only a Gemini launch reads it.
+    pub gemini_api_key: bool,
+}
+
+/// What of the environment decides the Gemini CLI's auth type.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GeminiEnv {
+    /// `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set and not empty.
+    pub api_key: bool,
+    /// `GOOGLE_GENAI_USE_VERTEXAI` is `true` or `1`.
+    pub vertex: bool,
+    /// `GOOGLE_GENAI_USE_GCA` is `true` or `1`.
+    pub login: bool,
+}
+
+/// The auth type a Gemini settings file selects, or `None` when it
+/// selects none. `security.auth.selectedType` is where the CLI keeps it
+/// now; the top-level `selectedAuthType` is the older spelling, read
+/// only when the new one is absent.
+fn gemini_selected_type(settings: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(settings).ok()?;
+    let new = value.pointer("/security/auth/selectedType").and_then(Value::as_str);
+    let old = value.get("selectedAuthType").and_then(Value::as_str);
+    new.or(old).map(str::to_string)
+}
+
+/// Whether the Gemini CLI, as configured, authenticates with an API key
+/// -- the one mode of its two that is routed (`recipe`).
+///
+/// `settings` are the settings files that apply, highest precedence
+/// first (the project's, then the user's). A selected type wins over the
+/// environment, which the CLI only consults to pick a mode when none is
+/// selected: an API key in the environment does not override a Login
+/// with Google the human chose. A file that names no type, or does not
+/// parse, defers to the next.
+pub fn gemini_uses_api_key(settings: &[&str], env: GeminiEnv) -> bool {
+    if let Some(selected) = settings.iter().find_map(|text| gemini_selected_type(text)) {
+        return selected == "gemini-api-key";
+    }
+    env.api_key && !env.vertex && !env.login
 }
 
 /// Whether this session is compressed.
@@ -353,9 +399,13 @@ pub fn decide(facts: Facts) -> Decision {
 /// when it has one.
 fn unroutable(agent: Agent) -> Option<Reason> {
     match agent {
-        Agent::ClaudeCode | Agent::Codex | Agent::Opencode | Agent::Custom(_) => None,
+        Agent::ClaudeCode
+        | Agent::Codex
+        | Agent::Gemini
+        | Agent::Opencode
+        | Agent::Custom(_) => None,
         Agent::Cursor => Some(Reason::UnsupportedAgent),
-        Agent::Gemini | Agent::Other => Some(Reason::NoRecipe),
+        Agent::Other => Some(Reason::NoRecipe),
     }
 }
 
@@ -391,6 +441,16 @@ fn unroutable(agent: Agent) -> Option<Reason> {
 /// marked compressed and send Headroom nothing, so there is no recipe
 /// without it.
 ///
+/// **Gemini.** Routed only when the CLI authenticates with an API key,
+/// through `GOOGLE_GEMINI_BASE_URL`; the spike (headroom-07) proved that
+/// request path reaches Headroom and Google's answer comes back through
+/// it. Login with Google has no recipe: its endpoint variable
+/// (`CODE_ASSIST_ENDPOINT`) is documented only "for development and
+/// testing", Headroom serves `/v1internal` for other Gemini clients, and
+/// Google itself now refuses the CLI's individual tier
+/// (`UNSUPPORTED_CLIENT`), so a session marked compressed there would not
+/// be a session that works.
+///
 /// **Custom.** Whichever variable its API family's SDK reads.
 pub fn recipe(agent: Agent, port: u16, facts: &Facts) -> Option<Recipe> {
     let base = base_url(port);
@@ -411,6 +471,9 @@ pub fn recipe(agent: Agent, port: u16, facts: &Facts) -> Option<Recipe> {
             let config =
                 opencode_config(facts.inherited_opencode_config, &base, session, plugin);
             Some(Recipe::env(vec![(OPENCODE_CONFIG, config)]))
+        }
+        Agent::Gemini if facts.gemini_api_key => {
+            Some(Recipe::env(vec![(GEMINI_BASE_URL, tagged_url(&base, session))]))
         }
         Agent::Custom(ApiFamily::Anthropic) => {
             Some(Recipe::env(vec![(CLAUDE_BASE_URL, tagged_url(&base, session))]))
@@ -469,7 +532,7 @@ fn single_quoted(text: &str) -> String {
 /// Codex receives it with its TOML quotes on, exactly as its SDK passes
 /// it.
 fn with_codex_base_url(line: &str, url: &str) -> Option<String> {
-    let ends: Vec<usize> = command_words(line)
+    let ends: Vec<usize> = command_words(line)?
         .into_iter()
         .filter(|(_, word)| names_binary(word, "codex"))
         .map(|(end, _)| end)
@@ -500,10 +563,18 @@ fn names_binary(word: &str, name: &str) -> bool {
 /// launched with. Quotes and escapes, so a prompt that mentions `codex`
 /// is text; the operators after which a new command starts (`&&`, `||`,
 /// `;`, `|`, `&`, a newline, a parenthesis); assignments ahead of a
-/// command (`KEY=value codex`); comments. What it cannot read -- a
-/// heredoc, a function, a reserved word -- costs it a command word it
-/// does not see, and a line whose Codex it does not see is left alone.
-fn command_words(line: &str) -> Vec<(usize, String)> {
+/// command (`KEY=value codex`); comments.
+///
+/// What it cannot read it refuses -- `None` for the whole line -- rather
+/// than guess, because a guess puts the flag inside a string, a heredoc
+/// body or a function's name, and a line whose Codex is only partly
+/// routed must not be marked compressed. It refuses an ANSI-C string
+/// (`$'…'`, whose `\'` does not end it), a heredoc (`<<`, whose body is
+/// text, not commands), a function definition (`name() {`), and a
+/// command word that hands the real command to the word after it (`time`,
+/// `env`, `nohup`, `exec`, `then`, `{`, `!` and the like). A line
+/// without a Codex to route is left alone either way.
+fn command_words(line: &str) -> Option<Vec<(usize, String)>> {
     let mut words = Vec::new();
     let mut word: Option<String> = None;
     let mut starts_command = true;
@@ -553,6 +624,18 @@ fn command_words(line: &str) -> Vec<(usize, String)> {
                 Some((_, next)) => word.get_or_insert_default().push(next),
                 None => word.get_or_insert_default().push('\\'),
             },
+            '$' if chars.peek().is_some_and(|&(_, next)| next == '\'') => return None,
+            '<' if chars.peek().is_some_and(|&(_, next)| next == '<') => {
+                chars.next();
+                // `<<<` is a here-string: one word, no body.
+                if chars.peek().is_some_and(|&(_, next)| next == '<') {
+                    chars.next();
+                    word.get_or_insert_default().push_str("<<<");
+                } else {
+                    return None;
+                }
+            }
+            '(' if function_definition(&word, starts_command, &mut chars) => return None,
             '\'' | '"' => {
                 word.get_or_insert_default();
                 quote = Some(c);
@@ -576,7 +659,31 @@ fn command_words(line: &str) -> Vec<(usize, String)> {
         }
     }
     finish(&mut word, line.len(), &mut starts_command);
-    words
+    if words.iter().any(|(_, word)| PREFIX_WORDS.contains(&word.as_str())) {
+        return None;
+    }
+    Some(words)
+}
+
+/// Command words after which the command that runs is the NEXT word, or
+/// a compound's body: not read through, so a line holding one is refused.
+const PREFIX_WORDS: [&str; 15] = [
+    "time", "env", "nohup", "exec", "command", "builtin", "then", "else", "elif", "do", "if",
+    "while", "until", "{", "!",
+];
+
+/// Whether the `(` about to be read opens a function definition: right
+/// after a command word (`codex() {`), or after one and a space with
+/// nothing between the parentheses (`codex () {`).
+fn function_definition(
+    word: &Option<String>,
+    starts_command: bool,
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
+) -> bool {
+    match word {
+        Some(w) => starts_command && !is_assignment(w) && !w.ends_with(['$', '<', '>']),
+        None => !starts_command && chars.peek().is_some_and(|&(_, next)| next == ')'),
+    }
 }
 
 /// `NAME=value`: an assignment, which a shell reads ahead of the
@@ -857,6 +964,7 @@ mod tests {
             inherited_opencode_config: None,
             opencode_plugin: None,
             without_headroom: false,
+            gemini_api_key: false,
         }
     }
 
@@ -988,6 +1096,78 @@ mod tests {
             assert!(decision.compressed(), "{line}");
             assert_eq!(decision.command(), None, "Claude Code is routed by environment alone");
         }
+    }
+
+    fn gemini() -> Facts<'static> {
+        Facts {
+            launch: Launch::Profile("gemini"),
+            command: Some("gemini --yolo --prompt='Read the card'"),
+            ..facts()
+        }
+    }
+
+    #[test]
+    fn gemini_on_an_api_key_is_routed_through_a_tagged_base_url() {
+        let decision = decide(Facts { gemini_api_key: true, ..gemini() });
+
+        assert_eq!(
+            decision.env(),
+            [("GOOGLE_GEMINI_BASE_URL".to_string(), format!("http://127.0.0.1:{PORT}/p/{SESSION}"))]
+        );
+        assert_eq!(decision.command(), None, "Gemini is routed by environment alone");
+    }
+
+    #[test]
+    fn gemini_on_any_other_login_has_no_recipe_and_is_handed_nothing() {
+        let decision = decide(gemini());
+
+        assert_eq!(decision, Decision::Uncompressed(Some(Reason::NoRecipe)));
+        assert!(decision.env().is_empty(), "Login with Google must never get CODE_ASSIST_ENDPOINT");
+    }
+
+    #[test]
+    fn a_gemini_that_is_not_ready_says_so_before_saying_it_has_no_recipe() {
+        let decision = decide(Facts { ready_port: None, gemini_api_key: true, ..gemini() });
+
+        assert_eq!(decision, Decision::Uncompressed(Some(Reason::NotReady)));
+    }
+
+    #[test]
+    fn an_mcp_spawn_of_gemini_follows_the_configured_auth() {
+        let key = decide(Facts { gemini_api_key: true, ..spawned("gemini 'fix it'") });
+
+        assert!(key.compressed());
+    }
+
+    const KEY: &str = r#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#;
+    const LOGIN: &str = r#"{"security":{"auth":{"selectedType":"oauth-personal"}}}"#;
+
+    #[test]
+    fn the_auth_type_is_the_configured_one_and_the_environment_only_fills_a_gap() {
+        let key_in_env = GeminiEnv { api_key: true, ..Default::default() };
+        // Chosen Login with Google outranks a key that happens to be set.
+        assert!(!gemini_uses_api_key(&[LOGIN], key_in_env));
+        assert!(gemini_uses_api_key(&[KEY], GeminiEnv::default()));
+        // Nothing chosen: the environment decides.
+        assert!(gemini_uses_api_key(&[], key_in_env));
+        assert!(gemini_uses_api_key(&["{}"], key_in_env));
+        assert!(!gemini_uses_api_key(&[], GeminiEnv::default()));
+        assert!(!gemini_uses_api_key(&[], GeminiEnv { vertex: true, ..key_in_env }));
+        assert!(!gemini_uses_api_key(&[], GeminiEnv { login: true, ..key_in_env }));
+    }
+
+    #[test]
+    fn the_projects_settings_outrank_the_users_and_a_bad_file_defers() {
+        let none = GeminiEnv::default();
+        assert!(gemini_uses_api_key(&[KEY, LOGIN], none));
+        assert!(!gemini_uses_api_key(&[LOGIN, KEY], none));
+        assert!(gemini_uses_api_key(&["not json", "{}", KEY], none));
+        // The older spelling is read only when the new one is absent.
+        assert!(gemini_uses_api_key(&[r#"{"selectedAuthType":"gemini-api-key"}"#], none));
+        assert!(!gemini_uses_api_key(
+            &[r#"{"selectedAuthType":"gemini-api-key","security":{"auth":{"selectedType":"oauth-personal"}}}"#],
+            none
+        ));
     }
 
     #[test]
@@ -1306,14 +1486,40 @@ mod tests {
         assert_eq!(no_line, Decision::Uncompressed(Some(Reason::NoRecipe)));
     }
 
+    /// A construct the scanner cannot read is refused whole: a flag put
+    /// in a string, a heredoc body or a function's name, or a line only
+    /// partly routed, is worse than a line left alone.
+    #[test]
+    fn a_line_with_a_construct_the_scanner_cannot_read_is_refused() {
+        for line in [
+            // `\'` does not end an ANSI-C string.
+            r"codex exec $'it\'s done; codex is fine'",
+            "cat > notes.txt <<EOF\ncodex = true\nEOF\ncodex exec x",
+            r#"codex() { command codex "$@"; }; codex exec x"#,
+            r#"codex () { command codex "$@"; }; codex exec x"#,
+            "codex exec a && time codex exec b",
+            "codex exec a && env A=1 codex exec b",
+            "codex exec a && nohup codex exec b",
+            "if true; then codex exec b; fi",
+            "{ codex exec b; }",
+            "! codex exec b",
+        ] {
+            assert_eq!(with_codex_base_url(line, "http://127.0.0.1:1/p/s/v1"), None, "{line}");
+        }
+        // Not refused: a here-string, a substitution, a quoted `<<`.
+        for line in ["codex exec <<< hi", "codex exec \"$(pwd)\" '<<'", "A=$(x) codex exec y"] {
+            assert!(with_codex_base_url(line, "http://127.0.0.1:1/p/s/v1").is_some(), "{line}");
+        }
+    }
+
     #[test]
     fn a_line_is_read_for_the_programs_it_runs_and_nothing_else() {
         let line = "A=1 b c && 'd e' f; g|h (i) # j\nk \"l\\\"m\" n\\ o";
 
-        let words: Vec<String> = command_words(line).into_iter().map(|(_, word)| word).collect();
+        let words: Vec<String> = command_words(line).expect("readable").into_iter().map(|(_, word)| word).collect();
 
         assert_eq!(words, ["b", "d e", "g", "h", "i", "k"]);
-        let (end, _) = command_words("  codex  --x").remove(0);
+        let (end, _) = command_words("  codex  --x").expect("readable").remove(0);
         assert_eq!(end, "  codex".len());
     }
 

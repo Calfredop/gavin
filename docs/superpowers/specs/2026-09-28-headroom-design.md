@@ -171,7 +171,7 @@ Like the Superpowers install, it is an argv array (never a shell string) with a 
 | **Codex** (`codex`) | Insert `-c openai_base_url="<base>/p/<id>/v1"` after the binary, and set `OPENAI_BASE_URL` to the same | The `/p/` prefix |
 | **opencode** (`opencode`) | `OPENCODE_CONFIG_CONTENT` pointing the `anthropic` and `openai` providers' `baseURL` at `<base>/p/<id>/v1`, and loading Headroom's transport plugin from Headroom's install directory with `project: <id>` | The `/p/` prefix and the plugin's `project` option |
 | **Custom** | Per the profile's **API family** picker: None (the default), Anthropic (`ANTHROPIC_BASE_URL=<base>/p/<id>`) or OpenAI-compatible (`OPENAI_BASE_URL=<base>/p/<id>/v1`) | The `/p/` prefix |
-| **Gemini** | Only after the spike (headroom-07) | — |
+| **Gemini** | API key only: `GOOGLE_GEMINI_BASE_URL=<base>/p/<id>`, chosen when the CLI's configured auth type is `gemini-api-key` (or none is set and a key is in the environment). Login with Google gets no recipe | The `/p/` prefix |
 | **Cursor** | None possible | — |
 
 **Claude Code.**
@@ -192,7 +192,7 @@ Like the Superpowers install, it is an argv array (never a shell string) with a 
 
 **Custom.** The API family picker joins the custom agent's other settings (command and model flag).
 
-**Gemini.** The Gemini CLI honours `GOOGLE_GEMINI_BASE_URL` for an API key, which also flips its auth type to "gateway", and `CODE_ASSIST_ENDPOINT` for Login with Google, documented only "for development and testing". Headroom documents its `/v1internal` route for other Gemini clients, not the official CLI. And CCR originals are not recovered on streaming Gemini, so lossy compression there cannot be undone. Gemini therefore ships only the auth modes a spike proves on real logins.
+**Gemini.** The Gemini CLI honours `GOOGLE_GEMINI_BASE_URL` for an API key, which also flips its auth type to "gateway", and `CODE_ASSIST_ENDPOINT` for Login with Google, documented only "for development and testing". Headroom documents its `/v1internal` route for other Gemini clients, not the official CLI. And CCR originals are not recovered on streaming Gemini, so lossy compression there cannot be undone. Gemini therefore ships only the auth modes the spike (headroom-07) proved: the API key. Login with Google is routed by the CLI but has no recipe: on the spike account Google answered `UNSUPPORTED_CLIENT` for the individual tier, so a compressed session there would not work.
 
 **Cursor.** The `agent` CLI sends everything through Cursor's own servers over Cursor's protocol. Cursor's docs and LiteLLM's docs both say no gateway can sit in between. The row says so.
 

@@ -25,7 +25,7 @@ import { parseReach, reachCheckDue } from "$lib/agents/headroomMark";
 import {
   noteHeadroomReach,
   sessionCompressionById,
-  takeReopenedPaint,
+  isAwaitingFirstSubmit,
 } from "$lib/agents/headroomMarkState";
 
 /// The supersession token per session, so an answer to an older ask never
@@ -54,16 +54,16 @@ function isRun(sessionId: string): boolean {
   return false;
 }
 
-/// The status listener. A reopened conversation's first quiet is consumed
-/// here whether or not anything is asked: it is the one quiet that is not
-/// a turn, and it only happens once.
+/// The status listener. A reopened conversation is passed over at every
+/// quiet until a line has been submitted to it (`noteInputSubmitted`):
+/// before that it is waiting on the human, however often it goes quiet.
 function onSessionStatus(
   sessionId: string,
   status: SessionStatus,
   previousStatus: SessionStatus | undefined
 ): void {
   const turnEnded = previousStatus === "working" && status === "idle";
-  const reopenedPaint = turnEnded && takeReopenedPaint(sessionId);
+  const reopenedPaint = turnEnded && isAwaitingFirstSubmit(sessionId);
   const due = reachCheckDue({
     previousStatus,
     status,

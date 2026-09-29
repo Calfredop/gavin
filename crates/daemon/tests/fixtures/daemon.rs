@@ -155,6 +155,14 @@ impl Machine {
             .env_remove("XDG_DATA_HOME")
             .env_remove("XDG_BIN_HOME")
             .env_remove("UV_TOOL_BIN_DIR")
+            // What decides the Gemini CLI's auth type: a key in the
+            // human's shell must not turn a test's Gemini into a
+            // routed one.
+            .env_remove("GEMINI_API_KEY")
+            .env_remove("GOOGLE_API_KEY")
+            .env_remove("GOOGLE_GENAI_USE_VERTEXAI")
+            .env_remove("GOOGLE_GENAI_USE_GCA")
+            .env_remove("GEMINI_CLI_HOME")
             .env("PATH", DOCK_PATH)
             // What a daemon started from the human's terminal can
             // inherit. Neither may reach the proxy.

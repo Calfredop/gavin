@@ -2914,6 +2914,26 @@ mod tests {
     /// also match, or an expired token classifies as a network blip and
     /// gavin resumes into a login prompt.
     #[test]
+    fn headroom_not_blamed_markers_cover_every_non_network_cause() {
+        // The daemon's `NOT_HEADROOMS_MARKERS` keeps a compressed session's
+        // auth / usage-limit / outage line from being renamed a Headroom
+        // failure. It lists the same strings as these rows.
+        const SERVER: &str = include_str!("../../../crates/daemon/src/server.rs");
+        let start = SERVER.find("pub const NOT_HEADROOMS_MARKERS").expect("const");
+        let list = &SERVER[start..start + SERVER[start..].find("];").unwrap()];
+        for p in AGENT_PROFILES {
+            for row in p.failure_causes.iter().filter(|r| r.cause != "network") {
+                assert!(
+                    list.contains(&format!("\"{}\"", row.pattern)),
+                    "{} ({}) missing from NOT_HEADROOMS_MARKERS",
+                    row.pattern,
+                    row.cause
+                );
+            }
+        }
+    }
+
+    #[test]
     fn failure_causes_travel_with_patterns_and_put_auth_first() {
         let classifying: Vec<&str> = AGENT_PROFILES
             .iter()

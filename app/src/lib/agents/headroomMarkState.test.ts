@@ -7,7 +7,8 @@ import {
   noteSessionCompression,
   seedSessionCompression,
   sessionCompressionById,
-  takeReopenedPaint,
+  isAwaitingFirstSubmit,
+  noteInputSubmitted,
 } from "$lib/agents/headroomMarkState";
 
 beforeEach(() => __resetForTesting());
@@ -72,10 +73,13 @@ describe("what a turn found", () => {
 });
 
 describe("a reopened conversation", () => {
-  it("has its first quiet passed over once, and only once", () => {
+  it("stays reopened through any number of quiets, until a line is submitted", () => {
     noteReopenedConversation("s1");
-    expect(takeReopenedPaint("s1")).toBe(true);
-    expect(takeReopenedPaint("s1")).toBe(false);
-    expect(takeReopenedPaint("s2")).toBe(false);
+    expect(isAwaitingFirstSubmit("s1")).toBe(true);
+    expect(isAwaitingFirstSubmit("s1")).toBe(true);
+    expect(isAwaitingFirstSubmit("s2")).toBe(false);
+    noteInputSubmitted("s1");
+    expect(isAwaitingFirstSubmit("s1")).toBe(false);
   });
+
 });

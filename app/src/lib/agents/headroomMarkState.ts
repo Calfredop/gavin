@@ -68,8 +68,9 @@ export function noteHeadroomReach(sessionId: string, reach: HeadroomReach | "unk
 }
 
 /// Sessions that reopened a conversation (resume, review) and have not
-/// yet gone quiet once: that first quiet is the history being painted,
-/// not a turn (`reachCheckDue`).
+/// been SUBMITTED to yet. Until then every quiet is the human at the
+/// prompt -- the history being painted, then a pause mid-sentence -- and
+/// none of it is a turn (`reachCheckDue`).
 const reopened = new Set<string>();
 
 /// Called by the launches that reopen a conversation rather than hand an
@@ -78,10 +79,16 @@ export function noteReopenedConversation(sessionId: string): void {
   reopened.add(sessionId);
 }
 
-/// Whether this is the first quiet of a reopened conversation, and if it
-/// is, it is the last time that is true.
-export function takeReopenedPaint(sessionId: string): boolean {
-  return reopened.delete(sessionId);
+/// Whether this reopened conversation is still waiting for its first
+/// submitted line. A peek: only `noteInputSubmitted` ends it.
+export function isAwaitingFirstSubmit(sessionId: string): boolean {
+  return reopened.has(sessionId);
+}
+
+/// What the human typed or pasted into a session ended in Enter: the
+/// model has been asked something, so the next quiet is a turn.
+export function noteInputSubmitted(sessionId: string): void {
+  reopened.delete(sessionId);
 }
 
 /// @internal - for testing only
