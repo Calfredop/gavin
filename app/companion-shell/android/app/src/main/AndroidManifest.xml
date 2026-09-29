@@ -1,8 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Backup and device-to-device transfer are off: the Device's Noise key
+         is this phone's alone (ADR 0001), and allowBackup="false" by itself
+         does not stop a transfer for targetSdk 31 and above. -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -54,4 +59,6 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The prompt before the Device's hardware key signs. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 </manifest>

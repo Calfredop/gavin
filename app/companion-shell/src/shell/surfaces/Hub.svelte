@@ -4,6 +4,7 @@
   // Workstation's UI read as one app.
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
   import { stateLabel, type HubWorkstation } from "$shell/hub/workstations";
+  import type { Snippet } from "svelte";
   import type { VisitState } from "$shell/visit/visit";
 
   interface Props {
@@ -14,8 +15,10 @@
     native: boolean;
     onOpen: (workstation: HubWorkstation) => void;
     onDismiss: () => void;
+    /// Below the Workstations: a debug build's keys panel.
+    children?: Snippet;
   }
-  let { workstations, visit, native, onOpen, onDismiss }: Props = $props();
+  let { workstations, visit, native, onOpen, onDismiss, children }: Props = $props();
 
   const opening = $derived(visit.status === "opening" ? visit.workstation.id : null);
 </script>
@@ -56,6 +59,8 @@
         view of its own.
       </p>
     {/if}
+
+    {@render children?.()}
   </div>
 </main>
 

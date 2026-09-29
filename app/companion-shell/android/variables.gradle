@@ -1,5 +1,8 @@
 ext {
-    minSdkVersion = 24
+    // The Device's hardware key needs API 30: an auth window that takes
+    // a strong biometric or the device credential
+    // (setUserAuthenticationParameters).
+    minSdkVersion = 30
     compileSdkVersion = 36
     targetSdkVersion = 36
     androidxActivityVersion = '1.11.0'

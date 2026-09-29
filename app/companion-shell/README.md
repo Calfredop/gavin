@@ -100,6 +100,50 @@ boot simulators of their own.
 Anything refused natively is reported to the shell's web layer by origin
 alone (the `dropped` event), never by content.
 
+## The Device's keys
+
+The `DeviceKeys` plugin (`ios/App/App/DeviceKeysPlugin.swift`,
+`android/…/DeviceKeysPlugin.java`, driven through
+`src/shell/native/deviceKeys.ts`) holds the Device's two keys (ADR 0001;
+the parameters are `docs/research/2026-09-28-companion-device-keys.md`'s).
+It is registered on the shell's own bridge and no other, so no bundle can
+reach it; the probe tries.
+
+| | iOS | Android |
+|---|---|---|
+| hardware key | Secure Enclave P-256, `[.privateKeyUsage, .userPresence]`, `WhenPasscodeSetThisDeviceOnly` | Keystore P-256 in StrongBox, else the TEE; an auth window of one hour for a strong biometric or the device credential; unlocked device required; attested |
+| Noise key | 32 bytes in a generic-password item, `WhenPasscodeSetThisDeviceOnly`, never synchronised | 32 bytes sealed by a Keystore AES-GCM key, in `noBackupFilesDir`; backup and device transfer off in the manifest |
+| sign | asks for the owner, then signs `"gavin-device-unlock-v1" \|\| hash`, the hash exactly 32 bytes | the same, with a `BiometricPrompt` |
+| refused | no passcode; no Secure Enclave | no screen lock; a key that comes out software |
+| Simulator, emulator | a debug build uses a software key marked `software-debug` | a debug build keeps the emulator's software key, marked the same |
+| reinstall | the first launch deletes what an earlier install left in the keychain | an uninstall takes the keys with it |
+
+The public half of the hardware key is what pairing registers. The Noise
+key's private half goes only to the shell's web layer, for the Companion
+core, which also derives its public half: neither iOS below Safari 18.4 nor
+Android below API 33 has X25519 outside it.
+
+Each sign prompts. The Unlock -- one authentication held for a foreground
+stretch -- is companion-22's, and the auth window (one hour, ticket 02's
+recommendation) is baked into each key when it is made.
+
+A debug build shows a keys panel under the Workstations: create the keys,
+sign a test handshake, delete them. `scripts/keys.sh` runs the same plugin
+through the keys check (`src/shell/keys/keysCheck.ts`) on a Simulator or an
+emulator, answers the prompt, and verifies the signature the way the daemon
+does:
+
+```
+scripts/keys.sh ios <simulator-udid> [--strict]
+scripts/keys.sh android <emulator-serial> [--strict] [--pin <pin>]
+```
+
+`--strict` refuses a software key, as a release build does. On iOS the
+script enrols Face ID on the Simulator and answers with a matching face. On
+Android an emulator with no screen lock is refused for having no passcode;
+set one with `adb -s <serial> shell locksettings set-pin <pin>` and pass it
+as `--pin`.
+
 ## The shell's end of the channel
 
 `src/shell/channel/shellChannel.ts`, one per visit (`src/shell/visit/visit.ts`):
@@ -137,10 +181,18 @@ README says a shell-hosted demo is.
   channel has no message for going back inside a bundle.
 - **The first open on a cold emulator takes seconds**: a new process and its
   first WebView.
+- **A debug build logs every plugin answer**, the Noise key's included:
+  Capacitor's own bridge logging, on in debug builds only. A release build
+  logs nothing of it.
+- **A Simulator always reports a passcode**, Face ID enrolled or not, so the
+  no-passcode refusal can only be seen on an emulator (or a phone). Without
+  Face ID enrolled the prompt is a passcode sheet that takes any code.
+- **Two hyphens in a row end an XML comment** and fail the Android resource
+  build, as they fail codesign on a plist.
 
 ## What is here, and what is not
 
-The hub lists the Demo Workstation and opens its embedded bundle. The
-Device's keys (companion-20), pairing (companion-21), the Unlock and a live
-hub (companion-22), and served, signed, cached bundles (companion-23) are the
-cards that follow.
+The hub lists the Demo Workstation and opens its embedded bundle, and the
+Device's keys are here (companion-20). Pairing (companion-21), the Unlock and
+a live hub (companion-22), and served, signed, cached bundles (companion-23)
+are the cards that follow.
