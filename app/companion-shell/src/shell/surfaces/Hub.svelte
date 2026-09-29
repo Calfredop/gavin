@@ -1,8 +1,9 @@
 <script lang="ts">
-  // The Workstations hub. A thin template over hub/workstations.ts and the
-  // visit's state; the header is the bundle's own, so the hub and a
-  // Workstation's UI read as one app.
+  // The Workstations hub. A thin template over hub/workstations.ts,
+  // hub/inbox.ts, unlock/unlock.ts and the visit's state; the header is
+  // the bundle's own, so the hub and a Workstation's UI read as one app.
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
+  import { kindLabel, type InboxRow } from "$shell/hub/inbox";
   import { stateLabel, type HubWorkstation } from "$shell/hub/workstations";
   import type { Snippet } from "svelte";
   import type { VisitState } from "$shell/visit/visit";
@@ -18,10 +19,34 @@
     /// "Pair a Workstation". Absent in a browser, which has no keys and no
     /// camera to pair with.
     onPair?: (() => void) | null;
+    /// What is waiting on the human, on every ready Workstation. Null
+    /// while there is nothing unlocked to ask.
+    inbox?: InboxRow[] | null;
+    onOpenItem?: (row: InboxRow) => void;
+    /// The Unlock's line, and whether it offers to unlock.
+    unlockNotice?: { text: string; action: boolean } | null;
+    onUnlock?: () => void;
+    /// A line from the hub itself, dismissable.
+    notice?: string | null;
+    onDismissNotice?: () => void;
     /// Below the Workstations: a debug build's keys panel.
     children?: Snippet;
   }
-  let { workstations, visit, native, onOpen, onDismiss, onPair = null, children }: Props = $props();
+  let {
+    workstations,
+    visit,
+    native,
+    onOpen,
+    onDismiss,
+    onPair = null,
+    inbox = null,
+    onOpenItem = () => {},
+    unlockNotice = null,
+    onUnlock = () => {},
+    notice = null,
+    onDismissNotice = () => {},
+    children,
+  }: Props = $props();
 
   const opening = $derived(visit.status === "opening" ? visit.workstation.id : null);
 </script>
@@ -29,6 +54,44 @@
 <main class="hub">
   <PhoneHeader title="Workstations" />
   <div class="scroll">
+    {#if unlockNotice}
+      <div class="unlock" role="status">
+        <p>{unlockNotice.text}</p>
+        {#if unlockNotice.action}
+          <button type="button" class="action" onclick={onUnlock}>Unlock</button>
+        {/if}
+      </div>
+    {/if}
+
+    {#if notice}
+      <div class="note" role="status">
+        <p>{notice}</p>
+        <button type="button" class="action" onclick={onDismissNotice}>Dismiss</button>
+      </div>
+    {/if}
+
+    {#if inbox}
+      <h2 class="section">Waiting on you</h2>
+      {#if inbox.length === 0}
+        <p class="empty">Nothing is waiting on you.</p>
+      {:else}
+        <ul class="list">
+          {#each inbox as row (row.key)}
+            <li>
+              <button type="button" class="row item kind-{row.kind}" onclick={() => onOpenItem(row)}>
+                <span class="head">
+                  <span class="kind">{kindLabel(row.kind)}</span>
+                  <span class="where">{row.workstationName}</span>
+                </span>
+                <span class="text">{row.text}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <h2 class="section">Workstations</h2>
+    {/if}
+
     <ul class="list">
       {#each workstations as ws (ws.id)}
         <li>
@@ -156,8 +219,75 @@
   .state-ready .dot {
     background: var(--success-text);
   }
-  .state-paired .dot {
+  .state-connecting .dot {
     background: var(--accent);
+  }
+  .state-desktop-app-not-running .dot,
+  .state-unreachable .dot {
+    background: var(--warning-text);
+  }
+  .state-refused .dot,
+  .state-failed .dot {
+    background: var(--danger-text);
+  }
+  .section {
+    margin: 0;
+    padding: 18px max(14px, env(safe-area-inset-right)) 6px max(14px, env(safe-area-inset-left));
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .empty {
+    margin: 0;
+    padding: 4px 14px 12px;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+  }
+  .kind {
+    flex: 0 0 auto;
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+  .kind-failed .kind,
+  .kind-interrupted .kind {
+    color: var(--danger-text);
+  }
+  .kind-waiting .kind,
+  .kind-human-test .kind {
+    color: var(--accent);
+  }
+  .kind-rail-stopped .kind {
+    color: var(--warning-text);
+  }
+  .where {
+    min-width: 0;
+    margin-left: auto;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .text {
+    font-size: 0.9375rem;
+    line-height: 1.4;
+  }
+  .unlock {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px max(14px, env(safe-area-inset-right)) 12px max(14px, env(safe-area-inset-left));
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-raised);
+  }
+  .unlock p {
+    flex: 1 1 auto;
+    margin: 0;
+    color: var(--text);
+    font-size: 0.875rem;
+    line-height: 1.4;
   }
   .summary {
     color: var(--text-muted);

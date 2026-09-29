@@ -23,21 +23,44 @@ describe("the Workstations hub's list", () => {
     );
   });
 
-  it("lists paired Workstations first, by their names, and not yet openable", () => {
-    const list = hubWorkstations([{ ...paired, name: "Studio Mac" }], () => "29 Sept");
+  it("lists paired Workstations first, by their names, locked until the Unlock, and not yet openable", () => {
+    const list = hubWorkstations([{ ...paired, name: "Studio Mac" }]);
     expect(list).toEqual([
       {
         id: paired.id,
         name: "Studio Mac",
         demo: false,
-        summary: "Paired on 29 Sept. Opening it from this phone comes in a later build.",
-        state: "paired",
+        summary: "Unlock to connect.",
+        state: "locked",
         openable: false,
       },
       DEMO_WORKSTATION,
     ]);
-    expect(stateLabel("paired")).toBe("Paired");
+    expect(stateLabel("locked")).toBe("Locked");
     expect(DEMO_WORKSTATION.openable).toBe(true);
+  });
+
+  it("shows each paired Workstation's live state: ready, desktop app not running, asleep", () => {
+    const other = keepPairing({ ...paired, workstationKey: "4b".repeat(32) }, [paired], 2);
+    const third = keepPairing({ ...paired, workstationKey: "4c".repeat(32) }, [paired, other], 3);
+    const list = hubWorkstations([paired, other, third], {
+      [paired.id]: {
+        state: "ready",
+        items: [{ id: "a", workspace: "w", kind: "waiting", text: "t", target: null }],
+      },
+      [other.id]: { state: "desktop-app-not-running" },
+      [third.id]: { state: "asleep" },
+    });
+    expect(list.slice(0, 3).map((ws) => [ws.state, stateLabel(ws.state), ws.summary])).toEqual([
+      ["ready", "Ready", "1 waiting on you."],
+      [
+        "desktop-app-not-running",
+        "Desktop app not running",
+        "It is on, but Gavin’s desktop app is not running there, so nothing can answer.",
+      ],
+      ["asleep", "Asleep", "Its Relay has not heard from it: it is asleep, or remote access is off at the desk."],
+    ]);
+    expect(stateLabel("ready")).toBe("Ready");
   });
 
   it("gives every listed Workstation an id that can be its bundle's host", () => {

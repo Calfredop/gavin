@@ -1,14 +1,15 @@
 // What the Workstations hub lists.
 //
-// The Workstations this Device has paired with (companion-21), then the
-// Demo Workstation: it is built into the binary, needs no pairing, and is
-// what App Review explores (ADR 0005, Guideline 2.1(a)). A paired
-// Workstation's live state ("desktop app not running", "asleep") and
-// opening its UI are companion-22's and companion-23's.
+// The Workstations this Device has paired with, each with its live state
+// while the Companion is unlocked (`hub/live.ts`), then the Demo
+// Workstation: it is built into the binary, needs no pairing, and is what
+// App Review explores (ADR 0005, Guideline 2.1(a)). Opening a paired
+// Workstation's UI is companion-23's.
 import { DEMO } from "$companion/demo/sampleData";
+import { liveLabel, liveSummary, type LiveState, type LiveStateName } from "$shell/hub/live";
 import type { PairedWorkstation } from "$shell/hub/paired";
 
-export type WorkstationState = "ready" | "paired";
+export type WorkstationState = LiveStateName;
 
 export interface HubWorkstation {
   /// Also the host of its bundle's origin, so it is a DNS label.
@@ -34,34 +35,33 @@ export const DEMO_WORKSTATION: HubWorkstation = {
   openable: true,
 };
 
-/// "29 Sept", the way the phone writes a date.
-export type FormatDay = (ms: number) => string;
+const LOCKED: LiveState = { state: "locked" };
 
-const formatDay: FormatDay = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short" });
-
-export function hubWorkstations(paired: PairedWorkstation[] = [], day: FormatDay = formatDay): HubWorkstation[] {
+/// `live` is each paired Workstation's state by id; one it does not
+/// name is locked.
+export function hubWorkstations(
+  paired: PairedWorkstation[] = [],
+  live: Readonly<Record<string, LiveState>> = {}
+): HubWorkstation[] {
   return [
-    ...paired.map(
-      (ws): HubWorkstation => ({
+    ...paired.map((ws): HubWorkstation => {
+      const state = live[ws.id] ?? LOCKED;
+      return {
         id: ws.id,
         name: ws.name,
         demo: false,
-        summary: `Paired on ${day(ws.pairedAt)}. Opening it from this phone comes in a later build.`,
-        state: "paired",
+        summary: liveSummary(state),
+        state: state.state,
+        // Its UI is served over its connection: companion-23.
         openable: false,
-      })
-    ),
+      };
+    }),
     DEMO_WORKSTATION,
   ];
 }
 
 export function stateLabel(state: WorkstationState): string {
-  switch (state) {
-    case "ready":
-      return "Ready";
-    case "paired":
-      return "Paired";
-  }
+  return liveLabel(state);
 }
 
 /// A Workstation's id becomes a host name in its bundle's origin. Anything
