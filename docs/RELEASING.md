@@ -191,6 +191,45 @@ KeyLocker, SSL.com eSigner). Swap the import step for that provider's
 authentication step when the certificate is bought; everything else in the
 job stays.
 
+## The container images
+
+The Relay and the Push gateway ship as Docker images, not bundles, and the
+`images` job in `release.yml` is the one thing that pushes anywhere: it
+builds `crates/gavin-relay/Dockerfile` and `crates/push-gateway/Dockerfile`
+from the tagged commit, pushes them to `ghcr.io/<owner>/gavin-relay` and
+`ghcr.io/<owner>/gavin-push-gateway`, and signs each **by digest**. Only
+that job holds `packages: write` and `id-token: write`; the workflow's own
+token stays `contents: read`.
+
+The signature is **keyless** (cosign, Sigstore). It binds the digest to
+`release.yml` on a `v*` tag of this repository through the run's OIDC
+identity, so there is no image-signing key in the secrets table above to
+guard, rotate or lose. The trust it gives a downloader is different in
+kind from the rest of this file: not "a key I already trust signed this",
+but "the workflow that the repository's history says builds releases
+signed this". That is only as strong as the branch and tag protection on
+the repository, so protect `v*` tags.
+
+The job then runs the very `cosign verify` command that
+[`docs/self-hosting-relay.md`](self-hosting-relay.md) tells self-hosters to
+run, against the registry, and fails if it does not pass. Its output,
+`image-digests.md`, is the table that goes in the release notes: a
+self-hoster gets the digest from the release page and the signature from
+the registry, two channels that must agree.
+
+`cosign` is built with `go install` at the version pinned in the job
+(`COSIGN_VERSION`), so bumping it is a reviewed one-line change. A manual
+(`workflow_dispatch`) run pushes images under a non-release tag and does
+not run the verify step, because its identity is not a tag; only a tag
+makes an image a release.
+
+**First run.** Like the rest of this workflow, the job has not executed:
+the first tagged release is its test. GHCR creates a package **private**;
+after the first push, make both packages public (Package settings → Change
+visibility) and link them to the repository, or nobody else can pull them
+or verify them. That is a one-time human act, deliberately not done by the
+workflow.
+
 ## The checklist
 
 1. The tree is clean, the tests pass (`cargo test --workspace`; `cd app &&
@@ -219,6 +258,11 @@ job stays.
    points at `releases/download/<tag>/<file>`, so a renamed or omitted
    artefact is an install that can never update. Open one URL from it in
    a browser before calling the release done.
+10. Paste the contents of the `gavin-image-digests` artefact
+    (`image-digests.md`) into the release notes, under a heading naming the
+    two images. Then, from a machine that is not the build host, run the
+    `cosign verify` command from `docs/self-hosting-relay.md` against each
+    digest as written in the notes, exactly as a self-hoster would.
 
 ## Verifying a bundle by hand
 
