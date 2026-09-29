@@ -537,6 +537,33 @@ fn headroom_reason() -> String {
     format!("{HEADROOM_REASON_PREFIX}, so this compressed agent could not reach its model through it")
 }
 
+/// Markers of a failure that is not the network's: an auth or usage-limit
+/// line, or an upstream outage. Each can only have reached the screen
+/// FROM upstream, through Headroom, so Headroom being down at the verdict
+/// does not make it Headroom's -- and renaming it would send auto-resume
+/// uncompressed into the login wall, or straight past a usage reset. The
+/// spec scopes the cause to the failure that "would be classified
+/// `network`". Every non-`network` row of Claude Code's `failure_causes`
+/// (`app/src-tauri/src/agent_setup.rs`) is listed, pinned by
+/// `headroom_not_blamed_markers_cover_every_non_network_cause` there.
+pub const NOT_HEADROOMS_MARKERS: &[&str] = &[
+    "/login",
+    "OAuth token has expired",
+    "disabled Claude subscription access",
+    "temporarily limiting requests",
+    "exceeded your usage limit",
+    "usage limit",
+    "hit your session limit",
+    "/usage-credits to continue or switch",
+    "529 Overloaded",
+    "Overloaded",
+    "Server error mid-response",
+];
+
+fn someone_elses_line(reason: &str) -> bool {
+    NOT_HEADROOMS_MARKERS.iter().any(|m| reason.contains(m))
+}
+
 /// The failure's reason, with the blame moved to Headroom when it is
 /// Headroom's: the session was compressed and Headroom fails its health
 /// check now, at the moment the break is judged. Otherwise the reason
@@ -553,7 +580,7 @@ fn headroom_reason() -> String {
 /// `answering` is a closure so a session that was never compressed costs
 /// nothing to judge.
 fn blame_headroom(reason: String, compressed: bool, answering: impl FnOnce() -> bool) -> String {
-    if compressed && !answering() {
+    if compressed && !someone_elses_line(&reason) && !answering() {
         headroom_reason()
     } else {
         reason
@@ -11495,6 +11522,21 @@ mod tests {
     fn a_compressed_session_that_breaks_while_headroom_does_not_answer_is_headroom_s_failure() {
         let reason = blame_headroom("API Error: Connection error".into(), true, || false);
         assert!(reason.starts_with(HEADROOM_REASON_PREFIX), "{reason}");
+    }
+
+    /// An auth or usage-limit line came THROUGH Headroom, so a Headroom
+    /// that is down at the verdict does not make it Headroom's.
+    #[test]
+    fn an_auth_or_usage_limit_line_keeps_its_own_reason_with_headroom_down() {
+        for line in [
+            "API Error: 401 \u{b7} Please run /login",
+            "OAuth token has expired",
+            "You've hit your session limit \u{b7} resets 3pm",
+            "API Error: exceeded your usage limit",
+            "529 Overloaded",
+        ] {
+            assert_eq!(blame_headroom(line.into(), true, || false), line);
+        }
     }
 
     /// A Headroom the supervisor already brought back is answering: the
