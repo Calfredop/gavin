@@ -1,4 +1,5 @@
 ---
+order: 5120
 title: Show Gavin's own memory in the task manager
 status: In Progress
 complexity: moderate
@@ -18,4 +19,5 @@ Plan:
 - [x] TS: `backend.gavinMemory`, plus `gavinLine`/`gavinNote` in `sessionsManager.ts` with tests.
 - [x] Modal: poll beside the session list and render a "Gavin" line above the watchman line, which is relabelled "Related to Gavin".
 - [x] Checks: cargo test -p app (549 pass), npm test (6478 pass), npm run check (0 errors), npm run build. commandGate.test.ts classifies `gavin_memory` as ordinary. A probe against the live app matched footprint(1): app 40 MB, interface 3 helpers 278 MB, daemon 78 MB, with Fork's helpers excluded.
-- [ ] Human test: open Task manager (sidebar footer). Under the grid, a "Gavin: … — app … · interface … · daemon …" line should sit above the "Related to Gavin: watchman …" line, with the numbers roughly matching Activity Monitor's Memory column for Gavin, com.apple.WebKit.* and gavin-daemon. Its hover should explain each part.
+- [x] Human test: open Task manager (sidebar footer). Under the grid, a "Gavin: … — app … · interface … · daemon …" line should sit above the "Related to Gavin: watchman …" line, with the numbers roughly matching Activity Monitor's Memory column for Gavin, com.apple.WebKit.* and gavin-daemon. Its hover should explain each part.
+  Result (2026-09-28): passed
