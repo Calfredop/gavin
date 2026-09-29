@@ -174,7 +174,7 @@ pub fn platform_unavailable(os: &str, arch: &str) -> Option<&'static str> {
             "Headroom is not available on Windows yet: its proxy has an open outage there.",
         ),
         ("macos", "x86_64") => Some(
-            "Headroom is not available on Intel Macs yet: it ships no tested native build for them.",
+            "Headroom is not available on Intel Macs yet: its onnxruntime dependency ships no Intel Mac wheels.",
         ),
         _ => None,
     }
