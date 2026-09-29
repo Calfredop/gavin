@@ -677,7 +677,7 @@ fn dispatch_tool(
         Response::Board { columns, labels, card_sessions: _ } => {
             Ok(serde_json::to_string_pretty(&json!({ "columns": columns, "labels": labels }))?)
         }
-        Response::SessionCreated { id } => {
+        Response::SessionCreated { id, .. } => {
             Ok(format!("spawned session {id} — visible on the Agents page in gavin"))
         }
         Response::PlanFieldSet { path } => Ok(match requested_path {
@@ -3727,7 +3727,7 @@ mod tests {
     #[test]
     fn spawn_defaults_cwd_to_root_and_reports_the_agents_page() {
         let root = Path::new("/ws");
-        let mut t = mock(vec![Response::SessionCreated { id: "s-1".into() }]);
+        let mut t = mock(vec![Response::SessionCreated { id: "s-1".into(), compressed: false, uncompressed_reason: None }]);
         let reply = handle_line(
             r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"gavin_spawn_session","arguments":{"command":"claude"}}}"#,
             Some(root),

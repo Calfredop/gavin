@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  HEADROOM_REASON_PREFIX,
   SLEPT_REASON_PREFIX,
   MAX_AUTO_RESUME_ATTEMPTS,
   STAGGER_SPREAD_MS,
@@ -8,6 +9,7 @@ import {
   autoResumePolicy,
   classifyFailure,
   isImmediateRefailure,
+  relaunchesWithoutHeadroom,
   resumeDelayMs,
   resumeNotificationBody,
   resumeNoteFor,
@@ -112,6 +114,43 @@ describe("classifyFailure", () => {
     ).toBe("suspend");
   });
 
+  // The daemon's own sentence (`headroom_reason`, server.rs), written
+  // when a COMPRESSED session broke while Headroom failed its health
+  // check. It is the daemon that knows both facts; this only has to read
+  // the prefix -- and must read it before any agent line, so it wins
+  // whatever else the reason says.
+  it("recognises gavin's own Headroom sentence without a profile", () => {
+    const said = `${HEADROOM_REASON_PREFIX}, so this compressed agent could not reach its model through it`;
+    expect(classifyFailure(said, [])).toBe("headroom");
+    expect(classifyFailure(said, CLAUDE)).toBe("headroom");
+  });
+
+  // Otherwise the existing classification stands: the same agent line,
+  // from a session that was not compressed or whose Headroom answered,
+  // is the network's exactly as before.
+  it("leaves every other failure where the table puts it", () => {
+    expect(classifyFailure("API Error: Connection error", CLAUDE)).toBe("network");
+    expect(classifyFailure("API Error: Connection dropped (ECONNRESET)", CLAUDE)).toBe("network");
+    // Only as a prefix: the word in an agent's own line is not gavin's
+    // sentence.
+    expect(classifyFailure(`Upstream said: ${HEADROOM_REASON_PREFIX}`, CLAUDE)).toBe("unknown");
+  });
+
+  // What a build from BEFORE the cause existed does with the daemon's
+  // sentence: no pattern in the table matches it, so it is a cause that
+  // build cannot name -- and unknown never resumes, which is the only
+  // safe thing for it to do with a proxy it knows nothing about.
+  it("gives an older build nothing in the Headroom sentence to mistake for the network", () => {
+    const said = `${HEADROOM_REASON_PREFIX}, so this compressed agent could not reach its model through it`;
+    const olderBuild = (reason: string) =>
+      CLAUDE.find((row) => reason.includes(row.pattern))?.cause ?? "unknown";
+    expect(olderBuild(said)).toBe("unknown");
+  });
+
+  it("accepts headroom from a profile row, like any cause it knows", () => {
+    expect(classifyFailure("proxy down", [{ pattern: "proxy down", cause: "headroom" }])).toBe("headroom");
+  });
+
   // A profile with no table gets NO classification, never a guess -- the
   // same posture failure_patterns takes, and for the same reason.
   it("classifies nothing for a profile that verified no causes", () => {
@@ -143,6 +182,17 @@ describe("autoResumePolicy", () => {
   it("holds a usage limit and never resumes an auth failure", () => {
     expect(autoResumePolicy("usage-limit").kind).toBe("hold");
     expect(autoResumePolicy("auth").kind).toBe("never");
+  });
+
+  // Resumed like the network -- the relaunch goes around Headroom, so
+  // what it needs is the route to the model -- and ONLY this cause goes
+  // around it.
+  it("resumes a Headroom failure once the network is there, without Headroom", () => {
+    expect(autoResumePolicy("headroom")).toEqual({ kind: "resume", on: "reachable" });
+    expect(relaunchesWithoutHeadroom("headroom")).toBe(true);
+    for (const cause of ["suspend", "network", "outage", "usage-limit", "auth", "crashed", "unknown"] as const) {
+      expect(relaunchesWithoutHeadroom(cause), cause).toBe(false);
+    }
   });
 
   it("never resumes a crash or a cause it cannot name", () => {
@@ -227,6 +277,26 @@ describe("autoResumeDecision", () => {
     // that cannot be.
     expect(autoResumeDecision(input({ attempts: null })).kind).toBe("resume");
     expect(autoResumeDecision(input({ attempts: undefined })).kind).toBe("resume");
+  });
+
+  it("resumes a consented run that broke on Headroom", () => {
+    const d = autoResumeDecision(
+      input({ reason: `${HEADROOM_REASON_PREFIX}, so this compressed agent could not reach its model through it` })
+    );
+    expect(d).toEqual({ kind: "resume", cause: "headroom", on: "reachable", delayMs: resumeDelayMs("reachable") });
+  });
+
+  // An older daemon would drop the override and hand the relaunch the
+  // proxy it broke on. The gate reaches that cause and no other.
+  it("will not resume a Headroom failure into a daemon that cannot relaunch without it", () => {
+    const blocked = "Needs daemon v50; the running daemon is v49. Restart the daemon to enable this.";
+    const headroom = autoResumeDecision(
+      input({ reason: `${HEADROOM_REASON_PREFIX}, and more`, withoutHeadroomBlocked: blocked })
+    );
+    expect(headroom).toEqual({ kind: "skip", cause: "headroom", why: blocked });
+
+    const network = autoResumeDecision(input({ withoutHeadroomBlocked: blocked }));
+    expect(network.kind).toBe("resume");
   });
 
   it("reports the caller's own blocker verbatim, so the trail can say it", () => {

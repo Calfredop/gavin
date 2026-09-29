@@ -18,6 +18,31 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v50 is honest failures (`2026-09-28-headroom-design.md`, "Failures"):
+/// a session that should have been compressed and was not says why, and
+/// a broken Headroom stops being a retry loop. Four changes of three
+/// kinds:
+///
+/// - `CreateSession` WIDENED with `without_headroom`, the override
+///   auto-resume sends when it relaunches a session that broke on
+///   Headroom. `min_version_for` cannot see a field, so
+///   FEATURE_MIN_VERSION.headroomFailures is its gate in the app, and the
+///   host withholds it from an older daemon besides
+///   (`HEADROOM_FAILURES_MIN_VERSION`).
+/// - `HeadroomReach`, a new request TYPE: whether Headroom has seen a
+///   compressed session's requests, asked when one of its turns ends.
+///   `min_version_for` is its whole wire gate.
+/// - `SessionCreated`, `AgentSessionSpawned` and `SessionSummary` widened
+///   with what the daemon decided (`compressed`, `uncompressed_reason`)
+///   and what it later found (`headroom_reach`), all `serde(default)`.
+///   Replies and a push, so an older client ignores them.
+/// - No wire change at all, and the one an older app is exposed to: a
+///   compressed session that breaks while Headroom fails its health
+///   check is reported with gavin's own sentence
+///   (`HEADROOM_REASON_PREFIX` in the daemon) instead of the agent's.
+///   An older app classifies that as a cause it cannot name, which never
+///   resumes -- the safe reading of it.
+///
 /// v49 is savings (`2026-09-28-headroom-design.md`, "Savings"). When a
 /// compressed session ends, the daemon snapshots what Headroom saved it
 /// onto its card runs, and two things carry that out:
@@ -548,7 +573,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 49;
+pub const PROTOCOL_VERSION: u32 = 50;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -568,6 +593,16 @@ pub const COMPRESSED_LAUNCH_MIN_VERSION: u32 = 47;
 /// (`FEATURE_MIN_VERSION.customApiFamily` in the app, and the host's
 /// `create_fresh_session` behind it).
 pub const CUSTOM_API_FAMILY_MIN_VERSION: u32 = 48;
+
+/// The version that widened `CreateSession` with `without_headroom`.
+///
+/// A v49 daemon would parse the request, drop the override and decide
+/// the relaunch against Headroom as it stands -- which, for a Headroom
+/// that is answering `/readyz` and failing everything else, is the very
+/// proxy the session just broke on. A client that sends it compares the
+/// daemon's version with this (`FEATURE_MIN_VERSION.headroomFailures` in
+/// the app, and the host's `create_agent_session` behind it).
+pub const HEADROOM_FAILURES_MIN_VERSION: u32 = 50;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -610,6 +645,22 @@ pub enum Request {
         /// none, so a newer app's family is never routed as a guess.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         api_family: Option<String>,
+        /// This launch must not be routed through Headroom, whatever
+        /// Headroom's state (v50). Sent by auto-resume, and only when it
+        /// relaunches a session that broke on Headroom: the `headroom`
+        /// failure cause, which the daemon reported because Headroom was
+        /// failing its health check when the session broke.
+        ///
+        /// An override and not a request to decide again: a Headroom
+        /// that answers `/readyz` and fails every request is one the
+        /// decision would pick again, and the relaunch would break the
+        /// same way -- across the whole fleet at once. The session
+        /// records `headroom-failed` as its reason, so its tab says so.
+        ///
+        /// Skipped when false, so every other launch is byte for byte
+        /// the request a v49 daemon parses.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        without_headroom: bool,
     },
     ListSessions,
     /// What every live session is costing right now: one sample of the
@@ -1480,6 +1531,18 @@ pub enum Request {
     HeadroomSavings {
         since: i64,
     },
+    /// Whether Headroom has seen this compressed session's requests
+    /// (v50), asked by the app when one of the session's turns ends.
+    ///
+    /// Answered with `Response::HeadroomReach`, from Headroom's `/stats`
+    /// read at that moment. A session that finished a turn and sent
+    /// Headroom nothing is talking to its model some other way -- an
+    /// agent CLI that stopped honouring the routing -- and its tab says
+    /// so. The daemon keeps the answer, so `SessionSummary.headroom_reach`
+    /// carries it to a frontend that reloads.
+    HeadroomReach {
+        session_id: String,
+    },
 
     GetProtocolVersion,
     /// Asks the daemon to exit cleanly. Added in v12 so the app can stop
@@ -1735,6 +1798,12 @@ pub fn min_version_for(req: &Request) -> u32 {
         // is its whole wire gate; FEATURE_MIN_VERSION.headroomSavings
         // keeps the hub from asking an older daemon at all.
         Request::HeadroomSavings { .. } => 49,
+
+        // Whether a compressed session reaches Headroom. A new TYPE, so
+        // this match is its whole wire gate; the same version's
+        // `CreateSession.without_headroom` is NOT here, because it widens
+        // a v1 request (FEATURE_MIN_VERSION.headroomFailures).
+        Request::HeadroomReach { .. } => 50,
 
         Request::Shutdown => 12,
 
@@ -2082,7 +2151,22 @@ pub fn require_local_token_path() -> anyhow::Result<PathBuf> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Response {
-    SessionCreated { id: String },
+    /// A new session's id, and what the daemon decided about routing it
+    /// through Headroom as it spawned (v50): the same two facts
+    /// `SessionSummary` carries, handed back with the id so the app can
+    /// mark a launch that should have been compressed and was not from
+    /// its first frame, rather than from the next time it lists sessions.
+    ///
+    /// `serde(default)` on both, because a v49 daemon sends only the id,
+    /// and "not compressed, no reason" is the true reading of that: it
+    /// marks nothing.
+    SessionCreated {
+        id: String,
+        #[serde(default)]
+        compressed: bool,
+        #[serde(default)]
+        uncompressed_reason: Option<String>,
+    },
     SessionList { sessions: Vec<SessionSummary> },
     Output { id: String, data: String },
     SessionExited { id: String, exit_code: i32 },
@@ -2236,7 +2320,20 @@ pub enum Response {
     /// the filter that decided this was worth saying already ran here.
     GitWorktreeChanged { cwd: String },
     PlanCreated { path: String },
-    AgentSessionSpawned { workspace_id: String, session_id: String, cwd: String, command: String },
+    /// Push: another agent spawned a session over MCP. Carries what the
+    /// daemon decided about compressing it (v50), for the reason
+    /// `SessionCreated` does -- an MCP spawn never passes through the
+    /// app's own create call. `serde(default)` for a v49 daemon.
+    AgentSessionSpawned {
+        workspace_id: String,
+        session_id: String,
+        cwd: String,
+        command: String,
+        #[serde(default)]
+        compressed: bool,
+        #[serde(default)]
+        uncompressed_reason: Option<String>,
+    },
     /// Push: an agent renamed its own tab. The app applies it through the
     /// very same path a human rename takes.
     SessionNamed { session_id: String, name: String },
@@ -2346,6 +2443,15 @@ pub enum Response {
     Headroom { status: HeadroomStatus },
     /// The answer to `HeadroomSavings` (v49), oldest first.
     HeadroomSavings { runs: Vec<RunSavings> },
+    /// The answer to `HeadroomReach` (v50). `reach` is `reached`,
+    /// `unreached`, or `unknown` when it could not be told -- Headroom
+    /// not answering, restarted since the session launched, or keeping
+    /// as many sessions as it will hold, so that an absent one may have
+    /// been pushed out rather than never have arrived. A string for the
+    /// reason `status` is one: a word a newer daemon writes reaches the
+    /// app as written, and the app reads a word it does not know as
+    /// `unknown`.
+    HeadroomReach { session_id: String, reach: String },
 }
 
 /// Headroom on this machine, as the daemon that has to execute it sees
@@ -2625,6 +2731,17 @@ pub struct SessionSummary {
     /// plain shell tab in any workspace.
     #[serde(default)]
     pub uncompressed_reason: Option<String>,
+    /// What Headroom was last found to have seen of this compressed
+    /// session (v50): `reached` once any request tagged with its id has
+    /// arrived, `unreached` when a turn ended and none had. A string for
+    /// the reason `status` is one.
+    ///
+    /// `None` for a session nobody has asked about, for one the answer
+    /// could not be read for, and for every session that is not
+    /// compressed. Kept by the daemon in memory: a session outlives an
+    /// app reload, never a daemon restart, which interrupts it anyway.
+    #[serde(default)]
+    pub headroom_reach: Option<String>,
 }
 
 /// A surviving process, as much of it as the app needs to talk about it.
@@ -4650,6 +4767,7 @@ mod tests {
             command: None,
             profile_id: None,
             api_family: None,
+            without_headroom: false,
         };
         write_message(&mut buf, &req).unwrap();
 
@@ -4657,12 +4775,20 @@ mod tests {
         let decoded: Request = read_message(&mut cursor).unwrap().unwrap();
 
         match decoded {
-            Request::CreateSession { workspace_path, cwd, command, profile_id, api_family } => {
+            Request::CreateSession {
+                workspace_path,
+                cwd,
+                command,
+                profile_id,
+                api_family,
+                without_headroom,
+            } => {
                 assert_eq!(workspace_path, "/tmp/ws");
                 assert_eq!(cwd, "/tmp/ws");
                 assert_eq!(command, None);
                 assert_eq!(profile_id, None);
                 assert_eq!(api_family, None);
+                assert!(!without_headroom);
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -4680,6 +4806,7 @@ mod tests {
             command: Some("npm test".into()),
             profile_id: None,
             api_family: None,
+            without_headroom: false,
         };
 
         let written = serde_json::to_value(&bare).unwrap();
@@ -4703,6 +4830,7 @@ mod tests {
             command: Some("claude 'do it'".into()),
             profile_id: Some("claude-code".into()),
             api_family: None,
+            without_headroom: false,
         };
         let written = serde_json::to_string(&launch).unwrap();
         assert!(written.contains(r#""profile_id":"claude-code""#), "{written}");
@@ -4732,6 +4860,7 @@ mod tests {
             command: Some("my-agent 'do it'".into()),
             profile_id: Some("custom".into()),
             api_family: Some("openai".into()),
+            without_headroom: false,
         };
         let written = serde_json::to_string(&custom).unwrap();
         assert!(written.contains(r#""api_family":"openai""#), "{written}");
@@ -4749,6 +4878,7 @@ mod tests {
             command: Some("claude".into()),
             profile_id: Some("claude-code".into()),
             api_family: None,
+            without_headroom: false,
         };
         assert!(!serde_json::to_string(&claude).unwrap().contains("api_family"));
 
@@ -4779,6 +4909,7 @@ mod tests {
             command: Some("claude".into()),
             profile_id: Some("claude-code".into()),
             api_family: None,
+            without_headroom: false,
         };
         assert_eq!(
             min_version_for(&launch),
@@ -4875,6 +5006,7 @@ mod tests {
             orphan: None,
             compressed: false,
             uncompressed_reason: Some("not-ready".into()),
+            headroom_reach: None,
         };
 
         let written = serde_json::to_string(&summary).unwrap();
@@ -4882,6 +5014,112 @@ mod tests {
 
         assert_eq!(read, summary);
         assert!(written.contains(r#""uncompressed_reason":"not-ready""#), "{written}");
+    }
+
+    /// v50's half of the summary: what Headroom was found to have seen.
+    /// Absent from an older daemon, which never asked.
+    #[test]
+    fn a_session_summary_carries_what_headroom_has_seen_and_an_older_one_says_nothing() {
+        let older = r#"{"id":"s1","workspace_path":"/ws","cwd":"/ws","status":"idle","restored":false,"compressed":true}"#;
+        let read: SessionSummary = serde_json::from_str(older).unwrap();
+        assert!(read.compressed);
+        assert_eq!(read.headroom_reach, None);
+
+        let summary = SessionSummary { headroom_reach: Some("unreached".into()), ..read };
+        let written = serde_json::to_string(&summary).unwrap();
+        assert!(written.contains(r#""headroom_reach":"unreached""#), "{written}");
+        assert_eq!(serde_json::from_str::<SessionSummary>(&written).unwrap(), summary);
+    }
+
+    /// The override is v50's widened payload: invisible to
+    /// `min_version_for`, and absent from every launch that does not
+    /// carry it, so an older daemon is sent exactly what it always was.
+    #[test]
+    fn a_relaunch_without_headroom_says_so_and_every_other_launch_is_unchanged() {
+        let relaunch = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws".into(),
+            command: Some("claude --resume abc".into()),
+            profile_id: Some("claude-code".into()),
+            api_family: None,
+            without_headroom: true,
+        };
+        let written = serde_json::to_string(&relaunch).unwrap();
+        assert!(written.contains(r#""without_headroom":true"#), "{written}");
+        match serde_json::from_str::<Request>(&written).unwrap() {
+            Request::CreateSession { without_headroom, .. } => assert!(without_headroom),
+            other => panic!("wrong variant: {other:?}"),
+        }
+        assert_eq!(
+            min_version_for(&relaunch),
+            1,
+            "a widened payload is invisible here: FEATURE_MIN_VERSION.headroomFailures is its gate"
+        );
+
+        let launch = Request::CreateSession {
+            workspace_path: "/ws".into(),
+            cwd: "/ws".into(),
+            command: Some("claude --resume abc".into()),
+            profile_id: Some("claude-code".into()),
+            api_family: None,
+            without_headroom: false,
+        };
+        assert!(!serde_json::to_string(&launch).unwrap().contains("without_headroom"));
+
+        // What a v49 client sends.
+        let older = r#"{"type":"CreateSession","workspace_path":"/ws","cwd":"/ws","command":null,"profile_id":"claude-code"}"#;
+        match serde_json::from_str::<Request>(older).unwrap() {
+            Request::CreateSession { without_headroom, .. } => assert!(!without_headroom),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// A v49 daemon answers a launch with the id alone. That reads as
+    /// "not compressed, and nothing to explain" -- no mark.
+    #[test]
+    fn a_created_session_carries_the_decision_and_an_older_reply_reads_as_none() {
+        let older: Response = serde_json::from_str(r#"{"type":"SessionCreated","id":"s1"}"#).unwrap();
+        match older {
+            Response::SessionCreated { id, compressed, uncompressed_reason } => {
+                assert_eq!(id, "s1");
+                assert!(!compressed);
+                assert_eq!(uncompressed_reason, None);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        let created = Response::SessionCreated {
+            id: "s2".into(),
+            compressed: false,
+            uncompressed_reason: Some("headroom-failed".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&created).unwrap(),
+            serde_json::json!({
+                "type": "SessionCreated",
+                "id": "s2",
+                "compressed": false,
+                "uncompressed_reason": "headroom-failed",
+            })
+        );
+    }
+
+    #[test]
+    fn whether_a_session_reaches_headroom_is_v50() {
+        let asked = Request::HeadroomReach { session_id: "s1".into() };
+        assert_eq!(min_version_for(&asked), 50);
+        assert_eq!(
+            serde_json::to_value(&asked).unwrap(),
+            serde_json::json!({ "type": "HeadroomReach", "session_id": "s1" })
+        );
+        assert_eq!(
+            serde_json::to_value(Response::HeadroomReach {
+                session_id: "s1".into(),
+                reach: "unreached".into()
+            })
+            .unwrap(),
+            serde_json::json!({ "type": "HeadroomReach", "session_id": "s1", "reach": "unreached" })
+        );
     }
 
     #[test]
@@ -5669,7 +5907,12 @@ mod tests {
         // TYPE.
         // v49: savings -- HeadroomSavings, one new TYPE; CardRun widened
         // with `headroom_tokens_saved` and `headroom_requests`.
-        assert_eq!(PROTOCOL_VERSION, 49);
+        // v50: honest failures -- HeadroomReach, one new TYPE;
+        // CreateSession widened with `without_headroom`, gated by
+        // FEATURE_MIN_VERSION.headroomFailures; SessionCreated,
+        // AgentSessionSpawned and SessionSummary widened with what the
+        // daemon decided and found.
+        assert_eq!(PROTOCOL_VERSION, 50);
     }
 
     #[test]
@@ -5964,6 +6207,7 @@ mod tests {
                 command: None,
                 profile_id: None,
                 api_family: None,
+                without_headroom: false,
             },
             Request::ListSessions,
             Request::WriteInput { id: "s".into(), data: "d".into() },
@@ -6192,6 +6436,7 @@ mod tests {
             Request::SetHeadroomWorkspaces { workspaces: vec![] },
             // v49's savings in a window.
             Request::HeadroomSavings { since: 0 },
+            Request::HeadroomReach { session_id: "s".into() },
             Request::Unknown,
         ]
     }
@@ -6229,7 +6474,8 @@ mod tests {
     /// tools), v39=1 (SessionScreen), v40=3 (ssh workspace files), v41=2
     /// (ssh git/files), v42=2 (the Decisions tab's writes), v43=1
     /// (GetCardSession), v46=5 (the daemon runs Headroom), v47=1
-    /// (SetHeadroomWorkspaces), v49=1 (HeadroomSavings), plus Unknown.
+    /// (SetHeadroomWorkspaces), v49=1 (HeadroomSavings), v50=1
+    /// (HeadroomReach), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -6297,6 +6543,8 @@ mod tests {
         expected.insert(47, 1);
         // Savings in a limit window: HeadroomSavings.
         expected.insert(49, 1);
+        // Whether a compressed session reaches Headroom: HeadroomReach.
+        expected.insert(50, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
@@ -6727,19 +6975,40 @@ mod tests {
             session_id: "s-1".to_string(),
             cwd: "/ws".to_string(),
             command: "claude".to_string(),
+            compressed: false,
+            uncompressed_reason: Some("not-ready".to_string()),
         };
         write_message(&mut buf, &resp).unwrap();
         let mut cursor = Cursor::new(buf);
         let decoded: Response = read_message(&mut cursor).unwrap().unwrap();
         match decoded {
-            Response::AgentSessionSpawned { workspace_id, session_id, cwd, command } => {
+            Response::AgentSessionSpawned {
+                workspace_id,
+                session_id,
+                cwd,
+                command,
+                compressed,
+                uncompressed_reason,
+            } => {
                 assert_eq!(workspace_id, "ws-1");
                 assert_eq!(session_id, "s-1");
                 assert_eq!(cwd, "/ws");
                 assert_eq!(command, "claude");
+                assert!(!compressed);
+                assert_eq!(uncompressed_reason.as_deref(), Some("not-ready"));
             }
             other => panic!("wrong variant: {other:?}"),
         }
+
+        // What a v49 daemon pushes: no decision, and none is read into it.
+        let older: Response = serde_json::from_str(
+            r#"{"type":"AgentSessionSpawned","workspace_id":"w","session_id":"s","cwd":"/","command":"claude"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            older,
+            Response::AgentSessionSpawned { compressed: false, uncompressed_reason: None, .. }
+        ));
     }
 
     #[test]

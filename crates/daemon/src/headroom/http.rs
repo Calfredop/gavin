@@ -1,8 +1,8 @@
 //! The three things the daemon asks a running Headroom.
 //!
 //! `/readyz` for readiness, `/health` to recognise a proxy after a
-//! crash, and `/stats` for the lifetime total and what one session
-//! saved. All three are loopback
+//! crash, and `/stats` for the lifetime total, what one session saved,
+//! and whether it has reached Headroom at all. All three are loopback
 //! GETs with short deadlines: the supervisor asks on every tick, and a
 //! proxy that does not answer in a second is not ready in any sense that
 //! matters to an agent about to be pointed at it.
@@ -94,6 +94,35 @@ pub fn session_savings(port: u16, session_id: &str) -> Option<SessionSavings> {
     }
 }
 
+/// How many sessions Headroom 0.39.1 keeps in `per_project` before it
+/// evicts one (`savings_tracker.py`, `DEFAULT_MAX_PROJECTS`), for a
+/// `/stats` that does not say. Pinned with the version; the reply's own
+/// `persistent_savings.projects_limit` wins when it is there.
+pub const DEFAULT_PROJECTS_LIMIT: u64 = 50;
+
+/// What `/stats` says of one session's requests, with what it takes to
+/// believe an absence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectView {
+    /// The requests Headroom counted under the session's tag, or `None`
+    /// when it has no entry for it.
+    pub requests: Option<u64>,
+    /// How many sessions `per_project` holds right now.
+    pub kept: u64,
+    /// How many it holds before it evicts the one that saved least.
+    pub limit: u64,
+}
+
+/// The session's place in `/stats`' per-project map, or `None` when
+/// Headroom did not answer, or answered with something that is not a
+/// map of projects.
+pub fn project_view(port: u16, session_id: &str) -> Option<ProjectView> {
+    match get(port, "/stats")? {
+        (200, body) => read_project_view(&body, session_id),
+        _ => None,
+    }
+}
+
 pub fn lifetime_tokens_saved(port: u16) -> Option<u64> {
     match get(port, "/stats")? {
         (200, body) => read_lifetime_tokens_saved(&body),
@@ -128,6 +157,24 @@ fn read_session_savings(body: &str, session_id: &str) -> Option<SessionSavings> 
     Some(SessionSavings {
         tokens_saved: entry.get("tokens_saved")?.as_u64()?,
         requests: entry.get("requests")?.as_u64()?,
+    })
+}
+
+/// `savings.per_project`, read for one session: its request count when
+/// it has an entry, and the map's size beside its limit, which is what
+/// says whether a missing entry was ever there (`reach.rs`).
+fn read_project_view(body: &str, session_id: &str) -> Option<ProjectView> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let projects = value.get("savings")?.get("per_project")?.as_object()?;
+    let limit = value
+        .get("persistent_savings")
+        .and_then(|persistent| persistent.get("projects_limit"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(DEFAULT_PROJECTS_LIMIT);
+    Some(ProjectView {
+        requests: projects.get(session_id).and_then(|entry| entry.get("requests")?.as_u64()),
+        kept: projects.len() as u64,
+        limit,
     })
 }
 
@@ -208,6 +255,40 @@ mod tests {
         assert_eq!(read_session_savings(&half, SESSION), None, "both numbers or neither");
     }
 
+    #[test]
+    fn a_sessions_reach_is_its_request_count_beside_the_maps_size_and_limit() {
+        assert_eq!(
+            read_project_view(STATS_0_39_1, SESSION),
+            Some(ProjectView { requests: Some(37), kept: 1, limit: 50 })
+        );
+        assert_eq!(
+            read_project_view(STATS_0_39_1, "a-session-that-sent-nothing"),
+            Some(ProjectView { requests: None, kept: 1, limit: 50 })
+        );
+    }
+
+    /// The limit is Headroom's own word when it gives one, and the pinned
+    /// version's when it does not.
+    #[test]
+    fn the_limit_is_read_from_the_reply_and_otherwise_is_the_pinned_one() {
+        let said = r#"{"savings":{"per_project":{}},"persistent_savings":{"projects_limit":7}}"#;
+        assert_eq!(read_project_view(said, SESSION), Some(ProjectView { requests: None, kept: 0, limit: 7 }));
+        let unsaid = r#"{"savings":{"per_project":{}}}"#;
+        assert_eq!(
+            read_project_view(unsaid, SESSION),
+            Some(ProjectView { requests: None, kept: 0, limit: DEFAULT_PROJECTS_LIMIT })
+        );
+    }
+
+    /// No map at all is no answer -- not "absent from an empty map",
+    /// which would read as a session that sent nothing.
+    #[test]
+    fn a_reply_with_no_per_project_map_says_nothing_about_a_session() {
+        for body in ["not json", r#"{"savings":{}}"#, r#"{"savings":{"per_project":[]}}"#, "{}"] {
+            assert_eq!(read_project_view(body, SESSION), None, "{body}");
+        }
+    }
+
     /// A server that answers each path with a fixed status and body,
     /// for as many requests as the test makes.
     fn serve(routes: Vec<(&'static str, u16, &'static str)>) -> u16 {
@@ -257,6 +338,7 @@ mod tests {
         assert_eq!(health(port), None);
         assert_eq!(lifetime_tokens_saved(port), None);
         assert_eq!(session_savings(port, SESSION), None);
+        assert_eq!(project_view(port, SESSION), None);
     }
 
     #[test]
@@ -265,6 +347,7 @@ mod tests {
         assert_eq!(health(port).unwrap().version, "0.39.1");
         assert_eq!(lifetime_tokens_saved(port), Some(182_044));
         assert_eq!(session_savings(port, SESSION), Some(SessionSavings { tokens_saved: 41_200, requests: 37 }));
+        assert_eq!(project_view(port, SESSION), Some(ProjectView { requests: Some(37), kept: 1, limit: 50 }));
     }
 
     /// Something else on the port: it answers, and it is not Headroom.

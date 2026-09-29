@@ -6,6 +6,8 @@
 
 import { get } from "svelte/store";
 import * as backend from "$lib/core/backend";
+import { withoutHeadroom } from "$lib/agents/compression";
+import { noteReopenedConversation } from "$lib/agents/headroomMarkState";
 import { agentForCard, agentForProfile, armFailureDetection, baseShaForLaunch, cardReviewed, conversationIdForLaunch, layoutState, handleAgentSessionSpawned, profileIdForLaunch, resolvedAgentFor, setSessionName, switchWorkspace, switchWorkspaceView, switchToSessionInPage, workspaceRootPath } from "$lib/core/layoutState";
 import { gavinTrees } from "$lib/core/gavinState";
 import { findSessionLocation } from "$lib/core/workspace";
@@ -297,7 +299,10 @@ export function resumeCard(
   /// Only an automatic resume spends the persisted budget: a human may
   /// press the button as often as they like, and bounding that was never
   /// what the budget is for.
-  options: { automatic?: boolean } = {}
+  ///
+  /// `withoutHeadroom` is auto-resume's, for a run whose agent broke on
+  /// Headroom: the relaunch goes around it (`relaunchesWithoutHeadroom`).
+  options: { automatic?: boolean; withoutHeadroom?: boolean } = {}
 ): Promise<string | null> {
   return launchCard(workspaceId, card, "resume", options);
 }
@@ -484,7 +489,7 @@ async function launchCard(
   workspaceId: string,
   card: CardView,
   mode: "run" | "resume" | "review",
-  options: { automatic?: boolean; queued?: boolean } = {}
+  options: { automatic?: boolean; queued?: boolean; withoutHeadroom?: boolean } = {}
 ): Promise<string | null> {
   if (card.kind === "note") return "Notes are not runnable";
 
@@ -564,6 +569,10 @@ async function launchCard(
       cardPath: card.id,
       mode,
       automatic: options.automatic === true,
+      // Carried across the wait like `automatic`: a relaunch after
+      // Headroom broke that came back as an ordinary one would be
+      // decided against the proxy it broke on.
+      ...(options.withoutHeadroom ? { withoutHeadroom: true as const } : {}),
     });
     // Null, not the sentence: being queued is not a failure, and the
     // board's error strip is for failures. The card's own queued badge
@@ -723,22 +732,32 @@ async function launchCard(
   // cwd: `cwd` on the binding follows OSC 7 and drifts the moment the
   // agent moves into a worktree, and the resumed agent has to run where
   // the work is.
+  // The profile this launch names, with auto-resume's override attached
+  // when the run broke on Headroom: that relaunch goes around it, whatever
+  // Headroom looks like now (`withoutHeadroom` in compression.ts).
+  const profileId = profileIdForLaunch(agent);
+  const profileIdToSend = options.withoutHeadroom ? withoutHeadroom(profileId) : profileId;
+
   if (reopening && resumeCommand !== null && binding) {
     const resumeCwd = binding.launchCwd ?? binding.cwd;
     let resumed: string;
     try {
       // A resume is a fresh session, and whether it is compressed is
       // decided again as it spawns: the conversation is the same one,
-      // the Headroom it talks through is whatever is there now.
+      // the Headroom it talks through is whatever is there now -- unless
+      // it broke on Headroom, which is the one thing not asked again.
       resumed = await backend.createSession(
         resumeCwd,
         resumeCommand,
         workspaceRootPath(workspaceId) ?? undefined,
-        profileIdForLaunch(agent)
+        profileIdToSend
       );
     } catch (e) {
       return `Couldn't resume the conversation: ${e instanceof Error ? e.message : e}`;
     }
+    // Its first quiet is its history being painted, not a turn: nothing
+    // has been asked of the model yet (headroomMark.ts, `reachCheckDue`).
+    noteReopenedConversation(resumed);
     void armFailureDetection(resumed, agent.failurePatterns);
     handleAgentSessionSpawned(workspaceId, resumed);
     const name = provisionalSessionName(card.title);
@@ -828,7 +847,7 @@ async function launchCard(
       cwd,
       command,
       workspaceRootPath(workspaceId) ?? undefined,
-      profileIdForLaunch(agent)
+      profileIdToSend
     );
   } catch (e) {
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
@@ -1130,5 +1149,6 @@ export async function launchQueuedCard(intent: CardIntent): Promise<void> {
   await launchCard(intent.workspaceId, card, intent.mode, {
     automatic: intent.automatic,
     queued: true,
+    ...(intent.withoutHeadroom ? { withoutHeadroom: true } : {}),
   });
 }

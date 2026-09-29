@@ -3630,6 +3630,13 @@ pub struct SessionBaseline {
     /// matters more here than there: a red session with nothing to say
     /// for itself is exactly the state this feature exists to replace.
     pub failure_reason: Option<String>,
+    /// What the daemon decided about routing it through Headroom, and
+    /// what Headroom was later found to have seen of it (v50). The tab's
+    /// exception mark reads all three, and the first two arrive with the
+    /// session's creation -- which a reloaded frontend missed.
+    pub compressed: bool,
+    pub uncompressed_reason: Option<String>,
+    pub headroom_reach: Option<String>,
 }
 
 /// Every live session's cwd, status, restored, interrupted flags and
@@ -3690,6 +3697,9 @@ pub async fn get_session_baselines(
             interrupted: s.interrupted,
             orphan: s.orphan,
             failure_reason: s.failure_reason,
+            compressed: s.compressed,
+            uncompressed_reason: s.uncompressed_reason,
+            headroom_reach: s.headroom_reach,
         })
         .collect();
     Ok(SessionBaselines { sessions, hosts })
@@ -4071,6 +4081,8 @@ mod command_connection_tests {
     fn send_command_round_trips_a_request_and_response() {
         let (client, _dir) = fake_daemon_replying_with(vec![Response::SessionCreated {
             id: "new-session-id".to_string(),
+            compressed: false,
+            uncompressed_reason: None,
         }]);
         let conn = Mutex::new(client);
 
@@ -4082,12 +4094,13 @@ mod command_connection_tests {
                 command: None,
                 profile_id: None,
                 api_family: None,
+                without_headroom: false,
             },
         )
         .unwrap();
 
         match resp {
-            Response::SessionCreated { id } => assert_eq!(id, "new-session-id"),
+            Response::SessionCreated { id, .. } => assert_eq!(id, "new-session-id"),
             other => panic!("expected SessionCreated, got {other:?}"),
         }
     }
@@ -4113,8 +4126,8 @@ mod command_connection_tests {
         // reply, in order -- this is the whole reason CommandConnection
         // exists as a separate, mutex-serialized connection.
         let (client, _dir) = fake_daemon_replying_with(vec![
-            Response::SessionCreated { id: "session-0".to_string() },
-            Response::SessionCreated { id: "session-1".to_string() },
+            Response::SessionCreated { id: "session-0".to_string(), compressed: false, uncompressed_reason: None },
+            Response::SessionCreated { id: "session-1".to_string(), compressed: false, uncompressed_reason: None },
         ]);
         let conn = Mutex::new(client);
 
@@ -4124,13 +4137,14 @@ mod command_connection_tests {
             command: None,
             profile_id: None,
             api_family: None,
+            without_headroom: false,
         };
 
         let first = send_command(&conn, &make_req()).unwrap();
         let second = send_command(&conn, &make_req()).unwrap();
 
         match (first, second) {
-            (Response::SessionCreated { id: id0 }, Response::SessionCreated { id: id1 }) => {
+            (Response::SessionCreated { id: id0, .. }, Response::SessionCreated { id: id1, .. }) => {
                 assert_eq!(id0, "session-0");
                 assert_eq!(id1, "session-1");
             }
@@ -4224,7 +4238,7 @@ mod resolve_workspaces_tests {
     fn a_file_tab_alongside_a_stale_session_leaves_the_file_tab_and_replaces_only_the_session() {
         let (client, _captured, _dir) = fake_daemon_capturing_requests(vec![
             Response::SessionList { sessions: vec![] },
-            Response::SessionCreated { id: "fresh-a".to_string() },
+            Response::SessionCreated { id: "fresh-a".to_string(), compressed: false, uncompressed_reason: None },
         ]);
         let conn = lanes_over(client);
         let mut workspaces =
@@ -4240,8 +4254,8 @@ mod resolve_workspaces_tests {
     fn a_pinned_stale_session_stays_pinned_under_its_fresh_id() {
         let (client, _captured, _dir) = fake_daemon_capturing_requests(vec![
             Response::SessionList { sessions: vec![] },
-            Response::SessionCreated { id: "fresh-a".to_string() },
-            Response::SessionCreated { id: "fresh-b".to_string() },
+            Response::SessionCreated { id: "fresh-a".to_string(), compressed: false, uncompressed_reason: None },
+            Response::SessionCreated { id: "fresh-b".to_string(), compressed: false, uncompressed_reason: None },
         ]);
         let conn = lanes_over(client);
         let pinned_leaf = LayoutNode::Leaf {
@@ -4275,6 +4289,7 @@ mod resolve_workspaces_tests {
             failure_reason: None,
             compressed: false,
             uncompressed_reason: None,
+            headroom_reach: None,
         }
     }
 
@@ -4290,6 +4305,7 @@ mod resolve_workspaces_tests {
             failure_reason: None,
             compressed: false,
             uncompressed_reason: None,
+            headroom_reach: None,
         }
     }
 
@@ -4334,8 +4350,8 @@ mod resolve_workspaces_tests {
     fn replaces_stale_session_ids_across_multiple_pages_and_workspaces() {
         let (client, _dir) = fake_daemon_replying_with(vec![
             Response::SessionList { sessions: vec![valid_session("valid-1")] },
-            Response::SessionCreated { id: "fresh-a".to_string() },
-            Response::SessionCreated { id: "fresh-b".to_string() },
+            Response::SessionCreated { id: "fresh-a".to_string(), compressed: false, uncompressed_reason: None },
+            Response::SessionCreated { id: "fresh-b".to_string(), compressed: false, uncompressed_reason: None },
         ]);
         let conn = lanes_over(client);
         let mut workspaces = vec![
@@ -4355,7 +4371,7 @@ mod resolve_workspaces_tests {
             Response::SessionList {
                 sessions: vec![exited_session("exited-1", "/Users/alice/project")],
             },
-            Response::SessionCreated { id: "fresh-a".to_string() },
+            Response::SessionCreated { id: "fresh-a".to_string(), compressed: false, uncompressed_reason: None },
         ]);
         let conn = lanes_over(client);
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["exited-1"]))])];
@@ -4384,7 +4400,7 @@ mod resolve_workspaces_tests {
             Response::SessionList {
                 sessions: vec![exited_session("exited-1", "/Users/alice/project-rail")],
             },
-            Response::SessionCreated { id: "fresh-a".to_string() },
+            Response::SessionCreated { id: "fresh-a".to_string(), compressed: false, uncompressed_reason: None },
         ]);
         let conn = lanes_over(client);
         let mut ws = workspace("ws-1", vec![page("page-1", leaf(&["exited-1"]))]);
@@ -4408,7 +4424,7 @@ mod resolve_workspaces_tests {
 
         let (client, captured, _dir) = fake_daemon_capturing_requests(vec![
             Response::SessionList { sessions: vec![] },
-            Response::SessionCreated { id: "fresh-b".to_string() },
+            Response::SessionCreated { id: "fresh-b".to_string(), compressed: false, uncompressed_reason: None },
         ]);
         let conn = lanes_over(client);
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["unknown-id"]))])];
@@ -4437,7 +4453,7 @@ mod resolve_workspaces_tests {
                 sessions: vec![exited_session("exited-2", "/definitely/does/not/exist/anywhere")],
             },
             Response::Error { message: "cwd does not exist or is not a directory".to_string() },
-            Response::SessionCreated { id: "fresh-c".to_string() },
+            Response::SessionCreated { id: "fresh-c".to_string(), compressed: false, uncompressed_reason: None },
         ]);
         let conn = lanes_over(client);
         let mut workspaces = vec![workspace("ws-1", vec![page("page-1", leaf(&["exited-2"]))])];
@@ -4461,7 +4477,7 @@ mod resolve_workspaces_tests {
     #[test]
     fn create_fresh_session_with_no_command_sends_none() {
         let (client, captured, _dir) =
-            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string(), compressed: false, uncompressed_reason: None }]);
         let conn = lanes_over(client);
 
         block_on(create_fresh_session(&conn, Some("/tmp"), None, None, None, None, "/home/t")).unwrap();
@@ -4477,7 +4493,7 @@ mod resolve_workspaces_tests {
     #[test]
     fn create_fresh_session_threads_an_explicit_command_through() {
         let (client, captured, _dir) =
-            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string(), compressed: false, uncompressed_reason: None }]);
         let conn = lanes_over(client);
 
         block_on(create_fresh_session(&conn, Some("/tmp"), None, Some("npm test"), None, None, "/home/t"))
@@ -4498,7 +4514,7 @@ mod resolve_workspaces_tests {
     #[test]
     fn create_fresh_session_names_the_owning_workspace_not_a_second_copy_of_cwd() {
         let (client, captured, _dir) =
-            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string(), compressed: false, uncompressed_reason: None }]);
         let conn = lanes_over(client);
 
         block_on(create_fresh_session(
@@ -4527,7 +4543,7 @@ mod resolve_workspaces_tests {
     #[test]
     fn create_fresh_session_without_a_workspace_falls_back_to_its_cwd() {
         let (client, captured, _dir) =
-            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string(), compressed: false, uncompressed_reason: None }]);
         let conn = lanes_over(client);
 
         block_on(create_fresh_session(&conn, Some("/tmp/loose"), None, None, None, None, "/home/t")).unwrap();
@@ -4563,7 +4579,7 @@ mod resolve_workspaces_tests {
     #[test]
     fn create_fresh_session_names_the_profile_doing_the_launching() {
         let (client, captured, _dir) =
-            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string(), compressed: false, uncompressed_reason: None }]);
         let conn = lanes_over(client);
 
         block_on(create_fresh_session(
@@ -4587,7 +4603,7 @@ mod resolve_workspaces_tests {
     #[test]
     fn an_older_daemon_is_never_sent_the_launching_profile() {
         let (client, captured, _dir) =
-            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string(), compressed: false, uncompressed_reason: None }]);
         let conn = lanes_at(client, compat_at(protocol::COMPRESSED_LAUNCH_MIN_VERSION - 1));
 
         let id = block_on(create_fresh_session(
@@ -4627,7 +4643,7 @@ mod resolve_workspaces_tests {
     fn the_home_fallback_drops_the_profile_along_with_the_workspace() {
         let (client, captured, _dir) = fake_daemon_capturing_requests(vec![
             Response::Error { message: "cwd does not exist or is not a directory".to_string() },
-            Response::SessionCreated { id: "s2".to_string() },
+            Response::SessionCreated { id: "s2".to_string(), compressed: false, uncompressed_reason: None },
         ]);
         let conn = lanes_over(client);
 
@@ -4658,7 +4674,7 @@ mod resolve_workspaces_tests {
     #[test]
     fn a_custom_launch_names_the_api_family_its_settings_name() {
         let (client, captured, _dir) =
-            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string(), compressed: false, uncompressed_reason: None }]);
         let conn = lanes_over(client);
 
         block_on(create_fresh_session(
@@ -4681,7 +4697,7 @@ mod resolve_workspaces_tests {
     #[test]
     fn a_custom_agent_with_no_api_family_sends_none() {
         let (client, captured, _dir) =
-            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string() }]);
+            fake_daemon_capturing_requests(vec![Response::SessionCreated { id: "s1".to_string(), compressed: false, uncompressed_reason: None }]);
         let conn = lanes_over(client);
 
         block_on(create_fresh_session(
@@ -4723,7 +4739,7 @@ mod resolve_workspaces_tests {
     fn the_home_fallback_drops_the_api_family_along_with_the_profile() {
         let (client, captured, _dir) = fake_daemon_capturing_requests(vec![
             Response::Error { message: "cwd does not exist or is not a directory".to_string() },
-            Response::SessionCreated { id: "s2".to_string() },
+            Response::SessionCreated { id: "s2".to_string(), compressed: false, uncompressed_reason: None },
         ]);
         let conn = lanes_over(client);
 
@@ -4740,6 +4756,109 @@ mod resolve_workspaces_tests {
 
         assert_eq!(the_family_sent(&captured, 0).as_deref(), Some("openai"));
         assert_eq!(the_family_sent(&captured, 1), None);
+    }
+
+    fn the_override_sent(captured: &Arc<Mutex<Vec<Request>>>, index: usize) -> bool {
+        match &captured.lock().unwrap()[index] {
+            Request::CreateSession { without_headroom, .. } => *without_headroom,
+            other => panic!("expected CreateSession, got {other:?}"),
+        }
+    }
+
+    /// Auto-resume's relaunch of a session that broke on Headroom (v50):
+    /// the override reaches the daemon, and what it decided comes back
+    /// for the tab's mark.
+    #[test]
+    fn a_relaunch_without_headroom_says_so_and_hands_back_what_was_decided() {
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![Response::SessionCreated {
+            id: "s1".to_string(),
+            compressed: false,
+            uncompressed_reason: Some("headroom-failed".to_string()),
+        }]);
+        let conn = lanes_over(client);
+
+        let created = block_on(create_agent_session(
+            &conn,
+            Some("/tmp"),
+            Some("/tmp"),
+            Some("claude --resume abc"),
+            Some("claude-code"),
+            None,
+            true,
+            "/home/t",
+        ))
+        .unwrap();
+
+        assert!(the_override_sent(&captured, 0));
+        assert_eq!(
+            created,
+            CreatedSession {
+                id: "s1".into(),
+                compressed: false,
+                uncompressed_reason: Some("headroom-failed".into()),
+            }
+        );
+        // The event's shape, which the frontend's listener reads.
+        assert_eq!(
+            serde_json::to_value(&created).unwrap(),
+            serde_json::json!({ "id": "s1", "compressed": false, "uncompressedReason": "headroom-failed" })
+        );
+    }
+
+    /// A v49 daemon would drop the override and decide the relaunch
+    /// against the proxy the session just broke on. It is never sent one.
+    #[test]
+    fn an_older_daemon_is_never_sent_the_override() {
+        let at = protocol::HEADROOM_FAILURES_MIN_VERSION;
+        assert!(!without_headroom_for_daemon(at - 1, true));
+        assert!(without_headroom_for_daemon(at, true));
+        assert!(!without_headroom_for_daemon(at, false));
+
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![Response::SessionCreated {
+            id: "s1".to_string(),
+            compressed: false,
+            uncompressed_reason: None,
+        }]);
+        let conn = lanes_at(client, compat_at(at - 1));
+        block_on(create_agent_session(
+            &conn,
+            Some("/tmp"),
+            Some("/tmp"),
+            Some("claude --resume abc"),
+            Some("claude-code"),
+            None,
+            true,
+            "/home/t",
+        ))
+        .unwrap();
+        let sent = serde_json::to_value(&captured.lock().unwrap()[0]).unwrap();
+        assert!(sent.get("without_headroom").is_none(), "{sent}");
+    }
+
+    /// Every other launch goes on as the request it always was, and the
+    /// fallback shell in $HOME is never a relaunch of anything.
+    #[test]
+    fn the_home_fallback_drops_the_override_along_with_the_profile() {
+        let (client, captured, _dir) = fake_daemon_capturing_requests(vec![
+            Response::Error { message: "cwd does not exist or is not a directory".to_string() },
+            Response::SessionCreated { id: "s2".to_string(), compressed: false, uncompressed_reason: None },
+        ]);
+        let conn = lanes_over(client);
+
+        block_on(create_agent_session(
+            &conn,
+            Some("/definitely/does/not/exist/anywhere"),
+            Some("/Users/alice/project"),
+            Some("claude --resume abc"),
+            Some("claude-code"),
+            None,
+            true,
+            "/home/t",
+        ))
+        .unwrap();
+
+        assert!(the_override_sent(&captured, 0));
+        assert!(!the_override_sent(&captured, 1));
     }
 }
 
@@ -5052,13 +5171,28 @@ pub(crate) fn attach_and_relay(
                 Response::DeviceDisconnected { device_id } => {
                     let _ = reader_app_handle.emit("device-disconnected", device_id);
                 }
-                Response::AgentSessionSpawned { workspace_id, session_id, cwd, command } => {
+                Response::AgentSessionSpawned {
+                    workspace_id,
+                    session_id,
+                    cwd,
+                    command,
+                    compressed,
+                    uncompressed_reason,
+                } => {
                     // Attach BEFORE emitting: a session nobody attaches
                     // renders blank forever (the Milestone-C lesson).
                     let _ = send_request(
                         &relay_writer,
                         &Request::Attach { id: session_id.clone() },
                         &compat,
+                    );
+                    // What the daemon decided about compressing it, ahead
+                    // of the spawn itself so the tab is marked from its
+                    // first frame (v50). An MCP spawn never passes through
+                    // `create_session`, which says it for every other one.
+                    emit_session_compression(
+                        &reader_app_handle,
+                        &CreatedSession { id: session_id.clone(), compressed, uncompressed_reason },
                     );
                     let _ = reader_app_handle
                         .emit("agent-session-spawned", (workspace_id, session_id, cwd, command));
@@ -5482,6 +5616,39 @@ pub(crate) fn api_family_for_daemon(
     api_family.map(str::trim).filter(|family| !family.is_empty()).map(str::to_string)
 }
 
+/// Whether to send auto-resume's "not through Headroom" override to a
+/// daemon at `daemon_version`: never to one that would drop it.
+///
+/// Dropping it is the quiet failure `profile_for_daemon` guards against,
+/// with more at stake: an older daemon decides the relaunch against the
+/// Headroom it can see, which may be the very proxy the session broke on.
+/// The app does not send it to such a daemon at all
+/// (`FEATURE_MIN_VERSION.headroomFailures`); this makes that true of
+/// every caller.
+pub(crate) fn without_headroom_for_daemon(daemon_version: u32, without_headroom: bool) -> bool {
+    without_headroom && daemon_version >= protocol::HEADROOM_FAILURES_MIN_VERSION
+}
+
+/// A session the daemon created, with what it decided about routing it
+/// through Headroom (`SessionCreated`, v50). What the frontend's
+/// `session-compression` event carries.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedSession {
+    pub id: String,
+    pub compressed: bool,
+    pub uncompressed_reason: Option<String>,
+}
+
+/// Tells the frontend what was decided about compressing a session it
+/// is about to show, so a launch that should have been compressed and
+/// was not is marked from its first frame (spec, "Failures"). An event
+/// rather than a return value: every surface that creates a session
+/// reads a bare id back, and one listener keeps the mark's state.
+fn emit_session_compression(app_handle: &AppHandle, created: &CreatedSession) {
+    let _ = app_handle.emit("session-compression", created);
+}
+
 /// `home` is the fallback cwd, and it belongs to the machine the daemon
 /// is on: `local_home()` for the local daemon, the banner's `home` for a
 /// link (`remote.rs`).
@@ -5500,6 +5667,25 @@ pub(crate) async fn create_fresh_session(
     api_family: Option<&str>,
     home: &str,
 ) -> anyhow::Result<String> {
+    create_agent_session(lanes, cwd, workspace_root, command, profile_id, api_family, false, home)
+        .await
+        .map(|created| created.id)
+}
+
+/// `create_fresh_session`, with auto-resume's override for a relaunch of
+/// a session that broke on Headroom, and the daemon's decision handed
+/// back beside the id.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_agent_session(
+    lanes: &DaemonLanes,
+    cwd: Option<&str>,
+    workspace_root: Option<&str>,
+    command: Option<&str>,
+    profile_id: Option<&str>,
+    api_family: Option<&str>,
+    without_headroom: bool,
+    home: &str,
+) -> anyhow::Result<CreatedSession> {
     let home = home.to_string();
     let target = cwd.map(str::to_string).unwrap_or_else(|| home.clone());
     let workspace = workspace_root.map(str::to_string).unwrap_or_else(|| target.clone());
@@ -5507,6 +5693,7 @@ pub(crate) async fn create_fresh_session(
     let daemon_version = lanes.compat().daemon_version;
     let api_family = api_family_for_daemon(daemon_version, profile_id, api_family);
     let profile_id = profile_for_daemon(daemon_version, profile_id);
+    let without_headroom = without_headroom_for_daemon(daemon_version, without_headroom);
 
     let resp = lanes
         .request(Request::CreateSession {
@@ -5515,10 +5702,13 @@ pub(crate) async fn create_fresh_session(
             command: command.clone(),
             profile_id,
             api_family,
+            without_headroom,
         })
         .await?;
     match resp {
-        Response::SessionCreated { id } => return Ok(id),
+        Response::SessionCreated { id, compressed, uncompressed_reason } => {
+            return Ok(CreatedSession { id, compressed, uncompressed_reason })
+        }
         Response::Error { message } if target != home => {
             eprintln!("failed to recreate session at last-known cwd {target}, falling back to $HOME: {message}");
         }
@@ -5541,10 +5731,15 @@ pub(crate) async fn create_fresh_session(
             command,
             profile_id: None,
             api_family: None,
+            without_headroom: false,
         })
         .await?;
     match resp {
-        Response::SessionCreated { id } => Ok(id),
+        // A plain shell in $HOME: nothing was asked of Headroom, and
+        // there is nothing to mark.
+        Response::SessionCreated { id, compressed, uncompressed_reason } => {
+            Ok(CreatedSession { id, compressed, uncompressed_reason })
+        }
         other => anyhow::bail!("expected SessionCreated, got {other:?}"),
     }
 }
@@ -5567,6 +5762,11 @@ pub(crate) async fn create_fresh_session(
 /// already says the launch is that agent's, and a launch that had to
 /// carry it would be one more argument on every surface for a value
 /// none of them decides.
+///
+/// `without_headroom` is auto-resume's, and only when it relaunches a
+/// session that broke on Headroom: the launch must not go through it
+/// whatever its state (v50). What the daemon decided is told to the
+/// frontend as `session-compression` before the id comes back.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_session(
@@ -5574,6 +5774,7 @@ pub async fn create_session(
     workspace_root: Option<String>,
     command: Option<String>,
     profile_id: Option<String>,
+    without_headroom: Option<bool>,
     app_handle: AppHandle,
     command_state: State<'_, CommandConnection>,
     daemon_state: State<'_, DaemonConnection>,
@@ -5581,41 +5782,72 @@ pub async fn create_session(
     agent_defaults: State<'_, AgentDefaults>,
 ) -> Result<String, String> {
     let api_family = agent_defaults.0.lock().unwrap().custom_api_family.clone();
+    let without_headroom = without_headroom.unwrap_or(false);
     if let crate::remote::Route::Remote(link) =
         crate::remote::route_for_root(&app_handle, workspace_root.as_deref())?
     {
-        let id = create_fresh_session(
+        let created = create_agent_session(
             &link.lanes(),
             cwd.as_deref(),
             workspace_root.as_deref(),
             command.as_deref(),
             profile_id.as_deref(),
             Some(&api_family),
+            without_headroom,
             &link.home,
         )
         .await
         .map_err(|e| e.to_string())?;
-        crate::remote::remember_session(&app_handle, &id, &link.host);
-        send_request(&link.writer, &Request::Attach { id: id.clone() }, &link.compat)
+        crate::remote::remember_session(&app_handle, &created.id, &link.host);
+        send_request(&link.writer, &Request::Attach { id: created.id.clone() }, &link.compat)
             .map_err(|e| e.to_string())?;
-        return Ok(id);
+        emit_session_compression(&app_handle, &created);
+        return Ok(created.id);
     }
     let compat = current_compat(&compat);
-    let id = create_fresh_session(
+    let created = create_agent_session(
         &command_state.lanes(compat),
         cwd.as_deref(),
         workspace_root.as_deref(),
         command.as_deref(),
         profile_id.as_deref(),
         Some(&api_family),
+        without_headroom,
         &local_home(),
     )
     .await
     .map_err(|e| e.to_string())?;
 
-    send_request(&daemon_state.writer, &Request::Attach { id: id.clone() }, &compat)
+    send_request(&daemon_state.writer, &Request::Attach { id: created.id.clone() }, &compat)
         .map_err(|e| e.to_string())?;
-    Ok(id)
+    emit_session_compression(&app_handle, &created);
+    Ok(created.id)
+}
+
+/// Whether Headroom has seen a compressed session's requests (v50),
+/// asked when one of its turns ends: `reached`, `unreached` or
+/// `unknown`, the daemon's own word.
+///
+/// Aimed at the local daemon, the only one that runs Headroom: an ssh
+/// workspace's sessions are never compressed. A new request TYPE, so the
+/// lane's gate refuses it against an older daemon and the error names
+/// both versions.
+#[tauri::command]
+pub async fn headroom_reach(
+    session_id: String,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<String, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::HeadroomReach { session_id })
+        .await
+        .map_err(|e| e.to_string())?;
+    match resp {
+        Response::HeadroomReach { reach, .. } => Ok(reach),
+        Response::Error { message } => Err(message),
+        other => Err(format!("expected HeadroomReach, got {other:?}")),
+    }
 }
 
 /// Hands the LOCAL daemon every workspace's effective compression
@@ -6882,6 +7114,7 @@ mod adopt_session_tests {
             failure_reason: None,
             compressed: false,
             uncompressed_reason: None,
+            headroom_reach: None,
         }
     }
 
@@ -6897,6 +7130,7 @@ mod adopt_session_tests {
             failure_reason: None,
             compressed: false,
             uncompressed_reason: None,
+            headroom_reach: None,
         }
     }
 
@@ -7058,6 +7292,7 @@ mod main_session_tests {
             failure_reason: None,
             compressed: false,
             uncompressed_reason: None,
+            headroom_reach: None,
         }
     }
 
@@ -7330,7 +7565,7 @@ mod gate_tests {
     /// changes.
     fn one_of_every_request_variant() -> Vec<Request> {
         vec![
-            Request::CreateSession { workspace_path: "w".into(), cwd: "c".into(), command: None, profile_id: None, api_family: None },
+            Request::CreateSession { workspace_path: "w".into(), cwd: "c".into(), command: None, profile_id: None, api_family: None, without_headroom: false },
             Request::ListSessions,
             Request::WriteInput { id: "s".into(), data: "d".into() },
             Request::ResizeSession { id: "s".into(), cols: 80, rows: 24 },

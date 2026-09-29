@@ -150,6 +150,7 @@ pub fn run() {
             session::set_headroom_workspaces,
             session::get_headroom_status,
             session::headroom_savings,
+            session::headroom_reach,
             session::detect_headroom,
             session::install_headroom,
             session::get_session_names,

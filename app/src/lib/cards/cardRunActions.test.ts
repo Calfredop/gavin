@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { takeReopenedPaint } from "$lib/agents/headroomMarkState";
 import { get, writable } from "svelte/store";
 import type { DaemonCompat } from "$lib/core/daemonCompat";
 import type { SessionStatus } from "$lib/core/notifications";
@@ -1367,6 +1368,42 @@ describe("a failed binding", () => {
       conversationId: "u-1",
       launchCwd: "/ws/worktree",
     });
+  });
+
+  // Auto-resume's relaunch of a run whose agent broke on Headroom: the
+  // same reopened conversation, sent around Headroom rather than decided
+  // again against the proxy it broke on. The daemon marks the new session
+  // `headroom-failed`, which is its tab's mark (headroomMark.ts).
+  it("reopens the conversation without Headroom when the run broke on it", async () => {
+    vi.mocked(resolvedAgentFor).mockReturnValue(claudeAgent as never);
+    kanbanState.set({
+      "ws-1": board([
+        {
+          path: "/ws/.gavin-root/plans/t.md",
+          sessionId: "s-live",
+          cwd: "/ws",
+          conversationId: "u-1",
+          launchCwd: "/ws/worktree",
+        },
+      ]),
+    });
+    broke("s-live");
+    vi.mocked(backend.createSession).mockResolvedValue("s-new");
+
+    const err = await resumeCard("ws-1", card("task", "In Progress"), {
+      automatic: true,
+      withoutHeadroom: true,
+    });
+
+    expect(err).toBeNull();
+    expect(backend.createSession).toHaveBeenCalledWith(
+      "/ws/worktree",
+      "claude --resume u-1",
+      "/ws",
+      { profileId: "claude-code", withoutHeadroom: true }
+    );
+    // Its first quiet is the history being painted, not a turn.
+    expect(takeReopenedPaint("s-new")).toBe(true);
   });
 
   // A profile with no verified resume argv keeps today's behaviour, and

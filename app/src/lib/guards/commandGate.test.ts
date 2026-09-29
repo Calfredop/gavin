@@ -187,6 +187,7 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   // The hub's savings in a limit window: a read of snapshots the daemon
   // already took.
   headroom_savings: ["ordinary"],
+  headroom_reach: ["ordinary"],
   detect_headroom: ["ordinary"],
   install_headroom: ["ordinary"],
   get_session_names: ["ordinary"],

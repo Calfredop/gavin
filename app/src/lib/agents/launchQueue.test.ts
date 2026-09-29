@@ -296,6 +296,15 @@ describe("persistence", () => {
     expect(parseLaunchQueue(raw)).toHaveLength(1);
   });
 
+  // A held auto-resume of a run that broke on Headroom has to come back
+  // from the wait still going around Headroom, reload or not.
+  it("keeps a relaunch's going-around-Headroom across the wait", () => {
+    const held = JSON.stringify({ ...CARD, mode: "resume", automatic: true, withoutHeadroom: true, id: "q1", askedAtMs: 5 });
+    expect(parseLaunchQueue(`[${held}]`)).toEqual([
+      { ...CARD, mode: "resume", automatic: true, withoutHeadroom: true, id: "q1", askedAtMs: 5 },
+    ]);
+  });
+
   it("reads unparseable or absent state as an empty queue", () => {
     expect(parseLaunchQueue(null)).toEqual([]);
     expect(parseLaunchQueue("not json")).toEqual([]);

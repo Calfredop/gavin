@@ -6,6 +6,7 @@ import * as layout from "$lib/panes/layout";
 import * as backend from "$lib/core/backend";
 import { setTempRoot } from "$lib/orchestration/orchestrationLoop";
 import type { PauseCycle } from "$lib/agents/agentPause";
+import type { LaunchProfile } from "$lib/agents/compression";
 import * as terminalRegistry from "$lib/terminal/terminalRegistry";
 import { hotState } from "$lib/core/hotState";
 import * as workspace from "$lib/core/workspace";
@@ -45,6 +46,7 @@ import {
   type McpFormatInfo,
 } from "$lib/core/settings";
 import { mergeDiscoveredModels } from "$lib/agents/agentModel";
+import { noteSessionCompression, seedSessionCompression } from "$lib/agents/headroomMarkState";
 import { normalizeTerminalFontSize, resolveTerminalFontSize } from "$lib/terminal/terminalFont";
 import { normalizeAutoCommit, resolveAutoCommit } from "$lib/git/autoCommit";
 import { normalizeGitTracking } from "$lib/git/gitTracking";
@@ -1114,6 +1116,9 @@ async function seedSessionBaselines(): Promise<void> {
     () => null
   );
   if (!baselines) return;
+  // The Headroom mark's facts, from the same read: a reload missed the
+  // `session-compression` event each session was created with.
+  seedSessionCompression(baselines);
   const known = get(layoutState);
   const fresh = baselines.filter((b) => known.cwdBySessionId[b.id] === undefined);
   for (const b of fresh) {
@@ -1392,6 +1397,16 @@ export async function bootstrap(): Promise<void> {
     await listen<[string, string]>("session-failed", (event) => {
       handleSessionFailed(event.payload[0], event.payload[1]);
     })
+  );
+  // What the daemon decided about routing a session through Headroom,
+  // sent by the host for every session this app creates and every one an
+  // agent spawns over MCP, before the tab paints (v50). The tab's
+  // exception mark reads it (headroomMark.ts).
+  unlisteners.push(
+    await listen<{ id: string; compressed: boolean; uncompressedReason: string | null }>(
+      "session-compression",
+      (event) => noteSessionCompression(event.payload.id, event.payload)
+    )
   );
   // Fires for every change to a session's queue, whoever made it: this
   // window adding one, another surface reordering one, and -- the case
@@ -2125,7 +2140,7 @@ function createDaemonSession(
   cwd: string | undefined,
   command: string | undefined,
   workspaceRoot: string | undefined,
-  profileId: string | undefined
+  profileId: LaunchProfile | undefined
 ): Promise<string> {
   return profileId === undefined
     ? backend.createSession(cwd, command, workspaceRoot)
@@ -3577,6 +3592,7 @@ export function handleSessionStatusChanged(sessionId: string, rawStatus: string)
       readSessionIds: clearSessionRead(readMarks(s), sessionId),
     };
   });
+  for (const listener of sessionStatusListeners) listener(sessionId, status, previousStatus);
   if (status === "failed") {
     // Held for the reason, which the daemon sends immediately after this
     // (`persist_and_emit_failure` writes StatusChanged first, so every
@@ -3674,9 +3690,10 @@ export function setSessionFailureHook(hook: SessionFailureHook | null): void {
 /// A hook rather than an import for the reason the failure hook is one:
 /// its owner (turnVerdictDriver.ts) reads `orchestrations` and
 /// `kanbanState`, and both of those read THIS module, so a static import
-/// here would close a cycle. One hook, not a list -- the same shape as
-/// its sibling, to be widened when a second listener exists rather than
-/// before.
+/// here would close a cycle. The hook is the turn verdict's slot, which
+/// has to run BEFORE the store update (see handleSessionStatusChanged);
+/// anything else that only needs to hear about a report registers a
+/// listener instead (`addSessionStatusListener`).
 export type SessionStatusHook = (
   sessionId: string,
   status: SessionStatus,
@@ -3689,11 +3706,27 @@ export function setSessionStatusHook(hook: SessionStatusHook | null): void {
   sessionStatusHook = hook;
 }
 
+/// Everything else that hears every status report, with what was
+/// reported before it: today the "not reaching Headroom" check
+/// (headroomReachDriver.ts). Called after the store update, because none
+/// of them owns a decision a subscriber has to see first -- that is the
+/// hook's job, and it keeps its own slot. Registered rather than imported
+/// for the hook's reason. Returns its own removal.
+const sessionStatusListeners = new Set<SessionStatusHook>();
+
+export function addSessionStatusListener(listener: SessionStatusHook): () => void {
+  sessionStatusListeners.add(listener);
+  return () => {
+    sessionStatusListeners.delete(listener);
+  };
+}
+
 /// @internal - for testing only
 export function __resetFailureNotices(): void {
   pendingFailureNotice.clear();
   sessionFailureHook = null;
   statusNoticeHold = null;
+  sessionStatusListeners.clear();
 }
 
 function notifyStatus(
@@ -4322,7 +4355,7 @@ export async function createPage(
 export async function createTiledPage(
   workspaceId: string,
   name: string,
-  specs: readonly { cwd: string; command: string | null; profileId?: string }[],
+  specs: readonly { cwd: string; command: string | null; profileId?: LaunchProfile }[],
   opts: { activate?: boolean } = {}
 ): Promise<{ pageId: string; sessionIds: string[] } | null> {
   const state = get(layoutState);
@@ -4395,7 +4428,7 @@ export async function createSessionOnNewPage(
   name: string,
   cwd: string,
   command: string | null,
-  opts: { activate?: boolean; profileId?: string } = {}
+  opts: { activate?: boolean; profileId?: LaunchProfile } = {}
 ): Promise<{ pageId: string; sessionId: string } | null> {
   const { profileId, ...pageOpts } = opts;
   const made = await createTiledPage(workspaceId, name, [{ cwd, command, profileId }], pageOpts);
@@ -4426,7 +4459,7 @@ export async function createSessionOnPage(
   pageId: string | null,
   cwd: string,
   command: string | null,
-  profileId?: string
+  profileId?: LaunchProfile
 ): Promise<string | null> {
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);
@@ -4464,7 +4497,7 @@ export async function createSessionForCard(
   workspaceId: string,
   cwd: string,
   command: string | null,
-  profileId?: string
+  profileId?: LaunchProfile
 ): Promise<string | null> {
   const state = get(layoutState);
   const ws = state.workspaces.find((w) => w.id === workspaceId);

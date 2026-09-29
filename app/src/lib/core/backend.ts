@@ -33,7 +33,7 @@ import type { ManagedSessions } from "$lib/sessions/sessionsManager";
 import type { GavinFootprint, McpFootprint, RemovalReport } from "$lib/workspace/workspaceDelete";
 import type { AttachmentStatus } from "$lib/cards/attachments";
 import type { WorkspaceSettingsPatch, WorkspaceSettingsRecord } from "$lib/workspace/workspaceSettings";
-import type { HeadroomStatus, HeadroomWorkspace } from "$lib/agents/compression";
+import type { HeadroomStatus, HeadroomWorkspace, LaunchProfile } from "$lib/agents/compression";
 import type { RunSavings } from "$lib/agents/headroomSavings";
 import type { AvailableUpdate, UpdateSettings } from "$lib/shell/updates";
 import type { DeviceList, PairingOffer } from "$lib/core/remoteAccess";
@@ -53,12 +53,22 @@ import { keyedQueue } from "$lib/core/keyedQueue";
 /// decides as it spawns the process. A shell tab, a command tool and a
 /// setup script name none. Callers get theirs from `profileIdForLaunch`,
 /// which names none against a daemon too old to read it.
+///
+/// Auto-resume's relaunch of a session that broke on Headroom passes the
+/// profile with the override attached (`withoutHeadroom` in
+/// compression.ts); every other launch passes the bare id, and sends
+/// exactly the arguments it always did. What the daemon decided comes
+/// back as the `session-compression` event, not here.
 export function createSession(
   cwd?: string,
   command?: string,
   workspaceRoot?: string,
-  profileId?: string
+  profileId?: LaunchProfile
 ): Promise<string> {
+  if (typeof profileId === "object") {
+    const { profileId: id, withoutHeadroom } = profileId;
+    return invoke("create_session", { cwd, command, workspaceRoot, profileId: id, withoutHeadroom });
+  }
   return invoke("create_session", { cwd, command, workspaceRoot, profileId });
 }
 
@@ -434,6 +444,15 @@ export function getHeadroomStatus(): Promise<HeadroomStatus> {
 /// request. See `headroomSavingsState.ts`, its one caller.
 export function headroomSavings(since: number): Promise<RunSavings[]> {
   return invoke("headroom_savings", { since });
+}
+
+/// Whether Headroom has seen a compressed session's requests, asked of
+/// the local daemon when one of the session's turns ends (v50):
+/// `reached`, `unreached` or `unknown`, as the daemon wrote it. Gate on
+/// FEATURE_MIN_VERSION.headroomFailures first: an older daemon refuses
+/// the request. See `headroomReachDriver.ts`, its one caller.
+export function headroomReach(sessionId: string): Promise<string> {
+  return invoke("headroom_reach", { sessionId });
 }
 
 /// Looks for Headroom again. `locatedPath` absent is Check again; a path
@@ -911,6 +930,13 @@ export interface SessionBaseline {
   /// push arrives once per app PROCESS -- and it matters more: a red
   /// session with nothing to say for itself is the state this replaces.
   failureReason: string | null;
+  /// What the daemon decided about routing it through Headroom, and what
+  /// Headroom was later found to have seen of it (v50): the tab's
+  /// exception mark reads all three. Absent from a host older than the
+  /// fields, which reads as "not compressed, nothing to explain".
+  compressed?: boolean;
+  uncompressedReason?: string | null;
+  headroomReach?: string | null;
 }
 
 /// Every live session on every daemon, and which linked ssh hosts those

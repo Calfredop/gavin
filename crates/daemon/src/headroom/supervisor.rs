@@ -115,6 +115,14 @@ pub fn backoff(failures: u32) -> Duration {
     Duration::from_secs(seconds).min(MAX_BACKOFF)
 }
 
+/// A ready Headroom: the port every compressed agent is pointed at, and
+/// the process answering on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Serving {
+    pub port: u16,
+    pub pid: u32,
+}
+
 /// What the supervisor knows, for the status.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
@@ -298,8 +306,27 @@ impl Supervisor {
     /// in that window is no worse off than one whose proxy died a tick
     /// AFTER it launched: the restart is on the same port.
     pub fn ready_port(&self) -> Option<u16> {
+        self.serving().map(|serving| serving.port)
+    }
+
+    /// The process that is ready, and its port: `ready_port` with the
+    /// pid beside it, read under one lock so the two describe the same
+    /// process. A compressed session keeps the pid it was pointed at, and
+    /// a later answer about what Headroom has seen of it is only as good
+    /// as that process still being the one serving (`reach.rs`).
+    pub fn serving(&self) -> Option<Serving> {
         let shared = self.inner.lock();
-        if shared.ready { shared.port } else { None }
+        if !shared.ready {
+            return None;
+        }
+        Some(Serving { port: shared.port?, pid: shared.pid? })
+    }
+
+    /// This daemon's port, whether or not anything is answering on it:
+    /// where every compressed agent is pointed, so where a health check
+    /// asks.
+    pub fn port(&self) -> Option<u16> {
+        self.inner.lock().port
     }
 
     pub fn snapshot(&self) -> Snapshot {

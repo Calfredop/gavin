@@ -92,3 +92,40 @@ describe("the wizard's step", () => {
     expect(STEP).toMatch(/\{#if reading === undefined\}\s*<p class="hint">Checking…<\/p>/);
   });
 });
+
+// Honest failures (v50). Which session is an exception, and why, is
+// headroomMark.ts's and tested there; the tab is a template no suite
+// mounts, so this reads it for the wiring the mark depends on.
+describe("the exception mark on a tab", () => {
+  const PANE = source("Pane.svelte");
+
+  it("is decided by the one rule, from the session's facts and the workspace's setting as it is now", () => {
+    expect(PANE).toContain(
+      "const compressedHere = resolveHeadroom(ownHeadroom(getActiveWorkspace($layoutState)), $headroomDefault);"
+    );
+    expect(PANE).toContain(
+      "return headroomIndicator(headroomException($sessionCompressionById[sessionId], compressedHere));"
+    );
+  });
+
+  it("is drawn in the shared vocabulary, beside the tab's other badges", () => {
+    expect(PANE).toContain("{#if headroom}<StatusBadge indicator={headroom} size={10} />{/if}");
+  });
+
+  // The facts reach the store three ways, and each has a writer.
+  it("is fed by the create event, the reload's baselines, and the end-of-turn check", () => {
+    const layout = source("layoutState.ts");
+    expect(layout).toContain('"session-compression",');
+    expect(layout).toContain("(event) => noteSessionCompression(event.payload.id, event.payload)");
+    expect(layout).toContain("seedSessionCompression(baselines);");
+    expect(source("headroomReachDriver.ts")).toContain("noteHeadroomReach(sessionId, parseReach(word));");
+    expect(source("orchestrationState.ts")).toContain("const stopHeadroomReach = startHeadroomReach();");
+  });
+
+  // A reopened conversation goes quiet once before any turn: its history
+  // being painted. Both launches that reopen one say so.
+  it("is told which sessions reopened a conversation", () => {
+    expect(source("cardRunActions.ts")).toContain("noteReopenedConversation(resumed);");
+    expect(source("orchestrationState.ts")).toContain("noteReopenedConversation(sessionId);");
+  });
+});

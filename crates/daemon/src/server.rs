@@ -496,17 +496,68 @@ fn emit_queued_inputs_changed(manager: &SessionManager, id: &str) {
 /// pausing its rail for that would be exactly the false alarm this whole
 /// design is trying not to raise.
 fn failure_verdict(manager: &Arc<SessionManager>, id: &str) -> Option<String> {
-    if let Some(gap) = manager.slept_mid_turn.lock().unwrap().get(id).copied() {
-        return Some(slept_reason(gap));
+    let reason = if let Some(gap) = manager.slept_mid_turn.lock().unwrap().get(id).copied() {
+        slept_reason(gap)
+    } else {
+        let matched = failure_on_screen(manager, id)?;
+        // Already on screen when the human last typed here: they have
+        // seen it, answered at the prompt below it, and this is the
+        // verdict on THAT turn rather than a re-run of the last one.
+        if manager.acknowledged_failures.lock().unwrap().get(id) == Some(&matched) {
+            return None;
+        }
+        matched
+    };
+    // Whose failure it is, asked only of a compressed session: nothing
+    // else was talking through Headroom, and the question is an HTTP
+    // call. Asked HERE, on the timer's thread and holding nothing -- the
+    // same reason the screen read above is.
+    Some(blame_headroom(reason, manager.was_compressed(id), || manager.headroom_answering()))
+}
+
+/// The opening of the other failure reason gavin writes ITSELF: a
+/// compressed session broke while Headroom was failing its health check
+/// (spec, "Failures").
+///
+/// A fixed prefix for the reason `SLEPT_REASON_PREFIX` is one: the app
+/// classifies a failure by its reason, and matches this to name the
+/// cause `headroom` (`HEADROOM_REASON_PREFIX` in
+/// `app/src/lib/agents/autoResume.ts`, pinned by
+/// `the_headroom_reason_keeps_the_prefix_the_app_classifies_on`). The
+/// agent's own line is left out on purpose. It would be `API Error:
+/// Connection error`, which says nothing the prefix does not -- and an
+/// app older than v50 classifies a reason by the agent lines it
+/// contains, so it would read this as `network` and resume every
+/// compressed session in the fleet into the proxy they all broke on.
+/// Without the line it reads as a cause it cannot name, which never
+/// resumes.
+pub const HEADROOM_REASON_PREFIX: &str = "Headroom stopped answering";
+
+fn headroom_reason() -> String {
+    format!("{HEADROOM_REASON_PREFIX}, so this compressed agent could not reach its model through it")
+}
+
+/// The failure's reason, with the blame moved to Headroom when it is
+/// Headroom's: the session was compressed and Headroom fails its health
+/// check now, at the moment the break is judged. Otherwise the reason
+/// stands as it was found.
+///
+/// Without this a compressed session whose proxy died reads `network`,
+/// and auto-resume answers `network` by waiting for the network -- which
+/// never went -- and relaunching into the same broken proxy, every
+/// compressed session at once. The check is taken live because what
+/// matters is Headroom as it is while the session is being called
+/// broken: one the supervisor already restarted is answering again, and
+/// then the break is the network's to retry like any other.
+///
+/// `answering` is a closure so a session that was never compressed costs
+/// nothing to judge.
+fn blame_headroom(reason: String, compressed: bool, answering: impl FnOnce() -> bool) -> String {
+    if compressed && !answering() {
+        headroom_reason()
+    } else {
+        reason
     }
-    let matched = failure_on_screen(manager, id)?;
-    // Already on screen when the human last typed here: they have seen
-    // it, answered at the prompt below it, and this is the verdict on
-    // THAT turn rather than a re-run of the last one.
-    if manager.acknowledged_failures.lock().unwrap().get(id) == Some(&matched) {
-        return None;
-    }
-    Some(matched)
 }
 
 /// The first line of this session's RENDERED screen that matches one of
@@ -1197,7 +1248,19 @@ fn session_summary(r: SessionRecord) -> SessionSummary {
         interrupted: r.interrupted,
         compressed: r.compressed,
         uncompressed_reason: r.uncompressed_reason,
+        // Not a registry fact: the daemon's Headroom keeps it, and
+        // `list_sessions` puts it in (v50).
+        headroom_reach: None,
     }
+}
+
+/// A session just created, with what the daemon decided about routing it
+/// through Headroom (v50's `SessionCreated`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Created {
+    pub id: String,
+    pub compressed: bool,
+    pub uncompressed_reason: Option<String>,
 }
 
 pub struct SessionManager {
@@ -2314,21 +2377,26 @@ impl SessionManager {
         root_path: &str,
         cwd: &str,
         command: &str,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<Created> {
         let watcher = self
             .find_watcher_by_root(root_path)
             .ok_or_else(|| anyhow::anyhow!("workspace not open in gavin"))?;
         // Nobody's word for what this is, so the command line speaks for
         // itself: compressed when its first token is an agent gavin has
         // a recipe for, exactly like a launch from the app.
-        let id = self.create_session(root_path, cwd, Some(command), Launch::Command(command))?;
+        let created =
+            self.create_session_as(root_path, cwd, Some(command), Launch::Command(command), false)?;
         watcher.push_response(&Response::AgentSessionSpawned {
             workspace_id: watcher.workspace_id.clone(),
-            session_id: id.clone(),
+            session_id: created.id.clone(),
             cwd: cwd.to_string(),
             command: command.to_string(),
+            // What was decided, for the tab's mark (v50): an MCP spawn
+            // never passes through the app's own create call.
+            compressed: created.compressed,
+            uncompressed_reason: created.uncompressed_reason.clone(),
         });
-        Ok(id)
+        Ok(created)
     }
 
     /// An agent naming its own tab. Routed by the session's ATTACHED
@@ -2387,6 +2455,20 @@ impl SessionManager {
         command: Option<&str>,
         launch: Launch,
     ) -> anyhow::Result<String> {
+        self.create_session_as(workspace_path, cwd, command, launch, false).map(|created| created.id)
+    }
+
+    /// `create_session`, with auto-resume's override for a relaunch of a
+    /// session that broke on Headroom (`without_headroom`, v50), and the
+    /// decision handed back beside the id.
+    pub fn create_session_as(
+        &self,
+        workspace_path: &str,
+        cwd: &str,
+        command: Option<&str>,
+        launch: Launch,
+        without_headroom: bool,
+    ) -> anyhow::Result<Created> {
         if !std::path::Path::new(cwd).is_dir() {
             anyhow::bail!("cwd does not exist or is not a directory: {cwd}");
         }
@@ -2409,7 +2491,8 @@ impl SessionManager {
         // environment it is born with. A resume or a relaunch arrives as
         // another call to this function and is decided again, against
         // Headroom as it is then.
-        let compression = self.decide_compression(workspace_path, launch, &id, command);
+        let compression =
+            self.decide_compression(workspace_path, launch, &id, command, without_headroom);
         let pty = PtySession::spawn_with_env(
             cwd,
             // Codex's recipe hands its base URL over on the command line.
@@ -2457,7 +2540,11 @@ impl SessionManager {
             .set_token_hash(&id, &protocol::hash_token_hex(&session_token))?;
 
         self.sessions.lock().unwrap().insert(id.clone(), pty);
-        Ok(id)
+        Ok(Created {
+            id,
+            compressed: compression.compressed(),
+            uncompressed_reason: compression.reason().map(|reason| reason.id().to_string()),
+        })
     }
 
     /// Whether a session about to be spawned is compressed.
@@ -2472,16 +2559,39 @@ impl SessionManager {
         launch: Launch,
         session_id: &str,
         command: Option<&str>,
+        without_headroom: bool,
     ) -> Decision {
         match self.headroom.get() {
-            Some(headroom) => headroom.decide(workspace_path, launch, session_id, command),
+            Some(headroom) => {
+                headroom.decide(workspace_path, launch, session_id, command, without_headroom)
+            }
             None => Decision::Uncompressed(None),
         }
     }
 
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionSummary>> {
         let records = self.registry.lock().unwrap().list()?;
-        Ok(records.into_iter().map(session_summary).collect())
+        let headroom = self.headroom.get();
+        Ok(records
+            .into_iter()
+            .map(session_summary)
+            .map(|mut summary| {
+                // What Headroom has been found to have seen of it (v50),
+                // kept by the daemon's Headroom rather than the registry:
+                // it is a finding about this lifetime's proxy.
+                summary.headroom_reach = headroom
+                    .and_then(|headroom| headroom.reach_of(&summary.id))
+                    .map(|reach| reach.id().to_string());
+                summary
+            })
+            .collect())
+    }
+
+    /// Whether this daemon's Headroom answers its health check right now.
+    /// False for a daemon with none, which compresses nothing -- so the
+    /// question never arises for one of its sessions.
+    fn headroom_answering(&self) -> bool {
+        self.headroom.get().is_some_and(|headroom| headroom.answering())
     }
 
     /// One sample of what every session is costing right now.
@@ -4270,6 +4380,9 @@ impl SessionManager {
                     std::thread::spawn(move || {
                         let savings = headroom.session_savings(&id);
                         manager.record_savings(&id, savings);
+                        // Nothing will ask whether it reaches Headroom
+                        // again (v50).
+                        headroom.forget(&id);
                     });
                 }
             }
@@ -4349,8 +4462,15 @@ impl SessionManager {
 
 pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
     let result = match req {
-        Request::CreateSession { workspace_path, cwd, command, profile_id, api_family } => manager
-            .create_session(
+        Request::CreateSession {
+            workspace_path,
+            cwd,
+            command,
+            profile_id,
+            api_family,
+            without_headroom,
+        } => manager
+            .create_session_as(
                 &workspace_path,
                 &cwd,
                 command.as_deref(),
@@ -4360,8 +4480,15 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 // to have turned on. The API family is the custom
                 // agent's, and only its (v48).
                 Launch::requested(profile_id.as_deref(), api_family.as_deref()),
+                // Auto-resume's relaunch of a session that broke on
+                // Headroom (v50).
+                without_headroom,
             )
-            .map(|id| Response::SessionCreated { id }),
+            .map(|created| Response::SessionCreated {
+                id: created.id,
+                compressed: created.compressed,
+                uncompressed_reason: created.uncompressed_reason,
+            }),
         Request::ListSessions => manager
             .list_sessions()
             .map(|sessions| Response::SessionList { sessions }),
@@ -4689,6 +4816,13 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .unwrap()
             .savings_since(since)
             .map(|runs| Response::HeadroomSavings { runs }),
+        // Asked when one of a compressed session's turns ends (v50). An
+        // HTTP call to Headroom, made by the Headroom facade outside any
+        // of this manager's locks.
+        Request::HeadroomReach { session_id } => manager.headroom_or_err().map(|headroom| {
+            let reach = headroom.reach(&session_id).id().to_string();
+            Response::HeadroomReach { session_id, reach }
+        }),
         Request::CardRuns { workspace_id, path } => {
             manager.card_runs(&workspace_id, &path).map(|runs| Response::CardRuns { runs })
         }
@@ -4865,7 +4999,11 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             .map(|board| Response::Board { columns: board.columns, labels: board.labels, card_sessions: board.card_sessions }),
         Request::SpawnAgentSession { root_path, cwd, command } => manager
             .spawn_agent_session(&root_path, &cwd, &command)
-            .map(|id| Response::SessionCreated { id }),
+            .map(|created| Response::SessionCreated {
+                id: created.id,
+                compressed: created.compressed,
+                uncompressed_reason: created.uncompressed_reason,
+            }),
         Request::NameSession { session_id, name, agent_conversation_id } => manager
             .name_session(&session_id, &name, agent_conversation_id.as_deref())
             .map(|_| Response::Ok),
@@ -5279,6 +5417,10 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // successors' model traffic passes through. A remote changes the
         // setting through the desk, which pushes the result.
         | Request::SetHeadroomWorkspaces { .. }
+        // What Headroom has seen of a session (v50). The app asks it of
+        // sessions it hosts; an agent asking it of another session would
+        // be reading that session's traffic, however coarsely.
+        | Request::HeadroomReach { .. }
         // What finishes them (v42): the streaming network ops and their
         // cancel, the worktree watch, the env-carrying run and the three
         // tree mutations. Same reasoning, and it does not weaken for the
@@ -6325,7 +6467,7 @@ mod tests {
         assert!(authorize(&id, &Request::Shutdown, false).is_ok());
         assert!(authorize(
             &id,
-            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None },
+            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None, without_headroom: false },
             true, // even with the switch on
         )
         .is_ok());
@@ -6338,7 +6480,7 @@ mod tests {
         assert!(authorize(&id, &Request::Shutdown, false).is_ok());
         assert!(authorize(
             &id,
-            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None },
+            &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None, without_headroom: false },
             false,
         )
         .is_ok());
@@ -6350,7 +6492,7 @@ mod tests {
         assert!(matches!(
             authorize(
                 &id,
-                &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None },
+                &Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None, without_headroom: false },
                 true
             ),
             Err(Response::Forbidden { .. })
@@ -6689,7 +6831,7 @@ mod tests {
         let (_ws, root, _card) = workspace_with_card();
         let id = ClientIdentity::agent("sess-1", &root, &root);
         for req in [
-            Request::CreateSession { workspace_path: root.clone(), cwd: root.clone(), command: None, profile_id: None, api_family: None },
+            Request::CreateSession { workspace_path: root.clone(), cwd: root.clone(), command: None, profile_id: None, api_family: None, without_headroom: false },
             Request::Shutdown,
             Request::EndOrphan { id: "x".into() },
             Request::WriteInput { id: "other".into(), data: "rm -rf /\n".into() },
@@ -6828,7 +6970,7 @@ mod tests {
     /// not depend on that helper's visibility.
     fn one_of_every_request_variant_for_authorize() -> Vec<Request> {
         vec![
-            Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None },
+            Request::CreateSession { workspace_path: "/x".into(), cwd: "/x".into(), command: None, profile_id: None, api_family: None, without_headroom: false },
             Request::ListSessions,
             Request::SessionProcesses,
             Request::EndOrphan { id: "s".into() },
@@ -6956,6 +7098,9 @@ mod tests {
                     enabled: true,
                 }],
             },
+            // The agent's OWN session, which is the case worth refusing
+            // by name: it is still a read of what Headroom saw.
+            Request::HeadroomReach { session_id: "sess-1".into() },
         ]
     }
 
@@ -7005,7 +7150,8 @@ mod tests {
     }
 
     /// With `require_local_token` on, an untokened local connection
-    /// loses the five that start or end a process and keeps the read.
+    /// loses the five that start or end a process and keeps the two
+    /// reads.
     #[test]
     fn the_local_token_switch_narrows_every_headroom_request_but_the_read() {
         let local = ClientIdentity::local();
@@ -7017,7 +7163,7 @@ mod tests {
             );
             assert_eq!(
                 authorize(&local, &req, true).is_err(),
-                !matches!(req, Request::GetHeadroomStatus),
+                !matches!(req, Request::GetHeadroomStatus | Request::HeadroomReach { .. }),
                 "{}",
                 request_type_name(&req)
             );
@@ -7909,7 +8055,7 @@ mod tests {
             },
         );
         let session_id = match resp {
-            Response::SessionCreated { id } => id,
+            Response::SessionCreated { id, .. } => id,
             other => panic!("expected SessionCreated, got {other:?}"),
         };
 
@@ -7918,11 +8064,22 @@ mod tests {
         // spelling while the match itself is canonical.)
         let push: Response = read_message(&mut app_reader).unwrap().unwrap();
         match push {
-            Response::AgentSessionSpawned { workspace_id, session_id: pushed, cwd, command } => {
+            Response::AgentSessionSpawned {
+                workspace_id,
+                session_id: pushed,
+                cwd,
+                command,
+                compressed,
+                uncompressed_reason,
+            } => {
                 assert_eq!(workspace_id, "ws-a");
                 assert_eq!(pushed, session_id);
                 assert_eq!(cwd, root);
                 assert_eq!(command, "/bin/sh");
+                // A shell line, and a daemon with no Headroom: nothing to
+                // compress and nothing to explain (v50).
+                assert!(!compressed);
+                assert_eq!(uncompressed_reason, None);
             }
             other => panic!("expected AgentSessionSpawned, got {other:?}"),
         }
@@ -7960,10 +8117,11 @@ mod tests {
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
                 api_family: None,
+                without_headroom: false,
             },
         );
         let session_id = match resp {
-            Response::SessionCreated { id } => id,
+            Response::SessionCreated { id, .. } => id,
             other => panic!("expected SessionCreated, got {other:?}"),
         };
 
@@ -8068,10 +8226,11 @@ mod tests {
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
                 api_family: None,
+                without_headroom: false,
             },
         );
         let session_id = match resp {
-            Response::SessionCreated { id } => id,
+            Response::SessionCreated { id, .. } => id,
             other => panic!("expected SessionCreated, got {other:?}"),
         };
 
@@ -8417,10 +8576,11 @@ mod tests {
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
                 api_family: None,
+                without_headroom: false,
             },
         );
         let id = match created {
-            Response::SessionCreated { id } => id,
+            Response::SessionCreated { id, .. } => id,
             other => panic!("expected SessionCreated, got {other:?}"),
         };
 
@@ -8710,9 +8870,10 @@ mod tests {
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
                 api_family: None,
+                without_headroom: false,
             },
         ) {
-            Response::SessionCreated { id } => id,
+            Response::SessionCreated { id, .. } => id,
             other => panic!("expected SessionCreated, got {other:?}"),
         };
         write_message(&mut first, &Request::Attach { id: id.clone() }).unwrap();
@@ -8757,9 +8918,10 @@ mod tests {
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
                 api_family: None,
+                without_headroom: false,
             },
         ) {
-            Response::SessionCreated { id } => id,
+            Response::SessionCreated { id, .. } => id,
             other => panic!("expected SessionCreated, got {other:?}"),
         };
         write_message(&mut stream, &Request::Attach { id: id.clone() }).unwrap();
@@ -8960,10 +9122,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -8997,10 +9160,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -9043,10 +9207,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -9093,6 +9258,7 @@ mod tests {
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
                 api_family: None,
+                without_headroom: false,
             },
         );
         assert!(matches!(resp, Response::Error { .. }));
@@ -11064,10 +11230,11 @@ mod tests {
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
                 api_family: None,
+                without_headroom: false,
             },
         );
         let id = match created {
-            Response::SessionCreated { id } => id,
+            Response::SessionCreated { id, .. } => id,
             other => panic!("expected SessionCreated, got {other:?}"),
         };
         if let Some(patterns) = patterns {
@@ -11302,6 +11469,54 @@ mod tests {
     /// holds this same prefix; a reword here without one there turns
     /// every wake-up failure into an unknown cause, which never
     /// auto-resumes -- the feature would go quiet with every test green.
+    /// The app classifies a failure as `headroom` on this prefix
+    /// (`HEADROOM_REASON_PREFIX` in `app/src/lib/agents/autoResume.ts`).
+    /// A copy-edit here that is not made there too turns every Headroom
+    /// failure back into one the app cannot name.
+    #[test]
+    fn the_headroom_reason_keeps_the_prefix_the_app_classifies_on() {
+        assert_eq!(HEADROOM_REASON_PREFIX, "Headroom stopped answering");
+        assert!(headroom_reason().starts_with(HEADROOM_REASON_PREFIX));
+        // An older app finds a cause by the agent lines a reason
+        // contains. None of Claude Code's may be in this one, or that
+        // app resumes the fleet into the broken proxy.
+        for line in ["API Error:", "Connection error", "ECONNRESET", "Overloaded", "/login"] {
+            assert!(!headroom_reason().contains(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_compressed_session_that_breaks_while_headroom_does_not_answer_is_headroom_s_failure() {
+        let reason = blame_headroom("API Error: Connection error".into(), true, || false);
+        assert!(reason.starts_with(HEADROOM_REASON_PREFIX), "{reason}");
+    }
+
+    /// A Headroom the supervisor already brought back is answering: the
+    /// break stays the network's, and the retry lands on the restarted
+    /// proxy (spec, "Headroom dies mid-session").
+    #[test]
+    fn a_compressed_session_that_breaks_while_headroom_answers_keeps_its_own_reason() {
+        let reason = blame_headroom("API Error: Connection error".into(), true, || true);
+        assert_eq!(reason, "API Error: Connection error");
+    }
+
+    /// Nothing else was talking through Headroom, and it is not even
+    /// asked: the health check is an HTTP call.
+    #[test]
+    fn a_session_that_was_not_compressed_is_never_blamed_on_headroom_or_asked_about_it() {
+        let reason = blame_headroom("API Error: Connection error".into(), false, || {
+            panic!("asked Headroom about a session that never talked through it")
+        });
+        assert_eq!(reason, "API Error: Connection error");
+    }
+
+    /// A suspend is judged the same way: what counts is Headroom now.
+    #[test]
+    fn a_suspended_compressed_session_is_headroom_s_only_if_headroom_does_not_answer() {
+        assert_eq!(blame_headroom(slept_reason(8040), true, || true), slept_reason(8040));
+        assert!(blame_headroom(slept_reason(8040), true, || false).starts_with(HEADROOM_REASON_PREFIX));
+    }
+
     #[test]
     fn the_slept_reason_keeps_the_prefix_the_app_classifies_on() {
         assert_eq!(SLEPT_REASON_PREFIX, "the machine slept for");
@@ -11333,10 +11548,11 @@ mod tests {
                 command: Some("/bin/sh".to_string()),
                 profile_id: None,
                 api_family: None,
+                without_headroom: false,
             },
         );
         let id = match created {
-            Response::SessionCreated { id } => id,
+            Response::SessionCreated { id, .. } => id,
             other => panic!("expected SessionCreated, got {other:?}"),
         };
 
@@ -11370,10 +11586,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -11406,10 +11623,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -11446,10 +11664,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -11571,10 +11790,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -11638,10 +11858,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -11686,10 +11907,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -11734,10 +11956,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -11783,10 +12006,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -11845,10 +12069,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -11940,10 +12165,11 @@ mod tests {
                 command: Some(command.to_string()),
                 profile_id: None,
                 api_family: None,
+                without_headroom: false,
             },
         );
         match created {
-            Response::SessionCreated { id } => id,
+            Response::SessionCreated { id, .. } => id,
             other => panic!("expected SessionCreated, got {other:?}"),
         }
     }
@@ -12431,10 +12657,11 @@ mod tests {
                     command: None,
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -12488,10 +12715,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -12555,10 +12783,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -12655,10 +12884,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -12718,10 +12948,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -12777,10 +13008,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -12832,10 +13064,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -14058,10 +14291,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -14275,10 +14509,11 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             );
             match created {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -15138,9 +15373,10 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             ) {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };
@@ -15230,9 +15466,10 @@ mod tests {
                     command: Some("/bin/sh".to_string()),
                     profile_id: None,
                     api_family: None,
+                    without_headroom: false,
                 },
             ) {
-                Response::SessionCreated { id } => id,
+                Response::SessionCreated { id, .. } => id,
                 other => panic!("expected SessionCreated, got {other:?}"),
             }
         };

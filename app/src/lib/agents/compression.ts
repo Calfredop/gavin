@@ -14,6 +14,29 @@
 
 import type { Workspace } from "$lib/core/workspace";
 
+/// What a launch tells the daemon about compression: the agent profile
+/// doing the launching (`profileIdForLaunch`) -- or, for auto-resume's
+/// relaunch of a session that broke on Headroom, that profile with the
+/// override that sends it around Headroom (`CreateSession.withoutHeadroom`,
+/// v50).
+///
+/// One value rather than a second argument, because it rides the same
+/// road the profile does: from a launch surface down through every seam
+/// that places a session on a page (`createSessionOnRailPage`,
+/// `createSessionOnPage`, `createDaemonSession`, …) to `createSession`,
+/// which alone unpacks it. A launch that is not a relaunch after Headroom
+/// broke passes the bare id, exactly as it always did.
+export type LaunchProfile = string | { profileId: string; withoutHeadroom: true };
+
+/// `profileId` with the override attached, for the one relaunch that must
+/// not go through Headroom. Undefined stays undefined: a launch that names
+/// no profile (a daemon too old for one) has nothing to override, and the
+/// auto-resume gate keeps such a daemon from being asked anyway
+/// (`FEATURE_MIN_VERSION.headroomFailures`).
+export function withoutHeadroom(profileId: string | undefined): LaunchProfile | undefined {
+  return profileId === undefined ? undefined : { profileId, withoutHeadroom: true };
+}
+
 /// Off. Installing Headroom must never quietly change how the workspaces
 /// that already exist talk to their models, so compression is something
 /// a human turns on.

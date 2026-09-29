@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { takeReopenedPaint } from "$lib/agents/headroomMarkState";
 import { get, writable, type Writable } from "svelte/store";
 
 vi.mock("$lib/core/backend", () => ({
@@ -122,6 +123,9 @@ vi.mock("$lib/core/layoutState", () => ({
   // And it starts the tray's half of the same feature, which registers
   // into this second seam (verdictNoticeState.ts).
   setStatusNoticeHold: vi.fn(),
+  // And the "not reaching Headroom" check's driver beside them, which
+  // listens on the second status seam.
+  addSessionStatusListener: vi.fn(() => () => {}),
   notifyPrefsFor: vi.fn(() => ({ needsInput: true, finished: true })),
   daemonCompat: writable(null),
 }));
@@ -957,6 +961,62 @@ describe("rail controls", () => {
       "/x/wt",
       null,
       "ws-1",
+    );
+  });
+
+  // Auto-resume's relaunch of a step whose agent broke on Headroom. The
+  // profile goes down the rail page's seams with the override attached,
+  // and the reopened conversation's first quiet -- its history being
+  // painted -- is noted so it is not taken for a turn.
+  it("Resume step relaunches without Headroom when auto-resume says the step broke on it", async () => {
+    setRailPageLive();
+    vi.mocked(layoutStateModule.resolvedAgentFor).mockReturnValue({
+      profileId: "claude-code",
+      launchCommand: "claude",
+      promptArgs: "",
+      resumeArgs: "--resume",
+      failurePatterns: [],
+      failureCauses: [],
+      sessionIdArgs: "--session-id",
+    } as never);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-2");
+    await setStepRunAction("ws-1", "t1", "stalled", "sess-1", "broke", "conv-1", "/x/wt");
+    await setRailRunAction("ws-1", "r1", "paused", "s1");
+
+    expect(await resumeStep("ws-1", "t1", { automatic: true, withoutHeadroom: true })).toBeNull();
+
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "p1",
+      "/x/wt",
+      "claude --resume conv-1",
+      { profileId: "claude-code", withoutHeadroom: true }
+    );
+    expect(takeReopenedPaint("sess-2")).toBe(true);
+  });
+
+  it("Resume step names the bare profile on every other resume", async () => {
+    setRailPageLive();
+    vi.mocked(layoutStateModule.resolvedAgentFor).mockReturnValue({
+      profileId: "claude-code",
+      launchCommand: "claude",
+      promptArgs: "",
+      resumeArgs: "--resume",
+      failurePatterns: [],
+      failureCauses: [],
+      sessionIdArgs: "--session-id",
+    } as never);
+    vi.mocked(layoutStateModule.createSessionOnPage).mockResolvedValue("sess-2");
+    await setStepRunAction("ws-1", "t1", "stalled", "sess-1", "broke", "conv-1", "/x/wt");
+
+    await resumeStep("ws-1", "t1", { automatic: true });
+
+    expect(layoutStateModule.createSessionOnPage).toHaveBeenCalledWith(
+      "ws-1",
+      "p1",
+      "/x/wt",
+      "claude --resume conv-1",
+      "claude-code"
     );
   });
 

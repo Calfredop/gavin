@@ -206,6 +206,10 @@ pub enum Reason {
     /// The agent cannot be routed at all. Cursor's CLI sends everything
     /// through Cursor's own servers over Cursor's protocol.
     UnsupportedAgent,
+    /// A relaunch of a session that broke on Headroom: its agent failed
+    /// while Headroom was failing its health check, and auto-resume put
+    /// it back without Headroom (`CreateSession.without_headroom`).
+    HeadroomFailed,
 }
 
 impl Reason {
@@ -215,6 +219,7 @@ impl Reason {
             Reason::NotReady => "not-ready",
             Reason::NoRecipe => "no-recipe",
             Reason::UnsupportedAgent => "unsupported-agent",
+            Reason::HeadroomFailed => "headroom-failed",
         }
     }
 }
@@ -302,6 +307,9 @@ pub struct Facts<'a> {
     /// plugin, or `None` when it has none there. Only an opencode
     /// launch needs it.
     pub opencode_plugin: Option<&'a Path>,
+    /// The launch asked not to be routed through Headroom: a relaunch
+    /// of a session that broke on it (`CreateSession.without_headroom`).
+    pub without_headroom: bool,
 }
 
 /// Whether this session is compressed.
@@ -312,6 +320,13 @@ pub struct Facts<'a> {
 /// is: "Cursor cannot be compressed" is true tomorrow, and "Headroom
 /// was not ready" would send the human to fix something that changes
 /// nothing for that session.
+///
+/// A relaunch without Headroom is said before readiness too, and for the
+/// opposite reason: it is an override, and a Headroom that looks ready is
+/// exactly the case it overrides. The one that broke the session was
+/// answering `/readyz` as well, or had come back by the time the relaunch
+/// fired; deciding on readiness would hand the relaunch the proxy it just
+/// broke on, and the auto-resume budget with it.
 pub fn decide(facts: Facts) -> Decision {
     if !facts.workspace_on {
         return Decision::Uncompressed(None);
@@ -321,6 +336,9 @@ pub fn decide(facts: Facts) -> Decision {
     };
     if let Some(reason) = unroutable(agent) {
         return Decision::Uncompressed(Some(reason));
+    }
+    if facts.without_headroom {
+        return Decision::Uncompressed(Some(Reason::HeadroomFailed));
     }
     let Some(port) = facts.ready_port else {
         return Decision::Uncompressed(Some(Reason::NotReady));
@@ -838,6 +856,7 @@ mod tests {
             inherited_headers: None,
             inherited_opencode_config: None,
             opencode_plugin: None,
+            without_headroom: false,
         }
     }
 
@@ -910,6 +929,42 @@ mod tests {
 
         assert_eq!(ready, Decision::Uncompressed(Some(Reason::UnsupportedAgent)));
         assert_eq!(down, Decision::Uncompressed(Some(Reason::UnsupportedAgent)));
+    }
+
+    /// Auto-resume's relaunch of a session that broke on Headroom. The
+    /// Headroom here is READY, which is the case the override exists for:
+    /// the one the session broke on answered `/readyz` too, or had come
+    /// back by the time the relaunch fired.
+    #[test]
+    fn a_relaunch_without_headroom_is_uncompressed_however_ready_headroom_looks() {
+        let decision = decide(Facts { without_headroom: true, ..facts() });
+
+        assert_eq!(decision, Decision::Uncompressed(Some(Reason::HeadroomFailed)));
+        assert_eq!(decision.reason().map(Reason::id), Some("headroom-failed"));
+        assert!(decision.env().is_empty(), "handed the proxy it just broke on");
+        assert_eq!(decision.command(), None);
+
+        let down = decide(Facts { without_headroom: true, ready_port: None, ..facts() });
+        assert_eq!(down, Decision::Uncompressed(Some(Reason::HeadroomFailed)), "the override names why");
+    }
+
+    /// The override is an exception only where compression was asked
+    /// for: a workspace that is off, a shell and an agent that cannot be
+    /// routed answer as they always did.
+    #[test]
+    fn the_override_changes_nothing_that_was_never_going_to_be_compressed() {
+        assert_eq!(
+            decide(Facts { without_headroom: true, workspace_on: false, ..facts() }),
+            Decision::Uncompressed(None)
+        );
+        assert_eq!(
+            decide(Facts { without_headroom: true, launch: Launch::Shell, ..facts() }),
+            Decision::Uncompressed(None)
+        );
+        assert_eq!(
+            decide(Facts { without_headroom: true, launch: Launch::Profile("cursor"), ..facts() }),
+            Decision::Uncompressed(Some(Reason::UnsupportedAgent))
+        );
     }
 
     #[test]

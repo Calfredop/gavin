@@ -77,7 +77,7 @@ import { resumeCard } from "$lib/cards/cardRunActions";
 import { sendAutoResumeNotice } from "$lib/agents/autoResumeNotify";
 import { __resetAutoResume, __setAutoResumeClock, resumeTrail, startAutoResume } from "$lib/agents/autoResumeState";
 import { PENDING_BACKSTOP_MS, turnVerdictById } from "$lib/agents/turnVerdictState";
-import { STAGGER_SPREAD_MS, WAVE_ABORT_WINDOW_MS } from "$lib/agents/autoResume";
+import { HEADROOM_REASON_PREFIX, STAGGER_SPREAD_MS, WAVE_ABORT_WINDOW_MS } from "$lib/agents/autoResume";
 
 const NETWORK = "API Error: Connection dropped (ECONNRESET)";
 const AUTH = "Please run /login · API Error: 401 OAuth token has expired";
@@ -453,6 +453,69 @@ describe("a rail step", () => {
     fail("sess-t2");
     await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
     expect(resumeStep).not.toHaveBeenCalled();
+  });
+});
+
+describe("a run that broke on Headroom", () => {
+  // The daemon's own sentence for a compressed session that broke while
+  // Headroom failed its health check (server.rs, `headroom_reason`).
+  const HEADROOM = `${HEADROOM_REASON_PREFIX}, so this compressed agent could not reach its model through it`;
+
+  function brokeOnHeadroom(sessionId: string): void {
+    layoutState.update(
+      (s) => ({ ...s, failureReasonById: { ...s.failureReasonById, [sessionId]: HEADROOM } }) as never
+    );
+    captured.hook?.(sessionId, HEADROOM, "working");
+  }
+
+  // Decided again, the relaunch would be handed the proxy it broke on
+  // whenever that proxy looks ready -- every compressed session at once.
+  // So it goes back without Headroom, and the daemon marks the new
+  // session `headroom-failed` for its tab.
+  it("reopens a card run without Headroom", async () => {
+    daemonCompat.set({ daemonVersion: 50, appVersion: 50, degraded: false } as never);
+    cardRun();
+    brokeOnHeadroom("sess-1");
+    await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
+    expect(resumeCard).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({ id: "/ws/.gavin-root/plans/a.md" }),
+      { automatic: true, withoutHeadroom: true }
+    );
+  });
+
+  it("reopens a rail step without Headroom", async () => {
+    daemonCompat.set({ daemonVersion: 50, appVersion: 50, degraded: false } as never);
+    railRun("sequence", ["t1"], ["t1"]);
+    brokeOnHeadroom("sess-t1");
+    await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
+    expect(resumeStep).toHaveBeenCalledWith("ws-1", "t1", { automatic: true, withoutHeadroom: true });
+    expect(get(resumeTrail).t1?.cause).toBe("headroom");
+  });
+
+  // A daemon that would drop the override would hand the relaunch the
+  // proxy it broke on: declined, and said why, rather than sent.
+  it("is declined, with the reason, by a daemon that cannot relaunch without Headroom", async () => {
+    daemonCompat.set({ daemonVersion: 49, appVersion: 50, degraded: true } as never);
+    cardRun();
+    brokeOnHeadroom("sess-1");
+    await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
+    expect(resumeCard).not.toHaveBeenCalled();
+    expect(sendAutoResumeNotice).toHaveBeenCalledWith(expect.stringContaining("Needs daemon v50"));
+  });
+
+  // Every other cause is the call it always was: the daemon decides the
+  // relaunch against Headroom as it is then.
+  it("changes nothing for a failure that is not Headroom's", async () => {
+    daemonCompat.set({ daemonVersion: 50, appVersion: 50, degraded: false } as never);
+    cardRun();
+    fail("sess-1");
+    await vi.advanceTimersByTimeAsync(STAGGER_SPREAD_MS);
+    expect(resumeCard).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({ id: "/ws/.gavin-root/plans/a.md" }),
+      { automatic: true }
+    );
   });
 });
 

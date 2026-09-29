@@ -81,6 +81,8 @@ import {
 } from "$lib/orchestration/orchestrationTools";
 import { currentPlatform } from "$lib/core/platform";
 import type { Tool } from "$lib/orchestration/orchestrationTools";
+import { withoutHeadroom, type LaunchProfile } from "$lib/agents/compression";
+import { noteReopenedConversation } from "$lib/agents/headroomMarkState";
 import {
   alsoBuildFindingsRailParam,
   parseReviewersParam,
@@ -717,7 +719,7 @@ async function createSessionOnRailPage(
   railId: string,
   cwd: string,
   command: string | null,
-  profileId?: string
+  profileId?: LaunchProfile
 ): Promise<string | null> {
   // One page per rail even under a double Start: making it is an await
   // long enough for a second launch to arrive while the rail is still
@@ -758,7 +760,7 @@ async function spawnRailPageFor(
   railId: string,
   cwd: string,
   command: string | null,
-  profileId?: string
+  profileId?: LaunchProfile
 ): Promise<string | null> {
   const rail = get(orchestrations)[workspaceId]?.rails.find((r) => r.id === railId);
   if (!rail) return null;
@@ -784,7 +786,7 @@ async function spawnRailPage(
   name: string,
   cwd: string,
   command: string | null,
-  profileId?: string
+  profileId?: LaunchProfile
 ): Promise<{ pageId: string; sessionId: string } | null> {
   const made = await createSessionOnNewPage(workspaceId, name, cwd, command, {
     // The human is on the Orchestration tab -- they pressed Start there.
@@ -918,7 +920,10 @@ export async function resumeStep(
   /// button. Only an automatic resume spends the persisted budget: a
   /// human may press Resume as often as they like, and bounding that
   /// was never what the budget is for.
-  options: { automatic?: boolean } = {}
+  ///
+  /// `withoutHeadroom` is auto-resume's, for a step whose agent broke on
+  /// Headroom: the relaunch goes around it (`relaunchesWithoutHeadroom`).
+  options: { automatic?: boolean; withoutHeadroom?: boolean } = {}
 ): Promise<string | null> {
   const orch = get(orchestrations)[workspaceId];
   const rail = orch ? railOwning(orch, stepId) : null;
@@ -961,20 +966,22 @@ export async function resumeStep(
   if (!cwd) return "Nothing recorded where this run was launched, so it cannot be reopened there";
 
   let sessionId: string | null;
+  // The profile this launch names, with auto-resume's override attached
+  // when the step broke on Headroom (`withoutHeadroom` in compression.ts).
+  const profileId = profileIdForLaunch(agent);
+  const profileIdToSend = options.withoutHeadroom ? withoutHeadroom(profileId) : profileId;
   try {
     // A resume is a fresh session: whether it is compressed is decided
-    // again as it spawns, against Headroom as it is now.
-    sessionId = await createSessionOnRailPage(
-      workspaceId,
-      rail.id,
-      cwd,
-      command,
-      profileIdForLaunch(agent)
-    );
+    // again as it spawns, against Headroom as it is now -- unless it
+    // broke on Headroom, which is the one thing not asked again.
+    sessionId = await createSessionOnRailPage(workspaceId, rail.id, cwd, command, profileIdToSend);
   } catch (e) {
     return `Couldn't reopen the conversation: ${e instanceof Error ? e.message : e}`;
   }
   if (!sessionId) return "Couldn't reopen the conversation";
+  // Its first quiet is its history being painted, not a turn
+  // (headroomMark.ts, `reachCheckDue`).
+  noteReopenedConversation(sessionId);
   void armFailureDetection(sessionId, agent.failurePatterns);
 
   const entry = cardIndex(get(gavinTrees)[workspaceId]).get(step.cardPath);
@@ -2509,6 +2516,11 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
   // this module does import statically; that file imports nothing back.)
   const { startTurnVerdict } = await import("$lib/agents/turnVerdictDriver");
   const stopTurnVerdict = startTurnVerdict();
+  // The "not reaching Headroom" check, on the same terms: it tells a run
+  // from a terminal the human opened by this module's bindings, so it is
+  // started here and imported dynamically for the same reason.
+  const { startHeadroomReach } = await import("$lib/agents/headroomReachDriver");
+  const stopHeadroomReach = startHeadroomReach();
   return () => {
     stop();
     unlistenWrites();
@@ -2518,6 +2530,7 @@ export async function initOrchestrationListeners(): Promise<UnlistenFn> {
     stopAgents();
     stopAutoResume();
     stopTurnVerdict();
+    stopHeadroomReach();
     setRailNotificationVoice(null);
     unlisten();
   };

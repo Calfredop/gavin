@@ -16,6 +16,7 @@ import {
   allIndicators,
   attentionIndicator,
   gitIndicator,
+  headroomIndicator,
   priorityIndicator,
   railIndicator,
   stepIndicator,
@@ -352,6 +353,47 @@ describe("usageProjectionIndicator", () => {
     expect(badge.tip).toBe("Usage · Claude Code · Weekly runs out first");
     expect(badge.label).toBe(badge.tip);
     expect(badge.tone).toBe("danger");
+  });
+});
+
+describe("headroomIndicator", () => {
+  // The exception mark, and only the exception: a compressed session and
+  // a workspace that never asked draw nothing (headroomMark.ts decides
+  // which is which).
+  it("draws nothing for a session that is not an exception", () => {
+    expect(headroomIndicator(null)).toBeNull();
+  });
+
+  it("names each of the three reasons on the Headroom axis", () => {
+    const notReady = headroomIndicator("not-ready") as Indicator;
+    const relaunched = headroomIndicator("relaunched") as Indicator;
+    const notReaching = headroomIndicator("not-reaching") as Indicator;
+    for (const badge of [notReady, relaunched, notReaching]) {
+      expect(badge.axis).toBe("headroom");
+      expect(badge.tip.startsWith("Headroom · ")).toBe(true);
+    }
+    expect(notReady.tip).toMatch(/not ready/);
+    expect(relaunched.tip).toMatch(/relaunched without it/);
+    expect(notReaching.tip).toMatch(/not reaching Headroom/);
+  });
+
+  // Not ready is nothing to act on -- the next launch is compressed --
+  // and the other two are a Headroom, or an agent CLI, a human should
+  // look at.
+  it("asks for a human only where there is something to look at", () => {
+    expect(headroomIndicator("not-ready")?.tone).toBe("neutral");
+    expect(headroomIndicator("relaunched")?.tone).toBe("warning");
+    expect(headroomIndicator("not-reaching")?.tone).toBe("warning");
+  });
+
+  // "Not compressed" is one claim and "routed and not arriving" another,
+  // so they are two shapes; the first claim's two reasons differ by tone.
+  it("draws the routed session that is not arriving differently from the uncompressed ones", () => {
+    const [notReady, relaunched, notReaching] = (["not-ready", "relaunched", "not-reaching"] as const).map(
+      (exception) => glyphClass(headroomIndicator(exception) as Indicator)
+    );
+    expect(notReady).toBe(relaunched);
+    expect(notReaching).not.toBe(notReady);
   });
 });
 

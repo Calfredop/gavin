@@ -18,6 +18,7 @@
 //! - `store` is what is remembered between lifetimes
 //! - `switch` is the daemon's copy of which workspaces want compression
 //! - `compress` decides whether a session is compressed, and how
+//! - `reach` says whether a compressed session's requests arrive
 //!
 //! Whether a workspace WANTS compression is the app's to say. It pushes
 //! each workspace's effective setting (`set_workspaces`), and Headroom
@@ -28,6 +29,7 @@ pub mod detect;
 pub mod http;
 pub mod install;
 pub mod launch;
+pub mod reach;
 pub mod run;
 pub mod store;
 pub mod supervisor;
@@ -40,6 +42,8 @@ pub mod fake;
 
 use compress::{Decision, Facts, Launch};
 use protocol::{BuildProfile, HeadroomInstall, HeadroomStatus, HeadroomWorkspace};
+use reach::Reach;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use store::InstallRecord;
@@ -80,6 +84,22 @@ struct Inner {
     /// workspace off must not have its stop overtaken by the start of
     /// the list before it.
     switching: Mutex<()>,
+    /// Every session this lifetime compressed, by id: the Headroom
+    /// process it was pointed at, and what that Headroom has been found
+    /// to have seen of it. In memory: a session never outlives the daemon
+    /// that spawned it as the session it was (`recover` makes it a shell).
+    compressed: Mutex<HashMap<String, Tracked>>,
+}
+
+/// One compressed session, as `reach` needs it.
+#[derive(Debug, Clone, Copy)]
+struct Tracked {
+    /// The Headroom process serving when it launched. Only that process
+    /// can say it saw nothing: one restarted since forgot whatever it
+    /// had not yet written down (`reach.rs`).
+    pid: u32,
+    /// The last verdict that settled anything; `None` until one has.
+    reach: Option<Reach>,
 }
 
 /// One daemon's Headroom: what is installed, and the process it runs.
@@ -119,6 +139,7 @@ impl Headroom {
                 timeouts: install::Timeouts::default(),
                 switch: Switch::open(state_dir, profile),
                 switching: Mutex::new(()),
+                compressed: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -224,13 +245,18 @@ impl Headroom {
     ///
     /// `command` is the line the session is about to run: Codex's recipe
     /// is the one that changes it, and the answer carries the line to
-    /// run instead.
+    /// run instead. `without_headroom` is auto-resume's override for a
+    /// relaunch of a session that broke on Headroom.
+    ///
+    /// A session decided compressed is remembered with the process it
+    /// was pointed at, which is what `reach` later reads.
     pub fn decide(
         &self,
         workspace_path: &str,
         launch: Launch,
         session_id: &str,
         command: Option<&str>,
+        without_headroom: bool,
     ) -> Decision {
         // Read per spawn, like everything else a session inherits: it
         // is the daemon's environment the PTY is about to be handed.
@@ -242,16 +268,80 @@ impl Headroom {
             Some(compress::Agent::Opencode) => self.opencode_plugin(),
             _ => None,
         };
-        compress::decide(Facts {
+        let serving = self.inner.supervisor.serving();
+        let decision = compress::decide(Facts {
             workspace_on: self.inner.switch.is_on(workspace_path),
-            ready_port: self.inner.supervisor.ready_port(),
+            ready_port: serving.map(|serving| serving.port),
             launch,
             session_id,
             command,
             inherited_headers: inherited_headers.as_deref(),
             inherited_opencode_config: inherited_opencode_config.as_deref(),
             opencode_plugin: opencode_plugin.as_deref(),
-        })
+            without_headroom,
+        });
+        if let (true, Some(serving)) = (decision.compressed(), serving) {
+            self.lock_compressed()
+                .insert(session_id.to_string(), Tracked { pid: serving.pid, reach: None });
+        }
+        decision
+    }
+
+    /// Whether Headroom answers its health check right now, on the port
+    /// every compressed agent is pointed at. Asked live rather than read
+    /// off the supervisor's last tick: it is asked at the moment a
+    /// compressed session breaks, and whether Headroom is what broke it
+    /// is a question about that moment. An HTTP call, so never under a
+    /// lock.
+    pub fn answering(&self) -> bool {
+        self.inner.supervisor.port().is_some_and(http::ready)
+    }
+
+    /// Whether the requests of a session this daemon compressed are
+    /// reaching Headroom, asked of the running proxy (`reach.rs`). Asked
+    /// by the app when one of the session's turns ends.
+    ///
+    /// `Reached` is settled for good and asked no more. `Unreached` is
+    /// kept until a later ask finds otherwise; an `Unknown` answer
+    /// changes nothing that was known. A session this lifetime did not
+    /// compress is `Unknown`: there is nothing to have reached.
+    pub fn reach(&self, session_id: &str) -> Reach {
+        let Some(tracked) = self.lock_compressed().get(session_id).copied() else {
+            return Reach::Unknown;
+        };
+        if tracked.reach == Some(Reach::Reached) {
+            return Reach::Reached;
+        }
+        let Some(serving) = self.inner.supervisor.serving() else {
+            return Reach::Unknown;
+        };
+        // Asked outside the lock: it is an HTTP call, and `/stats` is
+        // megabytes on a proxy that has been up for weeks.
+        let view = http::project_view(serving.port, session_id);
+        let verdict = reach::verdict(view.as_ref(), serving.pid == tracked.pid);
+        if verdict != Reach::Unknown {
+            // Only if it is still tracked: a session that ended while
+            // Headroom was being asked is not brought back.
+            if let Some(tracked) = self.lock_compressed().get_mut(session_id) {
+                tracked.reach = Some(verdict);
+            }
+        }
+        verdict
+    }
+
+    /// What `reach` last settled for a session, for the session list.
+    /// `None` until something has.
+    pub fn reach_of(&self, session_id: &str) -> Option<Reach> {
+        self.lock_compressed().get(session_id).and_then(|tracked| tracked.reach)
+    }
+
+    /// The session has ended: nothing will be asked about it again.
+    pub fn forget(&self, session_id: &str) {
+        self.lock_compressed().remove(session_id);
+    }
+
+    fn lock_compressed(&self) -> MutexGuard<'_, HashMap<String, Tracked>> {
+        self.inner.compressed.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// What Headroom saved one session, asked of the running proxy: the

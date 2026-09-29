@@ -529,6 +529,26 @@ export const FEATURE_MIN_VERSION = {
   // daemon's run has no snapshot, and absent is what the run history
   // reads as "nothing new to show".
   headroomSavings: 49,
+  // Honest failures (v50), two changes and one gate.
+  //
+  // `CreateSession` was WIDENED a third time, with `withoutHeadroom`:
+  // auto-resume's relaunch of a session that broke on Headroom, which
+  // must go around it whatever Headroom looks like. `min_version_for`
+  // cannot see a field, and a v49 daemon would drop this one and decide
+  // the relaunch against the proxy the session just broke on -- spending
+  // the one automatic attempt on it, fleet-wide. Its consumer is the
+  // surface that produces it, auto-resume's decision
+  // (`withoutHeadroomBlocked` in autoResume.ts, read by
+  // autoResumeState.ts), which declines a `headroom` failure with this
+  // reason rather than sending it; the host withholds the field besides
+  // (`without_headroom_for_daemon` in session.rs).
+  //
+  // `HeadroomReach` is a new request TYPE, so the wire gate stops it;
+  // the entry is read for `headroomSavings`' reason: the driver asks at
+  // the end of every compressed turn, and asking a v49 daemon would be a
+  // version error each time (`reachCheckBlocked` in
+  // headroomReachDriver.ts).
+  headroomFailures: 50,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

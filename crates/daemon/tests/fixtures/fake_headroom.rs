@@ -20,6 +20,11 @@
 //!   `/stats` reports as `savings.per_project`. Read on every request,
 //!   because a test learns a session's id only after the daemon has
 //!   started its Headroom; absent or empty is `{}`
+//! - `FAKE_HEADROOM_UNHEALTHY_FILE`: while a file exists at this path,
+//!   `/readyz` answers 503 -- a Headroom that is running, holds its port
+//!   and fails its health check, which is what a broken one looks like
+//!   from outside. Checked on every request, so a test can break it
+//!   mid-session and mend it again
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -107,6 +112,7 @@ fn serve(args: &[String], version: &str) {
     let tokens_saved: u64 =
         knob("FAKE_HEADROOM_TOKENS_SAVED").and_then(|v| v.parse().ok()).unwrap_or(0);
     let per_project_file = knob("FAKE_HEADROOM_PER_PROJECT_FILE");
+    let unhealthy_file = knob("FAKE_HEADROOM_UNHEALTHY_FILE");
     println!("fake headroom {version} listening on {host}:{port}");
 
     for stream in listener.incoming() {
@@ -123,7 +129,8 @@ fn serve(args: &[String], version: &str) {
             header.clear();
         }
         let path = request_line.split_whitespace().nth(1).unwrap_or("/");
-        let ready = Instant::now() >= ready_at;
+        let ready = Instant::now() >= ready_at
+            && !unhealthy_file.as_deref().is_some_and(|file| std::path::Path::new(file).exists());
         let identity = format!("\"service\":\"headroom-proxy\",\"version\":{}", json_string(version));
         let (status, body) = match path {
             "/readyz" if ready => (200, format!("{{{identity},\"status\":\"healthy\",\"ready\":true}}")),
@@ -146,7 +153,7 @@ fn serve(args: &[String], version: &str) {
                 (
                     200,
                     format!(
-                        "{{\"savings\":{{\"per_project\":{per_project}}},\"persistent_savings\":{{\"schema_version\":6,\"lifetime\":{{\"requests\":1,\"tokens_saved\":{tokens_saved}}}}}}}"
+                        "{{\"savings\":{{\"per_project\":{per_project}}},\"persistent_savings\":{{\"schema_version\":6,\"lifetime\":{{\"requests\":1,\"tokens_saved\":{tokens_saved}}},\"projects_limit\":50}}}}"
                     ),
                 )
             }

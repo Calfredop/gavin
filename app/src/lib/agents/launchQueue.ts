@@ -262,6 +262,10 @@ export interface CardIntent extends IntentBase {
   /// has to carry that fact across the wait, or a held auto-resume would
   /// come back as a human's press and never count.
   automatic: boolean;
+  /// Auto-resume's relaunch of a run that broke on Headroom, which has to
+  /// go around it (`relaunchesWithoutHeadroom`). Absent on every other
+  /// launch, and on every intent queued by a build that predates it.
+  withoutHeadroom?: true;
 }
 
 export interface ToolIntent extends IntentBase {

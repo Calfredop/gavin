@@ -103,7 +103,7 @@ impl Launched {
 
 fn created(response: Response) -> String {
     match response {
-        Response::SessionCreated { id } => id,
+        Response::SessionCreated { id, .. } => id,
         other => panic!("expected a session, got {other:?}"),
     }
 }
@@ -159,6 +159,7 @@ fn launch_line(
         command: Some(line.to_string()),
         profile_id: profile.map(str::to_string),
         api_family: api_family.map(str::to_string),
+        without_headroom: false,
     }));
     reported(machine, daemon, id)
 }
@@ -776,6 +777,7 @@ fn held(daemon: &Daemon, root: &str, profile: Option<&str>) -> String {
         command: Some(HELD.to_string()),
         profile_id: profile.map(str::to_string),
         api_family: None,
+        without_headroom: false,
     }))
 }
 
@@ -882,4 +884,236 @@ fn a_compressed_card_run_keeps_what_headroom_saved_it_and_a_plain_one_keeps_noth
         }
         other => panic!("expected the savings, got {other:?}"),
     }
+}
+
+// --- honest failures (v50) ---------------------------------------------
+
+/// A launch as auto-resume makes it, with the override when it relaunches
+/// a session that broke on Headroom, and the daemon's whole reply.
+fn create(daemon: &Daemon, root: &str, line: &str, profile: Option<&str>, without_headroom: bool) -> Response {
+    daemon.ask(Request::CreateSession {
+        workspace_path: root.to_string(),
+        cwd: root.to_string(),
+        command: Some(line.to_string()),
+        profile_id: profile.map(str::to_string),
+        api_family: None,
+        without_headroom,
+    })
+}
+
+/// The reply to a launch says what was decided about it, so the app can
+/// mark it from its first frame.
+#[test]
+fn a_created_session_says_what_was_decided_about_routing_it() {
+    if unavailable_here() {
+        return;
+    }
+    let (_machine, daemon, root, _port) = compressing();
+
+    for (profile, compressed, reason) in [
+        (Some(CLAUDE_CODE), true, None),
+        (Some("cursor"), false, Some("unsupported-agent")),
+        (None, false, None),
+    ] {
+        match create(&daemon, &root, HELD, profile, false) {
+            Response::SessionCreated { id, compressed: said, uncompressed_reason } => {
+                assert_eq!(said, compressed, "{profile:?}");
+                assert_eq!(uncompressed_reason.as_deref(), reason, "{profile:?}");
+                let listed = summary(&daemon, &id);
+                assert_eq!((listed.compressed, listed.uncompressed_reason.as_deref()), (said, reason));
+            }
+            other => panic!("expected a session, got {other:?}"),
+        }
+    }
+}
+
+/// Auto-resume's relaunch of a session that broke on Headroom. Headroom
+/// here is READY: the override is for exactly that, a proxy that looks
+/// fine and is the one the session just broke on.
+#[test]
+fn a_relaunch_without_headroom_is_uncompressed_while_headroom_is_ready_and_says_why() {
+    if unavailable_here() {
+        return;
+    }
+    let (machine, daemon, root, _port) = compressing();
+    assert!(daemon.status().ready);
+
+    let id = match create(&daemon, &root, REPORT, Some(CLAUDE_CODE), true) {
+        Response::SessionCreated { id, compressed, uncompressed_reason } => {
+            assert!(!compressed);
+            assert_eq!(uncompressed_reason.as_deref(), Some("headroom-failed"));
+            id
+        }
+        other => panic!("expected a session, got {other:?}"),
+    };
+    let session = reported(&machine, &daemon, id);
+
+    assert!(session.routing().is_empty(), "relaunched into the proxy it broke on: {:?}", session.routing());
+    assert!(!session.summary.compressed);
+    assert_eq!(session.summary.uncompressed_reason.as_deref(), Some("headroom-failed"));
+    // And only that launch: the next one is decided as ever.
+    let next = launch(&machine, &daemon, &root, Some(CLAUDE_CODE));
+    assert!(next.summary.compressed);
+}
+
+/// Prints the line Claude Code prints when its connection is refused,
+/// once its go file appears, and then sits quiet: a broken agent, as the
+/// daemon sees one.
+const BREAKS: &str = r#"while [ ! -e "$HOME/go-$GAVIN_SESSION_ID" ]; do sleep 0.05; done; printf 'API Error%s Connection error\n' :; sleep 600"#;
+
+/// The reason the daemon gives when this session breaks: its failure
+/// patterns set, attached so its pump runs, then let go.
+fn failure_of(machine: &Machine, daemon: &Daemon, id: &str) -> String {
+    match daemon.ask(Request::SetFailurePatterns { id: id.to_string(), patterns: vec!["API Error:".into()] }) {
+        Response::Ok => {}
+        other => panic!("expected the patterns set, got {other:?}"),
+    }
+    let mut stream = daemon.connect();
+    write_message(&mut stream, &Request::Attach { id: id.to_string() }).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let watched = id.to_string();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stream);
+        while let Ok(Some(message)) = read_message::<_, Response>(&mut reader) {
+            if let Response::SessionFailed { id, reason } = message {
+                if id == watched {
+                    let _ = tx.send(reason);
+                    return;
+                }
+            }
+        }
+    });
+    release(machine, id);
+    rx.recv_timeout(std::time::Duration::from_secs(30)).expect("the session never failed")
+}
+
+/// A compressed session that breaks while Headroom fails its health check
+/// is Headroom's failure, said in gavin's own words -- the prefix the app
+/// classifies as `headroom` and relaunches without it.
+#[test]
+fn a_compressed_session_that_breaks_while_headroom_fails_its_health_check_is_headroom_s_failure() {
+    if unavailable_here() {
+        return;
+    }
+    let machine = machine_with_headroom();
+    let broken = machine.home.path().join("headroom-is-broken");
+    let daemon =
+        machine.daemon_with(&[("FAKE_HEADROOM_UNHEALTHY_FILE", broken.to_str().unwrap())]);
+    let root = workspace(&machine, "repo");
+    switch(&daemon, &[(&root, true)]);
+    daemon.until_ready();
+    let id = created(create(&daemon, &root, BREAKS, Some(CLAUDE_CODE), false));
+    assert!(summary(&daemon, &id).compressed);
+
+    std::fs::write(&broken, "").unwrap();
+    wait_for("the daemon to see Headroom fail", || (!daemon.status().ready).then_some(()));
+    let reason = failure_of(&machine, &daemon, &id);
+
+    assert!(reason.starts_with("Headroom stopped answering"), "{reason}");
+    assert!(!reason.contains("API Error"), "an older app would read that as the network's: {reason}");
+}
+
+/// The other side: Headroom answering, or a session it never carried.
+/// Either way the break is what the agent said it was.
+#[test]
+fn a_break_while_headroom_answers_or_of_a_plain_session_keeps_the_agent_s_own_line() {
+    if unavailable_here() {
+        return;
+    }
+    let machine = machine_with_headroom();
+    let broken = machine.home.path().join("headroom-is-broken");
+    let daemon =
+        machine.daemon_with(&[("FAKE_HEADROOM_UNHEALTHY_FILE", broken.to_str().unwrap())]);
+    let root = workspace(&machine, "repo");
+    switch(&daemon, &[(&root, true)]);
+    daemon.until_ready();
+
+    let compressed = created(create(&daemon, &root, BREAKS, Some(CLAUDE_CODE), false));
+    assert_eq!(failure_of(&machine, &daemon, &compressed), "API Error: Connection error");
+
+    let plain = created(create(&daemon, &root, BREAKS, None, false));
+    std::fs::write(&broken, "").unwrap();
+    wait_for("the daemon to see Headroom fail", || (!daemon.status().ready).then_some(()));
+    assert_eq!(failure_of(&machine, &daemon, &plain), "API Error: Connection error");
+}
+
+fn reach(daemon: &Daemon, id: &str) -> String {
+    match daemon.ask(Request::HeadroomReach { session_id: id.to_string() }) {
+        Response::HeadroomReach { session_id, reach } => {
+            assert_eq!(session_id, id);
+            reach
+        }
+        other => panic!("expected the reach, got {other:?}"),
+    }
+}
+
+/// A daemon whose fake Headroom reports `per_project` from a file the
+/// test writes, with one workspace compressed and ready.
+fn counting() -> (Machine, Daemon, String, PathBuf) {
+    let machine = machine_with_headroom();
+    let per_project = machine.home.path().join("per-project.json");
+    let daemon =
+        machine.daemon_with(&[("FAKE_HEADROOM_PER_PROJECT_FILE", per_project.to_str().unwrap())]);
+    let root = workspace(&machine, "repo");
+    switch(&daemon, &[(&root, true)]);
+    daemon.until_ready();
+    (machine, daemon, root, per_project)
+}
+
+/// Headroom's own count is the evidence: nothing counted under the
+/// session's tag by the process it was pointed at is a session talking to
+/// its model some other way; anything counted settles it for good.
+#[test]
+fn whether_a_compressed_session_reaches_headroom_is_read_off_headroom_s_own_count() {
+    if unavailable_here() {
+        return;
+    }
+    let (_machine, daemon, root, per_project) = counting();
+    let id = created(create(&daemon, &root, HELD, Some(CLAUDE_CODE), false));
+    assert_eq!(summary(&daemon, &id).headroom_reach, None, "nobody has asked yet");
+
+    assert_eq!(reach(&daemon, &id), "unreached");
+    assert_eq!(summary(&daemon, &id).headroom_reach.as_deref(), Some("unreached"));
+
+    std::fs::write(&per_project, format!(r#"{{"{id}":{{"requests":3,"tokens_saved":120}}}}"#)).unwrap();
+    assert_eq!(reach(&daemon, &id), "reached");
+    assert_eq!(summary(&daemon, &id).headroom_reach.as_deref(), Some("reached"));
+
+    // Settled: an eviction afterwards does not make it a stranger.
+    std::fs::write(&per_project, "{}").unwrap();
+    assert_eq!(reach(&daemon, &id), "reached");
+
+    // A session that was never compressed has nothing to reach.
+    let plain = created(create(&daemon, &root, HELD, None, false));
+    assert_eq!(reach(&daemon, &plain), "unknown");
+    assert_eq!(summary(&daemon, &plain).headroom_reach, None);
+}
+
+/// The two ways Headroom's count loses a session that did reach it. An
+/// absence either could explain marks nothing.
+#[test]
+fn a_session_missing_from_a_full_map_or_from_a_restarted_headroom_is_not_called_unreached() {
+    if unavailable_here() {
+        return;
+    }
+    let (machine, daemon, root, per_project) = counting();
+    let id = created(create(&daemon, &root, HELD, Some(CLAUDE_CODE), false));
+
+    // Fifty others: Headroom evicts the least saver on every arrival.
+    let others: Vec<String> = (0..50)
+        .map(|i| format!(r#""other-{i}":{{"requests":1,"tokens_saved":{i}}}"#))
+        .collect();
+    std::fs::write(&per_project, format!("{{{}}}", others.join(","))).unwrap();
+    assert_eq!(reach(&daemon, &id), "unknown");
+    assert_eq!(summary(&daemon, &id).headroom_reach, None);
+
+    // A restart: the new process forgot what it had not written down.
+    std::fs::write(&per_project, "{}").unwrap();
+    let first = machine.pid().unwrap();
+    kill(first);
+    wait_for("a second Headroom", || {
+        machine.pid().filter(|pid| *pid != first && daemon.status().ready)
+    });
+    assert_eq!(reach(&daemon, &id), "unknown");
+    assert_eq!(summary(&daemon, &id).headroom_reach, None);
 }

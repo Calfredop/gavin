@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { sessionCompressionById } from "$lib/agents/headroomMarkState";
 import { FEATURE_MIN_VERSION } from "$lib/core/daemonCompat";
 import { get } from "svelte/store";
 import { gavinTrees, worktreeSetups } from "$lib/core/gavinState";
@@ -201,6 +202,7 @@ import {
   retainTabOnExit,
   handleCwdChanged,
   handleSessionStatusChanged,
+  addSessionStatusListener,
   setSessionRead,
   attentionStatusById,
   attentionState,
@@ -1379,6 +1381,23 @@ describe("handleCwdChanged", () => {
 });
 
 describe("handleSessionStatusChanged", () => {
+  // The second seam (the "not reaching Headroom" check): every report,
+  // with what came before it, after the store has taken it.
+  it("tells every status listener what was reported and what came before", () => {
+    const heard: [string, string, string | undefined, string | undefined][] = [];
+    const stop = addSessionStatusListener((id, status, previous) =>
+      heard.push([id, status, previous, get(layoutState).sessionStatusById[id]])
+    );
+    handleSessionStatusChanged("a", "working");
+    handleSessionStatusChanged("a", "idle");
+    stop();
+    handleSessionStatusChanged("a", "working");
+    expect(heard).toEqual([
+      ["a", "working", undefined, "working"],
+      ["a", "idle", "working", "idle"],
+    ]);
+  });
+
   it("records working and waiting as a session that has actually started", () => {
     handleSessionStatusChanged("a", "working");
     expect(get(layoutState).sessionsSeenWorking.has("a")).toBe(true);
@@ -3408,6 +3427,23 @@ describe("daemon errors: refused request vs lost connection", () => {
     return handlers;
   }
 
+  // Not an error, but the one other host event this file wires and no
+  // other suite fires: what the daemon decided about compressing a
+  // session, which its tab's Headroom mark reads (v50).
+  it("takes what the daemon decided about compressing a session, for its tab's mark", async () => {
+    const handlers = await bootstrapCapturingListeners();
+
+    handlers.get("session-compression")!({
+      payload: { id: "s-new", compressed: false, uncompressedReason: "headroom-failed" },
+    });
+
+    expect(get(sessionCompressionById)["s-new"]).toEqual({
+      compressed: false,
+      uncompressedReason: "headroom-failed",
+      reach: null,
+    });
+  });
+
   it("a refused request banners, leaving the app up", async () => {
     const handlers = await bootstrapCapturingListeners();
 
@@ -3642,6 +3678,48 @@ describe("bootstrap seeds the push-fed session maps", () => {
     // Read straight into the map, never through handleSessionFailed:
     // re-reading a failure the human has already seen is not a new one.
     expect(notifications.maybeNotifyStatusChange).not.toHaveBeenCalled();
+  });
+
+  // The `session-compression` event arrives once, with the session's
+  // creation; a reloaded frontend missed it, and a tab that should say
+  // "Headroom failed, relaunched without it" would say nothing.
+  it("fills what the daemon decided about compressing each session, so a reload keeps the mark", async () => {
+    vi.mocked(backend.getSessionBaselines).mockResolvedValue(baselinesRead([
+      {
+        id: "s-relaunched",
+        cwd: "/ws",
+        status: "idle",
+        restored: false,
+        interrupted: false,
+        orphan: null,
+        failureReason: null,
+        compressed: false,
+        uncompressedReason: "headroom-failed",
+        headroomReach: null,
+      },
+      {
+        id: "s-bypassing",
+        cwd: "/ws",
+        status: "idle",
+        restored: false,
+        interrupted: false,
+        orphan: null,
+        failureReason: null,
+        compressed: true,
+        uncompressedReason: null,
+        headroomReach: "unreached",
+      },
+    ]));
+
+    await bootstrapReady();
+
+    await vi.waitFor(() => expect(get(sessionCompressionById)["s-relaunched"]).toBeDefined());
+    expect(get(sessionCompressionById)["s-relaunched"].uncompressedReason).toBe("headroom-failed");
+    expect(get(sessionCompressionById)["s-bypassing"]).toEqual({
+      compressed: true,
+      uncompressedReason: null,
+      reach: "unreached",
+    });
   });
 
   it("never overwrites a push that already landed", async () => {
