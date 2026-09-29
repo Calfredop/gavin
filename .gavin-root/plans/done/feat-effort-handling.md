@@ -2,7 +2,7 @@
 order: 39936
 kind: task
 title: [feat] effort handling
-status: In Progress
+status: Done
 complexity: complex
 ---
 Allow effort handling in all agents configs: default agent, fallback, complexity, app/workspace settings… There should be precompiled effort levels taken from each agents’ api and a custom one.
