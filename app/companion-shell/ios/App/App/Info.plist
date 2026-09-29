@@ -24,6 +24,15 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Your phone’s key signs each connection to a Workstation only once you confirm it is you.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Gavin reads the pairing code your Workstation shows, to pair this phone with it.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Gavin reaches your Workstation through a Relay, which can be one on your own network.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>

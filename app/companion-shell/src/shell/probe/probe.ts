@@ -21,6 +21,7 @@ export const PROBE_WORKSTATION: HubWorkstation = {
   demo: false,
   summary: "",
   state: "ready",
+  openable: true,
 };
 
 /// The command the probe page reports with, and the one its frames try.
@@ -52,6 +53,9 @@ export interface ChecksReport {
   pluginCalls: ProbeAttempt[];
   /// The same calls, made to the Device's keys plugin.
   keyCalls: ProbeAttempt[];
+  /// And to the plugins pairing added: the paired Workstations' store,
+  /// which holds their notification keys, and the camera.
+  pairingCalls: ProbeAttempt[];
   frames: ProbeFrame[];
   fetches: ProbeAttempt[];
 }
@@ -128,6 +132,14 @@ export function probeVerdict({ reports, invokes, drops }: VerdictInput): ProbeVe
       checks.keyCalls.length > 0
         ? checks.keyCalls.map((c) => `${c.how}: ${c.outcome}`).join("; ")
         : "the probe made no call to the keys plugin"
+    );
+    const pairingCalls = checks.pairingCalls ?? [];
+    add(
+      "the paired Workstations and the camera are out of the bundle's reach",
+      pairingCalls.length > 0 && pairingCalls.every((c) => failed(c.outcome)),
+      pairingCalls.length > 0
+        ? pairingCalls.map((c) => `${c.how}: ${c.outcome}`).join("; ")
+        : "the probe made no call to the Workstations or QrScanner plugin"
     );
 
     const nativeDrops = drops.filter((d): d is Extract<VisitDrop, { where: "native" }> => d.where === "native");

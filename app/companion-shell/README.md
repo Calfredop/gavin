@@ -43,12 +43,16 @@ cd app/companion-shell && npm ci
 From `app/`:
 
 ```
-npm run companion-shell:test    # vitest: the shell's channel, visits, the probe's verdict
+npm run companion-shell:test    # vitest: the channel, visits, pairing, the core, the probe's verdict
 npm run companion-shell:check   # svelte-check, the desktop's library included
-npm run companion-shell:build   # the hub, in companion-shell/build
+npm run companion-shell:build   # the hub and the Companion core, in companion-shell/build
 npm run companion-shell:sync    # both builds, then `cap sync` and the embedded bundles
 npm run companion-shell:dev     # the hub in a browser on :1440 (it cannot open a Workstation there)
 ```
+
+`:test`, `:build` and `:dev` first build the Companion core for
+`wasm32-unknown-unknown` (`scripts/core.mjs`), so they need cargo and
+`rustup target add wasm32-unknown-unknown`.
 
 `companion-shell:sync -- ios` (or `android`) syncs one platform; `--probe`
 embeds the probe bundle on iOS too (see below). Then open
@@ -164,6 +168,100 @@ The Demo Workstation is the bundle's own (`app/companion/src/companion/demo`),
 made fresh for each visit and paced by the shell, exactly as the bundle's
 README says a shell-hosted demo is.
 
+## The Companion core
+
+`crates/companion-wasm` is the Companion core (`crates/companion-core`)
+as this layer calls it: a plain C ABI with JSON across it, built by
+`scripts/core.mjs` into `static/companion-core.wasm` (a build output, not
+committed) with the workspace's `companion-wasm` profile. It imports
+nothing. `src/shell/core/core.ts` compiles it once, the first time a
+pairing needs it, and instantiates it afresh for every exchange, so a trap
+ends one pairing and nothing else. The wire -- the handshake, framing,
+the six digits, the Relay's hello and its replies -- is computed there by
+the Rust the daemon and the test Device run; the TypeScript only carries
+bytes. The page's CSP allows `'wasm-unsafe-eval'` for it, and `ws:` and
+`wss:` for the Relays; the core dials `ws://` only to this machine or
+this network (`protocol::relay::RelayUrl`).
+
+## Pairing
+
+"Pair a Workstation" under the hub (`src/shell/pairing/`):
+
+1. **Scan.** The `QrScanner` plugin: on iOS a full-screen AVFoundation
+   scanner of the shell's own; on Android Google's code scanner, which
+   runs the camera in Google Play services and hands back only the code,
+   so the app holds no camera permission. Both read QR codes and nothing
+   else.
+2. **Keys.** Refused on a phone that cannot be a Device; the keys are made
+   at the first pairing and are the same for every Workstation after it.
+3. **The core reads the code** before anything is dialled: a code that
+   is not one, or a Workstation too old to pair with, costs no connection.
+4. **The Relay.** The first one the code names that answers `ready` to the
+   hello carries the stream (the webview's own WebSocket,
+   `pairing/relaySocket.ts`).
+5. **Sign.** After the handshake the hardware key signs its hash, which
+   prompts for Face ID or a fingerprint; the proof carries the hardware
+   public key, which is what pairing registers.
+6. **Compare.** The six digits show once the Workstation has taken the
+   proof, in two groups of three like the desk's.
+7. **Keep.** `paired` from the desk leaves a record in the `Workstations`
+   store, named "Workstation" (then "Workstation 2", …) and renamable on
+   the spot; the hub lists it above the Demo Workstation. Opening it, and
+   its live state, are companion-22 and companion-23.
+
+The records are the web layer's JSON, opaque to the native side, each
+holding that Workstation's notification key:
+
+| | iOS | Android |
+|---|---|---|
+| where | a keychain item a Workstation, `AfterFirstUnlockThisDeviceOnly`, never synchronised | one file in `noBackupFilesDir`, sealed by a Keystore AES-GCM key |
+| why readable while locked | the notification service extension will open pushes on a locked phone | the same, for the FCM handler |
+| gone with | the Device's keys (`deleteKeys`, and the first launch after a reinstall) | the Device's keys, and an uninstall |
+
+### The scripted pairing
+
+```
+scripts/pair.sh node
+scripts/pair.sh ios <simulator-udid> [--relay-host <ip>]
+scripts/pair.sh android <emulator-serial> --pin <pin>
+```
+
+Both pair with a Workstation on this Mac: `scripts/devstack.mjs` starts
+`gavin-relay` on loopback (plain `ws://`, which a Relay URL may be only
+because it is loopback) and a `gavin-daemon` under a temporary `$HOME`,
+and plays the desk on its two connections. `node` runs the shell's own
+pairing module and the real core in Node (`src/shell/pairing/pairing.e2e.ts`):
+a pairing the desk confirms, one it declines, and a spent code. `ios`
+installs a fresh debug app, launches it with the code in place of a scan
+(`-GavinPairCode`, base64), answers the Face ID prompt, lets the desk
+confirm only if the phone's digits are its own, and then launches the app
+again: the hub must still list the Workstation. It uninstalls the app
+first, keys and pairings with it. `android` does the same on an emulator,
+reaching the Relay through `adb reverse` and answering the prompt with
+the screen-lock PIN. `--relay-host` puts the Relay on a LAN address
+instead of loopback, which is what a real phone dials.
+
+**Cleartext on Android.** A dev Relay is `ws://`, and Android refuses
+cleartext unless the app's network security config allows it. A release
+build allows it to loopback only; a debug build to any host
+(`src/debug/res/xml/network_security_config.xml`), so a phone can pair
+with a dev Relay on the LAN. The core still refuses `ws://` to a host that
+is not on this machine or this network, either way.
+
+To pair a real phone with the dev desktop by hand: run a Relay the phone
+can reach (`GAVIN_RELAY_LISTEN=0.0.0.0:8443 GAVIN_RELAY_TOKENS=<token>
+GAVIN_RELAY_TLS_TERMINATED=1 target/debug/gavin-relay`), set remote access
+at the desk to `ws://<this Mac's LAN address>:8443` with that token, and
+press Pair a device there, and scan its code. The phone asks for
+local-network access the first time, and macOS's firewall asks whether
+`gavin-relay` may accept incoming connections: until it is allowed, the
+phone and the daemon both time out on it.
+
+`ws://` is what a dev Relay speaks, and each platform has to let it
+through: iOS by `NSAllowsLocalNetworking` (App Transport Security),
+Android by a debug build's network security config (below). Both follow
+the core's rule, `ws://` only to this machine or this network.
+
 ## Traps
 
 - **Capacitor 8.5.2 hangs on a blank page on the iOS 27.0 Simulator.** Its
@@ -190,10 +288,21 @@ README says a shell-hosted demo is.
   Face ID enrolled the prompt is a passcode sheet that takes any code.
 - **Two hyphens in a row end an XML comment** and fail the Android resource
   build, as they fail codesign on a plist.
+- **A desk that stops its Relay the moment it confirms** cuts off the
+  verdict on its way to the phone, which then reports that the
+  Workstation stopped waiting. `scripts/devstack.mjs` holds the stack
+  until the phone says how the pairing ended.
+- **UserDefaults reads a launch argument that looks like a property list
+  as one**, so the scripted code travels as base64.
+- **A WebView WebSocket that Android refused says so only to the page's
+  console** (`net::ERR_CLEARTEXT_NOT_PERMITTED`), not to logcat. A debug
+  build's WebView can be asked directly: `adb -s <serial> forward
+  tcp:9333 localabstract:webview_devtools_remote_<pid>`, then the page's
+  DevTools socket from `http://127.0.0.1:9333/json`.
 
 ## What is here, and what is not
 
-The hub lists the Demo Workstation and opens its embedded bundle, and the
-Device's keys are here (companion-20). Pairing (companion-21), the Unlock and
-a live hub (companion-22), and served, signed, cached bundles (companion-23)
-are the cards that follow.
+The hub lists the paired Workstations and the Demo Workstation, and opens
+the Demo's embedded bundle. The Device's keys (companion-20) and pairing
+(companion-21) are here. The Unlock and a live hub (companion-22), and
+served, signed, cached bundles (companion-23) are the cards that follow.

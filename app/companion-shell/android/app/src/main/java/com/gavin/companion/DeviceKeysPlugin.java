@@ -259,6 +259,7 @@ public class DeviceKeysPlugin extends Plugin {
         });
     }
 
+    /** The keys, and the Workstations paired with them: a record names the Device those keys made. */
     private void deleteAll() {
         try {
             KeyStore keyStore = keyStore();
@@ -269,6 +270,7 @@ public class DeviceKeysPlugin extends Plugin {
             Log.w(BundleChannel.TAG, "DeviceKeys: could not delete a key: " + e);
         }
         noiseFile().delete();
+        WorkstationsPlugin.deleteAll(getContext());
     }
 
     // reading

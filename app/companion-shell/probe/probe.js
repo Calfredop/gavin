@@ -46,6 +46,7 @@
     globals: {},
     pluginCalls: [],
     keyCalls: [],
+    pairingCalls: [],
     frames: [],
     fetches: [],
   };
@@ -97,6 +98,12 @@
   await everyWay(report.keyCalls, "DeviceKeys", "noiseKey", {});
   await everyWay(report.keyCalls, "DeviceKeys", "sign", { handshakeHash: "00".repeat(32), reason: marked });
   for (const c of report.keyCalls) show(`keys call, ${c.how}: ${c.outcome}`);
+
+  // 2c. What pairing added: the paired Workstations, each with its
+  // notification key, and the camera.
+  await everyWay(report.pairingCalls, "Workstations", "list", {});
+  await everyWay(report.pairingCalls, "QrScanner", "scan", {});
+  for (const c of report.pairingCalls) show(`pairing call, ${c.how}: ${c.outcome}`);
 
   // 3. The channel from frames: one of another origin (sandboxed, so
   // opaque), one of the page's own origin.

@@ -22,6 +22,8 @@
 		A1C0DE0000000000000000B4 /* BundleFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A4 /* BundleFiles.swift */; };
 		A1C0DE0000000000000000B5 /* Bundles in Resources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A5 /* Bundles */; };
 		A1C0DE0000000000000000B6 /* DeviceKeysPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A6 /* DeviceKeysPlugin.swift */; };
+		A1C0DE0000000000000000B7 /* QrScannerPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A7 /* QrScannerPlugin.swift */; };
+		A1C0DE0000000000000000B8 /* WorkstationsPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A8 /* WorkstationsPlugin.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -42,6 +44,8 @@
 		A1C0DE0000000000000000A4 /* BundleFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleFiles.swift; sourceTree = "<group>"; };
 		A1C0DE0000000000000000A5 /* Bundles */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Bundles; sourceTree = "<group>"; };
 		A1C0DE0000000000000000A6 /* DeviceKeysPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKeysPlugin.swift; sourceTree = "<group>"; };
+		A1C0DE0000000000000000A7 /* QrScannerPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrScannerPlugin.swift; sourceTree = "<group>"; };
+		A1C0DE0000000000000000A8 /* WorkstationsPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkstationsPlugin.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -91,6 +95,8 @@
 				A1C0DE0000000000000000A4 /* BundleFiles.swift */,
 				A1C0DE0000000000000000A5 /* Bundles */,
 				A1C0DE0000000000000000A6 /* DeviceKeysPlugin.swift */,
+				A1C0DE0000000000000000A7 /* QrScannerPlugin.swift */,
+				A1C0DE0000000000000000A8 /* WorkstationsPlugin.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -184,6 +190,8 @@
 				A1C0DE0000000000000000B3 /* BundleViewController.swift in Sources */,
 				A1C0DE0000000000000000B4 /* BundleFiles.swift in Sources */,
 				A1C0DE0000000000000000B6 /* DeviceKeysPlugin.swift in Sources */,
+				A1C0DE0000000000000000B7 /* QrScannerPlugin.swift in Sources */,
+				A1C0DE0000000000000000B8 /* WorkstationsPlugin.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -27,6 +27,10 @@ function checks(overrides: Partial<ChecksReport> = {}): ChecksReport {
       { how: "Capacitor.Plugins.DeviceKeys.noiseKey", outcome: "failed: TypeError: undefined is not an object" },
       { how: "webkit.messageHandlers.bridge.postMessage DeviceKeys.sign", outcome: "failed: no such handler" },
     ],
+    pairingCalls: [
+      { how: "Capacitor.Plugins.Workstations.list", outcome: "failed: TypeError: undefined is not an object" },
+      { how: "androidBridge.postMessage QrScanner.scan", outcome: "failed: TypeError: undefined is not an object" },
+    ],
     frames: [iosFrame("other-origin"), iosFrame("own-origin-subframe")],
     fetches: [
       { how: "fetch https://example.com/", outcome: "failed: TypeError: Load failed" },
@@ -126,6 +130,22 @@ describe("the probe's verdict", () => {
     expect(check(v, "the Device's keys are out of the bundle's reach")).toMatchObject({
       passed: false,
       detail: "the probe made no call to the keys plugin",
+    });
+  });
+
+  it("fails when a call to the paired Workstations went through, or none was tried", () => {
+    const ran = verdict({
+      reports: [
+        checks({ pairingCalls: [{ how: "Capacitor.Plugins.Workstations.list", outcome: 'ran: {"records":[]}' }] }),
+        NAVIGATION,
+      ],
+    });
+    const name = "the paired Workstations and the camera are out of the bundle's reach";
+    expect(check(ran, name).passed).toBe(false);
+    expect(ran.passed).toBe(false);
+    expect(check(verdict({ reports: [checks({ pairingCalls: [] }), NAVIGATION] }), name)).toMatchObject({
+      passed: false,
+      detail: "the probe made no call to the Workstations or QrScanner plugin",
     });
   });
 

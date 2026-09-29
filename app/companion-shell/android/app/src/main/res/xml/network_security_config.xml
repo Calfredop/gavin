@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cleartext, for the one thing that may use it: a Relay on this phone's
+     own loopback (an emulator reaching the Mac through adb reverse). The
+     Companion core dials ws:// only to this machine or this network, and a
+     release build takes the narrower of the two: anywhere else, wss://.
+     A debug build widens this to any host (src/debug), for a dev Relay on
+     the LAN. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

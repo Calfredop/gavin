@@ -1,12 +1,14 @@
 // What the Workstations hub lists.
 //
-// For now that is the Demo Workstation alone: it is built into the
-// binary, needs no pairing, and is what App Review explores (ADR 0005,
-// Guideline 2.1(a)). Paired Workstations join it with companion-21, and
-// their states ("desktop app not running", "asleep") with companion-22.
+// The Workstations this Device has paired with (companion-21), then the
+// Demo Workstation: it is built into the binary, needs no pairing, and is
+// what App Review explores (ADR 0005, Guideline 2.1(a)). A paired
+// Workstation's live state ("desktop app not running", "asleep") and
+// opening its UI are companion-22's and companion-23's.
 import { DEMO } from "$companion/demo/sampleData";
+import type { PairedWorkstation } from "$shell/hub/paired";
 
-export type WorkstationState = "ready";
+export type WorkstationState = "ready" | "paired";
 
 export interface HubWorkstation {
   /// Also the host of its bundle's origin, so it is a DNS label.
@@ -16,6 +18,9 @@ export interface HubWorkstation {
   /// The line under the name.
   summary: string;
   state: WorkstationState;
+  /// Whether tapping it opens its UI. Not yet for a paired one: there is
+  /// no connection to carry its bundle.
+  openable: boolean;
 }
 
 /// The Demo Workstation, under the identity its own end of the channel
@@ -26,16 +31,36 @@ export const DEMO_WORKSTATION: HubWorkstation = {
   demo: DEMO.workstation.demo,
   summary: "Sample workspaces, cards and agents to explore. Nothing to pair.",
   state: "ready",
+  openable: true,
 };
 
-export function hubWorkstations(): HubWorkstation[] {
-  return [DEMO_WORKSTATION];
+/// "29 Sept", the way the phone writes a date.
+export type FormatDay = (ms: number) => string;
+
+const formatDay: FormatDay = (ms) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+
+export function hubWorkstations(paired: PairedWorkstation[] = [], day: FormatDay = formatDay): HubWorkstation[] {
+  return [
+    ...paired.map(
+      (ws): HubWorkstation => ({
+        id: ws.id,
+        name: ws.name,
+        demo: false,
+        summary: `Paired on ${day(ws.pairedAt)}. Opening it from this phone comes in a later build.`,
+        state: "paired",
+        openable: false,
+      })
+    ),
+    DEMO_WORKSTATION,
+  ];
 }
 
 export function stateLabel(state: WorkstationState): string {
   switch (state) {
     case "ready":
       return "Ready";
+    case "paired":
+      return "Paired";
   }
 }
 

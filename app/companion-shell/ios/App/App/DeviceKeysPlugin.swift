@@ -232,11 +232,14 @@ public class DeviceKeysPlugin: CAPPlugin, CAPBridgedPlugin {
         guard status == errSecSuccess else { throw keychainError("SecItemAdd(\(service))", status) }
     }
 
+    /// The keys, and the Workstations paired with them: a record names
+    /// the Device those keys made, and without them this phone is not it.
     static func deleteAll() {
         SecItemDelete([kSecClass as String: kSecClassKey, kSecAttrApplicationTag as String: hardwareTag] as CFDictionary)
         for service in [softwareService, noiseService] {
             SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service] as CFDictionary)
         }
+        WorkstationsPlugin.deleteAll()
     }
 
     // MARK: reading

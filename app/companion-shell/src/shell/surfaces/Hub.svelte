@@ -15,10 +15,13 @@
     native: boolean;
     onOpen: (workstation: HubWorkstation) => void;
     onDismiss: () => void;
+    /// "Pair a Workstation". Absent in a browser, which has no keys and no
+    /// camera to pair with.
+    onPair?: (() => void) | null;
     /// Below the Workstations: a debug build's keys panel.
     children?: Snippet;
   }
-  let { workstations, visit, native, onOpen, onDismiss, children }: Props = $props();
+  let { workstations, visit, native, onOpen, onDismiss, onPair = null, children }: Props = $props();
 
   const opening = $derived(visit.status === "opening" ? visit.workstation.id : null);
 </script>
@@ -29,7 +32,7 @@
     <ul class="list">
       {#each workstations as ws (ws.id)}
         <li>
-          <button type="button" class="row" disabled={opening !== null} onclick={() => onOpen(ws)}>
+          <button type="button" class="row" disabled={opening !== null || !ws.openable} onclick={() => onOpen(ws)}>
             <span class="head">
               <span class="name">{ws.name}</span>
               {#if ws.demo}
@@ -47,6 +50,12 @@
         </li>
       {/each}
     </ul>
+
+    {#if onPair}
+      <div class="pair">
+        <button type="button" class="action" disabled={opening !== null} onclick={onPair}>Pair a Workstation</button>
+      </div>
+    {/if}
 
     {#if visit.status === "failed"}
       <div class="note" role="alert">
@@ -147,10 +156,16 @@
   .state-ready .dot {
     background: var(--success-text);
   }
+  .state-paired .dot {
+    background: var(--accent);
+  }
   .summary {
     color: var(--text-muted);
     font-size: 0.8125rem;
     line-height: 1.4;
+  }
+  .pair {
+    padding: 16px max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
   }
   .note {
     margin: 0;
@@ -174,8 +189,11 @@
     color: var(--text);
     font-size: 0.875rem;
   }
-  .action:active {
+  .action:active:not(:disabled) {
     background: var(--surface-hover);
+  }
+  .action:disabled {
+    opacity: 0.5;
   }
   .action:focus-visible {
     outline: 2px solid var(--border-focus);

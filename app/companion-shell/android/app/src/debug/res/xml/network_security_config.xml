@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A debug build's: cleartext to any host, so that a phone can pair with a
+     dev Relay on the LAN over ws://. The Companion core still refuses
+     ws:// to a host that is not on this machine or this network
+     (protocol::relay::RelayUrl). A release build uses src/main's. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
