@@ -73,6 +73,7 @@ pub const REGISTERED_COMMANDS: &[&str] = &[
     "confirm_pairing",
     "reject_pairing",
     "list_devices",
+    "get_relay_state",
     "revoke_device",
     "revoke_all_devices",
     "set_remote_access",

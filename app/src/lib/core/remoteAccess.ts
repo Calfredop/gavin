@@ -615,6 +615,64 @@ export function relayAdmissionBlocked(compat: DaemonCompat | null): string | nul
   return featureBlockedReason(compat, "relayAdmission");
 }
 
+// -- whether the daemon reached its Relay --------------------------------
+
+/// Where the daemon's dial stands, as `protocol::RelayState` puts it on
+/// the wire (v56). `since` is epoch SECONDS. `why` is a sentence the dial
+/// already had -- never the admission token, which appears in no error.
+/// `unknown` is a state a newer daemon reports.
+export type RelayState =
+  | { state: "not_wanted" }
+  | { state: "dialling" }
+  | { state: "connected"; since: number }
+  | { state: "failed"; why: string }
+  | { state: "unknown" };
+
+/// The gate for the state's own read: a daemon older than v56 answers
+/// `Unsupported` to it, and a failure would read as a Relay that is down.
+/// Null when the daemon is new enough or no verdict yet.
+export function relayStateBlocked(compat: DaemonCompat | null): string | null {
+  return featureBlockedReason(compat, "relayState");
+}
+
+/// What the row beside the Relay URL says, and the badge state to draw
+/// it with. `text` is the short word beside the glyph; `detail` the
+/// sentence under it, when there is more to say.
+export interface RelayStatus {
+  badge: "not_wanted" | "dialling" | "connected" | "failed" | null;
+  text: string;
+  detail: string | null;
+}
+
+export function relayStatus(state: RelayState | null, nowMs: number): RelayStatus {
+  if (state === null) return { badge: null, text: "", detail: null };
+  switch (state.state) {
+    case "not_wanted":
+      return {
+        badge: "not_wanted",
+        text: "Not connected",
+        detail: "Remote access is off, or no Relay URL is set.",
+      };
+    case "dialling":
+      return { badge: "dialling", text: "Connecting…", detail: null };
+    case "connected":
+      return {
+        badge: "connected",
+        text: "Connected",
+        detail: `Connected ${relativeTime(state.since * 1000, nowMs)}.`,
+      };
+    case "failed":
+      return {
+        badge: "failed",
+        text: "Could not connect",
+        detail: `${state.why}. Dialling again until it holds.`,
+      };
+    default:
+      // A state a newer daemon reports: say nothing rather than guess.
+      return { badge: null, text: "", detail: null };
+  }
+}
+
 // -- whether pairing can work -------------------------------------------
 
 /// Why a QR drawn now could not pair anything, or null when it could.
@@ -632,7 +690,8 @@ export function relayAdmissionBlocked(compat: DaemonCompat | null): string | nul
 /// work.
 export function pairingUnavailable(
   list: DeviceList | null,
-  compat: DaemonCompat | null
+  compat: DaemonCompat | null,
+  relay: RelayState | null = null
 ): string | null {
   const blocked = featureBlockedReason(compat, "relayDial");
   if (blocked !== null) return blocked;
@@ -645,6 +704,19 @@ export function pairingUnavailable(
   }
   if (relayUrlHint(list.relayUrl) !== null) {
     return "The daemon will not dial the Relay URL above, so a Device has nowhere to pair through.";
+  }
+  // Offered only while the daemon is connected. Unknown (no read yet, or
+  // a daemon too old to be asked) is not unavailable.
+  if (relay !== null && relayStateBlocked(compat) === null) {
+    if (relay.state === "dialling") {
+      return "The daemon is still connecting to the Relay — a Device could not pair through it yet.";
+    }
+    if (relay.state === "failed") {
+      return `The daemon has not reached the Relay: ${relay.why}.`;
+    }
+    if (relay.state === "not_wanted") {
+      return "The daemon is not connected to the Relay.";
+    }
   }
   return null;
 }

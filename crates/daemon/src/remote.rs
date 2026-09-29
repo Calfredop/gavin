@@ -48,6 +48,7 @@ use crate::server::{AwaitedPairing, PairingDecision, SessionManager};
 use gavin_relay::client::{self, DialError, DialOptions, RelayConnection, RelayStream};
 use protocol::device_wire::{ConnectVerdict, PairingVerdict, MAX_PAYLOAD};
 use protocol::relay::{self, RefusalReason, RelayHello, RelayReply};
+use protocol::RelayState;
 use protocol::transport::Stream;
 use std::io::{Read, Write};
 use std::net::Shutdown;
@@ -422,6 +423,13 @@ enum Ended {
     Lost(String, Duration),
 }
 
+fn epoch_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// Starts the dial. Called once, by `serve`, after the trust store is
 /// open and before the socket accepts anything.
 pub fn spawn(manager: &Arc<SessionManager>) {
@@ -465,14 +473,22 @@ fn supervise(manager: &Arc<SessionManager>) {
         let Some(dial) = desired(manager) else {
             // Until poked, or until it is time to look at the store
             // again on nobody's say-so.
+            manager.set_relay_state(RelayState::NotWanted);
             wake.wait_past(seen, Some(STORE_POLL));
             backoff.reset();
             said.forget();
             continue;
         };
         match hold(manager, &dial, &mut seen, &mut said) {
-            Ended::Changed | Ended::Slept => backoff.reset(),
+            Ended::Changed | Ended::Slept => {
+                // Dialled again at once, so what was said about the last
+                // dial -- a failure against a URL since changed -- is
+                // not said about the next.
+                manager.set_relay_state(RelayState::Dialling);
+                backoff.reset();
+            }
             Ended::Undiallable(why) => {
+                manager.set_relay_state(RelayState::Failed { why: why.clone() });
                 said.say(format!("the Relay is not being dialled: {why}"));
                 wait_while_wanted(manager, &dial, None);
                 backoff.reset();
@@ -481,6 +497,7 @@ fn supervise(manager: &Arc<SessionManager>) {
                 if held >= SETTLED {
                     backoff.reset();
                 }
+                manager.set_relay_state(RelayState::Failed { why: why.clone() });
                 said.say(format!(
                     "the connection to the Relay ended ({why}); dialling again until it holds"
                 ));
@@ -520,6 +537,12 @@ fn wait_while_wanted(manager: &SessionManager, dial: &Dial, at_most: Option<Dura
 /// Dials the Relay, registers this Workstation, and holds the connection
 /// until it ends or stops being wanted.
 fn hold(manager: &Arc<SessionManager>, dial: &Dial, seen: &mut u64, said: &mut Said) -> Ended {
+    // A retry after a failure keeps saying it failed: "dialling" again
+    // every backoff would flap the desk between the two, and the reason
+    // is what the human needs until a dial holds.
+    if !matches!(manager.relay_state(), RelayState::Failed { .. }) {
+        manager.set_relay_state(RelayState::Dialling);
+    }
     let hello = RelayHello::workstation(&dial.token, &dial.rendezvous);
     let mut connection = match client::dial(&dial.url, &hello, &DialOptions::default()) {
         Ok(connection) => connection,
@@ -528,6 +551,7 @@ fn hold(manager: &Arc<SessionManager>, dial: &Dial, seen: &mut u64, said: &mut S
     };
     said.forget();
     said.say("connected to the Relay".to_string());
+    manager.set_relay_state(RelayState::Connected { since: epoch_seconds() });
     let since = Instant::now();
     let ended = attend(manager, dial, seen, &mut connection, since);
     connection.close();

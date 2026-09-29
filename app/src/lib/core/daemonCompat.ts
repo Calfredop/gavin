@@ -589,6 +589,15 @@ export const FEATURE_MIN_VERSION = {
   // other about a socket being opened, and the next bump may move one
   // without the other.
   relayDial: 52,
+  // Where the daemon's dial stands (`companion-32`): `GetRelayState` and
+  // the `RelayStateChanged` push are v56 request/response TYPES an older
+  // daemon answers `Unsupported`.
+  //
+  // Consumer: `remoteAccess.ts`'s `relayStateBlocked`, which the Settings
+  // section reads before it asks and before it draws the badge beside the
+  // Relay URL, and which `pairingUnavailable` reads so that an older
+  // daemon's silence is not taken for a Relay that failed.
+  relayState: 56,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

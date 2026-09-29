@@ -32,6 +32,7 @@
 
 import type { Component } from "svelte";
 import {
+  Cable,
   ChevronsRight,
   Clock,
   CircleDashed,
@@ -53,6 +54,8 @@ import {
   OctagonAlert,
   Pause,
   Pencil,
+  Plug,
+  PlugZap,
   Repeat,
   RotateCw,
   RouteOff,
@@ -68,6 +71,7 @@ import {
   SquareX,
   TriangleAlert,
   Unlink2,
+  Unplug,
 } from "@lucide/svelte";
 import type { SessionStatus } from "$lib/core/notifications";
 // The rails already own these three; re-declaring them here would be a
@@ -101,7 +105,8 @@ export type IndicatorAxis =
   | "rail"
   | "run"
   | "usage"
-  | "headroom";
+  | "headroom"
+  | "relay";
 
 /// The human-readable name of each axis. Every tooltip leads with it,
 /// which is the whole point: the old badges said "amber" and left the
@@ -117,6 +122,7 @@ export const AXIS_LABEL: Record<IndicatorAxis, string> = {
   run: "Run",
   usage: "Usage",
   headroom: "Headroom",
+  relay: "Relay",
 };
 
 export interface Indicator {
@@ -703,6 +709,34 @@ export function headroomIndicator(exception: HeadroomException | null): Indicato
 
 export const HEADROOM_EXCEPTIONS = ["not-ready", "relaunched", "not-reaching"] as const;
 
+// ---- relay -------------------------------------------------------------
+// Whether the daemon reached its Relay, beside the Relay URL in Settings.
+// `remoteAccess.ts` owns the state and the words a failure is given; this
+// file only draws the four answers. A plug family of its own, since a
+// wire that is or is not connected is not a git, run or agent fact.
+//
+// `failed` and `not_wanted` both read as an unplugged wire, told apart by
+// tone: one is broken, the other is simply off.
+
+const RELAY = {
+  not_wanted: make("relay", "not_wanted", Cable, "neutral", "not connected — remote access is off"),
+  dialling: make("relay", "dialling", PlugZap, "accent", "dialling the Relay"),
+  connected: make("relay", "connected", Plug, "success", "connected"),
+  failed: make("relay", "failed", Unplug, "danger", "could not connect"),
+};
+
+export const RELAY_STATES = ["not_wanted", "dialling", "connected", "failed"] as const;
+export type RelayIndicatorState = (typeof RELAY_STATES)[number];
+
+/// The badge for one of the dial's four states. A `why` for a failure
+/// goes in the bubble, after the axis, like the queue's does.
+export function relayIndicator(state: RelayIndicatorState, why?: string | null): Indicator {
+  const base = RELAY[state];
+  if (state !== "failed" || !why) return base;
+  const tip = `${AXIS_LABEL.relay} · ${why}`;
+  return { ...base, tip, label: tip };
+}
+
 // ---- attention ---------------------------------------------------------
 // What a RUNNING step is waiting on a human for. Not an axis of its own:
 // all three answers are facts about the agent, so they are agent badges,
@@ -788,5 +822,6 @@ export function allIndicators(): Indicator[] {
     shellOrphanIndicator(),
     ...PROJECTION_BANDS.map((band) => USAGE[band]),
     ...HEADROOM_EXCEPTIONS.map((exception) => HEADROOM[exception]),
+    ...RELAY_STATES.map((state) => RELAY[state]),
   ];
 }

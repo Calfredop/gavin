@@ -1503,6 +1503,11 @@ pub struct SessionManager {
     /// above and unlike `trust`: it holds no file and cannot fail, and a
     /// manager whose dial was never started simply has nobody listening.
     remote_wake: Arc<crate::remote::Wake>,
+    /// Where the dial to the Relay stands, written by `remote.rs` and read
+    /// by `GetRelayState`. Held here and not in the dial's thread because
+    /// the desk asks for it from a connection's, and pushes follow every
+    /// change (`set_relay_state`).
+    relay_state: Mutex<protocol::RelayState>,
     /// Hands out `PendingPairing::ticket`.
     next_pairing_ticket: AtomicU64,
     /// Running `RunGitStreaming` ops, keyed by the desktop's own op id,
@@ -1748,6 +1753,7 @@ impl SessionManager {
             pending_offer: Mutex::new(None),
             pending_pairings: Mutex::new(HashMap::new()),
             remote_wake: Arc::new(crate::remote::Wake::default()),
+            relay_state: Mutex::new(protocol::RelayState::NotWanted),
             next_pairing_ticket: AtomicU64::new(0),
             git_ops: Mutex::new(HashMap::new()),
             forwarding: Mutex::new(None),
@@ -1756,6 +1762,25 @@ impl SessionManager {
             pending_forwards: Mutex::new(HashMap::new()),
             event_subscribers: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Where the dial to the Relay stands. See `relay_state`.
+    pub fn relay_state(&self) -> protocol::RelayState {
+        self.relay_state.lock().unwrap().clone()
+    }
+
+    /// Records where the dial stands and, if that is a change, tells
+    /// every live app. A repeat -- the dial re-reads the store every few
+    /// seconds and says "not wanted" each time -- pushes nothing.
+    pub fn set_relay_state(&self, state: protocol::RelayState) {
+        {
+            let mut held = self.relay_state.lock().unwrap();
+            if *held == state {
+                return;
+            }
+            *held = state.clone();
+        }
+        self.push_to_apps(&Response::RelayStateChanged { state });
     }
 
     /// What `remote.rs` waits on. See `remote_wake`.
@@ -5538,6 +5563,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
             manager.reject_pairing(&device_id).map(|_| Response::Ok)
         }
         Request::ListDevices => manager.list_devices(),
+        Request::GetRelayState => Ok(Response::RelayState { state: manager.relay_state() }),
         // Answered `Ok` rather than with what changed: the app refetches
         // the list, which is the only account of the store that cannot
         // disagree with the store.
@@ -6034,6 +6060,7 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::ConfirmPairing { .. }
         | Request::RejectPairing { .. }
         | Request::ListDevices
+        | Request::GetRelayState
         | Request::RevokeDevice { .. }
         | Request::RevokeAllDevices
         | Request::SetRemoteAccess { .. }

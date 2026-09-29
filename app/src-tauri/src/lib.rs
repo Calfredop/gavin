@@ -186,6 +186,7 @@ pub fn run() {
             session::confirm_pairing,
             session::reject_pairing,
             session::list_devices,
+            session::get_relay_state,
             session::revoke_device,
             session::revoke_all_devices,
             session::set_remote_access,

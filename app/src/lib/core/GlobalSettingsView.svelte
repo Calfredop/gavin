@@ -120,6 +120,8 @@
     pairingUnavailable,
     qrDraw,
     relayAdmissionBlocked,
+    relayStateBlocked,
+    relayStatus,
     relayUrlHint,
     relayUrlToSave,
     remoteAccessBlocked,
@@ -129,7 +131,10 @@
     type DeviceList,
     type PairingRequest,
     type PairingState,
+    type RelayState,
   } from "$lib/core/remoteAccess";
+  import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import { relayIndicator } from "$lib/ui/indicators";
   import { agentPauseStore, profilesInUse, saveAgentPause } from "$lib/agents/agentPauseState";
   import { launchConfigStore, saveLaunchConfig } from "$lib/agents/launchQueue";
   import type { LaunchConfig } from "$lib/agents/launchGate";
@@ -477,12 +482,38 @@
   /// whenever the panel last happened to re-render.
   let nowMs = $state(Date.now());
 
+  /// Whether the daemon reached its Relay: read once on open, then
+  /// followed by the daemon's `relay-state-changed` push. Null until read,
+  /// and for good against a daemon too old to be asked.
+  let relayState = $state<RelayState | null>(null);
+
   const deviceList = $derived(devices ? deviceRows(devices.devices, nowMs) : []);
   const relayHint = $derived(relayUrlHint(relayDraft));
   /// Why a QR drawn now could pair nothing, or null. Read from what the
   /// DAEMON holds rather than from the drafts: a URL still being typed
   /// is not one it is dialling.
-  const pairingGate = $derived(pairingUnavailable(devices, $daemonCompat));
+  const pairingGate = $derived(pairingUnavailable(devices, $daemonCompat, relayState));
+
+  const relayGate = $derived(relayStateBlocked($daemonCompat));
+  const relayLine = $derived(relayStatus(relayState, nowMs));
+  const relayBadge = $derived(
+    relayLine.badge === null
+      ? null
+      : relayIndicator(
+          relayLine.badge,
+          relayState?.state === "failed" ? `${relayState.why}` : null
+        )
+  );
+
+  async function refreshRelayState(): Promise<void> {
+    if (remoteAccessGate !== null || relayGate !== null) return;
+    try {
+      relayState = await backend.getRelayState();
+    } catch {
+      // Not knowing is not a failure to connect.
+      relayState = null;
+    }
+  }
 
   async function refreshDevices(): Promise<void> {
     if (remoteAccessGate !== null) return;
@@ -509,6 +540,10 @@
     if (remoteAccessGate !== null || devices !== null) return;
     void refreshDevices();
   });
+  $effect(() => {
+    if (remoteAccessGate !== null || relayGate !== null || relayState !== null) return;
+    void refreshRelayState();
+  });
 
   // The device pushes. Component-local rather than in layoutState's
   // bootstrap listeners on purpose: this section is the only thing in
@@ -534,6 +569,10 @@
       // Devices connect; the list they change is drawn here.
       listen<string>("device-connected", () => void refreshDevices()),
       listen<string>("device-disconnected", () => void refreshDevices()),
+      listen<RelayState>("relay-state-changed", (event) => {
+        relayState = event.payload;
+        nowMs = Date.now();
+      }),
     ];
     return () => {
       for (const p of stop) void p.then((off) => off());
@@ -1593,6 +1632,14 @@
           />
         </span>
       </div>
+      {#if relayBadge}
+        <p class="hint relay-status">
+          <StatusBadge indicator={relayBadge} text={relayLine.text} />
+          {#if relayLine.detail}
+            <span class="detail">{relayLine.detail}</span>
+          {/if}
+        </p>
+      {/if}
       <p class="hint">
         {RELAY_NOTE}
         {#if relayHint}

@@ -287,7 +287,7 @@ describe("Pair a device", () => {
   // A QR drawn with remote access off points a Device at a Relay the
   // daemon is not connected to.
   it("is offered only when a Device could pair", () => {
-    expect(VIEW).toContain("pairingUnavailable(devices, $daemonCompat)");
+    expect(VIEW).toContain("pairingUnavailable(devices, $daemonCompat, relayState)");
     // `relayDial` is a gate like any other: the entry, and a consumer.
     expect(MODULE).toContain('featureBlockedReason(compat, "relayDial")');
     expect(FEATURE_MIN_VERSION.relayDial).toBe(52);
@@ -316,5 +316,21 @@ describe("Pair a device", () => {
     for (const word of ["Pair a device", "QR", "Relay URL", "Revoke", "lost phone", "phone"]) {
       expect(keywords).toContain(word);
     }
+  });
+});
+
+describe("the Relay's state beside its URL", () => {
+  // The entry and its consumers: an entry nothing reads is a dead gate.
+  it("has a gate with a consumer in the module and one in the view", () => {
+    expect(FEATURE_MIN_VERSION.relayState).toBe(56);
+    expect(MODULE).toContain('featureBlockedReason(compat, "relayState")');
+    expect(VIEW).toContain("relayStateBlocked($daemonCompat)");
+    expect(VIEW).toContain("relayGate !== null");
+  });
+
+  it("is drawn through the badge vocabulary and follows the daemon's push", () => {
+    expect(VIEW).toContain("relayIndicator(");
+    expect(VIEW).toContain("<StatusBadge indicator={relayBadge}");
+    expect(VIEW).toContain('listen<RelayState>("relay-state-changed"');
   });
 });

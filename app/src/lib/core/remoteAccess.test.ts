@@ -27,6 +27,8 @@ import {
   pairingUnavailable,
   qrDraw,
   relayAdmissionBlocked,
+  relayStateBlocked,
+  relayStatus,
   relayUrlHint,
   relayUrlProblem,
   relayUrlToSave,
@@ -683,5 +685,67 @@ describe("the gate", () => {
       remoteAccessBlocked({ daemonVersion: needed, appVersion: needed, degraded: false })
     ).toBeNull();
     expect(remoteAccessBlocked(null)).toBeNull();
+  });
+});
+
+describe("whether the daemon reached its Relay", () => {
+  const NOW = 1_800_000_000_000;
+  const list: DeviceList = {
+    devices: [],
+    remoteAccessEnabled: true,
+    relayUrl: "wss://relay.example/gavin",
+    relayAdmissionSet: true,
+  };
+  const needed = FEATURE_MIN_VERSION.relayState;
+  const knows = { daemonVersion: needed, appVersion: needed, degraded: false };
+
+  it("says nothing before the daemon has been asked, and about a state it does not know", () => {
+    expect(relayStatus(null, NOW).badge).toBeNull();
+    expect(relayStatus({ state: "unknown" }, NOW).badge).toBeNull();
+  });
+
+  it("names each of the four states", () => {
+    expect(relayStatus({ state: "not_wanted" }, NOW)).toMatchObject({
+      badge: "not_wanted",
+      text: "Not connected",
+    });
+    expect(relayStatus({ state: "dialling" }, NOW)).toMatchObject({ badge: "dialling" });
+    const connected = relayStatus({ state: "connected", since: NOW / 1000 - 300 }, NOW);
+    expect(connected).toMatchObject({ badge: "connected", text: "Connected" });
+    expect(connected.detail).toBe("Connected 5m ago.");
+  });
+
+  it("gives a failure in the daemon's own words", () => {
+    const failed = relayStatus(
+      { state: "failed", why: "the Relay did not accept the admission token" },
+      NOW
+    );
+    expect(failed.badge).toBe("failed");
+    expect(failed.detail).toContain("the Relay did not accept the admission token");
+  });
+
+  it("offers pairing only while connected", () => {
+    expect(pairingUnavailable(list, knows, { state: "connected", since: 1 })).toBeNull();
+    expect(pairingUnavailable(list, knows, { state: "dialling" })).toContain("still connecting");
+    expect(
+      pairingUnavailable(list, knows, { state: "failed", why: "could not reach the Relay" })
+    ).toContain("could not reach the Relay");
+    expect(pairingUnavailable(list, knows, { state: "not_wanted" })).not.toBeNull();
+  });
+
+  // Unknown is not unavailable, and a daemon too old to be asked cannot
+  // be blamed for its silence.
+  it("does not refuse pairing on a state it has not read or cannot ask for", () => {
+    expect(pairingUnavailable(list, knows, null)).toBeNull();
+    expect(pairingUnavailable(list, knows, { state: "unknown" })).toBeNull();
+    const old = { daemonVersion: needed - 1, appVersion: needed, degraded: true };
+    expect(pairingUnavailable(list, old, { state: "failed", why: "x" })).toBeNull();
+  });
+
+  it("is gated by the version that can answer, and names it", () => {
+    expect(relayStateBlocked(null)).toBeNull();
+    expect(relayStateBlocked(knows)).toBeNull();
+    const reason = relayStateBlocked({ daemonVersion: needed - 1, appVersion: needed, degraded: true });
+    expect(reason).toContain(`v${needed}`);
   });
 });

@@ -160,6 +160,7 @@ fn is_unsolicited(resp: &Response) -> bool {
         Response::DevicePairingRequested { .. }
             | Response::DeviceConnected { .. }
             | Response::DeviceDisconnected { .. }
+            | Response::RelayStateChanged { .. }
     )
 }
 
@@ -1400,7 +1401,10 @@ mod tests {
                 .collect();
             let skipped = matches!(
                 name.as_str(),
-                "DevicePairingRequested" | "DeviceConnected" | "DeviceDisconnected"
+                "DevicePairingRequested"
+                    | "DeviceConnected"
+                    | "DeviceDisconnected"
+                    | "RelayStateChanged"
             );
             assert!(skipped, "the daemon pushes {name} to app connections; is_unsolicited must skip it");
             pushed += 1;

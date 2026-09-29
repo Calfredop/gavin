@@ -115,17 +115,35 @@ impl Desk {
         self.next()
     }
 
-    fn next(&mut self) -> Response {
+    /// The next message, whatever it is.
+    fn next_raw(&mut self) -> Response {
         read_message(&mut self.reader)
             .expect("the daemon did not answer in time")
             .expect("the daemon closed the connection")
+    }
+
+    /// The next message that is not the dial's state changing, which
+    /// arrives whenever the Relay is dialled and is asserted on by the
+    /// tests that are about it.
+    fn next(&mut self) -> Response {
+        loop {
+            match self.next_raw() {
+                Response::RelayStateChanged { .. } => {}
+                other => return other,
+            }
+        }
     }
 
     /// Whether anything arrives within `within`. For the pushes that
     /// must not be sent.
     fn hears_nothing_for(&mut self, within: Duration) -> bool {
         self.stream.set_read_timeout(Some(within)).unwrap();
-        let heard = read_message::<_, Response>(&mut self.reader);
+        let heard = loop {
+            match read_message::<_, Response>(&mut self.reader) {
+                Ok(Some(Response::RelayStateChanged { .. })) => continue,
+                other => break other,
+            }
+        };
         self.stream.set_read_timeout(Some(SOON)).unwrap();
         heard.is_err()
     }
@@ -920,6 +938,103 @@ fn a_daemon_without_the_admission_token_is_not_registered() {
 
     // Given the token, the daemon is registered without being restarted.
     workstation.reach(&relay);
+}
+
+// -- what the desk is told about the dial --------------------------------
+
+fn relay_state(workstation: &mut Workstation) -> protocol::RelayState {
+    match workstation.command.request(&Request::GetRelayState) {
+        Response::RelayState { state } => state,
+        other => panic!("expected RelayState, got {other:?}"),
+    }
+}
+
+fn eventually_state(
+    workstation: &mut Workstation,
+    what: &str,
+    check: impl Fn(&protocol::RelayState) -> bool,
+) -> protocol::RelayState {
+    let deadline = Instant::now() + SOON;
+    loop {
+        let state = relay_state(workstation);
+        if check(&state) {
+            return state;
+        }
+        assert!(Instant::now() < deadline, "{what}; the state is {state:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The dial's state is what the desk shows beside the Relay URL: off
+/// reads not wanted, a registered daemon reads connected, and a wrong
+/// token reads failed in the Relay's own words -- without the token.
+#[test]
+fn the_desk_is_told_whether_the_daemon_reached_its_relay() {
+    use protocol::RelayState;
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+
+    assert_eq!(relay_state(&mut workstation), RelayState::NotWanted);
+
+    let wrong = "not-the-token-9f3a";
+    workstation.set_remote_access(true, Some(&relay.url()), Some(wrong));
+    let failed = eventually_state(&mut workstation, "the wrong token was not reported", |s| {
+        matches!(s, RelayState::Failed { .. })
+    });
+    match &failed {
+        RelayState::Failed { why } => {
+            assert_eq!(why, &RefusalReason::Admission.to_string());
+        }
+        other => panic!("{other:?}"),
+    }
+    // Neither the state nor the push nor the log carries the token.
+    assert!(!serde_json::to_string(&failed).unwrap().contains(wrong));
+    assert!(!workstation.log().contains(wrong), "the token reached the log");
+
+    // The right token, without a restart: connected, since about now.
+    workstation.set_remote_access(true, Some(&relay.url()), Some(TOKEN));
+    let connected = eventually_state(&mut workstation, "the daemon did not connect", |s| {
+        matches!(s, RelayState::Connected { .. })
+    });
+    match connected {
+        RelayState::Connected { since } => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            assert!((now - since).abs() < 60, "since {since} is not near {now}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!workstation.log().contains(TOKEN), "the token reached the log");
+
+    workstation.set_remote_access(false, Some(&relay.url()), None);
+    eventually_state(&mut workstation, "off did not read as not wanted", |s| {
+        *s == RelayState::NotWanted
+    });
+}
+
+/// The desk hears the change without asking.
+#[test]
+fn a_change_of_the_dials_state_is_pushed_to_the_desk() {
+    use protocol::RelayState;
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    let mut push = Desk::connect(&workstation.endpoint(), &workstation.daemon_token, ConnectionKind::Push);
+
+    workstation.set_remote_access(true, Some(&relay.url()), Some(TOKEN));
+    let mut saw_connected = false;
+    for _ in 0..20 {
+        match push.next_raw() {
+            Response::RelayStateChanged { state: RelayState::Connected { .. } } => {
+                saw_connected = true;
+                break;
+            }
+            Response::RelayStateChanged { .. } => {}
+            other => panic!("unexpected push {other:?}"),
+        }
+    }
+    assert!(saw_connected, "no connected push arrived");
 }
 
 // -- the switch ---------------------------------------------------------

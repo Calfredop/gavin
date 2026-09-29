@@ -109,6 +109,7 @@ const REMOTE_COMMAND_TABLE: &[(&str, RemoteAllowance)] = &[
     ("confirm_pairing", RemoteAllowance::Refused), // Trust
     ("reject_pairing", RemoteAllowance::Refused), // Trust
     ("list_devices", RemoteAllowance::Refused), // Trust
+    ("get_relay_state", RemoteAllowance::Refused), // Trust: the desk's own dial
     ("revoke_device", RemoteAllowance::Refused), // Trust
     ("revoke_all_devices", RemoteAllowance::Refused), // Trust
     ("set_remote_access", RemoteAllowance::Refused), // Trust

@@ -43,6 +43,15 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v56 is the desk knowing whether the daemon reached its Relay
+/// (`companion-32`). It adds `GetRelayState`, answered by
+/// `Response::RelayState`, and the `RelayStateChanged` push that follows
+/// every change -- one new TYPE and one push, no widened payload, so
+/// `min_version_for` is the whole wire gate. The Settings section owes
+/// `FEATURE_MIN_VERSION.relayState`, for the copy against an older daemon.
+/// The state carries the words `DialError` and `RefusalReason` already
+/// have and never the admission token.
+///
 /// v55 is the attention request (`companion-14`, ADR 0005): the one
 /// deliberately stable API between the Companion shell and a Workstation.
 /// It adds `GetAttention` (a Device asks) and `AttentionResult` (the
@@ -693,7 +702,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 55;
+pub const PROTOCOL_VERSION: u32 = 56;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -723,6 +732,30 @@ pub const CUSTOM_API_FAMILY_MIN_VERSION: u32 = 48;
 /// daemon's version with this (`FEATURE_MIN_VERSION.headroomFailures` in
 /// the app, and the host's `create_agent_session` behind it).
 pub const HEADROOM_FAILURES_MIN_VERSION: u32 = 50;
+
+/// Where the daemon's dial to the Relay stands (v56).
+///
+/// `Failed.why` is a sentence the dial already has -- `DialError`'s or
+/// `RefusalReason`'s Display -- and never carries the admission token: the
+/// token is presented in the first frame and appears in no error.
+/// `Connected.since` is wall-clock epoch seconds, like `expires_at`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum RelayState {
+    /// Remote access is off, or there is no Relay URL to dial.
+    NotWanted,
+    /// The dial is being made, for the first time or after the settings
+    /// changed.
+    Dialling,
+    /// Registered with the Relay and holding the connection.
+    Connected { since: i64 },
+    /// The last dial failed or the held connection was lost, and another
+    /// is coming.
+    Failed { why: String },
+    /// A state a newer daemon reports.
+    #[serde(other)]
+    Unknown,
+}
 
 /// The oldest daemon a Device can pair with: the first whose pairing
 /// reads the Device's proof, acknowledges it (`PairingAck`) and answers
@@ -1573,6 +1606,10 @@ pub enum Request {
     /// settings `SetRemoteAccess` wrote. See `Response::Devices` for why
     /// the settings ride along.
     ListDevices,
+    /// Where the daemon's dial to the Relay stands (v56). Answered with
+    /// `Response::RelayState`; every change after is pushed as
+    /// `RelayStateChanged`.
+    GetRelayState,
     /// Revoke one device: mark the row and drop every live connection
     /// carrying its id (§3, "Revocation").
     RevokeDevice {
@@ -2119,6 +2156,11 @@ pub fn min_version_for(req: &Request) -> u32 {
         // payload's own `ATTENTION_API_VERSION` is the compat gate for
         // fields, so no FEATURE_MIN_VERSION entry is owed.
         Request::GetAttention { .. } | Request::AttentionResult { .. } => 55,
+
+        // Whether the daemon reached its Relay (v56 / companion-32). One
+        // new TYPE, so this arm is its whole wire gate; the Settings
+        // section owes FEATURE_MIN_VERSION.relayState for the copy.
+        Request::GetRelayState => 56,
 
         Request::Shutdown => 12,
 
@@ -2788,6 +2830,12 @@ pub enum Response {
         #[serde(default)]
         relay_admission_set: bool,
     },
+    /// The answer to `GetRelayState` (v56).
+    RelayState { state: RelayState },
+    /// Push to every live `app` connection (v56): the dial's state
+    /// changed. Only to a connection that reads pushes, like the device
+    /// pushes -- see `ConnectionKind`.
+    RelayStateChanged { state: RelayState },
     /// Push to every live `app` connection: a phone has completed the
     /// pairing handshake and is waiting on the human (§3).
     ///
@@ -5088,6 +5136,18 @@ mod tests {
     /// survive the parse as `None`, and a request that names none has to
     /// write the bytes an older daemon has always seen.
     #[test]
+    fn the_relay_state_has_one_wire_shape_and_a_newer_state_reads_as_unknown() {
+        let connected = serde_json::to_value(RelayState::Connected { since: 7 }).unwrap();
+        assert_eq!(connected, serde_json::json!({"state": "connected", "since": 7}));
+        let failed = RelayState::Failed { why: "no".into() };
+        let back: RelayState = serde_json::from_str(&serde_json::to_string(&failed).unwrap()).unwrap();
+        assert_eq!(back, failed);
+        let newer: RelayState = serde_json::from_str(r#"{"state":"asleep"}"#).unwrap();
+        assert_eq!(newer, RelayState::Unknown);
+        assert_eq!(min_version_for(&Request::GetRelayState), 56);
+    }
+
+    #[test]
     fn a_set_remote_access_with_no_token_is_what_an_older_app_sends() {
         let old = r#"{"type":"SetRemoteAccess","enabled":true,"relay_url":"wss://relay.example"}"#;
         match serde_json::from_str::<Request>(old).unwrap() {
@@ -6638,7 +6698,9 @@ mod tests {
         // between the shell and a Workstation (ADR 0005). Two new TYPES.
         // The Device wire built these five at 44..48 on its own branch
         // and moved them past main's 44..50 when the two met.
-        assert_eq!(PROTOCOL_VERSION, 55);
+        // v56: GetRelayState -- one new TYPE (plus the RelayState reply
+        // and RelayStateChanged push).
+        assert_eq!(PROTOCOL_VERSION, 56);
     }
 
     #[test]
@@ -7166,6 +7228,8 @@ mod tests {
                 call_id: 1,
                 items: vec![],
             },
+            // v56: whether the daemon reached its Relay.
+            Request::GetRelayState,
             // Companion notifications, gated at 49.
             Request::SetPushGatewayUrl {
                 url: Some("https://push.example".into()),
@@ -7308,6 +7372,8 @@ mod tests {
         expected.insert(54, 5);
         // GetAttention + AttentionResult -- the attention request.
         expected.insert(55, 2);
+        // GetRelayState -- whether the daemon reached its Relay.
+        expected.insert(56, 1);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
