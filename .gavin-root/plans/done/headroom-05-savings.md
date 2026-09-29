@@ -2,7 +2,7 @@
 order: 7328
 kind: task
 title: Headroom 05: savings
-status: To Do
+status: Done
 labels: ready-for-agent
 parent: headroom.md
 complexity: complex
@@ -21,11 +21,13 @@ Part of `headroom.md`. Read the spec (section "Savings") first.
 
 ## Acceptance criteria
 
-- [ ] The snapshot writes the saved tokens and the request count for a compressed run and nothing for an uncompressed one (tested against a fake `/stats`)
-- [ ] The migration is proven against an old-schema database
-- [ ] The run history and window sums are computed in pure modules (tested)
-- [ ] `cargo test --workspace`, `npm test` and `npm run check` green
+- [x] The snapshot writes the saved tokens and the request count for a compressed run and nothing for an uncompressed one (tested against a fake `/stats`)
+- [x] The migration is proven against an old-schema database
+- [x] The run history and window sums are computed in pure modules (tested)
+- [x] `cargo test --workspace`, `npm test` and `npm run check` green
 - [ ] Human test: after a real compressed card run, the run history shows the tokens it saved and the hub shows them in the current window
+- [ ] Decision: Headroom 0.39.1 caps /stats per_project at 50 entries and evicts the smallest saver (savings_tracker.py DEFAULT_MAX_PROJECTS; the spec assumed the map only grows). I ran Headroom's own tracker with 50 older sessions in the map: two live sessions alternating 20 requests each (true 20 requests / 100k saved apiece) read back as absent and as 1 request / 5k. A solo session reads right. So once 50 sessions have been tagged, per-run savings undercount in a fleet. This card ships the per_project snapshot as written, and the source is one function (http.rs session_savings). Which source should savings use?
+  Options: A) Keep per_project and accept the fleet undercount B) Run Headroom with --log-file under Gavin's state dir and tally each session from its JSONL (exact; one more pinned flag, a file to rotate) C) Keep per_project and ask upstream for a configurable cap or an eviction that spares active projects
 
 <!-- gavin:auto-commit -->
 When the implementation is done, commit it. Commit only the files you touched — never `git add -A`. Do not push.

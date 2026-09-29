@@ -1,5 +1,5 @@
 ---
-order: 7168
+order: 8192
 title: Headroom agent tooling
 status: To Do
 labels: ready-for-agent
@@ -18,12 +18,12 @@ The human installs Headroom from Settings or the wizard, at a version Gavin has 
 
 Tickets are task cards nested under this plan, each with its own status and a `Blocked by:` first line. Rails sequence them. After 02 lands, 03, 04 and 05 can run in parallel.
 
-- [ ] [headroom-01](headroom-01-daemon-runs-headroom.md): the daemon runs Headroom
-- [ ] [headroom-02](headroom-02-compressed-launches-claude-code.md): compressed launches and Claude Code
-- [ ] [headroom-03](headroom-03-codex-opencode-custom.md): Codex, opencode and Custom
-- [ ] [headroom-04](headroom-04-setup-surfaces.md): the setup surfaces
-- [ ] [headroom-05](headroom-05-savings.md): savings
-- [ ] [headroom-06](headroom-06-honest-failures.md): honest failures
+- [x] [headroom-01](./done/headroom-01-daemon-runs-headroom.md): the daemon runs Headroom
+- [x] [headroom-02](./done/headroom-02-compressed-launches-claude-code.md): compressed launches and Claude Code
+- [x] [headroom-03](./done/headroom-03-codex-opencode-custom.md): Codex, opencode and Custom
+- [x] [headroom-04](./done/headroom-04-setup-surfaces.md): the setup surfaces
+- [x] [headroom-05](./done/headroom-05-savings.md): savings
+- [x] [headroom-06](./done/headroom-06-honest-failures.md): honest failures
 - [ ] [headroom-07](headroom-07-gemini.md): Gemini, after a spike
 - [ ] [headroom-08](headroom-08-windows-and-intel-mac.md): Windows and Intel Macs (parked)
 
