@@ -4985,6 +4985,13 @@ impl SessionManager {
                             manager.slept_mid_turn.lock().unwrap().remove(&id);
                         }
 
+                        // Scanned ahead of the output heuristic below,
+                        // because one thing it finds changes what these
+                        // bytes mean to it: Claude Code's idle reminder.
+                        // Applied after it, in the order they always were.
+                        let status_events = status_scanner.feed(&buf[..n]);
+                        let reminded = status_events.contains(&StatusEvent::IdleReminder);
+
                         {
                             // Read before `inner` is locked: a different
                             // mutex, and this block's rule is that the
@@ -5010,6 +5017,16 @@ impl SessionManager {
                                 // explicit signals underneath (OSC 133,
                                 // the notification bell) are untouched;
                                 // only the guess is suspended.
+                            } else if reminded {
+                                // Claude Code's idle reminder: the program
+                                // saying, a minute late, that the turn is
+                                // over. Not the agent doing anything --
+                                // it is only sent to a session sitting at
+                                // its prompt -- so it reports no `working`,
+                                // and so no quiet timer comes back two
+                                // seconds later to re-announce a finished
+                                // turn as `idle` and deliver the
+                                // follow-up queue on it.
                             } else if !heuristic.applies {
                                 // A plain terminal: output claims
                                 // nothing. It does still END a wait --
@@ -5041,7 +5058,7 @@ impl SessionManager {
                             }
                         }
 
-                        for event in status_scanner.feed(&buf[..n]) {
+                        for event in status_events {
                             match event {
                                 StatusEvent::Idle => {
                                     heuristic.seen_osc133.store(true, Ordering::SeqCst);
@@ -5056,6 +5073,9 @@ impl SessionManager {
                                     heuristic.inner.lock().unwrap().waiting_for_input = true;
                                     persist_and_emit_status(&manager, &id, SessionStatus::WaitingForInput);
                                 }
+                                // Consumed above: it says nothing the
+                                // session's `idle` has not already said.
+                                StatusEvent::IdleReminder => {}
                             }
                         }
 
@@ -14701,6 +14721,52 @@ mod tests {
             "waiting_for_input",
             "the stored status must still say a human is needed"
         );
+    }
+
+    /// The bug behind "every finished session needs attention". Claude
+    /// Code sends `Claude is waiting for your input` 60 s after EVERY turn
+    /// nobody answered, finished or not, and it used to land here as a
+    /// wait -- with a `working` flash in front of it, because the
+    /// reminder's own bytes are output. A session that went quiet must
+    /// stay exactly as quiet when the reminder arrives.
+    #[test]
+    fn the_idle_reminder_is_neither_a_wait_nor_work() {
+        let (socket_path, _dir) = start_test_server();
+        // The paint in front is what lets the session settle to `idle`
+        // before the reminder, and on Windows it also takes ConPTY's
+        // first-write repaint out of the way (see the test above).
+        let command = "printf gavin_painted; sleep 4; \
+             printf '\\033]777;notify;Claude Code;Claude is waiting for your input\\007'; \
+             while :; do read _unused; done";
+        let id = create_session_with(&socket_path, command);
+
+        let mut attached = attach_reader(&socket_path, &id);
+        wait_for_status(&mut attached, &id, "working");
+        wait_for_status(&mut attached, &id, "idle");
+
+        // Long enough for the sleep to run out AND for a full quiet
+        // period after the reminder, so a `working` it provoked would
+        // have been followed by the timer's `idle` inside the window.
+        let deadline = std::time::Instant::now()
+            + Duration::from_secs(4)
+            + HEURISTIC_QUIET_PERIOD
+            + Duration::from_secs(1);
+        let mut statuses = Vec::new();
+        let mut output = String::new();
+        while std::time::Instant::now() < deadline {
+            match read_message::<_, Response>(&mut attached) {
+                Ok(Some(Response::StatusChanged { id: rid, status })) if rid == id => statuses.push(status),
+                Ok(Some(Response::Output { id: rid, data })) if rid == id => output.push_str(&data),
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        assert!(
+            output.contains("\u{1b}]777;notify;Claude Code;Claude is waiting for your input"),
+            "the reminder never reached the session, so this proves nothing: {output:?}"
+        );
+        assert!(statuses.is_empty(), "the idle reminder changed the session's status: {statuses:?}");
+        assert_eq!(manager_status(&socket_path, &id), "idle");
     }
 
     /// The other side of the window: it opens only when the size actually

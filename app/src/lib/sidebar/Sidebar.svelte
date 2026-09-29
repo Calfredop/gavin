@@ -633,11 +633,13 @@
     return $layoutState.cwdBySessionId[row.id] ?? "";
   }
 
-  // One bubble for the whole row (sidebarTips.ts). A session row always
-  // carries a status, so the kind word is only ever reached by the three
-  // that no agent runs behind.
+  // One bubble for the whole row (sidebarTips.ts), opening with the name
+  // the row had to ellipsize. A session row always carries a status, so
+  // the kind word is only ever reached by the three that no agent runs
+  // behind.
   function tabRowTip(row: PageTabRow, status: GitStatus | null): string {
     return tabRowTipFor({
+      name: tabRowLabel(row),
       lead: row.status
         ? statusWord(row.status)
         : tabRowKindWord(row.kind, $layoutState.cardTabsById[row.id]?.view === "followups"),
@@ -1196,8 +1198,12 @@
               }}
             />
           {:else}
+            <!-- The full name on hover: the row ellipsizes it. On the name
+                 and not the row, since mouseenter does not bubble and the
+                 recap's bubble would take a row-wide one over for good. -->
             <span
               class="page-name"
+              use:tooltip={page.name}
               ondblclick={() => startEditingPage(page.id, page.name)}
               onclick={() => {
                 switchWorkspaceView(ws.id, "terminal");
