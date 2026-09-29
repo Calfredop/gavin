@@ -3,7 +3,32 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 
+// A wasm build that forgot `default-features = false` would otherwise fail
+// deep inside `transport` with a wall of unresolved names; say what is
+// wrong here instead.
+#[cfg(all(feature = "os", target_family = "wasm"))]
+compile_error!(
+    "protocol's `os` feature cannot build for wasm: depend on it with `default-features = false`"
+);
+
+// Gated with the rest of the operating-system-specific parts (Cargo feature
+// `os`, on by default): it has a Unix and a Windows implementation and
+// nothing for any other target, `wasm32-unknown-unknown` among them.
+#[cfg(all(feature = "os", not(target_family = "wasm")))]
 pub mod transport;
+
+// The Device wire's two contracts. Neither has an operating-system part,
+// so both are here whether or not the `os` feature is: the Companion core
+// depends on them from `wasm32-unknown-unknown`.
+pub mod attention;
+pub mod device_wire;
+pub mod relay;
+pub mod remote_commands;
+
+pub use attention::{
+    AttentionItem, AttentionKind, AttentionTarget, WorkstationState, ATTENTION_API_VERSION,
+};
+pub use remote_commands::{allowance_for, remote_command_table, RemoteAllowance};
 
 /// Cap on a single protocol line, so a client that never sends a newline
 /// can't grow the daemon's read buffer unbounded. `pub` so gavin-mcp's
@@ -17,6 +42,91 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
+///
+/// v55 is the attention request (`companion-14`, ADR 0005): the one
+/// deliberately stable API between the Companion shell and a Workstation.
+/// It adds `GetAttention` (a Device asks) and `AttentionResult` (the
+/// desktop answers a `ForwardAttention` push) -- two new TYPES, gated by
+/// `min_version_for`. The answer itself carries an explicit
+/// `ATTENTION_API_VERSION` and only ever grows by optional fields, so a
+/// `FEATURE_MIN_VERSION` entry is not owed: nothing in the desktop UI
+/// sends `GetAttention`, and the shell versions the payload itself.
+///
+/// v54 is the third slice of the Device wire (`companion-12`): the daemon
+/// forwards gated desktop commands. It adds `InvokeDesktop`,
+/// `ListenDesktop`, `UnlistenDesktop`, `ForwardResult` and
+/// `OfferDesktopEvent` -- five new TYPES, gated by `min_version_for` --
+/// and widens `Hello`'s `connection` with `Forward` for the desktop's
+/// forwarding connection. The Remote role command table lives in
+/// `remote_commands`. The desktop's webview sends none of the new
+/// requests: companion-13 opens the forwarding connection and answers
+/// there, so no `FEATURE_MIN_VERSION` entry is owed on this bump.
+///
+/// v53 is the second slice of the Device wire (`companion-11`): a paired
+/// Device connects. It adds `RemoveThisDevice`, by which a Device deletes
+/// its own row -- one new TYPE, gated by `min_version_for`, and (until
+/// v54) the only request the Remote role may make. Nothing in the
+/// desktop app sends it, so no `FEATURE_MIN_VERSION` entry is owed: there
+/// is no surface for one to grey.
+///
+/// The rest of v53 is not on this wire. Pairing registers the Device's
+/// hardware key and agrees a notification key, and a connection is Noise
+/// `IK` followed by the hardware key's signature -- all of it between the
+/// daemon and the Companion core, inside the Relay's pipe
+/// (`device_wire`). What the number does for that half is ride in the
+/// pairing QR: a Device declines a QR drawn by a daemon older than
+/// `PAIRING_MIN_VERSION`, which would neither read its proof nor send it
+/// a notification key.
+///
+/// v52 is the first slice of the Device wire (`companion-10`): the daemon
+/// dials a Relay while remote access is on, and the Relay admits only
+/// peers that hold its admission token, so the token has to reach the
+/// daemon and the pairing QR. `SetRemoteAccess` gains `relay_admission`,
+/// `Devices` gains `relay_admission_set`, and `PairingQr` gains
+/// `relayAdmission`.
+///
+/// No new Request variant, so `min_version_for` has no new arm and cannot
+/// see any of it. What an older daemon does with `relay_admission` is
+/// drop it -- and that daemon dials nothing, so the token it lost was one
+/// it had no use for. The app still owes the human the truth about it:
+/// `FEATURE_MIN_VERSION.relayAdmission` greys the Settings field against
+/// a daemon that would discard what is typed into it.
+///
+/// An older APP matters more, because the two builds share one
+/// `devices.sqlite`: an app older than v52 that toggles the switch sends
+/// no `relay_admission` at all. Absent therefore means UNCHANGED, never
+/// "cleared" -- see `Request::SetRemoteAccess`.
+///
+/// v51 widens `Hello` with `connection`: which of the app's two
+/// connections this is, push or command (`ConnectionKind`). The daemon
+/// used to send the device pushes to every `app` connection, and the
+/// command connection takes the first message it reads as the reply to
+/// its request -- so a push arriving mid-request displaced the reply and
+/// left the connection one message out of step from then on
+/// (`device-pushes-reach-the-command-connection.md`). Now they go only to
+/// a connection that can read them.
+///
+/// No new Request variant, so `min_version_for` has no new arm: `Hello`
+/// keeps the one it took at v35, and that gate is by TYPE and cannot see
+/// a field. No `FEATURE_MIN_VERSION` entry or `featureBlockedReason`
+/// consumer is owed either, and not for want of a surface to put one on:
+/// nothing a person does produces this field, the app sets it on every
+/// handshake, and what an older daemon does with it is ignore it -- the
+/// connection then behaves as it always did, both of them sent the
+/// pushes, which the app's command lane already tolerates by skipping
+/// them (`is_unsolicited`). An older client sends no field, which the
+/// daemon reads as today's behaviour, so nothing is dropped in either
+/// direction.
+///
+/// The Device wire's five are 51..55 and not the 44..48 they were built
+/// at, for the reason Headroom below is 46 and not 45: the wire's branch
+/// was cut at v43 and numbered its slices 44..48 while `main` gave 44..50
+/// to Companion notifications, the rail schedule and Headroom, and the
+/// two met in one merge. `main`'s numbers had landed, so the wire's moved
+/// past them. A daemon built from `main` alone reports up to 50 and has
+/// none of the wire: gated at 46..48, a Device's requests would reach it
+/// and be answered `Unsupported` where the gate promised an answer, and a
+/// Device would accept its pairing QR and send a proof it never reads.
 ///
 /// v50 is honest failures (`2026-09-28-headroom-design.md`, "Failures"):
 /// a session that should have been compressed and was not says why, and
@@ -120,6 +230,16 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// `SetDeviceSendPermission` (the shell hands over a gateway permission).
 /// Ciphertext never crosses this socket -- only the plaintext the desk
 /// already knew, and the permission string the Device minted.
+/// Three new TYPES, gated by `min_version_for` -- at 49, not 44. Before
+/// the renumber above, the Device wire's branch answered 44..48 without
+/// knowing any of the three, and gated at 44 they would be sent to such a
+/// daemon and refused on every inbox change. 49 is the lowest number every
+/// build of either line knows them at: `main` has had them since 44, and
+/// the wire's branch since it first answered 49. A main-built v44..48
+/// daemon, which does know them, is refused them -- the cheap direction to
+/// be wrong in, and a rebuild and restart put it right. The app's
+/// `FEATURE_MIN_VERSION.companionNotifications` is what keeps the desk's
+/// driver quiet against an older daemon.
 ///
 /// v43 takes the launch command OUT of the board read, and adds
 /// `GetCardSession` to read one binding with its command put back
@@ -573,7 +693,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 50;
+pub const PROTOCOL_VERSION: u32 = 55;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -603,6 +723,13 @@ pub const CUSTOM_API_FAMILY_MIN_VERSION: u32 = 48;
 /// daemon's version with this (`FEATURE_MIN_VERSION.headroomFailures` in
 /// the app, and the host's `create_agent_session` behind it).
 pub const HEADROOM_FAILURES_MIN_VERSION: u32 = 50;
+
+/// The oldest daemon a Device can pair with: the first whose pairing
+/// reads the Device's proof, acknowledges it (`PairingAck`) and answers
+/// with a notification key, and derives the six digits from the
+/// handshake hash. Read by
+/// the Companion core against the `protocolVersion` a pairing QR carries.
+pub const PAIRING_MIN_VERSION: u32 = 55;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -1405,6 +1532,12 @@ pub enum Request {
         protocol_version: u32,
         auth: HelloAuth,
         nonce: String,
+        /// Which of the app's connections this is (v51). `None` -- the
+        /// only thing a client older than v51 can say -- is today's
+        /// behaviour: the connection is sent every device push. See
+        /// `ConnectionKind`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connection: Option<ConnectionKind>,
     },
 
     // -- Remote access, phase 2 (v42) ---------------------------------
@@ -1453,13 +1586,112 @@ pub enum Request {
     /// Store whether remote access is on and which relay to reach this
     /// daemon through.
     ///
-    /// Stored and inert in this phase: nothing dials and nothing listens
-    /// until phase 3's `remote.rs`. `relay_url` is `None` for "no relay,
-    /// LAN only" and is kept RAW -- the daemon has no opinion about which
-    /// relay the human self-hosts (§11 Q2).
+    /// Since v52 the daemon ACTS on it: while `enabled` is set and there
+    /// is a Relay URL, it dials that Relay and holds the connection
+    /// (`daemon/src/remote.rs`); turning it off lets go. `relay_url` is
+    /// `None` for "no Relay" and is stored as typed -- the daemon has no
+    /// opinion about which Relay the human self-hosts (§11 Q2), only
+    /// about whether the URL may be dialled (`relay::RelayUrl`).
+    ///
+    /// `relay_admission` is the Relay's admission token (v52), and its
+    /// absence means UNCHANGED: `None` leaves the stored token alone, an
+    /// empty string clears it, anything else replaces it. Unlike
+    /// `relay_url`, where `None` clears -- because an app older than v52
+    /// sends no `relay_admission` at all, the two builds share one trust
+    /// store, and a switch toggled from the older one must not wipe a
+    /// token it has never heard of.
+    ///
+    /// Unchanged for the SAME Relay. A request that changes `relay_url`
+    /// and names no token forgets the stored one: a token belongs to the
+    /// Relay that issued it, and the daemon presents what is stored to
+    /// whatever it dials.
     SetRemoteAccess {
         enabled: bool,
         relay_url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_admission: Option<String>,
+    },
+
+    /// A Device removes itself from this Workstation (v53): its row is
+    /// deleted and every connection it holds is dropped.
+    ///
+    /// It names no Device. Which row goes is decided by the connection
+    /// the request arrived on, whose identity the Noise handshake fixed
+    /// -- so a Device can remove itself and nothing else, and a request
+    /// that arrives on a connection that is no Device's is an error.
+    /// Managing Devices is otherwise the desk's alone (ADR 0004); this is
+    /// the one exception the spec makes, and it only ever takes trust
+    /// away.
+    RemoveThisDevice,
+
+    /// A Device asks the daemon to invoke a desktop Tauri command (v54).
+    ///
+    /// The daemon checks `command` against the Remote role table
+    /// (`remote_commands`), forwards an allowed name to the desktop's
+    /// forwarding connection, and answers with `DesktopResult`. A refused
+    /// or unknown name never reaches the desktop. With no forwarding
+    /// connection live the answer is `Error` carrying "desktop app not
+    /// running".
+    InvokeDesktop {
+        command: String,
+        /// The arguments the command takes, as the webview's `invoke`
+        /// would pass them -- typically a JSON object.
+        args: serde_json::Value,
+    },
+
+    /// A Device asks to receive pushes for a desktop event by name (v54).
+    ///
+    /// Events the desktop offers on its forwarding connection
+    /// (`OfferDesktopEvent`) are then written to every Device connection
+    /// that has listened for that name, as `Response::DesktopEvent`.
+    ListenDesktop { event: String },
+
+    /// Stop receiving a previously listened desktop event (v54).
+    UnlistenDesktop { event: String },
+
+    /// The desktop app's answer to a `ForwardCommand` (v54).
+    ///
+    /// Arrives on the forwarding connection. `error` present means the
+    /// command failed; otherwise `value` is what the handler returned
+    /// (including JSON `null`).
+    ForwardResult {
+        call_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+
+    /// A desktop event the host emitted, offered on the forwarding
+    /// connection (v54). The daemon relays it to Devices that listened
+    /// for `event`.
+    OfferDesktopEvent {
+        event: String,
+        payload: serde_json::Value,
+    },
+
+    /// A Device asks what is waiting on the human on this Workstation
+    /// (v55, ADR 0005).
+    ///
+    /// `version` is the attention API version the Device understands
+    /// (`ATTENTION_API_VERSION`). The daemon asks the desktop over the
+    /// forwarding connection (`ForwardAttention`) and answers with
+    /// `Response::Attention`. With no desktop connected the answer is
+    /// still `Attention`, carrying `WorkstationState::DesktopAppNotRunning`
+    /// — a state, not an error, so the hub can draw it.
+    GetAttention {
+        version: u32,
+    },
+
+    /// The desktop's answer to a `ForwardAttention` (v55).
+    ///
+    /// Arrives on the forwarding connection. `items` is what the
+    /// desktop built from the attention inbox, turn verdicts and rails;
+    /// the daemon wraps them as `Response::Attention` with state
+    /// `Ready` for the Device that asked.
+    AttentionResult {
+        call_id: u64,
+        items: Vec<AttentionItem>,
     },
 
     /// Where this daemon posts Companion notification ciphertext.
@@ -1577,6 +1809,62 @@ pub enum HelloAuth {
     /// A session token minted at `CreateSession`; the connection becomes
     /// `agent`, scoped to the session the token was minted for.
     SessionToken { token: String },
+}
+
+/// Which of the desktop app's connections a `Hello` is introducing (v51;
+/// `Forward` added in v54).
+///
+/// The app opens connections to its daemon and each proves the daemon
+/// token, so each becomes `app`. They are not alike: the push connection
+/// is read continuously for whatever the daemon sends it, and the command
+/// connection is read only as the answer to the request just written, the
+/// next message taken to be that answer. A push written to the command
+/// connection while a request is in flight is read as the answer, and the
+/// answer it displaced is then read as the reply to the request after --
+/// one message out of step until something fails.
+///
+/// So the daemon sends the device pushes (`DevicePairingRequested`,
+/// `DeviceConnected`, `DeviceDisconnected`) only to a connection that can
+/// read them: `Push`, or one that sent no kind at all. Sending none is what
+/// a client older than v51 does and is kept as it was, so an older app
+/// keeps the pushes on both of its connections, and the command lane's own
+/// skip of them (`is_unsolicited` in the app) stays for exactly that case.
+///
+/// `Forward` (v54) is the third: the daemon hands it gated commands to run
+/// and it hands back results and events (ADR 0003). It reads
+/// `ForwardCommand` pushes the way a push connection reads device pushes,
+/// and writes `ForwardResult` / `OfferDesktopEvent` as requests. It is
+/// not sent the device pushes -- those stay on `Push`.
+///
+/// `Unknown` is a kind a newer client sent that this daemon has never
+/// heard of. It has to be a value and not a parse error, for the reason
+/// `Request::Unknown` is: `read_message` turns a parse error into a closed
+/// connection, and a `Hello` that fails to parse leaves the client with no
+/// identity at all. A connection that is neither a push nor a command
+/// connection is not asking for the pushes, so it gets none.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConnectionKind {
+    /// Read for whatever the daemon pushes; never used to send a request.
+    Push,
+    /// Written a request and read for its answer, and nothing else.
+    Command,
+    /// The desktop's forwarding connection (v54): reads `ForwardCommand`
+    /// and writes results and events.
+    Forward,
+    /// A kind a newer client sent. Deserialize-only: never constructed or
+    /// sent by us.
+    #[serde(other)]
+    Unknown,
+}
+
+impl ConnectionKind {
+    /// Whether a connection that introduced itself as `kind` is sent the
+    /// device pushes. `None` is a `Hello` with no kind, which is every
+    /// client older than v51 and keeps today's answer: yes.
+    pub fn takes_device_pushes(kind: Option<ConnectionKind>) -> bool {
+        matches!(kind, None | Some(ConnectionKind::Push))
+    }
 }
 
 /// The protocol version that introduced `req`'s variant.
@@ -1771,10 +2059,13 @@ pub fn min_version_for(req: &Request) -> u32 {
 
         // Companion encrypted notifications (ticket 25). Three new TYPES:
         // the desk's notify/resolve batch, the Push gateway URL, and the
-        // Device's send permission for this Workstation.
+        // Device's send permission for this Workstation. 49, not the 44
+        // they shipped at on main: before the Device wire was renumbered,
+        // a daemon from its branch answered 45..48 without them (see
+        // `PROTOCOL_VERSION`).
         Request::PushCompanionNotify { .. }
         | Request::SetPushGatewayUrl { .. }
-        | Request::SetDeviceSendPermission { .. } => 44,
+        | Request::SetDeviceSendPermission { .. } => 49,
 
         // The daemon runs Headroom (ADR 0007). Five new TYPES, so this
         // match is the whole wire gate. The app owes a
@@ -1805,6 +2096,30 @@ pub fn min_version_for(req: &Request) -> u32 {
         // a v1 request (FEATURE_MIN_VERSION.headroomFailures).
         Request::HeadroomReach { .. } => 50,
 
+        // A Device removing itself (v53). Sent by a Device over the
+        // Device wire and by nothing in the desktop app, so there is no
+        // surface to owe a FEATURE_MIN_VERSION entry. The gate that
+        // matters is the role: `server::authorize` allows it to `remote`,
+        // and the handler refuses a connection that carries no Device.
+        Request::RemoveThisDevice => 53,
+
+        // Forwarding gated desktop commands (v54). Five new TYPES: three
+        // a Device sends, two the desktop's forwarding connection sends.
+        // companion-13 is the surface that opens the forwarding
+        // connection; until then nothing in the desktop app sends any of
+        // these, so no FEATURE_MIN_VERSION entry is owed on this bump.
+        Request::InvokeDesktop { .. }
+        | Request::ListenDesktop { .. }
+        | Request::UnlistenDesktop { .. }
+        | Request::ForwardResult { .. }
+        | Request::OfferDesktopEvent { .. } => 54,
+
+        // The attention request (v55 / companion-14). A Device asks; the
+        // desktop's forwarding connection answers. Two new TYPES. The
+        // payload's own `ATTENTION_API_VERSION` is the compat gate for
+        // fields, so no FEATURE_MIN_VERSION entry is owed.
+        Request::GetAttention { .. } | Request::AttentionResult { .. } => 55,
+
         Request::Shutdown => 12,
 
         // Client identity on the local socket (phase 1 of the
@@ -1813,10 +2128,14 @@ pub fn min_version_for(req: &Request) -> u32 {
         // from the `#[serde(other)]` arm and every client reads that as
         // "this daemon has no identity yet" -- the app continues as
         // `local`, gavin-mcp continues untokened, and nothing is silently
-        // dropped because `Hello` carries no field an older daemon would
+        // dropped because `Hello` carried no field an older daemon would
         // parse-and-discard. The app still mirrors it as
         // FEATURE_MIN_VERSION.clientIdentity so the Settings surface can
         // say WHY it is greyed, per CLAUDE.md.
+        //
+        // v51 gave it `connection`, which this arm cannot see -- and does
+        // not need to: see `PROTOCOL_VERSION`'s v51 note for why a daemon
+        // that ignores it costs nothing.
         Request::Hello { .. } => 35,
 
         // The archive (`plans/archive/`). v13 also widened PlanFileInfo
@@ -2002,7 +2321,11 @@ pub fn gate_request(req: &Request, daemon_version: u32) -> Result<(), GatedReque
 /// opening it is where a daemon on that OS died: `mint_daemon_token` is
 /// the first thing `run_server` does, so the whole daemon failed to
 /// start with `os error 3` before it ever reached the pipe.
-#[cfg(not(windows))]
+///
+/// Behind the `os` feature: a build for `wasm32-unknown-unknown` has no OS
+/// random source to read, and a Device that needs randomness there takes it
+/// from its own host rather than from a fallback in this crate.
+#[cfg(all(feature = "os", not(windows)))]
 pub fn random_hex(n_bytes: usize) -> std::io::Result<String> {
     let mut buf = vec![0u8; n_bytes];
     let mut f = std::fs::File::open("/dev/urandom")?;
@@ -2015,7 +2338,7 @@ pub fn random_hex(n_bytes: usize) -> std::io::Result<String> {
 /// an algorithm handle nor the open/close dance around one. It is
 /// documented to always return TRUE; the check is here regardless,
 /// because the failure it would hide is a token of zeroes.
-#[cfg(windows)]
+#[cfg(all(feature = "os", windows))]
 pub fn random_hex(n_bytes: usize) -> std::io::Result<String> {
     use windows::Win32::Security::Cryptography::ProcessPrng;
     let mut buf = vec![0u8; n_bytes];
@@ -2027,13 +2350,39 @@ pub fn random_hex(n_bytes: usize) -> std::io::Result<String> {
     Ok(hex_encode(&buf))
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+/// Lowercase hex: the encoding every key, secret and id on this wire
+/// crosses a screen or a JSON string in.
+pub fn hex_encode(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
         s.push_str(&format!("{b:02x}"));
     }
     s
 }
+
+/// The bytes `hex_encode` wrote. Either case is read; anything that is
+/// not a whole number of hex pairs is an error rather than a guess.
+pub fn hex_decode(s: &str) -> anyhow::Result<Vec<u8>> {
+    if !s.is_ascii() || s.len() % 2 != 0 {
+        anyhow::bail!("a hex string is an even number of hex digits");
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|e| anyhow::anyhow!("bad hex: {e}"))
+        })
+        .collect()
+}
+
+/// The Noise pattern the pairing handshake runs, for both ends of it.
+///
+/// One string, here, because two programs build a handshake from it --
+/// the daemon's responder and the Companion core's initiator -- and the
+/// daemon's static key is generated from its DH function as well
+/// (`daemon/src/trust.rs`, which re-exports this as `NOISE_PARAMS` and
+/// says why the PSK slot is 3).
+pub const PAIRING_NOISE_PARAMS: &str = "Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s";
 
 /// SHA-256 of a token, hex-encoded. The registry stores this, never the
 /// session token itself, so a copy of `registry.sqlite` yields no token
@@ -2086,7 +2435,11 @@ pub fn server_proof(daemon_token: &str, nonce: &str) -> String {
 /// digest can never collide with another SHA-256 in this system, and a
 /// version in the string so a future change to the derivation is a
 /// DIFFERENT code rather than the same six digits meaning two things.
-const PAIRING_SAS_CONTEXT: &[u8] = b"gavin-pairing-sas-v1";
+///
+/// v1 hashed the two static keys and nothing else, so two handshakes made
+/// with one Device key showed one code whoever made them. v2 hashes the
+/// handshake.
+const PAIRING_SAS_CONTEXT: &[u8] = b"gavin-pairing-sas-v2";
 
 /// The six-digit short authentication string both screens show during
 /// pairing (§3, "The ceremony").
@@ -2094,17 +2447,19 @@ const PAIRING_SAS_CONTEXT: &[u8] = b"gavin-pairing-sas-v1";
 /// **The derivation, exactly, because the phone has to reproduce it:**
 ///
 /// ```text
-/// lo     = min(key_a, key_b)            // bytewise lexicographic
-/// hi     = max(key_a, key_b)
-/// digest = SHA-256("gavin-pairing-sas-v1" || lo || hi)
+/// digest = SHA-256("gavin-pairing-sas-v2" || handshake hash)
 /// sas    = u64::from_be_bytes(digest[0..8]) % 1_000_000
 /// shown  = sas, zero-padded to six digits ("000042", never "42")
 /// ```
 ///
-/// The two keys are SORTED rather than ordered initiator-then-responder,
-/// so each side computes the code from what it holds without first
-/// agreeing on who is who -- and so a transcript that swapped the roles
-/// could not produce a matching code by accident.
+/// `handshake hash` is the Noise handshake hash of THIS pairing's
+/// `XXpsk3` exchange, the 32 bytes both ends read from their handshake
+/// state after message 3 (`get_handshake_hash`). It covers both static
+/// keys, both ephemerals and the mixing of the secret, and both ends
+/// hold it without agreeing on who is who. So a handshake the owner's
+/// phone did not make shows other digits than the owner's phone does,
+/// even when it was made with a copy of the phone's Noise key: the
+/// ephemerals are fresh in each.
 ///
 /// Truncated at eight bytes, not four: taking a u64 modulo a million
 /// leaves a bias of about one part in 10^13, which is nothing, where a
@@ -2121,12 +2476,10 @@ const PAIRING_SAS_CONTEXT: &[u8] = b"gavin-pairing-sas-v1";
 /// implementations must compute identically, so it belongs with the wire
 /// contract they are both written against. This crate is not what the
 /// phone links -- it is what the phone's author reads.
-pub fn pairing_sas(key_a: &[u8], key_b: &[u8]) -> String {
-    let (lo, hi) = if key_a <= key_b { (key_a, key_b) } else { (key_b, key_a) };
+pub fn pairing_sas(handshake_hash: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(PAIRING_SAS_CONTEXT);
-    h.update(lo);
-    h.update(hi);
+    h.update(handshake_hash);
     let digest = h.finalize();
     let mut head = [0u8; 8];
     head.copy_from_slice(&digest[..8]);
@@ -2134,6 +2487,7 @@ pub fn pairing_sas(key_a: &[u8], key_b: &[u8]) -> String {
 }
 
 /// Where the daemon writes its per-start token, `0600`, beside the socket.
+#[cfg(feature = "os")]
 pub fn daemon_token_path() -> anyhow::Result<PathBuf> {
     Ok(app_support_dir()?.join(profile_file_name("daemon", "token", BuildProfile::current())))
 }
@@ -2144,6 +2498,7 @@ pub fn daemon_token_path() -> anyhow::Result<PathBuf> {
 /// connection is refused the privileged, process-starting requests
 /// (remote-access design §11 Q1). A file rather than a protocol field so
 /// the daemon can honour a live toggle with no restart and no new request.
+#[cfg(feature = "os")]
 pub fn require_local_token_path() -> anyhow::Result<PathBuf> {
     Ok(app_support_dir()?.join("require_local_token"))
 }
@@ -2418,7 +2773,21 @@ pub enum Response {
     /// round trip for one screen. Widening a response variant introduced
     /// in the SAME version costs nothing -- no peer older than 42 ever
     /// receives one.
-    Devices { devices: Vec<DeviceInfo>, remote_access_enabled: bool, relay_url: Option<String> },
+    ///
+    /// `relay_admission_set` (v52) says WHETHER an admission token is
+    /// stored and never what it is. The token is a credential the human
+    /// was handed by whoever runs the Relay; the panel has to show that
+    /// one is there, and nothing on the desk needs to read it back. The
+    /// one place the daemon gives it out is inside the pairing QR, which
+    /// is what it is for. Absent from an older daemon's reply, which
+    /// reads as "none" -- and that daemon holds none.
+    Devices {
+        devices: Vec<DeviceInfo>,
+        remote_access_enabled: bool,
+        relay_url: Option<String>,
+        #[serde(default)]
+        relay_admission_set: bool,
+    },
     /// Push to every live `app` connection: a phone has completed the
     /// pairing handshake and is waiting on the human (§3).
     ///
@@ -2437,6 +2806,55 @@ pub enum Response {
     /// Push to every live `app` connection: a paired device's connection
     /// closed, whether it hung up or a revocation cut it.
     DeviceDisconnected { device_id: String },
+
+    /// The answer to `InvokeDesktop` (v54): what the desktop command
+    /// returned, or the error string it failed with.
+    ///
+    /// `error` present means the command failed; otherwise `value` is the
+    /// handler's return (including JSON `null`). Distinct from a refused
+    /// command (which never reaches the desktop and is answered `Error`
+    /// naming the refusal) and from "desktop app not running".
+    DesktopResult {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+
+    /// Push to the desktop's forwarding connection (v54): run this Tauri
+    /// command and answer with `ForwardResult { call_id, … }`.
+    ForwardCommand {
+        call_id: u64,
+        command: String,
+        args: serde_json::Value,
+    },
+
+    /// Push to every Device connection that listened for `event` (v54):
+    /// a desktop event the host offered on its forwarding connection.
+    DesktopEvent {
+        event: String,
+        payload: serde_json::Value,
+    },
+
+    /// The answer to `GetAttention` (v55, ADR 0005): the Workstation's
+    /// state and the waiting items.
+    ///
+    /// `version` is the attention API version of this answer. New optional
+    /// fields may be added later; an older reader ignores ones it has
+    /// never heard of.
+    Attention {
+        state: WorkstationState,
+        items: Vec<AttentionItem>,
+        version: u32,
+    },
+
+    /// Push to the desktop's forwarding connection (v55): build the
+    /// attention answer and reply with `AttentionResult { call_id, … }`.
+    ForwardAttention {
+        call_id: u64,
+        version: u32,
+    },
+
     /// The answer to every Headroom request (v46): the status AFTER
     /// whatever the request did, so a caller never has to ask twice to
     /// see what its own press changed.
@@ -2640,6 +3058,20 @@ pub struct PairingQr {
     /// The daemon's protocol version, so a phone can say "this gavin is
     /// too old for me" before it starts a handshake rather than after.
     pub protocol_version: u32,
+    /// The Relay's admission token (v52), which the Device presents to
+    /// the Relay in `rendezvous` to be carried at all. Omitted when the
+    /// human has set none.
+    ///
+    /// §3's "what it must not carry" lists "the relay's own credentials",
+    /// and this is not one: it is not what lets anyone BE the Relay or
+    /// run it, it is what the Relay asks of every peer it carries, and it
+    /// is already shared by every Workstation and Device on that Relay.
+    /// It reaches nothing on this machine. A photograph of the QR that
+    /// kept it would hold the right to open a connection to the Relay,
+    /// and a Noise handshake it cannot complete once the secret beside it
+    /// has lapsed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_admission: Option<String>,
 }
 
 impl PairingQr {
@@ -3971,6 +4403,11 @@ pub fn profile_file_name(stem: &str, extension: &str, profile: BuildProfile) -> 
 /// prints anything and an app whose only symptom is "daemon did not
 /// become reachable". An Err travels up through `bootstrap` instead and
 /// reaches the human as the connection banner, naming the variable.
+///
+/// Behind the `os` feature, as is every function here that reads the
+/// environment or the filesystem. `resolve_app_support_dir` below is the
+/// pure rule and is always available.
+#[cfg(feature = "os")]
 pub fn app_support_dir() -> anyhow::Result<PathBuf> {
     resolve_app_support_dir(
         std::env::var_os("HOME"),
@@ -4105,6 +4542,7 @@ pub fn normalize_separators(path: &str, windows: bool) -> String {
 /// plain one and the file viewer refuses every file in the workspace.
 /// So it is stripped here, once, rather than guarded against at each of
 /// the eight call sites.
+#[cfg(feature = "os")]
 pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
     let canonical = std::fs::canonicalize(path)?;
     if !cfg!(windows) {
@@ -4134,6 +4572,7 @@ pub fn strip_verbatim_prefix(path: &str) -> String {
     normalize_separators(path, true)
 }
 
+#[cfg(feature = "os")]
 pub fn socket_path() -> anyhow::Result<PathBuf> {
     let path =
         app_support_dir()?.join(profile_file_name("daemon", "sock", BuildProfile::current()));
@@ -4149,7 +4588,7 @@ pub fn socket_path() -> anyhow::Result<PathBuf> {
 
 /// Rejects a socket path the kernel would refuse, while there is still
 /// something useful to say about it.
-#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg_attr(not(all(unix, feature = "os")), allow(dead_code))]
 fn check_sun_path(path: &Path) -> anyhow::Result<()> {
     let len = path.as_os_str().as_encoded_bytes().len();
     if len > SUN_PATH_MAX {
@@ -4473,6 +4912,7 @@ mod tests {
             secret: "bb".repeat(32),
             rendezvous: vec!["wss://relay.example/gavin".into()],
             protocol_version: PROTOCOL_VERSION,
+            relay_admission: None,
         };
         let v = serde_json::to_value(&qr).unwrap();
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
@@ -4502,46 +4942,236 @@ mod tests {
         assert!(!qr.to_qr_string().contains(' '), "the QR string is compact JSON");
     }
 
+    /// The one field the QR has gained since §3 was written, and the
+    /// spec that added it (`2026-09-27-companion-design.md`, "Pairing and
+    /// the trust store"): the Relay's admission token, so that pairing
+    /// sets up everything a Device needs to reach this Workstation. One
+    /// field, under one name, and only when there is a token to carry.
+    #[test]
+    fn the_qr_carries_the_admission_token_when_there_is_one() {
+        let qr = PairingQr {
+            daemon_public_key: "aa".repeat(32),
+            secret: "bb".repeat(32),
+            rendezvous: vec!["wss://relay.example/gavin".into()],
+            protocol_version: PROTOCOL_VERSION,
+            relay_admission: Some("let-me-in".into()),
+        };
+        let v = serde_json::to_value(&qr).unwrap();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["daemonPublicKey", "protocolVersion", "relayAdmission", "rendezvous", "secret"]
+        );
+        assert_eq!(v["relayAdmission"], "let-me-in");
+        assert_eq!(PairingQr::parse(&qr.to_qr_string()).unwrap(), qr);
+
+        // A QR drawn by a daemon older than v52 has no such field, and
+        // still parses: the Device then has no token to present.
+        let old = r#"{"daemonPublicKey":"aa","secret":"bb","rendezvous":[],"protocolVersion":44}"#;
+        assert_eq!(PairingQr::parse(old).unwrap().relay_admission, None);
+    }
+
+    /// A Device deleting its own row: it names no Device, because the
+    /// connection it arrives on already is one.
+    #[test]
+    fn remove_this_device_names_nobody_and_is_gated_at_53() {
+        let req = Request::RemoveThisDevice;
+        assert_eq!(serde_json::to_string(&req).unwrap(), r#"{"type":"RemoveThisDevice"}"#);
+        assert_eq!(min_version_for(&req), 53);
+        assert!(matches!(
+            serde_json::from_str::<Request>(r#"{"type":"RemoveThisDevice"}"#).unwrap(),
+            Request::RemoveThisDevice
+        ));
+    }
+
+    /// Forwarding requests are gated at 54 and round-trip on the wire.
+    #[test]
+    fn invoke_desktop_and_friends_are_gated_at_54() {
+        let invoke = Request::InvokeDesktop {
+            command: "get_board".into(),
+            args: serde_json::json!({"workspaceId": "w"}),
+        };
+        assert_eq!(min_version_for(&invoke), 54);
+        let v = serde_json::to_value(&invoke).unwrap();
+        assert_eq!(v["type"], "InvokeDesktop");
+        assert_eq!(v["command"], "get_board");
+        assert_eq!(v["args"]["workspaceId"], "w");
+        assert!(matches!(
+            serde_json::from_value::<Request>(v).unwrap(),
+            Request::InvokeDesktop { .. }
+        ));
+
+        assert_eq!(min_version_for(&Request::ListenDesktop { event: "e".into() }), 54);
+        assert_eq!(min_version_for(&Request::UnlistenDesktop { event: "e".into() }), 54);
+        assert_eq!(
+            min_version_for(&Request::ForwardResult { call_id: 1, value: None, error: None }),
+            54
+        );
+        assert_eq!(
+            min_version_for(&Request::OfferDesktopEvent {
+                event: "e".into(),
+                payload: serde_json::json!({}),
+            }),
+            54
+        );
+
+        let forward = Response::ForwardCommand {
+            call_id: 7,
+            command: "get_board".into(),
+            args: serde_json::json!({}),
+        };
+        let v = serde_json::to_value(&forward).unwrap();
+        assert_eq!(v["type"], "ForwardCommand");
+        assert_eq!(v["call_id"], 7);
+    }
+
+    /// The attention request is gated at 55; an older reader ignores an
+    /// unknown optional field on the answer.
+    #[test]
+    fn get_attention_is_gated_at_55_and_grows_by_optional_fields() {
+        let req = Request::GetAttention {
+            version: ATTENTION_API_VERSION,
+        };
+        assert_eq!(min_version_for(&req), 55);
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["type"], "GetAttention");
+        assert_eq!(v["version"], ATTENTION_API_VERSION);
+
+        assert_eq!(
+            min_version_for(&Request::AttentionResult {
+                call_id: 1,
+                items: vec![],
+            }),
+            55
+        );
+
+        // A newer answer carried `priority`. An older reader that has
+        // never heard of it still parses — growth is by optional fields.
+        let json = serde_json::json!({
+            "type": "Attention",
+            "state": "ready",
+            "items": [],
+            "version": 1,
+            "priority": "high",
+        });
+        match serde_json::from_value::<Response>(json).unwrap() {
+            Response::Attention { state, items, version } => {
+                assert_eq!(state, WorkstationState::Ready);
+                assert!(items.is_empty());
+                assert_eq!(version, 1);
+            }
+            other => panic!("expected Attention, got {other:?}"),
+        }
+
+        let forward = Response::ForwardAttention {
+            call_id: 3,
+            version: ATTENTION_API_VERSION,
+        };
+        let v = serde_json::to_value(&forward).unwrap();
+        assert_eq!(v["type"], "ForwardAttention");
+        assert_eq!(v["call_id"], 3);
+    }
+
+    /// A pairing is the proof after the handshake and the notification
+    /// key in the verdict, and a daemon older than 53 does neither. The
+    /// QR says which daemon drew it, so a Device can decline before it
+    /// has used the secret.
+    #[test]
+    fn a_device_pairs_with_a_daemon_that_registers_its_hardware_key() {
+        assert_eq!(PAIRING_MIN_VERSION, 55);
+        assert!(PAIRING_MIN_VERSION <= PROTOCOL_VERSION);
+    }
+
+    /// An app older than v52 sends no `relay_admission`, and the daemon
+    /// must read that as "leave the token alone" -- so the absence has to
+    /// survive the parse as `None`, and a request that names none has to
+    /// write the bytes an older daemon has always seen.
+    #[test]
+    fn a_set_remote_access_with_no_token_is_what_an_older_app_sends() {
+        let old = r#"{"type":"SetRemoteAccess","enabled":true,"relay_url":"wss://relay.example"}"#;
+        match serde_json::from_str::<Request>(old).unwrap() {
+            Request::SetRemoteAccess { enabled, relay_url, relay_admission } => {
+                assert!(enabled);
+                assert_eq!(relay_url.as_deref(), Some("wss://relay.example"));
+                assert_eq!(relay_admission, None);
+            }
+            other => panic!("expected SetRemoteAccess, got {other:?}"),
+        }
+
+        let unchanged =
+            Request::SetRemoteAccess { enabled: true, relay_url: None, relay_admission: None };
+        let v = serde_json::to_value(&unchanged).unwrap();
+        assert!(v.get("relay_admission").is_none(), "an unnamed token must not be written: {v}");
+
+        // Clearing is said out loud, with an empty string.
+        let cleared = Request::SetRemoteAccess {
+            enabled: true,
+            relay_url: None,
+            relay_admission: Some(String::new()),
+        };
+        assert_eq!(serde_json::to_value(&cleared).unwrap()["relay_admission"], "");
+    }
+
+    /// The reply an older daemon writes has no `relay_admission_set`; a
+    /// newer app must parse it, as "no token".
+    #[test]
+    fn a_devices_reply_with_no_token_flag_is_what_an_older_daemon_sends() {
+        let old = r#"{"type":"Devices","devices":[],"remote_access_enabled":true,"relay_url":null}"#;
+        match serde_json::from_str::<Response>(old).unwrap() {
+            Response::Devices { relay_admission_set, remote_access_enabled, .. } => {
+                assert!(remote_access_enabled);
+                assert!(!relay_admission_set);
+            }
+            other => panic!("expected Devices, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hex_round_trips_and_refuses_what_is_not_hex() {
+        let bytes: Vec<u8> = (0u8..=255).collect();
+        assert_eq!(hex_decode(&hex_encode(&bytes)).unwrap(), bytes);
+        assert_eq!(hex_encode(&[0x00, 0x0f, 0xff]), "000fff");
+        assert_eq!(hex_decode("000FFF").unwrap(), vec![0x00, 0x0f, 0xff]);
+        assert!(hex_decode("abc").is_err(), "an odd-length hex string is not bytes");
+        assert!(hex_decode("zz").is_err());
+        // Two bytes of one character must not be sliced down the middle.
+        assert!(hex_decode("é").is_err());
+    }
+
     /// The SAS derivation, pinned against a hand-computed vector so the
     /// phone's implementer has something to check theirs against.
     #[test]
-    fn the_sas_is_six_digits_derived_from_both_keys_in_sorted_order() {
+    fn the_sas_is_six_digits_derived_from_the_handshake_hash() {
         let a = [1u8; 32];
         let b = [2u8; 32];
-
-        // Sorted, so each side computes it from what it holds without
-        // first agreeing on who was the initiator.
-        assert_eq!(pairing_sas(&a, &b), pairing_sas(&b, &a));
 
         // Six digits, always -- the human is comparing two strings by
         // eye, and a code that is sometimes five characters long is a
         // comparison they can get wrong.
-        let sas = pairing_sas(&a, &b);
+        let sas = pairing_sas(&a);
         assert_eq!(sas.len(), 6, "{sas}");
         assert!(sas.chars().all(|c| c.is_ascii_digit()), "{sas}");
 
-        // Both keys matter: change either and the code changes. This is
-        // what defeats §3's attacker -- they photograph the QR and
-        // complete a handshake with THEIR key, and the desktop shows a
-        // code the owner's phone is not showing.
-        assert_ne!(pairing_sas(&a, &b), pairing_sas(&a, &[3u8; 32]));
-        assert_ne!(pairing_sas(&a, &b), pairing_sas(&[3u8; 32], &b));
+        // A different handshake, a different code. This is what defeats
+        // §3's attacker even with a copy of the Device's Noise key: their
+        // handshake has ephemerals of its own, so its hash is not the
+        // owner's phone's.
+        assert_ne!(pairing_sas(&a), pairing_sas(&b));
 
         // The zero-padding path, which is the one a lazy `to_string()`
         // would get wrong and which no random pair is likely to hit.
         assert_eq!(format!("{:06}", 42u64 % 1_000_000), "000042");
 
         // A fixed vector. Recomputable by hand:
-        //   SHA-256("gavin-pairing-sas-v1" || 0x01*32 || 0x02*32), first
-        //   eight bytes big-endian, modulo 1_000_000.
-        let pinned = pairing_sas(&a, &b);
+        //   SHA-256("gavin-pairing-sas-v2" || 0x01*32), first eight
+        //   bytes big-endian, modulo 1_000_000.
         assert_eq!(
-            pinned,
+            pairing_sas(&a),
             {
                 let mut h = Sha256::new();
-                h.update(b"gavin-pairing-sas-v1");
+                h.update(b"gavin-pairing-sas-v2");
                 h.update([1u8; 32]);
-                h.update([2u8; 32]);
                 let d = h.finalize();
                 let mut head = [0u8; 8];
                 head.copy_from_slice(&d[..8]);
@@ -4740,6 +5370,83 @@ mod tests {
         assert_eq!(v, serde_json::json!({"kind": "session-token", "token": "x"}));
         let n = serde_json::to_value(HelloAuth::None).unwrap();
         assert_eq!(n, serde_json::json!({"kind": "none"}));
+    }
+
+    /// A client older than v51 sends no `connection`, and the daemon must
+    /// read that as what it always meant: the connection is sent the
+    /// device pushes. Both directions matter -- an old `Hello` parses, and
+    /// a new one that names no kind writes the bytes an old daemon has
+    /// always seen.
+    #[test]
+    fn a_hello_with_no_connection_kind_is_what_an_older_client_sends() {
+        let old = r#"{"type":"Hello","client":"app","protocol_version":43,"auth":{"kind":"none"},"nonce":"n"}"#;
+        match serde_json::from_str::<Request>(old).unwrap() {
+            Request::Hello { connection, .. } => {
+                assert_eq!(connection, None);
+                assert!(ConnectionKind::takes_device_pushes(connection));
+            }
+            other => panic!("expected Hello, got {other:?}"),
+        }
+
+        let unnamed = Request::Hello {
+            client: "app".into(),
+            protocol_version: PROTOCOL_VERSION,
+            auth: HelloAuth::None,
+            nonce: "n".into(),
+            connection: None,
+        };
+        let v = serde_json::to_value(&unnamed).unwrap();
+        assert!(v.get("connection").is_none(), "an unnamed kind must not be written: {v}");
+    }
+
+    #[test]
+    fn a_hello_names_its_connection_in_kebab_case() {
+        for (kind, wire) in [
+            (ConnectionKind::Push, "push"),
+            (ConnectionKind::Command, "command"),
+            (ConnectionKind::Forward, "forward"),
+        ] {
+            let hello = Request::Hello {
+                client: "app".into(),
+                protocol_version: PROTOCOL_VERSION,
+                auth: HelloAuth::None,
+                nonce: "n".into(),
+                connection: Some(kind),
+            };
+            let v = serde_json::to_value(&hello).unwrap();
+            assert_eq!(v["connection"], wire);
+            match serde_json::from_value::<Request>(v).unwrap() {
+                Request::Hello { connection, .. } => assert_eq!(connection, Some(kind)),
+                other => panic!("expected Hello, got {other:?}"),
+            }
+        }
+    }
+
+    /// A kind a newer client invents must not stop the `Hello` parsing:
+    /// `read_message` turns a parse error into a closed connection, and
+    /// then the client has no identity at all.
+    #[test]
+    fn a_connection_kind_from_a_newer_client_is_a_value_not_a_parse_error() {
+        let line = r#"{"type":"Hello","client":"app","protocol_version":99,"auth":{"kind":"none"},"nonce":"n","connection":"telepathy"}"#;
+        match serde_json::from_str::<Request>(line).unwrap() {
+            Request::Hello { connection, .. } => {
+                assert_eq!(connection, Some(ConnectionKind::Unknown));
+                assert!(!ConnectionKind::takes_device_pushes(connection));
+            }
+            other => panic!("expected Hello, got {other:?}"),
+        }
+    }
+
+    /// Who is sent the device pushes. The command and forwarding
+    /// connections must not be: each reads the next message as a reply
+    /// (or a ForwardCommand), and a device push would take that place.
+    #[test]
+    fn only_a_push_connection_or_an_unnamed_one_takes_device_pushes() {
+        assert!(ConnectionKind::takes_device_pushes(Some(ConnectionKind::Push)));
+        assert!(ConnectionKind::takes_device_pushes(None));
+        assert!(!ConnectionKind::takes_device_pushes(Some(ConnectionKind::Command)));
+        assert!(!ConnectionKind::takes_device_pushes(Some(ConnectionKind::Forward)));
+        assert!(!ConnectionKind::takes_device_pushes(Some(ConnectionKind::Unknown)));
     }
 
     /// An older daemon's HelloAck has no `workspace_root`; a newer client
@@ -5892,7 +6599,8 @@ mod tests {
         // the board read no longer carries. One new TYPE, plus the
         // CardSession reply.
         // v44: Companion notifications -- PushCompanionNotify,
-        // SetPushGatewayUrl, SetDeviceSendPermission. Three new TYPES.
+        // SetPushGatewayUrl, SetDeviceSendPermission. Three new TYPES,
+        // gated at 49 (see `PROTOCOL_VERSION`).
         // v45: RailTrigger.at -- the at-time schedule. A widened payload
         // on an existing TYPE, gated by FEATURE_MIN_VERSION.railSchedule.
         // v46: the daemon runs Headroom -- GetHeadroomStatus,
@@ -5912,7 +6620,25 @@ mod tests {
         // FEATURE_MIN_VERSION.headroomFailures; SessionCreated,
         // AgentSessionSpawned and SessionSummary widened with what the
         // daemon decided and found.
-        assert_eq!(PROTOCOL_VERSION, 50);
+        // v51: `Hello.connection` -- which of the app's connections this
+        // is. A widened payload and no new TYPE, so no band count moves
+        // in the table below and `min_version_for` has no new arm.
+        // v52: the Relay's admission token -- `SetRemoteAccess.
+        // relay_admission`, `Devices.relay_admission_set` and the QR's
+        // `relayAdmission`. Widened payloads again and no new TYPE.
+        // v53: RemoveThisDevice -- a Device deleting its own row, over the
+        // connection the Device wire's second slice gives it. One new
+        // TYPE.
+        // v54: InvokeDesktop, ListenDesktop, UnlistenDesktop,
+        // ForwardResult, OfferDesktopEvent -- the Device asks, the
+        // desktop's forwarding connection answers. Five new TYPES. The
+        // `Hello.connection` value `Forward` is a widened payload and
+        // invisible here.
+        // v55: GetAttention + AttentionResult -- the one stable API
+        // between the shell and a Workstation (ADR 0005). Two new TYPES.
+        // The Device wire built these five at 44..48 on its own branch
+        // and moved them past main's 44..50 when the two met.
+        assert_eq!(PROTOCOL_VERSION, 55);
     }
 
     #[test]
@@ -6404,6 +7130,7 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
                 auth: HelloAuth::None,
                 nonce: "n".into(),
+                connection: None,
             },
             // v42's remote access: pairing, the device list, revocation.
             Request::BeginPairing,
@@ -6412,8 +7139,34 @@ mod tests {
             Request::ListDevices,
             Request::RevokeDevice { device_id: "d1".into() },
             Request::RevokeAllDevices,
-            Request::SetRemoteAccess { enabled: true, relay_url: None },
-            // v44's Companion notifications.
+            Request::SetRemoteAccess { enabled: true, relay_url: None, relay_admission: None },
+            // v53: a Device removing itself.
+            Request::RemoveThisDevice,
+            // v54: forwarding gated desktop commands.
+            Request::InvokeDesktop {
+                command: "get_board".into(),
+                args: serde_json::json!({}),
+            },
+            Request::ListenDesktop { event: "status-changed".into() },
+            Request::UnlistenDesktop { event: "status-changed".into() },
+            Request::ForwardResult {
+                call_id: 1,
+                value: Some(serde_json::json!(null)),
+                error: None,
+            },
+            Request::OfferDesktopEvent {
+                event: "status-changed".into(),
+                payload: serde_json::json!({}),
+            },
+            // v55: the attention request.
+            Request::GetAttention {
+                version: ATTENTION_API_VERSION,
+            },
+            Request::AttentionResult {
+                call_id: 1,
+                items: vec![],
+            },
+            // Companion notifications, gated at 49.
             Request::SetPushGatewayUrl {
                 url: Some("https://push.example".into()),
             },
@@ -6474,8 +7227,10 @@ mod tests {
     /// tools), v39=1 (SessionScreen), v40=3 (ssh workspace files), v41=2
     /// (ssh git/files), v42=2 (the Decisions tab's writes), v43=1
     /// (GetCardSession), v46=5 (the daemon runs Headroom), v47=1
-    /// (SetHeadroomWorkspaces), v49=1 (HeadroomSavings), v50=1
-    /// (HeadroomReach), plus Unknown.
+    /// (SetHeadroomWorkspaces), v49=4 (the three Companion notification
+    /// requests and HeadroomSavings), v50=1 (HeadroomReach), v53=1
+    /// (RemoveThisDevice), v54=5 (forwarding desktop commands), v55=2 (the
+    /// attention request), plus Unknown.
     #[test]
     fn variant_counts_per_version_band_are_pinned_to_catch_a_missed_bump() {
         use std::collections::HashMap;
@@ -6532,19 +7287,27 @@ mod tests {
         // GetCardSession -- one binding with its command, now the board
         // read leaves the command out.
         expected.insert(43, 1);
-        // Companion encrypted notifications: PushCompanionNotify,
-        // SetPushGatewayUrl, SetDeviceSendPermission.
-        expected.insert(44, 3);
         // The daemon runs Headroom: GetHeadroomStatus, DetectHeadroom,
         // StartHeadroom, StopHeadroom, InstallHeadroom.
         expected.insert(46, 5);
         // The daemon's copy of the compression switch:
         // SetHeadroomWorkspaces.
         expected.insert(47, 1);
-        // Savings in a limit window: HeadroomSavings.
-        expected.insert(49, 1);
+        // Two features share 49. Companion notifications:
+        // PushCompanionNotify, SetPushGatewayUrl, SetDeviceSendPermission
+        // -- three, gated at 49 rather than the 44 they shipped at (see
+        // `PROTOCOL_VERSION`). And savings in a limit window:
+        // HeadroomSavings -- one.
+        expected.insert(49, 4);
         // Whether a compressed session reaches Headroom: HeadroomReach.
         expected.insert(50, 1);
+        // RemoveThisDevice -- a Device deleting its own row.
+        expected.insert(53, 1);
+        // InvokeDesktop + Listen/UnlistenDesktop + ForwardResult +
+        // OfferDesktopEvent -- forwarding gated desktop commands.
+        expected.insert(54, 5);
+        // GetAttention + AttentionResult -- the attention request.
+        expected.insert(55, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
@@ -7355,6 +8118,7 @@ mod tests {
     /// is compiled everywhere for exactly this reason -- the rule has to
     /// be provable in the suite that runs on a mac and on the Windows
     /// machine that uses it.
+    #[cfg(feature = "os")]
     #[test]
     fn the_two_builds_hash_to_different_pipes() {
         let dir = Path::new("/x/gavin");
@@ -7483,6 +8247,7 @@ mod tests {
         assert!(err.contains("USERPROFILE"), "{err}");
     }
 
+    #[cfg(feature = "os")]
     #[test]
     fn a_windows_data_directory_is_not_measured_against_sun_path() {
         // The Windows endpoint is a pipe name hashed from this path, so

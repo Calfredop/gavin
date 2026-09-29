@@ -30,6 +30,13 @@ pub enum StatusEvent {
     Idle,
     Working,
     WaitingForInput,
+    /// Claude Code's `Claude is waiting for your input`: sent on a timer,
+    /// 60 s after every turn nobody answered, whether that turn asked
+    /// anything or not. It says only that the turn ENDED -- which the
+    /// session's `idle` already says -- so it is reported apart from the
+    /// requests above rather than as one of them. See
+    /// `is_idle_reminder`.
+    IdleReminder,
 }
 
 /// Watches a stream of raw PTY output bytes for three independent signals:
@@ -47,6 +54,10 @@ pub enum StatusEvent {
 /// TERM_PROGRAM is inherited from whatever launched the GUI (this daemon
 /// only ever sets TERM), a BEL-only detector misses the signal in most
 /// real environments. See this module's tests for the captured bytes.
+///
+/// One notification on those channels is not a request at all: Claude
+/// Code's timed idle reminder, reported as `IdleReminder` instead (see
+/// `is_idle_reminder`).
 ///
 /// OSC sequences are tracked GENERICALLY (any number, not just the ones
 /// above) -- this is deliberate, not incidental complexity. OSC 7 (cwd,
@@ -208,10 +219,46 @@ impl StatusScanner {
                 }
             }
             b"9" | b"99" | b"777" if Self::is_attention_notification(number, payload) => {
-                found.push(StatusEvent::WaitingForInput);
+                found.push(if Self::is_idle_reminder(number, payload) {
+                    StatusEvent::IdleReminder
+                } else {
+                    StatusEvent::WaitingForInput
+                });
             }
             _ => {}
         }
+    }
+
+    /// Whether a notification is Claude Code's idle reminder rather than
+    /// a request.
+    ///
+    /// Claude Code sends `Claude is waiting for your input` 60 s
+    /// (`messageIdleNotifThresholdMs`) after every turn nobody has
+    /// answered -- a turn that finished just as much as one that ended on
+    /// a question. Read as a request it put every finished agent at
+    /// `waiting_for_input` a minute after it stopped, which is where the
+    /// app's "waiting for you" badges, its attention inbox and a rail's
+    /// "needs you" all come from. It never stands for a dialog either:
+    /// Claude Code withholds it while one is on screen, and a permission
+    /// prompt sends a notification of its own. Whether a quiet turn was
+    /// a question is the turn verdict's to read, from the screen.
+    ///
+    /// Only the MESSAGE decides, never the title, and it is matched as a
+    /// suffix because iTerm2's channel folds a title in front of it as
+    /// `<title>: <message>`. Read off Claude Code 2.1.284's notifier.
+    fn is_idle_reminder(number: &[u8], payload: &[u8]) -> bool {
+        const IDLE_REMINDER: &[u8] = b"Claude is waiting for your input";
+        let message = match number {
+            // ghostty: notify ; title ; message
+            b"777" => payload.splitn(3, |&b| b == b';').nth(2).unwrap_or_default(),
+            // kitty: metadata ; message -- the body chunk, the only one
+            // `is_attention_notification` lets through.
+            b"99" => payload.splitn(2, |&b| b == b';').nth(1).unwrap_or_default(),
+            // iTerm2: the whole payload is the message.
+            b"9" => payload,
+            _ => return false,
+        };
+        message.ends_with(IDLE_REMINDER)
     }
 
     /// Whether a desktop-notification OSC sequence is a genuine
@@ -405,6 +452,75 @@ mod tests {
 \x1b]99;i=291:p=body;Claude needs your permission\x1b\\\
 \x1b]99;i=291:d=1:a=focus;\x1b\\"
             .to_vec();
+        assert_eq!(scanner.feed(&bytes), vec![StatusEvent::WaitingForInput]);
+    }
+
+    // --- Claude Code's idle reminder -> IdleReminder, never a wait ---
+    //
+    // The same channels as above, carrying the one message Claude Code
+    // (2.1.284) sends on a timer rather than because it wants anything:
+    // `idle_prompt`, 60 s after a turn nobody answered. Formats read off
+    // its notifier: ghostty `777;notify;<title>;<message>`, iTerm2
+    // `9;<message>`, kitty a title/body/focus burst of `99` chunks.
+
+    #[test]
+    fn osc777_idle_reminder_is_not_a_wait() {
+        let mut scanner = StatusScanner::new();
+        let mut bytes = b"\x1b]777;notify;Claude Code;Claude is waiting for your input".to_vec();
+        bytes.push(0x07);
+        assert_eq!(scanner.feed(&bytes), vec![StatusEvent::IdleReminder]);
+    }
+
+    #[test]
+    fn osc9_idle_reminder_is_not_a_wait() {
+        let mut scanner = StatusScanner::new();
+        let mut bytes = b"\x1b]9;Claude is waiting for your input".to_vec();
+        bytes.push(0x07);
+        assert_eq!(scanner.feed(&bytes), vec![StatusEvent::IdleReminder]);
+    }
+
+    #[test]
+    fn osc9_idle_reminder_with_a_title_prefix_is_not_a_wait() {
+        // iTerm2's channel folds a title in as `<title>: <message>`.
+        let mut scanner = StatusScanner::new();
+        let mut bytes = b"\x1b]9;Claude Code: Claude is waiting for your input".to_vec();
+        bytes.push(0x07);
+        assert_eq!(scanner.feed(&bytes), vec![StatusEvent::IdleReminder]);
+    }
+
+    #[test]
+    fn kitty_osc99_idle_reminder_burst_is_one_reminder() {
+        let mut scanner = StatusScanner::new();
+        let bytes = b"\x1b]99;i=17:d=0:p=title;Claude Code\x1b\\\
+\x1b]99;i=17:p=body;Claude is waiting for your input\x1b\\\
+\x1b]99;i=17:d=1:a=focus;\x1b\\"
+            .to_vec();
+        assert_eq!(scanner.feed(&bytes), vec![StatusEvent::IdleReminder]);
+    }
+
+    #[test]
+    fn an_idle_reminder_split_across_feeds_is_still_recognised() {
+        let full = {
+            let mut b = b"\x1b]777;notify;Claude Code;Claude is waiting for your input".to_vec();
+            b.push(0x07);
+            b
+        };
+        for split_at in 0..=full.len() {
+            let mut scanner = StatusScanner::new();
+            let mut found = scanner.feed(&full[..split_at]);
+            found.extend(scanner.feed(&full[split_at..]));
+            assert_eq!(found, vec![StatusEvent::IdleReminder], "failed when split at byte {split_at}");
+        }
+    }
+
+    #[test]
+    fn a_title_that_reads_like_the_reminder_does_not_hide_a_real_request() {
+        // Only the MESSAGE decides. A permission request under a title
+        // that happens to be the reminder's text is still a request.
+        let mut scanner = StatusScanner::new();
+        let mut bytes =
+            b"\x1b]777;notify;Claude is waiting for your input;Claude needs your permission".to_vec();
+        bytes.push(0x07);
         assert_eq!(scanner.feed(&bytes), vec![StatusEvent::WaitingForInput]);
     }
 

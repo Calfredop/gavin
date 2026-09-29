@@ -42,6 +42,7 @@
   import FindingsRailDialog from "$lib/review/FindingsRailDialog.svelte";
   import { hydrateRuns as hydrateCriticalReviewRuns } from "$lib/review/criticalReviewState";
   import { startFindingsRailAutoBuild } from "$lib/review/criticalReviewFindingsRailActions";
+  import { startCompanionAttentionPublisher } from "$lib/companion/attentionPublisher";
   import { showAlert } from "$lib/core/dialog";
   import { newWorkspaceFlow, skipSetup, finishSetup } from "$lib/workspace/workspaceCreate";
   import { resolveAgentConfig, accentVar } from "$lib/core/settings";
@@ -103,6 +104,7 @@
   let uninstallLineClipboard: (() => void) | null = null;
   let unlistenClose: (() => void) | null = null;
   let stopFindingsRailAutoBuild: (() => void) | null = null;
+  let stopCompanionAttention: (() => void) | null = null;
 
   const activeWorkspace = $derived(getActiveWorkspace($layoutState));
   const activeView = $derived(activeWorkspace ? getActiveView(activeWorkspace) : "terminal");
@@ -348,6 +350,7 @@
     uninstallHints = installHintTracking();
     uninstallLineClipboard = installLineClipboard();
     stopFindingsRailAutoBuild = startFindingsRailAutoBuild();
+    stopCompanionAttention = startCompanionAttentionPublisher();
   });
 
   onDestroy(() => {
@@ -356,6 +359,7 @@
     uninstallHints?.();
     uninstallLineClipboard?.();
     stopFindingsRailAutoBuild?.();
+    stopCompanionAttention?.();
     teardown();
   });
 </script>

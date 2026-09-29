@@ -10,10 +10,30 @@ development. Follow the gavin workflow skill in `.claude/skills/gavin/SKILL.md`
 Gavin itself — the app the PRD describes. A Rust workspace plus a Tauri/Svelte app:
 
 - `crates/protocol` — wire types, `PROTOCOL_VERSION`, `MIN_COMPATIBLE_VERSION`,
-  `min_version_for`
+  `min_version_for`. Its OS-specific parts (local transport, OS randomness,
+  the env/filesystem data paths) sit behind the `os` feature, on by default,
+  so the crate also checks for `wasm32-unknown-unknown` with it off — CI runs
+  that. New code that reads the environment, the filesystem or the OS random
+  source belongs behind the feature too.
 - `crates/daemon` — `gavin-daemon`: PTYs, SQLite, the `.gavin*` watcher,
-  orchestration state
+  orchestration state, and the dial to the Relay (`remote.rs`), which runs
+  only while the trust store says remote access is on
 - `crates/gavin-mcp` — the `gavin_*` MCP server
+- `crates/gavin-relay` — the Relay (feature `server`, the workspace's one
+  async crate) and the blocking dial the daemon and the test Device share
+  (feature `client`). What they say to each other before bytes are copied
+  is `protocol::relay`
+- `crates/companion-core` — the Device's half of the wire, with no I/O, no
+  randomness of its own and no signing (a phone's hardware signs; the core
+  is handed the signature), so it checks for `wasm32-unknown-unknown` — CI
+  runs that. Its `test-device` feature is the native test Device that
+  `crates/daemon/tests/device_wire.rs` drives a real daemon with
+
+A rule written twice is held to one table. Which Relay URLs may be dialled is
+`protocol::relay::RelayUrl::parse`, and `app/src/lib/core/remoteAccess.ts`
+mirrors it for the Settings hint; both suites read
+`test-fixtures/relay-urls/cases.json`, so a case added there is asserted on
+both sides. Add the case before changing either.
 - `app/` — SvelteKit + Svelte 5 + xterm.js; `app/src-tauri` — the Tauri host
   (git, file viewer, agent profiles)
 - `app/companion/` — the Companion web bundle: the desktop's own components
@@ -80,10 +100,22 @@ unsuffixed names; Restart daemon in either app kills only the pid owning the
 endpoint it connected to. What they still SHARE, deliberately, is the work: one
 `kanban.sqlite`, one `orchestration.sqlite`, one `config.json`, so the board,
 the rails, the workspace list and the settings are the same in both — and a
-build that widens `config.json` writes a shape the other then reads. A protocol
+build that widens `config.json` writes a shape the other then reads. They share
+`devices.sqlite` as well — one trust store, so one Workstation key — which
+means that with remote access on BOTH daemons dial the Relay and register
+under the same rendezvous id. The Relay announces a Device's stream to both,
+and the one whose desk is showing the pairing QR is the one that picks it up
+(`SessionManager::has_pairing_offer`). A paired Device's CONNECTION either can
+serve: the one with a desktop app connected picks it up at once, and one with
+nobody at the desk waits a moment first (`remote::deference`). Neither daemon can tell the other what
+it wrote there, so `remote.rs` re-reads the settings every two seconds rather
+than trusting its own wake-ups; anything else one daemon caches from that file
+has the same problem. A protocol
 bump only takes effect after a rebuild and restart, which is the human's call.
 To verify daemon or MCP behaviour meanwhile, run an isolated daemon under a temp
-`$HOME` — it gets its own socket and databases.
+`$HOME` — it gets its own socket and databases. `crates/daemon/tests/device_wire.rs`
+is that pattern with a local Relay and the test Device added; a daemon started
+that way trusts a Relay's test certificate through `SSL_CERT_FILE`.
 
 **`gavin-mcp` re-execs itself when the daemon moves ahead.** A bump used to cost
 every session on the machine its `gavin_*` tools until someone restarted it.
@@ -98,6 +130,13 @@ the whole budget (`GAVIN_MCP_REEXEC=1` marks the successor), so if you still see
 session", the handover already happened and did not help — the binary at that
 path is still stale. That is the expected state, not a fault in your work: file
 cards by hand and carry on.
+
+**A connection's identity may be the transport's, and then it is final.** A
+Device's connection reaches the same loop the local socket's do
+(`server::serve_connection`), with `ClientIdentity::remote` handed in. `Hello`
+must never replace an identity that was handed in: it resolves a connection
+that presents nothing to `local`, which may do anything. Anything added to that
+loop that sets `identity` has to leave a `fixed_by_transport` one alone.
 
 **The compat gate is per request TYPE.** `min_version_for` gates request
 variants, not fields, so widening an existing request's payload is invisible to

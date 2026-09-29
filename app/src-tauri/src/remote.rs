@@ -34,7 +34,7 @@ use std::net::Shutdown;
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 /// The bridge's first line (`crates/daemon/src/bridge.rs`).
 #[derive(Debug, Clone, Deserialize)]
@@ -1055,8 +1055,8 @@ pub fn link_workspace(app: &AppHandle, workspace_id: &str) -> anyhow::Result<()>
         &link.compat,
     )?;
 
-    let _ = app.emit("workspaces-synced", crate::session::WorkspacesSync::from_remote(&cfg.host, data));
-    let _ = app.emit(
+    let _ = crate::forwarding::emit(&app, "workspaces-synced", crate::session::WorkspacesSync::from_remote(&cfg.host, data));
+    let _ = crate::forwarding::emit(&app, 
         "remote-link-ready",
         RemoteLinkEvent {
             host: cfg.host,
@@ -1085,7 +1085,7 @@ pub fn link_all(app: AppHandle) {
         std::thread::spawn(move || {
             for workspace_id in workspace_ids {
                 if let Err(e) = link_workspace(&app, &workspace_id) {
-                    let _ = app.emit(
+                    let _ = crate::forwarding::emit(&app, 
                         "remote-link-lost",
                         RemoteLinkEvent {
                             host: host.clone(),
@@ -1125,7 +1125,7 @@ pub fn link_lost(app: &AppHandle, host: &str, link_id: u64, message: String) {
     // as long as the app lives, holding the blocking thread it is on --
     // and the toolbar's spinner never stops.
     abandon_git_ops(host, &message);
-    let _ = app.emit(
+    let _ = crate::forwarding::emit(&app, 
         "remote-link-lost",
         RemoteLinkEvent {
             host: host.to_string(),

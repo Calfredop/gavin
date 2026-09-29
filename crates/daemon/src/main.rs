@@ -1,4 +1,5 @@
 mod bridge;
+mod connect;
 mod gavin;
 mod git_status;
 mod git_watch;
@@ -15,6 +16,7 @@ mod notify_crypto;
 mod notify_display;
 mod companion_push;
 mod registry;
+mod remote;
 mod screen;
 mod server;
 mod shell;
@@ -23,6 +25,7 @@ mod status;
 mod testing;
 mod trash;
 mod trust;
+mod unlock;
 
 use kanban::KanbanStore;
 use registry::{secure_db_file, Registry};
@@ -131,6 +134,11 @@ fn serve() -> anyhow::Result<()> {
     let headroom = headroom::Headroom::open(&dir);
     headroom.resume();
     manager.set_headroom(headroom);
+    // After the trust store, which is what it reads. It dials the Relay
+    // only while that store says remote access is on, and sleeps
+    // otherwise -- so on a machine that never turned it on, this starts a
+    // thread that opens no socket.
+    remote::spawn(&manager);
 
     let socket = protocol::socket_path()?;
     println!("gavin-daemon listening on {}", socket.display());

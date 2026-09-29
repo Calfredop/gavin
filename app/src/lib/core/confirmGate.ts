@@ -30,6 +30,7 @@ import { askConfirm, type ConfirmOptions } from "$lib/core/dialog";
 /// Exactly `confirm_gate.rs`'s `GATED_ACTIONS`, and spelled with each
 /// command's own registered name -- the host compares the two strings.
 export type GatedAction =
+  | "confirm_pairing"
   | "delete_card_file"
   | "install_update"
   | "remove_gavin_footprint"
@@ -47,6 +48,12 @@ export const DAEMON_SUBJECT = "";
 // because what the human agreed to is "install 0.2.0" and not "update"
 // in the abstract -- so a token minted against a prompt for 0.2.0 is
 // refused by the host if the endpoint has moved on since (`updater.rs`).
+
+/// `confirm_pairing`'s subject (`confirm_gate::pairing_subject`): the
+/// device and the six digits the human compared.
+export function pairingSubject(deviceId: string, code: string): string {
+  return `${deviceId}:${code}`;
+}
 
 /// A token the host will refuse. Returned instead of throwing when the
 /// mint fails, so the refusal surfaces where every other failure of the

@@ -10,14 +10,22 @@
 //! static keys, and the human compares them and confirms **on the
 //! desktop**. Only then is there a row in `devices.sqlite`.
 //!
+//! **Pairing registers the Device's hardware key** (ADR 0001). After its
+//! last handshake message the Device sends its proof: the public half of
+//! the key its hardware holds, and that key's signature over this
+//! handshake (`unlock.rs`). It is read here, before anyone is asked
+//! anything, so that the Device on the desk's dialog is one that can
+//! connect once it is confirmed.
+//!
 //! **A library over `Read + Write`, not a transport.** Phase 2 must not
 //! open a listener or dial a relay (§10), so nothing here owns a socket:
 //! `run_responder` takes whatever byte stream its caller has and runs the
 //! three messages over it. That is what lets the whole ceremony be tested
 //! in-process today, against a `snow` initiator on the other end of a
-//! `Stream::pair()`, and it is the seam phase 3's `remote.rs` feeds once
-//! there is a relay connection to feed it with -- see `PairingHandshake`
-//! for what phase 3 picks up where this leaves off.
+//! `Stream::pair()`, and it is the seam `remote.rs` feeds with the stream
+//! a Relay handed it -- see `PairingHandshake` for what it picks up where
+//! the handshake leaves off, and `send_verdict` for the one message it
+//! then sends.
 //!
 //! **Why `psk3`.** `NOISE_PARAMS` lives in `trust.rs` (the daemon's
 //! static key is generated from its DH function, so one string has to
@@ -68,7 +76,10 @@ const SECRET_LEN: usize = 32;
 /// The largest Noise message, and therefore the largest frame. Fixed by
 /// the protocol itself (Noise messages carry a 2-byte length), not a
 /// number chosen here.
-const MAX_NOISE_MESSAGE: usize = 65535;
+pub(crate) const MAX_NOISE_MESSAGE: usize = 65535;
+
+/// The two bytes of length in front of every frame.
+pub(crate) const FRAME_PREFIX: usize = 2;
 
 /// The longest device name accepted out of the handshake.
 ///
@@ -158,17 +169,19 @@ pub struct PairingHandshake {
     /// The phone's Noise static public key: the identity that matters,
     /// and what `TrustStore::admit` will match a later connection against.
     pub public_key: Vec<u8>,
+    /// The public half of the phone's hardware key, which it proved it
+    /// holds by signing this handshake with it. What every later
+    /// connection's signature is verified against.
+    pub hardware_key: Vec<u8>,
     /// The six digits BOTH screens show (`protocol::pairing_sas`).
     pub sas: String,
     /// The encrypted channel the handshake left behind.
     ///
-    /// Unread in phase 2, and deliberately returned anyway: this is the
-    /// seam. Phase 3's `remote.rs` answers the phone over exactly this --
-    /// `HelloAck { role: "remote" }` once the human confirms, a refusal
-    /// otherwise -- and then hands the same channel to
-    /// `handle_connection_as` with a `ClientIdentity::remote(device_id)`.
-    /// Dropping it here would mean phase 3 re-running the handshake to
-    /// get it back.
+    /// `remote.rs` answers the Device over exactly this, once: the desk's
+    /// verdict (`send_verdict`). The channel then ends. It does not
+    /// become the Device's connection -- a connection is a Noise `IK`
+    /// handshake of its own, signed by the Device's hardware key (ADR
+    /// 0001), and a pairing stream proves neither.
     pub transport: snow::TransportState,
 }
 
@@ -207,6 +220,11 @@ impl ResponderKeys {
     pub fn from_store(store: &TrustStore) -> anyhow::Result<Self> {
         Ok(Self { private: store.static_private_key()?, public: store.static_public_key()? })
     }
+
+    /// For the connection handshake, which is this key's as well.
+    pub(crate) fn private(&self) -> &[u8] {
+        &self.private
+    }
 }
 
 /// What the Noise exchange itself produced, before the store has been
@@ -214,6 +232,7 @@ impl ResponderKeys {
 pub struct HandshakeOutcome {
     pub name: String,
     pub public_key: Vec<u8>,
+    pub hardware_key: Vec<u8>,
     pub sas: String,
     pub transport: snow::TransportState,
 }
@@ -221,7 +240,8 @@ pub struct HandshakeOutcome {
 /// Run the responder side of the pairing handshake over `stream`.
 ///
 /// Reads and writes exactly three Noise messages, each in its own
-/// length-prefixed frame (see `write_frame`), and returns what the human
+/// length-prefixed frame (see `write_frame`), then reads the Device's
+/// proof, and returns what the human
 /// has to be asked about. Writes NOTHING to the store: §3's "only then
 /// does the daemon write the device into the trust store" is enforced by
 /// this function never having a write path at all, which is stronger than
@@ -249,6 +269,7 @@ pub fn run_responder<S: Read + Write>(
         device_id,
         name: outcome.name,
         public_key: outcome.public_key,
+        hardware_key: outcome.hardware_key,
         sas: outcome.sas,
         transport: outcome.transport,
     })
@@ -335,10 +356,113 @@ pub fn run_responder_with_keys<S: Read + Write>(
         .to_vec();
 
     let name = clean_device_name(&payload[..payload_len]);
-    let sas = protocol::pairing_sas(daemon_public, &public_key);
+    // The hash of the whole handshake: what the Device's hardware signs.
+    // Both static keys and both ephemerals are in it, so the signature
+    // that follows is good for this pairing and no other.
+    let hash = handshake.get_handshake_hash().to_vec();
+    // Derived from the hash, which covers this handshake's ephemerals as
+    // well as both static keys: a handshake the owner's phone did not
+    // make shows other digits than the owner's phone does.
+    let sas = protocol::pairing_sas(&hash);
+    let mut transport = handshake.into_transport_mode()?;
 
-    let transport = handshake.into_transport_mode()?;
-    Ok(HandshakeOutcome { name, public_key, sas, transport })
+    // 4. <- the proof: the Device's hardware key, and that key's
+    //    signature over this handshake. Verified here, so a Device that
+    //    registers a key it cannot sign with is never put to the human.
+    let proof = read_sealed(stream, &mut transport).map_err(|e| {
+        anyhow::anyhow!("gavin-daemon: the device sent no proof of its hardware key ({e})")
+    })?;
+    let hardware_key = crate::unlock::registering(&proof, &hash)?;
+
+    Ok(HandshakeOutcome { name, public_key, hardware_key, sas, transport })
+}
+
+/// Tells the Device its proof was taken: this handshake holds the offer,
+/// and the desk is being asked about it. One sealed frame, sent after the
+/// offer is spent and before the desk rules. A Device shows its six
+/// digits only when it arrives, so a handshake that lost the race for the
+/// one-use secret never shows a code.
+pub fn send_ack<S: Write>(
+    stream: &mut S,
+    transport: &mut snow::TransportState,
+) -> anyhow::Result<()> {
+    write_sealed(stream, transport, &protocol::device_wire::PairingAck::ProofTaken.to_bytes())
+}
+
+/// Tells the Device what the desk ruled: one transport message, padded
+/// to the Device wire's bucket, in one frame.
+///
+/// The only thing the daemon says on a pairing stream after the
+/// handshake. It is
+/// sealed with the channel the handshake left behind, so it can only have
+/// come from the Workstation the Device pinned, and a Relay that altered
+/// it would have produced a frame that does not open.
+pub fn send_verdict<S: Write>(
+    stream: &mut S,
+    transport: &mut snow::TransportState,
+    verdict: &protocol::device_wire::PairingVerdict,
+) -> anyhow::Result<()> {
+    write_sealed(stream, transport, &verdict.to_bytes())
+}
+
+/// Seals `payload` as one frame of the Device wire -- padded to the
+/// bucket, then sealed -- and writes it.
+pub(crate) fn write_sealed<S: Write>(
+    stream: &mut S,
+    transport: &mut snow::TransportState,
+    payload: &[u8],
+) -> anyhow::Result<()> {
+    let mut message = vec![0u8; MAX_NOISE_MESSAGE];
+    let n = seal(transport, payload, &mut message)?;
+    write_frame(stream, &message[..n])
+}
+
+/// `payload` as one Noise message in `out`, and how long it is.
+pub(crate) fn seal(
+    transport: &mut snow::TransportState,
+    payload: &[u8],
+    out: &mut [u8],
+) -> anyhow::Result<usize> {
+    let plaintext = protocol::device_wire::pad(payload)?;
+    Ok(transport.write_message(&plaintext, out)?)
+}
+
+/// Reads one frame of the Device wire and opens it.
+pub(crate) fn read_sealed<S: Read>(
+    stream: &mut S,
+    transport: &mut snow::TransportState,
+) -> anyhow::Result<Vec<u8>> {
+    let mut message = vec![0u8; MAX_NOISE_MESSAGE];
+    let n = read_frame(stream, &mut message)?;
+    open(transport, &message[..n])
+}
+
+/// The payload inside one Noise message of the Device wire.
+///
+/// An error is a frame that was not sealed by the other end of this
+/// channel, as the next one it sealed: altered, repeated, dropped or
+/// moved on the way. There is no recovering the channel from it -- every
+/// frame after would be read against the wrong count -- so whoever gets
+/// one ends the stream.
+pub(crate) fn open(
+    transport: &mut snow::TransportState,
+    message: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    use protocol::device_wire::FRAME_BUCKET;
+    // Every frame the wire carries after a handshake is a whole number
+    // of buckets. One that is not was not sealed by a Device, so there
+    // is nothing in it to try.
+    if (FRAME_PREFIX + message.len()) % FRAME_BUCKET != 0 {
+        anyhow::bail!(
+            "gavin-daemon: a frame of {} bytes is not a whole number of {FRAME_BUCKET}-byte buckets",
+            FRAME_PREFIX + message.len()
+        );
+    }
+    let mut plaintext = vec![0u8; MAX_NOISE_MESSAGE];
+    let n = transport
+        .read_message(message, &mut plaintext)
+        .map_err(|e| anyhow::anyhow!("gavin-daemon: a frame from the device did not open ({e})"))?;
+    Ok(protocol::device_wire::unpad(&plaintext[..n])?.to_vec())
 }
 
 /// What a device name is allowed to be by the time it reaches a screen.
@@ -378,7 +502,7 @@ fn clean_device_name(bytes: &[u8]) -> String {
 // The length cannot overflow the prefix: Noise itself caps a message at
 // 65535 bytes, which is exactly what two bytes hold.
 
-fn write_frame<W: Write>(w: &mut W, buf: &[u8]) -> anyhow::Result<()> {
+pub(crate) fn write_frame<W: Write>(w: &mut W, buf: &[u8]) -> anyhow::Result<()> {
     if buf.len() > MAX_NOISE_MESSAGE {
         anyhow::bail!("gavin-daemon: a Noise message cannot exceed {MAX_NOISE_MESSAGE} bytes");
     }
@@ -389,7 +513,7 @@ fn write_frame<W: Write>(w: &mut W, buf: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn read_frame<R: Read>(r: &mut R, out: &mut [u8]) -> anyhow::Result<usize> {
+pub(crate) fn read_frame<R: Read>(r: &mut R, out: &mut [u8]) -> anyhow::Result<usize> {
     let mut len = [0u8; 2];
     r.read_exact(&mut len)?;
     let len = u16::from_be_bytes(len) as usize;
@@ -441,7 +565,13 @@ pub(crate) fn hex_decode(s: &str) -> anyhow::Result<Vec<u8>> {
 #[cfg(test)]
 pub(crate) struct InitiatorResult {
     pub public_key: Vec<u8>,
+    /// The hardware key it registered.
+    pub hardware_key: Vec<u8>,
     pub sas: String,
+    /// Whether the daemon said it took the proof (`take_ack`).
+    pub acknowledged: bool,
+    /// The Device's end of the channel, for reading the verdict.
+    pub transport: snow::TransportState,
 }
 
 /// The phone's half of §3's ceremony, as a test double.
@@ -458,6 +588,27 @@ pub(crate) fn run_initiator<S: Read + Write>(
     daemon_public_key: &[u8],
     secret_hex: &str,
     device_name: &str,
+) -> anyhow::Result<InitiatorResult> {
+    let hardware = crate::unlock::testing::HardwareKey::generate();
+    let registered = hardware.public();
+    let mut result =
+        run_initiator_proving(stream, daemon_public_key, secret_hex, device_name, |hash| {
+            Some(hardware.registering(hash))
+        })?;
+    result.hardware_key = registered;
+    Ok(result)
+}
+
+/// `run_initiator`, with the proof left to the caller: what follows
+/// message 3 is whatever `proof` makes of the handshake hash, and nothing
+/// at all if it makes nothing. For the Devices the daemon refuses.
+#[cfg(test)]
+pub(crate) fn run_initiator_proving<S: Read + Write>(
+    stream: &mut S,
+    daemon_public_key: &[u8],
+    secret_hex: &str,
+    device_name: &str,
+    proof: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
 ) -> anyhow::Result<InitiatorResult> {
     let params: snow::params::NoiseParams = NOISE_PARAMS.parse().unwrap();
     let keypair = snow::Builder::new(params.clone()).generate_keypair()?;
@@ -483,12 +634,36 @@ pub(crate) fn run_initiator<S: Read + Write>(
     if seen != daemon_public_key {
         anyhow::bail!("this is not the gavin whose QR was scanned");
     }
-    let sas = protocol::pairing_sas(daemon_public_key, &keypair.public);
-
     let n = handshake.write_message(device_name.as_bytes(), &mut message)?;
     write_frame(stream, &message[..n])?;
 
-    Ok(InitiatorResult { public_key: keypair.public, sas })
+    let hash = handshake.get_handshake_hash().to_vec();
+    let sas = protocol::pairing_sas(&hash);
+    let mut transport = handshake.into_transport_mode()?;
+    if let Some(payload) = proof(&hash) {
+        write_sealed(stream, &mut transport, &payload)?;
+    }
+
+    Ok(InitiatorResult {
+        public_key: keypair.public,
+        hardware_key: Vec::new(),
+        sas,
+        transport,
+        acknowledged: false,
+    })
+}
+
+#[cfg(test)]
+impl InitiatorResult {
+    /// Reads the acknowledgement `SessionManager::pair_over` sends once it
+    /// holds the offer, and records whether it came. A Device whose
+    /// handshake lost the race finds the stream closed instead.
+    pub(crate) fn take_ack<S: Read>(&mut self, stream: &mut S) {
+        self.acknowledged = read_sealed(stream, &mut self.transport)
+            .ok()
+            .and_then(|payload| protocol::device_wire::PairingAck::from_bytes(&payload).ok())
+            == Some(protocol::device_wire::PairingAck::ProofTaken);
+    }
 }
 
 #[cfg(test)]
@@ -501,6 +676,17 @@ mod tests {
     }
 
     const NOW: i64 = 1_770_000_000_000_000;
+
+    /// What confirming `handshake` would write.
+    fn registration(handshake: &PairingHandshake) -> crate::trust::Registration {
+        crate::trust::Registration {
+            public_key: handshake.public_key.clone(),
+            name: handshake.name.clone(),
+            role: crate::trust::DeviceRole::Remote,
+            hardware_key: handshake.hardware_key.clone(),
+            notification_key: vec![0x5c; 32],
+        }
+    }
 
     /// Drives one full ceremony in-process and hands back both sides.
     ///
@@ -530,6 +716,118 @@ mod tests {
         // this test for the suite's whole budget.
         drop(server);
         (responder, phone.join().unwrap())
+    }
+
+    /// `pair_in_process`, by a Device that proves itself as `proof` says.
+    fn pair_proving(
+        store: &TrustStore,
+        offer: &PairingOffer,
+        proof: impl FnOnce(&[u8]) -> Option<Vec<u8>> + Send + 'static,
+    ) -> anyhow::Result<PairingHandshake> {
+        let (client, server) = Stream::pair().unwrap();
+        let daemon_public = store.static_public_key().unwrap();
+        let secret = offer.secret_hex().to_string();
+        let phone = std::thread::spawn(move || {
+            let mut client = client;
+            let ran = run_initiator_proving(&mut client, &daemon_public, &secret, "iPhone", proof);
+            // Hangs up, as a Device with nothing more to say does.
+            let _ = client.shutdown(std::net::Shutdown::Both);
+            ran.map(|_| ())
+        });
+        let mut server = server;
+        let responder = run_responder(&mut server, store, offer, NOW);
+        drop(server);
+        let _ = phone.join().unwrap();
+        responder
+    }
+
+    /// ADR 0001: "the Device registers it at pairing". What the
+    /// handshake hands on is the key the Device proved it holds, which is
+    /// what `ConfirmPairing` will write.
+    #[test]
+    fn a_pairing_registers_the_hardware_key_the_device_proved() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let offer = PairingOffer::mint(NOW).unwrap();
+
+        let (daemon, phone) = pair_in_process(&store, &offer, offer.secret_hex(), "iPhone", NOW);
+        let daemon = daemon.unwrap();
+        let phone = phone.unwrap();
+
+        assert_eq!(daemon.hardware_key, phone.hardware_key);
+        assert_eq!(daemon.hardware_key.len(), protocol::device_wire::HARDWARE_KEY_BYTES);
+        // Still nothing in the store: the proof is not the confirmation.
+        assert!(store.list().unwrap().is_empty());
+    }
+
+    /// A Device that completes the handshake and says nothing more has
+    /// not paired, and the desk is asked nothing about it.
+    #[test]
+    fn a_pairing_without_a_proof_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let offer = PairingOffer::mint(NOW).unwrap();
+        let err = pair_proving(&store, &offer, |_| None).unwrap_err();
+        assert!(err.to_string().contains("proof"), "{err}");
+        assert!(store.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_proof_signed_by_another_key_fails_the_pairing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let offer = PairingOffer::mint(NOW).unwrap();
+        let err = pair_proving(&store, &offer, |hash| {
+            let registered = crate::unlock::testing::HardwareKey::generate();
+            let another = crate::unlock::testing::HardwareKey::generate();
+            Some(
+                protocol::device_wire::UnlockProof {
+                    signature: protocol::hex_encode(&another.sign(hash)),
+                    hardware_key: Some(protocol::hex_encode(&registered.public())),
+                }
+                .to_bytes(),
+            )
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("does not verify"), "{err}");
+    }
+
+    #[test]
+    fn a_proof_that_registers_no_key_fails_the_pairing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let offer = PairingOffer::mint(NOW).unwrap();
+        let err = pair_proving(&store, &offer, |hash| {
+            Some(crate::unlock::testing::HardwareKey::generate().connecting(hash))
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("registered no hardware key"), "{err}");
+    }
+
+    /// What follows message 3 is a frame of the Device wire: sealed, and
+    /// a whole number of buckets. One that is neither is not opened.
+    #[test]
+    fn a_proof_that_is_not_a_padded_frame_fails_the_pairing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let offer = PairingOffer::mint(NOW).unwrap();
+
+        let (client, server) = Stream::pair().unwrap();
+        let daemon_public = store.static_public_key().unwrap();
+        let secret = offer.secret_hex().to_string();
+        let phone = std::thread::spawn(move || {
+            let mut client = client;
+            let ran = run_initiator_proving(&mut client, &daemon_public, &secret, "iPhone", |_| None);
+            // In the clear, and a hundred bytes long.
+            let _ = write_frame(&mut client, &[0x41; 100]);
+            let _ = client.shutdown(std::net::Shutdown::Both);
+            ran.map(|_| ())
+        });
+        let mut server = server;
+        let err = run_responder(&mut server, &store, &offer, NOW).unwrap_err();
+        drop(server);
+        let _ = phone.join().unwrap();
+        assert!(err.to_string().contains("bucket"), "{err}");
     }
 
     /// The happy path, end to end: the two sides reach the SAME six
@@ -648,14 +946,7 @@ mod tests {
         let first = PairingOffer::mint(NOW).unwrap();
         let (daemon, _) = pair_in_process(&store, &first, first.secret_hex(), "iPhone", NOW);
         let first = daemon.unwrap();
-        store
-            .confirm_device(
-                &first.device_id,
-                &first.public_key,
-                &first.name,
-                crate::trust::DeviceRole::Remote,
-            )
-            .unwrap();
+        store.confirm_device(&first.device_id, &registration(&first)).unwrap();
 
         // The phone keeps its key across a re-pair, so pair the same key
         // again by reusing its static -- which is what the second
@@ -669,14 +960,8 @@ mod tests {
         assert_ne!(second.device_id, first.device_id, "a NEW key is a new device");
 
         // Now the actual case: a key the store already holds.
-        store
-            .confirm_device(
-                &second.device_id,
-                &phone.unwrap().public_key,
-                "iPhone",
-                crate::trust::DeviceRole::Remote,
-            )
-            .unwrap();
+        assert_eq!(phone.unwrap().public_key, second.public_key);
+        store.confirm_device(&second.device_id, &registration(&second)).unwrap();
         let known = store.device_for_key(&second.public_key).unwrap().unwrap();
         assert_eq!(known.device_id, second.device_id);
     }
@@ -698,6 +983,53 @@ mod tests {
         // the name is not a credential, and failing the whole ceremony
         // over a mis-encoded label would be the tail wagging the dog.
         assert!(!clean_device_name(&[0xff, 0xfe, b'a']).is_empty());
+    }
+
+    /// What the Device reads once the desk has ruled: one frame, a whole
+    /// number of buckets long, that opens with the Device's end of the
+    /// channel and with nothing else.
+    #[test]
+    fn a_verdict_reaches_the_initiator_in_one_padded_frame() {
+        use protocol::device_wire::{self, PairingVerdict};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let offer = PairingOffer::mint(NOW).unwrap();
+        let (daemon, phone) = pair_in_process(&store, &offer, offer.secret_hex(), "iPhone", NOW);
+        let mut daemon = daemon.unwrap();
+        let mut phone = phone.unwrap();
+
+        for verdict in [
+            PairingVerdict::Paired {
+                device_id: daemon.device_id.clone(),
+                notification_key: "5c".repeat(32),
+            },
+            PairingVerdict::Rejected,
+            PairingVerdict::Expired,
+        ] {
+            let mut wire = Vec::new();
+            send_verdict(&mut wire, &mut daemon.transport, &verdict).unwrap();
+            assert_eq!(
+                wire.len() % device_wire::FRAME_BUCKET,
+                0,
+                "{verdict:?} made a frame of {} bytes",
+                wire.len()
+            );
+            assert_eq!(
+                u16::from_be_bytes([wire[0], wire[1]]) as usize,
+                wire.len() - 2,
+                "one frame, and nothing after it"
+            );
+
+            // Sealed: the verdict's words are not on the wire.
+            let text = String::from_utf8_lossy(&wire);
+            assert!(!text.contains("paired") && !text.contains("rejected"), "{text}");
+
+            let mut plaintext = vec![0u8; MAX_NOISE_MESSAGE];
+            let n = phone.transport.read_message(&wire[2..], &mut plaintext).unwrap();
+            let read = PairingVerdict::from_bytes(device_wire::unpad(&plaintext[..n]).unwrap());
+            assert_eq!(read.unwrap(), verdict);
+        }
     }
 
     /// The QR is written by one of these and read by the other, so the

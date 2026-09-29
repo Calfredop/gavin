@@ -49,6 +49,7 @@ use tauri::State;
 /// own way past for those would be decorative; leaving it out is the
 /// honest record.
 pub const GATED_ACTIONS: &[&str] = &[
+    "confirm_pairing",
     "delete_card_file",
     "install_update",
     "remove_gavin_footprint",
@@ -61,6 +62,15 @@ pub const GATED_ACTIONS: &[&str] = &[
 /// and there is only ever one of it. Its prompt names this subject so
 /// the binding has the same shape as every other action's.
 pub const DAEMON_SUBJECT: &str = "";
+
+/// `confirm_pairing`'s subject: the device AND the six digits the human
+/// compared, so a token minted for one pairing cannot confirm another
+/// (companion-31). A device id is hex and a code is digits, so the colon
+/// cannot make two different pairs collide. The frontend spells it the
+/// same way (`pairingSubject` in `confirmGate.ts`).
+pub fn pairing_subject(device_id: &str, code: &str) -> String {
+    format!("{device_id}:{code}")
+}
 
 /// How long a prompt may stand unanswered before its record is dropped.
 /// Generous: a human can leave a modal on screen over lunch, and the
@@ -343,6 +353,24 @@ mod tests {
             grant.minted = Instant::now() - GRANT_TTL - Duration::from_secs(1);
         }
         assert!(spend(&g, &token, "restart_daemon", DAEMON_SUBJECT).is_err());
+    }
+
+    /// Confirming one pairing must not confirm another, and must not
+    /// confirm the same device against a code nobody compared.
+    #[test]
+    fn a_pairing_token_is_bound_to_the_device_and_the_code() {
+        let g = gate();
+        let id = open(&g, "confirm_pairing", &[&pairing_subject("dev-a", "123456")]);
+        let token = answer(&g, id, true).unwrap();
+        assert!(spend(&g, &token, "confirm_pairing", &pairing_subject("dev-b", "123456")).is_err());
+        assert!(spend(&g, &token, "confirm_pairing", &pairing_subject("dev-a", "654321")).is_err());
+        assert!(spend(&g, &token, "confirm_pairing", &pairing_subject("dev-a", "123456")).is_ok());
+    }
+
+    #[test]
+    fn confirming_a_pairing_without_a_token_is_refused() {
+        let g = gate();
+        assert!(spend(&g, "", "confirm_pairing", &pairing_subject("dev-a", "123456")).is_err());
     }
 
     /// Every gated action is spelled the way the command is registered:

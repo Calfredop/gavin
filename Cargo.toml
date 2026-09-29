@@ -1,3 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/daemon", "crates/protocol", "crates/gavin-mcp", "crates/push-gateway", "app/src-tauri"]
+members = [
+  "crates/daemon",
+  "crates/protocol",
+  "crates/gavin-mcp",
+  "crates/gavin-relay",
+  "crates/companion-core",
+  "crates/push-gateway",
+  "app/src-tauri",
+]

@@ -437,7 +437,14 @@ export const FEATURE_MIN_VERSION = {
   // an older daemon. The consumer is the companion-notify driver that
   // posts the desk's waiting-set diff; against an older daemon it stays
   // quiet rather than throwing on every inbox change.
-  companionNotifications: 44,
+  //
+  // 49, not the 44 they shipped at: before the Device wire was
+  // renumbered to 51..55, a daemon built on its branch answered 45..48
+  // without knowing any of the three. Gated at 44, the driver would send
+  // to one and be refused on every inbox change. A main-built v44..48
+  // daemon, which does know them, is told it is too old -- the cheap
+  // direction to be wrong in, and a rebuild and restart fix it.
+  companionNotifications: 49,
   // A rail trigger's `at` -- the epoch-seconds instant an `at-time`
   // schedule waits for (v45). Widens SetOrchestration the same way
   // `trigger` itself did at v36, so `min_version_for` is structurally
@@ -549,6 +556,39 @@ export const FEATURE_MIN_VERSION = {
   // version error each time (`reachCheckBlocked` in
   // headroomReachDriver.ts).
   headroomFailures: 50,
+  // The Relay's admission token (`companion-10`). v52 widened
+  // `SetRemoteAccess` with `relay_admission`, and `min_version_for`
+  // cannot see a field: an older daemon parses the request, stores the
+  // switch and the URL, and drops the token on the floor. The field
+  // would take a token and keep nothing, and the human would find out
+  // when a Device that scanned the QR was refused by the Relay.
+  //
+  // Not a dead gate (CLAUDE.md): `remoteAccess.ts`'s
+  // `relayAdmissionBlocked` reads it, and the Settings section greys the
+  // admission field and its Clear button behind it, on top of the
+  // section's own `remoteAccess` gate.
+  //
+  // The switch and the Relay URL are NOT behind it. An older daemon
+  // stores both exactly as it always did, and what it does not do --
+  // dial -- is not something a gate on a field can say; the section's
+  // copy is where that lives.
+  relayAdmission: 52,
+  // The daemon DIALS (`companion-10`). Not a request type and not a
+  // widened payload: v52 changed what the daemon does with a setting it
+  // already stored, so `min_version_for` is blind to it in principle,
+  // like `cardCleanup` above. An older daemon takes the switch and the
+  // Relay URL exactly as a v52 one does and then dials nothing.
+  //
+  // Consumers, both in `remoteAccess.ts`: `transportNote`, which stops
+  // the section telling the human that the daemon is connected to a
+  // Relay it has never dialled; and `pairingUnavailable`, which greys
+  // Pair a device rather than drawing a QR no Device can use.
+  //
+  // The same number as `relayAdmission` and a separate entry, because
+  // they are separate promises: one is about a field being kept, the
+  // other about a socket being opened, and the next bump may move one
+  // without the other.
+  relayDial: 52,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

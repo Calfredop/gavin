@@ -392,8 +392,11 @@ QR string, secret and admission token included), hand the string to its own Devi
 call `confirm_pairing`. After step 2 of the build order that row is full control of the
 Workstation.
 
-**What stops it.** Today, nothing: `confirm_pairing` is an ordinary command.
-`confirm_gate.rs` records why that was acceptable in phase 2 ("there is no transport").
+**What stops it.** Since companion card 31, `confirm_pairing` is a gated command: the
+host refuses it without a token minted for that `device_id` and those six digits
+(`confirm_gate::pairing_subject`). `begin_pairing` and `set_remote_access` stay ordinary,
+with the reasons recorded in `commandGate.test.ts`. What remains is the page-drawn
+prompt, below.
 
 **06 requires, before the Remote role has any reach (§6, the gate before step 2):**
 

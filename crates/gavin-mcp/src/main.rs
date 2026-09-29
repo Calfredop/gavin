@@ -279,6 +279,9 @@ impl SocketTransport {
                         _ => protocol::HelloAuth::None,
                     },
                     nonce: protocol::random_hex(16).unwrap_or_default(),
+                    // Not one of the app's two connections; only the
+                    // `app` role is registered for pushes at all.
+                    connection: None,
                 };
                 if protocol::gate_request(&hello, version).is_ok()
                     && write_message(reader.get_mut(), &hello).is_ok()
