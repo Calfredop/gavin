@@ -27,6 +27,7 @@ One install holds one pair of keys for every Workstation it pairs with, so "Devi
 - The pairing payload gains the hardware public key.
 - `devices.sqlite` gains a column for it. This needs an `ALTER TABLE ... ADD COLUMN` migration; changing `CREATE TABLE IF NOT EXISTS` alone would never reach an existing database.
 - Phase 3 adds one message after the `IK` handshake: the signature over the handshake hash.
+- **The pairing code covers the handshake, not the keys.** The six digits are derived from the pairing handshake's hash (`protocol::pairing_sas`, v2), so a pairing made with a copy of the Noise key shows other digits than the owner's phone does, whichever hardware key it registers. Registering the hardware key at pairing is only as strong as the human's comparison, and that comparison has to be of something an attacker with the Noise key cannot reproduce. The Device also shows its code only after the Workstation acknowledges its proof (`PairingAck`), and the desk says when a pairing is for a Device it already trusts.
 - The pairing format can change for free now, because no Device has ever paired over a real transport.
 - **On Android, pairing also sends the hardware key's attestation chain.** A release daemon refuses a key unless it attests TEE or StrongBox under Google's hardware roots. iOS offers no attestation for such a key, so there the daemon relies on the shell's claim.
 - **iOS keeps keychain items across an uninstall.** The shell therefore deletes its keys on its first launch; otherwise a reinstall would silently be the old Device.

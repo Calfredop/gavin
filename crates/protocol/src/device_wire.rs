@@ -250,6 +250,34 @@ impl std::fmt::Display for ConnectRefusal {
     }
 }
 
+/// What the Workstation tells a Device once it has taken the Device's
+/// pairing proof: the offer is spent by THIS handshake, and the desk has
+/// been asked about it.
+///
+/// One frame, after the proof and before the desk rules. The Device
+/// shows its six digits only when it arrives. Without it a Device whose
+/// handshake lost the race for a one-use secret would be showing a code
+/// no desk is showing, and would be waiting on a verdict that was never
+/// coming.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum PairingAck {
+    ProofTaken,
+    /// An acknowledgement a newer Workstation sent.
+    #[serde(other)]
+    Unknown,
+}
+
+impl PairingAck {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap_or_default()
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
+}
+
 /// What the Workstation tells a Device once the human at the desk has
 /// ruled on its pairing.
 ///

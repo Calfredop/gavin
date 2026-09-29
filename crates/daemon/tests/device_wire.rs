@@ -1260,11 +1260,10 @@ fn a_wrong_secret_fails_the_handshake() {
     // The Device cannot tell from its own side -- it has sent its last
     // message and computed a code -- so what it sees is a Workstation
     // that lets go without a word.
-    let pairing = device(&relay, "attacker").pair_with(&photographed_too_late).unwrap();
-    match pairing.verdict(SOON) {
+    match device(&relay, "attacker").pair_with(&photographed_too_late) {
         Err(TestDeviceError::Closed) => {}
         Err(other) => panic!("expected the Workstation to end the pairing, got {other}"),
-        Ok(verdict) => panic!("a wrong secret reached a verdict: {verdict:?}"),
+        Ok(pairing) => panic!("a wrong secret showed the code {}", pairing.code),
     }
 
     // The desk was never asked, and nothing was written.
@@ -1429,10 +1428,12 @@ fn a_pairing_whose_proof_does_not_verify_asks_the_desk_nothing() {
         ("not a signature", Proving::Saying(b"trust me".to_vec())),
         ("not a proof", Proving::Instead(b"{\"type\":\"ListSessions\"}\n".to_vec())),
     ] {
-        let pairing = device(&relay, how).proving(proving).pair_with(&offer).unwrap();
-        match pairing.verdict(SOON) {
+        // Never acknowledged, so no code is shown: the Device learns
+        // its proof was not taken before it puts anything on screen.
+        match device(&relay, how).proving(proving).pair_with(&offer) {
             Err(TestDeviceError::Closed) => {}
-            other => panic!("{how}: expected the Workstation to end the pairing, got {other:?}"),
+            Err(other) => panic!("{how}: expected the Workstation to end the pairing, got {other}"),
+            Ok(pairing) => panic!("{how}: the code {} was shown", pairing.code),
         }
     }
     assert!(workstation.push.hears_nothing_for(QUIET), "the desk was asked about one of them");
@@ -1513,6 +1514,36 @@ fn a_copied_noise_key_on_another_phone_is_refused() {
         "the daemon should say why; its log:\n{}",
         workstation.log()
     );
+}
+
+/// Ticket 33: the six digits cover the pairing they are shown for. A copy
+/// of a Device's Noise key, on a phone with a hardware key of its own,
+/// makes another handshake and so shows other digits -- the owner cannot be
+/// walked into confirming a pairing they did not make by two screens that
+/// happen to agree.
+#[test]
+fn two_pairings_with_one_noise_key_show_different_codes() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let copy = device.copied_to_another_phone().unwrap();
+    assert_eq!(copy.keys.public, device.keys.public);
+
+    let first = device.pair(&workstation.offer()).unwrap();
+    let (first_id, _, first_desk) = workstation.asked();
+    assert_eq!(first.code, first_desk);
+    let resp = workstation.command.request(&Request::ConfirmPairing { device_id: first_id.clone() });
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+    let first_code = first.code.clone();
+    first.paired(SOON).unwrap();
+
+    let second = copy.pair(&workstation.offer()).unwrap();
+    let (second_id, _, second_desk) = workstation.asked();
+    // The same Noise key is the same row, so the desk can say it knows it.
+    assert_eq!(second_id, first_id);
+    assert_eq!(second.code, second_desk);
+    assert_ne!(second.code, first_code, "one Noise key showed one code twice");
 }
 
 /// A peer the Relay admitted, picked up by the daemon, that says nothing

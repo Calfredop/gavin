@@ -2353,7 +2353,7 @@ impl SessionManager {
             let trust = self.trust_or_err()?;
             crate::pairing::ResponderKeys::from_store(&trust)?
         };
-        let outcome = crate::pairing::run_responder_with_keys(
+        let mut outcome = crate::pairing::run_responder_with_keys(
             stream,
             &keys,
             &offer,
@@ -2394,6 +2394,11 @@ impl SessionManager {
                 ),
             }
         }
+
+        // The offer is this handshake's now: say so, before the Device
+        // shows anything. Not before the spend above -- a handshake that
+        // lost the race gets no acknowledgement, and so no code.
+        crate::pairing::send_ack(stream, &mut outcome.transport)?;
 
         let device_id = {
             let trust = self.trust_or_err()?;
@@ -11146,7 +11151,15 @@ mod tests {
         let mut client = client;
         let daemon_key = crate::pairing::hex_decode(&qr.daemon_public_key).unwrap();
         let phone = crate::pairing::run_initiator(&mut client, &daemon_key, &qr.secret, name);
-        (daemon.join().unwrap(), phone)
+        let daemon = daemon.join().unwrap();
+        let phone = phone.map(|mut phone| {
+            if daemon.is_ok() {
+                phone.take_ack(&mut client);
+                assert!(phone.acknowledged, "the daemon holds the offer and said nothing");
+            }
+            phone
+        });
+        (daemon, phone)
     }
 
     /// The whole ceremony, the way the card asks for it: `BeginPairing`,
@@ -11843,8 +11856,16 @@ mod tests {
             let said = crate::pairing::run_initiator(&mut device, &daemon_key, &qr.secret, name);
             let out = self.daemon.take().unwrap().join().unwrap();
             // The Device's own half always completes: it cannot tell,
-            // from its side, that its last message was refused.
-            said.unwrap();
+            // from its side, that its last message was refused. What it
+            // can tell is whether the daemon took its proof, and that
+            // is what decides whether it shows a code.
+            let mut said = said.unwrap();
+            said.take_ack(&mut device);
+            assert_eq!(
+                said.acknowledged,
+                out.is_ok(),
+                "a Device is told its proof was taken exactly when it was"
+            );
             out
         }
     }

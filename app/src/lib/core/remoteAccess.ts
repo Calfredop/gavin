@@ -68,8 +68,8 @@ export interface PairingOffer {
 export interface PairingRequest {
   deviceId: string;
   name: string;
-  /// Six decimal digits, derived from both static keys. The human
-  /// compares them against the phone's screen.
+  /// Six decimal digits, derived from the pairing handshake's hash. The
+  /// human compares them against the phone's screen.
   sas: string;
 }
 

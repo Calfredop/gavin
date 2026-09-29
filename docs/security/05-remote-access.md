@@ -123,7 +123,7 @@ pairing secret, records it with a two-minute expiry, and returns the QR payload.
 draws the QR. The phone scans it, connects (over the transport in §5, or the LAN), and
 runs a Noise `XX` handshake with the pairing secret mixed in as a pre-shared key. The
 phone sends its static public key and a device name inside the handshake. Both screens
-then show a six-digit short authentication string derived from both static keys. The
+then show a six-digit short authentication string derived from the handshake hash. The
 daemon pushes `DevicePairingRequested { device_id, name, sas }` to the app; the human
 compares the two codes and confirms **on the desktop**. Only then does the daemon write
 the device into the trust store and answer the phone with `HelloAck { role: "remote" }`.
@@ -146,17 +146,27 @@ implementer, settled in `crates/daemon/src/pairing.rs` and `crates/protocol`:
   belongs with the wire contract rather than inside one peer.
 
   ```text
-  lo     = min(key_a, key_b)            // bytewise lexicographic
-  hi     = max(key_a, key_b)
-  digest = SHA-256("gavin-pairing-sas-v1" || lo || hi)
+  digest = SHA-256("gavin-pairing-sas-v2" || handshake hash)
   sas    = u64::from_be_bytes(digest[0..8]) % 1_000_000
   shown  = sas, zero-padded to six digits ("000042", never "42")
   ```
 
-  The keys are **sorted** rather than ordered initiator-then-responder, so each side
-  computes the code from what it holds without first agreeing on who is who. The context
-  string carries a version, so a future change to the derivation is a *different* code
-  rather than the same six digits meaning two things. Zero-padding is load-bearing: a
+  The handshake hash is the Noise hash of this pairing's `XXpsk3` exchange, which both
+  ends hold after message 3 without agreeing on who is who. It covers both static keys,
+  both ephemerals and the mixing of the secret, so **a handshake the owner's phone did
+  not make shows other digits than the owner's phone does — even one made with a copy
+  of the phone's Noise key.** (v1 hashed the two static keys alone, so two pairings made
+  with one Noise key showed one code whoever made them, whatever hardware key each
+  registered: `companion-33`.) The context string carries a version, so the change was a
+  *different* code rather than the same six digits meaning two things.
+
+  **The Device shows the code only once the Workstation has said it took its proof.**
+  After the proof and before the desk rules, the daemon sends one sealed frame,
+  `PairingAck::ProofTaken`, and only after this handshake has spent the offer. A Device
+  whose handshake lost the race for the one-use secret is never sent it, so it shows no
+  code and no human is asked to compare one. And when `DevicePairingRequested` names an id
+  the trust store already holds, the desk's dialog says that confirming replaces that
+  Device's keys. Zero-padding is load-bearing: a
   human asked to compare "42" against "000042" has been handed a puzzle instead of a
   check, and the whole ceremony rests on that comparison being trivially obvious.
 - **There is a Reject button.** This section describes confirm and says nothing about
@@ -191,7 +201,7 @@ separately from the other devices that used it. Rejected. Trust-on-first-use wit
 confirmation (first scanner wins) loses to an attacker who photographs the QR and
 scans faster than the owner: the desktop would show "iPhone paired" and the human would
 nod. The SAS closes that: the attacker's phone and the human's phone produce different
-codes, and the code on the desktop belongs to whoever actually completed the handshake.
+codes (the code covers the handshake, not just the keys), and the code on the desktop belongs to whoever actually completed the handshake.
 This is Bluetooth numeric comparison and Signal safety numbers, which is where a
 single-developer product should stand rather than invent.
 
@@ -1019,14 +1029,12 @@ asks of this ticket, and Android's attestation chain at pairing (ADR 0001),
 which arrives with the shell that produces one. The direct listener is out
 of the Companion spec's scope.
 
-**Known, and filed.** The six-digit code is derived from the two Noise keys
-alone (§3), so it cannot tell a pairing made with a copied Noise key and
-another hardware key from the one the owner's phone made: both show the
-same digits. The preconditions are a copied key, sight of the QR and the
-owner pairing at that moment, and the confirmation is still a human's — but
-what it would defeat is the second key's whole purpose.
-`companion-33-pairing-code-covers-the-handshake.md` is the card, and it has
-to land before the Remote role is given any reach.
+**Closed by `companion-33`.** The six-digit code used to be derived from the two
+Noise keys alone, so it could not tell a pairing made with a copied Noise key and
+another hardware key from the one the owner's phone made. It now covers the
+pairing handshake (§3), the Device shows it only after the Workstation has taken
+its proof, and the desk's dialog says when a pairing is for a Device it already
+trusts.
 
 Lands: `remote.rs` (dial, reconnect on wake, Noise `IK`, framing, padding, caps) feeding
 `handle_connection` with role `remote`; `crates/gavin-relay`; the direct loopback/LAN

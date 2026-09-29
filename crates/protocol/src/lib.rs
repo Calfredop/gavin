@@ -725,9 +725,11 @@ pub const CUSTOM_API_FAMILY_MIN_VERSION: u32 = 48;
 pub const HEADROOM_FAILURES_MIN_VERSION: u32 = 50;
 
 /// The oldest daemon a Device can pair with: the first whose pairing
-/// reads the Device's proof and answers with a notification key. Read by
+/// reads the Device's proof, acknowledges it (`PairingAck`) and answers
+/// with a notification key, and derives the six digits from the
+/// handshake hash. Read by
 /// the Companion core against the `protocolVersion` a pairing QR carries.
-pub const PAIRING_MIN_VERSION: u32 = 53;
+pub const PAIRING_MIN_VERSION: u32 = 55;
 
 /// The oldest daemon this client can still talk to. Bumped ONLY when a
 /// change breaks the wire for an older peer -- adding a Request variant
@@ -2433,7 +2435,11 @@ pub fn server_proof(daemon_token: &str, nonce: &str) -> String {
 /// digest can never collide with another SHA-256 in this system, and a
 /// version in the string so a future change to the derivation is a
 /// DIFFERENT code rather than the same six digits meaning two things.
-const PAIRING_SAS_CONTEXT: &[u8] = b"gavin-pairing-sas-v1";
+///
+/// v1 hashed the two static keys and nothing else, so two handshakes made
+/// with one Device key showed one code whoever made them. v2 hashes the
+/// handshake.
+const PAIRING_SAS_CONTEXT: &[u8] = b"gavin-pairing-sas-v2";
 
 /// The six-digit short authentication string both screens show during
 /// pairing (§3, "The ceremony").
@@ -2441,17 +2447,19 @@ const PAIRING_SAS_CONTEXT: &[u8] = b"gavin-pairing-sas-v1";
 /// **The derivation, exactly, because the phone has to reproduce it:**
 ///
 /// ```text
-/// lo     = min(key_a, key_b)            // bytewise lexicographic
-/// hi     = max(key_a, key_b)
-/// digest = SHA-256("gavin-pairing-sas-v1" || lo || hi)
+/// digest = SHA-256("gavin-pairing-sas-v2" || handshake hash)
 /// sas    = u64::from_be_bytes(digest[0..8]) % 1_000_000
 /// shown  = sas, zero-padded to six digits ("000042", never "42")
 /// ```
 ///
-/// The two keys are SORTED rather than ordered initiator-then-responder,
-/// so each side computes the code from what it holds without first
-/// agreeing on who is who -- and so a transcript that swapped the roles
-/// could not produce a matching code by accident.
+/// `handshake hash` is the Noise handshake hash of THIS pairing's
+/// `XXpsk3` exchange, the 32 bytes both ends read from their handshake
+/// state after message 3 (`get_handshake_hash`). It covers both static
+/// keys, both ephemerals and the mixing of the secret, and both ends
+/// hold it without agreeing on who is who. So a handshake the owner's
+/// phone did not make shows other digits than the owner's phone does,
+/// even when it was made with a copy of the phone's Noise key: the
+/// ephemerals are fresh in each.
 ///
 /// Truncated at eight bytes, not four: taking a u64 modulo a million
 /// leaves a bias of about one part in 10^13, which is nothing, where a
@@ -2468,12 +2476,10 @@ const PAIRING_SAS_CONTEXT: &[u8] = b"gavin-pairing-sas-v1";
 /// implementations must compute identically, so it belongs with the wire
 /// contract they are both written against. This crate is not what the
 /// phone links -- it is what the phone's author reads.
-pub fn pairing_sas(key_a: &[u8], key_b: &[u8]) -> String {
-    let (lo, hi) = if key_a <= key_b { (key_a, key_b) } else { (key_b, key_a) };
+pub fn pairing_sas(handshake_hash: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(PAIRING_SAS_CONTEXT);
-    h.update(lo);
-    h.update(hi);
+    h.update(handshake_hash);
     let digest = h.finalize();
     let mut head = [0u8; 8];
     head.copy_from_slice(&digest[..8]);
@@ -5073,7 +5079,7 @@ mod tests {
     /// has used the secret.
     #[test]
     fn a_device_pairs_with_a_daemon_that_registers_its_hardware_key() {
-        assert_eq!(PAIRING_MIN_VERSION, 53);
+        assert_eq!(PAIRING_MIN_VERSION, 55);
         assert!(PAIRING_MIN_VERSION <= PROTOCOL_VERSION);
     }
 
@@ -5136,43 +5142,36 @@ mod tests {
     /// The SAS derivation, pinned against a hand-computed vector so the
     /// phone's implementer has something to check theirs against.
     #[test]
-    fn the_sas_is_six_digits_derived_from_both_keys_in_sorted_order() {
+    fn the_sas_is_six_digits_derived_from_the_handshake_hash() {
         let a = [1u8; 32];
         let b = [2u8; 32];
-
-        // Sorted, so each side computes it from what it holds without
-        // first agreeing on who was the initiator.
-        assert_eq!(pairing_sas(&a, &b), pairing_sas(&b, &a));
 
         // Six digits, always -- the human is comparing two strings by
         // eye, and a code that is sometimes five characters long is a
         // comparison they can get wrong.
-        let sas = pairing_sas(&a, &b);
+        let sas = pairing_sas(&a);
         assert_eq!(sas.len(), 6, "{sas}");
         assert!(sas.chars().all(|c| c.is_ascii_digit()), "{sas}");
 
-        // Both keys matter: change either and the code changes. This is
-        // what defeats §3's attacker -- they photograph the QR and
-        // complete a handshake with THEIR key, and the desktop shows a
-        // code the owner's phone is not showing.
-        assert_ne!(pairing_sas(&a, &b), pairing_sas(&a, &[3u8; 32]));
-        assert_ne!(pairing_sas(&a, &b), pairing_sas(&[3u8; 32], &b));
+        // A different handshake, a different code. This is what defeats
+        // §3's attacker even with a copy of the Device's Noise key: their
+        // handshake has ephemerals of its own, so its hash is not the
+        // owner's phone's.
+        assert_ne!(pairing_sas(&a), pairing_sas(&b));
 
         // The zero-padding path, which is the one a lazy `to_string()`
         // would get wrong and which no random pair is likely to hit.
         assert_eq!(format!("{:06}", 42u64 % 1_000_000), "000042");
 
         // A fixed vector. Recomputable by hand:
-        //   SHA-256("gavin-pairing-sas-v1" || 0x01*32 || 0x02*32), first
-        //   eight bytes big-endian, modulo 1_000_000.
-        let pinned = pairing_sas(&a, &b);
+        //   SHA-256("gavin-pairing-sas-v2" || 0x01*32), first eight
+        //   bytes big-endian, modulo 1_000_000.
         assert_eq!(
-            pinned,
+            pairing_sas(&a),
             {
                 let mut h = Sha256::new();
-                h.update(b"gavin-pairing-sas-v1");
+                h.update(b"gavin-pairing-sas-v2");
                 h.update([1u8; 32]);
-                h.update([2u8; 32]);
                 let d = h.finalize();
                 let mut head = [0u8; 8];
                 head.copy_from_slice(&d[..8]);

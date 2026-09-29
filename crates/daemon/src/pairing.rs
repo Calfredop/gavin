@@ -356,12 +356,14 @@ pub fn run_responder_with_keys<S: Read + Write>(
         .to_vec();
 
     let name = clean_device_name(&payload[..payload_len]);
-    let sas = protocol::pairing_sas(daemon_public, &public_key);
-
     // The hash of the whole handshake: what the Device's hardware signs.
     // Both static keys and both ephemerals are in it, so the signature
     // that follows is good for this pairing and no other.
     let hash = handshake.get_handshake_hash().to_vec();
+    // Derived from the hash, which covers this handshake's ephemerals as
+    // well as both static keys: a handshake the owner's phone did not
+    // make shows other digits than the owner's phone does.
+    let sas = protocol::pairing_sas(&hash);
     let mut transport = handshake.into_transport_mode()?;
 
     // 4. <- the proof: the Device's hardware key, and that key's
@@ -373,6 +375,18 @@ pub fn run_responder_with_keys<S: Read + Write>(
     let hardware_key = crate::unlock::registering(&proof, &hash)?;
 
     Ok(HandshakeOutcome { name, public_key, hardware_key, sas, transport })
+}
+
+/// Tells the Device its proof was taken: this handshake holds the offer,
+/// and the desk is being asked about it. One sealed frame, sent after the
+/// offer is spent and before the desk rules. A Device shows its six
+/// digits only when it arrives, so a handshake that lost the race for the
+/// one-use secret never shows a code.
+pub fn send_ack<S: Write>(
+    stream: &mut S,
+    transport: &mut snow::TransportState,
+) -> anyhow::Result<()> {
+    write_sealed(stream, transport, &protocol::device_wire::PairingAck::ProofTaken.to_bytes())
 }
 
 /// Tells the Device what the desk ruled: one transport message, padded
@@ -554,6 +568,8 @@ pub(crate) struct InitiatorResult {
     /// The hardware key it registered.
     pub hardware_key: Vec<u8>,
     pub sas: String,
+    /// Whether the daemon said it took the proof (`take_ack`).
+    pub acknowledged: bool,
     /// The Device's end of the channel, for reading the verdict.
     pub transport: snow::TransportState,
 }
@@ -618,18 +634,36 @@ pub(crate) fn run_initiator_proving<S: Read + Write>(
     if seen != daemon_public_key {
         anyhow::bail!("this is not the gavin whose QR was scanned");
     }
-    let sas = protocol::pairing_sas(daemon_public_key, &keypair.public);
-
     let n = handshake.write_message(device_name.as_bytes(), &mut message)?;
     write_frame(stream, &message[..n])?;
 
     let hash = handshake.get_handshake_hash().to_vec();
+    let sas = protocol::pairing_sas(&hash);
     let mut transport = handshake.into_transport_mode()?;
     if let Some(payload) = proof(&hash) {
         write_sealed(stream, &mut transport, &payload)?;
     }
 
-    Ok(InitiatorResult { public_key: keypair.public, hardware_key: Vec::new(), sas, transport })
+    Ok(InitiatorResult {
+        public_key: keypair.public,
+        hardware_key: Vec::new(),
+        sas,
+        transport,
+        acknowledged: false,
+    })
+}
+
+#[cfg(test)]
+impl InitiatorResult {
+    /// Reads the acknowledgement `SessionManager::pair_over` sends once it
+    /// holds the offer, and records whether it came. A Device whose
+    /// handshake lost the race finds the stream closed instead.
+    pub(crate) fn take_ack<S: Read>(&mut self, stream: &mut S) {
+        self.acknowledged = read_sealed(stream, &mut self.transport)
+            .ok()
+            .and_then(|payload| protocol::device_wire::PairingAck::from_bytes(&payload).ok())
+            == Some(protocol::device_wire::PairingAck::ProofTaken);
+    }
 }
 
 #[cfg(test)]

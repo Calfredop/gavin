@@ -3,8 +3,8 @@
 //! `docs/security/05-remote-access.md` §3 settles the ceremony and the
 //! daemon's `pairing.rs` is its other end. The human scans a QR at the
 //! desk; this runs a Noise `XXpsk3` handshake with the secret the QR
-//! carried; both screens then show six digits derived from both static
-//! keys; the human compares them and confirms at the desk. Only then does
+//! carried; both screens then show six digits derived from the handshake's
+//! hash; the human compares them and confirms at the desk. Only then does
 //! the Workstation answer -- and only then is the Device paired.
 //!
 //! What the Device owes the ceremony, and what this module is careful
@@ -23,7 +23,7 @@
 
 use crate::channel::{frame, Channel, Inbox, MAX_NOISE_MESSAGE};
 use crate::{noise, CoreError, DeviceKeys, Entropy};
-use protocol::device_wire::{self, PairingVerdict, UnlockProof, HARDWARE_KEY_BYTES};
+use protocol::device_wire::{self, PairingAck, PairingVerdict, UnlockProof, HARDWARE_KEY_BYTES};
 use protocol::relay::{self, RelayHello, RelayUrl};
 use protocol::PairingQr;
 
@@ -124,7 +124,9 @@ enum State {
     AwaitingWorkstation(Box<snow::HandshakeState>),
     /// The handshake is done, and the hardware is signing it.
     AwaitingProof(Box<Channel>),
-    /// The proof is sent and the code is on screen.
+    /// The proof is sent; the Workstation has not yet said it took it.
+    AwaitingAck(Box<Channel>),
+    /// The proof was taken and the code is on screen.
     AwaitingVerdict(Box<Channel>),
     Finished,
     /// Something failed. Every later call says so again.
@@ -141,9 +143,11 @@ pub struct PairingClient {
     state: State,
     inbox: Inbox,
     workstation_key: Vec<u8>,
-    device_key: Vec<u8>,
     hardware_key: Vec<u8>,
     name: String,
+    /// The six digits, known once the handshake is done and shown once
+    /// the Workstation has taken the proof.
+    sas: Option<String>,
 }
 
 impl PairingClient {
@@ -197,9 +201,9 @@ impl PairingClient {
             state: State::AwaitingWorkstation(Box::new(handshake)),
             inbox: Inbox::default(),
             workstation_key,
-            device_key: keys.public.clone(),
             hardware_key,
             name: bounded_name(device_name),
+            sas: None,
         };
         Ok((client, frame(&message[..n])))
     }
@@ -207,8 +211,9 @@ impl PairingClient {
     /// The hardware's signature over what `PairingEvent::Prove` named,
     /// as the hardware returned it (ASN.1 DER).
     ///
-    /// Answers with the proof to send and the code to show -- and with
-    /// whatever had arrived meanwhile and was waiting on this.
+    /// Answers with the proof to send -- and with whatever had arrived
+    /// meanwhile and was waiting on this. The code follows the
+    /// Workstation's acknowledgement, not this.
     pub fn prove(&mut self, signature: &[u8]) -> Result<Vec<PairingEvent>, CoreError> {
         let proof = UnlockProof {
             signature: protocol::hex_encode(signature),
@@ -240,13 +245,8 @@ impl PairingClient {
             Ok(sealed) => sealed,
             Err(e) => return Err(self.fail(e)),
         };
-        self.state = State::AwaitingVerdict(channel);
-        let mut events = vec![
-            PairingEvent::Send(sealed),
-            PairingEvent::CompareCode {
-                sas: protocol::pairing_sas(&self.workstation_key, &self.device_key),
-            },
-        ];
+        self.state = State::AwaitingAck(channel);
+        let mut events = vec![PairingEvent::Send(sealed)];
         events.extend(self.receive(&[])?);
         Ok(events)
     }
@@ -257,12 +257,10 @@ impl PairingClient {
         e
     }
 
-    /// The six digits, once the handshake has reached them.
+    /// The six digits, once the Workstation has taken the proof.
     pub fn code(&self) -> Option<String> {
         match self.state {
-            State::AwaitingVerdict(_) | State::Finished => {
-                Some(protocol::pairing_sas(&self.workstation_key, &self.device_key))
-            }
+            State::AwaitingVerdict(_) | State::Finished => self.sas.clone(),
             _ => None,
         }
     }
@@ -319,13 +317,28 @@ impl PairingClient {
                 // hardware signs: both static keys and both ephemerals
                 // are in it, so the signature is good for this pairing
                 // and no other.
-                let message = device_wire::unlock_message(handshake.get_handshake_hash());
+                let hash = handshake.get_handshake_hash().to_vec();
+                let message = device_wire::unlock_message(&hash);
+                self.sas = Some(protocol::pairing_sas(&hash));
                 let transport =
                     handshake.into_transport_mode().map_err(noise::handshake_error)?;
 
                 events.push(PairingEvent::Send(frame(&out[..n])));
                 events.push(PairingEvent::Prove { message });
                 self.state = State::AwaitingProof(Box::new(Channel::new(transport)));
+                Ok(())
+            }
+            State::AwaitingAck(mut channel) => {
+                let payload = channel.open(message)?;
+                match PairingAck::from_bytes(&payload) {
+                    Ok(PairingAck::ProofTaken) => {}
+                    // Not the acknowledgement: nothing this Workstation
+                    // said makes the digits safe to show.
+                    _ => return Err(CoreError::Frame("the Workstation did not take the proof".into())),
+                }
+                let sas = self.sas.clone().ok_or(CoreError::NotReady)?;
+                events.push(PairingEvent::CompareCode { sas });
+                self.state = State::AwaitingVerdict(channel);
                 Ok(())
             }
             State::AwaitingVerdict(mut channel) => {
@@ -350,6 +363,7 @@ impl std::fmt::Debug for PairingClient {
         let state = match &self.state {
             State::AwaitingWorkstation(_) => "awaiting the Workstation",
             State::AwaitingProof(_) => "awaiting the hardware's signature",
+            State::AwaitingAck(_) => "awaiting the Workstation's acknowledgement",
             State::AwaitingVerdict(_) => "awaiting the desk",
             State::Finished => "finished",
             State::Failed(_) => "failed",
@@ -432,7 +446,16 @@ mod tests {
             self.device_key = handshake.get_remote_static().unwrap().to_vec();
             self.hash = handshake.get_handshake_hash().to_vec();
             self.transport = Some(handshake.into_transport_mode()?);
-            Ok(protocol::pairing_sas(&self.keys.public, &self.device_key))
+            Ok(protocol::pairing_sas(&self.hash))
+        }
+
+        /// The acknowledgement the Workstation sends once it has taken
+        /// the proof.
+        fn ack(&mut self) -> Vec<u8> {
+            let plaintext = device_wire::pad(&PairingAck::ProofTaken.to_bytes()).unwrap();
+            let mut out = vec![0u8; MAX_NOISE_MESSAGE];
+            let n = self.transport.as_mut().unwrap().write_message(&plaintext, &mut out).unwrap();
+            frame(&out[..n])
         }
 
         /// Opens the Device's proof: the frame that follows message 3.
@@ -486,13 +509,20 @@ mod tests {
         }
     }
 
-    /// The proof's frame and the code, out of what proving produced.
-    fn proof_and_code(events: &[PairingEvent]) -> (Vec<u8>, String) {
+    /// The proof's frame, out of what proving produced: and no code yet,
+    /// because the Workstation has not said it took the proof.
+    fn proof_frame(events: &[PairingEvent]) -> Vec<u8> {
         match events {
-            [PairingEvent::Send(proof), PairingEvent::CompareCode { sas }] => {
-                (proof.clone(), sas.clone())
-            }
-            other => panic!("expected the proof then the code, got {other:?}"),
+            [PairingEvent::Send(proof)] => proof.clone(),
+            other => panic!("expected the proof and nothing else, got {other:?}"),
+        }
+    }
+
+    /// The code, out of what the acknowledgement produced.
+    fn code_of(events: &[PairingEvent]) -> String {
+        match events {
+            [PairingEvent::CompareCode { sas }] => sas.clone(),
+            other => panic!("expected the code, got {other:?}"),
         }
     }
 
@@ -511,8 +541,10 @@ mod tests {
         let (third, _) = third_and_message(&client.receive(&second).unwrap());
         let desk = workstation.finish(&third).unwrap();
 
-        let (proof, sas) = proof_and_code(&client.prove(SIGNATURE).unwrap());
+        let proof = proof_frame(&client.prove(SIGNATURE).unwrap());
         workstation.read_proof(&proof);
+        let ack = workstation.ack();
+        let sas = code_of(&client.receive(&ack).unwrap());
         assert_eq!(sas, desk, "the two screens must show the same code");
         (client, workstation, sas)
     }
@@ -534,7 +566,7 @@ mod tests {
         assert_eq!(message, device_wire::unlock_message(&workstation.hash));
         assert_eq!(workstation.hash.len(), 32);
 
-        let (proof, _) = proof_and_code(&client.prove(SIGNATURE).unwrap());
+        let proof = proof_frame(&client.prove(SIGNATURE).unwrap());
         let text = String::from_utf8_lossy(&proof).to_string();
         assert!(!text.contains("hardwareKey") && !text.contains("signature"), "sealed: {text}");
         assert_eq!(
@@ -546,9 +578,10 @@ mod tests {
         );
     }
 
-    /// The code goes on screen once the Device has said everything it
-    /// has to say: a Device showing six digits is one the desk is being
-    /// asked about, or is about to be.
+    /// The code goes on screen once the Workstation has said it took the
+    /// proof: a Device showing six digits is one the desk is being asked
+    /// about. A handshake that lost the race for the one-use secret is
+    /// never acknowledged, and shows nothing.
     #[test]
     fn no_code_is_shown_before_the_proof_is_made() {
         let mut workstation = Workstation::new(0x33, [0x44; 32]);
@@ -561,8 +594,60 @@ mod tests {
         );
         assert_eq!(client.code(), None);
 
-        let (_, sas) = proof_and_code(&client.prove(SIGNATURE).unwrap());
+        let (third, _) = third_and_message(&events);
+        workstation.finish(&third).unwrap();
+        let events = client.prove(SIGNATURE).unwrap();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(client.code(), None, "the proof is sent, but nobody has said it was taken");
+
+        let ack = workstation.ack();
+        let sas = code_of(&client.receive(&ack).unwrap());
         assert_eq!(client.code().as_deref(), Some(sas.as_str()));
+    }
+
+    /// Anything but the acknowledgement after the proof ends the pairing
+    /// with no code shown.
+    #[test]
+    fn a_frame_that_is_not_the_acknowledgement_shows_no_code() {
+        let (mut client, first, mut workstation) = {
+            let workstation = Workstation::new(0x33, [0x44; 32]);
+            let (client, first) = start(&workstation.offer(), "iPhone").unwrap();
+            (client, first, workstation)
+        };
+        let second = workstation.answer(&first);
+        let (third, _) = third_and_message(&client.receive(&second).unwrap());
+        workstation.finish(&third).unwrap();
+        client.prove(SIGNATURE).unwrap();
+
+        // The desk's ruling, before the acknowledgement: not it.
+        let ruling = workstation.rule(&PairingVerdict::Rejected);
+        assert!(matches!(client.receive(&ruling), Err(CoreError::Frame(_))));
+        assert_eq!(client.code(), None);
+    }
+
+    /// Two pairings made with one Device key show different codes: the
+    /// code covers the handshake, not the keys. This is the attacker of
+    /// ticket 33, who holds a copy of the Noise key.
+    #[test]
+    fn two_handshakes_with_one_device_key_show_different_codes() {
+        let run = |ephemeral: u8| {
+            let mut workstation = Workstation::new(0x33, [0x44; 32]);
+            let (mut client, first) = PairingClient::start(
+                &workstation.offer(),
+                &device(),
+                &hardware_key(),
+                "iPhone",
+                Entropy::from_bytes(vec![ephemeral; 32]),
+            )
+            .unwrap();
+            let second = workstation.answer(&first);
+            let (third, _) = third_and_message(&client.receive(&second).unwrap());
+            workstation.finish(&third).unwrap();
+            client.prove(SIGNATURE).unwrap();
+            let ack = workstation.ack();
+            code_of(&client.receive(&ack).unwrap())
+        };
+        assert_ne!(run(0x22), run(0x23));
     }
 
     #[test]
@@ -593,10 +678,12 @@ mod tests {
         let (third, _) = third_and_message(&client.receive(&second).unwrap());
         workstation.finish(&third).unwrap();
 
-        let early = workstation.rule(&PairingVerdict::Rejected);
+        let mut early = workstation.ack();
+        early.extend(workstation.rule(&PairingVerdict::Rejected));
         assert_eq!(client.receive(&early).unwrap(), vec![]);
         let events = client.prove(SIGNATURE).unwrap();
         assert_eq!(events.len(), 3, "{events:?}");
+        assert!(matches!(events[1], PairingEvent::CompareCode { .. }), "{events:?}");
         assert_eq!(events[2], PairingEvent::Finished(PairingVerdict::Rejected));
     }
 
@@ -677,8 +764,8 @@ mod tests {
     #[test]
     fn the_code_is_the_protocol_crates_own() {
         let (_, workstation, sas) = handshake("iPhone");
-        assert_eq!(sas, protocol::pairing_sas(&device().public, &workstation.keys.public));
-        assert_eq!(sas, "795576");
+        assert_eq!(sas, protocol::pairing_sas(&workstation.hash));
+        assert_eq!(sas, "517223");
     }
 
     /// A transport delivers bytes, not frames: a WebSocket message may
@@ -701,8 +788,10 @@ mod tests {
 
         // And the verdict's frame, split across two deliveries.
         workstation.finish(&third).unwrap();
-        let (proof, _) = proof_and_code(&client.prove(SIGNATURE).unwrap());
+        let proof = proof_frame(&client.prove(SIGNATURE).unwrap());
         workstation.read_proof(&proof);
+        let ack = workstation.ack();
+        code_of(&client.receive(&ack).unwrap());
         let verdict = workstation.rule(&PairingVerdict::Rejected);
         let (head, tail) = verdict.split_at(100);
         assert!(client.receive(head).unwrap().is_empty());
