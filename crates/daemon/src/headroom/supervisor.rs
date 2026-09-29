@@ -294,6 +294,24 @@ impl Supervisor {
         self.inner.wake.notify_all();
     }
 
+    /// The file every start runs now holds `installed`. A process this
+    /// daemon started (or re-adopted) under another version is swapped
+    /// for a fresh start, whoever changed the file -- gavin's install,
+    /// an upgrade in a terminal, or the other daemon that shares uv's
+    /// bin directory. A Headroom this daemon did not start has no
+    /// record and is never touched.
+    pub fn reconcile(&self, installed: Option<&str>) {
+        let Some(installed) = installed else { return };
+        let stale = self
+            .inner
+            .load_run()
+            .process
+            .is_some_and(|process| process.version != installed);
+        if stale {
+            self.replace();
+        }
+    }
+
     /// The port Headroom is answering on, or `None` while it is not
     /// ready: what a session about to be spawned needs to know, and
     /// nothing else.

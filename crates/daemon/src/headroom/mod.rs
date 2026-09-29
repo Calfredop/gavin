@@ -198,7 +198,8 @@ impl Headroom {
     /// checks again against whatever was located before.
     pub fn detect(&self, located: Option<String>) -> HeadroomStatus {
         if self.inner.unavailable.is_none() {
-            self.look(located);
+            let found = self.look(located);
+            self.inner.supervisor.reconcile(found.version.map(|v| v.to_string()).as_deref());
             self.inner.supervisor.nudge();
         }
         self.status()
@@ -402,7 +403,6 @@ impl Headroom {
         let this = self.clone();
         let spawned = std::thread::Builder::new().name("headroom-install".to_string()).spawn(
             move || {
-                let before = this.detected();
                 let outcome = install::install(
                     &uv,
                     &this.inner.env,
@@ -416,15 +416,14 @@ impl Headroom {
                     if outcome.succeeded { "succeeded" } else { "failed" },
                     &outcome.output,
                 );
-                // An update. A Headroom already serving imported the
-                // version that was there when it started, and goes on
-                // serving it -- so Settings would show the new version
-                // over a proxy running the old one. It is swapped for a
-                // fresh start instead, on the same port.
-                if outcome.succeeded && (after.path, after.version) != (before.path, before.version)
-                {
-                    this.inner.supervisor.replace();
-                }
+                // A Headroom already serving imported the version that
+                // was there when it started, and goes on serving it --
+                // so Settings would show the new version over a proxy
+                // running the old one. Compared with the running
+                // process, not with the last detection, and whatever
+                // the outcome: a failed prefetch has still replaced
+                // the package.
+                this.inner.supervisor.reconcile(after.version.map(|v| v.to_string()).as_deref());
                 this.inner.supervisor.nudge();
             },
         );
@@ -988,8 +987,12 @@ mod tests {
     /// file a process is running writes into its pages, and macOS kills
     /// that process for it -- which would read as a replacement here.
     fn with_uv_installing_the_pin(machine: &Machine) -> detect::Env {
+        with_uv_installing_the_pin_and_prefetch(machine, "echo 'model cached'")
+    }
+
+    fn with_uv_installing_the_pin_and_prefetch(machine: &Machine, prefetch: &str) -> detect::Env {
         let tools = machine.home.path().join("tools");
-        script(&tools.join("python"), "echo 'model cached'");
+        script(&tools.join("python"), prefetch);
         script(
             &tools.join("uv"),
             &format!(
@@ -1048,6 +1051,68 @@ mod tests {
         assert_eq!(after.port, before.port, "every compressed agent is pointed at this port");
         assert_eq!(after.restarts, 0, "a replacement is not a death");
         assert_eq!(fake::launches(&daemon.workspace()).len(), 2);
+    }
+
+    /// The package is replaced before the model is fetched, so a fetch
+    /// that fails has still changed what a start runs.
+    #[test]
+    fn an_update_whose_prefetch_fails_still_replaces_the_running_headroom() {
+        let machine = Machine::bare();
+        script(
+            &machine.bin().join("headroom"),
+            &format!("FAKE_HEADROOM_VERSION=0.38.0 exec '{}' \"$@\"", fake::binary().display()),
+        );
+        let env = with_uv_installing_the_pin_and_prefetch(&machine, "echo 'no network' >&2\nexit 1");
+        let daemon = Daemon {
+            headroom: Headroom::open_as(&machine.state(), BuildProfile::Dev, env, None),
+            state: machine.state(),
+            profile: BuildProfile::Dev,
+        };
+        daemon.headroom.start();
+        daemon.until_ready();
+        let first = daemon.pid().unwrap();
+
+        let done = installed(&daemon);
+        assert_eq!(done.install.unwrap().state, "failed");
+        assert_eq!(done.version.as_deref(), Some("0.39.1"));
+
+        let second = wait_for("the updated Headroom", || {
+            daemon.pid().filter(|pid| *pid != first && daemon.headroom.status().ready)
+        });
+        assert!(!alive(first), "the old version is not left serving");
+        assert!(alive(second));
+        assert_eq!(daemon.record().process.unwrap().version, "0.39.1");
+    }
+
+    /// An upgrade made outside gavin, found by Check again.
+    #[test]
+    fn checking_again_replaces_a_headroom_upgraded_underneath_it() {
+        let machine = Machine::bare();
+        script(
+            &machine.bin().join("headroom"),
+            &format!("FAKE_HEADROOM_VERSION=0.38.0 exec '{}' \"$@\"", fake::binary().display()),
+        );
+        let daemon = Daemon {
+            headroom: Headroom::open_as(&machine.state(), BuildProfile::Dev, machine.env(), None),
+            state: machine.state(),
+            profile: BuildProfile::Dev,
+        };
+        daemon.headroom.start();
+        daemon.until_ready();
+        let first = daemon.pid().unwrap();
+
+        // Into place by a rename, as an upgrade writes.
+        let bin = machine.bin();
+        std::fs::copy(fake::binary(), bin.join(".headroom.new")).unwrap();
+        std::fs::rename(bin.join(".headroom.new"), bin.join("headroom")).unwrap();
+        daemon.headroom.detect(None);
+
+        let second = wait_for("the upgraded Headroom", || {
+            daemon.pid().filter(|pid| *pid != first && daemon.headroom.status().ready)
+        });
+        assert!(!alive(first));
+        assert!(alive(second));
+        assert_eq!(daemon.record().process.unwrap().version, "0.39.1");
     }
 
     /// And an install that changed nothing leaves the proxy alone: a
