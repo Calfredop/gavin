@@ -17,10 +17,10 @@
     "companion:preview": "cd companion && vite preview",
     "companion:check": "svelte-kit sync && cd companion && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "companion:test": "svelte-kit sync && cd companion && svelte-kit sync && vitest run",
-    "companion-shell:dev": "svelte-kit sync && cd companion-shell && vite dev",
-    "companion-shell:build": "svelte-kit sync && cd companion-shell && svelte-kit sync && vite build",
+    "companion-shell:dev": "node companion-shell/scripts/core.mjs && svelte-kit sync && cd companion-shell && vite dev",
+    "companion-shell:build": "node companion-shell/scripts/core.mjs && svelte-kit sync && cd companion-shell && svelte-kit sync && vite build",
     "companion-shell:check": "svelte-kit sync && cd companion-shell && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "companion-shell:test": "svelte-kit sync && cd companion-shell && svelte-kit sync && vitest run",
+    "companion-shell:test": "node companion-shell/scripts/core.mjs && svelte-kit sync && cd companion-shell && svelte-kit sync && vitest run",
     "companion-shell:sync": "npm run companion:build && npm run companion-shell:build && node companion-shell/scripts/sync.mjs"
   },
   "license": "PolyForm-Noncommercial-1.0.0",

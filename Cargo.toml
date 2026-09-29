@@ -6,6 +6,19 @@ members = [
   "crates/gavin-mcp",
   "crates/gavin-relay",
   "crates/companion-core",
+  "crates/companion-wasm",
   "crates/push-gateway",
   "app/src-tauri",
 ]
+
+# The Companion core as the shell ships it (`crates/companion-wasm`, built
+# by `app/companion-shell/scripts/core.mjs`): small, because it is carried
+# inside the phone app, and aborting on a panic, which on this target is a
+# trap either way. Its own profile, so no other release build changes.
+[profile.companion-wasm]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

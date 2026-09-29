@@ -28,6 +28,11 @@ Gavin itself — the app the PRD describes. A Rust workspace plus a Tauri/Svelte
   is handed the signature), so it checks for `wasm32-unknown-unknown` — CI
   runs that. Its `test-device` feature is the native test Device that
   `crates/daemon/tests/device_wire.rs` drives a real daemon with
+- `crates/companion-wasm` — the core as the Companion shell loads it: a
+  plain C ABI with JSON across it, no wasm-bindgen, importing nothing. The
+  shell's `scripts/core.mjs` builds it (workspace profile `companion-wasm`)
+  into `app/companion-shell/static/companion-core.wasm`, so the shell's
+  build and tests need the wasm target
 
 A rule written twice is held to one table. Which Relay URLs may be dialled is
 `protocol::relay::RelayUrl::parse`, and `app/src/lib/core/remoteAccess.ts`

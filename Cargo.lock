@@ -782,6 +782,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "companion-wasm"
+version = "0.1.0"
+dependencies = [
+ "companion-core",
+ "protocol",
+ "serde",
+ "serde_json",
+ "snow",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

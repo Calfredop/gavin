@@ -57,7 +57,12 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
 
+      # The wasm target for the Companion shell's steps below: its build
+      # and its tests carry the Companion core as a .wasm
+      # (app/companion-shell/scripts/core.mjs).
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -295,6 +300,13 @@ jobs:
       # this target there is none.
       - name: cargo check — the Companion core for wasm32-unknown-unknown
         run: cargo check -p companion-core --target wasm32-unknown-unknown --locked
+
+      # Linked, not just checked: the module the shell carries, built the
+      # way its pipeline builds it. That it imports nothing is proved in
+      # the linux job, where the shell's tests instantiate it with an
+      # empty import object.
+      - name: cargo build — the Companion core's module for the shell
+        run: cargo build -p companion-wasm --target wasm32-unknown-unknown --profile companion-wasm --locked
 
   audit:
     name: Dependency audit
