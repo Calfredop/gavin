@@ -886,6 +886,74 @@ fn a_compressed_card_run_keeps_what_headroom_saved_it_and_a_plain_one_keeps_noth
     }
 }
 
+/// Attaches, and returns once the session's pump is reading it: the
+/// first Output can only come from the pump, and a session killed before
+/// its pump has a reader never reaches the teardown this is about. Then
+/// drains, like `attach`.
+fn attach_to_a_running_pump(daemon: &Daemon, id: &str) {
+    let mut stream = daemon.connect();
+    write_message(&mut stream, &Request::Attach { id: id.to_string() }).unwrap();
+    let mut reader = BufReader::new(stream);
+    loop {
+        match read_message::<_, Response>(&mut reader) {
+            Ok(Some(Response::Output { .. })) => break,
+            Ok(Some(_)) => {}
+            other => panic!("the session's pump never forwarded its output: {other:?}"),
+        }
+    }
+    std::thread::spawn(move || while let Ok(Some(_)) = read_message::<_, Response>(&mut reader) {});
+}
+
+/// The way an interactive agent actually ends: its tab is closed. The
+/// kill drops the session's registry row before the hangup that brings
+/// the teardown, so a snapshot decided on that row never happened. The
+/// run's history is read straight after the kill, as a card modal open
+/// on it would, which can land between the kill and the teardown and
+/// abandon the run with no end; either way the snapshot must arrive and
+/// be counted. And Headroom stops tracking the session once it has.
+#[test]
+fn a_compressed_card_run_whose_tab_was_closed_keeps_what_headroom_saved_it() {
+    if unavailable_here() {
+        return;
+    }
+    let (_machine, daemon, root, per_project) = counting();
+    let id = created(create(&daemon, &root, &format!("echo up; {HELD}"), Some(CLAUDE_CODE), false));
+    assert!(summary(&daemon, &id).compressed);
+    let card = "/repo/plans/a.md";
+    bind(&daemon, &root, card, &id);
+    std::fs::write(
+        &per_project,
+        format!(r#"{{"{id}":{{"requests":37,"tokens_saved":41200,"savings_percent":14.1}}}}"#),
+    )
+    .unwrap();
+    attach_to_a_running_pump(&daemon, &id);
+
+    match daemon.ask(Request::KillSession { id: id.clone() }) {
+        Response::Ok => {}
+        other => panic!("expected the session killed, got {other:?}"),
+    }
+    let _ = run_of(&daemon, card);
+    let run = wait_for("the closed run's snapshot", || {
+        let run = run_of(&daemon, card);
+        run.headroom_tokens_saved.is_some().then_some(run)
+    });
+
+    assert_eq!(run.headroom_tokens_saved, Some(41_200));
+    assert_eq!(run.headroom_requests, Some(37));
+    assert!(run.ended_at.is_some(), "a run with a snapshot and no end is never counted: {run:?}");
+    match daemon.ask(Request::HeadroomSavings { since: 0 }) {
+        Response::HeadroomSavings { runs } => {
+            assert_eq!(runs.len(), 1, "{runs:?}");
+            assert_eq!(runs[0].session_id, id);
+            assert_eq!(runs[0].tokens_saved, 41_200);
+        }
+        other => panic!("expected the savings, got {other:?}"),
+    }
+    wait_for("Headroom to stop tracking the closed session", || {
+        (reach(&daemon, &id) == "unknown").then_some(())
+    });
+}
+
 // --- honest failures (v50) ---------------------------------------------
 
 /// A launch as auto-resume makes it, with the override when it relaunches

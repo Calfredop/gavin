@@ -522,6 +522,16 @@ impl KanbanStore {
     /// while its session carried on is still that session's run, and
     /// the saving is the session's. A session bound to two cards puts
     /// the same snapshot on both rows; a sum counts the session once.
+    ///
+    /// A row with no end is given one: now, when the session was seen to
+    /// end. That row is one a `CardRuns` read abandoned in the moment
+    /// between a kill and its teardown -- the kill had already dropped
+    /// the registry row the sweep reads -- and `finish_runs_for_session`
+    /// closes only `running` rows. Left without an end, its snapshot
+    /// would be kept and never counted: `savings_since` places a run at
+    /// its end. `abandon_runs_for_sessions` leaves the end alone because
+    /// nobody watched those sessions end; this one was watched, which is
+    /// how it came to be snapshotted. A row that has an end keeps it.
     pub fn record_savings_for_session(
         &mut self,
         session_id: &str,
@@ -529,12 +539,14 @@ impl KanbanStore {
         requests: u64,
     ) -> anyhow::Result<()> {
         self.conn.execute(
-            "UPDATE card_runs SET headroom_tokens_saved = ?2, headroom_requests = ?3
+            "UPDATE card_runs SET headroom_tokens_saved = ?2, headroom_requests = ?3,
+                    ended_at = COALESCE(ended_at, ?4)
              WHERE session_id = ?1",
             params![
                 session_id,
                 i64::try_from(tokens_saved).unwrap_or(i64::MAX),
-                i64::try_from(requests).unwrap_or(i64::MAX)
+                i64::try_from(requests).unwrap_or(i64::MAX),
+                now_secs()
             ],
         )?;
         Ok(())
@@ -974,6 +986,34 @@ mod tests {
         assert_eq!(runs[0].tokens_saved, 2_000);
         assert_eq!(runs[0].requests, 9);
         assert_eq!(store.savings_since(0).unwrap().len(), 2, "the open run and the plain one never count");
+    }
+
+    /// A `CardRuns` read that lands between a kill and its teardown
+    /// abandons the run with no end, and the teardown's close skips it.
+    /// Its snapshot still arrives, and has to be countable: it is given
+    /// the end the sweep left out. A run that has an end keeps it.
+    #[test]
+    fn a_snapshot_on_a_run_abandoned_mid_kill_gives_it_an_end_and_keeps_every_other_end() {
+        let (_dir, mut store) = store();
+        link(&mut store, "/p/a.md", "s-killed");
+        link(&mut store, "/p/b.md", "s-exited");
+        store.abandon_runs_for_sessions(&["s-killed".to_string()]).unwrap();
+        store.finish_runs_for_session("s-killed", Some(-1)).unwrap();
+        store.finish_runs_for_session("s-exited", Some(0)).unwrap();
+        end_at(&store, "s-exited", 1_000);
+        let before = now_secs();
+
+        store.record_savings_for_session("s-killed", 41_200, 37).unwrap();
+        store.record_savings_for_session("s-exited", 900, 4).unwrap();
+
+        let killed = &store.card_runs("ws-1", "/p/a.md").unwrap()[0];
+        assert_eq!(killed.outcome, "abandoned", "the snapshot does not rewrite how the run ended");
+        assert!(killed.ended_at.is_some_and(|at| at >= before), "{killed:?}");
+        let exited = &store.card_runs("ws-1", "/p/b.md").unwrap()[0];
+        assert_eq!(exited.ended_at, Some(1_000), "an end already written is kept");
+        let counted: Vec<String> =
+            store.savings_since(before).unwrap().into_iter().map(|run| run.session_id).collect();
+        assert_eq!(counted, ["s-killed"]);
     }
 
     /// Every install already has a `card_runs` from v27, and `CREATE

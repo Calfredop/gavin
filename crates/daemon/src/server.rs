@@ -3104,6 +3104,10 @@ impl SessionManager {
     /// Whether a session's agent talked to its model through Headroom,
     /// as its registry row says. False for a session the registry has
     /// no row for: nothing can be claimed about it.
+    ///
+    /// For a session still being hosted. A killed one has no row by the
+    /// time its teardown runs, which is why the teardown asks
+    /// `Headroom::tracks` instead.
     fn was_compressed(&self, session_id: &str) -> bool {
         self.registry
             .lock()
@@ -4369,22 +4373,24 @@ impl SessionManager {
             // And what Headroom saved it (v49), for a compressed session
             // only: an uncompressed one has nothing to snapshot, and
             // asking would cost every plain exit a `/stats`. Whether it
-            // was compressed is read here, before the reap below forgets
-            // the row that says so; the asking happens on a thread of its
-            // own, because `/stats` is megabytes on a long-lived proxy
-            // and the exit announced below must not wait on it.
-            if manager.was_compressed(&id) {
-                if let Some(headroom) = manager.headroom.get().cloned() {
-                    let manager = Arc::clone(&manager);
-                    let id = id.clone();
-                    std::thread::spawn(move || {
-                        let savings = headroom.session_savings(&id);
-                        manager.record_savings(&id, savings);
-                        // Nothing will ask whether it reaches Headroom
-                        // again (v50).
-                        headroom.forget(&id);
-                    });
-                }
+            // was compressed is asked of Headroom's own list of the
+            // sessions it was handed, NOT of the registry row: a
+            // kill_session removes that row before the hangup that brings
+            // this teardown, so the row answered "not compressed" for
+            // every session that ended by its tab being closed. The
+            // asking happens on a thread of its own, because `/stats` is
+            // megabytes on a long-lived proxy and the exit announced
+            // below must not wait on it.
+            if let Some(headroom) = manager.headroom.get().filter(|h| h.tracks(&id)).cloned() {
+                let manager = Arc::clone(&manager);
+                let id = id.clone();
+                std::thread::spawn(move || {
+                    let savings = headroom.session_savings(&id);
+                    manager.record_savings(&id, savings);
+                    // Nothing will ask whether it reaches Headroom again
+                    // (v50), and the list it was on stops growing.
+                    headroom.forget(&id);
+                });
             }
             // And whatever standalone TOOL run it was (v30), here for the
             // same reason: this is the one block that runs for both a

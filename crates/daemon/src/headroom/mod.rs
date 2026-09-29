@@ -335,6 +335,20 @@ impl Headroom {
         self.lock_compressed().get(session_id).and_then(|tracked| tracked.reach)
     }
 
+    /// Whether this lifetime compressed the session and has not yet
+    /// forgotten it: what a session's teardown asks before it reads the
+    /// session's savings.
+    ///
+    /// Asked here rather than of the session's registry row, because a
+    /// kill removes that row before it hangs up the PTY whose close
+    /// brings the teardown -- so the row says "not compressed" for every
+    /// session that ended by its tab being closed, which is how an
+    /// interactive agent ends. Nothing removes a session from this list
+    /// but `forget`, which the teardown calls last.
+    pub fn tracks(&self, session_id: &str) -> bool {
+        self.lock_compressed().contains_key(session_id)
+    }
+
     /// The session has ended: nothing will be asked about it again.
     pub fn forget(&self, session_id: &str) {
         self.lock_compressed().remove(session_id);
