@@ -69,7 +69,8 @@ scripts/probe.sh android <emulator-serial>
 Builds a debug app with the probe bundle (`probe/`) embedded, launches it to
 open the probe the way a Workstation's bundle opens, and prints the verdict
 (`src/shell/probe/probe.ts`). From inside the bundle webview the probe calls
-a Capacitor plugin every way Capacitor's own JS does, speaks on the channel
+a Capacitor plugin every way Capacitor's own JS does -- the bundle view's and
+the Device's keys' -- speaks on the channel
 from a frame of another origin and from a subframe, fetches the network, the
 shell's origin and another Workstation's, opens a WebSocket, calls
 `window.open`, and navigates away. Every check must pass, the device log

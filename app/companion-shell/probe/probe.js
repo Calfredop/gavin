@@ -45,6 +45,7 @@
     capabilities: capabilities && capabilities.ok ? capabilities.value : null,
     globals: {},
     pluginCalls: [],
+    keyCalls: [],
     frames: [],
     fetches: [],
   };
@@ -62,30 +63,40 @@
   // have logged opening a marked URL, which scripts/probe.sh watches the
   // device log for.
   const marked = "https://probe.invalid/plugin-call-ran";
-  const call = async (how, fn) => {
+  const call = async (into, how, fn) => {
     try {
       const result = await fn();
-      report.pluginCalls.push({ how, outcome: result ?? "ran" });
+      into.push({ how, outcome: result === undefined ? "ran" : typeof result === "string" ? result : `ran: ${JSON.stringify(result)}` });
     } catch (e) {
-      report.pluginCalls.push({ how, outcome: `failed: ${e}` });
+      into.push({ how, outcome: `failed: ${e}` });
     }
   };
-  await call("Capacitor.Plugins.BundleView.openExternal", () =>
-    window.Capacitor.Plugins.BundleView.openExternal({ url: marked })
-  );
-  await call("Capacitor.nativePromise", () =>
-    window.Capacitor.nativePromise("BundleView", "openExternal", { url: marked })
-  );
-  const bridgeCall = { type: "message", callbackId: "probe", pluginId: "BundleView", methodName: "openExternal", options: { url: marked } };
-  await call("webkit.messageHandlers.bridge.postMessage", () => {
-    window.webkit.messageHandlers.bridge.postMessage(bridgeCall);
-    return "posted";
-  });
-  await call("androidBridge.postMessage", () => {
-    window.androidBridge.postMessage(JSON.stringify(bridgeCall));
-    return "posted";
-  });
+  const everyWay = async (into, pluginId, methodName, options) => {
+    await call(into, `Capacitor.Plugins.${pluginId}.${methodName}`, () =>
+      window.Capacitor.Plugins[pluginId][methodName](options)
+    );
+    await call(into, `Capacitor.nativePromise ${pluginId}.${methodName}`, () =>
+      window.Capacitor.nativePromise(pluginId, methodName, options)
+    );
+    const bridgeCall = { type: "message", callbackId: "probe", pluginId, methodName, options };
+    await call(into, `webkit.messageHandlers.bridge.postMessage ${pluginId}.${methodName}`, () => {
+      window.webkit.messageHandlers.bridge.postMessage(bridgeCall);
+      return "posted";
+    });
+    await call(into, `androidBridge.postMessage ${pluginId}.${methodName}`, () => {
+      window.androidBridge.postMessage(JSON.stringify(bridgeCall));
+      return "posted";
+    });
+  };
+  await everyWay(report.pluginCalls, "BundleView", "openExternal", { url: marked });
   for (const c of report.pluginCalls) show(`plugin call, ${c.how}: ${c.outcome}`);
+
+  // 2b. The Device's keys, the one thing a bundle must never reach
+  // (ADR 0001). The sign's reason carries the same mark: the shell's
+  // DeviceKeys logs every sign it is asked for, reason included.
+  await everyWay(report.keyCalls, "DeviceKeys", "noiseKey", {});
+  await everyWay(report.keyCalls, "DeviceKeys", "sign", { handshakeHash: "00".repeat(32), reason: marked });
+  for (const c of report.keyCalls) show(`keys call, ${c.how}: ${c.outcome}`);
 
   // 3. The channel from frames: one of another origin (sandboxed, so
   // opaque), one of the page's own origin.

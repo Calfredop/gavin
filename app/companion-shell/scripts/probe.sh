@@ -7,9 +7,10 @@
 # Builds the hub and the Companion web bundle, embeds them with the probe,
 # builds a DEBUG app, installs it on the device named, and launches it to
 # run the probe: a bundle that tries, from inside the bundle webview, to
-# call a Capacitor plugin, to speak on the channel from a frame of another
-# origin and from a subframe, to reach the network, and to navigate away.
-# Prints the shell's verdict and exits 0 only when every check passed.
+# call a Capacitor plugin -- the bundle view's and the Device's keys' --,
+# to speak on the channel from a frame of another origin and from a
+# subframe, to reach the network, and to navigate away. Prints the shell's
+# verdict and exits 0 only when every check passed.
 #
 # Name the device by UDID or serial, never `booted`: other sessions on this
 # Mac boot simulators of their own.
@@ -75,7 +76,7 @@ fi
 grep -a -E "\[gavin-shell\]|GavinShell|dropped|blocked|refused" "$log" | grep -v '\[gavin-probe\]' || true
 verdict=$(grep -a -o '\[gavin-probe\] {.*' "$log" | head -1 | sed 's/^\[gavin-probe\] //')
 if grep -a -q "probe.invalid" "$log"; then
-  echo "FAILED: a plugin call from the bundle reached the shell's plugin (it logged opening the probe's marked URL)"
+  echo "FAILED: a plugin call from the bundle reached one of the shell's plugins (it logged the probe's marked URL)"
   exit 1
 fi
 printf '%s' "$verdict" | node -e '

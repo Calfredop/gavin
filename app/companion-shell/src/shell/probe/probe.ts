@@ -50,6 +50,8 @@ export interface ChecksReport {
   capabilities: { workstation?: { id?: string } } | null;
   globals: Record<string, string>;
   pluginCalls: ProbeAttempt[];
+  /// The same calls, made to the Device's keys plugin.
+  keyCalls: ProbeAttempt[];
   frames: ProbeFrame[];
   fetches: ProbeAttempt[];
 }
@@ -119,6 +121,13 @@ export function probeVerdict({ reports, invokes, drops }: VerdictInput): ProbeVe
       "a plugin call from the bundle webview fails",
       checks.pluginCalls.length > 0 && checks.pluginCalls.every((c) => failed(c.outcome)),
       checks.pluginCalls.map((c) => `${c.how}: ${c.outcome}`).join("; ")
+    );
+    add(
+      "the Device's keys are out of the bundle's reach",
+      checks.keyCalls.length > 0 && checks.keyCalls.every((c) => failed(c.outcome)),
+      checks.keyCalls.length > 0
+        ? checks.keyCalls.map((c) => `${c.how}: ${c.outcome}`).join("; ")
+        : "the probe made no call to the keys plugin"
     );
 
     const nativeDrops = drops.filter((d): d is Extract<VisitDrop, { where: "native" }> => d.where === "native");
