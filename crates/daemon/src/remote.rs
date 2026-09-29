@@ -423,7 +423,7 @@ enum Ended {
     Lost(String, Duration),
 }
 
-fn epoch_seconds() -> i64 {
+pub(crate) fn epoch_seconds() -> i64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -727,7 +727,7 @@ fn connect_through(
         // Refused, and told so.
         Ok(Err(refused)) => {
             stream.close();
-            note(refusal(&refused));
+            refused_at_the_door(manager, &refused);
             return Ok(());
         }
         Err(e) => {
@@ -747,11 +747,10 @@ fn connect_through(
             let verdict = ConnectVerdict::Refused { reason };
             let _ = connect::send_verdict(&mut stream, &mut accepted.transport, &verdict);
             stream.close();
-            note(refusal(&connect::Refused {
-                reason,
-                device_id: Some(device_id),
-                why: None,
-            }));
+            refused_at_the_door(
+                manager,
+                &connect::Refused { reason, device_id: Some(device_id), why: None },
+            );
             return Ok(());
         }
     };
@@ -786,6 +785,16 @@ fn connect_through(
         note(format!("{device_id}'s connection was dropped: {why}"));
     }
     Ok(())
+}
+
+/// A Device was refused a connection: the log says so, and if the key that
+/// handshook is one the store holds, so does the desk (v57). A key the
+/// store has never seen names no Device and stays in the log.
+fn refused_at_the_door(manager: &SessionManager, refused: &connect::Refused) {
+    note(refusal(refused));
+    if let Some(device_id) = &refused.device_id {
+        manager.note_device_refusal(device_id, refused.reason);
+    }
 }
 
 /// What the log says of a Device that was refused.

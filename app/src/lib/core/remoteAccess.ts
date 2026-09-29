@@ -38,6 +38,29 @@ export interface DeviceInfo {
   /// second opinion in the app could grey a row the daemon will still
   /// accept, or leave un-greyed one it will refuse.
   stale: boolean;
+  /// The last time the daemon refused this Device a connection (v57), or
+  /// absent: an older daemon never sends it, and a Device that has not
+  /// been refused since the daemon started has none.
+  lastRefusal?: DeviceRefusal;
+}
+
+/// Why a paired Device was refused, as `protocol::device_wire::
+/// ConnectRefusal` spells it. `other` is what a newer daemon's reason
+/// arrives as.
+export type RefusalReason =
+  | "not-paired"
+  | "revoked"
+  | "stale"
+  | "pair-again"
+  | "unlock"
+  | "busy"
+  | "other";
+
+/// One refused connection, `protocol::DeviceRefusal`. `at` is wall-clock
+/// epoch SECONDS.
+export interface DeviceRefusal {
+  reason: RefusalReason;
+  at: number;
 }
 
 /// `ListDevices`'s whole answer. The two settings ride along with the

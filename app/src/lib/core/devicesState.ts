@@ -78,6 +78,9 @@ export function watchDevices(): () => void {
       connected.update((set) => withoutConnected(set, event.payload));
       void refreshDeviceList();
     }),
+    // A refusal is on the row the list returns, so the list is re-read
+    // rather than patched: the panel then draws one account of the store.
+    listen<[string, unknown]>("device-refusal-changed", () => void refreshDeviceList()),
     listen<RelayState>("relay-state-changed", (event) => relay.set(event.payload)),
   ];
   // The first read waits for a verdict (see refreshDeviceList).

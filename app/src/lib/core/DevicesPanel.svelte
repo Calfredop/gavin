@@ -29,7 +29,12 @@
     type PairingRequest,
     type PairingState,
   } from "$lib/core/remoteAccess";
-  import { DEVICES_LABEL, devicesBlocked, panelRows } from "$lib/core/devicesPanel";
+  import {
+    DEVICES_LABEL,
+    devicesBlocked,
+    panelRows,
+    refusalsBlocked,
+  } from "$lib/core/devicesPanel";
   import {
     connectedDevices,
     deviceList,
@@ -38,7 +43,7 @@
     refreshDeviceList,
     refreshDeviceRelay,
   } from "$lib/core/devicesState";
-  import { relayIndicator } from "$lib/ui/indicators";
+  import { deviceIndicator, relayIndicator } from "$lib/ui/indicators";
 
   let { onClose }: { onClose: () => void } = $props();
 
@@ -48,6 +53,9 @@
   // never on the disabled control -- a disabled element fires no
   // mouseenter, so a tooltip on it never opens.
   const gate = $derived(devicesBlocked($daemonCompat));
+  // Separate from `gate`: an older daemon can list and revoke, it just
+  // cannot say a Device was refused (v57).
+  const refusalGate = $derived(refusalsBlocked($daemonCompat));
 
   let pairing = $state<PairingState>(PAIRING_IDLE);
   let pairingError = $state<string | null>(null);
@@ -270,6 +278,14 @@
                 title={row.lastSeenTitle}>{row.state}</span
               >
               {#if row.note}<span class="warn">{row.note}</span>{/if}
+              {#if row.refusal}
+                <span class="refusal">
+                  <StatusBadge
+                    indicator={deviceIndicator(row.refusal.badge, row.refusal.tip)}
+                    text={row.refusal.text}
+                  />
+                </span>
+              {/if}
               <span use:tooltip={gate ?? ""}>
                 <button
                   type="button"
@@ -283,6 +299,9 @@
             </li>
           {/each}
         </ul>
+        {#if refusalGate}
+          <p class="hint">Refused connections are not shown. {refusalGate}</p>
+        {/if}
       {/if}
     {/if}
   </div>
@@ -392,6 +411,10 @@
   .device-state {
     flex: 0 0 auto;
     color: var(--text-subtle);
+  }
+  .refusal {
+    flex: 0 1 auto;
+    min-width: 0;
   }
   .device-state.connected {
     color: var(--success-text, var(--text));

@@ -18,12 +18,14 @@
 // it reconnects -- an undercount, never an invented connection.
 
 import { featureBlockedReason, type DaemonCompat } from "$lib/core/daemonCompat";
+import { relativeTime } from "$lib/hub/appHub";
 import {
   deviceRows,
   remoteAccessBlocked,
   type DeviceInfo,
   type DeviceRow,
 } from "$lib/core/remoteAccess";
+import type { DeviceIndicatorState } from "$lib/ui/indicators";
 
 /// The footer row's label and the panel's title. One constant, so the row
 /// and the panel cannot name themselves differently.
@@ -76,10 +78,94 @@ export function devicesBadgeTip(count: number): string {
   return count === 1 ? "1 Device connected" : `${count} Devices connected`;
 }
 
+/// What a row says of the daemon's last refusal of that Device (v57).
+export interface RefusalNotice {
+  /// Which badge `ui/indicators.ts` draws it as.
+  badge: DeviceIndicatorState;
+  /// The row's words: "proof failed · 2m ago".
+  text: string;
+  /// What it means and what to do, for the badge's bubble.
+  tip: string;
+  /// The one worth stopping for: a good row whose Noise key answered a
+  /// handshake and could not sign. The panel keeps Revoke beside it.
+  alarming: boolean;
+}
+
+/// The words for a refusal, or null for a row the daemon has not refused.
+///
+/// A failed proof is the alarm. The handshake proved someone holds the
+/// Device's Noise key and the signature proved it is not the phone, which
+/// by ADR 0001's reasoning is a copied key -- so it is said as what it is,
+/// and stays `alarming` only while the row is otherwise good: a Device
+/// already revoked has had the button pressed.
+///
+/// The others are a Device the desk already knows being told no, worth
+/// showing and not worth an alarm.
+export function refusalNotice(d: DeviceInfo, nowMs: number): RefusalNotice | null {
+  const refusal = d.lastRefusal;
+  if (!refusal) return null;
+  const age = relativeTime(refusal.at * 1000, nowMs);
+  const good = d.revokedAt === null && !d.stale;
+  const said = (badge: DeviceIndicatorState, what: string, tip: string, alarming = false) => ({
+    badge,
+    text: `${what} · ${age}`,
+    tip,
+    alarming,
+  });
+  switch (refusal.reason) {
+    case "unlock":
+      return said(
+        "proof_failed",
+        "proof failed",
+        good
+          ? "Something holding this Device's key connected and could not sign with the phone's hardware key. That is what a copied key looks like. If it was not you, revoke this Device."
+          : "Something holding this Device's key connected and could not sign with the phone's hardware key. The Device is not trusted now, so it was refused anyway.",
+        good
+      );
+    case "revoked":
+      return said(
+        "refused",
+        "tried to connect, revoked",
+        "This Device was revoked at the desk and is still trying to connect."
+      );
+    case "stale":
+      return said(
+        "refused",
+        "tried to connect, not seen for 90 days",
+        "This Device was unseen for ninety days and was refused. Pair it again to use it."
+      );
+    case "pair-again":
+      return said(
+        "refused",
+        "pair again",
+        "This Device was paired before Devices held a hardware key, and cannot connect as it is. Pair it again."
+      );
+    case "busy":
+      return said(
+        "refused",
+        "too many connections",
+        "This Device already held as many connections as one may, and another was refused."
+      );
+    case "not-paired":
+      return said("refused", "not paired", "The Workstation held no row for this Device when it connected.");
+    default:
+      return said("refused", "refused", "The Workstation refused this Device a connection.");
+  }
+}
+
+/// Why the panel cannot say a Device was refused, or null. Read beside the
+/// list: against a daemon older than v57 a row with no refusal is not a
+/// clean record, only one nobody kept.
+export function refusalsBlocked(compat: DaemonCompat | null): string | null {
+  return featureBlockedReason(compat, "deviceRefusals");
+}
+
 export interface PanelRow extends DeviceRow {
   connected: boolean;
   /// What the state column says: "Connected", or "seen 3w ago".
   state: string;
+  /// The daemon's last refusal of this Device, or null.
+  refusal: RefusalNotice | null;
 }
 
 /// The list the panel draws: `deviceRows`' order and dimming, plus whether
@@ -90,6 +176,7 @@ export function panelRows(
   nowMs: number
 ): PanelRow[] {
   const live = new Set(devices.filter(admitted).map((d) => d.deviceId));
+  const byId = new Map(devices.map((d) => [d.deviceId, d]));
   const rows = deviceRows(devices, nowMs);
   const sorted = rows.map((row) => {
     const isConnected = live.has(row.deviceId) && connected.has(row.deviceId);
@@ -97,6 +184,7 @@ export function panelRows(
       ...row,
       connected: isConnected,
       state: isConnected ? "Connected" : `seen ${row.lastSeen}`,
+      refusal: refusalNotice(byId.get(row.deviceId)!, nowMs),
     };
   });
   // Connected first, then `deviceRows`' own order. Stable, so ties keep it.

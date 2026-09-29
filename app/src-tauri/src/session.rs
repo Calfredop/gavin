@@ -5300,6 +5300,15 @@ pub(crate) fn attach_and_relay(
                 Response::DeviceDisconnected { device_id } => {
                     let _ = crate::forwarding::emit(&reader_app_handle, "device-disconnected", device_id);
                 }
+                // A paired Device was refused a connection (v57). The
+                // daemon only sends it to an app that said it speaks 57.
+                Response::DeviceRefusalChanged { device_id, refusal } => {
+                    let _ = crate::forwarding::emit(
+                        &reader_app_handle,
+                        "device-refusal-changed",
+                        (device_id, refusal),
+                    );
+                }
                 // The dial's state changed (v56). The payload is the state
                 // itself, so the section redraws without asking again.
                 Response::RelayStateChanged { state } => {

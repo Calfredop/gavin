@@ -68,6 +68,8 @@ import {
   SquareCheck,
   SquareDot,
   SquareSlash,
+  ShieldAlert,
+  ShieldX,
   SquareX,
   TriangleAlert,
   Unlink2,
@@ -106,7 +108,8 @@ export type IndicatorAxis =
   | "run"
   | "usage"
   | "headroom"
-  | "relay";
+  | "relay"
+  | "device";
 
 /// The human-readable name of each axis. Every tooltip leads with it,
 /// which is the whole point: the old badges said "amber" and left the
@@ -123,6 +126,7 @@ export const AXIS_LABEL: Record<IndicatorAxis, string> = {
   usage: "Usage",
   headroom: "Headroom",
   relay: "Relay",
+  device: "Device",
 };
 
 export interface Indicator {
@@ -737,6 +741,33 @@ export function relayIndicator(state: RelayIndicatorState, why?: string | null):
   return { ...base, tip, label: tip };
 }
 
+// ---- device ------------------------------------------------------------
+// What the daemon last refused a paired Device, on its row in the Devices
+// panel. `devicesPanel.ts` owns which refusal is which and the words; this
+// file only draws the answers.
+//
+// A failed proof is its own state and the only `danger`: the handshake
+// proved someone holds the Device's Noise key and the signature proved it
+// is not the phone, which is what a copied key looks like. Every other
+// refusal is a Device that is known and being told no, so it is a warning.
+
+const DEVICE = {
+  proof_failed: make("device", "proof_failed", ShieldAlert, "danger", "failed its hardware proof"),
+  refused: make("device", "refused", ShieldX, "warning", "was refused a connection"),
+};
+
+export const DEVICE_STATES = ["proof_failed", "refused"] as const;
+export type DeviceIndicatorState = (typeof DEVICE_STATES)[number];
+
+/// The badge for a refused Device. `why`, when given, goes in the bubble
+/// after the axis, like the relay's.
+export function deviceIndicator(state: DeviceIndicatorState, why?: string | null): Indicator {
+  const base = DEVICE[state];
+  if (!why) return base;
+  const tip = `${AXIS_LABEL.device} · ${why}`;
+  return { ...base, tip, label: tip };
+}
+
 // ---- attention ---------------------------------------------------------
 // What a RUNNING step is waiting on a human for. Not an axis of its own:
 // all three answers are facts about the agent, so they are agent badges,
@@ -823,5 +854,6 @@ export function allIndicators(): Indicator[] {
     ...PROJECTION_BANDS.map((band) => USAGE[band]),
     ...HEADROOM_EXCEPTIONS.map((exception) => HEADROOM[exception]),
     ...RELAY_STATES.map((state) => RELAY[state]),
+    ...DEVICE_STATES.map((state) => DEVICE[state]),
   ];
 }

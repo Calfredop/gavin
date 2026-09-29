@@ -43,6 +43,15 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
+/// v57 is the desk hearing of a Device that was refused
+/// (`companion-34`). `DeviceInfo` gains `last_refusal`, and the
+/// `DeviceRefusalChanged` push says when one changes. The push is a new
+/// `Response` variant, which an app older than v57 cannot parse, so the
+/// daemon sends it only to an app connection whose `Hello` said it speaks
+/// 57 or more (`DEVICE_REFUSALS_MIN_VERSION`). The read needs no such
+/// care: `last_refusal` is a defaulted field an older app ignores. The
+/// Devices panel owes `FEATURE_MIN_VERSION.deviceRefusals`.
+///
 /// v56 is the desk knowing whether the daemon reached its Relay
 /// (`companion-32`). It adds `GetRelayState`, answered by
 /// `Response::RelayState`, and the `RelayStateChanged` push that follows
@@ -702,7 +711,12 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 56;
+pub const PROTOCOL_VERSION: u32 = 57;
+
+/// The first version that pushes `DeviceRefusalChanged` and carries
+/// `DeviceInfo::last_refusal`. The daemon compares an app's `Hello`
+/// version with this before it writes the push (v57).
+pub const DEVICE_REFUSALS_MIN_VERSION: u32 = 57;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -2832,6 +2846,15 @@ pub enum Response {
     },
     /// The answer to `GetRelayState` (v56).
     RelayState { state: RelayState },
+    /// Push (v57): a paired Device was refused a connection, and this is
+    /// its new last refusal. Not cleared by the Device connecting later:
+    /// a copied key that failed its proof and then the real phone
+    /// connecting is exactly the order that must not hide the first.
+    /// Sent only to an `app` connection that reads
+    /// pushes and whose `Hello` said it speaks
+    /// `DEVICE_REFUSALS_MIN_VERSION` or more: an older app cannot parse a
+    /// variant it has never heard of.
+    DeviceRefusalChanged { device_id: String, refusal: DeviceRefusal },
     /// Push to every live `app` connection (v56): the dial's state
     /// changed. Only to a connection that reads pushes, like the device
     /// pushes -- see `ConnectionKind`.
@@ -3045,6 +3068,29 @@ pub struct DeviceInfo {
     /// Unseen for ninety days: shown greyed with "re-pair to use", and
     /// refused until it is paired again (§3, "How many, for how long").
     pub stale: bool,
+    /// The last time this daemon refused this Device a connection (v57),
+    /// or `None` if it has not since it started. A later successful
+    /// connection does not clear it. In memory on the daemon: a fact about the recent
+    /// past, not the trust store's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_refusal: Option<DeviceRefusal>,
+}
+
+/// One refused connection from a paired Device, as the desk shows it (v57).
+///
+/// A refusal of a key the store has never seen is not one of these: it
+/// names no Device, and stays in the daemon's log.
+///
+/// `reason` is what the Device was told. `ConnectRefusal::Unlock` on a row
+/// that is otherwise good is the one that matters: the handshake proved
+/// someone holds the Device's Noise key and the signature proved it is not
+/// the phone, which is what a copied key looks like (ADR 0001).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceRefusal {
+    pub reason: device_wire::ConnectRefusal,
+    /// Wall-clock epoch seconds.
+    pub at: i64,
 }
 
 /// One Companion notification event the desk asks the daemon to seal and
@@ -5256,6 +5302,7 @@ mod tests {
             last_seen_at: 1_770_000_500,
             revoked_at: None,
             stale: false,
+            last_refusal: None,
         };
         let v = serde_json::to_value(&info).unwrap();
         assert_eq!(v["deviceId"], "dev-1");
@@ -5265,6 +5312,28 @@ mod tests {
         // The static public key is NOT on the wire, and that is a rule
         // rather than an omission -- see DeviceInfo's doc comment.
         assert!(v.get("publicKey").is_none());
+    }
+
+    /// v57: a row from an older daemon has no `lastRefusal`, and a row
+    /// with none says nothing rather than `null`, so an older app's parse
+    /// of a newer daemon's list is byte-for-byte what it was.
+    #[test]
+    fn device_info_carries_a_refusal_only_when_there_is_one() {
+        let old = r#"{"deviceId":"d","name":"n","role":"remote","createdAt":1,"lastSeenAt":2,"revokedAt":null,"stale":false}"#;
+        let parsed: DeviceInfo = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.last_refusal, None);
+        assert!(serde_json::to_value(&parsed).unwrap().get("lastRefusal").is_none());
+
+        let refused = DeviceInfo {
+            last_refusal: Some(DeviceRefusal {
+                reason: device_wire::ConnectRefusal::Unlock,
+                at: 1_770_000_900,
+            }),
+            ..parsed
+        };
+        let v = serde_json::to_value(&refused).unwrap();
+        assert_eq!(v["lastRefusal"]["reason"], "unlock");
+        assert_eq!(v["lastRefusal"]["at"], 1_770_000_900);
     }
 
     /// The env-carrying run is a SEPARATE request from `RunGit`, not a
@@ -6700,7 +6769,9 @@ mod tests {
         // and moved them past main's 44..50 when the two met.
         // v56: GetRelayState -- one new TYPE (plus the RelayState reply
         // and RelayStateChanged push).
-        assert_eq!(PROTOCOL_VERSION, 56);
+        // v57: no new request. DeviceInfo.last_refusal and the
+        // DeviceRefusalChanged push, which is gated by the app's Hello.
+        assert_eq!(PROTOCOL_VERSION, 57);
     }
 
     #[test]

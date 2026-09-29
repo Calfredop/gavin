@@ -89,17 +89,30 @@ impl LocalRelay {
 struct Desk {
     stream: Stream,
     reader: BufReader<Stream>,
+    /// Refusals pushed (v57) that a test reading something else went
+    /// past. `heard_refusal` takes them back out.
+    refusals: std::collections::VecDeque<(String, protocol::DeviceRefusal)>,
 }
 
 impl Desk {
     fn connect(endpoint: &Endpoint, daemon_token: &str, kind: ConnectionKind) -> Self {
+        Self::connect_speaking(endpoint, daemon_token, kind, protocol::PROTOCOL_VERSION)
+    }
+
+    /// An app that says it speaks `version`, for the app older than a bump.
+    fn connect_speaking(
+        endpoint: &Endpoint,
+        daemon_token: &str,
+        kind: ConnectionKind,
+        version: u32,
+    ) -> Self {
         let stream = Stream::connect(endpoint.clone()).unwrap();
         stream.set_read_timeout(Some(SOON)).unwrap();
         let reader = BufReader::new(stream.try_clone().unwrap());
-        let mut desk = Self { stream, reader };
+        let mut desk = Self { stream, reader, refusals: Default::default() };
         match desk.request(&Request::Hello {
             client: "app".into(),
-            protocol_version: protocol::PROTOCOL_VERSION,
+            protocol_version: version,
             auth: HelloAuth::DaemonToken { token: daemon_token.to_string() },
             nonce: "seam-one".into(),
             connection: Some(kind),
@@ -129,7 +142,27 @@ impl Desk {
         loop {
             match self.next_raw() {
                 Response::RelayStateChanged { .. } => {}
+                Response::DeviceRefusalChanged { device_id, refusal } => {
+                    self.refusals.push_back((device_id, refusal))
+                }
                 other => return other,
+            }
+        }
+    }
+
+    /// The next refusal the daemon pushes, whether it has already gone
+    /// past or is still to come.
+    fn heard_refusal(&mut self) -> (String, protocol::DeviceRefusal) {
+        loop {
+            if let Some(heard) = self.refusals.pop_front() {
+                return heard;
+            }
+            match self.next_raw() {
+                Response::RelayStateChanged { .. } => {}
+                Response::DeviceRefusalChanged { device_id, refusal } => {
+                    return (device_id, refusal)
+                }
+                other => panic!("expected DeviceRefusalChanged, got {other:?}"),
             }
         }
     }
@@ -141,6 +174,10 @@ impl Desk {
         let heard = loop {
             match read_message::<_, Response>(&mut self.reader) {
                 Ok(Some(Response::RelayStateChanged { .. })) => continue,
+                Ok(Some(Response::DeviceRefusalChanged { device_id, refusal })) => {
+                    self.refusals.push_back((device_id, refusal));
+                    continue;
+                }
                 other => break other,
             }
         };
@@ -373,6 +410,12 @@ impl Workstation {
             "sock",
             protocol::BuildProfile::current(),
         )))
+    }
+
+    /// The desk's push connection, from an app that says it speaks
+    /// `version`.
+    fn push_speaking(&self, version: u32) -> Desk {
+        Desk::connect_speaking(&self.endpoint(), &self.daemon_token, ConnectionKind::Push, version)
     }
 
     /// Opens the desktop's forwarding connection (v54).
@@ -1629,6 +1672,96 @@ fn a_copied_noise_key_on_another_phone_is_refused() {
         "the daemon should say why; its log:\n{}",
         workstation.log()
     );
+}
+
+/// Ticket 34: a connection that completes the handshake with a paired
+/// Device's Noise key and fails its signature is what a copied key looks
+/// like, and the desk is told -- by a push, and by the row the next read of
+/// the Device list returns.
+#[test]
+fn the_desk_is_told_when_a_copied_key_fails_its_proof() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    assert_eq!(workstation.devices()[0].last_refusal.clone(), None, "nothing was refused yet");
+
+    let before = now_seconds();
+    let copy = device.copied_to_another_phone().unwrap();
+    assert!(matches!(
+        copy.connect(&paired),
+        Err(TestDeviceError::Refused(ConnectRefusal::Unlock))
+    ));
+
+    let (device_id, pushed) = workstation.push.heard_refusal();
+    assert_eq!(device_id, paired.device_id);
+    assert_eq!(pushed.reason, ConnectRefusal::Unlock);
+    assert!(pushed.at >= before && pushed.at <= now_seconds(), "{}", pushed.at);
+
+    let devices = workstation.devices();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].last_refusal, Some(pushed));
+
+    // The real phone connecting afterwards does not wipe the record: a
+    // copy that failed and then the phone that did is the order in which
+    // the alarm would otherwise vanish.
+    let _real = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+    assert_eq!(workstation.devices()[0].last_refusal.as_ref().map(|r| r.reason), Some(ConnectRefusal::Unlock));
+}
+
+/// ...and a Device the human revoked, still trying.
+#[test]
+fn the_desk_is_told_when_a_revoked_device_is_refused() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    let resp = workstation
+        .command
+        .request(&Request::RevokeDevice { device_id: paired.device_id.clone() });
+    assert!(matches!(resp, Response::Ok), "{resp:?}");
+
+    assert!(matches!(
+        device.connect(&paired),
+        Err(TestDeviceError::Refused(ConnectRefusal::Revoked))
+    ));
+    let (device_id, pushed) = workstation.push.heard_refusal();
+    assert_eq!(device_id, paired.device_id);
+    assert_eq!(pushed.reason, ConnectRefusal::Revoked);
+    let devices = workstation.devices();
+    assert_eq!(devices[0].last_refusal, Some(pushed));
+    assert!(devices[0].revoked_at.is_some());
+}
+
+/// An app older than v57 is sent nothing it cannot parse: a
+/// `DeviceRefusalChanged` it has never heard of would be read as the reply
+/// to a request. It still reads the row, which carries the new field only
+/// where an older app ignores it.
+#[test]
+fn an_app_older_than_the_bump_is_not_sent_the_refusal_push() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let mut older = workstation.push_speaking(protocol::DEVICE_REFUSALS_MIN_VERSION - 1);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    // Pairing pushes the desk's own dialog to `older` too, which it can
+    // parse; let it go past.
+    assert!(matches!(older.next(), Response::DevicePairingRequested { .. }));
+
+    let copy = device.copied_to_another_phone().unwrap();
+    assert!(matches!(
+        copy.connect(&paired),
+        Err(TestDeviceError::Refused(ConnectRefusal::Unlock))
+    ));
+    // The current app was told, so the daemon did push...
+    workstation.push.heard_refusal();
+    // ...and the older one heard nothing at all.
+    assert!(older.hears_nothing_for(QUIET), "an app that speaks v56 was sent a v57 push");
+    assert!(older.refusals.is_empty());
 }
 
 /// Ticket 33: the six digits cover the pairing they are shown for. A copy

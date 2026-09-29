@@ -598,6 +598,15 @@ export const FEATURE_MIN_VERSION = {
   // Relay URL, and which `pairingUnavailable` reads so that an older
   // daemon's silence is not taken for a Relay that failed.
   relayState: 56,
+  // A refused Device on its row (`companion-34`): `DeviceInfo.lastRefusal`
+  // and the `DeviceRefusalChanged` push are v57. An older daemon sends
+  // neither, and a row with no refusal reads as "nothing was refused" --
+  // which is a claim an older daemon cannot back.
+  //
+  // Consumer: `devicesPanel.ts`'s `refusalsBlocked`, which the Devices
+  // panel reads to say so under the list rather than leave the silence to
+  // be taken for a clean record.
+  deviceRefusals: 57,
 } as const;
 
 export type Feature = keyof typeof FEATURE_MIN_VERSION;

@@ -7,6 +7,8 @@ import {
   devicesBadgeTip,
   devicesBlocked,
   panelRows,
+  refusalNotice,
+  refusalsBlocked,
   withConnected,
   withoutConnected,
 } from "$lib/core/devicesPanel";
@@ -118,5 +120,58 @@ describe("the surfaces", () => {
     const disabled = [...panel.matchAll(/disabled=\{([^}]*)\}/g)].map((m) => m[1]);
     expect(disabled.length).toBe(3);
     for (const d of disabled) expect(d).toContain("gate !== null");
+  });
+});
+
+describe("a refused Device's row", () => {
+  const at = NOW / 1000 - 120;
+  const refused = (reason: NonNullable<DeviceInfo["lastRefusal"]>["reason"], over = {}) =>
+    dev("a", { lastRefusal: { reason, at }, ...over });
+
+  it("says nothing for a Device that was not refused, or that an older daemon never reports", () => {
+    expect(refusalNotice(dev("a"), NOW)).toBeNull();
+    expect(panelRows([dev("a")], new Set(), NOW)[0].refusal).toBeNull();
+  });
+
+  it("calls a failed proof on a good row what it is, and alarms", () => {
+    const n = refusalNotice(refused("unlock"), NOW)!;
+    expect(n.badge).toBe("proof_failed");
+    expect(n.alarming).toBe(true);
+    expect(n.text).toBe("proof failed · 2m ago");
+    expect(n.tip).toMatch(/copied key/);
+    expect(n.tip).toMatch(/revoke/i);
+  });
+
+  it("stops alarming once the row is revoked, and still says the proof failed", () => {
+    const n = refusalNotice(refused("unlock", { revokedAt: 5 }), NOW)!;
+    expect(n.badge).toBe("proof_failed");
+    expect(n.alarming).toBe(false);
+    expect(n.tip).not.toMatch(/revoke this/i);
+  });
+
+  it("shows every other refusal as a warning, in its own words", () => {
+    const said = (r: Parameters<typeof refused>[0]) => refusalNotice(refused(r), NOW)!;
+    expect(said("revoked").text).toMatch(/^tried to connect, revoked/);
+    expect(said("stale").text).toMatch(/90 days/);
+    expect(said("pair-again").text).toMatch(/^pair again/);
+    expect(said("busy").text).toMatch(/too many/);
+    expect(said("not-paired").text).toMatch(/^not paired/);
+    expect(said("other").text).toMatch(/^refused/);
+    for (const r of ["revoked", "stale", "pair-again", "busy", "not-paired", "other"] as const) {
+      expect(said(r).badge).toBe("refused");
+      expect(said(r).alarming).toBe(false);
+    }
+  });
+
+  it("rides on the panel row", () => {
+    const rows = panelRows([refused("unlock")], new Set(), NOW);
+    expect(rows[0].refusal?.badge).toBe("proof_failed");
+  });
+
+  it("is gated on the daemon that can report it, and the panel reads the gate", () => {
+    expect(refusalsBlocked({ daemonVersion: 56 } as never)).toMatch(/v57/);
+    expect(refusalsBlocked({ daemonVersion: 57 } as never)).toBeNull();
+    expect(refusalsBlocked(null)).toBeNull();
+    expect(source("DevicesPanel.svelte")).toContain("refusalsBlocked(");
   });
 });

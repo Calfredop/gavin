@@ -1473,7 +1473,12 @@ pub struct SessionManager {
     /// take that reply's place. That also settles what "an app is live"
     /// means: someone who can be shown a dialog, and a command connection
     /// alone cannot be.
-    app_connections: Mutex<HashMap<u64, Arc<Mutex<Stream>>>>,
+    app_connections: Mutex<HashMap<u64, (u32, Arc<Mutex<Stream>>)>>,
+    /// Each paired Device's last refused connection (v57), by device id.
+    /// In memory: a fact about the recent past, not the trust store's, and
+    /// the other daemon sharing that store cannot see it. Only a key the
+    /// store holds gets an entry -- see `note_device_refusal`.
+    device_refusals: Mutex<HashMap<String, protocol::DeviceRefusal>>,
     next_app_connection: AtomicU64,
     /// The one live pairing offer, or none.
     ///
@@ -1749,6 +1754,7 @@ impl SessionManager {
             device_connections: Mutex::new(HashMap::new()),
             next_device_connection: AtomicU64::new(0),
             app_connections: Mutex::new(HashMap::new()),
+            device_refusals: Mutex::new(HashMap::new()),
             next_app_connection: AtomicU64::new(0),
             pending_offer: Mutex::new(None),
             pending_pairings: Mutex::new(HashMap::new()),
@@ -2014,9 +2020,12 @@ impl SessionManager {
 
     /// Registers a connection that took the `app` role and reads pushes,
     /// returning the token that removes it again. See `app_connections`.
-    fn register_app_connection(&self, writer: Arc<Mutex<Stream>>) -> u64 {
+    ///
+    /// `speaks` is the version the app's `Hello` said, which is what a
+    /// push newer than that is held back by (`push_to_apps_speaking`).
+    fn register_app_connection(&self, speaks: u32, writer: Arc<Mutex<Stream>>) -> u64 {
         let token = self.next_app_connection.fetch_add(1, Ordering::SeqCst);
-        self.app_connections.lock().unwrap().insert(token, writer);
+        self.app_connections.lock().unwrap().insert(token, (speaks, writer));
         token
     }
 
@@ -2213,10 +2222,70 @@ impl SessionManager {
     /// going away and its own thread's `Drop` is what removes it.
     fn push_to_apps(&self, resp: &Response) {
         let writers: Vec<Arc<Mutex<Stream>>> =
-            self.app_connections.lock().unwrap().values().cloned().collect();
+            self.app_connections.lock().unwrap().values().map(|(_, w)| Arc::clone(w)).collect();
         for writer in writers {
             let _ = write_message(&mut *writer.lock().unwrap(), resp);
         }
+    }
+
+    /// `push_to_apps`, to the apps whose `Hello` said they speak at least
+    /// `since`. For a push that is a new `Response` variant: an older app
+    /// cannot parse it, and what it cannot parse it reads as the reply to
+    /// its next request.
+    fn push_to_apps_speaking(&self, since: u32, resp: &Response) {
+        let writers: Vec<Arc<Mutex<Stream>>> = self
+            .app_connections
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|(speaks, _)| *speaks >= since)
+            .map(|(_, w)| Arc::clone(w))
+            .collect();
+        for writer in writers {
+            let _ = write_message(&mut *writer.lock().unwrap(), resp);
+        }
+    }
+
+    /// Records that `device_id` was refused a connection for `reason`, and
+    /// tells the desks that can be told (v57).
+    ///
+    /// Only for a Device the store holds: the caller has a device id only
+    /// when the key that handshook is one it does, and a key it has never
+    /// seen is not the desk's business. The record is replaced by every
+    /// refusal, but a repeat of the same reason inside `REFUSAL_PUSH_EVERY`
+    /// is not pushed again -- a Device that retries every few seconds would
+    /// otherwise be a push every few seconds. The read (`list_devices`)
+    /// always has the latest.
+    pub fn note_device_refusal(
+        &self,
+        device_id: &str,
+        reason: protocol::device_wire::ConnectRefusal,
+    ) {
+        self.note_device_refusal_at(device_id, reason, crate::remote::epoch_seconds());
+    }
+
+    fn note_device_refusal_at(
+        &self,
+        device_id: &str,
+        reason: protocol::device_wire::ConnectRefusal,
+        at: i64,
+    ) {
+        const REFUSAL_PUSH_EVERY: i64 = 30;
+        let refusal = protocol::DeviceRefusal { reason, at };
+        let previous = self
+            .device_refusals
+            .lock()
+            .unwrap()
+            .insert(device_id.to_string(), refusal.clone());
+        if let Some(previous) = previous {
+            if previous.reason == reason && at - previous.at < REFUSAL_PUSH_EVERY {
+                return;
+            }
+        }
+        self.push_to_apps_speaking(
+            protocol::DEVICE_REFUSALS_MIN_VERSION,
+            &Response::DeviceRefusalChanged { device_id: device_id.to_string(), refusal },
+        );
     }
 
     // -- pairing (§3's ceremony, phase 2) ------------------------------
@@ -2538,10 +2607,12 @@ impl SessionManager {
         let trust = self.trust_or_err()?;
         let now = crate::trust::now_us();
         let settings = trust.remote_access()?;
+        let refusals = self.device_refusals.lock().unwrap().clone();
         let devices = trust
             .list()?
             .into_iter()
             .map(|d| protocol::DeviceInfo {
+                last_refusal: refusals.get(&d.device_id).cloned(),
                 // Computed here, by the daemon that enforces it, rather
                 // than left for the app to re-derive from `last_seen_at`
                 // -- see `protocol::DeviceInfo`. Read before the row is
@@ -6564,7 +6635,7 @@ fn serve_connection(
         // never authorized (it is what SETS the role) and never dispatched
         // to handle_request. A second one is refused -- identity is fixed
         // once set.
-        if let Request::Hello { auth, nonce, connection, .. } = &req {
+        if let Request::Hello { auth, nonce, connection, protocol_version, .. } = &req {
             if hello_seen {
                 write_message(
                     &mut *writer.lock().unwrap(),
@@ -6603,7 +6674,7 @@ fn serve_connection(
             // reply to its request, so a push written to it mid-request
             // is read as that reply. See `ConnectionKind`.
             if identity.role == Role::App && protocol::ConnectionKind::takes_device_pushes(*connection) {
-                let token = manager.register_app_connection(Arc::clone(&writer));
+                let token = manager.register_app_connection(*protocol_version, Arc::clone(&writer));
                 _app_slot = Some(AppConnectionSlot { manager: &manager, token });
             }
             // The forwarding connection (v54): the daemon hands it gated

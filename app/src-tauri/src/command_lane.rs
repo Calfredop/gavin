@@ -161,6 +161,7 @@ fn is_unsolicited(resp: &Response) -> bool {
             | Response::DeviceConnected { .. }
             | Response::DeviceDisconnected { .. }
             | Response::RelayStateChanged { .. }
+            | Response::DeviceRefusalChanged { .. }
     )
 }
 
@@ -1405,6 +1406,7 @@ mod tests {
                     | "DeviceConnected"
                     | "DeviceDisconnected"
                     | "RelayStateChanged"
+                    | "DeviceRefusalChanged"
             );
             assert!(skipped, "the daemon pushes {name} to app connections; is_unsolicited must skip it");
             pushed += 1;
