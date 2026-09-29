@@ -107,8 +107,11 @@ export function beginPairing(): Promise<PairingOffer> {
 
 /// The human compared the six digits and said yes. The only call in the
 /// app that writes a row into the daemon's trust store.
-export function confirmPairing(deviceId: string): Promise<void> {
-  return invoke("confirm_pairing", { deviceId });
+///
+/// `code` is the six digits, and `token` the grant the host minted for
+/// this device and this code (`confirmGate.ts`).
+export function confirmPairing(deviceId: string, code: string, token: string): Promise<void> {
+  return invoke("confirm_pairing", { deviceId, code, token });
 }
 
 /// The human said no: discard the pending handshake so the phone hears

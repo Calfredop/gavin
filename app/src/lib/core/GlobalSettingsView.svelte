@@ -71,7 +71,7 @@
   } from "$lib/core/settingsSearchFallback";
   import ConfirmPrompt from "$lib/core/ConfirmPrompt.svelte";
   import { DEFAULT_CYCLE, MIN_PERIOD_MINUTES, type PauseCycle, validateCycle } from "$lib/agents/agentPause";
-  import { grantForAnsweredPrompt, DAEMON_SUBJECT } from "$lib/core/confirmGate";
+  import { grantForAnsweredPrompt, pairingSubject, DAEMON_SUBJECT } from "$lib/core/confirmGate";
   import { featureBlockedReason, restartOutcome, restartConfirmLines } from "$lib/core/daemonCompat";
   import * as backend from "$lib/core/backend";
   import { typesafeSettings } from "$lib/agents/turnVerdictState";
@@ -568,7 +568,10 @@
     pairingError = null;
     try {
       if (said) {
-        await backend.confirmPairing(request.deviceId);
+        const token = await grantForAnsweredPrompt("confirm_pairing", [
+          pairingSubject(request.deviceId, request.sas),
+        ]);
+        await backend.confirmPairing(request.deviceId, request.sas, token);
         pairing = pairingConfirmed(pairing);
       } else {
         await backend.rejectPairing(request.deviceId);

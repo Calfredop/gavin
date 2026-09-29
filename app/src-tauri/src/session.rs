@@ -3406,12 +3406,26 @@ pub async fn begin_pairing(
 
 /// The human compared the two six-digit codes and pressed Confirm. The
 /// only call in the app that writes a row into `devices.sqlite`.
+///
+/// Gated: `token` is the grant minted for THIS device and THESE six digits
+/// (`confirm_gate::pairing_subject`), so a script in the page cannot
+/// confirm a pairing nobody was asked about with the token of another.
+/// `code` is not sent to the daemon; it only binds the token.
 #[tauri::command]
 pub async fn confirm_pairing(
     device_id: String,
+    code: String,
+    token: String,
+    gate: State<'_, crate::confirm_gate::ConfirmGate>,
     state: State<'_, CommandConnection>,
     compat: State<'_, DaemonCompatState>,
 ) -> Result<(), String> {
+    crate::confirm_gate::spend(
+        &gate,
+        &token,
+        "confirm_pairing",
+        &crate::confirm_gate::pairing_subject(&device_id, &code),
+    )?;
     let resp = state
         .lanes(current_compat(&compat))
         .request(Request::ConfirmPairing { device_id })
