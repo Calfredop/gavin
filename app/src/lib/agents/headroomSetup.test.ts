@@ -119,6 +119,13 @@ describe("each state's actions", () => {
     expect(headroomActions(verified({ version: "0.38.0", uvFound: false }))).toEqual(["check-again"]);
   });
 
+  it("keeps Update on offer at the pin while the last install failed, to re-run the model fetch", () => {
+    const failed = { state: "failed", output: "prefetch exited 1" };
+    expect(headroomActions(verified({ install: failed }))).toEqual(["update", "check-again"]);
+    expect(headroomActions(verified({ install: { state: "succeeded", output: "" } }))).toEqual(["check-again"]);
+    expect(headroomActions(verified({ install: failed, uvFound: false }))).toEqual(["check-again"]);
+  });
+
   it("Unavailable: nothing, because no button can make this machine run it", () => {
     expect(headroomActions(unavailable())).toEqual([]);
   });
