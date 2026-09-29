@@ -74,17 +74,24 @@ if [ "$platform" = android ]; then
 fi
 
 grep -a -E "\[gavin-shell\]|GavinShell|dropped|blocked|refused" "$log" | grep -v '\[gavin-probe\]' || true
-verdict=$(grep -a -o '\[gavin-probe\] {.*' "$log" | head -1 | sed 's/^\[gavin-probe\] //')
+# One line a check, then the summary: a device log cuts a longer line off.
+summary=$(grep -a -o '\[gavin-probe\] {.*' "$log" | head -1 | sed 's/^\[gavin-probe\] //')
+grep -a -o '\[gavin-probe\] check {.*' "$log" | sed 's/^\[gavin-probe\] check //' >"$work/checks"
 if grep -a -q "probe.invalid" "$log"; then
   echo "FAILED: a plugin call from the bundle reached one of the shell's plugins (it logged the probe's marked URL)"
   exit 1
 fi
-printf '%s' "$verdict" | node -e '
+printf '%s' "$summary" | CHECKS="$work/checks" node -e '
   let raw = "";
   process.stdin.on("data", (d) => (raw += d)).on("end", () => {
-    const verdict = JSON.parse(raw);
-    for (const c of verdict.checks) console.log(`${c.passed ? "pass" : "FAIL"}  ${c.name}\n      ${c.detail}`);
-    console.log(verdict.passed ? "\nThe bundle webview is sealed." : "\nThe probe FAILED.");
-    process.exit(verdict.passed ? 0 : 1);
+    const summary = JSON.parse(raw);
+    const lines = require("fs").readFileSync(process.env.CHECKS, "utf8").split("\n").filter(Boolean);
+    const checks = lines.map((line) => JSON.parse(line.replace(/\r$/, "")));
+    for (const c of checks) console.log(`${c.passed ? "pass" : "FAIL"}  ${c.name}\n      ${c.detail}`);
+    const whole = checks.length === summary.checks;
+    if (!whole) console.log(`\n${summary.checks} checks were reported and ${checks.length} read back.`);
+    const passed = summary.passed && whole && checks.every((c) => c.passed);
+    console.log(passed ? "\nThe bundle webview is sealed." : "\nThe probe FAILED.");
+    process.exit(passed ? 0 : 1);
   });
 '

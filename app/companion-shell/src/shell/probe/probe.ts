@@ -229,7 +229,10 @@ export function createProbeBench(): ProbeBench {
 }
 
 /// Opens the probe, waits for it to finish (or for `timeoutMs`), and
-/// writes the verdict to the log on one line the probe script can find.
+/// writes the verdict to the log for the probe script to find: a line a
+/// check, then one saying whether they all passed and how many there
+/// were. Not the whole verdict on one line: a device log cuts a line off
+/// at about 4 KB, and the checks' details together run past that.
 export async function runProbe(options: {
   visits: Visits;
   bench: ProbeBench;
@@ -248,7 +251,8 @@ export async function runProbe(options: {
   ]);
   clearTimeout(timer);
   const verdict = probeVerdict(bench);
-  log(`${VERDICT_MARK} ${JSON.stringify(verdict)}`);
+  for (const check of verdict.checks) log(`${VERDICT_MARK} check ${JSON.stringify(check)}`);
+  log(`${VERDICT_MARK} ${JSON.stringify({ passed: verdict.passed, checks: verdict.checks.length })}`);
   await visits.close();
   return verdict;
 }
