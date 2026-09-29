@@ -9,7 +9,11 @@
 #
 # node   The shell's own pairing module and the Companion core, in Node
 #        (src/shell/pairing/pairing.e2e.ts): a pairing the desk confirms,
-#        one it declines, and a second pairing on a spent code.
+#        one it declines, and a second pairing on a spent code. And the
+#        live hub (src/shell/hub/hub.e2e.ts): one phone paired with two
+#        Workstations, one Unlock connecting both, a dropped connection
+#        back without a prompt, a desktop app that quit, a Workstation
+#        that left its Relay, and the Unlock ending on background.
 # ios    Builds a DEBUG app, installs it fresh on the Simulator named, and
 #        pairs it for real. The desk shows a code; the app is launched with
 #        that code in place of a scan (a Simulator has no camera); the

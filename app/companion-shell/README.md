@@ -43,7 +43,7 @@ cd app/companion-shell && npm ci
 From `app/`:
 
 ```
-npm run companion-shell:test    # vitest: the channel, visits, pairing, the core, the probe's verdict
+npm run companion-shell:test    # vitest: the channel, visits, pairing, the core, the Unlock, the live hub, the probe's verdict
 npm run companion-shell:check   # svelte-check, the desktop's library included
 npm run companion-shell:build   # the hub and the Companion core, in companion-shell/build
 npm run companion-shell:sync    # both builds, then `cap sync` and the embedded bundles
@@ -128,9 +128,10 @@ key's private half goes only to the shell's web layer, for the Companion
 core, which also derives its public half: neither iOS below Safari 18.4 nor
 Android below API 33 has X25519 outside it.
 
-Each sign prompts. The Unlock -- one authentication held for a foreground
-stretch -- is companion-22's, and the auth window (one hour, ticket 02's
-recommendation) is baked into each key when it is made.
+`sign` prompts every time: it is pairing's. Connections sign under the
+Unlock instead (below): `unlock` asks once and holds it, `signUnlocked`
+never asks. The auth window (one hour, ticket 02's recommendation) is
+baked into each key when it is made.
 
 A debug build shows a keys panel under the Workstations: create the keys,
 sign a test handshake, delete them. `scripts/keys.sh` runs the same plugin
@@ -206,8 +207,8 @@ this network (`protocol::relay::RelayUrl`).
    proof, in two groups of three like the desk's.
 7. **Keep.** `paired` from the desk leaves a record in the `Workstations`
    store, named "Workstation" (then "Workstation 2", …) and renamable on
-   the spot; the hub lists it above the Demo Workstation. Opening it, and
-   its live state, are companion-22 and companion-23.
+   the spot; the hub lists it above the Demo Workstation, and connects to
+   it once the Companion is unlocked. Opening its UI is companion-23's.
 
 The records are the web layer's JSON, opaque to the native side, each
 holding that Workstation's notification key:
@@ -294,15 +295,91 @@ the core's rule, `ws://` only to this machine or this network.
   until the phone says how the pairing ended.
 - **UserDefaults reads a launch argument that looks like a property list
   as one**, so the scripted code travels as base64.
+- **A fresh Simulator's first boot takes minutes** after `simctl boot`
+  returns, and `simctl listapps` or `get_app_container` hang until it is
+  done: wait with `xcrun simctl bootstatus <udid>` before a script.
+- **The shell's activity is `singleTask`**, so launching it -- the
+  launcher icon, or `am start` -- clears a bundle above it; the app
+  switcher brings the bundle back as it was. Either way the Unlock asks,
+  over whichever is in front.
+- **Android draws the passcode screen black in a screenshot** (a secure
+  window): a black `screencap` during the Unlock is the prompt.
 - **A WebView WebSocket that Android refused says so only to the page's
   console** (`net::ERR_CLEARTEXT_NOT_PERMITTED`), not to logcat. A debug
   build's WebView can be asked directly: `adb -s <serial> forward
   tcp:9333 localabstract:webview_devtools_remote_<pid>`, then the page's
   DevTools socket from `http://127.0.0.1:9333/json`.
 
+## The Unlock and the live hub
+
+ADR 0004: one Face ID, fingerprint or passcode, when the Companion comes
+to the front, unlocks the connections to every paired Workstation, until
+the app goes to the background or the phone locks. The parameters are
+ticket 02's (`docs/research/2026-09-28-companion-device-keys.md`).
+
+- **Native** (`DeviceKeys`): `unlock` asks once and holds it -- on iOS the
+  evaluated `LAContext`, set to never show anything again; on Android the
+  hardware key's auth window, which the prompt opened -- and
+  `signUnlocked` signs each connection's handshake under it without a
+  prompt. The native side ends it itself on background and lock (iOS
+  `didEnterBackground` and `protectedDataWillBecomeUnavailable`; Android
+  the app's last started activity stopping, and `SCREEN_OFF`), never on
+  losing the focus (Control Center, the shade, a call banner, the prompt
+  itself), and tells the web layer as a `lifecycle` event, with coming
+  back to the front.
+- **Android's "in front"** spans two processes: the shell's activity and a
+  bundle's, in `:bundle`. `AppForeground` counts both -- the bundle's
+  start and stop cross over the channel -- and decides "background" 700 ms
+  after the last one stops, so opening a Workstation's UI is not leaving
+  the app.
+- **The rule** is `src/shell/unlock/unlock.ts`, pure: what asks, what
+  connects, what drops everything. A reconnect is not an event there at
+  all. Android's auth window closing (`lapsed`) asks again while the
+  connections already open stay; a lapse within a minute of the owner
+  confirming is the hardware refusing, and locks with the reason rather
+  than asking forever.
+- **The connections** are `src/shell/connection/`: the first Relay that
+  answers carries `IK`, the proof is signed under the Unlock, and then the
+  attention request (`GetAttention`, API version 1) over the daemon's own
+  protocol. A Relay that answers `offline` makes the Workstation *asleep*
+  (or remote access is off at the desk); one that cannot be reached, or a
+  connection that drops, *unreachable*.
+- **The live hub** (`src/shell/hub/liveHub.ts`) keeps one connection per
+  paired Workstation while the Unlock allows it, asks what is waiting
+  every 15 s (which also finds a connection a dead network left open),
+  and reconnects a drop from 1 s, doubling to 30 s, with no prompt. A
+  Workstation that refused this Device for good (revoked, removed, unseen
+  ninety days) is not tried again until the next Unlock.
+- **The inbox** (`src/shell/hub/inbox.ts`) is every ready Workstation's
+  items, each labelled with its Workstation. One that is locked,
+  connecting, asleep, unreachable, or whose desktop app is not running
+  adds nothing. Tapping an item opens its Workstation, once a paired one
+  can be opened (companion-23); until then the hub says so.
+
+`src/shell/hub/unlockedHub.ts` wires the two to the plugin; the page only
+draws them. A debug build logs each step (`[gavin-unlock]`, `[gavin-hub]`).
+
+```
+scripts/pair.sh node                               # includes src/shell/hub/hub.e2e.ts
+scripts/hub.sh ios <simulator-udid> [--screenshots <dir>]
+scripts/hub.sh android <emulator-serial> --pin <pin> [--screenshots <dir>]
+```
+
+`hub.e2e.ts` runs the shell's own modules and the real core in Node
+against two Workstations (`scripts/devstack.mjs`, twice): one Unlock
+connects both, the inbox labels both, a dropped connection comes back
+without a prompt, a desk item dealt with leaves, a desktop app that quits
+and a Workstation that leaves its Relay show so and add nothing, and
+background locks. `hub.sh` pairs a fresh debug install with two
+Workstations (`devstack.mjs hub`), then launches it: the Unlock must ask
+once and both answer ready; another app in front must lock both; back in
+front it must ask again and both answer again.
+
 ## What is here, and what is not
 
-The hub lists the paired Workstations and the Demo Workstation, and opens
-the Demo's embedded bundle. The Device's keys (companion-20) and pairing
-(companion-21) are here. The Unlock and a live hub (companion-22), and
-served, signed, cached bundles (companion-23) are the cards that follow.
+The hub lists the paired Workstations, live while unlocked, with the
+combined inbox, and the Demo Workstation, and opens the Demo's embedded
+bundle. The Device's keys (companion-20), pairing (companion-21), and the
+Unlock and the live hub (companion-22) are here. Served, signed, cached
+bundles -- opening a paired Workstation, and landing on an inbox item --
+are companion-23's.

@@ -15,6 +15,13 @@
 // reads the six digits the phone shows out of its log, confirms only if
 // they match, and exits 0 once the desk lists the phone.
 //
+//   node scripts/devstack.mjs hub --work <dir>
+//
+// is the two Workstations for `scripts/hub.sh`: two stacks, each paired
+// the same way in turn -- `<dir>/qr-<n>` for the code, `<dir>/phone-<n>.log`
+// for what the phone showed -- then each desktop app started with
+// something waiting, and `<dir>/ready` written. It holds them until killed.
+//
 // The Relay is plain ws:// on 127.0.0.1, which a Relay URL may be only
 // because it is loopback (`protocol::relay::RelayUrl::parse`). A Simulator
 // shares the Mac's network, so it dials the same address; an emulator
@@ -215,6 +222,8 @@ export async function startDevStack({ log = () => {}, relayHost = "127.0.0.1" } 
       DeskConnection.open(socketPath, daemonToken, "command", version).catch(() => null)
     );
     const push = await DeskConnection.open(socketPath, daemonToken, "push", version);
+    /// The desktop app's forwarding connections, while it runs.
+    const apps = [];
     log(`daemon: ${home}`);
 
     const ok = (answer, what) => {
@@ -253,6 +262,51 @@ export async function startDevStack({ log = () => {}, relayHost = "127.0.0.1" } 
         if (answer.type !== "Devices") throw new Error(`no device list: ${JSON.stringify(answer)}`);
         return answer.devices;
       },
+      /// Starts the desktop app, as far as a Device can tell: the
+      /// forwarding connection, answering every attention ask with
+      /// `items` (`AttentionItem`s) and every forwarded command with
+      /// null. Until it is started, and after `quit()`, the daemon
+      /// answers "desktop app not running".
+      async startApp(items = []) {
+        const forward = await DeskConnection.open(socketPath, daemonToken, "forward", version);
+        let answering = items;
+        let running = true;
+        void (async () => {
+          while (running) {
+            let message;
+            try {
+              message = await forward.next(60_000);
+            } catch {
+              if (forward.closed) return;
+              continue;
+            }
+            // `Ok` acknowledges an answer this loop wrote.
+            if (message.type === "ForwardAttention") {
+              forward.socket.write(`${JSON.stringify({ type: "AttentionResult", call_id: message.call_id, items: answering })}\n`);
+            } else if (message.type === "ForwardCommand") {
+              forward.socket.write(`${JSON.stringify({ type: "ForwardResult", call_id: message.call_id, value: null, error: null })}\n`);
+            }
+          }
+        })();
+        apps.push(forward);
+        return {
+          setItems(next) {
+            answering = next;
+          },
+          quit() {
+            running = false;
+            forward.close();
+          },
+        };
+      },
+      /// Remote access off at the desk: the daemon lets go of its Relay,
+      /// which then tells a Device the Workstation is `offline`.
+      async remoteAccess(enabled) {
+        ok(
+          await command.request({ type: "SetRemoteAccess", enabled, relay_url: relayUrl, relay_admission: TOKEN }),
+          enabled ? "turning remote access on" : "turning remote access off"
+        );
+      },
     };
 
     return {
@@ -286,6 +340,7 @@ export async function startDevStack({ log = () => {}, relayHost = "127.0.0.1" } 
         );
       },
       async stop() {
+        for (const app of apps) app.close();
         command.close();
         push.close();
         await stop();
@@ -364,6 +419,75 @@ async function runDesk() {
   }
 }
 
+/// Pairs the phone with `stack` the way `runDesk` does: the code in
+/// `qrOut`, the phone's six digits read out of `phoneLog`.
+async function pairPhone(stack, qrOut, phoneLog, say) {
+  const qr = await stack.desk.offer();
+  await stack.registered(qr);
+  writeFileSync(qrOut, qr);
+  say("pairing code ready; waiting for the phone");
+  const asked = await stack.desk.asked();
+  const phoneCode = await until(
+    "the phone to show its code",
+    () => /\[gavin-pair\] code (\d{6})/.exec(existsSync(phoneLog) ? readFileSync(phoneLog, "utf8") : "")?.[1],
+    60_000
+  );
+  say(`the desk shows ${asked.sas}, the phone ${phoneCode}`);
+  if (phoneCode !== asked.sas) {
+    await stack.desk.reject(asked.device_id);
+    throw new Error("the codes differ");
+  }
+  await stack.desk.confirm(asked.device_id);
+  const ended = await until(
+    "the phone to hear the verdict",
+    () => /\[gavin-pair\] (paired|failed)/.exec(readFileSync(phoneLog, "utf8"))?.[1],
+    60_000
+  );
+  if (ended !== "paired") throw new Error("the phone says the pairing failed");
+  say("paired");
+}
+
+async function runHub() {
+  const work = option("--work");
+  if (!work) {
+    console.error("usage: node scripts/devstack.mjs hub --work <dir>");
+    process.exit(2);
+  }
+  buildStack();
+  const stacks = [];
+  const stopAll = () => Promise.all(stacks.map((stack) => stack.stop()));
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.once(signal, () => void stopAll().finally(() => process.exit(0)));
+  }
+  try {
+    for (const n of [0, 1]) {
+      stacks.push(await startDevStack({ log: (line) => console.log(`[desk ${n}] ${line}`) }));
+    }
+    for (const n of [0, 1]) {
+      await pairPhone(stacks[n], join(work, `qr-${n}`), join(work, `phone-${n}.log`), (line) =>
+        console.log(`[desk ${n}] ${line}`)
+      );
+    }
+    const item = (id, kind, text) => ({ id, workspace: "ws-1", kind, text, target: { kind: "session", id: `s-${id}` } });
+    await stacks[0].desk.startApp([
+      item("w1", "waiting", "feat-x asks which migration to keep"),
+      item("w2", "human-test", "check the Devices panel"),
+    ]);
+    await stacks[1].desk.startApp([item("w1", "rail-stopped", "the nightly rail paused")]);
+    writeFileSync(join(work, "ready"), "");
+    console.log("[desk] both Workstations paired, their desktop apps running");
+    await new Promise(() => {});
+  } catch (e) {
+    console.error(`[desk] ${e instanceof Error ? e.message : String(e)}`);
+    for (const stack of stacks) console.error(stack.daemonLog());
+    await stopAll();
+    process.exit(1);
+  }
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "desk") {
   await runDesk();
+}
+if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "hub") {
+  await runHub();
 }
