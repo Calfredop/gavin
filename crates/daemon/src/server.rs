@@ -4710,7 +4710,7 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
                 .push_companion_notify(&crate::companion_push::UreqTransport, &mapped)
                 .map(|_| Response::Ok)
         }
-        // -- Headroom (v45) -------------------------------------------
+        // -- Headroom (v46) -------------------------------------------
         //
         // Every one answers with the status AFTER what it did. None of
         // them waits on Headroom itself: a start returns before the
@@ -5128,7 +5128,7 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         | Request::SetPushGatewayUrl { .. }
         | Request::SetDeviceSendPermission { .. }
         | Request::PushCompanionNotify { .. }
-        // Headroom (v45) is the desktop's. It is the proxy every
+        // Headroom (v46) is the desktop's. It is the proxy every
         // compressed agent's model traffic crosses: an agent that could
         // stop it would cut the fleet off mid-turn, one that could
         // point detection at a file of its choosing would pick what the
@@ -5199,7 +5199,7 @@ fn is_privileged(req: &Request) -> bool {
             | Request::SetPushGatewayUrl { .. }
             | Request::SetDeviceSendPermission { .. }
             | Request::PushCompanionNotify { .. }
-            // Headroom (v45). Each of the four starts a process --
+            // Headroom (v46). Each of the four starts a process --
             // detection runs the file it is handed, which is the same
             // reach as the shell `CreateSession` starts -- or ends the
             // one every compressed agent is talking through. The status
@@ -6798,7 +6798,7 @@ mod tests {
         ]
     }
 
-    /// Every request v45 added, one of each, for the role tests below.
+    /// Every request v46 added, one of each, for the role tests below.
     fn every_headroom_request() -> Vec<Request> {
         vec![
             Request::GetHeadroomStatus,

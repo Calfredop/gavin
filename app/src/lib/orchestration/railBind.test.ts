@@ -67,6 +67,14 @@ describe("what a chip says", () => {
       null
     );
     expect(named.value).toContain("backend");
+
+    const timed = railBindChip(
+      "trigger",
+      { ...UNBOUND, trigger: { kind: "at-time", at: 1_800_000_000 } },
+      null
+    );
+    expect(timed.value).toMatch(/^at /);
+    expect(timed.bound).toBe(true);
   });
 
   it("shows the folder but keeps the whole path in the tooltip", () => {
