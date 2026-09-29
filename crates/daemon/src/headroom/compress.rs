@@ -469,7 +469,7 @@ fn single_quoted(text: &str) -> String {
 /// Codex receives it with its TOML quotes on, exactly as its SDK passes
 /// it.
 fn with_codex_base_url(line: &str, url: &str) -> Option<String> {
-    let ends: Vec<usize> = command_words(line)
+    let ends: Vec<usize> = command_words(line)?
         .into_iter()
         .filter(|(_, word)| names_binary(word, "codex"))
         .map(|(end, _)| end)
@@ -500,10 +500,18 @@ fn names_binary(word: &str, name: &str) -> bool {
 /// launched with. Quotes and escapes, so a prompt that mentions `codex`
 /// is text; the operators after which a new command starts (`&&`, `||`,
 /// `;`, `|`, `&`, a newline, a parenthesis); assignments ahead of a
-/// command (`KEY=value codex`); comments. What it cannot read -- a
-/// heredoc, a function, a reserved word -- costs it a command word it
-/// does not see, and a line whose Codex it does not see is left alone.
-fn command_words(line: &str) -> Vec<(usize, String)> {
+/// command (`KEY=value codex`); comments.
+///
+/// What it cannot read it refuses -- `None` for the whole line -- rather
+/// than guess, because a guess puts the flag inside a string, a heredoc
+/// body or a function's name, and a line whose Codex is only partly
+/// routed must not be marked compressed. It refuses an ANSI-C string
+/// (`$'…'`, whose `\'` does not end it), a heredoc (`<<`, whose body is
+/// text, not commands), a function definition (`name() {`), and a
+/// command word that hands the real command to the word after it (`time`,
+/// `env`, `nohup`, `exec`, `then`, `{`, `!` and the like). A line
+/// without a Codex to route is left alone either way.
+fn command_words(line: &str) -> Option<Vec<(usize, String)>> {
     let mut words = Vec::new();
     let mut word: Option<String> = None;
     let mut starts_command = true;
@@ -553,6 +561,18 @@ fn command_words(line: &str) -> Vec<(usize, String)> {
                 Some((_, next)) => word.get_or_insert_default().push(next),
                 None => word.get_or_insert_default().push('\\'),
             },
+            '$' if chars.peek().is_some_and(|&(_, next)| next == '\'') => return None,
+            '<' if chars.peek().is_some_and(|&(_, next)| next == '<') => {
+                chars.next();
+                // `<<<` is a here-string: one word, no body.
+                if chars.peek().is_some_and(|&(_, next)| next == '<') {
+                    chars.next();
+                    word.get_or_insert_default().push_str("<<<");
+                } else {
+                    return None;
+                }
+            }
+            '(' if function_definition(&word, starts_command, &mut chars) => return None,
             '\'' | '"' => {
                 word.get_or_insert_default();
                 quote = Some(c);
@@ -576,7 +596,31 @@ fn command_words(line: &str) -> Vec<(usize, String)> {
         }
     }
     finish(&mut word, line.len(), &mut starts_command);
-    words
+    if words.iter().any(|(_, word)| PREFIX_WORDS.contains(&word.as_str())) {
+        return None;
+    }
+    Some(words)
+}
+
+/// Command words after which the command that runs is the NEXT word, or
+/// a compound's body: not read through, so a line holding one is refused.
+const PREFIX_WORDS: [&str; 15] = [
+    "time", "env", "nohup", "exec", "command", "builtin", "then", "else", "elif", "do", "if",
+    "while", "until", "{", "!",
+];
+
+/// Whether the `(` about to be read opens a function definition: right
+/// after a command word (`codex() {`), or after one and a space with
+/// nothing between the parentheses (`codex () {`).
+fn function_definition(
+    word: &Option<String>,
+    starts_command: bool,
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
+) -> bool {
+    match word {
+        Some(w) => starts_command && !is_assignment(w) && !w.ends_with(['$', '<', '>']),
+        None => !starts_command && chars.peek().is_some_and(|&(_, next)| next == ')'),
+    }
 }
 
 /// `NAME=value`: an assignment, which a shell reads ahead of the
@@ -1306,14 +1350,40 @@ mod tests {
         assert_eq!(no_line, Decision::Uncompressed(Some(Reason::NoRecipe)));
     }
 
+    /// A construct the scanner cannot read is refused whole: a flag put
+    /// in a string, a heredoc body or a function's name, or a line only
+    /// partly routed, is worse than a line left alone.
+    #[test]
+    fn a_line_with_a_construct_the_scanner_cannot_read_is_refused() {
+        for line in [
+            // `\'` does not end an ANSI-C string.
+            r"codex exec $'it\'s done; codex is fine'",
+            "cat > notes.txt <<EOF\ncodex = true\nEOF\ncodex exec x",
+            r#"codex() { command codex "$@"; }; codex exec x"#,
+            r#"codex () { command codex "$@"; }; codex exec x"#,
+            "codex exec a && time codex exec b",
+            "codex exec a && env A=1 codex exec b",
+            "codex exec a && nohup codex exec b",
+            "if true; then codex exec b; fi",
+            "{ codex exec b; }",
+            "! codex exec b",
+        ] {
+            assert_eq!(with_codex_base_url(line, "http://127.0.0.1:1/p/s/v1"), None, "{line}");
+        }
+        // Not refused: a here-string, a substitution, a quoted `<<`.
+        for line in ["codex exec <<< hi", "codex exec \"$(pwd)\" '<<'", "A=$(x) codex exec y"] {
+            assert!(with_codex_base_url(line, "http://127.0.0.1:1/p/s/v1").is_some(), "{line}");
+        }
+    }
+
     #[test]
     fn a_line_is_read_for_the_programs_it_runs_and_nothing_else() {
         let line = "A=1 b c && 'd e' f; g|h (i) # j\nk \"l\\\"m\" n\\ o";
 
-        let words: Vec<String> = command_words(line).into_iter().map(|(_, word)| word).collect();
+        let words: Vec<String> = command_words(line).expect("readable").into_iter().map(|(_, word)| word).collect();
 
         assert_eq!(words, ["b", "d e", "g", "h", "i", "k"]);
-        let (end, _) = command_words("  codex  --x").remove(0);
+        let (end, _) = command_words("  codex  --x").expect("readable").remove(0);
         assert_eq!(end, "  codex".len());
     }
 
