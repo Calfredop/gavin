@@ -16,6 +16,8 @@
     setGitTrackingDefault,
     restartDaemonInPlace,
     daemonCompat,
+    headroomDefault,
+    setHeadroomDefault,
   } from "$lib/core/layoutState";
   import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
   import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
@@ -23,6 +25,17 @@
   import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
   import { modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
   import { API_FAMILIES, apiFamilyOf, withApiFamily, type ApiFamily } from "$lib/agents/apiFamily";
+  import HeadroomControls from "$lib/agents/HeadroomControls.svelte";
+  import { DEFAULT_HEADROOM } from "$lib/agents/compression";
+  import { compressionSwitchBlocked } from "$lib/agents/compressionDriver";
+  import {
+    HEADROOM_RESIDUAL_NOTE,
+    headroomDefaultBlocked,
+    headroomFromSelect,
+    headroomOptions,
+    headroomToSelect,
+  } from "$lib/agents/headroomSetup";
+  import { headroomReading, watchHeadroom } from "$lib/agents/headroomState";
   import { DEFAULT_TERMINAL_FONT_SIZE, fontSizeOptions } from "$lib/terminal/terminalFont";
   import {
     DEFAULT_AUTO_COMMIT,
@@ -252,6 +265,17 @@
     else delete complexity[level];
     void setAgentDefaults({ ...$agentDefaultsStore, complexity });
   }
+
+  // --- headroom --------------------------------------------------------
+  //
+  // Live while this page is open: whether it is running, its port and the
+  // lifetime total change by themselves, and an install's progress is
+  // read off the status. Everything the section draws is
+  // headroomSetup.ts's; the controls are shared with the wizard's step.
+  onMount(() => watchHeadroom());
+  const headroomDefaultGate = $derived(
+    headroomDefaultBlocked($headroomReading, compressionSwitchBlocked($daemonCompat))
+  );
 
   // --- updates ---------------------------------------------------------
   //
@@ -610,6 +634,22 @@
     {
       id: "custom-agent",
       keywords: ["Custom agent", "Command", "Model flag", "API family", "Headroom", "compression"],
+    },
+    {
+      id: "headroom",
+      keywords: [
+        "Headroom",
+        "compression",
+        "compress",
+        "tokens saved",
+        "savings",
+        "proxy",
+        "uv",
+        "Install",
+        "Update",
+        "Locate",
+        "Check again",
+      ],
     },
     {
       id: "tools",
@@ -1014,6 +1054,46 @@
         Headroom, OpenAI-compatible points <code>OPENAI_BASE_URL</code>. None leaves the agent
         uncompressed.
       </p>
+    </section>
+
+    <section hidden={!settingsFilter.visible("headroom") || selectedSection !== "headroom"}>
+      <h3>Headroom</h3>
+      <p class="hint">
+        Headroom compresses what your agents send their model — tool output, logs, file reads — so
+        the same work spends less of a subscription's limit. gavin installs a version it has tested,
+        runs it as part of the daemon, and routes an agent through it only in a workspace with
+        compression on.
+      </p>
+      <div class="compression-controls">
+        <HeadroomControls reading={$headroomReading} />
+      </div>
+      <div class="row">
+        <label for="headroom-default">Compression</label>
+        <!-- The reason hangs on the wrapping span, not the select: a
+             disabled element fires no mouseenter, so a tooltip on it can
+             never open. -->
+        <span use:tooltip={headroomDefaultGate ?? ""}>
+          <select
+            id="headroom-default"
+            value={headroomToSelect($headroomDefault)}
+            disabled={headroomDefaultGate !== null}
+            onchange={(e) => void setHeadroomDefault(headroomFromSelect(e.currentTarget.value))}
+          >
+            {#each headroomOptions(DEFAULT_HEADROOM) as opt (opt.value)}
+              <option value={opt.value}>{opt.label}</option>
+            {/each}
+          </select>
+        </span>
+      </div>
+      {#if headroomDefaultGate}
+        <p class="hint warn">{headroomDefaultGate}</p>
+      {/if}
+      <p class="hint">
+        Every workspace that sets nothing of its own follows this. It starts off, so installing
+        Headroom never changes how a workspace already talks to its model; a workspace can switch it
+        either way on its own Settings tab, under Agent.
+      </p>
+      <p class="hint">{HEADROOM_RESIDUAL_NOTE}</p>
     </section>
 
     <section hidden={!settingsFilter.visible("tools") || selectedSection !== "tools"}>
@@ -1740,6 +1820,9 @@
   }
   .hint.error {
     color: var(--danger-text);
+  }
+  .compression-controls {
+    margin: 12px 0;
   }
   .tools-explorer {
     margin-top: 10px;

@@ -66,6 +66,7 @@ function everyKey(id: string, flavour: string): Workspace {
     requireReview: flavour === "a",
     requireReviewAsked: flavour === "a",
     headroom: flavour === "a",
+    headroomAsked: flavour === "a",
     customResumeArgs: `--resume-${flavour}`,
     actionPromptOverrides: { "action:run-task": `prompt-${flavour}` },
   };

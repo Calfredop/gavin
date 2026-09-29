@@ -178,6 +178,14 @@ const CLASSIFICATION: Record<string, [Bucket, string?]> = {
   get_headroom_default: ["ordinary"],
   set_headroom_default: ["ordinary"],
   set_headroom_workspaces: ["ordinary"],
+  // Headroom's setup surfaces. The status and Check again/Locate… read
+  // and look. The install writes a uv tool into the human's home and
+  // fetches a model; as Update it also restarts the proxy on its port,
+  // which costs a running agent one retried request -- the same trade as
+  // the switch above, and Settings asks before it. Nothing is removed.
+  get_headroom_status: ["ordinary"],
+  detect_headroom: ["ordinary"],
+  install_headroom: ["ordinary"],
   get_session_names: ["ordinary"],
   set_session_name: ["ordinary"],
   get_file_tabs: ["ordinary"],

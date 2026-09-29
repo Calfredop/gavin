@@ -146,6 +146,10 @@ struct Shared {
     /// detection, an install -- so a supervisor waiting out a backoff
     /// tries again now rather than in thirty seconds.
     nudges: u64,
+    /// The process serving is to be swapped for a fresh start: an
+    /// install changed the file every start runs, and a proxy that
+    /// imported the old version goes on serving it until it is.
+    replace: bool,
 }
 
 struct Inner {
@@ -259,6 +263,26 @@ impl Supervisor {
     /// Something changed what a start would find. Try again now.
     pub fn nudge(&self) {
         self.inner.lock().nudges += 1;
+        self.inner.wake.notify_all();
+    }
+
+    /// The install changed the file every start runs. The Headroom
+    /// serving is stopped and the new one started on the same port, as
+    /// after a death -- which is what every compressed agent's next
+    /// request meets: one connection error, one retry. Deliberate, so it
+    /// is not counted as a restart and does not feed the backoff.
+    ///
+    /// Nothing is asked of a supervisor that is not running: there is no
+    /// process to replace, and the next start reads the new file anyway.
+    pub fn replace(&self) {
+        {
+            let mut shared = self.inner.lock();
+            if !shared.thread {
+                return;
+            }
+            shared.replace = true;
+            shared.nudges += 1;
+        }
         self.inner.wake.notify_all();
     }
 
@@ -395,6 +419,12 @@ impl Inner {
         shared.wanted && !shared.closing
     }
 
+    /// Whether a replacement was asked for since the last look, clearing
+    /// the ask: one install is one replacement.
+    fn take_replace(&self) -> bool {
+        std::mem::take(&mut self.lock().replace)
+    }
+
     fn supervise(self: Arc<Self>) {
         let mut owned = self.recover();
         let mut failures: u32 = 0;
@@ -412,9 +442,20 @@ impl Inner {
                     continue;
                 }
                 shared.thread = false;
+                // Asked of a process that is gone now. Left set, it
+                // would replace whatever the next thread re-adopts.
+                shared.replace = false;
                 drop(shared);
                 self.wake.notify_all();
                 return;
+            }
+            if self.take_replace() {
+                if let Some(process) = owned.take() {
+                    self.stop_process(process);
+                    self.forget_process();
+                }
+                failures = 0;
+                continue;
             }
             let Some(process) = owned.as_mut() else {
                 self.pause(backoff(failures));

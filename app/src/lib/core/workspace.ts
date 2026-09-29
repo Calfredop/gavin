@@ -274,6 +274,13 @@ export interface Workspace {
   /// run: one where it misbehaves can opt out without turning it off
   /// everywhere.
   headroom?: boolean;
+  /// Whether the human has been ASKED whether this workspace compresses
+  /// its agents -- in the setup wizard's Headroom step, or by moving the
+  /// switch on the Settings tab. Not the answer -- `headroom` (or its
+  /// absence) is that. Same shape and reason as `requireReviewAsked`:
+  /// leaving compression on the app-wide default is indistinguishable on
+  /// disk from nobody having decided yet.
+  headroomAsked?: boolean;
   /// This workspace's own resume flag for the `custom` agent profile
   /// (v38), e.g. `--resume`. Absent means inherit the app-wide default
   /// (`getCustomResumeArgs`), and failing that no resume at all for

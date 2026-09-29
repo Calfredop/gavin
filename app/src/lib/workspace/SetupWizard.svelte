@@ -11,12 +11,15 @@
   import { sshLimitation } from "$lib/workspace/sshWorkspace";
   import { setupProgress, type SetupStep } from "$lib/workspace/setupWizard";
   import { UNKNOWN_STATUS, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
+  import { workspaceHeadroomReading } from "$lib/agents/headroomSetup";
+  import { ensureHeadroomReading, headroomReading } from "$lib/agents/headroomState";
   import * as backend from "$lib/core/backend";
   import Modal from "$lib/core/Modal.svelte";
   import AgentStep from "$lib/wizardSteps/AgentStep.svelte";
   import IntegrationStep from "$lib/wizardSteps/IntegrationStep.svelte";
   import PrdStep from "$lib/wizardSteps/PrdStep.svelte";
   import SuperpowersStep from "$lib/wizardSteps/SuperpowersStep.svelte";
+  import HeadroomStep from "$lib/wizardSteps/HeadroomStep.svelte";
   import GitStep from "$lib/wizardSteps/GitStep.svelte";
   import ReviewStep from "$lib/wizardSteps/ReviewStep.svelte";
   import LaunchStep from "$lib/wizardSteps/LaunchStep.svelte";
@@ -30,6 +33,7 @@
     { id: "agent", label: "Agent" },
     { id: "integration", label: "Integration" },
     { id: "superpowers", label: "Superpowers" },
+    { id: "headroom", label: "Headroom" },
     { id: "git", label: "Git" },
     { id: "review", label: "Review" },
     { id: "prd", label: "PRD" },
@@ -57,6 +61,11 @@
   // detector still running is not a detector that found nothing.
   let superpowers = $state<SuperpowersStatus | undefined>(undefined);
   let superpowersMark = $state<SuperpowersMark | undefined>(undefined);
+  // Headroom's reading is the machine's, shared with Settings, and
+  // undefined until the daemon has answered -- the same rule again: a
+  // question in flight is not a Headroom that is missing.
+  ensureHeadroomReading();
+  const headroom = $derived(workspaceHeadroomReading($headroomReading, ws));
 
   // The Superpowers check answers off the main thread, so a reread can
   // land after a newer one -- and this one lands as a whole, file bodies
@@ -104,6 +113,8 @@
       gitTrackingAsked: Boolean(ws?.gitTrackingAsked),
       // Same shape, same reason -- see the git field above.
       requireReviewAsked: Boolean(ws?.requireReviewAsked),
+      headroomReading: headroom,
+      headroomAsked: Boolean(ws?.headroomAsked),
     })
   );
 
@@ -169,6 +180,8 @@
             onChanged={() => void reread()}
             onDone={advance}
           />
+        {:else if current === "headroom"}
+          <HeadroomStep {workspaceId} reading={headroom} onDone={advance} />
         {:else if current === "git"}
           <GitStep {workspaceId} onDone={advance} />
         {:else if current === "review"}

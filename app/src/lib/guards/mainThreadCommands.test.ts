@@ -157,6 +157,12 @@ const OFF_MAIN_THREAD: [file: string, command: string, waitsOn: string][] = [
   // Turning the last workspace's compression off has the daemon stop
   // Headroom and wait for it to be gone: SIGTERM, then up to 10 s.
   ["session.rs", "set_headroom_workspaces", "a daemon round trip that waits on Headroom stopping"],
+  // Settings polls the status every few seconds while it is open, and
+  // the first ask of a daemon's lifetime runs detection. Check again and
+  // Locate… run `headroom --version`, a Python start.
+  ["session.rs", "get_headroom_status", "a daemon round trip, polled while Settings is open"],
+  ["session.rs", "detect_headroom", "`headroom --version` in the daemon, a Python start"],
+  ["session.rs", "install_headroom", "a daemon round trip"],
   ["session.rs", "session_screen", "a daemon round trip, per turn verdict"],
   ["session.rs", "gavin_root_exists", "a root scan on an ssh host"],
   // Explicit actions, but unbounded: the stop waits up to ~0.9 s, the

@@ -438,6 +438,19 @@ pub struct Workspace {
     /// indistinguishable on disk from nobody having decided yet.
     #[serde(default)]
     pub require_review_asked: bool,
+    /// Whether the human has been ASKED whether this workspace compresses
+    /// its agents through Headroom -- in the setup wizard's Headroom step,
+    /// or by moving the switch on the workspace's Settings tab. Not the
+    /// answer -- `headroom` (or its absence) is that. Same shape and
+    /// reason as `require_review_asked`: leaving compression on the
+    /// app-wide default is indistinguishable on disk from nobody having
+    /// decided yet.
+    ///
+    /// Written only once it is true, unlike the two before it: a config
+    /// written by a build without the field must survive a save by this
+    /// one unchanged, and every workspace in it has never been asked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub headroom_asked: bool,
     /// This workspace's own resume flag for the `custom` agent profile
     /// (v38), e.g. `--resume`. Absent means inherit
     /// `AppConfig::custom_resume_args`, and failing that no resume at all
@@ -1189,6 +1202,7 @@ mod tests {
             require_review: None,
             headroom: None,
             require_review_asked: false,
+            headroom_asked: false,
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),

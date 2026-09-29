@@ -420,6 +420,26 @@ export function setHeadroomWorkspaces(workspaces: HeadroomWorkspace[]): Promise<
   return invoke("set_headroom_workspaces", { workspaces });
 }
 
+/// Headroom on this machine, as the local daemon sees it. Reads what
+/// detection stored; the first ask of a daemon's lifetime runs detection.
+/// See `headroomState.ts`, its one caller.
+export function getHeadroomStatus(): Promise<HeadroomStatus> {
+  return invoke("get_headroom_status");
+}
+
+/// Looks for Headroom again. `locatedPath` absent is Check again; a path
+/// is the file Locate… picked, remembered from then on; "" forgets it.
+export function detectHeadroom(locatedPath?: string): Promise<HeadroomStatus> {
+  return invoke("detect_headroom", { locatedPath: locatedPath ?? null });
+}
+
+/// Installs the pinned Headroom and fetches its compression model. Answers
+/// at once with the install marked running; its progress is read off the
+/// status.
+export function installHeadroom(): Promise<HeadroomStatus> {
+  return invoke("install_headroom");
+}
+
 /// The app-wide default a NEW workspace's init starts from. Same
 /// absence-not-the-default convention as the theme, the font size and the
 /// auto-commit block: null means nobody chose, `false` means an install

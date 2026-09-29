@@ -2930,6 +2930,17 @@ export async function markRequireReviewAsked(workspaceId: string): Promise<void>
   await saveWorkspaceSettings(workspaceId, { requireReviewAsked: true });
 }
 
+/// Records that this workspace's human has answered the compression
+/// question -- in the wizard's Headroom step, or by moving the switch on
+/// the Settings tab. Same shape and reason as `markRequireReviewAsked`:
+/// both answers are legitimate, so this records only that the question
+/// was put, never which side was picked.
+export async function markHeadroomAsked(workspaceId: string): Promise<void> {
+  const state = get(layoutState);
+  if (state.workspaces.find((w) => w.id === workspaceId)?.headroomAsked) return;
+  await saveWorkspaceSettings(workspaceId, { headroomAsked: true });
+}
+
 export async function setWorkspaceColor(workspaceId: string, color: string): Promise<void> {
   await saveWorkspaceSettings(workspaceId, { color: normalizeColor(color) });
 }

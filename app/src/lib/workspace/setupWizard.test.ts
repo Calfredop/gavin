@@ -8,6 +8,8 @@ import {
   SETUP_STEPS,
 } from "$lib/workspace/setupWizard";
 import type { SuperpowersStatus } from "$lib/agents/superpowers";
+import type { HeadroomStatus } from "$lib/agents/compression";
+import { SSH_UNAVAILABLE, workspaceHeadroomReading, type HeadroomReading } from "$lib/agents/headroomSetup";
 import { svelteSources } from "$lib/sources";
 
 /// A settled check that found nothing: enough to keep the derivation off
@@ -20,6 +22,39 @@ const SP_ABSENT: SuperpowersStatus = {
   output: "",
 };
 const SP_FOUND: SuperpowersStatus = { ...SP_ABSENT, state: "verified" };
+
+function headroomStatus(over: Partial<HeadroomStatus> = {}): HeadroomStatus {
+  return {
+    state: "absent",
+    reason: null,
+    newerThanTested: false,
+    version: null,
+    floor: "0.38.0",
+    pin: "0.39.1",
+    path: null,
+    source: null,
+    uvFound: true,
+    wanted: false,
+    running: false,
+    ready: false,
+    port: null,
+    restarts: 0,
+    lastError: null,
+    lifetimeTokensSaved: null,
+    install: null,
+    ...over,
+  };
+}
+/// Settled readings: enough to keep the derivation off `pending`.
+const HR_ABSENT: HeadroomReading = { kind: "status", status: headroomStatus() };
+const HR_VERIFIED: HeadroomReading = {
+  kind: "status",
+  status: headroomStatus({ state: "verified", version: "0.39.1" }),
+};
+const HR_UNAVAILABLE: HeadroomReading = {
+  kind: "status",
+  status: headroomStatus({ state: "unavailable", reason: "Headroom is not available on Intel Macs yet." }),
+};
 
 const TEMPLATE = [
   "# ws — Product Requirements",
@@ -48,6 +83,8 @@ const NOTHING_DONE = {
   superpowersMark: undefined,
   gitTrackingAsked: false,
   requireReviewAsked: false,
+  headroomReading: HR_ABSENT,
+  headroomAsked: false,
 };
 
 const ALL_DONE = {
@@ -60,6 +97,8 @@ const ALL_DONE = {
   superpowersMark: undefined,
   gitTrackingAsked: true,
   requireReviewAsked: true,
+  headroomReading: HR_VERIFIED,
+  headroomAsked: true,
 };
 
 // The home tab's banner lives entirely in compiled markup, which no other
@@ -148,15 +187,18 @@ describe("setupProgress", () => {
   // S2: agent tooling, so it sits beside Integration; PRD and Launch stay
   // last. Pinned because the order is what the stepper draws and what
   // `next` walks.
-  it("puts Superpowers third, Git fourth and Review fifth", () => {
+  it("puts Superpowers third, Headroom fourth, Git fifth and Review sixth", () => {
     // Superpowers beside Integration because it is agent tooling (S2);
-    // Git after both because it asks about the files gavin has by then
-    // created; Review right after Git, the same shape of question, before
-    // PRD because that step writes into a file the earlier ones create.
+    // Headroom right after it, agent tooling too (the Headroom spec, "The
+    // switch"); Git after those because it asks about the files gavin has
+    // by then created; Review right after Git, the same shape of question,
+    // before PRD because that step writes into a file the earlier ones
+    // create.
     expect(SETUP_STEPS).toEqual([
       "agent",
       "integration",
       "superpowers",
+      "headroom",
       "git",
       "review",
       "prd",
@@ -274,7 +316,23 @@ describe("setupProgress", () => {
   // The banner reads its total off this list rather than a literal, which
   // is how "n of 4" survived a fifth step being added anywhere else.
   it("exposes the step list every counter has to count", () => {
-    expect(SETUP_STEPS).toHaveLength(7);
+    expect(SETUP_STEPS).toHaveLength(8);
+  });
+
+  // Both counters. The Home banner reads its total off SETUP_STEPS and
+  // its "done" off setupProgress; the wizard draws its own labelled list,
+  // which has to be the same list in the same order or the stepper and
+  // `next` disagree about where Headroom is.
+  it("draws the wizard's stepper from the same steps, Headroom included", () => {
+    const wizard = SOURCES["SetupWizard.svelte"];
+    const ids = [...wizard.matchAll(/\{ id: "([a-z]+)", label: "[^"]+" \}/g)].map((m) => m[1]);
+    expect(ids).toEqual(SETUP_STEPS);
+    expect(wizard).toContain('current === "headroom"');
+    expect(wizard).toContain("headroomAsked: Boolean(ws?.headroomAsked)");
+    const home = SOURCES["HomeHubView.svelte"];
+    expect(home).toContain("{SETUP_STEPS.length}");
+    expect(home).toContain("headroomAsked: Boolean(ws?.headroomAsked)");
+    expect(home).toContain("headroomReading: headroom,");
   });
 
   // The two file bodies arrive from async reads, so every consumer sees a
@@ -307,6 +365,73 @@ describe("setupProgress", () => {
     const p = setupProgress({ ...NOTHING_DONE, hasRoot: false, configCommand: "claude" });
     expect(p.complete).toBe(false);
     expect(p.done).toEqual([]);
+  });
+});
+
+describe("setupProgress: the Headroom step", () => {
+  const upToHeadroom = { ...NOTHING_DONE, configCommand: "claude", agentFileBody: "<!-- gavin:start -->", superpowers: SP_FOUND };
+
+  it("comes right after Superpowers", () => {
+    expect(setupProgress(upToHeadroom).next).toBe("headroom");
+  });
+
+  it("counts once the question has been put, whichever way it was answered", () => {
+    for (const headroom of [HR_ABSENT, HR_VERIFIED]) {
+      expect(setupProgress({ ...NOTHING_DONE, headroomReading: headroom, headroomAsked: true }).done).toEqual(["headroom"]);
+    }
+  });
+
+  // Verified is not an answer: it is a Headroom the human could turn on,
+  // and the step is where they are asked whether to.
+  it("does not count while nobody has been asked, installed or not", () => {
+    for (const headroom of [HR_ABSENT, HR_VERIFIED]) {
+      expect(setupProgress({ ...upToHeadroom, headroomReading: headroom }).done).not.toContain("headroom");
+    }
+  });
+
+  it("counts on its own where Headroom cannot serve the workspace: nothing to ask", () => {
+    expect(setupProgress({ ...upToHeadroom, headroomReading: HR_UNAVAILABLE }).done).toContain("headroom");
+    const ssh = workspaceHeadroomReading(HR_VERIFIED, { ssh: { host: "box" } });
+    expect(ssh).toEqual({ kind: "unavailable", reason: SSH_UNAVAILABLE });
+    expect(setupProgress({ ...upToHeadroom, headroomReading: ssh }).done).toContain("headroom");
+    expect(workspaceHeadroomReading(HR_VERIFIED, { ssh: undefined })).toBe(HR_VERIFIED);
+  });
+
+  // The setupProgress trap: a reading still in flight is not a Headroom
+  // that is missing. Read as absent, it opens the wizard on this step
+  // with an Install button for a Headroom that may well be there.
+  it("is pending, not absent, while the reading has not landed", () => {
+    const p = setupProgress({ ...upToHeadroom, headroomReading: undefined });
+    expect(p.pending).toBe(true);
+    expect(p.done).not.toContain("headroom");
+  });
+
+  it("is settled by a recorded answer even with the reading still out", () => {
+    const p = setupProgress({ ...upToHeadroom, headroomReading: undefined, headroomAsked: true });
+    expect(p.pending).toBe(false);
+    expect(p.done).toContain("headroom");
+  });
+
+  // Both of these settle: a wizard that waited on them would never open.
+  // Neither is an answer, so neither finishes the step.
+  it("settles on a failed ask and on a daemon too old to ask, without counting either", () => {
+    const failed: HeadroomReading = { kind: "error", message: "the daemon went away" };
+    const old: HeadroomReading = { kind: "blocked", reason: "Needs daemon v46" };
+    for (const headroom of [failed, old]) {
+      const p = setupProgress({ ...upToHeadroom, headroomReading: headroom });
+      expect(p.pending).toBe(false);
+      expect(p.done).not.toContain("headroom");
+      expect(p.next).toBe("headroom");
+    }
+  });
+
+  // Off is the default and a workspace set up as it always was, so an
+  // unanswered Headroom question is no reason for the Home banner to nag.
+  it("leaves a workspace configured with the question unanswered", () => {
+    const p = setupProgress({ ...ALL_DONE, headroomReading: HR_ABSENT, headroomAsked: false });
+    expect(p.configured).toBe(true);
+    expect(p.complete).toBe(false);
+    expect(p.next).toBe("headroom");
   });
 });
 

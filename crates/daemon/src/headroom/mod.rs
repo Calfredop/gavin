@@ -289,6 +289,7 @@ impl Headroom {
         let this = self.clone();
         let spawned = std::thread::Builder::new().name("headroom-install".to_string()).spawn(
             move || {
+                let before = this.detected();
                 let outcome = install::install(
                     &uv,
                     &this.inner.env,
@@ -297,11 +298,20 @@ impl Headroom {
                 );
                 // Looked for whatever the outcome: a failed prefetch
                 // still leaves a Headroom installed.
-                this.look(None);
+                let after = this.look(None);
                 this.set_install(
                     if outcome.succeeded { "succeeded" } else { "failed" },
                     &outcome.output,
                 );
+                // An update. A Headroom already serving imported the
+                // version that was there when it started, and goes on
+                // serving it -- so Settings would show the new version
+                // over a proxy running the old one. It is swapped for a
+                // fresh start instead, on the same port.
+                if outcome.succeeded && (after.path, after.version) != (before.path, before.version)
+                {
+                    this.inner.supervisor.replace();
+                }
                 this.inner.supervisor.nudge();
             },
         );
@@ -856,6 +866,100 @@ mod tests {
             std::fs::read_to_string(&calls).unwrap(),
             "tool install --python 3.13 headroom-ai[all]==0.39.1\n"
         );
+    }
+
+    /// A machine whose `uv` installs the fake Headroom, at the pin, over
+    /// whatever is in uv's bin directory.
+    ///
+    /// Into place by a rename, the way an installer writes: `cp` over the
+    /// file a process is running writes into its pages, and macOS kills
+    /// that process for it -- which would read as a replacement here.
+    fn with_uv_installing_the_pin(machine: &Machine) -> detect::Env {
+        let tools = machine.home.path().join("tools");
+        script(&tools.join("python"), "echo 'model cached'");
+        script(
+            &tools.join("uv"),
+            &format!(
+                "mkdir -p '{bin}'\n\
+                 cp '{fake}' '{bin}/.headroom.new'\n\
+                 mv '{bin}/.headroom.new' '{bin}/headroom'\n\
+                 cp '{tools}/python' '{bin}/python'",
+                bin = machine.bin().display(),
+                fake = fake::binary().display(),
+                tools = tools.display(),
+            ),
+        );
+        detect::Env { well_known_bin_dirs: vec![tools], ..machine.env() }
+    }
+
+    fn installed(daemon: &Daemon) -> HeadroomStatus {
+        daemon.headroom.install();
+        wait_for("the install to finish", || {
+            let status = daemon.headroom.status();
+            (status.install.as_ref()?.state != "running").then_some(status)
+        })
+    }
+
+    /// Settings' Update: the pin moved past what is installed. The proxy
+    /// serving imported the old version, so it is replaced -- on the
+    /// port every compressed agent carries.
+    #[test]
+    fn an_update_replaces_the_running_headroom_on_the_same_port() {
+        let machine = Machine::bare();
+        script(
+            &machine.bin().join("headroom"),
+            &format!("FAKE_HEADROOM_VERSION=0.38.0 exec '{}' \"$@\"", fake::binary().display()),
+        );
+        let env = with_uv_installing_the_pin(&machine);
+        let daemon = Daemon {
+            headroom: Headroom::open_as(&machine.state(), BuildProfile::Dev, env, None),
+            state: machine.state(),
+            profile: BuildProfile::Dev,
+        };
+        daemon.headroom.start();
+        let before = daemon.until_ready();
+        assert_eq!(before.version.as_deref(), Some("0.38.0"));
+        let first = daemon.pid().unwrap();
+
+        let done = installed(&daemon);
+        assert_eq!(done.install.unwrap().state, "succeeded");
+
+        let second = wait_for("the updated Headroom", || {
+            daemon.pid().filter(|pid| *pid != first && daemon.headroom.status().ready)
+        });
+        let after = daemon.headroom.status();
+        assert!(!alive(first), "the old version is not left serving");
+        assert!(alive(second));
+        assert_eq!(after.version.as_deref(), Some("0.39.1"));
+        assert_eq!(daemon.record().process.unwrap().version, "0.39.1");
+        assert_eq!(after.port, before.port, "every compressed agent is pointed at this port");
+        assert_eq!(after.restarts, 0, "a replacement is not a death");
+        assert_eq!(fake::launches(&daemon.workspace()).len(), 2);
+    }
+
+    /// And an install that changed nothing leaves the proxy alone: a
+    /// replacement costs every running agent a retried request.
+    #[test]
+    fn an_install_that_changes_nothing_leaves_the_running_headroom_alone() {
+        let machine = Machine::with_headroom();
+        let env = with_uv_installing_the_pin(&machine);
+        let daemon = Daemon {
+            headroom: Headroom::open_as(&machine.state(), BuildProfile::Dev, env, None),
+            state: machine.state(),
+            profile: BuildProfile::Dev,
+        };
+        daemon.headroom.start();
+        daemon.until_ready();
+        let first = daemon.pid().unwrap();
+
+        let done = installed(&daemon);
+        assert_eq!(done.install.unwrap().state, "succeeded");
+        // Longer than a replacement takes in the test above.
+        std::thread::sleep(Duration::from_millis(1500));
+
+        assert_eq!(daemon.pid(), Some(first));
+        assert!(alive(first));
+        assert_eq!(fake::launches(&daemon.workspace()).len(), 1);
     }
 
     #[test]

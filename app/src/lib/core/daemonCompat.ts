@@ -452,6 +452,25 @@ export const FEATURE_MIN_VERSION = {
   // discipline in CLAUDE.md: the entry alone is a dead gate without a
   // featureBlockedReason consumer on every surface that can produce it.
   railSchedule: 45,
+  // The daemon runs Headroom (v46): its status, Check again and Locate…,
+  // and the Install that also serves as Update. Five new request TYPES,
+  // so `min_version_for` already refuses every one of them against an
+  // older daemon and nothing can be silently dropped -- this entry is not
+  // guarding a widened payload.
+  //
+  // It earns its place for `remoteAccess`'s reason: refusing to SEND
+  // decides nothing about what to show instead. Asked of a v45 daemon,
+  // the status comes back as a wire error, and a section that drew that
+  // as "Absent" would offer an Install the daemon cannot run; one that
+  // drew nothing would read as "gavin has no Headroom" when the truth is
+  // "the daemon has not been restarted".
+  //
+  // Its consumer is the one reader, `readHeadroom` in headroomState.ts,
+  // which settles on the reason instead of asking. Every surface draws
+  // from that reading -- Settings' Headroom section, the workspace
+  // switch and the wizard's step -- so the gate reaches all three, and
+  // the wizard's step is settled rather than pending forever.
+  headroomSetup: 46,
   // Compressed sessions (`2026-09-28-headroom-design.md`). v47 is two
   // changes, and this entry is the only gate either of them has in the
   // app.

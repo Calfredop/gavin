@@ -23,6 +23,9 @@
     setWorkspaceComplexityTable,
     markGitTrackingAsked,
     trustedAgentConfigs,
+    headroomDefault,
+    setWorkspaceHeadroom,
+    markHeadroomAsked,
   } from "$lib/core/layoutState";
   import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
   import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
@@ -94,6 +97,17 @@
     sanitizeFallbackThreshold,
   } from "$lib/agents/agentFallback";
   import { superpowersLabel, type SuperpowersMark, type SuperpowersStatus } from "$lib/agents/superpowers";
+  import { ownHeadroom, resolveHeadroom } from "$lib/agents/compression";
+  import { compressionSwitchBlocked } from "$lib/agents/compressionDriver";
+  import { apiFamilyOf } from "$lib/agents/apiFamily";
+  import {
+    headroomFromSelect,
+    headroomOptions,
+    headroomSwitchView,
+    headroomToSelect,
+    workspaceHeadroomReading,
+  } from "$lib/agents/headroomSetup";
+  import { ensureHeadroomReading, headroomReading } from "$lib/agents/headroomState";
   import { UNFILED_WORKSPACE_ID } from "$lib/core/workspace";
   import HubTabsModal from "$lib/hub/HubTabsModal.svelte";
   import {
@@ -163,6 +177,31 @@
     void readSuperpowers();
   });
 
+  // --- compression --------------------------------------------------------
+  /// The workspace's Headroom switch. Its notes and its darkness are
+  /// headroomSetup.ts's: Unavailable over ssh or on a machine Headroom
+  /// cannot run on, dark on a daemon that cannot take it, and otherwise
+  /// live with whatever stands between it and a compressed agent said
+  /// underneath -- a profile with no recipe, a Headroom not installed.
+  ensureHeadroomReading();
+  const inheritedHeadroom = $derived(resolveHeadroom(undefined, $headroomDefault));
+  const headroomSwitch = $derived(
+    headroomSwitchView({
+      reading: workspaceHeadroomReading($headroomReading, ws),
+      switchBlocked: compressionSwitchBlocked($daemonCompat),
+      profileId: agent.profileId,
+      customApiFamily: apiFamilyOf($agentDefaultsStore),
+    })
+  );
+
+  /// Moving it answers the wizard's Headroom step too, as the git switch
+  /// answers the git step: a step that goes on asking a question the
+  /// human settled here, in a panel that shows the answer, asks twice.
+  async function pickHeadroom(value: string): Promise<void> {
+    await setWorkspaceHeadroom(workspaceId, headroomFromSelect(value));
+    await markHeadroomAsked(workspaceId);
+  }
+
   // Drafts exist so a watcher push cannot overwrite a field mid-type
   // (spec §5.2): a focused input keeps its draft, everything else follows
   // the store.
@@ -214,6 +253,8 @@
         "MCP config",
         "MCP format",
         "Superpowers",
+        "Headroom",
+        "compression",
       ],
     },
     { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
@@ -1071,6 +1112,39 @@
             Process skills for {profileLabel} — brainstorm before building, plan before coding,
             debug by narrowing. It is what makes gavin's plan and debug flows deep rather than
             nominal.
+          </p>
+        </div>
+
+        <div class="sp-row">
+          <span class="sp-title">Headroom</span>
+          <div class="row">
+            <label for="workspace-headroom">Compression</label>
+            <!-- The reason hangs on the wrapping span, not the select: a
+                 disabled element fires no mouseenter. -->
+            <span use:tooltip={headroomSwitch.disabled ? (headroomSwitch.notes[0] ?? "") : ""}>
+              <select
+                id="workspace-headroom"
+                value={headroomSwitch.unavailable ? "unavailable" : headroomToSelect(ownHeadroom(ws))}
+                disabled={headroomSwitch.disabled}
+                onchange={(e) => void pickHeadroom(e.currentTarget.value)}
+              >
+                {#if headroomSwitch.unavailable}
+                  <option value="unavailable">Unavailable</option>
+                {:else}
+                  {#each headroomOptions(inheritedHeadroom) as opt (opt.value)}
+                    <option value={opt.value}>{opt.label}</option>
+                  {/each}
+                {/if}
+              </select>
+            </span>
+          </div>
+          {#each headroomSwitch.notes as note (note)}
+            <p class="hint warn">{note}</p>
+          {/each}
+          <p class="hint">
+            Whether the agents gavin launches here talk to their model through Headroom, which
+            compresses what they send. Your own terminal tabs never do. Headroom itself — installing
+            it, its state, what it has saved — is in the app's Settings.
           </p>
         </div>
       {/if}

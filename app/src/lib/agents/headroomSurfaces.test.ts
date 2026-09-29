@@ -1,0 +1,94 @@
+import { describe, expect, it } from "vitest";
+import { source } from "$lib/sources";
+
+// A static pre-flight over the three Headroom surfaces. Every rule they
+// draw is headroomSetup.ts's and tested there; what no suite can mount is
+// the templates, so this reads them for the wiring those rules depend on
+// -- the one reading, the one set of actions, the Update's confirmation,
+// and the switch that answers the wizard's question.
+
+const CONTROLS = source("HeadroomControls.svelte");
+const APP_SETTINGS = source("GlobalSettingsView.svelte");
+const WORKSPACE_SETTINGS = source("SettingsHubView.svelte");
+const STEP = source("HeadroomStep.svelte");
+const STATE = source("headroomState.ts");
+
+describe("the controls Settings and the wizard share", () => {
+  it("draw everything from the section view, and every action from its list", () => {
+    expect(CONTROLS).toContain("headroomSectionView(reading)");
+    expect(CONTROLS).toContain("{#each view.actions as action");
+    expect(CONTROLS).toContain("headroomActionLabel(action, status");
+  });
+
+  it("are the same component in both places", () => {
+    expect(APP_SETTINGS).toContain("<HeadroomControls reading={$headroomReading} />");
+    expect(STEP).toContain("<HeadroomControls {reading} />");
+  });
+
+  // Update restarts the proxy every compressed agent is talking through,
+  // so it goes through the one function that asks first.
+  it("send Update through the confirmation, and nothing else past it", () => {
+    expect(CONTROLS).toContain("await updateHeadroom(status)");
+    expect(CONTROLS).not.toMatch(/backend\.installHeadroom/);
+    expect(STATE).toMatch(/if \(!\(await askConfirm\(headroomUpdateConfirm\(status\)\)\)\) return null;/);
+  });
+});
+
+// The card's third criterion, end to end: a `danger` choice reaches the
+// prompt, and the prompt then focuses the dismissing button.
+describe("the Update confirmation", () => {
+  it("is the app's own modal, never a native dialog", () => {
+    for (const text of [CONTROLS, STATE, APP_SETTINGS]) {
+      expect(text).not.toMatch(/from "@tauri-apps\/plugin-dialog"/);
+    }
+    expect(STATE).toContain('import { askConfirm } from "$lib/core/dialog"');
+  });
+
+  it("keeps focus on the dismissing button when its choice is danger", () => {
+    expect(source("AppDialog.svelte")).toContain("danger: req.danger");
+    expect(source("ConfirmPrompt.svelte")).toMatch(
+      /const target = enterIsSafe \? choiceButtons\[choices\.length - 1\] : cancelButton;/
+    );
+  });
+});
+
+describe("the app-wide Settings section", () => {
+  it("offers the default through the three rows, and names the residual", () => {
+    expect(APP_SETTINGS).toContain("headroomOptions(DEFAULT_HEADROOM)");
+    expect(APP_SETTINGS).toContain("setHeadroomDefault(headroomFromSelect(");
+    expect(APP_SETTINGS).toContain("{HEADROOM_RESIDUAL_NOTE}");
+  });
+
+  it("is live while open", () => {
+    expect(APP_SETTINGS).toContain("onMount(() => watchHeadroom())");
+  });
+});
+
+describe("the workspace switch", () => {
+  it("takes its darkness and its notes from the switch view, for this workspace", () => {
+    expect(WORKSPACE_SETTINGS).toContain("headroomSwitchView({");
+    expect(WORKSPACE_SETTINGS).toContain("workspaceHeadroomReading($headroomReading, ws)");
+    expect(WORKSPACE_SETTINGS).toContain("disabled={headroomSwitch.disabled}");
+    expect(WORKSPACE_SETTINGS).toContain('<option value="unavailable">Unavailable</option>');
+    expect(WORKSPACE_SETTINGS).toContain("{#each headroomSwitch.notes as note");
+  });
+
+  // Moving it answers the wizard's question; otherwise the step goes on
+  // asking something the human settled in a panel that shows the answer.
+  it("answers the wizard's step when it is moved", () => {
+    const pick = WORKSPACE_SETTINGS.slice(WORKSPACE_SETTINGS.indexOf("async function pickHeadroom"));
+    expect(pick).toMatch(/setWorkspaceHeadroom\(workspaceId, headroomFromSelect\(value\)\);\s*await markHeadroomAsked\(workspaceId\);/);
+  });
+});
+
+describe("the wizard's step", () => {
+  it("offers the switch only when Headroom is Verified, and marks the question put", () => {
+    expect(STEP).toContain("headroomStepOffers(reading)");
+    expect(STEP).toContain("{#if offers.switch && ws}");
+    expect(STEP).toContain("await markHeadroomAsked(workspaceId);");
+  });
+
+  it("says it is checking while the reading is out, rather than drawing a state", () => {
+    expect(STEP).toMatch(/\{#if reading === undefined\}\s*<p class="hint">Checking…<\/p>/);
+  });
+});

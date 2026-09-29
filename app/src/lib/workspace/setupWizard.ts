@@ -1,7 +1,20 @@
 import type { SuperpowersMark, SuperpowersStatus } from "$lib/agents/superpowers";
 import { superpowersDone } from "$lib/agents/superpowers";
+import {
+  headroomStepDone,
+  headroomStepSettled,
+  type HeadroomReading,
+} from "$lib/agents/headroomSetup";
 
-export type SetupStep = "agent" | "integration" | "superpowers" | "git" | "review" | "prd" | "launch";
+export type SetupStep =
+  | "agent"
+  | "integration"
+  | "superpowers"
+  | "headroom"
+  | "git"
+  | "review"
+  | "prd"
+  | "launch";
 
 export interface SetupProgress {
   done: SetupStep[];
@@ -9,7 +22,7 @@ export interface SetupProgress {
   next: SetupStep | null;
   complete: boolean;
   /// Every step a workspace can be BADLY SET UP for -- everything but
-  /// `launch` and `git`. The rest are configuration that stays
+  /// `launch`, `git`, `review` and `headroom`. The rest are configuration that stays
   /// configured; launch's evidence is a live process, so it is the only
   /// step that can un-happen, and it is optional besides (W2). A nag must
   /// read this, never `complete`: keyed off `complete`, pressing Stop on
@@ -22,7 +35,9 @@ export interface SetupProgress {
   /// force, so the only thing missing is that nobody has been ASKED --
   /// and every workspace that existed before the step did is in exactly
   /// that state. Nagging them all would be a banner about a question,
-  /// not about a problem.
+  /// not about a problem. `review` and `headroom` are out for the same
+  /// reason: compression is off by default, and off is a workspace set up
+  /// the way it always was.
   configured: boolean;
   /// True while an input the derivation needs has not been read yet.
   /// Every other field then describes only the evidence seen so far and
@@ -80,10 +95,22 @@ export interface SetupInput {
   /// legitimate, and the gate's default (on) is indistinguishable on disk
   /// from nobody having decided yet.
   requireReviewAsked: boolean;
+  /// Headroom as the local daemon reported it, for this workspace
+  /// (`workspaceHeadroomReading`), `undefined` while the ask is out.
+  /// Not the same answer as "absent", for the file bodies' reason: a
+  /// reading still in flight read as a missing Headroom opens the wizard
+  /// on a step with an Install button for something that is there.
+  headroomReading: HeadroomReading | undefined;
+  /// Whether the human has answered the compression question for this
+  /// workspace (`Workspace.headroomAsked`). Same shape as
+  /// `requireReviewAsked`: off, the default, is indistinguishable on disk
+  /// from nobody having decided.
+  headroomAsked: boolean;
 }
 
 /// Superpowers sits third (spec S2): it is agent tooling, so it belongs
-/// beside Integration, and PRD and Launch stay last. Exported because
+/// beside Integration, and PRD and Launch stay last. Headroom is agent
+/// tooling too, and follows Superpowers (the Headroom spec, "The switch"). Exported because
 /// every surface that counts steps must count THIS list -- the Home hub's
 /// banner said "of 4" as a literal and would have gone on saying it.
 ///
@@ -97,6 +124,7 @@ export const SETUP_STEPS: SetupStep[] = [
   "agent",
   "integration",
   "superpowers",
+  "headroom",
   "git",
   "review",
   "prd",
@@ -121,6 +149,9 @@ export function setupProgress(input: SetupInput): SetupProgress {
   // S6: a check that found it, the human's word, or their "not now".
   // The third route is why declining once stops the nagging.
   if (superpowersDone(input.superpowers, input.superpowersMark)) done.push("superpowers");
+  // The question was put, or there is none to put: Headroom cannot serve
+  // this workspace on this machine. Never on an unknown reading.
+  if (headroomStepDone(input.headroomReading, input.headroomAsked)) done.push("headroom");
   // A recorded answer and nothing else -- see `gitTrackingAsked`. Both
   // answers finish the step; which one they gave lives in the repo.
   if (input.gitTrackingAsked) done.push("git");
@@ -142,17 +173,24 @@ export function setupProgress(input: SetupInput): SetupProgress {
   // and waiting on one would hold the whole wizard for a round trip that
   // cannot matter.
   const superpowersSettled = Boolean(input.superpowersMark) || input.superpowers !== undefined;
+  // The Headroom reading the same way: out is pending, and a recorded
+  // answer settles it whatever the reading.
+  const headroomSettled = headroomStepSettled(input.headroomReading, input.headroomAsked);
   const pending =
-    input.agentFileBody === undefined || input.prdBody === undefined || !superpowersSettled;
-  // Three steps sit outside the nag, for two different reasons. Launch's
+    input.agentFileBody === undefined ||
+    input.prdBody === undefined ||
+    !superpowersSettled ||
+    !headroomSettled;
+  // Four steps sit outside the nag, for two different reasons. Launch's
   // evidence is a live process rather than a file or a marker, so it is
   // the one step that can un-happen, and it is optional besides (W2).
-  // Git's and Review's are both questions nobody has been asked yet, which
-  // is not the same as a workspace set up wrong -- see `configured`. What
+  // Git's, Review's and Headroom's are questions nobody has been asked
+  // yet, which is not the same as a workspace set up wrong -- see
+  // `configured`. What
   // is left is what the Home banner is allowed to read; `complete` still
   // means all of them, which is what the wizard opens on.
   const configured = ORDER.every(
-    (s) => s === "launch" || s === "git" || s === "review" || done.includes(s)
+    (s) => s === "launch" || s === "git" || s === "review" || s === "headroom" || done.includes(s)
   );
   return { done: ordered, next, complete: next === null, configured, pending };
 }

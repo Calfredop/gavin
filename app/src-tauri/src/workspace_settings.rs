@@ -75,6 +75,7 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "requireReview",
     "requireReviewAsked",
     "headroom",
+    "headroomAsked",
     "customResumeArgs",
     "actionPromptOverrides",
     // Runs in flight are not layout: a Generate or a Develop started from
@@ -332,6 +333,7 @@ mod tests {
             require_review: Some(flavour == "a"),
             headroom: Some(flavour == "a"),
             require_review_asked: flavour == "a",
+            headroom_asked: flavour == "a",
             custom_resume_args: Some(s("--resume")),
             agent_fallback: Some(vec![s("fallback")]),
             armed_agents: vec![s("armed")],

@@ -1443,7 +1443,9 @@ pub enum Request {
     StopHeadroom,
     /// Install the pinned Headroom with `uv tool install`, then fetch the
     /// compression model. Answers at once with the install marked
-    /// running; its output and outcome are read from the status.
+    /// running; its output and outcome are read from the status. An
+    /// install that changed what is installed -- Settings' Update --
+    /// replaces a Headroom already running, on the same port.
     InstallHeadroom,
     /// Every workspace's effective compression setting, as the app
     /// resolved it (the workspace's own choice, else the app-wide

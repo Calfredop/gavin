@@ -27,6 +27,14 @@ export function normalizeHeadroom(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
+/// A workspace's OWN choice, or null where it inherits: what its switch
+/// shows as selected. Not whether compression is on there -- that is
+/// `resolveHeadroom`'s, and the switch names what inheriting comes to
+/// beside it.
+export function ownHeadroom(ws: { headroom?: unknown } | null | undefined): boolean | null {
+  return normalizeHeadroom(ws?.headroom);
+}
+
 /// Whether compression is on in a workspace: its own choice, else the
 /// app-wide one, else gavin's default. The same three levels, in the same
 /// order, as `resolveRequireReview`.

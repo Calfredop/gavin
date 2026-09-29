@@ -1169,6 +1169,7 @@ mod workspaces_data_tests {
             require_review: None,
             headroom: None,
             require_review_asked: false,
+            headroom_asked: false,
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
@@ -1416,6 +1417,7 @@ mod workspace_migration_tests {
             require_review: None,
             headroom: None,
             require_review_asked: false,
+            headroom_asked: false,
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
@@ -4187,6 +4189,7 @@ mod resolve_workspaces_tests {
             require_review: None,
             headroom: None,
             require_review_asked: false,
+            headroom_asked: false,
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
@@ -5187,6 +5190,7 @@ pub fn bootstrap(app_handle: AppHandle) -> anyhow::Result<()> {
                 require_review: None,
                 headroom: None,
                 require_review_asked: false,
+                headroom_asked: false,
                 custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
@@ -5642,6 +5646,74 @@ pub async fn set_headroom_workspaces(
         .request(Request::SetHeadroomWorkspaces { workspaces })
         .await
         .map_err(|e| e.to_string())?;
+    headroom_status(resp)
+}
+
+/// Headroom on this machine, as the LOCAL daemon -- the one that has to
+/// execute it -- sees it: installed or not, at what version against the
+/// floor and the pin, running or not, on which port, and what it has
+/// saved. What Settings' Headroom section and the wizard's step draw.
+///
+/// Local only, like `set_headroom_workspaces` and for its reason: an ssh
+/// workspace is Unavailable, and its host's daemon runs no Headroom for
+/// this machine to show.
+///
+/// A new request TYPE (v46), so the lane's gate refuses it against an
+/// older daemon with both versions named. The app does not ask one: it
+/// reads `FEATURE_MIN_VERSION.headroomSetup` first and says what the
+/// section needs instead.
+#[tauri::command]
+pub async fn get_headroom_status(
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::HeadroomStatus, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::GetHeadroomStatus)
+        .await
+        .map_err(|e| e.to_string())?;
+    headroom_status(resp)
+}
+
+/// Looks for Headroom again: Settings' Check again (`located_path`
+/// absent) and Locate… (the file the human picked, remembered from then
+/// on; an empty string forgets it). Runs `headroom --version`, which is
+/// a Python start.
+#[tauri::command]
+pub async fn detect_headroom(
+    located_path: Option<String>,
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::HeadroomStatus, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::DetectHeadroom { located_path })
+        .await
+        .map_err(|e| e.to_string())?;
+    headroom_status(resp)
+}
+
+/// Installs the pinned Headroom with `uv` and fetches its compression
+/// model: Settings' Install and Update, and the wizard's Install. The
+/// daemon answers at once with the install marked running, and the
+/// caller reads its progress off the status.
+#[tauri::command]
+pub async fn install_headroom(
+    state: State<'_, CommandConnection>,
+    compat: State<'_, DaemonCompatState>,
+) -> Result<protocol::HeadroomStatus, String> {
+    let resp = state
+        .lanes(current_compat(&compat))
+        .request(Request::InstallHeadroom)
+        .await
+        .map_err(|e| e.to_string())?;
+    headroom_status(resp)
+}
+
+/// The status a Headroom request answers with -- every one answers with
+/// the status AFTER it. Each command awaits its own lane, in its own
+/// body, so the main-thread guard can see that it does.
+fn headroom_status(resp: Response) -> Result<protocol::HeadroomStatus, String> {
     match resp {
         Response::Headroom { status } => Ok(status),
         Response::Error { message } => Err(message),
@@ -6937,6 +7009,7 @@ mod main_session_tests {
             require_review: None,
             headroom: None,
             require_review_asked: false,
+            headroom_asked: false,
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
@@ -7675,6 +7748,7 @@ mod attach_target_tests {
             require_review: None,
             headroom: None,
             require_review_asked: false,
+            headroom_asked: false,
             custom_resume_args: None,
             agent_fallback: None,
             armed_agents: Vec::new(),
