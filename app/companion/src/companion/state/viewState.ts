@@ -10,14 +10,20 @@
 // elsewhere (workstation.ts).
 
 /// The surfaces a workspace opens on, in the order the strip shows them.
-export const SURFACES = ["board", "git", "files"] as const;
+export const SURFACES = ["board", "git", "files", "settings"] as const;
 export type Surface = (typeof SURFACES)[number];
 
 export const SURFACE_LABELS: Record<Surface, string> = {
   board: "Board",
   git: "Git",
   files: "Files",
+  settings: "Settings",
 };
+
+/// What the Companion shows while no workspace is open: the workspace
+/// list, the Workstation's own settings, or adding a workspace.
+export const SCREENS = ["workspaces", "settings", "add-workspace"] as const;
+export type Screen = (typeof SCREENS)[number];
 
 /// Where the Files surface is: the folder on screen, and the file open
 /// over it, if one is.
@@ -32,6 +38,9 @@ export interface ViewState {
   surface: Surface;
   /// Absent until the Files surface has been somewhere in this workspace.
   files?: FilesPlace;
+  /// With no workspace open, which screen is: absent is the workspace
+  /// list, which is also how a view a bundle before this one saved reads.
+  screen?: Exclude<Screen, "workspaces">;
 }
 
 /// The part of `Storage` this needs, so a suite can hand it a map and a
@@ -53,6 +62,14 @@ export function openWorkspace(_view: ViewState, workspaceId: string): ViewState 
 
 export function backToWorkspaces(_view: ViewState): ViewState {
   return { workspaceId: null, surface: "board" };
+}
+
+/// One of the screens that belong to the Workstation rather than to a
+/// workspace. Only from the workspace list's level: a workspace that is
+/// open is left by going back, not by jumping sideways out of it.
+export function showScreen(view: ViewState, screen: Screen): ViewState {
+  if (view.workspaceId !== null) return view;
+  return screen === "workspaces" ? backToWorkspaces(view) : { workspaceId: null, surface: "board", screen };
 }
 
 /// Switches the open workspace to another of its surfaces, keeping the
@@ -82,6 +99,14 @@ function isSurface(value: unknown): value is Surface {
   return (SURFACES as readonly unknown[]).includes(value);
 }
 
+/// The screen a stored view may come back to. Adding a workspace is not
+/// one: the folder it had got to and the question it was asking are not
+/// remembered, and landing half-way through an add nobody remembers
+/// starting is worse than landing on the list.
+function restorableScreen(value: unknown): ViewState["screen"] | null {
+  return value === "settings" ? value : null;
+}
+
 /// A stored Files place, or null for anything that is not one.
 function readPlace(value: unknown): FilesPlace | null {
   if (typeof value !== "object" || value === null) return null;
@@ -103,7 +128,7 @@ export function loadView(storage: ViewStorage | null, workstationId: string): Vi
     return initialView();
   }
   if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return initialView();
-  const { workspaceId, surface, files } = stored as Record<string, unknown>;
+  const { workspaceId, surface, files, screen } = stored as Record<string, unknown>;
   if (workspaceId !== null && typeof workspaceId !== "string") return initialView();
   const view: ViewState = {
     workspaceId: workspaceId ?? null,
@@ -111,7 +136,11 @@ export function loadView(storage: ViewStorage | null, workstationId: string): Vi
     // the workspace is still the right one to open.
     surface: isSurface(surface) ? surface : "board",
   };
-  const place = view.workspaceId === null ? null : readPlace(files);
+  if (view.workspaceId === null) {
+    const restored = restorableScreen(screen);
+    return restored ? { ...view, screen: restored } : view;
+  }
+  const place = readPlace(files);
   return place ? { ...view, files: place } : view;
 }
 

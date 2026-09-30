@@ -6,6 +6,16 @@
 // they read text, because drawing a surface needs a page.
 import { describe, expect, it } from "vitest";
 import { codeOf, companionSource, companionSources } from "$companion/testing/companionSources";
+import layoutStateSource from "../../../../src/lib/core/layoutState.ts?raw";
+
+/// One top-level function's text in a module's source, from its
+/// declaration to the brace that closes it at the start of a line.
+function functionBody(source: string, name: string): string {
+  const start = new RegExp(`^(export )?(async )?function ${name}\\(`, "m").exec(source);
+  if (!start) throw new Error(`no function ${name} in the source`);
+  const end = source.indexOf("\n}\n", start.index);
+  return source.slice(start.index, end === -1 ? undefined : end);
+}
 
 /// What `import { ... } from "<module>"` names in one source.
 function importedFrom(text: string, module: string): string[] {
@@ -21,18 +31,66 @@ function importedFrom(text: string, module: string): string[] {
 }
 
 describe("what the bundle takes from the desktop's layout state", () => {
-  // Every ACTION that module exports ends in a save of the desk's pages
-  // and tabs. The stores are what the desktop's components read, and the
-  // two handlers only record what the Workstation said.
-  const ALLOWED = ["layoutState", "attentionStatusById", "handleSessionStatusChanged"];
+  // What the desktop's components read, and what only records what the
+  // Workstation said: the stores, the status handler, the loaders.
+  const STORES_AND_HANDLERS = [
+    "layoutState",
+    "attentionStatusById",
+    "handleSessionStatusChanged",
+    "loadAgentProfiles",
+    "reloadAppSettings",
+    "agentProfilesStore",
+    "agentModelDefaultsStore",
+    "agentDefaultsStore",
+    "terminalFontSizeDefault",
+    "autoCommitDefault",
+    "requireReviewDefault",
+    "gitTrackingDefault",
+    "daemonCompat",
+    "trustedAgentConfigs",
+  ];
+  // Most of that module's ACTIONS end in a save of the desk's pages and
+  // tabs. These do not (ADR 0006): each writes Workstation data -- a
+  // workspace's settings through `set_workspace_settings`, its agent
+  // through its config.toml, or an app-wide setting through its own
+  // command -- and the guard below reads each one's body to hold it there.
+  const SETTINGS_WRITERS = [
+    "renameWorkspace",
+    "setWorkspaceColor",
+    "setWorkspaceFontSize",
+    "setWorkspaceAutoCommit",
+    "setWorkspaceRequireReview",
+    "setWorkspaceComplexityTable",
+    "setWorkspacePause",
+    "setWorkspaceFallback",
+    "setWorkspaceFlag",
+    "setAgentField",
+    "setTerminalFontSizeDefault",
+    "setAutoCommitDefault",
+    "setRequireReviewDefault",
+    "setGitTrackingDefault",
+    "setAgentModelDefault",
+    "setAgentDefaults",
+  ];
 
-  it("is its stores and its handlers, never its actions", () => {
+  it("is its stores, its handlers and its settings writers, never a layout action", () => {
     const taken = Object.entries(companionSources()).flatMap(([name, text]) =>
       importedFrom(codeOf(text), "$lib/core/layoutState")
-        .filter((imported) => !ALLOWED.includes(imported))
+        .filter((imported) => !STORES_AND_HANDLERS.includes(imported) && !SETTINGS_WRITERS.includes(imported))
         .map((imported) => `${name}: ${imported}`)
     );
     expect(taken).toEqual([]);
+  });
+
+  it("has settings writers that never reach the desk's layout save", () => {
+    // One level down as well: the helpers the writers share.
+    const reached = [...SETTINGS_WRITERS, "saveWorkspaceSettings", "stampConfigTrust"].flatMap((name) => {
+      const body = functionBody(layoutStateSource, name);
+      return /\bpersistWorkspaces\s*\(/.test(body) ? [name] : [];
+    });
+    expect(reached).toEqual([]);
+    // And the read finds one where there is one: pinning a row is layout.
+    expect(functionBody(layoutStateSource, "setWorkspacePinned")).toMatch(/\bpersistWorkspaces\s*\(/);
   });
 
   it("is never the whole module", () => {
@@ -42,10 +100,13 @@ describe("what the bundle takes from the desktop's layout state", () => {
     expect(whole).toEqual([]);
   });
 
-  it("is read by this guard in the file that takes the most", () => {
+  it("is read by this guard in the files that take the most", () => {
     expect(importedFrom(companionSource("companion/state/workstation.ts"), "$lib/core/layoutState").sort()).toEqual(
-      ["handleSessionStatusChanged", "layoutState"]
+      ["handleSessionStatusChanged", "layoutState", "loadAgentProfiles", "reloadAppSettings"]
     );
+    expect(
+      importedFrom(codeOf(companionSource("companion/surfaces/PhoneWorkspaceSettings.svelte")), "$lib/core/layoutState")
+    ).toContain("setWorkspaceColor");
   });
 });
 

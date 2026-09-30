@@ -12,14 +12,18 @@
     openWorkspace,
     placeFiles,
     returnToHub,
+    showScreen,
     showSurface,
     showWorkspaces,
     view,
   } from "$companion/state/workstation";
+  import PhoneAddWorkspace from "$companion/surfaces/PhoneAddWorkspace.svelte";
+  import PhoneAppSettings from "$companion/surfaces/PhoneAppSettings.svelte";
   import PhoneBoard from "$companion/surfaces/PhoneBoard.svelte";
   import PhoneFiles from "$companion/surfaces/PhoneFiles.svelte";
   import PhoneGit from "$companion/surfaces/PhoneGit.svelte";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
+  import PhoneWorkspaceSettings from "$companion/surfaces/PhoneWorkspaceSettings.svelte";
   import SurfaceTabs from "$companion/surfaces/SurfaceTabs.svelte";
   import WorkspaceList from "$companion/surfaces/WorkspaceList.svelte";
 
@@ -90,19 +94,28 @@
             <PhoneGit workspace={open} />
           {:else if $view.surface === "files"}
             <PhoneFiles workspace={open} place={$view.files} onPlace={placeFiles} />
+          {:else if $view.surface === "settings"}
+            <PhoneWorkspaceSettings workspace={open} />
           {:else}
             <PhoneBoard workspace={open} landing={$landing} />
           {/if}
         {/key}
+      {:else if $view.screen === "settings"}
+        <PhoneHeader title="Settings" back="Workspaces" onBack={showWorkspaces} tag={ready.workstation.demo ? "demo" : null} />
+        <PhoneAppSettings />
+      {:else if $view.screen === "add-workspace"}
+        <PhoneHeader title="Add a workspace" back="Workspaces" onBack={showWorkspaces} tag={ready.workstation.demo ? "demo" : null} />
+        <PhoneAddWorkspace />
       {:else}
         <PhoneHeader
           title={ready.workstation.name || "Workstation"}
           back={ready.canReturnToHub ? "Workstations" : null}
           onBack={ready.canReturnToHub ? () => void returnToHub() : null}
           tag={ready.workstation.demo ? "demo" : null}
+          onSettings={() => showScreen("settings")}
         />
         <div class="scroll">
-          <WorkspaceList onOpen={openWorkspace} />
+          <WorkspaceList onOpen={openWorkspace} onAdd={() => showScreen("add-workspace")} />
         </div>
       {/if}
 

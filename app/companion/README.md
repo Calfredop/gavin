@@ -123,8 +123,11 @@ modules agree about which workspace is open, and written nowhere else.
 `core.ts` refuses them before the channel. `seam/layoutSaving.test.ts` holds the
 refusal; `state/workstation.test.ts` drives a whole visit and reads the wire;
 `seam/bundleSources.test.ts` keeps the bundle from importing `layoutState`'s
-actions at all. That list stands in for the Remote role command table until
-companion-12 lands it in the protocol crate — reconcile the two then.
+layout actions at all — only its stores, and the settings writers that end in
+`set_workspace_settings`, a workspace's config.toml or an app-wide setting's
+own command, which the same suite reads to hold them there. That list stands
+in for the Remote role command table until companion-12 lands it in the
+protocol crate — reconcile the two then.
 
 **It never runs a rail.** This is the one that bites. The desktop's scheduler
 is not only `startScheduler`: every fetch, refresh and push of a workspace's
@@ -182,9 +185,11 @@ demo lacks, that is where it shows.
 
 ## What is here, and what is not
 
-The workspace list, and three surfaces for an open workspace, switched by the
-strip under the header (`SurfaceTabs`); the view remembers which, and where
-Files was, on the Device.
+The workspace list, with the Workstation's settings behind the gear in its
+header and **Add a workspace…** under it; and four surfaces for an open
+workspace, switched by the strip under the header (`SurfaceTabs`). The view
+remembers which, where Files was, and a settings screen left open, on the
+Device — never a half-finished add.
 
 **Board**, to read. It draws the desktop's own `BoardCard` with no workspace
 id, which is the card the desk draws in previews — no Run, no session jump, no
@@ -208,26 +213,66 @@ with `canOpenExternally={false}`. What the desk hands to another application
 (a picture, a binary) the phone says it cannot show. No create, rename or
 trash yet.
 
+**Settings** (`PhoneWorkspaceSettings.svelte`), per workspace: its name,
+colour and folder; terminal size; auto commit and review; its agent's model
+and effort; complexity, pause, fallback, unattended recovery, notifications.
+Every write is ticket 04's `set_workspace_settings`, through the desktop's own
+setters — or, for the agent, its folder's config.toml, as the desk writes it —
+and never the layout (ADR 0006). **The Workstation's settings**
+(`PhoneAppSettings.svelte`): theme, terminal, cards, git tracking, each agent's
+default model and effort, the custom agent, complexity, fallback, pause, the
+memory wall. Both are the desk's stores, writers and option lists
+(`phoneSettings.ts` has what the phone decides differently); what the desk's
+two panels have beyond them is the desk's alone — Updates, the daemon, remote
+access, Devices, Headroom and TypeSafe; the sidebar and hub-tab rows, which
+are its layout; switching an agent, which moves files and re-runs setup; and
+picking a folder. A write that fails is said on the screen (`saveSetting`),
+not in the desk's whole-window overlay.
+
+Every app-wide setter on the host announces `app-settings-synced`, and every
+desk window and every Device re-reads its settings on another writer's change
+(`loadAppSettings`). A Device's writes are announced under the origin
+`companion` (`forwarding::FORWARDED_ORIGIN`, from a header `dispatch` sets):
+under the desk window's own label, the one that dispatched the call would
+drop it as its own echo and never show what the phone did.
+
+**Adding a workspace** (`PhoneAddWorkspace.svelte` over
+`phoneAddWorkspace.ts`): the Workstation's disk a folder at a time from its
+home folder (`home_dir`), through the Files surface's `list_directory` with the
+top of the disk as its root, dotfiles left out. A folder a workspace already
+works in offers to open it; any other is added named for itself, after the
+desk's own question — set gavin up there (and track its files in git?), or add
+it as it is. The add is `add_workspace`: settings alone, an id the Workstation
+mints, no pages — what the desk's + makes. Every desk window hears it as
+`workspaces-synced` and arms the watch on its folder
+(`watchRootedWorkspaces` now watches each workspace's root once, not once per
+window).
+
 Where a desktop component was wrong for a thumb it became responsive where it
 lives, under media queries a window with a mouse never matches: `GitFileRow`
 shows its actions without hover and at a fingertip's size, `GitCommitBox` and
 `CodeMirrorView` keep text at 16px so iOS does not zoom into a field,
 `FileEditor`'s mode switch is thumb-sized, and at a phone's width
 `GitDiffUnified` wraps long lines and `MarkdownToolbar` scrolls in one row.
+`ColourPicker`'s swatches and `FallbackChainEditor`'s controls are
+fingertip-sized, and `ComplexityTable` stacks each level's controls at a
+phone's width.
 
 The desktop's Git actions name every op with `crypto.randomUUID`, which a
 page has only in a secure context; `remote/randomUUID.ts` gives the page one
 where the shell's origin (iOS's `gavin-bundle://`) may not count as secure.
 
-`seam/gitActions.test.ts` and `seam/fileActions.test.ts` hold each action's
-channel traffic, and hold everything the two surfaces send against the
+`seam/gitActions.test.ts`, `seam/fileActions.test.ts`,
+`seam/settingsActions.test.ts` and `seam/addWorkspace.test.ts` hold each
+action's channel traffic, and hold everything those surfaces send against the
 daemon's own Remote role table (`testing/remoteTable.ts` reads
-`protocol::remote_command_table`).
+`protocol::remote_command_table`). Seam 1 holds the same line from the
+daemon's side: `device_wire.rs` has the workspace-settings commands and
+`add_workspace` reach the desk, and the layout saves refused before it.
 
 How this bundle reaches a phone — built and signed by the desktop build,
 served by the Workstation, verified and cached by the shell — is the shell's
 README's ("Served bundles").
 
-Acting on cards, sessions and terminals, rails, and settings are the cards
-that follow (companion-26 to -28 and -30), each extending the Demo
-Workstation to match.
+Acting on cards, sessions and terminals, and rails are the cards that follow
+(companion-26 to -28), each extending the Demo Workstation to match.

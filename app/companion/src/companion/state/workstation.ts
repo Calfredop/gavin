@@ -18,10 +18,12 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { fetchBoard } from "$lib/board/kanbanState";
 import * as backend from "$lib/core/backend";
 import { gavinTrees, initGavinListeners, refreshGavinTree } from "$lib/core/gavinState";
-import { handleSessionStatusChanged, layoutState } from "$lib/core/layoutState";
+import { handleSessionStatusChanged, layoutState, loadAgentProfiles, reloadAppSettings } from "$lib/core/layoutState";
 import { parseSessionStatus } from "$lib/core/notifications";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import { themeState } from "$lib/ui/themeState.svelte";
+import { applyInitTracking, nameForRoot } from "$lib/workspace/workspaceOpen";
+import { adoptSettingsRecord, type WorkspaceSettingsRecord } from "$lib/workspace/workspaceSettings";
 import type { Capabilities, Landing } from "$companion/channel/messages";
 import type { ChannelPort } from "$companion/channel/port";
 import { channel, connectChannel, disconnectChannel } from "$companion/remote/connection";
@@ -33,8 +35,10 @@ import {
   placeFiles as placeFilesIn,
   reconcileView,
   saveView,
+  showScreen as showScreenIn,
   showSurface as showSurfaceIn,
   type FilesPlace,
+  type Screen,
   type Surface,
   type ViewState,
   type ViewStorage,
@@ -101,6 +105,13 @@ export function showSurface(surface: Surface): void {
   show(showSurfaceIn(current, surface));
 }
 
+/// One of the Workstation's own screens, from the workspace list: its
+/// settings, or adding a workspace -- or the list itself again.
+export function showScreen(screen: Screen): void {
+  landingStore.set(null);
+  show(showScreenIn(get(viewStore), screen));
+}
+
 /// Where the Files surface has got to, remembered with the rest of the
 /// view.
 export function placeFiles(place: FilesPlace): void {
@@ -122,6 +133,104 @@ export function land(where: Landing): void {
 /// Leaves this Workstation for the Workstations hub.
 export async function returnToHub(): Promise<void> {
   await channel()?.returnToHub();
+}
+
+// ---- Settings ----------------------------------------------------------
+
+const saveProblemStore = writable<string | null>(null);
+
+/// Why the last setting the human changed was not saved, or null.
+export const saveProblem: Readable<string | null> = { subscribe: saveProblemStore.subscribe };
+
+/// Whether a settings screen has been opened on this connection. Until
+/// one has, the app-wide settings are nobody's to keep current, and a
+/// change at the desk costs the phone no reads.
+let settingsShown = false;
+let profilesRead = false;
+
+/// What the settings screens draw: every app-wide setting, read fresh each
+/// time one opens, and the agent profile table once a connection -- its
+/// model catalogue can cost the desk a subprocess to answer. Through the
+/// desktop's own loaders, into the stores its settings panels read.
+export async function loadSettings(): Promise<void> {
+  settingsShown = true;
+  const reads = [reloadAppSettings()];
+  if (!profilesRead) {
+    profilesRead = true;
+    reads.push(loadAgentProfiles());
+  }
+  await Promise.all(reads);
+}
+
+/// Runs one of the desktop's settings writers and says what went wrong.
+///
+/// Those writers do not throw: a failure goes into the desk's error state,
+/// which at the desk is the overlay over the whole window. A phone draws
+/// no such overlay, so the failure is taken out of that state -- which is
+/// put back -- and shown beside the settings instead. The few writers that
+/// do throw (the pause cycle, the launch wall) are caught the same way.
+export async function saveSetting(write: () => Promise<unknown>): Promise<void> {
+  saveProblemStore.set(null);
+  try {
+    await write();
+  } catch (e) {
+    saveProblemStore.set(e instanceof Error ? e.message : String(e));
+    return;
+  }
+  const after = get(layoutState);
+  if (after.status === "error") {
+    saveProblemStore.set(after.errorMessage);
+    layoutState.update((s) => ({ ...s, status: "ready", errorMessage: "" }));
+  }
+}
+
+export function dismissSaveProblem(): void {
+  saveProblemStore.set(null);
+}
+
+/// How a folder becomes a workspace: set up for gavin first, with the git
+/// question answered, or added as it is.
+export interface FolderSetup {
+  trackInGit: boolean;
+}
+
+/// Adds a workspace on `folder`, named for it as the desk names one it
+/// opens (`nameForRoot`), and opens it.
+///
+/// With `setup`, gavin is scaffolded there first -- before the workspace
+/// exists, as the desk's own "Open workspace…" does (workspaceOpen.ts), so
+/// the watch each desk window arms for the new root sees the skeleton in
+/// its first push. The git question is answered with it, and recorded as
+/// asked, so the desk's wizard does not put it again.
+///
+/// Rejects with the Workstation's words, for the screen to show.
+export async function addWorkspace(folder: string, setup: FolderSetup | null): Promise<void> {
+  const name = nameForRoot(folder);
+  if (setup) {
+    await backend.initGavinRoot(folder, name);
+    await applyInitTracking(folder, setup.trackInGit);
+  }
+  const added = await backend.addWorkspace({
+    name,
+    rootPath: folder,
+    ...(setup ? { gitTrackingAsked: true } : {}),
+  });
+  // The host announces it as `workspaces-synced` as well. Read here too,
+  // so the new workspace is in hand before it is opened, whichever of the
+  // two lands first.
+  adoptWorkspaces(await backend.getWorkspacesState());
+  openWorkspace(added.id);
+}
+
+/// Another writer's change to one workspace's settings -- the desk, or
+/// this phone's own echo, which is the host's copy and so is taken too.
+/// Only settings move; the desk's layout of it is not the phone's.
+function adoptSettings(record: WorkspaceSettingsRecord): void {
+  const before = get(layoutState).workspaces.find((w) => w.id === record.id);
+  layoutState.update((s) => ({ ...s, workspaces: adoptSettingsRecord(s.workspaces, record) }));
+  const after = get(layoutState).workspaces.find((w) => w.id === record.id);
+  // A folder bound or moved at the desk is a board and a tree to read.
+  if (after && after.rootPath !== before?.rootPath) loadCards([after]);
 }
 
 /// A workspace with a folder has cards; one without has terminals only.
@@ -203,6 +312,9 @@ export async function connectWorkstation(
   const disconnect = (): void => {
     for (const stop of stops.splice(0)) stop();
     remember = null;
+    settingsShown = false;
+    profilesRead = false;
+    saveProblemStore.set(null);
     disconnectChannel();
   };
 
@@ -219,6 +331,20 @@ export async function connectWorkstation(
     stops.push(
       await listen<{ origin: string; data: WorkspacesData }>("workspaces-synced", (event) => {
         adoptWorkspaces(event.payload.data);
+      })
+    );
+    stops.push(
+      await listen<{ origin: string; record: WorkspaceSettingsRecord }>("workspace-settings-synced", (event) => {
+        adoptSettings(event.payload.record);
+      })
+    );
+    // Every app-wide setting read again, as the desk does: the event names
+    // none of them. The theme always -- every screen is drawn in it -- and
+    // the rest only once a settings screen has drawn them.
+    stops.push(
+      await listen<{ origin: string }>("app-settings-synced", () => {
+        if (settingsShown) void reloadAppSettings();
+        else void themeState.reload();
       })
     );
     stops.push(await initGavinListeners());
