@@ -8,3 +8,5 @@
 
 # Staged by stage-sidecars.mjs for bundle.externalBin; built, never committed.
 /binaries/
+# Staged by stage-companion.mjs for build.rs to embed; built and signed, never committed.
+/companion/

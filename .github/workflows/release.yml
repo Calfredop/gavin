@@ -117,6 +117,35 @@ jobs:
           fi
           echo "update key pinned (${#pubkey} chars)"
 
+      # The Companion bundle's publisher key (ADR 0005): a store build of
+      # the Companion runs only a bundle signed by the key the shell pins,
+      # so a release signed by any other key -- or none -- would be a
+      # green build whose UI every phone refuses. The seed is the
+      # secret; its public half is derived here and compared with the
+      # pinned one. Until the key is made and pinned (docs/RELEASING.md,
+      # "The Companion bundle key"), the pin is null and this gate fails,
+      # which is the point: a release cannot ship a bundle nobody can run.
+      - name: The Companion bundle key is the pinned one
+        env:
+          GAVIN_BUNDLE_SIGNING_KEY: ${{ secrets.GAVIN_BUNDLE_SIGNING_KEY }}
+        run: |
+          pinned=$(node -e "const s=require('fs').readFileSync('app/companion-shell/src/shell/bundle/publisherKey.ts','utf8'); const m=s.match(/PUBLISHER_KEY[^=]*=\\s*\"([0-9a-f]{64})\"/); console.log(m ? m[1] : '')")
+          if [ -z "$pinned" ]; then
+            echo "app/companion-shell/src/shell/bundle/publisherKey.ts pins no publisher key" >&2
+            echo "run node app/src-tauri/companion-key.mjs generate, keep the seed as GAVIN_BUNDLE_SIGNING_KEY and pin the public key" >&2
+            exit 1
+          fi
+          if [ -z "$GAVIN_BUNDLE_SIGNING_KEY" ]; then
+            echo "missing secret: GAVIN_BUNDLE_SIGNING_KEY" >&2
+            exit 1
+          fi
+          derived=$(node app/src-tauri/companion-key.mjs public "$GAVIN_BUNDLE_SIGNING_KEY")
+          if [ "$derived" != "$pinned" ]; then
+            echo "GAVIN_BUNDLE_SIGNING_KEY is not the key publisherKey.ts pins (${derived:0:12}… vs ${pinned:0:12}…)" >&2
+            exit 1
+          fi
+          echo "bundle key pinned (${pinned:0:12}…)"
+
       # Named one at a time so the failure says WHICH one is missing. A
       # secret is never echoed -- only whether it is empty.
       - name: Every signing secret is present
@@ -231,6 +260,7 @@ jobs:
           APPLE_API_KEY_PATH: ${{ runner.temp }}/notary/AuthKey.p8
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GAVIN_BUNDLE_SIGNING_KEY: ${{ secrets.GAVIN_BUNDLE_SIGNING_KEY }}
           CI: true
         run: >
           npx tauri build
@@ -323,6 +353,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GAVIN_BUNDLE_SIGNING_KEY: ${{ secrets.GAVIN_BUNDLE_SIGNING_KEY }}
           CI: true
         run: >
           npx tauri build
@@ -453,6 +484,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GAVIN_BUNDLE_SIGNING_KEY: ${{ secrets.GAVIN_BUNDLE_SIGNING_KEY }}
           CI: true
         run: >
           npx tauri build

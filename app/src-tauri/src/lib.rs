@@ -4,6 +4,7 @@ mod agent_tokens;
 mod agent_usage;
 mod command_lane;
 mod commands;
+mod companion_bundle;
 mod config;
 mod confirm_gate;
 mod daemon;

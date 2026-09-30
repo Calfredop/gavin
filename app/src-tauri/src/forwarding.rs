@@ -7,7 +7,9 @@
 //! `ForwardResult` back. Events the host emits to its webview are offered
 //! on the same connection as `OfferDesktopEvent`, so subscribed Devices
 //! hear them. Attention asks (`ForwardAttention`, v55) are answered from
-//! the snapshot the webview keeps filled via `set_companion_attention`.
+//! the snapshot the webview keeps filled via `set_companion_attention`,
+//! and bundle asks (`ForwardBundle`, v56) from the signed Companion
+//! bundle this build embeds (`companion_bundle`).
 //!
 //! One thread owns the connection: offers and results both travel through
 //! it, so an Ok reply is never mistaken for a ForwardCommand. Concurrent
@@ -200,6 +202,7 @@ fn run_loop<R: Runtime>(
 ) -> anyhow::Result<()> {
     let stream = connect_forward(&socket)?;
     handshake_forward(&stream, &token)?;
+    eprintln!("gavin forwarding: connected; {}", crate::companion_bundle::describe());
 
     let reader_stream = stream.try_clone()?;
     let writer_stream = stream;
@@ -256,6 +259,17 @@ fn run_loop<R: Runtime>(
                     &writer,
                     &mut reader,
                     &Request::AttentionResult { call_id, items },
+                )?;
+            }
+            Ok(Some(Response::ForwardBundle { call_id, version: _, offset, length })) => {
+                // The Companion bundle this build carries (ADR 0005): the
+                // manifest and the slice the daemon asked for, which it
+                // already cut to the wire's chunk cap.
+                let (manifest, offset, data) = crate::companion_bundle::answer(offset, length);
+                write_and_ack(
+                    &writer,
+                    &mut reader,
+                    &Request::BundleResult { call_id, manifest, offset, data },
                 )?;
             }
             Ok(Some(Response::Ok)) => {
