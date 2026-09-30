@@ -7,31 +7,16 @@
 // Every answer is typed as what `backend.ts` says that command returns
 // (`Answer<...>`), so a desktop change to a wire shape is a type error
 // here rather than a demo that quietly renders nothing.
+//
+// A board's and a card's commands have a table of their own
+// (cardCommands.ts), gathered in with the rest below.
 import { agentLastLine } from "$lib/agents/turnVerdict";
-import type * as backend from "$lib/core/backend";
 import type { GavinTree } from "$lib/core/gavin";
-import type { DemoState } from "$companion/demo/sampleData";
+import { DemoFailure, type Answer, type DemoCommand, type DemoContext } from "$companion/demo/answer";
+import { CARD_COMMANDS } from "$companion/demo/cardCommands";
 import { end, launch, repaint, screenText, type } from "$companion/demo/sessions";
 
-/// A command the demo understood and would not, or could not, carry out.
-/// Its message is what the bundle's caller is told.
-export class DemoFailure extends Error {}
-
-export interface DemoContext {
-  state: DemoState;
-  /// What the desktop host does when it emits: every listener for the
-  /// event hears it.
-  emit(event: string, payload: unknown): void;
-}
-
-export type DemoCommand = (args: Record<string, unknown>, demo: DemoContext) => unknown;
-
-/// What the desktop's backend module promises for one of its functions.
-type Answer<K extends keyof typeof backend> = (typeof backend)[K] extends (
-  ...args: never[]
-) => Promise<infer R>
-  ? R
-  : never;
+export { DemoFailure, type DemoCommand, type DemoContext } from "$companion/demo/answer";
 
 function workspaceId(args: Record<string, unknown>, demo: DemoContext): string {
   const id = args.workspaceId;
@@ -97,9 +82,20 @@ const WORK: Record<string, DemoCommand> = {
   // No demo session sits in a repository the demo could report on.
   get_git_baselines: (args): Answer<"getGitBaselines"> =>
     (Array.isArray(args.cwds) ? args.cwds : []).map(() => null),
-  list_queued_inputs: (): Answer<"listQueuedInputs"> => [],
+  list_queued_inputs: (_args, demo): Answer<"listQueuedInputs"> => demo.state.queuedInputs,
 
-  get_board: (args, demo): Answer<"getBoard"> => demo.state.boards[workspaceId(args, demo)],
+  // Each binding's launch command stays on the Workstation: the board has
+  // carried none since v43, and `card_session` is what answers it.
+  get_board: (args, demo): Answer<"getBoard"> => {
+    const board = demo.state.boards[workspaceId(args, demo)];
+    return {
+      ...board,
+      cardSessions: board.cardSessions.map((cs) => {
+        const { command: _command, ...binding } = cs as typeof cs & { command?: unknown };
+        return binding;
+      }),
+    };
+  },
   get_orchestration: (args, demo): Answer<"getOrchestration"> =>
     demo.state.orchestrations[workspaceId(args, demo)],
 
@@ -132,7 +128,11 @@ const WORK: Record<string, DemoCommand> = {
   session_screen: (args, demo): Answer<"sessionScreen"> =>
     screenText(demo.state.terminals[sessionId(args, demo)]),
   create_session: (args, demo): Answer<"createSession"> =>
-    launch(demo, { cwd: optionalString(args.cwd), command: optionalString(args.command) }),
+    launch(demo, {
+      cwd: optionalString(args.cwd),
+      command: optionalString(args.command),
+      workspaceRoot: optionalString(args.workspaceRoot),
+    }),
   kill_session: (args, demo): Answer<"killSession"> => {
     end(demo, sessionId(args, demo));
   },
@@ -258,4 +258,4 @@ const TABLES: Record<string, DemoCommand> = {
   watchman_status: (): Answer<"watchmanStatus"> => null,
 };
 
-export const COMMANDS: Record<string, DemoCommand> = { ...WORK, ...TABLES };
+export const COMMANDS: Record<string, DemoCommand> = { ...WORK, ...TABLES, ...CARD_COMMANDS };

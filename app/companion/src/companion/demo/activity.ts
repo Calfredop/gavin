@@ -8,7 +8,8 @@
 //
 // No clock in here. The page that hosts a demo advances it on a timer of
 // its own; a suite advances it by hand.
-import type { PlanFileInfo } from "$lib/core/gavin";
+import { parseChecklist } from "$lib/cards/planChecklist";
+import { CARD_COMMANDS, cardNamed, putBack } from "$companion/demo/cardCommands";
 import type { DemoContext } from "$companion/demo/commands";
 import { DEMO, sampleState } from "$companion/demo/sampleData";
 import { restore, setStatus, type as typeInto, write } from "$companion/demo/sessions";
@@ -16,17 +17,19 @@ import { NOTES_PERMISSION, notesPermission, STORE_ANSWERED_AT_DESK } from "$comp
 
 export type DemoStep = (demo: DemoContext) => void;
 
-function changeCard(
-  demo: DemoContext,
-  workspaceId: string,
-  fileName: string,
-  change: (plan: PlanFileInfo) => void
-): void {
-  const tree = demo.state.trees[workspaceId];
-  const plan = tree?.contexts.flatMap((ctx) => ctx.plans).find((p) => p.fileName === fileName);
-  if (!tree || !plan) return;
-  change(plan);
-  demo.emit("gavin-tree-changed", [workspaceId, tree]);
+/// An agent ticks the next item of a card's checklist, through the same
+/// command a desk's agent writes it with.
+function tickNext(demo: DemoContext, fileName: string): void {
+  const path = cardNamed(demo, fileName);
+  const next = path ? parseChecklist(demo.state.files[path]).find((item) => !item.checked) : undefined;
+  if (!path || !next) return;
+  CARD_COMMANDS.set_checklist_item({ path, lineIndex: next.lineIndex, expectedText: next.rawText, checked: true }, demo);
+}
+
+/// ...and moves a card to a column.
+function moveCard(demo: DemoContext, fileName: string, status: string): void {
+  const path = cardNamed(demo, fileName);
+  if (path) CARD_COMMANDS.set_plan_frontmatter_field({ path, key: "status", value: status }, demo);
 }
 
 /// Answers a session's menu as the human at the desk would: by typing
@@ -40,6 +43,8 @@ function answerAtDesk(demo: DemoContext, sessionId: string, option: number): voi
 
 /// The sessions whose screens this loop moves on, and so puts back.
 const SCRIPTED = ["s-atlas-store", "s-notes-sync"];
+/// ...and the cards.
+const SCRIPTED_CARDS = ["token-refresh.md", "openapi-accounts.md"];
 
 // Ordered so that an agent is waiting on a menu for most of the loop:
 // the quick replies are what a phone is picked up to try, and a reviewer
@@ -54,33 +59,25 @@ export const ACTIVITY: DemoStep[] = [
     setStatus(demo, "s-notes-sync", "waiting_for_input");
   },
 
-  (demo) =>
-    changeCard(demo, DEMO.atlas, "token-refresh.md", (plan) => {
-      plan.checklistDone += 1;
-    }),
+  (demo) => tickNext(demo, "token-refresh.md"),
 
   // A reviewed card is finished. Done is a folder as well as a status:
   // the daemon files a finished card under `plans/done/`.
-  (demo) =>
-    changeCard(demo, DEMO.atlas, "openapi-accounts.md", (plan) => {
-      plan.status = "Done";
-      plan.path = plan.path.replace("/plans/", "/plans/done/");
-    }),
+  (demo) => moveCard(demo, "openapi-accounts.md", "Done"),
 
   // The human answered the session-store question at the desk.
   (demo) => answerAtDesk(demo, "s-atlas-store", STORE_ANSWERED_AT_DESK),
 
   (demo) => {
     answerAtDesk(demo, "s-notes-sync", 1);
-    changeCard(demo, DEMO.atlas, "token-refresh.md", (plan) => {
-      plan.checklistDone += 1;
-    });
+    tickNext(demo, "token-refresh.md");
   },
 
   // And round again: the machine as it was found, said as a desk would
   // say it. The two scripted agents are put back to asking, to be
-  // answered again from the phone or at the desk; a session the human
-  // opened or ended on the demo stays as they left it.
+  // answered again from the phone or at the desk, and the two scripted
+  // cards where they started; a session the human opened or ended, and a
+  // card they moved, filed or answered, stays as they left it.
   (demo) => {
     const fresh = sampleState();
     for (const id of SCRIPTED) {
@@ -88,9 +85,6 @@ export const ACTIVITY: DemoStep[] = [
       restore(demo, id, fresh.terminals[id]);
       setStatus(demo, id, fresh.sessions.find((s) => s.id === id)!.status);
     }
-    demo.state.trees = fresh.trees;
-    for (const [workspaceId, tree] of Object.entries(demo.state.trees)) {
-      demo.emit("gavin-tree-changed", [workspaceId, tree]);
-    }
+    putBack(demo, fresh.files, SCRIPTED_CARDS);
   },
 ];

@@ -292,8 +292,25 @@ function baseline(id: string, cwd: string, status: string): SessionBaseline {
   return { id, cwd, status, restored: false, interrupted: false, orphan: null, failureReason: null };
 }
 
+/// A command as its terminal's first line shows it: a card's run carries
+/// its whole prompt, which a screen echoing it verbatim would spend
+/// itself on.
+function commandLine(command: string): string {
+  const first = command.split("\n")[0];
+  return first.length > 48 || first !== command ? `${first.slice(0, 48).trimEnd()}…` : first;
+}
+
 /// What `create_session` starts: the agent a command names, else a shell.
-export function launch(demo: DemoContext, options: { cwd: string | null; command: string | null }): string {
+///
+/// Every session the demo starts is a Device's -- a phone is the demo's
+/// only client -- so the desk places it as a Device-started session is
+/// placed (companion-16): as a tab on its workspace's Agents page, the
+/// page a card's run lands on, and says so. A session under no
+/// workspace's folder is left running where nobody at the desk placed it.
+export function launch(
+  demo: DemoContext,
+  options: { cwd: string | null; command: string | null; workspaceRoot?: string | null }
+): string {
   demo.state.launched += 1;
   const id = `s-demo-${demo.state.launched}`;
   const cwd = options.cwd || DEMO.home;
@@ -302,7 +319,7 @@ export function launch(demo: DemoContext, options: { cwd: string | null; command
     ? {
         output:
           rows(
-            `✻ ${options.command}`,
+            `✻ ${commandLine(options.command)}`,
             "",
             ...said("Ready when you are. This is the Demo Workstation's agent: it acts out a script and changes nothing."),
             ""
@@ -312,7 +329,42 @@ export function launch(demo: DemoContext, options: { cwd: string | null; command
     : { output: prompt(folderLabel(cwd)), program: { kind: "shell", cwd, line: "" } };
   demo.emit("cwd-changed", [id, cwd]);
   demo.emit("session-status-changed", [id, "idle"]);
+  placeAtDesk(demo, id, options.workspaceRoot || options.cwd);
   return id;
+}
+
+/// The workspace a Device-started session belongs in: the one whose root
+/// holds where it started, the deepest when roots nest.
+function workspaceHolding(demo: DemoContext, where: string | null | undefined): string | null {
+  if (!where) return null;
+  const holding = demo.state.workspaces.workspaces
+    .filter((w) => w.rootPath && (where === w.rootPath || where.startsWith(`${w.rootPath}/`)))
+    .sort((a, b) => (b.rootPath?.length ?? 0) - (a.rootPath?.length ?? 0));
+  return holding[0]?.id ?? null;
+}
+
+/// The tab the desk opens for a session a Device started, on the
+/// workspace's Agents page -- made for it, without taking the desk to it,
+/// when the workspace has none.
+function placeAtDesk(demo: DemoContext, sessionId: string, where: string | null | undefined): void {
+  const workspaceId = workspaceHolding(demo, where);
+  const ws = demo.state.workspaces.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return;
+  const agents = ws.pages.find((p) => p.name === "Agents");
+  let data = demo.state.workspaces;
+  if (agents) {
+    const anchor = layout.allSessionIds(agents.layout)[0];
+    data = workspace.updatePageLayout(data, ws.id, agents.id, layout.addTab(agents.layout, anchor, sessionId));
+  } else {
+    data = workspace.createPage(data, ws.id, `p-demo-agents-${ws.id}`, "Agents", {
+      type: "leaf",
+      tabs: [sessionId],
+      activeTabIndex: 0,
+    });
+    if (ws.activePageId) data = workspace.switchPage(data, ws.id, ws.activePageId);
+  }
+  demo.state.workspaces = data;
+  demo.emit("workspaces-synced", { origin: "main", data });
 }
 
 /// What `kill_session` does: the session ends, then the desk closes its

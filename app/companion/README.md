@@ -150,7 +150,15 @@ in its place and fills the same stores through the desktop's own loaders.
 sample data — the thing App Review explores, and the suites' only fixture.
 
 - `sampleData.ts` — the machine: two projects and a Scratchpad, typed against
-  the desktop's own wire types.
+  the desktop's own wire types. Its cards are files (`sampleCards.ts`), and
+  its trees are what a scan of them reads (`cardFiles.ts`, the daemon's own
+  parse and writers in `gavin.rs`, cut down).
+- `cardCommands.ts` — a board's and a card's commands over those files: a
+  write edits one, then the trees are read again and pushed as
+  `gavin-tree-changed`, and a watched file is said to have changed, exactly
+  as a Workstation's watchers do. Done files a card under `done/`,
+  archiving under `archive/`, nested tasks travel with their plan, and a
+  binding or rail step that named the old path follows it.
 - `commands.ts` — one answer per desktop command name, each typed as what
   `backend.ts` says that command returns. A command with no entry is answered
   with an error and recorded in `demo.unanswered()`.
@@ -160,9 +168,11 @@ sample data — the thing App Review explores, and the suites' only fixture.
   a screen with history behind it and a script for what is typed into it: an
   agent waits in its input box (bracketed paste on), asks in a numbered menu
   and takes the digit, or works until Esc; the Scratchpad's shell knows `ls`,
-  `cd`, `seq`, `git status`. `create_session` opens a shell or an agent,
-  `kill_session` ends one and closes its tab the way the desk would, with
-  `session-exited` then `workspaces-synced`. The demo's turn verdict is a rule
+  `cd`, `seq`, `git status`. `create_session` opens a shell or an agent and
+  places it as a tab on its workspace's Agents page, as the desk places a
+  Device's session (companion-16); `kill_session` ends one and closes its
+  tab the way the desk would, with `session-exited` then
+  `workspaces-synced`. The demo's turn verdict is a rule
   over its own screens shaped as TypeSafe's answer, so the desktop's parser
   and policy read it.
 - `workstation.ts` — the endpoint. Refuses what the Remote role is refused,
