@@ -20,8 +20,8 @@ import {
 } from "$lib/core/settings";
 
 const PROFILES: AgentProfileInfo[] = [
-  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArgs: "", headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", sessionIdDiscovery: "", resumeArgs: "--resume", usageProbe: "anthropic-oauth" },
-  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArgs: "", headlessArgs: "exec --sandbox workspace-write --ask-for-approval never --", modelFlag: "--model", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", sessionIdDiscovery: "", resumeArgs: "", usageProbe: "codex-rollout" },
+  { id: "claude-code", label: "Claude Code", instructionsFile: "CLAUDE.md", command: "claude", mcpSupported: true, mcpConfigFile: ".mcp.json", promptArgs: "", headlessArgs: "-p --allowedTools \"Bash(git *)\" --", modelFlag: "--model", models: ["fable", "opus", "sonnet"], effortFlag: "--effort", efforts: ["low", "medium", "high", "xhigh", "max"], failurePatterns: ["API Error:"], failureCauses: [{ pattern: "/login", cause: "auth" }], sessionIdArgs: "--session-id", sessionIdDiscovery: "", resumeArgs: "--resume", usageProbe: "anthropic-oauth" },
+  { id: "codex", label: "Codex CLI", instructionsFile: "AGENTS.md", command: "codex", mcpSupported: true, mcpConfigFile: ".codex/config.toml", promptArgs: "", headlessArgs: "exec --sandbox workspace-write --ask-for-approval never --", modelFlag: "--model", models: [], effortFlag: "-c model_reasoning_effort=", efforts: ["minimal", "low", "medium", "high", "xhigh"], failurePatterns: [], failureCauses: [], sessionIdArgs: "", sessionIdDiscovery: "", resumeArgs: "", usageProbe: "codex-rollout" },
   { id: "custom", label: "Custom…", instructionsFile: "", command: "", mcpSupported: false, mcpConfigFile: "", promptArgs: null, headlessArgs: "", modelFlag: "", models: [], failurePatterns: [], failureCauses: [], sessionIdArgs: "", sessionIdDiscovery: "", resumeArgs: "", usageProbe: null },
 ];
 
@@ -211,6 +211,8 @@ describe("resolveAgentConfig", () => {
       promptArgs: "",
       model: "",
       modelFlag: "--model",
+      effort: "",
+      effortFlag: "-c model_reasoning_effort=",
       launchCommand: "codex --x",
       failurePatterns: [],
       failureCauses: [],
@@ -231,7 +233,7 @@ describe("resolveAgentConfig", () => {
       profileId: "claude-code", label: "Claude Code", file: "CLAUDE.md", command: "claude",
       mcpSupported: true, mcpConfigFile: ".mcp.json",
       headlessArgs: '-p --allowedTools "Bash(git *)" --', promptArgs: "",
-      model: "", modelFlag: "--model", launchCommand: "claude",
+      model: "", modelFlag: "--model", effort: "", effortFlag: "--effort", launchCommand: "claude",
       failurePatterns: ["API Error:"],
       failureCauses: [{ pattern: "/login", cause: "auth" }],
       sessionIdArgs: "--session-id", sessionIdDiscovery: "", resumeArgs: "--resume",
@@ -396,6 +398,64 @@ describe("resolveAgentConfig", () => {
     expect(r.modelFlag).toBe("--model");
   });
 
+  it("resolves effort by model's layers: the workspace's own, else the app-wide one", () => {
+    const own = resolveAgentConfig(
+      { profile: "claude-code", file: null, command: null, model: "opus", effort: "high" },
+      PROFILES,
+      {},
+      undefined,
+      {},
+      { "claude-code": "low" }
+    );
+    expect(own.effort).toBe("high");
+    // Model first, then effort -- the order `claude --help` lists them.
+    expect(own.launchCommand).toBe("claude --model opus --effort high");
+    const inherited = resolveAgentConfig(
+      { profile: "claude-code", file: null, command: null },
+      PROFILES,
+      {},
+      undefined,
+      {},
+      { "claude-code": "max", codex: "minimal" }
+    );
+    expect(inherited.effort).toBe("max");
+    expect(inherited.launchCommand).toBe("claude --effort max");
+  });
+
+  it("attaches the level to a flag that ends in =", () => {
+    const r = resolveAgentConfig(
+      { profile: "codex", file: null, command: null, effort: "xhigh" },
+      PROFILES,
+      {}
+    );
+    expect(r.launchCommand).toBe("codex -c model_reasoning_effort=xhigh");
+  });
+
+  it("gives custom an effort only through a flag somebody named", () => {
+    const none = resolveAgentConfig(
+      { profile: "custom", file: null, command: "my-agent", effort: "high" },
+      PROFILES,
+      {}
+    );
+    expect(none.effortFlag).toBe("");
+    expect(none.launchCommand).toBe("my-agent");
+    const app = resolveAgentConfig(
+      { profile: "custom", file: null, command: "my-agent", effort: "high" },
+      PROFILES,
+      {},
+      { command: "", modelFlag: "", effortFlag: "--think" }
+    );
+    expect(app.launchCommand).toBe("my-agent --think high");
+    // The workspace's own flag wins over the app-wide one.
+    const own = resolveAgentConfig(
+      { profile: "custom", file: null, command: "my-agent", effort: "high", effortFlag: "--reason=" },
+      PROFILES,
+      {},
+      { command: "", modelFlag: "", effortFlag: "--think" }
+    );
+    expect(own.launchCommand).toBe("my-agent --reason=high");
+  });
+
   it("lets a workspace flag override the profile table's, on any profile", () => {
     const r = resolveAgentConfig(
       { profile: "claude-code", file: null, command: null, modelFlag: "--pick", model: "opus" },
@@ -424,6 +484,8 @@ describe("resolveAgentConfig", () => {
       // verified way to put a model on this command, so every model
       // control for it stays hidden rather than guessing a flag.
       modelFlag: "",
+      effort: "",
+      effortFlag: "",
       launchCommand: "my-agent",
       failurePatterns: [],
       failureCauses: [],

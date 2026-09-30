@@ -153,7 +153,7 @@ describe("the bundle answer", () => {
   });
 
   it("refuses what it cannot read, in words", () => {
-    expect(() => readBundleAnswer({ type: "Unsupported", request_type: "GetCompanionBundle", min_version: 56 })).toThrow(/too old/);
+    expect(() => readBundleAnswer({ type: "Unsupported", request_type: "GetCompanionBundle", min_version: 57 })).toThrow(/too old/);
     expect(() => readBundleAnswer({ type: "Error", message: "boom" })).toThrow(/boom/);
     expect(() => readBundleAnswer({ type: "CompanionBundle", version: 1, state: "warming-up" })).toThrow(BundleError);
     expect(() => readBundleAnswer("no")).toThrow(BundleError);

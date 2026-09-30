@@ -22,8 +22,8 @@
   import ComplexityTable from "$lib/cards/ComplexityTable.svelte";
   import FallbackChainEditor from "$lib/workspace/FallbackChainEditor.svelte";
   import { sanitizeFallbackThreshold } from "$lib/agents/agentFallback";
-  import type { Complexity, ComplexityAgent } from "$lib/cards/complexity";
-  import { modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
+  import { withAgentEffort, type Complexity, type ComplexityAgent } from "$lib/cards/complexity";
+  import { effortOptions, modelOptions, CUSTOM_MODEL } from "$lib/agents/agentModel";
   import { API_FAMILIES, apiFamilyOf, withApiFamily, type ApiFamily } from "$lib/agents/apiFamily";
   import HeadroomControls from "$lib/agents/HeadroomControls.svelte";
   import { DEFAULT_HEADROOM } from "$lib/agents/compression";
@@ -241,18 +241,57 @@
     void setAgentModelDefault(profileId, value);
   }
 
-  /// The custom agent's two fields, saved on blur rather than per
+  /// The custom agent's text fields, saved on blur rather than per
   /// keystroke: a half-typed command written through would be launched
   /// by anything that started an agent mid-edit.
-  function commitCustomAgent(patch: { customCommand?: string; customModelFlag?: string }): void {
+  function commitCustomAgent(patch: {
+    customCommand?: string;
+    customModelFlag?: string;
+    customEffortFlag?: string;
+  }): void {
     const next = { ...$agentDefaultsStore, ...patch };
     if (
       next.customCommand === $agentDefaultsStore.customCommand &&
-      next.customModelFlag === $agentDefaultsStore.customModelFlag
+      next.customModelFlag === $agentDefaultsStore.customModelFlag &&
+      (next.customEffortFlag ?? "") === ($agentDefaultsStore.customEffortFlag ?? "")
     ) {
       return;
     }
     void setAgentDefaults(next);
+  }
+
+  // --- default effort, per profile ----------------------------------------
+  //
+  // The model rows' machinery again, over `agentDefaults.agentEfforts`:
+  // a picker of the CLI's levels, and a box for a level it does not list.
+  /// Only profiles gavin knows how to put an effort on.
+  const effortProfiles = $derived($agentProfilesStore.filter((p) => p.effortFlag));
+  let effortCustomOpen = $state<Record<string, boolean>>({});
+  let effortDrafts = $state<Record<string, string>>({});
+
+  function storedEffort(profileId: string): string {
+    return $agentDefaultsStore.agentEfforts?.[profileId] ?? "";
+  }
+
+  function effortIsCustom(profile: { id: string; efforts?: string[] }): boolean {
+    const value = storedEffort(profile.id);
+    return effortCustomOpen[profile.id] || (value !== "" && !(profile.efforts ?? []).includes(value));
+  }
+
+  function pickEffort(profileId: string, value: string): void {
+    if (value === CUSTOM_MODEL) {
+      effortCustomOpen = { ...effortCustomOpen, [profileId]: true };
+      effortDrafts = { ...effortDrafts, [profileId]: storedEffort(profileId) };
+      return;
+    }
+    effortCustomOpen = { ...effortCustomOpen, [profileId]: false };
+    void setAgentDefaults(withAgentEffort($agentDefaultsStore, profileId, value));
+  }
+
+  function commitCustomEffort(profileId: string): void {
+    const value = (effortDrafts[profileId] ?? storedEffort(profileId)).trim();
+    if (value === storedEffort(profileId)) return;
+    void setAgentDefaults(withAgentEffort($agentDefaultsStore, profileId, value));
   }
 
   /// The custom agent's API family: what lets Headroom compress it. A
@@ -685,10 +724,21 @@
       id: "git",
       keywords: ["Git", "Track gavin's files", "tracking", "gitignore", "initialize"],
     },
-    { id: "agent-defaults", keywords: ["Agent defaults", "model", "Claude Code", "Codex"] },
+    {
+      id: "agent-defaults",
+      keywords: ["Agent defaults", "model", "effort", "reasoning", "thinking", "Claude Code", "Codex"],
+    },
     {
       id: "custom-agent",
-      keywords: ["Custom agent", "Command", "Model flag", "API family", "Headroom", "compression"],
+      keywords: [
+        "Custom agent",
+        "Command",
+        "Model flag",
+        "Effort flag",
+        "API family",
+        "Headroom",
+        "compression",
+      ],
     },
     {
       id: "headroom",
@@ -717,7 +767,7 @@
         "prompt overrides",
       ],
     },
-    { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model"] },
+    { id: "complexity", keywords: ["Complexity", "difficulty", "agent", "model", "effort"] },
     {
       id: "fallback-agent",
       keywords: ["Fallback agent", "fallback chain", "usage limit", "quota", "rate limit", "arm"],
@@ -1051,6 +1101,41 @@
           aliases — for the rest, type the model name your CLI expects.
         </p>
       {/if}
+      {#if effortProfiles.length > 0}
+        <h3 class="sub">Effort</h3>
+        {#each effortProfiles as profile (profile.id)}
+          <div class="row">
+            <span>{profile.label}</span>
+            <select
+              value={effortIsCustom(profile) ? CUSTOM_MODEL : storedEffort(profile.id)}
+              onchange={(e) => pickEffort(profile.id, e.currentTarget.value)}
+            >
+              {#each effortOptions({ effortFlag: profile.effortFlag ?? "", efforts: profile.efforts ?? [] }, "") as opt (opt.value)}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </select>
+            {#if effortIsCustom(profile)}
+              <input
+                class="custom"
+                spellcheck="false"
+                placeholder="effort"
+                value={effortDrafts[profile.id] ?? storedEffort(profile.id)}
+                oninput={(e) => (effortDrafts = { ...effortDrafts, [profile.id]: e.currentTarget.value })}
+                onblur={() => commitCustomEffort(profile.id)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+              />
+            {/if}
+          </div>
+        {/each}
+        <p class="hint">
+          How hard each agent thinks, for any workspace that sets no effort of its own — the
+          fallback chain launches each agent at this too. Higher levels are slower and spend more of
+          the subscription. The levels are the ones each CLI documents; Custom… takes one it adds
+          later. Gemini, Cursor and opencode take no effort flag gavin can pass.
+        </p>
+      {/if}
     </section>
 
     <section hidden={!settingsFilter.visible("custom-agent") || selectedSection !== "custom-agent"}>
@@ -1082,6 +1167,19 @@
         />
       </div>
       <div class="row">
+        <span>Effort flag</span>
+        <input
+          class="custom"
+          spellcheck="false"
+          placeholder="--effort"
+          value={$agentDefaultsStore.customEffortFlag ?? ""}
+          onchange={(e) => commitCustomAgent({ customEffortFlag: e.currentTarget.value.trim() })}
+          onkeydown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+        />
+      </div>
+      <div class="row">
         <label for="custom-api-family">API family</label>
         <select
           id="custom-api-family"
@@ -1101,8 +1199,9 @@
         The agent behind the <strong>Custom…</strong> profile — your own CLI, launched as written.
         Any workspace on that profile that names no command of its own uses this one. The model flag
         is how gavin puts a model on it: without one it has no way to, so every model control for a
-        custom agent stays dark rather than guessing a flag. A workspace can override both on its
-        own Settings tab.
+        custom agent stays dark rather than guessing a flag. The effort flag does the same for how
+        hard it thinks; end it with <code>=</code> when the level goes straight after it
+        (<code>--think=high</code>). A workspace can override all three on its own Settings tab.
       </p>
       <p class="hint">
         The API family is the API your agent talks to, and it is how a workspace with compression
@@ -1168,8 +1267,8 @@
       <p class="hint">
         A card can say how hard its work is, and each level can run a different agent — so a rename
         need not spend the model a gnarly refactor needs. A level left alone runs whatever agent the
-        workspace runs; a model on its own keeps that agent and only changes the model. Every
-        workspace can override any level on its own Settings tab.
+        workspace runs; a model or an effort on its own keeps that agent and changes only that.
+        Every workspace can override any level on its own Settings tab.
       </p>
       <ComplexityTable
         profiles={$agentProfilesStore}

@@ -1538,7 +1538,7 @@ enum ForwardOutcome {
     Done { value: Option<serde_json::Value>, error: Option<String> },
     /// The desktop's answer to a `ForwardAttention`.
     Attention { items: Vec<protocol::AttentionItem> },
-    /// The desktop's answer to a `ForwardBundle` (v56).
+    /// The desktop's answer to a `ForwardBundle` (v57).
     Bundle { manifest: Option<protocol::BundleManifest>, offset: u64, data: String },
     DesktopGone,
 }
@@ -6176,7 +6176,7 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // Attention (v55): a Device's ask, or the desktop's answer.
         | Request::GetAttention { .. }
         | Request::AttentionResult { .. }
-        // The served bundle (v56): a Device's ask, or the desktop's answer.
+        // The served bundle (v57): a Device's ask, or the desktop's answer.
         | Request::GetCompanionBundle { .. }
         | Request::BundleResult { .. }
         | Request::Unknown => false,
@@ -6796,7 +6796,7 @@ fn serve_connection(
             continue;
         }
 
-        // The served bundle (v56): a Device asks for the manifest and a
+        // The served bundle (v57): a Device asks for the manifest and a
         // slice of the archive; the desktop answers on the forwarding
         // connection with BundleResult.
         if let Request::GetCompanionBundle { version, offset, length } = req {

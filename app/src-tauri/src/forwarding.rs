@@ -8,7 +8,7 @@
 //! on the same connection as `OfferDesktopEvent`, so subscribed Devices
 //! hear them. Attention asks (`ForwardAttention`, v55) are answered from
 //! the snapshot the webview keeps filled via `set_companion_attention`,
-//! and bundle asks (`ForwardBundle`, v56) from the signed Companion
+//! and bundle asks (`ForwardBundle`, v57) from the signed Companion
 //! bundle this build embeds (`companion_bundle`).
 //!
 //! One thread owns the connection: offers and results both travel through

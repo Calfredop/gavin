@@ -45,7 +45,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
 ///
-/// v56 is the served Companion bundle (`companion-23`, ADR 0005): the
+/// v57 is the served Companion bundle (`companion-23`, ADR 0005): the
 /// Workstation serves the UI the Device runs. It adds `GetCompanionBundle`
 /// (a Device asks for the manifest and the archive, a chunk at a time)
 /// and `BundleResult` (the desktop answers a `ForwardBundle` push) -- two
@@ -53,9 +53,19 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// payload carries its own `COMPANION_BUNDLE_API_VERSION` and only ever
 /// grows by optional fields; nothing in the desktop UI sends it, so no
 /// `FEATURE_MIN_VERSION` entry is owed. Built at 56 on `companion/phone`
-/// while `main` and `companion/wire` were giving 56..58 to agent effort,
-/// Relay status, refused Devices and presence; the merge renumbers it,
-/// as the Device wire's five were renumbered before.
+/// and moved to 57 when `main`'s agent effort took 56, as the Device
+/// wire's five were renumbered before.
+///
+/// v56 is agent effort (`2026-09-30-agent-effort-design.md`): how hard an
+/// agent thinks, set wherever its model is. `AgentConfig` gains `effort`
+/// and `effort_flag` (the root config's `[agent]` keys of those names),
+/// `PlanFileInfo` gains `effort` (a card's `effort:` line), and
+/// `SetRootConfigField` / `SetPlanFrontmatterField` accept the new keys.
+/// Not one new Request variant, so `min_version_for` is blind to all of
+/// it; the gate is the app's `FEATURE_MIN_VERSION.agentEffort`, and it
+/// covers the read as well as the write -- a v55 daemon refuses the keys
+/// loudly but also never parses them, so a card's `effort:` reads back
+/// as absent and the run launches at the agent's default.
 ///
 /// v55 is the attention request (`companion-14`, ADR 0005): the one
 /// deliberately stable API between the Companion shell and a Workstation.
@@ -707,7 +717,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 56;
+pub const PROTOCOL_VERSION: u32 = 57;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -2175,7 +2185,7 @@ pub fn min_version_for(req: &Request) -> u32 {
         // the desktop's forwarding connection answers. Two new TYPES. The
         // payload's own `COMPANION_BUNDLE_API_VERSION` is the compat gate
         // for fields, so no FEATURE_MIN_VERSION entry is owed.
-        Request::GetCompanionBundle { .. } | Request::BundleResult { .. } => 56,
+        Request::GetCompanionBundle { .. } | Request::BundleResult { .. } => 57,
 
         Request::Shutdown => 12,
 
@@ -4110,6 +4120,14 @@ pub struct PlanFileInfo {
     /// `serde(default)` so an older daemon's tree still parses.
     #[serde(default)]
     pub model: Option<String>,
+    /// The card's `effort:` line -- how hard its agent thinks (v56). Raw
+    /// for `model`'s reason: the levels belong to whichever CLI runs the
+    /// card. Part of the same override as `agent` and `model`, so a card
+    /// naming only an effort runs the workspace's agent at it.
+    ///
+    /// `serde(default)` so an older daemon's tree still parses.
+    #[serde(default)]
+    pub effort: Option<String>,
     /// The card's `Decision:` / `Human test:` checklist lines, parsed
     /// (v42) -- everything on this card that is waiting on a person.
     ///
@@ -4288,6 +4306,18 @@ pub struct AgentConfig {
     /// `model` does above.
     #[serde(default)]
     pub model_flag: Option<String>,
+    /// How hard this workspace's agent thinks -- `high`, `max` -- composed
+    /// onto the command after the model as `<effort_flag> <effort>`.
+    /// Absent means "inherit the app-wide default for this profile",
+    /// exactly as `model` does (v56).
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// The argv that carries `effort`, for the `custom` profile whose
+    /// flag the table cannot know -- `model_flag`'s twin. A value ending
+    /// in `=` takes the level attached. Absent means the profile table's
+    /// own flag (v56).
+    #[serde(default)]
+    pub effort_flag: Option<String>,
 }
 
 /// A folder that contains a `.gavin-root/` (kind Root, only ever directly
@@ -5160,7 +5190,7 @@ mod tests {
         assert_eq!(v["call_id"], 3);
     }
 
-    /// The served bundle is gated at 56; the answer grows by optional
+    /// The served bundle is gated at 57; the answer grows by optional
     /// fields, and a manifest crosses in the camelCase the shell reads.
     #[test]
     fn get_companion_bundle_is_gated_at_56_and_grows_by_optional_fields() {
@@ -5169,7 +5199,7 @@ mod tests {
             offset: 1024,
             length: 512,
         };
-        assert_eq!(min_version_for(&req), 56);
+        assert_eq!(min_version_for(&req), 57);
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["type"], "GetCompanionBundle");
         assert_eq!(v["version"], COMPANION_BUNDLE_API_VERSION);
@@ -5187,7 +5217,7 @@ mod tests {
             offset: 0,
             data: "YQ==".into(),
         };
-        assert_eq!(min_version_for(&result), 56);
+        assert_eq!(min_version_for(&result), 57);
         let v = serde_json::to_value(&result).unwrap();
         assert_eq!(v["manifest"]["gavinVersion"], "0.1.0");
         assert_eq!(v["manifest"]["signer"], manifest.signer);
@@ -6327,6 +6357,7 @@ mod tests {
                     complexity: Some(Complexity::Moderate),
                     agent: Some("codex".to_string()),
                     model: Some("gpt-5.1".to_string()),
+                    effort: Some("xhigh".to_string()),
                     human_items: Some(vec![HumanItem {
                         kind: HumanItemKind::Decision,
                         text: "Which serializer?".to_string(),
@@ -6382,6 +6413,7 @@ mod tests {
                         "complexity": "moderate",
                         "agent": "codex",
                         "model": "gpt-5.1",
+                        "effort": "xhigh",
                         "humanItems": [{
                             "kind": "decision",
                             "text": "Which serializer?",
@@ -6527,6 +6559,8 @@ mod tests {
                 mcp_format: None,
                 model: Some("sonnet".to_string()),
                 model_flag: None,
+                effort: Some("high".to_string()),
+                effort_flag: None,
             }),
             outside: false,
             prd: Some("docs/PRD.md".to_string()),
@@ -6544,7 +6578,9 @@ mod tests {
                 "mcpFile": null,
                 "mcpFormat": null,
                 "model": "sonnet",
-                "modelFlag": null
+                "modelFlag": null,
+                "effort": "high",
+                "effortFlag": null
             })
         );
     }
@@ -6793,9 +6829,12 @@ mod tests {
         // between the shell and a Workstation (ADR 0005). Two new TYPES.
         // The Device wire built these five at 44..48 on its own branch
         // and moved them past main's 44..50 when the two met.
-        // v56: GetCompanionBundle + BundleResult -- the Workstation serves
+        // v56: agent effort -- `AgentConfig.effort`/`effort_flag`,
+        // `PlanFileInfo.effort` and the keys that write them. Widened
+        // payloads and no new TYPE.
+        // v57: GetCompanionBundle + BundleResult -- the Workstation serves
         // the UI the Device runs (ADR 0005). Two new TYPES.
-        assert_eq!(PROTOCOL_VERSION, 56);
+        assert_eq!(PROTOCOL_VERSION, 57);
     }
 
     #[test]
@@ -7478,7 +7517,7 @@ mod tests {
         // GetAttention + AttentionResult -- the attention request.
         expected.insert(55, 2);
         // GetCompanionBundle + BundleResult -- the served bundle.
-        expected.insert(56, 2);
+        expected.insert(57, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(

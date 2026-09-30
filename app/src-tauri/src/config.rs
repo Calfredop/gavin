@@ -693,8 +693,8 @@ impl Default for LaunchConfig {
 /// nobody wanted to make. An empty `model` in turn means "that profile's
 /// own default model".
 ///
-/// A level with BOTH empty is not stored at all: the map's absence is
-/// what "inherit" means, at both levels.
+/// A level with every field empty is not stored at all: the map's absence
+/// is what "inherit" means, at both levels.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ComplexityAgent {
@@ -702,6 +702,12 @@ pub struct ComplexityAgent {
     pub profile: String,
     #[serde(default)]
     pub model: String,
+    /// How hard this level's agent thinks -- `high`, `max`. Empty means
+    /// the effort the agent would otherwise launch with. Skipped when
+    /// empty, so a table that never set one is written as it was and an
+    /// older build reading it back sees nothing new.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub effort: String,
 }
 
 /// The app-wide half of "which agent executes this card": the `custom`
@@ -732,6 +738,19 @@ pub struct AgentDefaultsConfig {
     /// guessing a flag -- the same posture the Rust profile table takes.
     #[serde(default)]
     pub custom_model_flag: String,
+    /// The argv that carries an effort level into that command, e.g.
+    /// `--effort`, or `--think=` for one that takes it attached. Empty
+    /// hides every effort control for `custom`, exactly as an empty
+    /// `custom_model_flag` hides the model ones.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub custom_effort_flag: String,
+    /// The app-wide default effort per profile id, beside `AppConfig::
+    /// agent_models`' default model -- keyed by profile for the same
+    /// reason (`max` is noise to an agent that has no such level). A
+    /// workspace's own `[agent] effort` wins over it. Here rather than a
+    /// new `persist_workspaces` positional, like `agent_fallback`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_efforts: HashMap<String, String>,
     /// The API the custom agent speaks, which is what lets Headroom
     /// compress it: `anthropic`, `openai` (OpenAI-compatible), or empty
     /// for none -- the shipped state, and no recipe. Sent to the daemon
@@ -1317,6 +1336,48 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load(dir.path()).unwrap().agent_defaults.custom_api_family, "");
+    }
+
+    /// Every effort field round-trips, and a config written before any of
+    /// them existed -- a complexity row with only a profile and a model --
+    /// reads back as no effort anywhere. Empty is written as no key, so a
+    /// config that never chose an effort is byte-for-byte what it was.
+    #[test]
+    fn agent_efforts_roundtrip_and_default_to_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.agent_defaults.custom_effort_flag = "--think=".to_string();
+        config.agent_defaults.agent_efforts.insert("claude-code".to_string(), "high".to_string());
+        config.agent_defaults.complexity.insert(
+            "intricate".to_string(),
+            ComplexityAgent { profile: String::new(), model: "opus".to_string(), effort: "max".to_string() },
+        );
+        save(dir.path(), &config).unwrap();
+        let loaded = load(dir.path()).unwrap().agent_defaults;
+        assert_eq!(loaded.custom_effort_flag, "--think=");
+        assert_eq!(loaded.agent_efforts.get("claude-code").map(String::as_str), Some("high"));
+        assert_eq!(loaded.complexity["intricate"].effort, "max");
+
+        config.agent_defaults = AgentDefaultsConfig::default();
+        config.agent_defaults.complexity.insert(
+            "simple".to_string(),
+            ComplexityAgent { profile: String::new(), model: "haiku".to_string(), effort: String::new() },
+        );
+        save(dir.path(), &config).unwrap();
+        let written = std::fs::read_to_string(config_path(dir.path())).unwrap();
+        for key in ["customEffortFlag", "agentEfforts", "effort"] {
+            assert!(!written.contains(key), "{key} written while empty: {written}");
+        }
+
+        std::fs::write(
+            config_path(dir.path()),
+            r#"{"workspaces":[],"agent_defaults":{"customCommand":"","customModelFlag":"","complexity":{"complex":{"profile":"codex","model":"gpt-5.1"}}}}"#,
+        )
+        .unwrap();
+        let old = load(dir.path()).unwrap().agent_defaults;
+        assert_eq!(old.complexity["complex"].effort, "");
+        assert!(old.agent_efforts.is_empty());
+        assert_eq!(old.custom_effort_flag, "");
     }
 
     #[test]
