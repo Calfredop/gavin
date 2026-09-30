@@ -175,4 +175,30 @@
     opacity: 0.4;
     cursor: default;
   }
+  /* A fingertip, on the Companion (companion-30): thumb-sized controls,
+     and 16px text in the fields so iOS does not zoom into one. A window
+     with a mouse never matches. */
+  @media (pointer: coarse) {
+    .check {
+      min-height: 44px;
+      font-size: 0.875rem;
+    }
+    .check input {
+      width: 20px;
+      height: 20px;
+    }
+    select,
+    .pct {
+      min-height: 44px;
+      font-size: 16px;
+    }
+    .pct {
+      width: 4em;
+    }
+    button.ghost {
+      min-height: 44px;
+      padding: 0 8px;
+      font-size: 0.875rem;
+    }
+  }
 </style>
