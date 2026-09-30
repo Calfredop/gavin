@@ -65,9 +65,10 @@ shell older than its bundle costs a button, never the page.
 shell wants the bundle to land, when it opened it for an inbox item — the
 item's workspace and its target, a session or a card (`readLanding`). The
 shell hands it over in the first `capabilities` answer and never again.
-The bundle opens that workspace's board on the card the item names, or on
-the card whose agent is the session it names (`landingCard`), and outlines
-it until the human goes somewhere else.
+The bundle opens the terminal of the session the item names, where the
+workspace still holds it; otherwise that workspace's board on the card the
+item names, or on the card whose agent is the session it names
+(`landingCard`), outlined until the human goes somewhere else.
 
 **The shell's side of the contract** (companion-19, `app/companion-shell/`):
 put an object at `window.gavinChannel` with `postMessage(string)` and an
@@ -155,6 +156,15 @@ sample data — the thing App Review explores, and the suites' only fixture.
   with an error and recorded in `demo.unanswered()`.
 - `activity.ts` — a loop of what agents do, so the demo changes while someone
   watches. The page advances it on a timer; a suite advances it by hand.
+- `sessions.ts` and `transcripts.ts` — the terminals. Each sample session has
+  a screen with history behind it and a script for what is typed into it: an
+  agent waits in its input box (bracketed paste on), asks in a numbered menu
+  and takes the digit, or works until Esc; the Scratchpad's shell knows `ls`,
+  `cd`, `seq`, `git status`. `create_session` opens a shell or an agent,
+  `kill_session` ends one and closes its tab the way the desk would, with
+  `session-exited` then `workspaces-synced`. The demo's turn verdict is a rule
+  over its own screens shaped as TypeSafe's answer, so the desktop's parser
+  and policy read it.
 - `workstation.ts` — the endpoint. Refuses what the Remote role is refused,
   as a real Workstation's daemon does.
 
@@ -162,15 +172,65 @@ sample data — the thing App Review explores, and the suites' only fixture.
 and fails on any command left unanswered. When a surface needs a command the
 demo lacks, that is where it shows.
 
+## Terminals (companion-26)
+
+A workspace opens on two surfaces, Board and Sessions (`state/viewState.ts`
+remembers which). Sessions lists the workspace's own agent and every page's
+terminals in the desk's tab order, with the desk's names and badges
+(`surfaces/sessionList.ts`), and starts a New agent or a New terminal the way
+the desk does (`state/sessions.ts`: the same `resolvedAgentFor`, profile and
+failure patterns). Placing that session as a tab is the desk's
+(companion-16); until it does, the phone lists what it started under
+"Started from this phone". A session is ended from its terminal, behind the
+desk's own confirm (`AppDialog` is mounted on the page).
+
+The terminal is the desk's `TerminalPane` over the desk's terminal registry,
+on xterm.js 6.1 (6.0's touch scrolling is broken on iOS). Typing follows the
+typing prototype (ticket 01; its findings are comments on `companion.md`):
+
+- **Compose by default.** A line goes as a paste and then Enter, in one
+  `write_input`; the paste markers only while the program has bracketed paste
+  on (`surfaces/terminalInput.ts`). An empty line is a bare Enter.
+- **Quick replies.** Whether the agent is asking is the bell or the turn
+  verdict (`verdictAsksQuietly`); what the answers are is read off the screen
+  (`surfaces/quickReplies.ts`): a numbered menu's digits, an arrow menu walked
+  then Enter, `(y/n)` as lines, canned words only for a question in prose.
+  They scroll sideways; Esc and ^C stay pinned.
+- **Raw one tap away.** Esc, Tab, a latched Ctrl, the arrows (application
+  cursor mode followed), and a More row. The latch reaches the soft keyboard's
+  own typing through the registry's `setInputTransform`, the one place a
+  terminal's typing is sent.
+- **The keyboard.** The page sizes itself to the visual viewport
+  (`surfaces/viewport.ts`), so the terminal refits and the PTY is told its new
+  size when the keyboard comes and goes.
+
+The desk takes a verdict whenever an agent it ran goes quiet, but keeps it in
+its own webview. The phone asks for its own, through the desk's own driver and
+under all of its gates, for the one session on screen (`state/turn.ts`). A
+list row therefore shows a prose question as waiting only once its terminal
+has been opened on the phone.
+
+A terminal is let go when the phone leaves it: every open one is a
+`pty-output` listener, and that event carries every session's output, so each
+kept terminal is Relay traffic for screens nobody sees. Reopening repaints
+from the Workstation's screen model, history included. The event is still
+per Workstation rather than per session, so the one open terminal hears all
+of them; narrowing that is a protocol change of its own.
+
+`seam/typing.test.ts` drives the dock's own sends against the Demo
+Workstation, with a real xterm fed from the wire as the phone's screen
+(`testing/phoneScreen.ts`).
+
 ## What is here, and what is not
 
-The first surface: the workspace list and one workspace's board, to read. The
-board draws the desktop's own `BoardCard` with no workspace id, which is the
-card the desk draws in previews — no Run, no session jump, no drag. An inbox
-item lands on its card (above). How this bundle reaches a phone — built and
-signed by the desktop build, served by the Workstation, verified and cached
-by the shell — is the shell's README's ("Served bundles").
+The workspace list, one workspace's board, to read, and its sessions and
+terminals (above). The board draws the desktop's own `BoardCard` with no
+workspace id, which is the card the desk draws in previews — no Run, no
+session jump, no drag. An inbox item lands on its card, or on the terminal of
+the session it names. How this bundle reaches a phone — built and signed by
+the desktop build, served by the Workstation, verified and cached by the
+shell — is the shell's README's ("Served bundles").
 
-Opening a card, acting on one, sessions and terminals, rails, Git, files and
-settings are the cards that follow (companion-26 to -30), each extending the
-Demo Workstation to match.
+Opening a card, acting on one, rails, Git, files and settings are the cards
+that follow (companion-27 to -30), each extending the Demo Workstation to
+match.

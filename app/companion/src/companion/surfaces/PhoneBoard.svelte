@@ -115,7 +115,7 @@
 
 {#if !workspace.rootPath}
   <p class="note">
-    This workspace is bound to no folder, so it has no cards. Its terminals are at the desk.
+    This workspace is bound to no folder, so it has no cards. Its terminals are under Sessions.
   </p>
 {:else if loadError}
   <p class="note problem">The board could not be read: {loadError}</p>

@@ -18,20 +18,29 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { fetchBoard } from "$lib/board/kanbanState";
 import * as backend from "$lib/core/backend";
 import { gavinTrees, initGavinListeners, refreshGavinTree } from "$lib/core/gavinState";
-import { handleSessionStatusChanged, layoutState } from "$lib/core/layoutState";
+import { handleCwdChanged, handleSessionStatusChanged, layoutState } from "$lib/core/layoutState";
 import { parseSessionStatus } from "$lib/core/notifications";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
+import { allSessionIds } from "$lib/panes/layout";
+import { destroyTerminal } from "$lib/terminal/terminalRegistry";
 import { themeState } from "$lib/ui/themeState.svelte";
 import type { Capabilities, Landing } from "$companion/channel/messages";
 import type { ChannelPort } from "$companion/channel/port";
 import { channel, connectChannel, disconnectChannel } from "$companion/remote/connection";
+import { forgetSession, resetSessions, startedHere } from "$companion/state/sessions";
+import { resetTurns, turnMovedOn } from "$companion/state/turn";
 import {
   backToWorkspaces,
+  closeTerminal as closeTerminalIn,
   initialView,
   loadView,
+  openTerminal as openTerminalIn,
   openWorkspace as openWorkspaceIn,
+  reconcileSession,
   reconcileView,
   saveView,
+  showSurface as showSurfaceIn,
+  type Surface,
   type ViewState,
   type ViewStorage,
 } from "$companion/state/viewState";
@@ -88,14 +97,61 @@ export function showWorkspaces(): void {
   show(backToWorkspaces(get(viewStore)));
 }
 
-/// Lands where the shell asked: the item's workspace, with its card (or
-/// the card running its session) for the board to reveal. A workspace
-/// this Workstation no longer has is not a place, and the view stays
-/// where it was remembered.
+/// One of the open workspace's surfaces: its board, or its sessions.
+export function showSurface(surface: Surface): void {
+  if (get(viewStore).workspaceId === null) return;
+  landingStore.set(null);
+  show(showSurfaceIn(get(viewStore), surface));
+}
+
+/// Whether a workspace holds a session, as a place to go: on one of its
+/// pages, as its own agent, or started from this phone in it.
+function holdsSession(ws: Workspace, sessionId: string): boolean {
+  return (
+    ws.mainSessionId === sessionId ||
+    ws.pages.some((p) => allSessionIds(p.layout).includes(sessionId)) ||
+    get(startedHere)[sessionId] === ws.id
+  );
+}
+
+/// Every session the view could have open in a workspace.
+function sessionsOf(ws: Workspace | undefined): string[] {
+  if (!ws) return [];
+  const ids = ws.pages.flatMap((p) => allSessionIds(p.layout));
+  if (ws.mainSessionId) ids.push(ws.mainSessionId);
+  for (const [id, workspaceId] of Object.entries(get(startedHere))) if (workspaceId === ws.id) ids.push(id);
+  return ids;
+}
+
+/// A session's terminal, in the workspace that holds it.
+export function openTerminal(sessionId: string): void {
+  const ws = get(layoutState).workspaces.find((w) => holdsSession(w, sessionId));
+  if (!ws) return;
+  landingStore.set(null);
+  show(openTerminalIn(ws.id, sessionId));
+}
+
+/// Back from a terminal to its workspace's sessions.
+export function closeTerminal(): void {
+  show(closeTerminalIn(get(viewStore)));
+}
+
+/// Lands where the shell asked. A session the workspace holds opens its
+/// terminal, which is the place an agent waiting on the human is
+/// answered; anything else opens the board with the item's card (or the
+/// card running its session) for the board to reveal. A workspace this
+/// Workstation no longer has is not a place, and the view stays where it
+/// was remembered.
 export function land(where: Landing): void {
-  if (!get(layoutState).workspaces.some((w) => w.id === where.workspace)) return;
+  const ws = get(layoutState).workspaces.find((w) => w.id === where.workspace);
+  if (!ws) return;
+  if (where.target.kind === "session" && holdsSession(ws, where.target.id)) {
+    landingStore.set(null);
+    show(openTerminalIn(ws.id, where.target.id));
+    return;
+  }
   landingStore.set(where);
-  show(openWorkspaceIn(get(viewStore), where.workspace));
+  show(showSurfaceIn(openWorkspaceIn(get(viewStore), ws.id), "board"));
 }
 
 /// Leaves this Workstation for the Workstations hub.
@@ -128,11 +184,23 @@ function adoptWorkspaces(data: WorkspacesData): void {
   }));
   loadCards(data.workspaces);
   const current = get(viewStore);
-  const reconciled = reconcileView(
-    current,
-    data.workspaces.map((w) => w.id)
+  const reconciled = reconcileSession(
+    reconcileView(
+      current,
+      data.workspaces.map((w) => w.id)
+    ),
+    sessionsOf(data.workspaces.find((w) => w.id === current.workspaceId))
   );
   if (reconciled !== current) show(reconciled);
+}
+
+/// A session has ended at the Workstation. Its terminal is let go -- the
+/// desk's handler for this is the one that saves the desk's layout, so it
+/// is not the phone's -- and a view showing it goes back to the list.
+function sessionEnded(sessionId: string): void {
+  forgetSession(sessionId);
+  if (get(viewStore).sessionId === sessionId) show(closeTerminalIn(get(viewStore)));
+  destroyTerminal(sessionId);
 }
 
 /// Every session's status as the Workstation holds it now. Written
@@ -148,7 +216,10 @@ async function loadSessions(): Promise<void> {
     const statusSinceById = { ...s.statusSinceById };
     const failureReasonById = { ...s.failureReasonById };
     const interruptedSessionIds = new Set(s.interruptedSessionIds);
+    const cwdBySessionId = { ...s.cwdBySessionId };
     for (const b of baselines?.sessions ?? []) {
+      // A cwd already heard is newer than the read.
+      cwdBySessionId[b.id] ??= b.cwd;
       if (sessionStatusById[b.id] === undefined) {
         sessionStatusById[b.id] = parseSessionStatus(b.status);
         statusSinceById[b.id] ??= { at: Date.now(), watched: false };
@@ -164,7 +235,8 @@ async function loadSessions(): Promise<void> {
       statusSinceById,
       failureReasonById,
       interruptedSessionIds,
-      sessionNames: sessionNames ?? s.sessionNames,
+      cwdBySessionId,
+      sessionNames: sessionNames ? { ...sessionNames, ...s.sessionNames } : s.sessionNames,
     };
   });
 }
@@ -182,6 +254,8 @@ export async function connectWorkstation(
   const disconnect = (): void => {
     for (const stop of stops.splice(0)) stop();
     remember = null;
+    resetSessions();
+    resetTurns();
     disconnectChannel();
   };
 
@@ -192,6 +266,7 @@ export async function connectWorkstation(
     // one the phone never shows.
     stops.push(
       await listen<[string, string]>("session-status-changed", (event) => {
+        turnMovedOn(event.payload[0], event.payload[1]);
         handleSessionStatusChanged(event.payload[0], event.payload[1]);
       })
     );
@@ -201,6 +276,31 @@ export async function connectWorkstation(
       })
     );
     stops.push(await initGavinListeners());
+    // What the sessions list and the terminals read. Each is recorded in
+    // memory only: the desk's handlers for these persist what they hear
+    // (a name, a closed tab), and that is the desk's to do once.
+    stops.push(
+      await listen<[string, number]>("session-exited", (event) => {
+        sessionEnded(event.payload[0]);
+      })
+    );
+    stops.push(
+      await listen<[string, string]>("cwd-changed", (event) => {
+        handleCwdChanged(event.payload[0], event.payload[1]);
+      })
+    );
+    stops.push(
+      await listen<[string, string]>("session-named", (event) => {
+        const [id, name] = event.payload;
+        layoutState.update((s) => ({ ...s, sessionNames: { ...s.sessionNames, [id]: name } }));
+      })
+    );
+    stops.push(
+      await listen<[string, string]>("session-failed", (event) => {
+        const [id, reason] = event.payload;
+        layoutState.update((s) => ({ ...s, failureReasonById: { ...s.failureReasonById, [id]: reason } }));
+      })
+    );
 
     const data = await backend.getWorkspacesState();
     const workstationId = capabilities.workstation.id;

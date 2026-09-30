@@ -1,5 +1,6 @@
 <script lang="ts">
   // The bar above every surface: where you are, and the way back.
+  import type { Snippet } from "svelte";
   import { ChevronLeft } from "@lucide/svelte";
 
   interface Props {
@@ -10,8 +11,12 @@
     onBack?: (() => void) | null;
     /// A short word beside the title: "demo".
     tag?: string | null;
+    /// What this screen can do, at the bar's end.
+    actions?: Snippet;
+    /// A badge before the title: what the thing titled is doing.
+    status?: Snippet;
   }
-  let { title, back = null, onBack = null, tag = null }: Props = $props();
+  let { title, back = null, onBack = null, tag = null, actions, status }: Props = $props();
 </script>
 
 <header class="bar">
@@ -21,10 +26,12 @@
       <span>{back}</span>
     </button>
   {/if}
+  {@render status?.()}
   <h1 class="title">{title}</h1>
   {#if tag}
     <span class="tag">{tag}</span>
   {/if}
+  {@render actions?.()}
 </header>
 
 <style>

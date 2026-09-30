@@ -3,7 +3,10 @@
   // surface the Companion's own view says. Every decision is in a module
   // (state/workstation.ts, state/entry.ts); this is the template over them.
   import { onMount } from "svelte";
+  import { verdictAttentionStatusById } from "$lib/agents/verdictAttention";
+  import AppDialog from "$lib/core/AppDialog.svelte";
   import { layoutState } from "$lib/core/layoutState";
+  import { workspaceAgentsSummary } from "$lib/sidebar/sidebarSummary";
   import { DEMO_PACE_MS, deviceStorage, openChannel } from "$companion/state/entry";
   import {
     connection,
@@ -11,12 +14,17 @@
     landing,
     openWorkspace,
     returnToHub,
+    showSurface,
     showWorkspaces,
     view,
   } from "$companion/state/workstation";
   import PhoneBoard from "$companion/surfaces/PhoneBoard.svelte";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
+  import PhoneSessions from "$companion/surfaces/PhoneSessions.svelte";
+  import PhoneTerminal from "$companion/surfaces/PhoneTerminal.svelte";
+  import { trackVisibleArea } from "$companion/surfaces/viewport";
   import WorkspaceList from "$companion/surfaces/WorkspaceList.svelte";
+  import WorkspaceTabs from "$companion/surfaces/WorkspaceTabs.svelte";
 
   // Counted, never compared: a connection that finishes after the page
   // has moved on (a retry, a teardown) must not become the live one.
@@ -47,11 +55,25 @@
 
   onMount(() => {
     connect();
-    return leave;
+    const stopTracking = trackVisibleArea();
+    return () => {
+      stopTracking();
+      leave();
+    };
   });
 
   const open = $derived($layoutState.workspaces.find((w) => w.id === $view.workspaceId) ?? null);
   const ready = $derived($connection.status === "ready" ? $connection : null);
+  const waiting = $derived(
+    open
+      ? workspaceAgentsSummary(open, {
+          sessionStatusById: $verdictAttentionStatusById,
+          fileTabsById: $layoutState.fileTabsById,
+          boardTabsById: $layoutState.boardTabsById,
+          cardTabsById: $layoutState.cardTabsById,
+        }).waiting
+      : 0
+  );
 </script>
 
 <main class="companion">
@@ -70,17 +92,29 @@
          is being created otherwise leaves the last one on screen and says
          nothing, and a phone has no console to look in. -->
     <svelte:boundary>
-      {#if open}
+      {#if open && $view.sessionId}
+        {#key $view.sessionId}
+          <PhoneTerminal sessionId={$view.sessionId} />
+        {/key}
+      {:else if open}
         <PhoneHeader
           title={open.name}
           back="Workspaces"
           onBack={showWorkspaces}
           tag={ready.workstation.demo ? "demo" : null}
         />
-        <p class="scope">Board · view only</p>
-        {#key open.id}
-          <PhoneBoard workspace={open} landing={$landing} />
-        {/key}
+        <WorkspaceTabs surface={$view.surface} onShow={showSurface} {waiting} />
+        {#if $view.surface === "sessions"}
+          <div class="scroll">
+            {#key open.id}
+              <PhoneSessions workspace={open} />
+            {/key}
+          </div>
+        {:else}
+          {#key open.id}
+            <PhoneBoard workspace={open} landing={$landing} />
+          {/key}
+        {/if}
       {:else}
         <PhoneHeader
           title={ready.workstation.name || "Workstation"}
@@ -105,30 +139,27 @@
   {/if}
 </main>
 
+<!-- The one confirm and alert layer, as at the desk (dialog.ts). Outside
+     the boundary, so a surface that failed can still say why. -->
+<AppDialog />
+
 <style>
   .companion {
     display: flex;
     flex-direction: column;
     height: 100vh;
     /* The height that follows the browser's own bars, where there is
-       one; the line above is for a webview that does not know it. */
-    height: 100dvh;
+       one; the line above is for a webview that does not know it. The
+       visible height (viewport.ts) goes further, and leaves out the soft
+       keyboard: a page that did not would type under it. */
+    height: var(--visible-height, 100dvh);
+    transform: translateY(var(--visible-top, 0px));
   }
   .scroll {
     flex: 1 1 auto;
     min-height: 0;
     padding-bottom: env(safe-area-inset-bottom);
     overflow-y: auto;
-  }
-  .scope {
-    flex: 0 0 auto;
-    margin: 0;
-    padding: 6px max(14px, env(safe-area-inset-right)) 6px max(14px, env(safe-area-inset-left));
-    border-bottom: 1px solid var(--border);
-    color: var(--text-subtle);
-    font-size: 0.6875rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
   }
   .note {
     margin: 0;

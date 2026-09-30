@@ -14,6 +14,8 @@ import type { Board } from "$lib/board/kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/core/gavin";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Orchestration } from "$lib/orchestration/orchestration";
+import type { DemoTerminal } from "$companion/demo/sessions";
+import { sampleTerminals } from "$companion/demo/transcripts";
 
 export const DEMO = {
   workstation: { id: "demo", name: "Demo Workstation", demo: true },
@@ -37,6 +39,12 @@ export interface DemoState {
   sessionNames: Record<string, string>;
   /// Card bodies by path, for the viewer.
   files: Record<string, string>;
+  /// Every live session's terminal: what it has written, and what it
+  /// does with what is typed into it (sessions.ts).
+  terminals: Record<string, DemoTerminal>;
+  /// How many sessions have been opened on the demo, which is what
+  /// names the next one.
+  launched: number;
 }
 
 function session(id: string, cwd: string, status: string): SessionBaseline {
@@ -441,5 +449,7 @@ export function sampleState(): DemoState {
       "s-notes-sync": "offline sync",
     },
     files: {},
+    terminals: sampleTerminals(DEMO.home),
+    launched: 0,
   };
 }

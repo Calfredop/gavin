@@ -23,8 +23,27 @@ function importedFrom(text: string, module: string): string[] {
 describe("what the bundle takes from the desktop's layout state", () => {
   // Every ACTION that module exports ends in a save of the desk's pages
   // and tabs. The stores are what the desktop's components read, and the
-  // two handlers only record what the Workstation said.
-  const ALLOWED = ["layoutState", "attentionStatusById", "handleSessionStatusChanged"];
+  // handlers only record what the Workstation said. The launch helpers
+  // are what a new session is made of at the desk -- the agent a
+  // workspace resolves to, the profile a launch names, the failure
+  // patterns it arms -- and save nothing; placing the session is the
+  // action, and that is the desk's.
+  const ALLOWED = [
+    // stores
+    "layoutState",
+    "attentionStatusById",
+    "agentProfilesStore",
+    "agentModelDefaultsStore",
+    "agentDefaultsStore",
+    "customResumeArgsDefault",
+    // handlers
+    "handleSessionStatusChanged",
+    "handleCwdChanged",
+    // launch helpers
+    "resolvedAgentFor",
+    "profileIdForLaunch",
+    "armFailureDetection",
+  ];
 
   it("is its stores and its handlers, never its actions", () => {
     const taken = Object.entries(companionSources()).flatMap(([name, text]) =>
@@ -43,8 +62,17 @@ describe("what the bundle takes from the desktop's layout state", () => {
   });
 
   it("is read by this guard in the file that takes the most", () => {
-    expect(importedFrom(companionSource("companion/state/workstation.ts"), "$lib/core/layoutState").sort()).toEqual(
-      ["handleSessionStatusChanged", "layoutState"]
+    expect(importedFrom(companionSource("companion/state/sessions.ts"), "$lib/core/layoutState").sort()).toEqual(
+      [
+        "agentDefaultsStore",
+        "agentModelDefaultsStore",
+        "agentProfilesStore",
+        "armFailureDetection",
+        "customResumeArgsDefault",
+        "layoutState",
+        "profileIdForLaunch",
+        "resolvedAgentFor",
+      ]
     );
   });
 });
@@ -86,6 +114,24 @@ describe("the board surface", () => {
     for (const module of ["cardRunActions", "cardDelete", "kanbanDragGlue", "archiveActions"]) {
       expect(board()).not.toContain(module);
     }
+  });
+});
+
+describe("the terminal surface", () => {
+  const terminal = () => codeOf(companionSource("companion/surfaces/PhoneTerminal.svelte"));
+
+  it("draws the desktop's own terminal, on the desktop's registry", () => {
+    expect(terminal()).toContain('import TerminalPane from "$lib/terminal/TerminalPane.svelte"');
+    expect(terminal()).toContain("<TerminalPane");
+  });
+
+  it("types through the dock's modules, not bytes of its own", () => {
+    expect(terminal()).not.toMatch(/\\x1b|\\u001b|\\r/);
+    expect(terminal()).not.toContain("backend.writeInput");
+  });
+
+  it("lets its terminal go when it closes, so no screen nobody sees keeps streaming", () => {
+    expect(terminal()).toContain("destroyTerminal(sessionId)");
   });
 });
 
