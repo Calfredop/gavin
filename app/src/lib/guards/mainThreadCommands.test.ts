@@ -317,10 +317,17 @@ describe("building a window", () => {
   const BUILDER = /\b(?:WebviewWindowBuilder|WindowBuilder|WebviewBuilder)::(?:new|from_config)\(/g;
   const COMMAND = /#\[tauri::command\]\s*(?:#\[[^\]]*\]\s*|\/\/\/[^\n]*\n\s*)*pub (async )?fn (\w+)\(/g;
 
+  /// Where a file's `#[cfg(test)]` module begins. A mock app's window is
+  /// built on the test's own thread, under the mock runtime, and never
+  /// reaches a WebView2 -- and a file's test module is its last item.
+  const TESTS = /#\[cfg\(test\)\]\s*mod \w+\s*\{/;
+
   /// [file, line, the command the builder sits in (if any), whether it is async]
   const builders = Object.entries(RUST).flatMap(([path, text]) => {
     const file = path.slice(path.indexOf("/src-tauri/src/") + "/src-tauri/src/".length);
-    return [...text.matchAll(BUILDER)].map((b): [string, number, string | undefined, boolean] => {
+    const tests = text.search(TESTS);
+    const shipped = [...text.matchAll(BUILDER)].filter((b) => tests < 0 || b.index < tests);
+    return shipped.map((b): [string, number, string | undefined, boolean] => {
       const at = b.index;
       const line = text.slice(0, at).split("\n").length;
       const around = [...text.matchAll(COMMAND)].find((c) => c.index < at && at < text.indexOf("\n}\n", c.index));
