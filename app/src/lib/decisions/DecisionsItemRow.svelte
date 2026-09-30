@@ -159,6 +159,12 @@
       </button>
     {/if}
   </div>
+  <!-- What a disabled button would say in its tooltip, said where a
+       finger can read it: a touch screen hovers over nothing, so the
+       tooltip never shows (hidden wherever something can hover). -->
+  {#if item.kind === "decision" ? refusal : failRefused}
+    <p class="why">{item.kind === "decision" ? refusal : failRefused}</p>
+  {/if}
 </div>
 
 <style>
@@ -273,5 +279,41 @@
   }
   .actions .danger {
     color: var(--danger-text);
+  }
+  .why {
+    display: none;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.78em;
+  }
+
+  /* A finger rather than a pointer: the Companion draws this row on a
+     phone. Every control a thumb's height, and the note at 16px, below
+     which iOS zooms the whole page into the field the moment it takes
+     focus. A window with a mouse never matches, so the desk is as it
+     was. */
+  @media (hover: none) {
+    .why {
+      display: block;
+    }
+  }
+  @media (pointer: coarse) {
+    .item {
+      gap: 10px;
+      padding: 12px;
+    }
+    .option,
+    .actions button {
+      min-height: 44px;
+      padding: 0 14px;
+      font-size: 0.9375rem;
+    }
+    .actions {
+      gap: 8px;
+    }
+    .note {
+      padding: 8px 10px;
+      font-size: 16px;
+    }
   }
 </style>
