@@ -92,10 +92,16 @@ describe("the Demo's file commands", () => {
     await expect(client.invoke("viewable_extensions")).resolves.toEqual(expected);
   });
 
-  it("list only below an open workspace's root", async () => {
+  it("list below the root they are given, which is any folder on the disk", async () => {
     const { client } = bench();
-    await expect(client.invoke("list_directory", { root: "/Users/demo", path: "/Users/demo" })).rejects.toThrow(
-      "/Users/demo is not the root of an open workspace"
+    await expect(client.invoke("list_directory", { root: "/", path: "/Users/demo" })).resolves.toMatchObject({
+      omitted: 0,
+    });
+    await expect(client.invoke("list_directory", { root: "/nowhere", path: "/nowhere" })).rejects.toThrow(
+      "workspace root /nowhere is unreadable"
+    );
+    await expect(client.invoke("list_directory", { root: DEMO.atlasRoot, path: DEMO.notesRoot })).rejects.toThrow(
+      "is outside the workspace root"
     );
     await expect(client.invoke("list_directory", { root: DEMO.atlasRoot, path: `${DEMO.atlasRoot}/README.md` })).rejects.toThrow(
       "is not a directory"

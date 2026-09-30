@@ -6,7 +6,9 @@
 // (`DemoState.files`) -- the working trees its repositories report on, so
 // a save here is a change on the Git surface. The host's two fences are
 // kept: a listing never leaves the root it was given, and a read or a
-// write never leaves every open workspace.
+// write never leaves every open workspace. The root a listing is given is
+// any folder on the disk, as it is for the host: the Files surface names
+// its workspace's, and adding a workspace names the top of the disk.
 import { compareNodes, isUnder, joinPath } from "$lib/files/fileTree";
 import { DemoFailure, text, type Answer, type DemoCommand, type DemoContext } from "$companion/demo/answer";
 import { announceFiles, announceRepo, repoHolding, unwatch, watch } from "$companion/demo/watches";
@@ -70,7 +72,9 @@ export const FILE_COMMANDS: Record<string, DemoCommand> = {
   list_directory: (args, demo): Answer<"listDirectory"> => {
     const root = text(args, "root");
     const path = text(args, "path");
-    if (!roots(demo).includes(root)) throw new DemoFailure(`${root} is not the root of an open workspace`);
+    if (!isDirectory(demo, root)) {
+      throw new DemoFailure(`workspace root ${root} is unreadable: No such file or directory (os error 2)`);
+    }
     if (!atOrUnder(root, path)) throw new DemoFailure(`${path} is outside the workspace root`);
     if (path in demo.state.files) throw new DemoFailure(`${path} is not a directory`);
     if (!isDirectory(demo, path)) throw new DemoFailure(`${path}: No such file or directory (os error 2)`);

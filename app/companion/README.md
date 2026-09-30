@@ -162,8 +162,17 @@ sample data — the thing App Review explores, and the suites' only fixture.
   editor's are `fileCommands.ts`. Both keep the host's fences, and both
   report through `watches.ts`: `file-changed` and `git-changed` reach only
   what is watched, as on a desk. A file saved in Files is a change in Git.
+  The Workstation's app-wide settings are `settingsCommands.ts` (each write
+  announced as `app-settings-synced`, as the host announces it), and the
+  workspaces as Workstation data are `workspaceCommands.ts`: each one's
+  settings, `add_workspace`, the home folder, and setting gavin up in a
+  folder. The home folder holds `code/weather-station`, a project no
+  workspace works in yet, for adding one to find.
 - `activity.ts` — a loop of what agents do, so the demo changes while someone
-  watches. The page advances it on a timer; a suite advances it by hand.
+  watches. The page advances it on a timer; a suite advances it by hand. Each
+  lap puts back only what it moved — session statuses and the sample cards —
+  so what a visitor changed (a setting, a saved file, a workspace added)
+  stays.
 - `workstation.ts` — the endpoint. Refuses what the Remote role is refused,
   as a real Workstation's daemon does.
 

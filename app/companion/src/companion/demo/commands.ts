@@ -9,11 +9,15 @@
 // here rather than a demo that quietly renders nothing.
 //
 // The Git tab's commands and the Files tab's have tables of their own
-// (gitCommands.ts, fileCommands.ts), gathered in with the rest below.
+// (gitCommands.ts, fileCommands.ts), as do the settings (settingsCommands.ts)
+// and the workspaces as Workstation data (workspaceCommands.ts), gathered
+// in with the rest below.
 import type { GavinTree } from "$lib/core/gavin";
 import { DemoFailure, type Answer, type DemoCommand, type DemoContext } from "$companion/demo/answer";
 import { FILE_COMMANDS } from "$companion/demo/fileCommands";
 import { GIT_COMMANDS } from "$companion/demo/gitCommands";
+import { SETTINGS_COMMANDS } from "$companion/demo/settingsCommands";
+import { WORKSPACE_COMMANDS } from "$companion/demo/workspaceCommands";
 
 export { DemoFailure, type DemoCommand, type DemoContext } from "$companion/demo/answer";
 
@@ -79,6 +83,8 @@ const CLAUDE_CODE: Answer<"agentProfiles">[number] = {
   headlessArgs: "-p",
   modelFlag: "--model",
   models: ["opus", "sonnet", "haiku"],
+  effortFlag: "--effort",
+  efforts: ["low", "medium", "high", "xhigh", "max"],
   failurePatterns: [],
   failureCauses: [],
   sessionIdArgs: "",
@@ -87,9 +93,22 @@ const CLAUDE_CODE: Answer<"agentProfiles">[number] = {
   usageProbe: null,
 };
 
+// A second agent, so the settings that choose between agents -- the
+// complexity table, the fallback chain -- have a choice to offer.
+const CODEX: Answer<"agentProfiles">[number] = {
+  ...CLAUDE_CODE,
+  id: "codex",
+  label: "Codex CLI",
+  instructionsFile: "AGENTS.md",
+  command: "codex",
+  mcpConfigFile: ".codex/config.toml",
+  headlessArgs: "exec",
+  models: [],
+  effortFlag: "-c model_reasoning_effort=",
+  efforts: ["minimal", "low", "medium", "high", "xhigh"],
+};
+
 const TABLES: Record<string, DemoCommand> = {
-  // Null is "System": the Device's own appearance decides.
-  get_theme_pref: (): Answer<"getThemePref"> => null,
   temp_dir: (): Answer<"tempDir"> => "/tmp",
   // Null is "not probed": no banner, and no feature gated shut.
   daemon_compat: (): Answer<"daemonCompat"> => null,
@@ -104,28 +123,9 @@ const TABLES: Record<string, DemoCommand> = {
   // The desk has one window open, and it holds the app's duties.
   app_duty: (): Answer<"appDuty"> => ({ holder: "main", windows: ["main"] }),
 
-  agent_profiles: (): Answer<"agentProfiles"> => [CLAUDE_CODE],
-  agent_model_catalog: (): Answer<"agentModelCatalog"> => ({}),
+  agent_profiles: (): Answer<"agentProfiles"> => [CLAUDE_CODE, CODEX],
+  agent_model_catalog: (): Answer<"agentModelCatalog"> => ({ codex: ["gpt-5-codex", "gpt-5"] }),
   mcp_formats: (): Answer<"mcpFormats"> => [],
-  get_agent_model_defaults: (): Answer<"getAgentModelDefaults"> => ({}),
-  get_agent_defaults: (): Answer<"getAgentDefaults"> => ({
-    customCommand: "",
-    customModelFlag: "",
-    complexity: {},
-    agentFallback: [],
-    fallbackThresholds: {},
-    actionPromptOverrides: {},
-  }),
-  get_agent_pause: (): Answer<"getAgentPause"> => null,
-  get_launch_config: (): Answer<"getLaunchConfig"> => null,
-
-  // "Nobody chose": each of these inherits gavin's own default.
-  get_terminal_font_size: (): Answer<"getTerminalFontSize"> => null,
-  get_custom_resume_args: (): Answer<"getCustomResumeArgs"> => null,
-  get_auto_commit: (): Answer<"getAutoCommit"> => null,
-  get_require_review: (): Answer<"getRequireReview"> => null,
-  get_headroom_default: (): Answer<"getHeadroomDefault"> => null,
-  get_git_tracking_default: (): Answer<"getGitTrackingDefault"> => null,
 
   typesafe_settings: (): Answer<"typesafeSettings"> => ({
     enabled: false,
@@ -175,6 +175,8 @@ const TABLES: Record<string, DemoCommand> = {
 export const COMMANDS: Record<string, DemoCommand> = {
   ...WORK,
   ...TABLES,
+  ...SETTINGS_COMMANDS,
+  ...WORKSPACE_COMMANDS,
   ...GIT_COMMANDS,
   ...FILE_COMMANDS,
 };

@@ -61,14 +61,23 @@ export const ACTIVITY: DemoStep[] = [
     });
   },
 
-  // And round again: the machine as it was found, said as a desk would
-  // say it -- every session's status, every workspace's tree.
+  // And round again: what this loop moved, put back as it was found and
+  // said as a desk would say it -- every session's status, every sample
+  // card. Only that. What a visitor changed -- a setting, a saved file, a
+  // commit, an agent's model, a workspace added or renamed -- stays, as it
+  // would on a real Workstation; a loop that put the whole machine back
+  // would undo it under them a lap later.
   (demo) => {
     const fresh = sampleState();
     for (const session of fresh.sessions) setStatus(demo, session.id, session.status);
-    Object.assign(demo.state, fresh);
-    for (const [workspaceId, tree] of Object.entries(demo.state.trees)) {
-      demo.emit("gavin-tree-changed", [workspaceId, tree]);
+    for (const [workspaceId, tree] of Object.entries(fresh.trees)) {
+      const live = demo.state.trees[workspaceId];
+      if (!live) continue;
+      for (const context of live.contexts) {
+        const found = tree.contexts.find((c) => c.folderPath === context.folderPath);
+        if (found) context.plans = found.plans;
+      }
+      demo.emit("gavin-tree-changed", [workspaceId, live]);
     }
   },
 ];

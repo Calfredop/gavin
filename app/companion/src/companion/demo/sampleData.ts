@@ -10,8 +10,11 @@
 // waiting on a human about, a status no column matches, a second context,
 // a rail in mid-run, and a workspace with no root at all. The two
 // projects' files and Git histories are sampleProjects.ts.
+import type { PauseCycle } from "$lib/agents/agentPause";
+import type { LaunchConfig } from "$lib/agents/launchGate";
 import type { SessionBaseline } from "$lib/core/backend";
 import type { Board } from "$lib/board/kanban";
+import type { AgentDefaults } from "$lib/cards/complexity";
 import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/core/gavin";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Orchestration } from "$lib/orchestration/orchestration";
@@ -26,7 +29,26 @@ export const DEMO = {
   notesRoot: "/Users/demo/code/field-notes",
   scratch: "demo-scratch",
   home: "/Users/demo",
+  /// A project on the demo's disk that no workspace works in yet: what
+  /// adding a workspace from the phone finds.
+  weatherRoot: "/Users/demo/code/weather-station",
 } as const;
+
+/// The Workstation's app-wide settings, as config.json holds them: null
+/// is "nobody chose", which inherits gavin's own default.
+export interface DemoSettings {
+  theme: string | null;
+  terminalFontSize: number | null;
+  autoCommit: boolean | null;
+  requireReview: boolean | null;
+  gitTracking: boolean | null;
+  headroom: boolean | null;
+  customResumeArgs: string | null;
+  agentModels: Record<string, string>;
+  agentDefaults: AgentDefaults;
+  agentPause: PauseCycle | null;
+  launch: LaunchConfig | null;
+}
 
 /// Everything a Demo Workstation can be asked about, and the only thing
 /// its commands read. Mutable: the demo's activity script and, later, its
@@ -47,6 +69,7 @@ export interface DemoState {
   /// What is being watched, and by how many: a desk reports a file's or a
   /// checkout's changes only while something watches it.
   watches: { files: Record<string, number>; git: Record<string, number> };
+  settings: DemoSettings;
 }
 
 function session(id: string, cwd: string, status: string): SessionBaseline {
@@ -99,6 +122,12 @@ function context(
     agent: kind === "root" ? { profile: "claude-code", file: "CLAUDE.md", command: null } : null,
     prd: null,
   };
+}
+
+/// The tree the daemon reports for a folder gavin was just set up in: its
+/// root context and no cards yet. A folder gavin is not in reports none.
+export function freshTree(root: string, name: string, scaffolded: boolean): GavinTree {
+  return { rootPath: root, rootMissing: false, contexts: scaffolded ? [context(root, "root", name, [])] : [] };
 }
 
 function atlasTree(): GavinTree {
@@ -429,6 +458,43 @@ function orchestrations(): Record<string, Orchestration> {
   };
 }
 
+/// The rest of the demo's home folder: a project nobody has made a
+/// workspace of, a document, and the dotfile every home folder has.
+function homeFiles(): Record<string, string> {
+  const weather = DEMO.weatherRoot;
+  return {
+    [`${DEMO.home}/.zshrc`]: "export EDITOR=vim\n",
+    [`${DEMO.home}/Documents/packing-list.md`]: "# Packing list\n\n- charger\n- notebook\n",
+    [`${weather}/.gitignore`]: "/target\n",
+    [`${weather}/Cargo.toml`]: '[package]\nname = "weather-station"\nversion = "0.1.0"\nedition = "2021"\n',
+    [`${weather}/README.md`]: "# weather-station\n\nReads the rooftop sensors and keeps a week of readings.\n",
+    [`${weather}/src/main.rs`]: 'fn main() {\n    println!("reading the sensors");\n}\n',
+  };
+}
+
+export function sampleSettings(): DemoSettings {
+  return {
+    theme: null,
+    terminalFontSize: null,
+    autoCommit: null,
+    requireReview: null,
+    gitTracking: null,
+    headroom: null,
+    customResumeArgs: null,
+    agentModels: {},
+    agentDefaults: {
+      customCommand: "",
+      customModelFlag: "",
+      complexity: {},
+      agentFallback: [],
+      fallbackThresholds: {},
+      actionPromptOverrides: {},
+    },
+    agentPause: null,
+    launch: null,
+  };
+}
+
 export function sampleState(): DemoState {
   return {
     workspaces: { workspaces: workspaces(), activeWorkspaceId: DEMO.atlas, removedWorkspaces: [] },
@@ -450,8 +516,9 @@ export function sampleState(): DemoState {
       "s-atlas-billing": "invoice pdf",
       "s-notes-sync": "offline sync",
     },
-    files: projectFiles({ atlas: DEMO.atlasRoot, notes: DEMO.notesRoot }),
+    files: { ...projectFiles({ atlas: DEMO.atlasRoot, notes: DEMO.notesRoot }), ...homeFiles() },
     repos: sampleRepos({ atlas: DEMO.atlasRoot, notes: DEMO.notesRoot }),
     watches: { files: {}, git: {} },
+    settings: sampleSettings(),
   };
 }
