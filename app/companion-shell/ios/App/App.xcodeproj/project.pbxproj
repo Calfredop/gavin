@@ -24,6 +24,7 @@
 		A1C0DE0000000000000000B6 /* DeviceKeysPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A6 /* DeviceKeysPlugin.swift */; };
 		A1C0DE0000000000000000B7 /* QrScannerPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A7 /* QrScannerPlugin.swift */; };
 		A1C0DE0000000000000000B8 /* WorkstationsPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A8 /* WorkstationsPlugin.swift */; };
+		A1C0DE0000000000000000B9 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A9 /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -46,6 +47,7 @@
 		A1C0DE0000000000000000A6 /* DeviceKeysPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKeysPlugin.swift; sourceTree = "<group>"; };
 		A1C0DE0000000000000000A7 /* QrScannerPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrScannerPlugin.swift; sourceTree = "<group>"; };
 		A1C0DE0000000000000000A8 /* WorkstationsPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkstationsPlugin.swift; sourceTree = "<group>"; };
+		A1C0DE0000000000000000A9 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -97,6 +99,7 @@
 				A1C0DE0000000000000000A6 /* DeviceKeysPlugin.swift */,
 				A1C0DE0000000000000000A7 /* QrScannerPlugin.swift */,
 				A1C0DE0000000000000000A8 /* WorkstationsPlugin.swift */,
+				A1C0DE0000000000000000A9 /* PrivacyInfo.xcprivacy */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -173,6 +176,7 @@
 				50379B232058CBB4000EE86E /* capacitor.config.json in Resources */,
 				504EC30D1FED79650016851F /* Main.storyboard in Resources */,
 				2FAD9763203C412B000D30F8 /* config.xml in Resources */,
+				A1C0DE0000000000000000B9 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
