@@ -690,3 +690,92 @@ fn a_workstation_key_of_the_wrong_shape_is_refused_before_anything_is_dialled() 
     }));
     assert_eq!(answer["error"]["kind"], "offer", "{answer}");
 }
+
+// -- the bundle ------------------------------------------------------------
+
+fn bundle_call(value: Value) -> Value {
+    serde_json::from_slice(&call(&serde_json::to_vec(&value).unwrap())).unwrap()
+}
+
+/// `bundle-open`: a bundle signed by a trusted key opens into its files; a
+/// bad signature, a key the shell does not trust (a dev key on a store
+/// build), and a changed archive are each refused with the verifier's
+/// sentence and nothing unpacked.
+#[test]
+fn bundle_open_verifies_under_the_trusted_keys_and_unpacks() {
+    use protocol::companion_bundle::{pack, public_key, sign};
+    let archive = pack(&[
+        ("index.html", b"<!doctype html>" as &[u8]),
+        ("_app/immutable/chunks/a.js", b"export const a = 1;\n"),
+    ])
+    .unwrap();
+    let dev_seed = [5u8; 32];
+    let publisher_seed = [6u8; 32];
+    let manifest = sign(&archive, &dev_seed, "0.1.0");
+    let dev_key = protocol::hex_encode(&public_key(&dev_seed));
+    let publisher_key = protocol::hex_encode(&public_key(&publisher_seed));
+
+    // A debug build trusts both keys.
+    let answer = bundle_call(json!({
+        "op": "bundle-open",
+        "archive": protocol::hex_encode(&archive),
+        "manifest": manifest,
+        "trustedKeys": [publisher_key, dev_key],
+    }));
+    let ok = &answer["ok"];
+    assert_eq!(ok["hash"], manifest.hash, "{answer}");
+    let files = ok["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0]["path"], "_app/immutable/chunks/a.js");
+    assert_eq!(
+        protocol::companion_bundle::decode_chunk(files[0]["data"].as_str().unwrap()).unwrap(),
+        b"export const a = 1;\n"
+    );
+    assert_eq!(files[1]["path"], "index.html");
+
+    // A store build trusts the publisher key alone: the dev-key bundle is
+    // refused, before the signature is looked at.
+    let answer = bundle_call(json!({
+        "op": "bundle-open",
+        "archive": protocol::hex_encode(&archive),
+        "manifest": manifest,
+        "trustedKeys": [publisher_key],
+    }));
+    assert_eq!(answer["error"]["kind"], "bundle", "{answer}");
+    assert!(answer["error"]["message"].as_str().unwrap().contains("does not trust"), "{answer}");
+
+    // A bad signature.
+    let mut forged = manifest.clone();
+    forged.signature = format!("00{}", &manifest.signature[2..]);
+    let answer = bundle_call(json!({
+        "op": "bundle-open",
+        "archive": protocol::hex_encode(&archive),
+        "manifest": forged,
+        "trustedKeys": [dev_key],
+    }));
+    assert_eq!(answer["error"]["kind"], "bundle", "{answer}");
+    assert!(answer["error"]["message"].as_str().unwrap().contains("signature"), "{answer}");
+
+    // The archive is not the one the manifest names.
+    let mut changed = archive.clone();
+    changed[600] ^= 1;
+    let answer = bundle_call(json!({
+        "op": "bundle-open",
+        "archive": protocol::hex_encode(&changed),
+        "manifest": manifest,
+        "trustedKeys": [dev_key],
+    }));
+    assert!(answer["error"]["message"].as_str().unwrap().contains("not the one"), "{answer}");
+
+    // Not a call: a key that is not 32 bytes.
+    let answer = bundle_call(json!({
+        "op": "bundle-open",
+        "archive": protocol::hex_encode(&archive),
+        "manifest": manifest,
+        "trustedKeys": ["abcd"],
+    }));
+    assert_eq!(answer["error"]["kind"], "request", "{answer}");
+
+    // Opening a bundle is not an exchange: the instance still starts one.
+    assert!(PAIRING.with(|p| p.borrow().is_none()) && CONNECTION.with(|c| c.borrow().is_none()));
+}

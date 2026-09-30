@@ -32,6 +32,17 @@
 //! | `connect-prove` | `signature` | `events` |
 //! | `connect-send` | `message` | `bytes` |
 //! | `relay-reply` | `text` | `reply`, and for a refusal `reason` and `message` |
+//! | `bundle-open` | `archive`, `manifest`, `trustedKeys` | `hash`, `files` |
+//!
+//! `bundle-open` (ADR 0005) is the one call that is not part of an
+//! exchange: it verifies a Companion bundle the shell fetched -- the
+//! archive is the one the manifest names, and the manifest's signer is
+//! one of `trustedKeys` and signed it -- and unpacks it. The archive
+//! goes in as hex, like every other byte that enters this core; the
+//! files come out as `{ path, data }` with `data` base64, because that
+//! is what the native store takes, and re-encoding a bundle's worth of
+//! bytes in the web layer is what this crate exists to spare it. A
+//! refusal is the `bundle` kind, with the verifier's own sentence.
 //!
 //! A connection's events are `send`, `prove` (the bare handshake hash),
 //! `connected` with the `deviceId`, `refused` with the Workstation's
@@ -97,6 +108,13 @@ enum Call {
     /// Reads one of the Relay's text frames.
     RelayReply {
         text: String,
+    },
+    /// Verifies a fetched Companion bundle under the keys the shell
+    /// trusts, and unpacks it.
+    BundleOpen {
+        archive: String,
+        manifest: protocol::BundleManifest,
+        trusted_keys: Vec<String>,
     },
 }
 
@@ -318,6 +336,30 @@ fn answer(call: Call) -> Result<Value, Failure> {
             }
             Err(e) => Err(Failure::request(format!("not a reply from a Relay: {e}"))),
         },
+        Call::BundleOpen { archive, manifest, trusted_keys } => {
+            use protocol::companion_bundle::{encode_chunk, unpack, verify};
+            let archive = bytes("archive", &archive)?;
+            let trusted = trusted_keys
+                .iter()
+                .map(|key| {
+                    let key = bytes("trustedKeys", key)?;
+                    <[u8; 32]>::try_from(key)
+                        .map_err(|_| Failure::request("a trusted key is 32 bytes"))
+                })
+                .collect::<Result<Vec<_>, Failure>>()?;
+            verify(&archive, &manifest, &trusted).map_err(|e| Failure { kind: "bundle", message: e.to_string() })?;
+            let files = unpack(&archive).map_err(|e| Failure {
+                kind: "bundle",
+                message: format!("the bundle's archive cannot be unpacked: {e}"),
+            })?;
+            Ok(json!({
+                "hash": manifest.hash,
+                "files": files
+                    .iter()
+                    .map(|f| json!({ "path": f.path, "data": encode_chunk(&f.data) }))
+                    .collect::<Vec<_>>(),
+            }))
+        }
     }
 }
 
