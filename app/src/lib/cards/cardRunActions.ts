@@ -51,13 +51,42 @@ import { UNREVIEWED_UNATTENDED } from "$lib/cards/cardReview";
 import { INTERRUPTED_REASON, shouldQueueForMainAgent } from "$lib/agents/queuedInput";
 import { queueFollowUp, queueTargetFor } from "$lib/agents/queuedInputActions";
 import { cardViewForPath, type CardView } from "$lib/core/planBoard";
-import { holdOrQueue, type CardIntent } from "$lib/agents/launchQueue";
+import { holdOrQueue, type CardIntent, type NewLaunchIntent } from "$lib/agents/launchQueue";
 import { launchDecision } from "$lib/agents/agentPauseState";
 import { isSshWorkspace, sshRunBlocked } from "$lib/workspace/sshWorkspace";
 import { sshLinks } from "$lib/workspace/sshLinkState";
 import { fallbackBlockedReason } from "$lib/agents/agentFallback";
 import { requestArm } from "$lib/agents/agentFallbackState";
 import { turnVerdictById } from "$lib/agents/turnVerdictState";
+
+/// Where a card launch meets the surface that asked for it.
+///
+/// Three steps of a launch are about the DESK rather than the card:
+/// putting the human in front of a live session instead of starting a
+/// second, the launch wall, and placing the new session as a tab. At the
+/// desk all three act on the desk's own layout and queue
+/// (`DESK_LAUNCH_HOST`, the default). A Device must do none of them
+/// there -- the desk's pages are the desk's to arrange (companion spec,
+/// story 35), and a queue drains only in the window that holds it -- so
+/// the Companion hands in its own. Everything else a launch does, which
+/// is nearly all of it, stays this one flow on both.
+export interface CardLaunchHost {
+  /// Shows the card's bound session if it is live, in
+  /// `jumpToBoundSession`'s words.
+  jump(workspaceId: string, path: string): Promise<"jumped" | "interrupted" | "failed" | "exited" | "none">;
+  /// The launch wall. Anything but `go` stops the launch, with the
+  /// sentence to report, or null where stopping is no failure: the desk
+  /// has QUEUED it, and the card's own badge says so.
+  hold(intent: NewLaunchIntent): { go: true } | { go: false; error: string | null };
+  /// Places a session the launch started.
+  place(workspaceId: string, sessionId: string): void;
+}
+
+export const DESK_LAUNCH_HOST: CardLaunchHost = {
+  jump: (workspaceId, path) => jumpToBoundSession(workspaceId, path),
+  hold: (intent) => (holdOrQueue(intent) ? { go: false, error: null } : { go: true }),
+  place: (workspaceId, sessionId) => handleAgentSessionSpawned(workspaceId, sessionId),
+};
 
 function agentForNewLaunch(
   workspaceId: string,
@@ -283,8 +312,12 @@ export function sshLaunchBlocker(workspaceId: string): string | null {
   );
 }
 
-export function runCard(workspaceId: string, card: CardView): Promise<string | null> {
-  return launchCard(workspaceId, card, "run");
+export function runCard(
+  workspaceId: string,
+  card: CardView,
+  host: CardLaunchHost = DESK_LAUNCH_HOST
+): Promise<string | null> {
+  return launchCard(workspaceId, card, "run", { host });
 }
 
 // Resume: the same launch, with the prompt that tells the agent work on
@@ -302,7 +335,7 @@ export function resumeCard(
   ///
   /// `withoutHeadroom` is auto-resume's, for a run whose agent broke on
   /// Headroom: the relaunch goes around it (`relaunchesWithoutHeadroom`).
-  options: { automatic?: boolean; withoutHeadroom?: boolean } = {}
+  options: { automatic?: boolean; withoutHeadroom?: boolean; host?: CardLaunchHost } = {}
 ): Promise<string | null> {
   return launchCard(workspaceId, card, "resume", options);
 }
@@ -489,11 +522,12 @@ async function launchCard(
   workspaceId: string,
   card: CardView,
   mode: "run" | "resume" | "review",
-  options: { automatic?: boolean; queued?: boolean; withoutHeadroom?: boolean } = {}
+  options: { automatic?: boolean; queued?: boolean; withoutHeadroom?: boolean; host?: CardLaunchHost } = {}
 ): Promise<string | null> {
   if (card.kind === "note") return "Notes are not runnable";
+  const host = options.host ?? DESK_LAUNCH_HOST;
 
-  if ((await jumpToBoundSession(workspaceId, card.id)) === "jumped") return null;
+  if ((await host.jump(workspaceId, card.id)) === "jumped") return null;
   const state = get(layoutState);
   const binding = cardSessionFor(get(kanbanState)[workspaceId], card.id);
   // Re-checked rather than trusted from the jump above, which is async:
@@ -562,7 +596,7 @@ async function launchCard(
   // already cleared the gate; asking again there would re-queue it for
   // ever.
   if (!options.queued) {
-    const held = holdOrQueue({
+    const held = host.hold({
       kind: "card",
       workspaceId,
       label: card.title,
@@ -574,10 +608,10 @@ async function launchCard(
       // decided against the proxy it broke on.
       ...(options.withoutHeadroom ? { withoutHeadroom: true as const } : {}),
     });
-    // Null, not the sentence: being queued is not a failure, and the
-    // board's error strip is for failures. The card's own queued badge
-    // is what says so.
-    if (held) return null;
+    // At the desk a held launch is QUEUED, and its error is null rather
+    // than the sentence: being queued is not a failure, and the board's
+    // error strip is for failures. The card's own queued badge says so.
+    if (!held.go) return held.error;
   }
 
   const resolved = await resolveAttachmentsForRun(workspaceId, card.attachments ?? []);
@@ -759,7 +793,7 @@ async function launchCard(
     // has been asked of the model yet (headroomMark.ts, `reachCheckDue`).
     noteReopenedConversation(resumed);
     void armFailureDetection(resumed, agent.failurePatterns);
-    handleAgentSessionSpawned(workspaceId, resumed);
+    host.place(workspaceId, resumed);
     const name = provisionalSessionName(card.title);
     if (name) await setSessionName(resumed, name);
     // The SAME conversation id: resuming appends to that transcript
@@ -853,7 +887,7 @@ async function launchCard(
     return `Couldn't start the agent: ${e instanceof Error ? e.message : e}`;
   }
   void armFailureDetection(sessionId, agent.failurePatterns);
-  handleAgentSessionSpawned(workspaceId, sessionId);
+  host.place(workspaceId, sessionId);
   // Named before the agent has drawn a frame. The agent's own
   // gavin_name_session replaces this the moment it runs -- but that call
   // is the FIRST thing it does and the first thing to break when the
@@ -1032,9 +1066,10 @@ export async function sendToMainAgent(workspaceId: string, card: CardView): Prom
 export async function relaunchCard(
   workspaceId: string,
   path: string,
-  options: { queued?: boolean } = {}
+  options: { queued?: boolean; host?: CardLaunchHost } = {}
 ): Promise<string | null> {
   if (!cardSessionFor(get(kanbanState)[workspaceId], path)) return "No session remembered for this card";
+  const host = options.host ?? DESK_LAUNCH_HOST;
   // Re-launch replays the ORIGINAL prompt, which for a card being
   // developed is the very text the develop agent is replacing -- so it is
   // the launch with the most to lose from ignoring this gate, not the
@@ -1054,16 +1089,15 @@ export async function relaunchCard(
   // would leave the card pointing at a session that never started.
   if (!options.queued) {
     const card = cardViewForPath(get(gavinTrees)[workspaceId], path);
-    if (holdOrQueue({
+    const held = host.hold({
       kind: "card",
       workspaceId,
       label: card?.title ?? path,
       cardPath: path,
       mode: "relaunch",
       automatic: false,
-    })) {
-      return null;
-    }
+    });
+    if (!held.go) return held.error;
   }
   // Through the card's OWN agent, not the workspace's, because the
   // command being replayed is the one that card LAUNCHED with -- and
@@ -1109,7 +1143,7 @@ export async function relaunchCard(
     return `Couldn't re-launch: ${e instanceof Error ? e.message : e}`;
   }
   void armFailureDetection(sessionId, agent.failurePatterns);
-  handleAgentSessionSpawned(workspaceId, sessionId);
+  host.place(workspaceId, sessionId);
   await linkCardSessionAction(workspaceId, {
     ...binding,
     sessionId,
