@@ -22,6 +22,7 @@
   import PhoneCard from "$companion/surfaces/PhoneCard.svelte";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
   import PhonePrd from "$companion/surfaces/PhonePrd.svelte";
+  import PhoneRails from "$companion/surfaces/PhoneRails.svelte";
   import PhoneSessions from "$companion/surfaces/PhoneSessions.svelte";
   import PhoneTerminal from "$companion/surfaces/PhoneTerminal.svelte";
   import { trackVisibleArea } from "$companion/surfaces/viewport";
@@ -124,6 +125,12 @@
           <div class="scroll">
             {#key open.id}
               <PhoneSessions workspace={open} />
+            {/key}
+          </div>
+        {:else if $view.surface === "rails"}
+          <div class="scroll">
+            {#key open.id}
+              <PhoneRails workspace={open} />
             {/key}
           </div>
         {:else}

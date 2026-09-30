@@ -10,7 +10,7 @@
 // elsewhere (workstation.ts).
 
 /// The surfaces a workspace opens on.
-export const SURFACES = ["board", "sessions"] as const;
+export const SURFACES = ["board", "rails", "sessions"] as const;
 export type Surface = (typeof SURFACES)[number];
 
 /// What is open over a workspace's board: one of its cards, by path, or

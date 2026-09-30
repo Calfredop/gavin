@@ -307,9 +307,18 @@ function commandLine(command: string): string {
 /// placed (companion-16): as a tab on its workspace's Agents page, the
 /// page a card's run lands on, and says so. A session under no
 /// workspace's folder is left running where nobody at the desk placed it.
+///
+/// `place` is for the one session the demo starts that is NOT a Device's:
+/// a rail's step, which the desk's own scheduler places on the rail's
+/// page (railCommands.ts).
 export function launch(
   demo: DemoContext,
-  options: { cwd: string | null; command: string | null; workspaceRoot?: string | null }
+  options: {
+    cwd: string | null;
+    command: string | null;
+    workspaceRoot?: string | null;
+    place?: (sessionId: string) => void;
+  }
 ): string {
   demo.state.launched += 1;
   const id = `s-demo-${demo.state.launched}`;
@@ -329,7 +338,8 @@ export function launch(
     : { output: prompt(folderLabel(cwd)), program: { kind: "shell", cwd, line: "" } };
   demo.emit("cwd-changed", [id, cwd]);
   demo.emit("session-status-changed", [id, "idle"]);
-  placeAtDesk(demo, id, options.workspaceRoot || options.cwd);
+  if (options.place) options.place(id);
+  else placeAtDesk(demo, id, options.workspaceRoot || options.cwd);
   return id;
 }
 

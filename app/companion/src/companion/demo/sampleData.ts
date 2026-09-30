@@ -8,8 +8,9 @@
 // Two real projects and a Scratchpad, chosen so the first surfaces have
 // every case to draw: a plan with nested tasks, a card an agent is
 // waiting on a human about, a status no column matches, a second context,
-// a rail in mid-run, and a workspace with no root at all. The cards are
-// files (sampleCards.ts), and the trees are what a scan of them reads.
+// a rail in mid-run and one waiting to be started, and a workspace with
+// no root at all. The cards are files (sampleCards.ts), and the trees
+// are what a scan of them reads.
 import type { QueuedInput } from "$lib/agents/queuedInput";
 import type { SessionBaseline } from "$lib/core/backend";
 import type { Board } from "$lib/board/kanban";
@@ -246,6 +247,33 @@ function orchestrations(): Record<string, Orchestration> {
               id: "stage-auth-2",
               position: 1,
               steps: [{ id: "step-rate-limit", position: 0, cardPath: `${plans}/login-rate-limit.md` }],
+            },
+          ],
+        },
+        {
+          // Idle, with work on it: the rail a phone is picked up to start.
+          id: "rail-fixes",
+          name: "fixes",
+          position: 1,
+          worktreePath: null,
+          branch: null,
+          pageId: null,
+          stages: [
+            {
+              id: "stage-fixes-1",
+              position: 0,
+              steps: [{ id: "step-flaky-expiry", position: 0, cardPath: `${plans}/flaky-expiry-test.md` }],
+            },
+            {
+              id: "stage-fixes-2",
+              position: 1,
+              steps: [
+                {
+                  id: "step-proration",
+                  position: 0,
+                  cardPath: `${DEMO.atlasRoot}/services/billing/.gavin/plans/proration.md`,
+                },
+              ],
             },
           ],
         },

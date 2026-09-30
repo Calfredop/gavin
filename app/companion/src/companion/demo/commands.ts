@@ -9,11 +9,13 @@
 // here rather than a demo that quietly renders nothing.
 //
 // A board's and a card's commands have a table of their own
-// (cardCommands.ts), gathered in with the rest below.
+// (cardCommands.ts), and so do a workspace's rails (railCommands.ts),
+// gathered in with the rest below.
 import { agentLastLine } from "$lib/agents/turnVerdict";
 import type { GavinTree } from "$lib/core/gavin";
 import { DemoFailure, type Answer, type DemoCommand, type DemoContext } from "$companion/demo/answer";
 import { CARD_COMMANDS } from "$companion/demo/cardCommands";
+import { RAIL_COMMANDS } from "$companion/demo/railCommands";
 import { end, launch, repaint, screenText, type } from "$companion/demo/sessions";
 
 export { DemoFailure, type DemoCommand, type DemoContext } from "$companion/demo/answer";
@@ -96,8 +98,6 @@ const WORK: Record<string, DemoCommand> = {
       }),
     };
   },
-  get_orchestration: (args, demo): Answer<"getOrchestration"> =>
-    demo.state.orchestrations[workspaceId(args, demo)],
 
   get_gavin_tree: (args, demo): Answer<"getGavinTree"> => treeOf(workspaceId(args, demo), demo),
   // Answers with nothing and then pushes, as the desktop's does: the
@@ -258,4 +258,4 @@ const TABLES: Record<string, DemoCommand> = {
   watchman_status: (): Answer<"watchmanStatus"> => null,
 };
 
-export const COMMANDS: Record<string, DemoCommand> = { ...WORK, ...TABLES, ...CARD_COMMANDS };
+export const COMMANDS: Record<string, DemoCommand> = { ...WORK, ...TABLES, ...CARD_COMMANDS, ...RAIL_COMMANDS };

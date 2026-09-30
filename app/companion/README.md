@@ -137,7 +137,9 @@ it beside the desk. `window.ts` gives the bundle a label no desktop window has,
 which turns every one of the desktop's own gates to "not here".
 `seam/railScheduler.test.ts` loads a rail that is owed work and reads the wire;
 `seam/railSchedulerControl.test.ts` runs the same state as `"main"` and watches
-it act, which is what makes the silence mean something.
+it act, which is what makes the silence mean something. `seam/rails.test.ts`
+drives every rail action with the scheduler's two doors watched, and fails
+if either opens.
 
 For the same reason the bundle does **not** call `layoutState.bootstrap()`.
 That bootstrap is the desk's: it starts every duty that must run in one place
@@ -154,6 +156,13 @@ sample data — the thing App Review explores, and the suites' only fixture.
   the desktop's own wire types. Its cards are files (`sampleCards.ts`), and
   its trees are what a scan of them reads (`cardFiles.ts`, the daemon's own
   parse and writers in `gavin.rs`, cut down).
+- `railCommands.ts` — a workspace's orchestration: the plan and run-state
+  writes, with the daemon's guard on taking a live step off the plan, and a
+  desk that ticks after each one -- launching a rail's card steps on a page
+  of the rail's own, marking them done as their cards reach Done, moving the
+  rail on -- and announces what it wrote as `orchestration-written`, as a
+  desk's host does. It ticks as time passes too (`advance`), so a card moved
+  to Done from the phone moves its rail on.
 - `cardCommands.ts` — a board's and a card's commands over those files: a
   write edits one, then the trees are read again and pushed as
   `gavin-tree-changed`, and a watched file is said to have changed, exactly
@@ -185,8 +194,8 @@ demo lacks, that is where it shows.
 
 ## Terminals (companion-26)
 
-A workspace opens on two surfaces, Board and Sessions (`state/viewState.ts`
-remembers which). Sessions lists the workspace's own agent and every page's
+A workspace opens on three surfaces, Board, Rails and Sessions
+(`state/viewState.ts` remembers which). Sessions lists the workspace's own agent and every page's
 terminals in the desk's tab order, with the desk's names and badges
 (`surfaces/sessionList.ts`), and starts a New agent or a New terminal the way
 the desk does (`state/sessions.ts`: the same `resolvedAgentFor`, profile and
@@ -278,13 +287,39 @@ Every action is the desk's, called from `state/cards.ts`:
 `seam/cards.test.ts` drives each of these against the Demo Workstation and
 reads every command they send.
 
+## Rails (companion-28)
+
+A workspace's third surface, between Board and Sessions: each rail's state
+and the one press that moves it -- Start while idle with work left, Pause
+while running, Resume once paused -- with Reset for a paused or finished
+rail, and its stages and steps (`surfaces/phoneRails.ts`, the desk's own
+joins). A running step opens its agent's terminal; any other opens its card.
+Edit opens one rail for changing: its name, a card added as a stage of its
+own or into a stage, a group's mode, a stage moved up or down or taken off,
+a step taken off, the rail deleted. Every write is the desk's own action
+from `orchestrationState.ts` (`state/rails.ts`), with the desk's confirms
+for a delete, a group and a reset.
+
+**Start arms; the desk runs.** `startRail` and `resumeRail` write the rail's
+run row and then ask for a pass of the scheduler, which in the bundle is
+gated shut -- so each is one `set_rail_run` on the wire and nothing more.
+The desk's host announces a Device's orchestration write to the desk's
+windows as `orchestration-written`, the event they tell each other with
+(`forwarding::announce_orchestration_written`), and the window that runs the
+workspace's rails re-reads and ticks. It announces every window's writes to
+the Devices under the same event, and the bundle re-reads on it -- and on
+`orchestration-changed`, an agent's write -- through the desk's own debounced
+re-read (`rereadAfterOtherWindowWrote`), so the phone watches the desk run
+what it armed. A card added into the stage a rail is running is started the
+same way: by the desk.
+
 ## What is here, and what is not
 
-The workspace list, one workspace's board and its cards (above), and its
-sessions and terminals. An inbox item lands on its card, or on the terminal
+The workspace list, one workspace's board and its cards (above), its rails,
+and its sessions and terminals. An inbox item lands on its card, or on the terminal
 of the session it names. How this bundle reaches a phone — built and signed
 by the desktop build, served by the Workstation, verified and cached by the
 shell — is the shell's README's ("Served bundles").
 
-Rails, Git, files and settings are the cards that follow (companion-28 to
--30), each extending the Demo Workstation to match.
+Git, files and settings are the cards that follow (companion-29 and -30),
+each extending the Demo Workstation to match.

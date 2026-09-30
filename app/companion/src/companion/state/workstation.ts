@@ -21,6 +21,7 @@ import { gavinTrees, initGavinListeners, refreshGavinTree } from "$lib/core/gavi
 import { handleCwdChanged, handleSessionStatusChanged, layoutState } from "$lib/core/layoutState";
 import { parseSessionStatus } from "$lib/core/notifications";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
+import { rereadAfterOtherWindowWrote } from "$lib/orchestration/orchestrationState";
 import { allSessionIds } from "$lib/panes/layout";
 import { destroyTerminal } from "$lib/terminal/terminalRegistry";
 import { themeState } from "$lib/ui/themeState.svelte";
@@ -320,6 +321,23 @@ export async function connectWorkstation(
       })
     );
     stops.push(await initGavinListeners());
+    // A workspace's orchestration, written at the desk -- by its
+    // scheduler, as it runs a rail this phone armed -- or by an agent,
+    // or by this phone. Re-read, never merged: the Workstation's copy is
+    // the one every window agrees on. The desk's own re-read, so a burst
+    // is read once and a save of this phone's in flight is waited for.
+    // A plan arriving ticks the desk's scheduler by hand, and here that
+    // pass is gated shut (`runsRailsFor`).
+    stops.push(
+      await listen<{ origin: string; payload: string }>("orchestration-written", (event) => {
+        rereadAfterOtherWindowWrote(event.payload.payload);
+      })
+    );
+    stops.push(
+      await listen<[string, unknown]>("orchestration-changed", (event) => {
+        rereadAfterOtherWindowWrote(event.payload[0]);
+      })
+    );
     // What the sessions list and the terminals read. Each is recorded in
     // memory only: the desk's handlers for these persist what they hear
     // (a name, a closed tab), and that is the desk's to do once.

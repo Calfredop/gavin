@@ -1,6 +1,6 @@
 <script lang="ts">
-  // The open workspace's surfaces, one tap apart: its board and its
-  // sessions.
+  // The open workspace's surfaces, one tap apart: its board, its rails
+  // and its sessions.
   import type { Surface } from "$companion/state/viewState";
 
   interface Props {
@@ -14,6 +14,7 @@
 
   const TABS: { surface: Surface; label: string }[] = [
     { surface: "board", label: "Board" },
+    { surface: "rails", label: "Rails" },
     { surface: "sessions", label: "Sessions" },
   ];
 </script>
