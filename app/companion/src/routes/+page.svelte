@@ -8,6 +8,7 @@
   import {
     connection,
     connectWorkstation,
+    landing,
     openWorkspace,
     returnToHub,
     showWorkspaces,
@@ -78,7 +79,7 @@
         />
         <p class="scope">Board · view only</p>
         {#key open.id}
-          <PhoneBoard workspace={open} />
+          <PhoneBoard workspace={open} landing={$landing} />
         {/key}
       {:else}
         <PhoneHeader

@@ -5,6 +5,7 @@
 // word on a card; what this adds is only the shape a narrow screen needs
 // -- a flat list of columns, which one to open on, and each card's agent
 // as a badge rather than as a control.
+import type { Landing } from "$companion/channel/messages";
 import { cardSessionState } from "$lib/board/columnRunAction";
 import type { Board, Label } from "$lib/board/kanban";
 import { cardSessionFor } from "$lib/board/kanbanState";
@@ -130,4 +131,21 @@ export function columnAt(keys: string[], scrollLeft: number, width: number): str
   if (width <= 0 || keys.length === 0) return null;
   const index = Math.min(keys.length - 1, Math.max(0, Math.round(scrollLeft / width)));
   return keys[index];
+}
+
+/// The card an inbox item lands on: the card the item names, or the card
+/// whose agent is the session it names. Null when the board is not here
+/// yet, or names neither -- then the workspace's board is the landing,
+/// which is still the right workspace.
+export function landingCard(board: Board | undefined, landing: Landing | null): string | null {
+  if (!board || !landing) return null;
+  const { target } = landing;
+  if (target.kind === "card") return target.path;
+  return board.cardSessions.find((cs) => cs.sessionId === target.id)?.path ?? null;
+}
+
+/// The key of the column holding `cardId`, or null.
+export function columnOf(columns: PhoneColumn[], cardId: string | null): string | null {
+  if (cardId === null) return null;
+  return columns.find((c) => c.cards.some((card) => card.id === cardId))?.key ?? null;
 }

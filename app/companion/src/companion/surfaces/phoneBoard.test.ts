@@ -4,6 +4,8 @@ import { DEMO, sampleState } from "$companion/demo/sampleData";
 import {
   cardAgent,
   columnAt,
+  columnOf,
+  landingCard,
   openingColumn,
   phoneBoard,
   scrollBehaviour,
@@ -207,5 +209,33 @@ describe("which column a swipe has settled on", () => {
   it("is none before the pager has a width, or a column", () => {
     expect(columnAt(keys, 0, 0)).toBeNull();
     expect(columnAt([], 0, 390)).toBeNull();
+  });
+});
+
+describe("where an inbox item lands", () => {
+  const board = () => state().boards[DEMO.atlas];
+
+  it("is the card the item names, and the column holding it", () => {
+    const card = board().cardSessions[0].path;
+    const landing = { workspace: DEMO.atlas, target: { kind: "card" as const, path: card } };
+    expect(landingCard(board(), landing)).toBe(card);
+    const column = columnOf(atlas()!.columns, card);
+    expect(column).not.toBeNull();
+    expect(atlas()!.columns.find((c) => c.key === column)!.cards.some((c) => c.id === card)).toBe(true);
+  });
+
+  it("is the card whose agent is the session the item names", () => {
+    const binding = board().cardSessions[0];
+    const landing = { workspace: DEMO.atlas, target: { kind: "session" as const, id: binding.sessionId } };
+    expect(landingCard(board(), landing)).toBe(binding.path);
+  });
+
+  it("is nowhere in particular before the board is here, with no item, or for a session no card runs", () => {
+    const landing = { workspace: DEMO.atlas, target: { kind: "session" as const, id: "no-such-session" } };
+    expect(landingCard(undefined, landing)).toBeNull();
+    expect(landingCard(board(), null)).toBeNull();
+    expect(landingCard(board(), landing)).toBeNull();
+    expect(columnOf(atlas()!.columns, null)).toBeNull();
+    expect(columnOf(atlas()!.columns, "/nowhere.md")).toBeNull();
   });
 });

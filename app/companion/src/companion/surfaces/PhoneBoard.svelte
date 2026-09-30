@@ -8,9 +8,12 @@
   import { attentionStatusById, layoutState } from "$lib/core/layoutState";
   import type { Workspace } from "$lib/core/workspace";
   import StatusBadge from "$lib/ui/StatusBadge.svelte";
+  import type { Landing } from "$companion/channel/messages";
   import {
     cardAgent,
     columnAt,
+    columnOf,
+    landingCard,
     openingColumn,
     phoneBoard,
     scrollBehaviour,
@@ -18,11 +21,15 @@
 
   interface Props {
     workspace: Workspace;
+    /// The inbox item this board was opened for, if one: its card is
+    /// revealed, and the board opens on that card's column.
+    landing?: Landing | null;
   }
-  let { workspace }: Props = $props();
+  let { workspace, landing = null }: Props = $props();
 
   const board = $derived(phoneBoard($kanbanState[workspace.id], $gavinTrees[workspace.id]));
   const columns = $derived(board?.columns ?? []);
+  const landed = $derived(landingCard($kanbanState[workspace.id], landing));
   // Read through the store so a failed load redraws; the message itself
   // is kept beside the boards, not in them.
   const loadError = $derived.by(() => {
@@ -42,19 +49,29 @@
   // not the human's choice to follow.
   let heading: string | null = null;
 
-  // The column the board opens on, once, when its columns first arrive.
-  // Not again afterwards: every push redraws the board, and a column the
-  // human swiped to must not be taken from under their thumb.
+  // The column the board opens on, once, when its columns first arrive:
+  // the landed card's, else the one work is in flight on. Not again
+  // afterwards: every push redraws the board, and a column the human
+  // swiped to must not be taken from under their thumb.
   $effect(() => {
     if (!pager || columns.length === 0) return;
     untrack(() => {
       if (shown !== null && columns.some((c) => c.key === shown)) return;
-      const opening = openingColumn(columns);
+      const opening = columnOf(columns, landed) ?? openingColumn(columns);
       shown = opening;
       const index = columns.findIndex((c) => c.key === opening);
       if (pager && index > 0) pager.scrollLeft = index * pager.clientWidth;
     });
   });
+
+  /// Brings the landed card into view, once it is drawn.
+  function reveal(node: HTMLElement, isLanded: boolean): { update(next: boolean): void } {
+    const show = (on: boolean): void => {
+      if (on) node.scrollIntoView({ block: "center" });
+    };
+    show(isLanded);
+    return { update: show };
+  }
 
   function show(key: string): void {
     const index = columns.findIndex((c) => c.key === key);
@@ -145,13 +162,15 @@
                 <span class="agent"><StatusBadge indicator={badge} size={13} text={badge.tip} tip={null} /></span>
               {/if}
             {/snippet}
-            <BoardCard
-              {card}
-              labelDefs={board.labels}
-              onOpen={stay}
-              workspaceId={null}
-              adornment={badge ? agent : undefined}
-            />
+            <div class="slot" class:landed={card.id === landed} use:reveal={card.id === landed}>
+              <BoardCard
+                {card}
+                labelDefs={board.labels}
+                onOpen={stay}
+                workspaceId={null}
+                adornment={badge ? agent : undefined}
+              />
+            </div>
           {:else}
             <p class="hint">Nothing here.</p>
           {/each}
@@ -171,6 +190,13 @@
   }
   .note.problem {
     color: var(--danger-text);
+  }
+  /* The card an inbox item landed on: outlined, so the eye finds it in
+     the column the board opened on. */
+  .slot.landed {
+    border-radius: 8px;
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .board {
     display: flex;

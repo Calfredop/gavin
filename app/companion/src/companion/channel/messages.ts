@@ -65,6 +65,14 @@ export type WorkstationMessage =
   | ResultMessage
   | { v: number; type: "event"; listener: number; event: string; payload: unknown };
 
+/// Where a bundle should land once open: the target of the inbox item
+/// the human tapped in the hub, and the workspace it belongs to. The
+/// shape is the attention item's (`protocol::attention`).
+export interface Landing {
+  workspace: string;
+  target: { kind: "session"; id: string } | { kind: "card"; path: string };
+}
+
 /// The answer to `capabilities`, as a `result`'s value.
 export interface Capabilities {
   /// The channel version the other end speaks.
@@ -74,6 +82,25 @@ export interface Capabilities {
   messages: string[];
   /// Which Workstation this channel reaches -- the only one it reaches.
   workstation: { id: string; name: string; demo: boolean };
+  /// Where to land, when the shell opened this bundle for an inbox item.
+  /// Optional, and read only by a bundle that knows it: an older shell
+  /// sends none, an older bundle ignores it.
+  landing?: Landing;
+}
+
+/// A landing as the wire carried it, or null for one this build cannot
+/// land on -- a target kind it has never heard of is not a place.
+export function readLanding(value: unknown): Landing | null {
+  if (!isRecord(value) || typeof value.workspace !== "string" || !value.workspace) return null;
+  const target = value.target;
+  if (!isRecord(target)) return null;
+  if (target.kind === "session" && typeof target.id === "string" && target.id) {
+    return { workspace: value.workspace, target: { kind: "session", id: target.id } };
+  }
+  if (target.kind === "card" && typeof target.path === "string" && target.path) {
+    return { workspace: value.workspace, target: { kind: "card", path: target.path } };
+  }
+  return null;
 }
 
 /// What a bundle may assume of any shell that answers at all, including
