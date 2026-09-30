@@ -10,6 +10,8 @@
 // phone keeps its own list of what it started, for this visit.
 import { get, writable, type Readable } from "svelte/store";
 import * as backend from "$lib/core/backend";
+import { loadAgentPause } from "$lib/agents/agentPauseState";
+import { normalizeRequireReview } from "$lib/cards/cardReview";
 import {
   agentDefaultsStore,
   agentModelDefaultsStore,
@@ -18,6 +20,7 @@ import {
   customResumeArgsDefault,
   layoutState,
   profileIdForLaunch,
+  requireReviewDefault,
   resolvedAgentFor,
 } from "$lib/core/layoutState";
 
@@ -36,15 +39,20 @@ export const launchTables: Readable<LaunchTables> = { subscribe: tablesStore.sub
 
 /// Reads the agent tables the desk's bootstrap reads, once per visit. A
 /// failed read leaves them unread, so the next showing of the list tries
-/// again.
+/// again. Two of the desk's launch settings ride along, because a phone
+/// that guessed at either would launch where the desk would not: whether a
+/// card's first run asks the human to read it first, and the agents'
+/// pause window.
 export async function loadLaunchTables(): Promise<void> {
   if (get(tablesStore) !== "unread") return;
   tablesStore.set("reading");
-  const [profiles, models, defaults, resumeArgs] = await Promise.all([
+  const [profiles, models, defaults, resumeArgs, requireReview] = await Promise.all([
     backend.agentProfiles().catch(() => null),
     backend.getAgentModelDefaults().catch(() => null),
     backend.getAgentDefaults().catch(() => null),
     backend.getCustomResumeArgs().catch(() => null),
+    backend.getRequireReview().catch(() => null),
+    loadAgentPause(),
   ]);
   if (!profiles || !models || !defaults) {
     tablesStore.set("unread");
@@ -56,6 +64,7 @@ export async function loadLaunchTables(): Promise<void> {
   // Workstation's config does not have yet reads as "nobody chose".
   agentDefaultsStore.update((empty) => ({ ...empty, ...defaults }));
   customResumeArgsDefault.set(resumeArgs);
+  requireReviewDefault.set(normalizeRequireReview(requireReview));
   tablesStore.set("ready");
 }
 
@@ -74,8 +83,14 @@ export async function startSession(workspaceId: string, kind: SessionKind): Prom
   } else {
     id = await backend.createSession(root, undefined, root);
   }
-  startedHereStore.update((started) => ({ ...started, [id]: workspaceId }));
+  recordStarted(id, workspaceId);
   return id;
+}
+
+/// A session this Device started in a workspace, by whatever launched it:
+/// a New agent or terminal, or a card's run.
+export function recordStarted(sessionId: string, workspaceId: string): void {
+  startedHereStore.update((started) => ({ ...started, [sessionId]: workspaceId }));
 }
 
 /// Ends a session. What it ran stops at the Workstation; the desk closes

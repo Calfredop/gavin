@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   backToWorkspaces,
+  closePage,
   closeTerminal,
   initialView,
   loadView,
+  openPage,
   openTerminal,
   openWorkspace,
   reconcileSession,
@@ -74,6 +76,45 @@ describe("where the Companion is looking", () => {
     expect(reconcileSession(terminal, ["s1", "s2"])).toBe(terminal);
     const list = closeTerminal(terminal);
     expect(reconcileSession(list, [])).toBe(list);
+  });
+});
+
+describe("a page over a board", () => {
+  const CARD = { kind: "card" as const, path: "/r/.gavin-root/plans/a.md" };
+
+  it("opens a card, or the PRD, over the board, and closes back to it", () => {
+    const sessions = showSurface(openWorkspace(initialView(), "ws-1"), "sessions");
+    const card = openPage(sessions, CARD);
+    expect(card).toEqual({ workspaceId: "ws-1", surface: "board", sessionId: null, page: CARD });
+    expect(closePage(card).page).toBeUndefined();
+    expect(openPage(card, { kind: "prd" }).page).toEqual({ kind: "prd" });
+  });
+
+  it("is closed by going anywhere else", () => {
+    const card = openPage(openWorkspace(initialView(), "ws-1"), CARD);
+    expect(showSurface(card, "sessions").page).toBeUndefined();
+    expect(openWorkspace(card, "ws-2").page).toBeUndefined();
+    expect(backToWorkspaces(card).page).toBeUndefined();
+    expect(openTerminal("ws-1", "s-1").page).toBeUndefined();
+  });
+
+  it("is remembered on the Device, and one this bundle cannot open is dropped for the board", () => {
+    const storage = memoryStorage();
+    const card = openPage(openWorkspace(initialView(), "ws-1"), CARD);
+    saveView(storage, "w", card);
+    expect(loadView(storage, "w")).toEqual(card);
+
+    const stored = (page: unknown) =>
+      memoryStorage({ [viewKey("w")]: JSON.stringify({ workspaceId: "ws-1", surface: "board", sessionId: null, page }) });
+    expect(loadView(stored({ kind: "rails" }), "w")).toEqual({ workspaceId: "ws-1", surface: "board", sessionId: null });
+    expect(loadView(stored({ kind: "card", path: 3 }), "w").page).toBeUndefined();
+    expect(loadView(stored({ kind: "prd" }), "w").page).toEqual({ kind: "prd" });
+  });
+
+  it("is only ever over a workspace's board", () => {
+    const stored = (view: object) => memoryStorage({ [viewKey("w")]: JSON.stringify({ ...view, page: { kind: "prd" } }) });
+    expect(loadView(stored({ workspaceId: null, surface: "board", sessionId: null }), "w").page).toBeUndefined();
+    expect(loadView(stored({ workspaceId: "ws-1", surface: "sessions", sessionId: null }), "w").page).toBeUndefined();
   });
 });
 

@@ -12,6 +12,7 @@ import { LAYOUT_SAVING_COMMANDS } from "$companion/remote/remoteRole";
 import { endSession, launchTables, loadLaunchTables, startedHere, startSession } from "$companion/state/sessions";
 import { viewKey } from "$companion/state/viewState";
 import {
+  closePage,
   closeTerminal,
   connectWorkstation,
   land,
@@ -102,13 +103,21 @@ describe("an inbox item", () => {
     expect(get(landing)).toBeNull();
   });
 
-  it("naming a card lands on the board, whichever surface was last chosen", async () => {
+  it("naming a card opens that card over the board, whichever surface was last chosen", async () => {
     await visit();
     openWorkspace(DEMO.atlas);
     showSurface("sessions");
     const where = { workspace: DEMO.atlas, target: { kind: "card" as const, path: "/x/.gavin-root/plans/a.md" } };
     land(where);
-    expect(get(view)).toEqual({ workspaceId: DEMO.atlas, surface: "board", sessionId: null });
+    expect(get(view)).toEqual({
+      workspaceId: DEMO.atlas,
+      surface: "board",
+      sessionId: null,
+      page: { kind: "card", path: "/x/.gavin-root/plans/a.md" },
+    });
+    // ...and the board under it outlines the card, once the human is back
+    // on it.
+    closePage();
     expect(get(landing)).toEqual(where);
   });
 

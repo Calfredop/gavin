@@ -19,7 +19,9 @@
     view,
   } from "$companion/state/workstation";
   import PhoneBoard from "$companion/surfaces/PhoneBoard.svelte";
+  import PhoneCard from "$companion/surfaces/PhoneCard.svelte";
   import PhoneHeader from "$companion/surfaces/PhoneHeader.svelte";
+  import PhonePrd from "$companion/surfaces/PhonePrd.svelte";
   import PhoneSessions from "$companion/surfaces/PhoneSessions.svelte";
   import PhoneTerminal from "$companion/surfaces/PhoneTerminal.svelte";
   import { trackVisibleArea } from "$companion/surfaces/viewport";
@@ -63,6 +65,12 @@
   });
 
   const open = $derived($layoutState.workspaces.find((w) => w.id === $view.workspaceId) ?? null);
+  // What a page over the board is drawn afresh for: another card, or the
+  // PRD. A card whose file moved is the same card, found by its name, and
+  // keeps what its page holds.
+  const pageKey = $derived(
+    $view.page?.kind === "card" ? $view.page.path.slice($view.page.path.lastIndexOf("/") + 1) : ($view.page?.kind ?? null)
+  );
   const ready = $derived($connection.status === "ready" ? $connection : null);
   const waiting = $derived(
     open
@@ -95,6 +103,14 @@
       {#if open && $view.sessionId}
         {#key $view.sessionId}
           <PhoneTerminal sessionId={$view.sessionId} />
+        {/key}
+      {:else if open && $view.page}
+        {#key `${open.id}:${pageKey}`}
+          {#if $view.page.kind === "card"}
+            <PhoneCard workspace={open} path={$view.page.path} />
+          {:else}
+            <PhonePrd workspace={open} />
+          {/if}
         {/key}
       {:else if open}
         <PhoneHeader

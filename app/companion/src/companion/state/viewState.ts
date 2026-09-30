@@ -13,6 +13,10 @@
 export const SURFACES = ["board", "sessions"] as const;
 export type Surface = (typeof SURFACES)[number];
 
+/// What is open over a workspace's board: one of its cards, by path, or
+/// its PRD.
+export type BoardPage = { kind: "card"; path: string } | { kind: "prd" };
+
 export interface ViewState {
   /// The workspace whose surface is open, or null at the workspace list.
   workspaceId: string | null;
@@ -21,6 +25,9 @@ export interface ViewState {
   surface: Surface;
   /// The terminal open over the workspace's sessions, or null.
   sessionId: string | null;
+  /// The page open over its board. Absent on the board itself, and
+  /// wherever the view is not on a board.
+  page?: BoardPage;
 }
 
 /// The part of `Storage` this needs, so a suite can hand it a map and a
@@ -35,11 +42,11 @@ export function initialView(): ViewState {
 }
 
 export function openWorkspace(view: ViewState, workspaceId: string): ViewState {
-  return { ...view, workspaceId, sessionId: null };
+  return { ...view, workspaceId, sessionId: null, page: undefined };
 }
 
 export function showSurface(view: ViewState, surface: Surface): ViewState {
-  return { ...view, surface, sessionId: null };
+  return { ...view, surface, sessionId: null, page: undefined };
 }
 
 /// A session's terminal, over its workspace's list of sessions -- which
@@ -48,12 +55,22 @@ export function openTerminal(workspaceId: string, sessionId: string): ViewState 
   return { workspaceId, surface: "sessions", sessionId };
 }
 
+/// A card, or the PRD, over the open workspace's board -- which is where
+/// closing it goes back to.
+export function openPage(view: ViewState, page: BoardPage): ViewState {
+  return { ...view, surface: "board", sessionId: null, page };
+}
+
+export function closePage(view: ViewState): ViewState {
+  return { ...view, page: undefined };
+}
+
 export function closeTerminal(view: ViewState): ViewState {
   return { ...view, sessionId: null };
 }
 
 export function backToWorkspaces(view: ViewState): ViewState {
-  return { ...view, workspaceId: null, sessionId: null };
+  return { ...view, workspaceId: null, sessionId: null, page: undefined };
 }
 
 /// The view, given the workspaces the Workstation has NOW. One removed at
@@ -78,6 +95,15 @@ function isSurface(value: unknown): value is Surface {
   return (SURFACES as readonly unknown[]).includes(value);
 }
 
+/// A stored page, or undefined for one this bundle cannot open.
+function readPage(value: unknown): BoardPage | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { kind, path } = value as Record<string, unknown>;
+  if (kind === "prd") return { kind };
+  if (kind === "card" && typeof path === "string" && path !== "") return { kind, path };
+  return undefined;
+}
+
 /// What was remembered for a Workstation, or the workspace list when
 /// nothing usable was. Never throws: storage on a phone can be absent,
 /// full, or written by a bundle newer than this one.
@@ -91,18 +117,22 @@ export function loadView(storage: ViewStorage | null, workstationId: string): Vi
     return initialView();
   }
   if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return initialView();
-  const { workspaceId, surface, sessionId } = stored as Record<string, unknown>;
+  const { workspaceId, surface, sessionId, page } = stored as Record<string, unknown>;
   if (workspaceId !== null && typeof workspaceId !== "string") return initialView();
   // A surface this bundle does not have is one a newer bundle saved; the
   // workspace is still the right one to open, on its board.
   const known = isSurface(surface);
-  return {
+  const view: ViewState = {
     workspaceId: workspaceId ?? null,
     surface: known ? surface : "board",
     // Written by a bundle older than terminals, or for a surface this one
     // cannot draw: no terminal.
     sessionId: known && workspaceId && typeof sessionId === "string" ? sessionId : null,
   };
+  // A page is over a board, and only over the board of a workspace. One
+  // this bundle cannot open is dropped, and the board shown under it.
+  const over = workspaceId && view.surface === "board" && view.sessionId === null ? readPage(page) : undefined;
+  return over ? { ...view, page: over } : view;
 }
 
 /// Best-effort: a view that could not be saved costs the human one tap

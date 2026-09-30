@@ -22,12 +22,14 @@ function importedFrom(text: string, module: string): string[] {
 
 describe("what the bundle takes from the desktop's layout state", () => {
   // Every ACTION that module exports ends in a save of the desk's pages
-  // and tabs. The stores are what the desktop's components read, and the
-  // handlers only record what the Workstation said. The launch helpers
-  // are what a new session is made of at the desk -- the agent a
-  // workspace resolves to, the profile a launch names, the failure
-  // patterns it arms -- and save nothing; placing the session is the
-  // action, and that is the desk's.
+  // and tabs -- but one. The stores are what the desktop's components
+  // read, and the handlers only record what the Workstation said. The
+  // launch helpers are what a new session is made of at the desk -- the
+  // agent a workspace resolves to, the profile a launch names, the
+  // failure patterns it arms -- and save nothing; placing the session is
+  // the action, and that is the desk's. The one action is the review
+  // stamp: it saves a workspace SETTING (which cards the human has read),
+  // which the Remote role may write (ADR 0006), never the layout.
   const ALLOWED = [
     // stores
     "layoutState",
@@ -36,6 +38,7 @@ describe("what the bundle takes from the desktop's layout state", () => {
     "agentModelDefaultsStore",
     "agentDefaultsStore",
     "customResumeArgsDefault",
+    "requireReviewDefault",
     // handlers
     "handleSessionStatusChanged",
     "handleCwdChanged",
@@ -43,6 +46,8 @@ describe("what the bundle takes from the desktop's layout state", () => {
     "resolvedAgentFor",
     "profileIdForLaunch",
     "armFailureDetection",
+    // a workspace setting
+    "stampCardReview",
   ];
 
   it("is its stores and its handlers, never its actions", () => {
@@ -71,6 +76,7 @@ describe("what the bundle takes from the desktop's layout state", () => {
         "customResumeArgsDefault",
         "layoutState",
         "profileIdForLaunch",
+        "requireReviewDefault",
         "resolvedAgentFor",
       ]
     );
@@ -114,6 +120,38 @@ describe("the board surface", () => {
     for (const module of ["cardRunActions", "cardDelete", "kanbanDragGlue", "archiveActions"]) {
       expect(board()).not.toContain(module);
     }
+  });
+});
+
+describe("acting on a card", () => {
+  const cards = () => codeOf(companionSource("companion/state/cards.ts"));
+
+  it("launches only with the Device's host, which places nothing at the desk", () => {
+    // Without a host the desk's launch flow places the session as a tab,
+    // jumps the desk's view to it and queues in the desk's queue -- the
+    // desk's layout and duties, from a phone.
+    const calls = [...cards().matchAll(/\b(runCard|resumeCard|relaunchCard)\(([^;]*?)\);/gs)];
+    expect(calls.map((c) => c[1]).sort()).toEqual(["relaunchCard", "resumeCard", "runCard"]);
+    for (const [call] of calls) expect(call).toContain("DEVICE_LAUNCH_HOST");
+  });
+
+  it("archives with its own ender, which leaves the desk's tabs to the desk", () => {
+    expect(cards()).toMatch(/executeArchive\([^)]*,\s*endAway\)/);
+  });
+
+  it("is reached from the phone's surfaces only through this module", () => {
+    for (const [name, text] of Object.entries(companionSources())) {
+      if (name === "companion/state/cards.ts" || name.endsWith(".test.ts")) continue;
+      for (const module of ["cardRunActions", "archiveActions", "decisionsActions", "cardCompletion"]) {
+        expect(codeOf(text), `${name} imports ${module}`).not.toContain(`/${module}"`);
+      }
+    }
+  });
+
+  it("answers an item with the Decisions tab's own row", () => {
+    const page = codeOf(companionSource("companion/surfaces/PhoneCard.svelte"));
+    expect(page).toContain('import DecisionsItemRow from "$lib/decisions/DecisionsItemRow.svelte"');
+    expect(page).toContain("<DecisionsItemRow");
   });
 });
 

@@ -66,9 +66,10 @@ shell wants the bundle to land, when it opened it for an inbox item — the
 item's workspace and its target, a session or a card (`readLanding`). The
 shell hands it over in the first `capabilities` answer and never again.
 The bundle opens the terminal of the session the item names, where the
-workspace still holds it; otherwise that workspace's board on the card the
-item names, or on the card whose agent is the session it names
-(`landingCard`), outlined until the human goes somewhere else.
+workspace still holds it; otherwise the card the item names, over its
+workspace's board, or that board on the card whose agent is the session it
+names (`landingCard`) — outlined on the board until the human goes somewhere
+else.
 
 **The shell's side of the contract** (companion-19, `app/companion-shell/`):
 put an object at `window.gavinChannel` with `postMessage(string)` and an
@@ -231,16 +232,59 @@ of them; narrowing that is a protocol change of its own.
 Workstation, with a real xterm fed from the wire as the phone's screen
 (`testing/phoneScreen.ts`).
 
+## The board and its cards (companion-27)
+
+The board draws the desktop's own `BoardCard` with no workspace id, which is
+the card the desk draws in previews — no Run, no session jump, no drag — with
+the card's agent and the decisions and tests waiting on the human as badges
+under it. A tap opens the card, or the nested task it landed on, as a page
+over the board (`ViewState.page`, remembered on the Device); closing it goes
+back to the board on that card's column (`returnedFrom`). The bar above the
+columns files a new card and opens the workspace's PRD.
+
+The card page (`surfaces/PhoneCard.svelte`, over `surfaces/phoneCard.ts`)
+leads with the desk's own session bar (`cardSituation`, `cardSessionBar`),
+cut to the actions a Device can take: jump to the agent, run, resume, run
+again. Several agents, a develop run and ending a stray process stay at the
+desk. Under it: the title, the column, what waits on the human — the
+Decisions tab's own `DecisionsItemRow`, fitted to a finger where it lives —
+the checklist without those items (they are answered, not ticked), the
+body, the plan's tasks, and Archive or Restore. A card whose file moves is
+found again by its name under the same `plans/`, and the view follows it.
+
+Every action is the desk's, called from `state/cards.ts`:
+
+- **Move** asks what the board's drag asks before a plan takes its tasks
+  into `done/` (`guardCompletion`). **Rename** writes the title; the file
+  keeps its name. **Tick** is the guarded `set_checklist_item`, and a
+  refusal reads the card again.
+- **Answer, pass, fail** are the Decisions tab's `answerHumanItem`, confirm
+  and message to the card's agent included.
+- **Archive** is the card menu's `executeArchive`, handed an ender of the
+  phone's own: the card's live agents are stopped at the Workstation, and a
+  desk tab showing the card is left to the desk.
+- **New card** is the composer's `buildCreatePlanArgs`, read as reviewed
+  (the human typed it) and placed at the end of its column.
+- **Run** is the desk's one launch flow (`cardRunActions.ts`), first-run
+  review and all, with `DEVICE_LAUNCH_HOST` in place of the desk's
+  (`CardLaunchHost`): a live agent is shown in the phone's terminal rather
+  than by moving the desk's tabs, the launch wall refuses rather than
+  queueing into a queue only the desk's window drains, and the session is
+  the desk's to place — as a labelled tab on the workspace's Agents page
+  (companion-16). The phone only notes it started it.
+- **The PRD** is read, and kept current while it is open, from the path the
+  desk's PRD tab edits (`resolvePrdPath`).
+
+`seam/cards.test.ts` drives each of these against the Demo Workstation and
+reads every command they send.
+
 ## What is here, and what is not
 
-The workspace list, one workspace's board, to read, and its sessions and
-terminals (above). The board draws the desktop's own `BoardCard` with no
-workspace id, which is the card the desk draws in previews — no Run, no
-session jump, no drag. An inbox item lands on its card, or on the terminal of
-the session it names. How this bundle reaches a phone — built and signed by
-the desktop build, served by the Workstation, verified and cached by the
+The workspace list, one workspace's board and its cards (above), and its
+sessions and terminals. An inbox item lands on its card, or on the terminal
+of the session it names. How this bundle reaches a phone — built and signed
+by the desktop build, served by the Workstation, verified and cached by the
 shell — is the shell's README's ("Served bundles").
 
-Opening a card, acting on one, rails, Git, files and settings are the cards
-that follow (companion-27 to -30), each extending the Demo Workstation to
-match.
+Rails, Git, files and settings are the cards that follow (companion-28 to
+-30), each extending the Demo Workstation to match.

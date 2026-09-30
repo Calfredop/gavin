@@ -31,9 +31,11 @@ import { forgetSession, resetSessions, startedHere } from "$companion/state/sess
 import { resetTurns, turnMovedOn } from "$companion/state/turn";
 import {
   backToWorkspaces,
+  closePage as closePageIn,
   closeTerminal as closeTerminalIn,
   initialView,
   loadView,
+  openPage as openPageIn,
   openTerminal as openTerminalIn,
   openWorkspace as openWorkspaceIn,
   reconcileSession,
@@ -66,9 +68,16 @@ const viewStore = writable<ViewState>(initialView());
 /// Device -- a landing is for this opening alone.
 const landingStore = writable<Landing | null>(null);
 
+/// The card the human has just come back from to its board, which the
+/// board opens on: a phone that drew the board afresh on the column work
+/// is in flight in would lose their place every time they looked at a
+/// card. In memory only, like a landing.
+const returnedFromStore = writable<string | null>(null);
+
 export const connection: Readable<Connection> = { subscribe: connectionStore.subscribe };
 export const view: Readable<ViewState> = { subscribe: viewStore.subscribe };
 export const landing: Readable<Landing | null> = { subscribe: landingStore.subscribe };
+export const returnedFrom: Readable<string | null> = { subscribe: returnedFromStore.subscribe };
 
 /// Writes a view down on the Device. Null until a Workstation is
 /// connected, since a view belongs to one.
@@ -76,6 +85,10 @@ let remember: ((next: ViewState) => void) | null = null;
 
 /// The one door every change of view goes through.
 function show(next: ViewState): void {
+  const before = get(viewStore);
+  returnedFromStore.set(
+    before.page?.kind === "card" && !next.page && next.workspaceId === before.workspaceId ? before.page.path : null
+  );
   viewStore.set(next);
   // The desktop's modules ask `layoutState` which workspace is open.
   // Answering them in memory is what keeps them right on a phone; the
@@ -136,12 +149,42 @@ export function closeTerminal(): void {
   show(closeTerminalIn(get(viewStore)));
 }
 
+/// One of the open workspace's cards, over its board.
+export function openCard(path: string): void {
+  if (get(viewStore).workspaceId === null) return;
+  landingStore.set(null);
+  show(openPageIn(get(viewStore), { kind: "card", path }));
+}
+
+/// The open workspace's PRD, over its board.
+export function openPrd(): void {
+  if (get(viewStore).workspaceId === null) return;
+  landingStore.set(null);
+  show(openPageIn(get(viewStore), { kind: "prd" }));
+}
+
+/// Back from a card or the PRD to the board under it, on the card's
+/// column. An inbox item's card stays outlined there: coming back to the
+/// board from the card it landed on is not going somewhere else.
+export function closePage(): void {
+  show(closePageIn(get(viewStore)));
+}
+
+/// The open card's file moved -- Done files it under `done/`, archiving
+/// under `archive/` -- and its path is its identity, so the view follows.
+export function followCard(from: string, to: string): void {
+  const current = get(viewStore);
+  if (from === to || current.page?.kind !== "card" || current.page.path !== from) return;
+  show(openPageIn(current, { kind: "card", path: to }));
+}
+
 /// Lands where the shell asked. A session the workspace holds opens its
 /// terminal, which is the place an agent waiting on the human is
-/// answered; anything else opens the board with the item's card (or the
-/// card running its session) for the board to reveal. A workspace this
-/// Workstation no longer has is not a place, and the view stays where it
-/// was remembered.
+/// answered; a card opens over its board, which is where a decision is
+/// answered and a human test passed; anything else opens the board with
+/// the card running the item's session, for the board to reveal. A
+/// workspace this Workstation no longer has is not a place, and the view
+/// stays where it was remembered.
 export function land(where: Landing): void {
   const ws = get(layoutState).workspaces.find((w) => w.id === where.workspace);
   if (!ws) return;
@@ -151,7 +194,8 @@ export function land(where: Landing): void {
     return;
   }
   landingStore.set(where);
-  show(showSurfaceIn(openWorkspaceIn(get(viewStore), ws.id), "board"));
+  const board = showSurfaceIn(openWorkspaceIn(get(viewStore), ws.id), "board");
+  show(where.target.kind === "card" ? openPageIn(board, { kind: "card", path: where.target.path }) : board);
 }
 
 /// Leaves this Workstation for the Workstations hub.
