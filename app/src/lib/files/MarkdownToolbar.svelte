@@ -94,4 +94,19 @@
     margin: 0 4px;
     background: var(--border);
   }
+
+  /* A phone's width (the Companion). Wrapped, the bar grows a second and
+     third row inside a strip one row tall, and the strip clips them; in
+     one row that scrolls sideways, every button stays a swipe away. */
+  @media (max-width: 600px) {
+    .format-bar {
+      flex: 1 1 auto;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .format-bar > :global(*) {
+      flex: 0 0 auto;
+    }
+  }
 </style>
