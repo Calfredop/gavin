@@ -1,5 +1,20 @@
 apply plugin: 'com.android.application'
 
+// The Play upload key, for `bundleRelease`. Play re-signs with the app
+// signing key it holds (Play App Signing); this one only proves an upload
+// is ours. It never enters the repository: `android/keystore.properties`
+// (gitignored) or the environment names the keystore and its passwords.
+// Without either, a release build is left unsigned, which Play refuses.
+def uploadKey = new Properties()
+def uploadKeyFile = rootProject.file('keystore.properties')
+if (uploadKeyFile.exists()) {
+    uploadKeyFile.withInputStream { uploadKey.load(it) }
+}
+def uploadKeyValue = { String name, String env ->
+    uploadKey.getProperty(name) ?: System.getenv(env)
+}
+def uploadStoreFile = uploadKeyValue('storeFile', 'GAVIN_ANDROID_UPLOAD_KEYSTORE')
+
 android {
     namespace = "com.gavin.companion"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,7 +22,9 @@ android {
         applicationId "com.gavin.companion"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
+        // Each upload to Play needs a higher versionCode; the store
+        // wizard passes it (-PversionCodeOverride=N), a plain build is 1.
+        versionCode((project.findProperty('versionCodeOverride') ?: '1') as Integer)
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
@@ -16,8 +33,21 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (uploadStoreFile) {
+            upload {
+                storeFile rootProject.file(uploadStoreFile)
+                storePassword uploadKeyValue('storePassword', 'GAVIN_ANDROID_UPLOAD_STORE_PASSWORD')
+                keyAlias uploadKeyValue('keyAlias', 'GAVIN_ANDROID_UPLOAD_KEY_ALIAS')
+                keyPassword uploadKeyValue('keyPassword', 'GAVIN_ANDROID_UPLOAD_KEY_PASSWORD')
+            }
+        }
+    }
     buildTypes {
         release {
+            if (uploadStoreFile) {
+                signingConfig signingConfigs.upload
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

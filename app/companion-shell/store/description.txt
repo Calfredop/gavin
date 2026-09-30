@@ -1,0 +1,10 @@
+Gavin Companion puts your Gavin desktop in your pocket: see what your coding agents are doing, and which of them are waiting for you, while you are away from the desk.
+
+- One hub for every desktop you pair, with a single inbox of the agent sessions that need you.
+- Each workspace's kanban board, live: the cards, their columns and the agents working on them. Tap an inbox item to go straight to its card.
+- Pair each phone once at your desk by scanning a code. Face ID or your passcode unlocks it after that.
+- Everything goes through your own desktop, which must be running, and is end-to-end encrypted on the way. No account, no analytics, no ads.
+
+Try it right away: the built-in Demo Workstation runs sample projects with simulated agents, with no pairing and no account.
+
+Gavin Companion needs the Gavin desktop app on your Mac, Windows or Linux computer.
