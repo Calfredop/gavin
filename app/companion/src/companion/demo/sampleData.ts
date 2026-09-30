@@ -8,12 +8,15 @@
 // Two real projects and a Scratchpad, chosen so the first surfaces have
 // every case to draw: a plan with nested tasks, a card an agent is
 // waiting on a human about, a status no column matches, a second context,
-// a rail in mid-run, and a workspace with no root at all.
+// a rail in mid-run, and a workspace with no root at all. The two
+// projects' files and Git histories are sampleProjects.ts.
 import type { SessionBaseline } from "$lib/core/backend";
 import type { Board } from "$lib/board/kanban";
 import type { GavinContext, GavinTree, PlanFileInfo } from "$lib/core/gavin";
 import type { Workspace, WorkspacesData } from "$lib/core/workspace";
 import type { Orchestration } from "$lib/orchestration/orchestration";
+import type { DemoRepo } from "$companion/demo/repo";
+import { projectFiles, sampleRepos } from "$companion/demo/sampleProjects";
 
 export const DEMO = {
   workstation: { id: "demo", name: "Demo Workstation", demo: true },
@@ -35,8 +38,15 @@ export interface DemoState {
   orchestrations: Record<string, Orchestration>;
   sessions: SessionBaseline[];
   sessionNames: Record<string, string>;
-  /// Card bodies by path, for the viewer.
+  /// The machine's disk: every file, by absolute path. What the Files
+  /// surface lists and the editor reads and writes, and each repository's
+  /// working tree (sampleProjects.ts).
   files: Record<string, string>;
+  /// The Git repositories, by root.
+  repos: Record<string, DemoRepo>;
+  /// What is being watched, and by how many: a desk reports a file's or a
+  /// checkout's changes only while something watches it.
+  watches: { files: Record<string, number>; git: Record<string, number> };
 }
 
 function session(id: string, cwd: string, status: string): SessionBaseline {
@@ -440,6 +450,8 @@ export function sampleState(): DemoState {
       "s-atlas-billing": "invoice pdf",
       "s-notes-sync": "offline sync",
     },
-    files: {},
+    files: projectFiles({ atlas: DEMO.atlasRoot, notes: DEMO.notesRoot }),
+    repos: sampleRepos({ atlas: DEMO.atlasRoot, notes: DEMO.notesRoot }),
+    watches: { files: {}, git: {} },
   };
 }

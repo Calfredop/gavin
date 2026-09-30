@@ -7,29 +7,15 @@
 // Every answer is typed as what `backend.ts` says that command returns
 // (`Answer<...>`), so a desktop change to a wire shape is a type error
 // here rather than a demo that quietly renders nothing.
-import type * as backend from "$lib/core/backend";
+//
+// The Git tab's commands and the Files tab's have tables of their own
+// (gitCommands.ts, fileCommands.ts), gathered in with the rest below.
 import type { GavinTree } from "$lib/core/gavin";
-import type { DemoState } from "$companion/demo/sampleData";
+import { DemoFailure, type Answer, type DemoCommand, type DemoContext } from "$companion/demo/answer";
+import { FILE_COMMANDS } from "$companion/demo/fileCommands";
+import { GIT_COMMANDS } from "$companion/demo/gitCommands";
 
-/// A command the demo understood and would not, or could not, carry out.
-/// Its message is what the bundle's caller is told.
-export class DemoFailure extends Error {}
-
-export interface DemoContext {
-  state: DemoState;
-  /// What the desktop host does when it emits: every listener for the
-  /// event hears it.
-  emit(event: string, payload: unknown): void;
-}
-
-export type DemoCommand = (args: Record<string, unknown>, demo: DemoContext) => unknown;
-
-/// What the desktop's backend module promises for one of its functions.
-type Answer<K extends keyof typeof backend> = (typeof backend)[K] extends (
-  ...args: never[]
-) => Promise<infer R>
-  ? R
-  : never;
+export { DemoFailure, type DemoCommand, type DemoContext } from "$companion/demo/answer";
 
 function workspaceId(args: Record<string, unknown>, demo: DemoContext): string {
   const id = args.workspaceId;
@@ -55,9 +41,6 @@ const WORK: Record<string, DemoCommand> = {
     hosts: [],
   }),
   get_session_names: (_args, demo): Answer<"getSessionNames"> => demo.state.sessionNames,
-  // No demo session sits in a repository the demo could report on.
-  get_git_baselines: (args): Answer<"getGitBaselines"> =>
-    (Array.isArray(args.cwds) ? args.cwds : []).map(() => null),
   list_queued_inputs: (): Answer<"listQueuedInputs"> => [],
 
   get_board: (args, demo): Answer<"getBoard"> => demo.state.boards[workspaceId(args, demo)],
@@ -189,4 +172,9 @@ const TABLES: Record<string, DemoCommand> = {
   watchman_status: (): Answer<"watchmanStatus"> => null,
 };
 
-export const COMMANDS: Record<string, DemoCommand> = { ...WORK, ...TABLES };
+export const COMMANDS: Record<string, DemoCommand> = {
+  ...WORK,
+  ...TABLES,
+  ...GIT_COMMANDS,
+  ...FILE_COMMANDS,
+};

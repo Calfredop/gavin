@@ -149,10 +149,19 @@ in its place and fills the same stores through the desktop's own loaders.
 sample data — the thing App Review explores, and the suites' only fixture.
 
 - `sampleData.ts` — the machine: two projects and a Scratchpad, typed against
-  the desktop's own wire types.
+  the desktop's own wire types. `sampleProjects.ts` is the two projects'
+  files and Git histories: atlas-api mid-task (a change staged, one not, a
+  file untracked, a commit not pushed, a finished branch to merge, a branch
+  only on origin), field-notes clean.
 - `commands.ts` — one answer per desktop command name, each typed as what
   `backend.ts` says that command returns. A command with no entry is answered
-  with an error and recorded in `demo.unanswered()`.
+  with an error and recorded in `demo.unanswered()`. The Git tab's commands
+  are `gitCommands.ts`, over `repo.ts` (enough git for status, diffs,
+  staging, commits, branches, a merge and a push, refusals in git's words;
+  a merge that would conflict is refused whole); the Files tab's and the
+  editor's are `fileCommands.ts`. Both keep the host's fences, and both
+  report through `watches.ts`: `file-changed` and `git-changed` reach only
+  what is watched, as on a desk. A file saved in Files is a change in Git.
 - `activity.ts` — a loop of what agents do, so the demo changes while someone
   watches. The page advances it on a timer; a suite advances it by hand.
 - `workstation.ts` — the endpoint. Refuses what the Remote role is refused,
