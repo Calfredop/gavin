@@ -1,0 +1,3 @@
+<en-US>
+First internal test of Gavin Companion. Open the app and tap Demo Workstation: sample projects and simulated agents, with no account and no pairing. To try it with your own desktop, pair it from the desktop's Devices settings with remote access on.
+</en-US>

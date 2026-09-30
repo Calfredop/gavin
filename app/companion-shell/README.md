@@ -65,6 +65,31 @@ The embedded bundles (`ios/App/App/Bundles/`, `android/app/src/*/assets/bundles/
 and the hub copied into each project (`public/`) are build outputs and are
 not committed: a fresh checkout needs a sync before either project builds.
 
+## Store builds
+
+`scripts/store-submit.sh` walks the owner through a submission: the App
+Store with manual release, and Play internal testing (companion-24). What
+the stores are sent — review notes, description, listing, Play icon — is in
+`store/`, whose README says why it must describe the build and not the plan.
+
+- **Release sync.** `companion-shell:sync -- ios android --release`, so no
+  dev key goes in. A store build trusts only the key `publisherKey.ts` pins,
+  and while that is null it opens the Demo Workstation and nothing else.
+- **Android signing.** `bundleRelease` signs with the Play upload key named
+  in `android/keystore.properties` (gitignored: `storeFile`, `storePassword`,
+  `keyAlias`, `keyPassword`), or in `GAVIN_ANDROID_UPLOAD_KEYSTORE`,
+  `…_STORE_PASSWORD`, `…_KEY_ALIAS`, `…_KEY_PASSWORD`. Without either it
+  builds an unsigned AAB, which Play refuses. `-PversionCodeOverride=N` sets
+  the versionCode, which must rise with every upload.
+- **Privacy manifest.** `ios/App/App/PrivacyInfo.xcprivacy` declares the App
+  target's own `UserDefaults` reads. App Store Connect refuses an upload that
+  reads a required-reason API no manifest declares (ITMS-91053), so native
+  code that starts reading a new one declares it there too.
+- **Icons and launch images** are drawn from the desktop's
+  `app/src-tauri/icons/icon.svg` by `scripts/icons.mjs` (needs `rsvg-convert`
+  and `magick`). The PNGs are committed; run it again when the icon changes.
+  The iOS icon must stay opaque: App Store Connect refuses one with alpha.
+
 ## The probe
 
 ```

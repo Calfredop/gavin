@@ -1,0 +1,23 @@
+Gavin Companion is the phone half of Gavin, a desktop app (macOS, Windows, Linux) where people run and supervise AI coding agents. The phone app connects to the user's own running desktop and shows its work. It does not mirror the desktop's screen, and it is not a website wrapper: the app draws its own phone-sized interface from the desktop's data.
+
+HOW TO REVIEW (no account, no pairing, no server)
+1. Open the app. The Workstations hub lists "Demo Workstation".
+2. Tap it. It opens a working Workstation built into this binary, with sample projects and simulated agents that keep working while you watch.
+3. Pick a workspace to see its kanban board: the cards, their columns and the agents on them.
+Pairing a real desktop needs the user's own Gavin install and is not needed for review. The Demo Workstation is the same interface a paired desktop shows, at this binary's version.
+
+WHAT THIS VERSION DOES
+- The Workstations hub: the desktops paired with this phone, the Demo Workstation, and one inbox of agent sessions that are waiting for the user.
+- Pairing: scan the code a desktop shows, then check that both screens show the same six digits.
+- Unlock: Face ID or the device passcode unlocks the connection to paired desktops, and confirms each pairing.
+- A Workstation's workspaces and each workspace's board, live. Tapping an inbox item opens the card it belongs to.
+
+HOW THE INTERFACE IS DELIVERED
+- When a paired desktop is opened, it sends the interface code it speaks: a JavaScript bundle signed by the publisher, the same bundle as the Demo's, at that desktop's version. The app checks the signature against a key built into this binary and refuses anything unsigned or signed by another key.
+- The bundle runs in a separate web view that has no access to native APIs (no Capacitor or plugin bridge). Its only outlet is a closed set of messages the app itself handles: ask that one desktop for data, listen to its events, open a web link in Safari, and go back to the hub.
+- A bundle cannot add a native capability, ask for a permission, or change what the app is for. Those change only through App Store updates.
+- This is interpreted code that keeps the app's advertised purpose (Developer Program License Agreement 3.3.1(B)), and it exposes no native platform API to downloaded code (Guideline 4.7.2).
+
+PRIVACY AND NETWORK
+- Data travels between the phone and the user's own desktop, end-to-end encrypted, through a relay that only forwards the encrypted bytes. The publisher cannot read it. The app has no account, no analytics and no ads.
+- Face ID/passcode protects the phone's device key, which never leaves the Secure Enclave. The camera is used only to scan a pairing code.
