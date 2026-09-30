@@ -365,7 +365,8 @@ impl Workstation {
 
 /// A scripted desktop stand-in on the forwarding connection: answers
 /// every `ForwardCommand` with a fixed value, every `ForwardAttention`
-/// with fixed items, and can offer events.
+/// with fixed items, every `ForwardBundle` from the bundle it carries
+/// (if any), and can offer events.
 struct StandIn {
     /// What reached it, in order (command name, or `"__attention__"`).
     received: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
@@ -385,9 +386,27 @@ impl StandIn {
     /// Answers forwarded commands with `value` and attention asks with
     /// `items`.
     fn answering_with_attention(
+        desk: Desk,
+        value: serde_json::Value,
+        items: Vec<protocol::AttentionItem>,
+    ) -> Self {
+        Self::start(desk, value, items, None)
+    }
+
+    /// Answers bundle asks from `bundle` -- the manifest and the archive
+    /// it names -- or, with `None`, as a desktop that carries no bundle.
+    fn answering_with_bundle(
+        desk: Desk,
+        bundle: Option<(protocol::BundleManifest, Vec<u8>)>,
+    ) -> Self {
+        Self::start(desk, serde_json::json!(null), vec![], bundle)
+    }
+
+    fn start(
         mut desk: Desk,
         value: serde_json::Value,
         items: Vec<protocol::AttentionItem>,
+        bundle: Option<(protocol::BundleManifest, Vec<u8>)>,
     ) -> Self {
         let received = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -419,6 +438,30 @@ impl StandIn {
                         let resp = desk.request(&Request::AttentionResult {
                             call_id,
                             items: items.clone(),
+                        });
+                        assert!(matches!(resp, Response::Ok), "{resp:?}");
+                    }
+                    Ok(Some(Response::ForwardBundle { call_id, version, offset, length })) => {
+                        received_thread.lock().unwrap().push((
+                            "__bundle__".into(),
+                            serde_json::json!({ "version": version, "offset": offset, "length": length }),
+                        ));
+                        // What the desktop host does: the manifest it
+                        // embeds, and the slice the daemon asked for.
+                        let (manifest, data) = match &bundle {
+                            Some((manifest, archive)) => (
+                                Some(manifest.clone()),
+                                protocol::companion_bundle::encode_chunk(
+                                    protocol::companion_bundle::chunk(archive, offset, length),
+                                ),
+                            ),
+                            None => (None, String::new()),
+                        };
+                        let resp = desk.request(&Request::BundleResult {
+                            call_id,
+                            manifest,
+                            offset,
+                            data,
                         });
                         assert!(matches!(resp, Response::Ok), "{resp:?}");
                     }
@@ -752,6 +795,146 @@ fn the_attention_request_reports_desktop_app_not_running_when_the_stand_in_is_ab
             assert_eq!(version, protocol::ATTENTION_API_VERSION);
         }
         other => panic!("expected Attention, got {other:?}"),
+    }
+}
+
+/// The Companion bundle a Device asks for is the manifest first, then the
+/// archive a chunk at a time, each cut to the wire's cap; what comes back
+/// is byte for byte the archive the desktop signed, and verifies under
+/// the key that signed it (ADR 0005, companion-23).
+#[test]
+fn the_companion_bundle_is_served_in_chunks_and_verifies() {
+    use protocol::companion_bundle::{self, BUNDLE_CHUNK_MAX};
+
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    let mut connection = device.connect(&paired).unwrap();
+    assert_eq!(workstation.connected(), paired.device_id);
+
+    // Bigger than one chunk, so the fetch has to loop.
+    let big: Vec<u8> = (0..(BUNDLE_CHUNK_MAX as usize * 2 + 777)).map(|i| (i % 251) as u8).collect();
+    let archive = companion_bundle::pack(&[
+        ("index.html", b"<!doctype html>" as &[u8]),
+        ("_app/immutable/chunks/big.js", &big),
+    ])
+    .unwrap();
+    let seed = [42u8; 32];
+    let manifest = companion_bundle::sign(&archive, &seed, "test");
+    let stand_in = StandIn::answering_with_bundle(
+        workstation.open_forwarding(),
+        Some((manifest.clone(), archive.clone())),
+    );
+
+    let ask = |connection: &mut Connection, offset: u64, length: u64| -> (protocol::BundleManifest, u64, Vec<u8>) {
+        match connection
+            .request(
+                &Request::GetCompanionBundle {
+                    version: protocol::COMPANION_BUNDLE_API_VERSION,
+                    offset,
+                    length,
+                },
+                SOON,
+            )
+            .unwrap()
+        {
+            Response::CompanionBundle { version, state, manifest, offset, data } => {
+                assert_eq!(version, protocol::COMPANION_BUNDLE_API_VERSION);
+                assert_eq!(state, protocol::WorkstationState::Ready);
+                (manifest.expect("a manifest"), offset, companion_bundle::decode_chunk(&data).unwrap())
+            }
+            other => panic!("expected CompanionBundle, got {other:?}"),
+        }
+    };
+
+    // The manifest alone.
+    let (got, offset, data) = ask(&mut connection, 0, 0);
+    assert_eq!(got, manifest);
+    assert_eq!(offset, 0);
+    assert!(data.is_empty());
+
+    // A length past the cap is cut to it.
+    let (_, _, data) = ask(&mut connection, 0, u64::MAX);
+    assert_eq!(data.len() as u64, BUNDLE_CHUNK_MAX);
+    assert_eq!(data, archive[..BUNDLE_CHUNK_MAX as usize]);
+
+    // The whole archive, the way the shell fetches it.
+    let mut fetched = Vec::new();
+    while (fetched.len() as u64) < manifest.size {
+        let (_, offset, data) = ask(&mut connection, fetched.len() as u64, BUNDLE_CHUNK_MAX);
+        assert_eq!(offset, fetched.len() as u64);
+        assert!(!data.is_empty(), "an empty chunk before the end");
+        fetched.extend_from_slice(&data);
+    }
+    assert_eq!(fetched, archive);
+    companion_bundle::verify(&fetched, &manifest, &[companion_bundle::public_key(&seed)]).unwrap();
+    let files = companion_bundle::unpack(&fetched).unwrap();
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0].path, "_app/immutable/chunks/big.js");
+    assert_eq!(files[0].data, big);
+
+    // Under another key it is refused: the shell's store build trusts
+    // only the publisher's.
+    assert_eq!(
+        companion_bundle::verify(&fetched, &manifest, &[companion_bundle::public_key(&[1u8; 32])]),
+        Err(companion_bundle::BundleRefusal::UntrustedSigner)
+    );
+
+    // Every ask reached the desktop, cut to the cap before it got there.
+    eventually("the stand-in saw the bundle asks", || {
+        stand_in.received().iter().filter(|(name, _)| name == "__bundle__").count() >= 5
+    });
+    for (_, args) in stand_in.received().iter().filter(|(name, _)| name == "__bundle__") {
+        assert!(args["length"].as_u64().unwrap() <= BUNDLE_CHUNK_MAX);
+    }
+}
+
+/// A desktop that carries no bundle says so with a state that is ready
+/// and no manifest; with no desktop at all the answer is the "desktop
+/// app not running" state, as for attention.
+#[test]
+fn the_companion_bundle_says_when_there_is_none_to_serve() {
+    let relay = LocalRelay::start();
+    let mut workstation = Workstation::start(&relay);
+    workstation.reach(&relay);
+    let device = device(&relay, "Seam one iPhone");
+    let paired = workstation.pair(&device);
+    let mut connection = device.connect(&paired).unwrap();
+    let _ = workstation.connected();
+
+    let ask = |connection: &mut Connection| {
+        connection
+            .request(
+                &Request::GetCompanionBundle {
+                    version: protocol::COMPANION_BUNDLE_API_VERSION,
+                    offset: 0,
+                    length: 0,
+                },
+                SOON,
+            )
+            .unwrap()
+    };
+
+    // No forwarding connection.
+    match ask(&mut connection) {
+        Response::CompanionBundle { state, manifest, data, .. } => {
+            assert_eq!(state, protocol::WorkstationState::DesktopAppNotRunning);
+            assert!(manifest.is_none());
+            assert!(data.is_empty());
+        }
+        other => panic!("expected CompanionBundle, got {other:?}"),
+    }
+
+    // A desktop with nothing staged.
+    let _stand_in = StandIn::answering_with_bundle(workstation.open_forwarding(), None);
+    match ask(&mut connection) {
+        Response::CompanionBundle { state, manifest, .. } => {
+            assert_eq!(state, protocol::WorkstationState::Ready);
+            assert!(manifest.is_none());
+        }
+        other => panic!("expected CompanionBundle, got {other:?}"),
     }
 }
 

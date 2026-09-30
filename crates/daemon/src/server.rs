@@ -1538,6 +1538,8 @@ enum ForwardOutcome {
     Done { value: Option<serde_json::Value>, error: Option<String> },
     /// The desktop's answer to a `ForwardAttention`.
     Attention { items: Vec<protocol::AttentionItem> },
+    /// The desktop's answer to a `ForwardBundle` (v56).
+    Bundle { manifest: Option<protocol::BundleManifest>, offset: u64, data: String },
     DesktopGone,
 }
 
@@ -2058,6 +2060,7 @@ impl SessionManager {
                         Response::DesktopResult { value, error }
                     }
                     Ok(ForwardOutcome::Attention { .. })
+                    | Ok(ForwardOutcome::Bundle { .. })
                     | Ok(ForwardOutcome::DesktopGone)
                     | Err(_) => {
                         self.pending_forwards.lock().unwrap().remove(&call_id);
@@ -2119,6 +2122,7 @@ impl SessionManager {
                 version,
             },
             Ok(ForwardOutcome::Done { .. })
+            | Ok(ForwardOutcome::Bundle { .. })
             | Ok(ForwardOutcome::DesktopGone)
             | Err(_) => {
                 self.pending_forwards.lock().unwrap().remove(&call_id);
@@ -2127,6 +2131,69 @@ impl SessionManager {
                     items: vec![],
                     version,
                 }
+            }
+        }
+    }
+
+    /// Deliver a `BundleResult` to the waiter that owns `call_id`.
+    fn complete_bundle(
+        &self,
+        call_id: u64,
+        manifest: Option<protocol::BundleManifest>,
+        offset: u64,
+        data: String,
+    ) {
+        if let Some(tx) = self.pending_forwards.lock().unwrap().remove(&call_id) {
+            let _ = tx.send(ForwardOutcome::Bundle { manifest, offset, data });
+        }
+    }
+
+    /// Ask the desktop for the Companion bundle it carries -- the manifest
+    /// and the asked-for slice of the archive (ADR 0005). The bundle ships
+    /// inside the desktop app, so with no forwarding connection the
+    /// answer is the "desktop app not running" state, as for attention.
+    ///
+    /// `length` is cut to `BUNDLE_CHUNK_MAX` before the desktop sees it:
+    /// the cap is this wire's, and a Device that asks for more gets the
+    /// most one answer carries.
+    fn get_companion_bundle(&self, version: u32, offset: u64, length: u64) -> Response {
+        let absent = || Response::CompanionBundle {
+            version,
+            state: protocol::WorkstationState::DesktopAppNotRunning,
+            manifest: None,
+            offset: 0,
+            data: String::new(),
+        };
+        let writer = {
+            let slot = self.forwarding.lock().unwrap();
+            match slot.as_ref() {
+                Some((_, w)) => Arc::clone(w),
+                None => return absent(),
+            }
+        };
+        let length = length.min(protocol::companion_bundle::BUNDLE_CHUNK_MAX);
+        let call_id = self.next_forward_call.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        self.pending_forwards.lock().unwrap().insert(call_id, tx);
+        let push = Response::ForwardBundle { call_id, version, offset, length };
+        if write_message(&mut *writer.lock().unwrap(), &push).is_err() {
+            self.pending_forwards.lock().unwrap().remove(&call_id);
+            return absent();
+        }
+        match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+            Ok(ForwardOutcome::Bundle { manifest, offset, data }) => Response::CompanionBundle {
+                version,
+                state: protocol::WorkstationState::Ready,
+                manifest,
+                offset,
+                data,
+            },
+            Ok(ForwardOutcome::Done { .. })
+            | Ok(ForwardOutcome::Attention { .. })
+            | Ok(ForwardOutcome::DesktopGone)
+            | Err(_) => {
+                self.pending_forwards.lock().unwrap().remove(&call_id);
+                absent()
             }
         }
     }
@@ -5671,7 +5738,9 @@ pub fn handle_request(manager: &SessionManager, req: Request) -> Response {
         | Request::ForwardResult { .. }
         | Request::OfferDesktopEvent { .. }
         | Request::GetAttention { .. }
-        | Request::AttentionResult { .. } => {
+        | Request::AttentionResult { .. }
+        | Request::GetCompanionBundle { .. }
+        | Request::BundleResult { .. } => {
             Err(anyhow::anyhow!("gavin-daemon: forwarding request reached handle_request"))
         }
         // A client newer than this daemon sent a request type we don't
@@ -6107,13 +6176,16 @@ fn agent_allows(id: &ClientIdentity, req: &Request) -> bool {
         // Attention (v55): a Device's ask, or the desktop's answer.
         | Request::GetAttention { .. }
         | Request::AttentionResult { .. }
+        // The served bundle (v56): a Device's ask, or the desktop's answer.
+        | Request::GetCompanionBundle { .. }
+        | Request::BundleResult { .. }
         | Request::Unknown => false,
     }
 }
 
 /// What a `remote` connection may do: remove itself, ask the daemon to
-/// forward a gated desktop command or listen for a desktop event, and ask
-/// the attention request (ADR 0005).
+/// forward a gated desktop command or listen for a desktop event, ask
+/// the attention request, and fetch the Companion bundle (ADR 0005).
 ///
 /// ADR 0004 gives an unlocked Device everything the desktop app can do
 /// except manage Devices, and all of that is the desktop app's to do --
@@ -6130,6 +6202,7 @@ fn remote_allows(req: &Request) -> bool {
             | Request::ListenDesktop { .. }
             | Request::UnlistenDesktop { .. }
             | Request::GetAttention { .. }
+            | Request::GetCompanionBundle { .. }
     )
 }
 
@@ -6719,6 +6792,21 @@ fn serve_connection(
 
         if let Request::AttentionResult { call_id, items } = req {
             manager.complete_attention(call_id, items);
+            write_message(&mut *writer.lock().unwrap(), &Response::Ok)?;
+            continue;
+        }
+
+        // The served bundle (v56): a Device asks for the manifest and a
+        // slice of the archive; the desktop answers on the forwarding
+        // connection with BundleResult.
+        if let Request::GetCompanionBundle { version, offset, length } = req {
+            let resp = manager.get_companion_bundle(version, offset, length);
+            write_message(&mut *writer.lock().unwrap(), &resp)?;
+            continue;
+        }
+
+        if let Request::BundleResult { call_id, manifest, offset, data } = req {
+            manager.complete_bundle(call_id, manifest, offset, data);
             write_message(&mut *writer.lock().unwrap(), &Response::Ok)?;
             continue;
         }
@@ -7859,6 +7947,8 @@ mod tests {
             vec![
                 "GetAttention",
                 "GetAttention",
+                "GetCompanionBundle",
+                "GetCompanionBundle",
                 "InvokeDesktop",
                 "InvokeDesktop",
                 "ListenDesktop",
@@ -8004,6 +8094,12 @@ mod tests {
                 call_id: 1,
                 items: vec![],
             },
+            Request::GetCompanionBundle {
+                version: protocol::COMPANION_BUNDLE_API_VERSION,
+                offset: 0,
+                length: 0,
+            },
+            Request::BundleResult { call_id: 1, manifest: None, offset: 0, data: String::new() },
             Request::SetPushGatewayUrl { url: Some("https://push.example".into()) },
             Request::SetDeviceSendPermission {
                 device_id: "d1".into(),

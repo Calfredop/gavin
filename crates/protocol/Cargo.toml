@@ -20,6 +20,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 sha2 = "0.10"
+# The Companion bundle's signature (`companion_bundle`): verified by the
+# Companion core from `wasm32-unknown-unknown`, so pure Rust and no OS
+# random source. curve25519-dalek is already here under snow. Signing is
+# for the Rust tooling and the tests; the desktop build signs in Node.
+ed25519-dalek = "2"
+# The bundle's chunks cross the wire base64 in a JSON string.
+base64 = "0.22"
 
 # `Stream::server_pid` only. A connected socket knows which process is on
 # the other end of it, but std does not expose that on any unix -- the

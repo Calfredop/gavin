@@ -21,6 +21,7 @@ pub mod transport;
 // so both are here whether or not the `os` feature is: the Companion core
 // depends on them from `wasm32-unknown-unknown`.
 pub mod attention;
+pub mod companion_bundle;
 pub mod device_wire;
 pub mod relay;
 pub mod remote_commands;
@@ -28,6 +29,7 @@ pub mod remote_commands;
 pub use attention::{
     AttentionItem, AttentionKind, AttentionTarget, WorkstationState, ATTENTION_API_VERSION,
 };
+pub use companion_bundle::{BundleManifest, COMPANION_BUNDLE_API_VERSION};
 pub use remote_commands::{allowance_for, remote_command_table, RemoteAllowance};
 
 /// Cap on a single protocol line, so a client that never sends a newline
@@ -42,6 +44,18 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// connection-close an older daemon produces when it can't parse the
 /// probe at all -- into actionable "restart the daemon" errors instead of
 /// mysteries (see the 2026-08-07 stale-daemon incident).
+///
+/// v56 is the served Companion bundle (`companion-23`, ADR 0005): the
+/// Workstation serves the UI the Device runs. It adds `GetCompanionBundle`
+/// (a Device asks for the manifest and the archive, a chunk at a time)
+/// and `BundleResult` (the desktop answers a `ForwardBundle` push) -- two
+/// new TYPES, gated by `min_version_for`. Like the attention request the
+/// payload carries its own `COMPANION_BUNDLE_API_VERSION` and only ever
+/// grows by optional fields; nothing in the desktop UI sends it, so no
+/// `FEATURE_MIN_VERSION` entry is owed. Built at 56 on `companion/phone`
+/// while `main` and `companion/wire` were giving 56..58 to agent effort,
+/// Relay status, refused Devices and presence; the merge renumbers it,
+/// as the Device wire's five were renumbered before.
 ///
 /// v55 is the attention request (`companion-14`, ADR 0005): the one
 /// deliberately stable API between the Companion shell and a Workstation.
@@ -693,7 +707,7 @@ pub const MAX_LINE_BYTES: u64 = 1024 * 1024;
 /// is untouched -- the gate that matters is the app's
 /// FEATURE_MIN_VERSION.groups, because a v14 daemon parses the request
 /// fine and then drops both fields on the floor.
-pub const PROTOCOL_VERSION: u32 = 55;
+pub const PROTOCOL_VERSION: u32 = 56;
 
 /// The version that widened `CreateSession` with `profile_id`.
 ///
@@ -1694,6 +1708,43 @@ pub enum Request {
         items: Vec<AttentionItem>,
     },
 
+    /// A Device asks for the Companion UI bundle this Workstation serves
+    /// (v56, ADR 0005; `companion_bundle`).
+    ///
+    /// `version` is the bundle API version the Device reads
+    /// (`COMPANION_BUNDLE_API_VERSION`). `offset` and `length` name the
+    /// slice of the archive to carry along with the manifest; `length`
+    /// 0 asks for the manifest alone, and a length past
+    /// `BUNDLE_CHUNK_MAX` is cut to it. The daemon asks the desktop over
+    /// the forwarding connection (`ForwardBundle`) and answers with
+    /// `Response::CompanionBundle`; with no desktop connected the answer
+    /// is still `CompanionBundle`, carrying
+    /// `WorkstationState::DesktopAppNotRunning` -- the bundle ships inside
+    /// the desktop app, so there is nothing to serve without it.
+    GetCompanionBundle {
+        version: u32,
+        #[serde(default)]
+        offset: u64,
+        #[serde(default)]
+        length: u64,
+    },
+
+    /// The desktop's answer to a `ForwardBundle` (v56).
+    ///
+    /// Arrives on the forwarding connection. `manifest` is `None` when
+    /// this desktop build carries no bundle (a dev build that skipped
+    /// the staging step); otherwise `data` is the asked-for slice of the
+    /// archive, base64, and `offset` is where it starts.
+    BundleResult {
+        call_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        manifest: Option<BundleManifest>,
+        #[serde(default)]
+        offset: u64,
+        #[serde(default)]
+        data: String,
+    },
+
     /// Where this daemon posts Companion notification ciphertext.
     /// `None` / empty clears it; with no URL the daemon will not push.
     SetPushGatewayUrl {
@@ -2119,6 +2170,12 @@ pub fn min_version_for(req: &Request) -> u32 {
         // payload's own `ATTENTION_API_VERSION` is the compat gate for
         // fields, so no FEATURE_MIN_VERSION entry is owed.
         Request::GetAttention { .. } | Request::AttentionResult { .. } => 55,
+
+        // The served Companion bundle (v56 / companion-23). A Device asks;
+        // the desktop's forwarding connection answers. Two new TYPES. The
+        // payload's own `COMPANION_BUNDLE_API_VERSION` is the compat gate
+        // for fields, so no FEATURE_MIN_VERSION entry is owed.
+        Request::GetCompanionBundle { .. } | Request::BundleResult { .. } => 56,
 
         Request::Shutdown => 12,
 
@@ -2853,6 +2910,36 @@ pub enum Response {
     ForwardAttention {
         call_id: u64,
         version: u32,
+    },
+
+    /// The answer to `GetCompanionBundle` (v56, ADR 0005): the manifest
+    /// of the bundle this Workstation serves and the asked-for slice of
+    /// its archive.
+    ///
+    /// `state` is `DesktopAppNotRunning` when nothing can serve it, and
+    /// the rest is empty. `manifest` is `None` on a desktop that carries
+    /// no bundle. `version` is the bundle API version of this answer;
+    /// new optional fields may be added later, and an older reader
+    /// ignores what it has never heard of.
+    CompanionBundle {
+        version: u32,
+        state: WorkstationState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        manifest: Option<BundleManifest>,
+        #[serde(default)]
+        offset: u64,
+        #[serde(default)]
+        data: String,
+    },
+
+    /// Push to the desktop's forwarding connection (v56): answer with
+    /// `BundleResult { call_id, … }` carrying the manifest and the slice
+    /// `offset..offset+length` of the archive.
+    ForwardBundle {
+        call_id: u64,
+        version: u32,
+        offset: u64,
+        length: u64,
     },
 
     /// The answer to every Headroom request (v46): the status AFTER
@@ -5073,6 +5160,74 @@ mod tests {
         assert_eq!(v["call_id"], 3);
     }
 
+    /// The served bundle is gated at 56; the answer grows by optional
+    /// fields, and a manifest crosses in the camelCase the shell reads.
+    #[test]
+    fn get_companion_bundle_is_gated_at_56_and_grows_by_optional_fields() {
+        let req = Request::GetCompanionBundle {
+            version: COMPANION_BUNDLE_API_VERSION,
+            offset: 1024,
+            length: 512,
+        };
+        assert_eq!(min_version_for(&req), 56);
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["type"], "GetCompanionBundle");
+        assert_eq!(v["version"], COMPANION_BUNDLE_API_VERSION);
+        assert_eq!(v["offset"], 1024);
+        // A Device that asks for the manifest alone may leave the slice
+        // out altogether.
+        let bare: Request =
+            serde_json::from_str(r#"{"type":"GetCompanionBundle","version":1}"#).unwrap();
+        assert!(matches!(bare, Request::GetCompanionBundle { version: 1, offset: 0, length: 0 }));
+
+        let manifest = companion_bundle::sign(b"archive", &[1u8; 32], "0.1.0");
+        let result = Request::BundleResult {
+            call_id: 2,
+            manifest: Some(manifest.clone()),
+            offset: 0,
+            data: "YQ==".into(),
+        };
+        assert_eq!(min_version_for(&result), 56);
+        let v = serde_json::to_value(&result).unwrap();
+        assert_eq!(v["manifest"]["gavinVersion"], "0.1.0");
+        assert_eq!(v["manifest"]["signer"], manifest.signer);
+
+        // A newer answer carried `compression`. An older reader that has
+        // never heard of it still parses.
+        let json = serde_json::json!({
+            "type": "CompanionBundle",
+            "version": 1,
+            "state": "ready",
+            "manifest": serde_json::to_value(&manifest).unwrap(),
+            "offset": 0,
+            "data": "",
+            "compression": "none",
+        });
+        match serde_json::from_value::<Response>(json).unwrap() {
+            Response::CompanionBundle { state, manifest: read, version, .. } => {
+                assert_eq!(state, WorkstationState::Ready);
+                assert_eq!(read, Some(manifest));
+                assert_eq!(version, 1);
+            }
+            other => panic!("expected CompanionBundle, got {other:?}"),
+        }
+        // With no desktop: a state, and nothing else.
+        let json = serde_json::json!({ "type": "CompanionBundle", "version": 1, "state": "desktop-app-not-running" });
+        match serde_json::from_value::<Response>(json).unwrap() {
+            Response::CompanionBundle { state, manifest, data, .. } => {
+                assert_eq!(state, WorkstationState::DesktopAppNotRunning);
+                assert_eq!(manifest, None);
+                assert_eq!(data, "");
+            }
+            other => panic!("expected CompanionBundle, got {other:?}"),
+        }
+
+        let forward = Response::ForwardBundle { call_id: 3, version: 1, offset: 0, length: 4096 };
+        let v = serde_json::to_value(&forward).unwrap();
+        assert_eq!(v["type"], "ForwardBundle");
+        assert_eq!(v["length"], 4096);
+    }
+
     /// A pairing is the proof after the handshake and the notification
     /// key in the verdict, and a daemon older than 53 does neither. The
     /// QR says which daemon drew it, so a Device can decline before it
@@ -6638,7 +6793,9 @@ mod tests {
         // between the shell and a Workstation (ADR 0005). Two new TYPES.
         // The Device wire built these five at 44..48 on its own branch
         // and moved them past main's 44..50 when the two met.
-        assert_eq!(PROTOCOL_VERSION, 55);
+        // v56: GetCompanionBundle + BundleResult -- the Workstation serves
+        // the UI the Device runs (ADR 0005). Two new TYPES.
+        assert_eq!(PROTOCOL_VERSION, 56);
     }
 
     #[test]
@@ -7166,6 +7323,18 @@ mod tests {
                 call_id: 1,
                 items: vec![],
             },
+            // v56: the served Companion bundle.
+            Request::GetCompanionBundle {
+                version: COMPANION_BUNDLE_API_VERSION,
+                offset: 0,
+                length: 0,
+            },
+            Request::BundleResult {
+                call_id: 1,
+                manifest: None,
+                offset: 0,
+                data: String::new(),
+            },
             // Companion notifications, gated at 49.
             Request::SetPushGatewayUrl {
                 url: Some("https://push.example".into()),
@@ -7308,6 +7477,8 @@ mod tests {
         expected.insert(54, 5);
         // GetAttention + AttentionResult -- the attention request.
         expected.insert(55, 2);
+        // GetCompanionBundle + BundleResult -- the served bundle.
+        expected.insert(56, 2);
         expected.insert(u32::MAX, 1); // Request::Unknown
 
         assert_eq!(
