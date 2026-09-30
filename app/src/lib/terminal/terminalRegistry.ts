@@ -43,7 +43,15 @@ interface LiveState {
   // in the registry -- not just ones created afterwards. Held beside them so
   // newly created terminals start in the right theme too.
   theme: EffectiveTheme;
+  // See setInputTransform. Held here rather than in a module `let` because
+  // each terminal's onData closure is built once and outlives a hot reload
+  // of this module; a transform set on the reloaded module has to be the
+  // one those closures read.
+  inputTransform?: InputTransform | null;
 }
+
+/// Rewrites what a terminal's own keyboard typed, before it is sent.
+export type InputTransform = (sessionId: string, data: string) => string;
 
 /// Every live terminal in the window, held where a hot reload cannot reach it.
 ///
@@ -199,7 +207,8 @@ export function getOrCreateTerminal(sessionId: string, fontSize: number): Regist
   term.open(container);
 
   term.onData((data) => {
-    backend.writeInput(sessionId, data).catch(() => {});
+    const bytes = live.inputTransform ? live.inputTransform(sessionId, data) : data;
+    backend.writeInput(sessionId, bytes).catch(() => {});
   });
 
   let unlisten: UnlistenFn | undefined;
@@ -235,6 +244,25 @@ export function setTerminalFontSize(sessionId: string, fontSize: number): boolea
   if (!entry || entry.term.options.fontSize === fontSize) return false;
   entry.term.options.fontSize = fontSize;
   return true;
+}
+
+/// Sets what every terminal's typing passes through on its way to the
+/// session, and hands back its release.
+///
+/// The desk never sets one: a keyboard at the desk has every key, and
+/// xterm turns each into its bytes. The Companion does (companion-26): a
+/// phone's soft keyboard has no Ctrl, so its dock offers a latched one,
+/// and the character typed after it has to become a control code before
+/// it leaves -- here, in the one place a terminal's typing is sent, rather
+/// than in a second path that would have to keep up with this one.
+///
+/// The release clears only its own transform, so a surface torn down
+/// after its successor mounted cannot take the successor's away.
+export function setInputTransform(transform: InputTransform): () => void {
+  live.inputTransform = transform;
+  return () => {
+    if (live.inputTransform === transform) live.inputTransform = null;
+  };
 }
 
 export function applyTerminalTheme(theme: EffectiveTheme): void {
