@@ -439,6 +439,11 @@ function takeDecoyReading(found: DecoyReading): void {
 // workspace from the daemon rather than trusting a payload: the daemon's
 // copy is the one every window agrees on, and re-reading is what the
 // push handler already does when a push disagrees with it.
+//
+// A Companion is the one writer that is not a window. The host announces
+// its writes to the windows under the same event, and every window's
+// writes to it (`forwarding::announce_orchestration_written`): a rail a
+// phone starts is only armed, and the window that runs it has to hear so.
 
 const ORCHESTRATION_WRITTEN = "orchestration-written";
 
@@ -448,7 +453,10 @@ const REREAD_DELAY_MS = 250;
 
 const rereads = new Map<string, ReturnType<typeof setTimeout>>();
 
-function rereadAfterOtherWindowWrote(workspaceId: string): void {
+/// Exported for the Companion, which hears a desk's writes -- and its
+/// own, as the desk announces them -- as this event, and must re-read
+/// the same way: after the burst, and never over a save still in flight.
+export function rereadAfterOtherWindowWrote(workspaceId: string): void {
   // A workspace this window never loaded has nothing stale to correct;
   // the first fetch will read the daemon anyway.
   if (!workspaceId || !(workspaceId in get(orchestrations))) return;
